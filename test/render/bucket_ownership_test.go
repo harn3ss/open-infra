@@ -92,15 +92,20 @@ case "$*" in
     [ -f "$STUB/fail-get" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
     [ -f "$STUB/records/$3" ] && printf '%s' "$(cat "$STUB/records/$3")" | base64 | tr -d '\n'
     exit 0 ;;
+  "get secret bucket-owner-"*" -n minio --ignore-not-found -o jsonpath={.data.owner}")
+    [ -f "$STUB/fail-get" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
+    [ -f "$STUB/records/$3.owner" ] && printf '%s' "$(cat "$STUB/records/$3.owner")" | base64 | tr -d '\n'
+    exit 0 ;;
   "create secret generic bucket-owner-"*" --dry-run=client -o yaml")
-    ns=""; for a in "$@"; do case "$a" in --from-literal=namespace=*) ns=${a#--from-literal=namespace=} ;; esac; done
-    printf 'name=%s\nowner-namespace=%s\n' "$4" "$ns" ;;
+    ns=""; ow=""; for a in "$@"; do case "$a" in --from-literal=namespace=*) ns=${a#--from-literal=namespace=} ;; --from-literal=owner=*) ow=${a#--from-literal=owner=} ;; esac; done
+    printf 'name=%s\nowner-namespace=%s\nowner-ref=%s\n' "$4" "$ns" "$ow" ;;
   "label --local -f - openinfra.dev/bucket-owner=true -o yaml") cat; echo "label=openinfra.dev/bucket-owner" ;;
   "create -f -")
-    obj=$(cat); name=$(printf '%s\n' "$obj" | sed -n 's/^name=//p'); ns=$(printf '%s\n' "$obj" | sed -n 's/^owner-namespace=//p')
+    obj=$(cat); name=$(printf '%s\n' "$obj" | sed -n 's/^name=//p'); ns=$(printf '%s\n' "$obj" | sed -n 's/^owner-namespace=//p'); ow=$(printf '%s\n' "$obj" | sed -n 's/^owner-ref=//p')
     [ -f "$STUB/race/$name" ] && cp "$STUB/race/$name" "$STUB/records/$name"
     if [ -f "$STUB/records/$name" ]; then echo "Error from server (AlreadyExists): secrets \"$name\" already exists" >&2; exit 1; fi
     printf '%s' "$ns" > "$STUB/records/$name"
+    printf '%s' "$ow" > "$STUB/records/$name.owner"
     printf '%s\n' "$obj" >> "$STUB/created.txt" ;;
   "get secret "*"-minio -n "*" -o jsonpath={.data.MINIO_SECRET_KEY}") exit 1 ;;
   "create secret generic "*"-minio -n "*" --dry-run=client -o yaml") printf 'secret %s\n' "$4"; printf '%s\n' "$@" | grep -- '--from-literal=MINIO_ACCESS_KEY=' ;;
@@ -158,8 +163,14 @@ func newBktEnv(t *testing.T, records, buckets map[string]string) bktEnv {
 			t.Fatal(err)
 		}
 	}
+	// A record value is the owning namespace, or "namespace|owner-ref" to also seed the modern owner
+	// field (a value with no "|" is a legacy record with no owner, exercising the namespace fallback).
 	for k, v := range records {
-		writeFile(t, filepath.Join(e.dir, "records", k), v)
+		ns, owner, modern := strings.Cut(v, "|")
+		writeFile(t, filepath.Join(e.dir, "records", k), ns)
+		if modern {
+			writeFile(t, filepath.Join(e.dir, "records", k+".owner"), owner)
+		}
 	}
 	for k, v := range buckets {
 		writeFile(t, filepath.Join(e.dir, "buckets", k), v+"\n")
@@ -225,12 +236,20 @@ func TestBucketOwnership_Claim(t *testing.T) {
 		wantOutSubstr string
 	}{
 		{name: "new bucket is recorded to this namespace", bucket: "data",
-			wantOK: true, wantRecord: "team-a", wantOutSubstr: "recorded as owned by namespace team-a"},
-		{name: "own bucket is used", bucket: "data", records: map[string]string{"bucket-owner-data": "team-a"},
+			wantOK: true, wantRecord: "team-a", wantOutSubstr: "recorded as owned by Bucket/team-a/data"},
+		{name: "own bucket is used (legacy record, namespace fallback)", bucket: "data", records: map[string]string{"bucket-owner-data": "team-a"},
+			buckets: map[string]string{"data": "2026-09-01T00:00:00+00:00"}, wantOK: true, wantRecord: "team-a"},
+		{name: "own bucket is used (modern record, identity match)", bucket: "data", records: map[string]string{"bucket-owner-data": "team-a|Bucket/team-a/data"},
 			buckets: map[string]string{"data": "2026-09-01T00:00:00+00:00"}, wantOK: true, wantRecord: "team-a"},
 		{name: "another namespace's bucket is refused", bucket: "data", records: map[string]string{"bucket-owner-data": "team-b"},
 			buckets: map[string]string{"data": "2026-10-24T00:00:00+00:00"}, wantRecord: "team-b",
 			wantOutSubstr: "BucketAlreadyExists: bucket data belongs to another namespace (team-b)"},
+		// The CloudFormation case: another claim in the SAME namespace (every stack lives in
+		// open-infra-cfn) must not adopt this claim's bucket by naming it. Identity, not namespace.
+		{name: "same namespace, different claim is refused", bucket: "data",
+			records: map[string]string{"bucket-owner-data": "team-a|Bucket/team-a/other"},
+			buckets: map[string]string{"data": "2026-10-24T00:00:00+00:00"}, wantRecord: "team-a",
+			wantOutSubstr: "BucketAlreadyExists: bucket data belongs to another claim (Bucket/team-a/other)"},
 		{name: "unrecorded bucket made by this claim is adopted", bucket: "data",
 			buckets: map[string]string{"data": "2026-10-23T02:56:10.123000+00:00"}, wantOK: true, wantRecord: "team-a"},
 		{name: "unrecorded bucket made in the same second is adopted", bucket: "data",

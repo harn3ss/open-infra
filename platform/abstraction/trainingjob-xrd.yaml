@@ -42,6 +42,7 @@ spec:
               properties:
                 image:
                   type: string
+                  pattern: '^[A-Za-z0-9][A-Za-z0-9._:/@-]*$'
                   description: "The training container image. It runs to completion; write model artifacts to the output bucket (see output)."
                 command:
                   type: array
@@ -70,9 +71,11 @@ spec:
                   description: "GPU class when gpu>0: smallgpu (A2000 class, may use a large GPU) or largegpu (requires a large GPU, e.g. 3090). Ignored when gpu=0."
                 cpu:
                   type: string
+                  pattern: '^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$'
                   description: "CPU request/limit as a Kubernetes quantity (e.g. \"2\", \"500m\"). Unset uses a modest default."
                 memory:
                   type: string
+                  pattern: '^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$'
                   description: "Memory request/limit as a Kubernetes quantity (e.g. \"8Gi\"). Unset uses a modest default."
                 dataset:
                   type: object

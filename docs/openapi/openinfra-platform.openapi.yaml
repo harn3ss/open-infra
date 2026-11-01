@@ -4069,6 +4069,7 @@ components:
           properties:
             image:
               type: string
+              pattern: ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$
               description: Container image to run, e.g. ghcr.io/me/my-api:latest. Omit for a data-only app (just a database,
                 buckets, or queues).
             port:
@@ -4136,13 +4137,16 @@ components:
               properties:
                 services:
                   type: string
+                  pattern: ^[0-9]+$
                   description: Max Services (default "60"). A Knative Function needs ~3.
                 pods:
                   type: string
+                  pattern: ^[0-9]+$
                   description: Max Pods (default "100"). Scale-to-zero Functions idle at 0 pods; this bounds apply/invocation
                     spikes.
                 persistentvolumeclaims:
                   type: string
+                  pattern: ^[0-9]+$
                   description: Max PersistentVolumeClaims (default "60").
             volumeMounts:
               type: array
@@ -4314,9 +4318,12 @@ components:
                         S3_SECRET_KEY).'
                 name:
                   type: string
-                  description: Database name (defaults to the application name).
+                  pattern: ^[A-Za-z_][A-Za-z0-9_$-]{0,127}$
+                  description: Database name (defaults to the application name). A SQL identifier (it names the database in
+                    T-SQL and in the restore script).
                 size:
                   type: string
+                  pattern: ^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$
                   description: "Storage size for the database's data volume, e.g. 20Gi (maps from RDS AllocatedStorage). When\
                     \ unset, the engine default is used (postgres/mysql/mongo 5Gi, babelfish 10Gi, sqlserver 20Gi). Expandable\
                     \ later where the engine + StorageClass support it. NOTE: on local-path, size is NOT enforced \u2014 the\
@@ -4402,6 +4409,7 @@ components:
                     MySQL/Mongo scale to zero; PVCs are retained). Set back to false to start it.
                 storageClass:
                   type: string
+                  pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
                   description: 'StorageClass for the database''s persistent volumes. When unset, each engine keeps its default
                     (local-path; babelfish + sqlserver: longhorn). Set this to your cluster''s StorageClass on substrates
                     that don''t ship a default local-path provisioner, or to pin the DB onto replicated storage (e.g. longhorn).'
@@ -4806,6 +4814,7 @@ components:
           properties:
             image:
               type: string
+              pattern: ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$
               description: The inference container. It reads the input records (INPUT_BUCKET/INPUT_PREFIX), optionally loads
                 a model artifact (ARTIFACT_BUCKET/ARTIFACT_KEY), and writes predictions to OUTPUT_BUCKET/OUTPUT_PREFIX. Runs
                 to completion.
@@ -4871,9 +4880,11 @@ components:
               description: GPU class when gpu>0. Ignored when gpu=0.
             cpu:
               type: string
+              pattern: ^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$
               description: CPU request/limit (e.g. "2").
             memory:
               type: string
+              pattern: ^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$
               description: Memory request/limit (e.g. "4Gi").
             env:
               type: array
@@ -4920,12 +4931,15 @@ components:
           $ref: '#/components/schemas/ObjectMeta'
         spec:
           type: object
+          x-kubernetes-validations:
+          - rule: has(self.bucketName) == has(oldSelf.bucketName) && (!has(self.bucketName) || self.bucketName == oldSelf.bucketName)
+            message: 'spec.bucketName is immutable: create a new claim for another bucket'
           properties:
             bucketName:
               type: string
               description: 'The S3 bucket name. Defaults to the claim name. DNS-compatible (lowercase letters, digits, hyphens),
-                3-63 chars. Immutable. Bucket names are global, as on S3: the bucket belongs to the namespace whose claim
-                created it, and a claim in another namespace that names it is refused.'
+                3-63 chars. Immutable. Bucket names are global, as on S3: the bucket belongs to the claim''s namespace (for
+                a CloudFormation stack, to the stack) that created it, and any other claimant is refused.'
               pattern: ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
             versioning:
               type: boolean
@@ -4941,10 +4955,14 @@ components:
                 properties:
                   id:
                     type: string
-                    description: Rule id (unique within the bucket).
+                    maxLength: 255
+                    pattern: ^[^\x00-\x1f\x7f]+$
+                    description: Rule id (unique within the bucket). Up to 255 characters, no control characters.
                   prefix:
                     type: string
-                    description: Apply only to object keys under this prefix. Empty = the whole bucket.
+                    maxLength: 1024
+                    pattern: ^[^\x00-\x1f\x7f]*$
+                    description: Apply only to object keys under this prefix. Empty = the whole bucket. No control characters.
                   expireDays:
                     type: integer
                     description: Delete current-version objects this many days after creation.
@@ -6927,6 +6945,7 @@ components:
               properties:
                 image:
                   type: string
+                  pattern: ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$
                   description: Serving container image that loads the artifact and serves HTTP.
                 command:
                   type: array
@@ -6966,9 +6985,11 @@ components:
                   description: GPU class when gpu>0.
                 cpu:
                   type: string
+                  pattern: ^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$
                   description: CPU request/limit (e.g. "2").
                 memory:
                   type: string
+                  pattern: ^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$
                   description: Memory request/limit (e.g. "8Gi").
                 modelPackage:
                   type: string
@@ -6991,11 +7012,13 @@ components:
                 gracefully to one. Default false = a single replica.
             domain:
               type: string
+              pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$
               description: "Hostname to expose the key-gated inference endpoint on externally \u2014 open-infra provisions\
                 \ an Ingress and a cert-manager TLS certificate for it (e.g. llama.example.com)."
             storageSize:
               type: string
               default: 20Gi
+              pattern: ^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$
               description: Size limit for the ephemeral weight cache (an emptyDir). Weights are re-pulled each time a fresh
                 pod starts, so this is scratch space, not persistent storage. Default 20Gi.
             expose:
@@ -7501,6 +7524,7 @@ components:
           properties:
             image:
               type: string
+              pattern: ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$
               description: The processing container. Reads its inputs, writes its outputs, and runs to completion.
             command:
               type: array
@@ -7559,9 +7583,11 @@ components:
               description: GPU class when gpu>0.
             cpu:
               type: string
+              pattern: ^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$
               description: CPU request/limit (e.g. "2").
             memory:
               type: string
+              pattern: ^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$
               description: Memory request/limit (e.g. "4Gi").
             env:
               type: array
@@ -7591,15 +7617,19 @@ components:
                 properties:
                   name:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
                     description: Volume name, referenced by volumeMounts.
                   configMap:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
                     description: Mount this ConfigMap's keys as files (in this namespace).
                   secret:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
                     description: Mount this Secret's keys as files (in this namespace).
                   volume:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
                     description: "Mount this kind: Volume (mode: Filesystem, same namespace) as durable storage \u2014 e.g.\
                       \ to load a SQL dump staged on a PVC."
             volumeMounts:
@@ -7613,6 +7643,7 @@ components:
                 properties:
                   name:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
                     description: Name of a volume declared in spec.volumes.
                   mountPath:
                     type: string
@@ -8222,6 +8253,7 @@ components:
           properties:
             domain:
               type: string
+              pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$
               description: Hostname the site is served on, e.g. app.example.com.
             domains:
               type: array
@@ -8269,7 +8301,9 @@ components:
             indexDocument:
               type: string
               default: index.html
-              description: The index/entry document served at / and (when spa) for unmatched routes.
+              pattern: ^[A-Za-z0-9._-]+$
+              description: The index/entry document served at / and (when spa) for unmatched routes (a file name; it is written
+                into the nginx config).
             errorDocument:
               type: string
               description: Document served for 404s when spa is false (e.g. 404.html). Ignored when spa is true.
@@ -8639,6 +8673,7 @@ components:
           properties:
             image:
               type: string
+              pattern: ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$
               description: The training container image. It runs to completion; write model artifacts to the output bucket
                 (see output).
             command:
@@ -8676,9 +8711,11 @@ components:
                 GPU, e.g. 3090). Ignored when gpu=0.'
             cpu:
               type: string
+              pattern: ^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$
               description: CPU request/limit as a Kubernetes quantity (e.g. "2", "500m"). Unset uses a modest default.
             memory:
               type: string
+              pattern: ^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$
               description: Memory request/limit as a Kubernetes quantity (e.g. "8Gi"). Unset uses a modest default.
             dataset:
               type: object

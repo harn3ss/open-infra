@@ -59,7 +59,7 @@ spec:
                     ARTIFACT_KEY + AWS_ENDPOINT_URL / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).
                     Set this OR `model`.
                   properties:
-                    image:   { type: string, description: "Serving container image that loads the artifact and serves HTTP." }
+                    image:   { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:/@-]*$', description: "Serving container image that loads the artifact and serves HTTP." }
                     command:
                       type: array
                       items: { type: string }
@@ -77,8 +77,8 @@ spec:
                         key:    { type: string, description: "Object key (or prefix) of the artifact." }
                     gpu:     { type: integer, default: 0, description: "GPUs for serving (0 = CPU-only)." }
                     gpuTier: { type: string, enum: [smallgpu, largegpu], default: smallgpu, description: "GPU class when gpu>0." }
-                    cpu:     { type: string, description: "CPU request/limit (e.g. \"2\")." }
-                    memory:  { type: string, description: "Memory request/limit (e.g. \"8Gi\")." }
+                    cpu:     { type: string, pattern: '^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$', description: "CPU request/limit (e.g. \"2\")." }
+                    memory:  { type: string, pattern: '^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$', description: "Memory request/limit (e.g. \"8Gi\")." }
                     modelPackage: { type: string, description: "Provenance: the ModelPackage this endpoint serves (informational)." }
                     env:
                       type: array
@@ -89,8 +89,8 @@ spec:
                           name:  { type: string }
                           value: { type: string }
                 highAvailability: { type: boolean, default: false, description: "Run two replicas spread across separate nodes (pod anti-affinity), load-balanced so the endpoint survives a single node loss. If too few qualifying nodes are available the second replica stays Pending, degrading gracefully to one. Default false = a single replica." }
-                domain:      { type: string, description: "Hostname to expose the key-gated inference endpoint on externally — open-infra provisions an Ingress and a cert-manager TLS certificate for it (e.g. llama.example.com)." }
-                storageSize: { type: string, default: "20Gi", description: "Size limit for the ephemeral weight cache (an emptyDir). Weights are re-pulled each time a fresh pod starts, so this is scratch space, not persistent storage. Default 20Gi." }
+                domain:      { type: string, pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$', description: "Hostname to expose the key-gated inference endpoint on externally — open-infra provisions an Ingress and a cert-manager TLS certificate for it (e.g. llama.example.com)." }
+                storageSize: { type: string, default: "20Gi", pattern: '^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$', description: "Size limit for the ephemeral weight cache (an emptyDir). Weights are re-pulled each time a fresh pod starts, so this is scratch space, not persistent storage. Default 20Gi." }
                 expose:      { type: boolean, default: false, description: "Also expose the inference endpoint on a LAN IP (a MetalLB LoadBalancer Service), so workstations can call the OpenAI-compatible API without DNS or Ingress. Default false = in-cluster only." }
             status:
               type: object

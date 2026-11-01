@@ -15,6 +15,7 @@ package render
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -2030,6 +2031,24 @@ func sprigLite() template.FuncMap {
 			}
 			return string(b)
 		},
+		// function-go-templating: parse YAML, failing the render on bad input. The compositions only
+		// parse JSON documents with it, so a JSON decoder is faithful here.
+		"fromYaml": func(s string) (any, error) {
+			var v any
+			if err := json.Unmarshal([]byte(s), &v); err != nil {
+				return nil, err
+			}
+			return v, nil
+		},
+		// sprig: is v of this kind ("map", "slice", "string", …)?
+		"kindIs": func(kind string, v any) bool {
+			if v == nil {
+				return kind == "invalid"
+			}
+			return reflect.ValueOf(v).Kind().String() == kind
+		},
+		// sprig: base64-encode a string.
+		"b64enc": func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) },
 		// sprig: ternary trueVal falseVal cond.
 		"ternary": func(vt any, vf any, cond bool) any {
 			if cond {

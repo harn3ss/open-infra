@@ -80,11 +80,11 @@ func TestStaticSite_Build(t *testing.T) {
 		"kind: CronJob",
 		`schedule: "*/2 * * * *"`,             // 120s -> 2 minutes
 		"automountServiceAccountToken: false", // untrusted build gets no cluster creds
-		"git clone --depth 1 -b \"release\"",
-		"https://github.com/me/app.git",
-		"pnpm i && pnpm build",
+		// The scripts read the tenant's values from env, never interpolate them.
+		`git clone --depth 1 -b "$BRANCH" "$URL" /ws/src`,
+		`exec /bin/sh -c "$BUILD_COMMAND"`,
+		`/ws/src/$OUTPUT_DIR/`,          // publishes the custom output dir via the env value
 		`s3://web-site/.build/last-sha`, // change-detection marker
-		"/ws/src/build/",                // publishes the custom output dir
 		"VITE_API",                      // build env threaded through
 		"concurrencyPolicy: Forbid",
 	} {
@@ -92,13 +92,56 @@ func TestStaticSite_Build(t *testing.T) {
 			t.Errorf("build render missing %q; got:\n%s", want, grepCtx(out, "build"))
 		}
 	}
+	// The tenant's repo, branch, command and output dir ride env VALUES (so a quote or newline in them
+	// can neither break the manifest nor the build wrapper). Parse and check the decoded values.
+	env := collectEnv(t, out)
+	for k, v := range map[string]string{
+		"REPO_URL": "https://github.com/me/app.git", "BRANCH": "release",
+		"BUILD_COMMAND": "pnpm i && pnpm build", "OUTPUT_DIR": "build",
+	} {
+		if env[k] != v {
+			t.Errorf("env %s = %q, want %q", k, env[k], v)
+		}
+	}
 }
 
-// A buildCommand containing single quotes (amplify.yml commands routinely do) must render into a
-// BLOCK scalar, not a single-quoted flow scalar — the latter breaks the manifest on the first quote
-// ("cannot decode manifest: error converting YAML to JSON"), a fail found by the live #296 E2E. This
-// module is stdlib-only (no YAML parser), so we assert the structural fix; the live probe proves the
-// apiserver actually accepts it.
+// collectEnv parses rendered manifests and returns every { name, value } env entry's decoded value.
+func collectEnv(t *testing.T, out string) map[string]string {
+	t.Helper()
+	docs, err := parseYAMLDocs(out)
+	if err != nil {
+		t.Fatalf("parse rendered output: %v\n%s", err, out)
+	}
+	res := map[string]string{}
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			n, okn := x["name"].(string)
+			val, okv := x["value"].(string)
+			if okn && okv && len(x) <= 3 {
+				res[n] = val
+			}
+			for _, c := range x {
+				walk(c)
+			}
+		case []any:
+			for _, c := range x {
+				walk(c)
+			}
+		}
+	}
+	for _, d := range docs {
+		walk(d)
+	}
+	return res
+}
+
+// A buildCommand with quotes (amplify.yml commands routinely have them) must not be able to break the
+// manifest or the build wrapper. It travels as a BUILD_COMMAND env VALUE (JSON-encoded, so quotes and
+// newlines are escaped inside one scalar) and runs as its own `sh -c "$BUILD_COMMAND"` — so neither the
+// rendered YAML nor the wrapping script can be escaped. This module is stdlib-only (no YAML parser), so
+// we assert the structural fix; the live #296 probe proves the apiserver accepts it.
 func TestStaticSite_BuildCommandWithQuotes(t *testing.T) {
 	tmpl := extractInlineTemplate(t, staticsiteCompositionPath)
 	cmd := `echo '<h1>hi</h1>' > dist/index.html && sed -i "s/a/b/g" dist/index.html`
@@ -106,17 +149,18 @@ func TestStaticSite_BuildCommandWithQuotes(t *testing.T) {
 		"domain": "app.example.com",
 		"build":  map[string]any{"repo": "https://github.com/me/app.git", "buildCommand": cmd},
 	}))
-	// Threaded through verbatim (quotes intact).
-	if !strings.Contains(out, cmd) {
-		t.Fatalf("buildCommand not rendered verbatim; got:\n%s", grepCtx(out, "sed"))
+	// The command rides the BUILD_COMMAND env value and decodes back verbatim (quotes intact), with the
+	// manifest still valid — so a quoted command cannot break the YAML.
+	if got := collectEnv(t, out)["BUILD_COMMAND"]; got != cmd {
+		t.Fatalf("BUILD_COMMAND env = %q, want %q", got, cmd)
 	}
-	// NOT the old single-quoted flow scalar that a quote would break.
-	if strings.Contains(out, "args: ['if [ -f /ws/.skip") {
-		t.Fatalf("build args still use a single-quoted flow scalar — a quoted buildCommand breaks the manifest")
+	// The command runs via its own shell reading the env var, never interpolated into the script text.
+	if !strings.Contains(out, `exec /bin/sh -c "$BUILD_COMMAND"`) {
+		t.Fatalf("build step must exec $BUILD_COMMAND, not the interpolated command; got:\n%s", grepCtx(out, "skip"))
 	}
-	// Block-scalar form: the skip guard sits on its own line, the command on the next.
-	if !strings.Contains(out, "if [ -f /ws/.skip ]; then exit 0; fi\n") {
-		t.Fatalf("expected the skip guard on its own line (block scalar); got:\n%s", grepCtx(out, "skip"))
+	// NOT the old inline forms that a quote would break.
+	if strings.Contains(out, "args: ['if [ -f /ws/.skip") || strings.Contains(out, cmd+"\n") {
+		t.Fatalf("buildCommand is still interpolated into the script; a quoted command breaks the manifest")
 	}
 }
 

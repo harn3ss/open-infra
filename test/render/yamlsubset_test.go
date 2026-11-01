@@ -44,8 +44,9 @@ func parseYAMLDocs(s string) ([]map[string]any, error) {
 }
 
 type yamlParser struct {
-	lines []string
-	i     int
+	lines   []string
+	i       int
+	anchors map[string]any // `&name` values, for `*name` aliases (an XRD reuses a schema this way)
 }
 
 func indentOf(s string) int { return len(s) - len(strings.TrimLeft(s, " ")) }
@@ -124,6 +125,26 @@ func (p *yamlParser) parseMap(ind int) (map[string]any, error) {
 // parseValue parses what follows `key:` (rest), advancing past it. ind is the key's indent.
 func (p *yamlParser) parseValue(ind int, rest string) (any, error) {
 	rest = stripComment(rest)
+	if strings.HasPrefix(rest, "*") && !strings.ContainsAny(rest, " ,]}") {
+		v, ok := p.anchors[rest[1:]]
+		if !ok {
+			return nil, fmt.Errorf("line %d: unknown alias %s", p.i+1, rest)
+		}
+		p.i++
+		return v, nil
+	}
+	if strings.HasPrefix(rest, "&") {
+		name, after, _ := strings.Cut(rest[1:], " ")
+		v, err := p.parseValue(ind, strings.TrimSpace(after))
+		if err != nil {
+			return nil, err
+		}
+		if p.anchors == nil {
+			p.anchors = map[string]any{}
+		}
+		p.anchors[name] = v
+		return v, nil
+	}
 	switch {
 	case rest == "":
 		p.i++

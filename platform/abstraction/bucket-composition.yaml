@@ -61,6 +61,8 @@ spec:
               {{- $lockJson = dict "ObjectLockEnabled" "Enabled" "Rule" (dict "DefaultRetention" $ret) | toJson }}
             {{- end }}
             {{- $policy := $spec.policy | default "" }}
+            {{- /* The policy must be a JSON object. It reaches the setup script only as an env value. */}}
+            {{- if $policy }}{{- if not (and (hasPrefix "{" (trim $policy)) (kindIs "map" (fromYaml $policy))) }}{{- fail (printf "kind: Bucket %s/%s: spec.policy must be a JSON policy document (an object)" $ns $name) }}{{- end }}{{- end }}
             {{- /* The owner is in the Job name too: same-named claims in two namespaces get two Jobs. */}}
             {{- $hashIn := printf "%v|%s|%s|%s|own-v1" ($spec.versioning | default false) $lifecycle $lockJson $owner }}
             {{- if $policy }}{{- $hashIn = printf "%s|%s" $hashIn $policy }}{{- end }}
@@ -113,6 +115,10 @@ spec:
                               - { name: OWNER_NS, value: {{ $ns | quote }} }
                               - { name: OWNER_REF, value: {{ $owner | quote }} }
                               - { name: XR_CREATED, value: {{ .observed.composite.resource.metadata.creationTimestamp | default "" | quote }} }
+                              # Tenant-supplied documents travel as env values, never inside the script.
+                              - { name: LIFECYCLE_JSON, value: {{ $lifecycle | toJson }} }
+                              - { name: LOCK_JSON, value: {{ $lockJson | toJson }} }
+                              - { name: BUCKET_POLICY, value: {{ $policy | toJson }} }
                             command: ["/bin/sh", "-c"]
                             args:
                               - |
@@ -135,7 +141,7 @@ spec:
                                     *) echo "create-bucket failed for {{ $bucket }}: $out" >&2; exit 1 ;;
                                   esac
                                 fi
-                                aws --endpoint-url $E s3api put-object-lock-configuration --bucket {{ $bucket }} --object-lock-configuration '{{ $lockJson }}'
+                                aws --endpoint-url $E s3api put-object-lock-configuration --bucket {{ $bucket }} --object-lock-configuration "$LOCK_JSON"
                                 {{- else }}
                                 if out=$(aws --endpoint-url $E s3 mb "s3://{{ $bucket }}" 2>&1); then
                                   echo "created bucket {{ $bucket }}"
@@ -150,12 +156,12 @@ spec:
                                 aws --endpoint-url $E s3api put-bucket-versioning --bucket {{ $bucket }} --versioning-configuration Status=Enabled
                                 {{- end }}
                                 {{- if $rules }}
-                                aws --endpoint-url $E s3api put-bucket-lifecycle-configuration --bucket {{ $bucket }} --lifecycle-configuration '{{ $lifecycle }}'
+                                aws --endpoint-url $E s3api put-bucket-lifecycle-configuration --bucket {{ $bucket }} --lifecycle-configuration "$LIFECYCLE_JSON"
                                 {{- end }}
                                 {{- if $policy }}
                                 # Bucket policy applied verbatim. MinIO stores it via put-bucket-policy, but only `*`
                                 # (public) principals resolve — AWS-IAM-ARN principals name identities MinIO can't map.
-                                aws --endpoint-url $E s3api put-bucket-policy --bucket {{ $bucket }} --policy '{{ $spec.policy }}'
+                                aws --endpoint-url $E s3api put-bucket-policy --bucket {{ $bucket }} --policy "$BUCKET_POLICY"
                                 {{- end }}
                                 # Mint a PER-APP, NON-root user scoped to ONLY this bucket (#151 fault 3);
                                 # reuse the existing key across re-syncs so the claim's creds stay stable.

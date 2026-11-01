@@ -246,7 +246,11 @@ data:
     # Sourced by POSIX sh. Needs E (the MinIO endpoint), MinIO root in AWS_ACCESS_KEY_ID /
     # AWS_SECRET_ACCESS_KEY or ROOT_USER / ROOT_PASS, and OWNER_NS, OWNER_REF and XR_CREATED (the
     # claim's namespace, <Kind>/<namespace>/<name>, and its composite's creationTimestamp).
-    PLATFORM_BUCKETS="velero lakehouse db-snapshots query-results openinfra-audit ecr-registry"
+    # Platform buckets are owned by the platform itself and never handed to a claim. Keep in step with
+    # the buckets platform components create: velero (platform/backup), lakehouse + query-data +
+    # query-results (platform/query), db-snapshots (managed-DB WAL + DynamoDB PITR), openinfra-audit
+    # (the WORM audit store), ecr-registry (the image registry), and longhorn (Longhorn's volume backups).
+    PLATFORM_BUCKETS="velero lakehouse query-data query-results db-snapshots openinfra-audit ecr-registry longhorn"
 
     oi_refuse() { echo "BucketAlreadyExists: $*" >&2; exit 1; }
 
@@ -269,11 +273,26 @@ data:
       [ -n "$OWNER_NS" ] && [ -n "$OWNER_REF" ] || { echo "claim_bucket: OWNER_NS and OWNER_REF must be set" >&2; exit 1; }
       rec="bucket-owner-$b"
       for _ in 1 2 3; do
-        if ! owner=$(kubectl get secret "$rec" -n minio --ignore-not-found -o jsonpath='{.data.namespace}'); then
+        # The record carries both the owning claim's identity (owner=<Kind>/<ns>/<name>) and its
+        # namespace. Match on the full identity: a bucket belongs to the one claim that created it, not
+        # to its whole namespace — otherwise two claims in a shared namespace (every CloudFormation
+        # stack lives in open-infra-cfn) could adopt each other's bucket by naming it. A legacy record
+        # that predates the owner field falls back to the namespace check.
+        if ! rawowner=$(kubectl get secret "$rec" -n minio --ignore-not-found -o jsonpath='{.data.owner}'); then
           echo "cannot read the owner record of bucket $b" >&2; exit 1
         fi
-        if [ -n "$owner" ]; then
-          owner=$(printf '%s' "$owner" | base64 -d)
+        if ! rawns=$(kubectl get secret "$rec" -n minio --ignore-not-found -o jsonpath='{.data.namespace}'); then
+          echo "cannot read the owner record of bucket $b" >&2; exit 1
+        fi
+        if [ -n "$rawowner" ]; then
+          owner=$(printf '%s' "$rawowner" | base64 -d)
+          if [ "$owner" = "$OWNER_REF" ]; then
+            echo "bucket $b belongs to $OWNER_REF"
+            return 0
+          fi
+          oi_refuse "bucket $b belongs to another claim ($owner); $OWNER_REF cannot use it"
+        elif [ -n "$rawns" ]; then
+          owner=$(printf '%s' "$rawns" | base64 -d)
           if [ "$owner" = "$OWNER_NS" ]; then
             echo "bucket $b belongs to namespace $OWNER_NS"
             return 0
@@ -288,14 +307,16 @@ data:
           x=$(oi_epoch "$XR_CREATED") || x=""
           if [ -z "$m" ] || [ -z "$x" ] || [ "$m" -lt "$x" ]; then
             oi_refuse "bucket $b exists, has no owner record and predates $OWNER_REF." \
-              "If it belongs to namespace $OWNER_NS, an admin records that with:" \
+              "Adopt it ONLY after confirming who the bucket really belongs to — do not assume it is this" \
+              "claim. If $OWNER_REF is genuinely its owner, an admin records that with:" \
               "kubectl -n minio create secret generic $rec --from-literal=namespace=$OWNER_NS --from-literal=owner=$OWNER_REF" \
-              "&& kubectl -n minio label secret $rec openinfra.dev/bucket-owner=true"
+              "&& kubectl -n minio label secret $rec openinfra.dev/bucket-owner=true" \
+              "(set namespace/owner to the TRUE owner if it is a different claim)."
           fi
         fi
         if out=$(kubectl create secret generic "$rec" -n minio --from-literal=namespace="$OWNER_NS" --from-literal=owner="$OWNER_REF" --dry-run=client -o yaml \
             | kubectl label --local -f - openinfra.dev/bucket-owner=true -o yaml | kubectl create -f - 2>&1); then
-          echo "bucket $b recorded as owned by namespace $OWNER_NS"
+          echo "bucket $b recorded as owned by $OWNER_REF"
           return 0
         fi
         case "$out" in

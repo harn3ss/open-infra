@@ -45,6 +45,7 @@ spec:
               properties:
                 image:
                   type: string
+                  pattern: '^[A-Za-z0-9][A-Za-z0-9._:/@-]*$'
                   description: "The processing container. Reads its inputs, writes its outputs, and runs to completion."
                 command:
                   type: array
@@ -85,9 +86,11 @@ spec:
                   description: "GPU class when gpu>0."
                 cpu:
                   type: string
+                  pattern: '^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$'
                   description: "CPU request/limit (e.g. \"2\")."
                 memory:
                   type: string
+                  pattern: '^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$'
                   description: "Memory request/limit (e.g. \"4Gi\")."
                 env:
                   type: array
@@ -112,10 +115,10 @@ spec:
                     type: object
                     required: [name]
                     properties:
-                      name:      { type: string, description: "Volume name, referenced by volumeMounts." }
-                      configMap: { type: string, description: "Mount this ConfigMap's keys as files (in this namespace)." }
-                      secret:    { type: string, description: "Mount this Secret's keys as files (in this namespace)." }
-                      volume:    { type: string, description: "Mount this kind: Volume (mode: Filesystem, same namespace) as durable storage — e.g. to load a SQL dump staged on a PVC." }
+                      name:      { type: string, pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', description: "Volume name, referenced by volumeMounts." }
+                      configMap: { type: string, pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', description: "Mount this ConfigMap's keys as files (in this namespace)." }
+                      secret:    { type: string, pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', description: "Mount this Secret's keys as files (in this namespace)." }
+                      volume:    { type: string, pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', description: "Mount this kind: Volume (mode: Filesystem, same namespace) as durable storage — e.g. to load a SQL dump staged on a PVC." }
                 volumeMounts:
                   type: array
                   description: "Where to mount spec.volumes inside the processing container."
@@ -123,7 +126,7 @@ spec:
                     type: object
                     required: [name, mountPath]
                     properties:
-                      name:      { type: string, description: "Name of a volume declared in spec.volumes." }
+                      name:      { type: string, pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$', description: "Name of a volume declared in spec.volumes." }
                       mountPath: { type: string, description: "Path to mount it at inside the container." }
                       subPath:   { type: string, description: "Optional: mount a single file/key within the volume (e.g. a specific ConfigMap key)." }
                       readOnly:  { type: boolean, description: "Mount read-only (default false)." }

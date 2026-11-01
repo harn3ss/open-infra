@@ -39,6 +39,7 @@ spec:
               properties:
                 domain:
                   type: string
+                  pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
                   description: "Hostname the site is served on, e.g. app.example.com."
                 domains:
                   type: array
@@ -78,7 +79,8 @@ spec:
                 indexDocument:
                   type: string
                   default: "index.html"
-                  description: "The index/entry document served at / and (when spa) for unmatched routes."
+                  pattern: '^[A-Za-z0-9._-]+$'
+                  description: "The index/entry document served at / and (when spa) for unmatched routes (a file name; it is written into the nginx config)."
                 errorDocument:
                   type: string
                   description: "Document served for 404s when spa is false (e.g. 404.html). Ignored when spa is true."

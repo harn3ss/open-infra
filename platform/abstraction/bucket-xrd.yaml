@@ -40,10 +40,15 @@ spec:
           properties:
             spec:
               type: object
+              # The bucket a claim names is fixed when the claim is created: retargeting a claim at another
+              # bucket would let it adopt one it never created.
+              x-kubernetes-validations:
+                - rule: "has(self.bucketName) == has(oldSelf.bucketName) && (!has(self.bucketName) || self.bucketName == oldSelf.bucketName)"
+                  message: "spec.bucketName is immutable: create a new claim for another bucket"
               properties:
                 bucketName:
                   type: string
-                  description: "The S3 bucket name. Defaults to the claim name. DNS-compatible (lowercase letters, digits, hyphens), 3-63 chars. Immutable. Bucket names are global, as on S3: the bucket belongs to the namespace whose claim created it, and a claim in another namespace that names it is refused."
+                  description: "The S3 bucket name. Defaults to the claim name. DNS-compatible (lowercase letters, digits, hyphens), 3-63 chars. Immutable. Bucket names are global, as on S3: the bucket belongs to the claim's namespace (for a CloudFormation stack, to the stack) that created it, and any other claimant is refused."
                   pattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
                 versioning:
                   type: boolean
@@ -56,8 +61,8 @@ spec:
                     type: object
                     required: [id]
                     properties:
-                      id: { type: string, description: "Rule id (unique within the bucket)." }
-                      prefix: { type: string, description: "Apply only to object keys under this prefix. Empty = the whole bucket." }
+                      id: { type: string, maxLength: 255, pattern: '^[^\x00-\x1f\x7f]+$', description: "Rule id (unique within the bucket). Up to 255 characters, no control characters." }
+                      prefix: { type: string, maxLength: 1024, pattern: '^[^\x00-\x1f\x7f]*$', description: "Apply only to object keys under this prefix. Empty = the whole bucket. No control characters." }
                       expireDays:
                         type: integer
                         description: "Delete current-version objects this many days after creation."

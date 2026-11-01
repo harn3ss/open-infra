@@ -64,7 +64,7 @@ spec:
                 - rule: "!has(self.port) || self.port == 0 || !has(self.additionalPorts) || self.additionalPorts.all(p, p.name != 'http' && (p.port != 80 || (has(p.protocol) && p.protocol != 'TCP')))"
                   message: "spec.additionalPorts must not use the name http or Service port 80/TCP while spec.port is set: spec.port already takes them (Service port 80, named http). Rename the entry or give it another port (its targetPort can still be any container port)."
               properties:
-                image:   { type: string, description: "Container image to run, e.g. ghcr.io/me/my-api:latest. Omit for a data-only app (just a database, buckets, or queues)." }
+                image:   { type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9._:/@-]*$', description: "Container image to run, e.g. ghcr.io/me/my-api:latest. Omit for a data-only app (just a database, buckets, or queues)." }
                 port:    { type: integer, description: "The port your container listens on (e.g. 8080). Needed to serve the app over HTTPS or a LAN IP. OMIT it for a worker with no listening socket (a queue consumer) — no Service or TCP health probe is created, and k8s still restarts the container if it exits." }
                 command:
                   type: array
@@ -100,9 +100,9 @@ spec:
                     Raise `services` for a namespace that holds many Knative Functions (each
                     scale-to-zero Function needs ~3 Services). Unset fields keep the defaults.
                   properties:
-                    services:               { type: string, description: "Max Services (default \"60\"). A Knative Function needs ~3." }
-                    pods:                   { type: string, description: "Max Pods (default \"100\"). Scale-to-zero Functions idle at 0 pods; this bounds apply/invocation spikes." }
-                    persistentvolumeclaims: { type: string, description: "Max PersistentVolumeClaims (default \"60\")." }
+                    services:               { type: string, pattern: '^[0-9]+$', description: "Max Services (default \"60\"). A Knative Function needs ~3." }
+                    pods:                   { type: string, pattern: '^[0-9]+$', description: "Max Pods (default \"100\"). Scale-to-zero Functions idle at 0 pods; this bounds apply/invocation spikes." }
+                    persistentvolumeclaims: { type: string, pattern: '^[0-9]+$', description: "Max PersistentVolumeClaims (default \"60\")." }
                 volumeMounts:
                   type: array
                   description: "Mount shared pod volumes (declared in spec.volumes) into the primary container — the ECS task-volume MountPoints equivalent."
@@ -188,9 +188,10 @@ spec:
                           description: "Object keys of a STRIPED multi-file backup (RDS native backup-to-S3 with @number_of_files), in order. SQL Server needs the whole set to restore; a missing stripe fails the restore loudly. Mutually exclusive with key/prefix."
                         prefix: { type: string, description: "Object-key prefix that enumerates a STRIPED multi-file backup — every object under the prefix is fetched (sorted) and restored as one stripe set. Zero objects fails closed. Mutually exclusive with key/keys." }
                         secret: { type: string, description: "Name of a Secret with S3 credentials for the bucket (keys: S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY)." }
-                    name:   { type: string, description: "Database name (defaults to the application name)." }
+                    name:   { type: string, pattern: '^[A-Za-z_][A-Za-z0-9_$-]{0,127}$', description: "Database name (defaults to the application name). A SQL identifier (it names the database in T-SQL and in the restore script)." }
                     size:
                       type: string
+                      pattern: '^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$'
                       description: "Storage size for the database's data volume, e.g. 20Gi (maps from RDS AllocatedStorage). When unset, the engine default is used (postgres/mysql/mongo 5Gi, babelfish 10Gi, sqlserver 20Gi). Expandable later where the engine + StorageClass support it. NOTE: on local-path, size is NOT enforced — the data lands on the node's own disk and consumes whatever free space it has — and scheduling is not capacity-aware on either local-path or Longhorn, so for a large DB set database.placement to a node that can hold it (local-path cannot move or grow). Longhorn provisions the requested size and backs it up with Velero, so it is the better class for large or movable databases."
                     cpu:
                       type: string
@@ -249,6 +250,7 @@ spec:
                       description: "Stop the database to save resources while keeping its data, like RDS stop/start (Postgres hibernates; MySQL/Mongo scale to zero; PVCs are retained). Set back to false to start it."
                     storageClass:
                       type: string
+                      pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
                       description: "StorageClass for the database's persistent volumes. When unset, each engine keeps its default (local-path; babelfish + sqlserver: longhorn). Set this to your cluster's StorageClass on substrates that don't ship a default local-path provisioner, or to pin the DB onto replicated storage (e.g. longhorn)."
                     storageEncrypted:
                       type: boolean

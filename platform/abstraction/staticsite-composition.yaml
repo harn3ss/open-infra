@@ -203,33 +203,37 @@ spec:
                                     {{- if $build.secret }}
                                     [ -n "$GIT_TOKEN" ] && AUTH="${GIT_TOKEN}@"
                                     {{- end }}
-                                    URL=$(printf '%s' "{{ $build.repo }}" | sed -E "s#^https://#https://${AUTH}#")
-                                    HEAD=$(git ls-remote "$URL" "{{ $bbranch }}" | awk '{print $1}' | head -1)
+                                    URL=$(printf '%s' "$REPO_URL" | sed -E "s#^https://#https://${AUTH}#")
+                                    HEAD=$(git ls-remote "$URL" "$BRANCH" | awk '{print $1}' | head -1)
                                     printf '%s' "$HEAD" > /ws/.head
-                                    if [ -n "$HEAD" ] && [ "$HEAD" = "$(cat /ws/.prev)" ]; then touch /ws/.skip; echo "no new commit ($HEAD)"; else git clone --depth 1 -b "{{ $bbranch }}" "$URL" /ws/src; fi
+                                    if [ -n "$HEAD" ] && [ "$HEAD" = "$(cat /ws/.prev)" ]; then touch /ws/.skip; echo "no new commit ($HEAD)"; else git clone --depth 1 -b "$BRANCH" "$URL" /ws/src; fi
                                 env:
+                                  # The repo and branch are the tenant's: data for the script, never part of it.
+                                  - { name: REPO_URL, value: {{ $build.repo | toJson }} }
+                                  - { name: BRANCH, value: {{ $bbranch | toJson }} }
                                   {{- if $build.secret }}
-                                  - { name: GIT_TOKEN, valueFrom: { secretKeyRef: { name: {{ $build.secret }}, key: GIT_TOKEN, optional: true } } }
+                                  - { name: GIT_TOKEN, valueFrom: { secretKeyRef: { name: {{ $build.secret | toJson }}, key: GIT_TOKEN, optional: true } } }
                                   {{- end }}
                                 volumeMounts: [{ name: ws, mountPath: /ws }]
                               # 3. Build (sandboxed) in the repo root, into the output dir.
                               - name: build
-                                image: {{ $build.image | default "node:20-alpine" }}
+                                image: {{ $build.image | default "node:20-alpine" | toJson }}
                                 workingDir: /ws/src
                                 command: [/bin/sh, -c]
-                                # A block scalar (not a single-quoted flow scalar) so a buildCommand
-                                # containing quotes/brackets/colons — amplify.yml commands routinely do —
-                                # does not break the rendered manifest. The command is a single line.
+                                # The tenant's build command is a script by design, but it travels as an env value
+                                # and runs as its own `sh -c`, so quotes, brackets or newlines in it (amplify.yml
+                                # commands routinely have them) can neither break this manifest nor this wrapper.
                                 args:
                                   - |
                                     if [ -f /ws/.skip ]; then exit 0; fi
-                                    {{ $build.buildCommand | default "npm ci && npm run build" }}
+                                    exec /bin/sh -c "$BUILD_COMMAND"
                                 securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: false, capabilities: { drop: [ALL] } }
                                 env:
                                   - { name: HOME, value: /ws }
                                   - { name: CI, value: "true" }
+                                  - { name: BUILD_COMMAND, value: {{ $build.buildCommand | default "npm ci && npm run build" | toJson }} }
                                   {{- range $e := ($build.env | default list) }}
-                                  - { name: {{ $e.name }}, value: {{ $e.value | quote }} }
+                                  - { name: {{ $e.name | toJson }}, value: {{ $e.value | toJson }} }
                                   {{- end }}
                                 volumeMounts: [{ name: ws, mountPath: /ws }]
                             containers:
@@ -240,10 +244,11 @@ spec:
                                 args:
                                   - |
                                     if [ -f /ws/.skip ]; then echo "unchanged — nothing to publish"; exit 0; fi
-                                    aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "/ws/src/{{ $boutput }}/" "s3://{{ $bucket }}/" --delete --exclude ".build/*"
+                                    aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "/ws/src/$OUTPUT_DIR/" "s3://{{ $bucket }}/" --delete --exclude ".build/*"
                                     aws --endpoint-url "$MINIO_ENDPOINT" s3 cp /ws/.head "s3://{{ $bucket }}/.build/last-sha"
-                                    echo "published {{ $boutput }} -> {{ $bucket }}"
+                                    echo "published $OUTPUT_DIR -> {{ $bucket }}"
                                 env:
+                                  - { name: OUTPUT_DIR, value: {{ $boutput | toJson }} }
                                   - { name: MINIO_ENDPOINT, valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ENDPOINT } } }
                                   - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ACCESS_KEY } } }
                                   - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_SECRET_KEY } } }

@@ -41,6 +41,7 @@ spec:
               properties:
                 image:
                   type: string
+                  pattern: '^[A-Za-z0-9][A-Za-z0-9._:/@-]*$'
                   description: "The inference container. It reads the input records (INPUT_BUCKET/INPUT_PREFIX), optionally loads a model artifact (ARTIFACT_BUCKET/ARTIFACT_KEY), and writes predictions to OUTPUT_BUCKET/OUTPUT_PREFIX. Runs to completion."
                 command:
                   type: array
@@ -84,9 +85,11 @@ spec:
                   description: "GPU class when gpu>0. Ignored when gpu=0."
                 cpu:
                   type: string
+                  pattern: '^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$'
                   description: "CPU request/limit (e.g. \"2\")."
                 memory:
                   type: string
+                  pattern: '^[0-9]+(\.[0-9]+)?(Ei|Pi|Ti|Gi|Mi|Ki|E|P|T|G|M|k|m)?$'
                   description: "Memory request/limit (e.g. \"4Gi\")."
                 env:
                   type: array
