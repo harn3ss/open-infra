@@ -121,7 +121,8 @@ metadata:
   name: open-appsync-authz-reconciler-scope
 spec:
   policyName: open-appsync-authz-reconciler-scope
-  validationActions: [Warn, Audit]
+  # Deny, with an audit annotation (after a Warn + Audit canary).
+  validationActions: [Deny, Audit]
 ---
 # (3) The reconciler: ensure the engine SA in each auth-using GraphQLApi namespace, then set the
 #     authorizer binding's subjects to exactly those SAs (apply = create-or-update, so the binding is
