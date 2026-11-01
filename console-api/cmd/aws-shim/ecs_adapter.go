@@ -79,7 +79,8 @@ func cfnKey(k string) string {
 // buildECSTemplate synthesizes the minimal CloudFormation template for one ECS service: the referenced
 // task definition inlined as an AWS::ECS::TaskDefinition, and the service as an AWS::ECS::Service whose
 // TaskDefinition is a !Ref to it. appName (== ecsName(serviceName)) is BOTH the Service logical id and
-// the stack name, so the cfn engine names the resulting kind: Application exactly appName.
+// the stack name, so the cfn engine names the resulting kind: Application appName — shortened with a hash
+// when appName is long or has "--" (ecsAppObject resolves the actual name).
 func buildECSTemplate(appName string, svc, td map[string]any) ([]byte, error) {
 	if appName == "" {
 		return nil, fmt.Errorf("serviceName does not reduce to a valid resource name")
@@ -97,6 +98,21 @@ func buildECSTemplate(appName string, svc, td map[string]any) ([]byte, error) {
 		},
 	}
 	return jsonMarshal(tmpl)
+}
+
+// ecsAppObject is the name of the kind: Application the cfn engine created for ECS service appName (the
+// service's stack and logical id). It is not always appName: the engine stack-qualifies names, and
+// shortens a long one (or one with "--") to a hashed form. So the stack record's name is read first;
+// with no record yet it is the name a new stack would give it.
+func ecsAppObject(ctx context.Context, ap *impersonatingApplier, appName string) string {
+	if rec, found, err := ap.GetStack(ctx, appName); err == nil && found {
+		for _, r := range append(append([]cfn.StackResource{}, rec.Resources...), rec.Pending...) {
+			if r.LogicalID == appName && r.Kind == "Application" && r.Name != "" {
+				return r.Name
+			}
+		}
+	}
+	return cfn.PhysicalName(appName, appName)
 }
 
 // --- service lifecycle (driven through the caller-impersonating applier) ---
@@ -149,7 +165,7 @@ func (h *ecsDoorway) createService(ctx context.Context, w http.ResponseWriter, r
 		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, aerr.Error())
 		return
 	}
-	if spec, found, _ := ap.GetSpec(ctx, ecsAppAPIVersion, "Application", appName); found && spec != nil {
+	if spec, found, _ := ap.GetSpec(ctx, ecsAppAPIVersion, "Application", ecsAppObject(ctx, ap, appName)); found && spec != nil {
 		writeECSError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "A service named "+serviceName+" already exists.")
 		return
 	}
@@ -301,7 +317,8 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 				cluster = ref.Cluster
 			}
 		}
-		spec, found, err := ap.GetSpec(ctx, ecsAppAPIVersion, "Application", appName)
+		obj := ecsAppObject(ctx, ap, appName)
+		spec, found, err := ap.GetSpec(ctx, ecsAppAPIVersion, "Application", obj)
 		if err != nil || !found {
 			failures = append(failures, map[string]any{"arn": h.serviceArn(cluster, svcName), "reason": "MISSING"})
 			continue
@@ -311,7 +328,7 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 		// Readiness is read via the CALLER (ap, caller-authority) like the spec above — not the shim SA — so
 		// the doorway needs no read access to the caller's workload. The composite is Ready only when its
 		// Deployment's replicas are available, so runningCount == desiredCount is an honest report of Ready.
-		if rdy, _, _ := ap.GetReady(ctx, ecsAppAPIVersion, "Application", appName); rdy {
+		if rdy, _, _ := ap.GetReady(ctx, ecsAppAPIVersion, "Application", obj); rdy {
 			running = desired
 		}
 		services = append(services, h.serviceObject(svcName, cluster, tdRef, desired, running, "ACTIVE", "", ""))
@@ -328,7 +345,7 @@ func (h *ecsDoorway) listServices(ctx context.Context, w http.ResponseWriter, re
 	arns := []any{}
 	for _, ref := range h.listServiceRefs(ctx) {
 		appName := ecsName(ref.ServiceName)
-		if _, found, _ := ap.GetSpec(ctx, ecsAppAPIVersion, "Application", appName); !found {
+		if _, found, _ := ap.GetSpec(ctx, ecsAppAPIVersion, "Application", ecsAppObject(ctx, ap, appName)); !found {
 			continue // the service record outlived its Application (mid-delete) — don't report a dead ARN
 		}
 		arns = append(arns, h.serviceArn(strOrDefault(ref.Cluster, "default"), ref.ServiceName))

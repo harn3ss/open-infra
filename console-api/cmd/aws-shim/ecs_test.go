@@ -11,6 +11,10 @@ import (
 
 	"github.com/harn3ss/open-infra/cfn"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
 // noopApplier is a cfn.Applier that provisions nothing — BuildChangeSet only reads (GetStack) and runs
@@ -177,6 +181,37 @@ func TestECS_UnsupportedOpRefused(t *testing.T) {
 	h.serve(w, ecsRequest("PutAccountSetting", `{}`),
 		iam.Claims{Sub: "erin", Groups: []string{"openinfra:powerusers", "openinfra:users"}}, "req-unsup")
 	assertECSErrorType(t, w, http.StatusBadRequest, "ClientException")
+}
+
+// A service's kind: Application is named by the cfn engine, which shortens a long name (or one with "--")
+// to a hashed form. The front door finds it through the service's stack record (else the engine's name
+// for a new stack), never by assuming the service name — which reported such services MISSING.
+func TestECS_AppObjectNameFollowsTheEngine(t *testing.T) {
+	long := ecsName("orders-api-production-eu-west-blue-green-canary")
+	dashed := ecsName("orders--api")
+	for _, n := range []string{long, dashed} {
+		if cfn.PhysicalName(n, n) == n {
+			t.Fatalf("test premise: the engine keeps %q unchanged", n)
+		}
+	}
+	rec, _ := json.Marshal(cfn.StackRecord{Name: long, Resources: []cfn.StackResource{
+		{LogicalID: ecsTDLogicalID, Kind: "Application", Name: "not-this"},
+		{LogicalID: long, APIVersion: ecsAppAPIVersion, Kind: "Application", Name: "recorded-name"},
+	}})
+	cm := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": "cfn-stack-" + long, "namespace": "default"},
+		"data":     map[string]any{"stack.json": string(rec)},
+	}}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{{Version: "v1", Resource: "configmaps"}: "ConfigMapList"}, cm)
+	ap := &impersonatingApplier{caller: dyn, shim: dyn, ns: "default"}
+	if got := ecsAppObject(context.Background(), ap, long); got != "recorded-name" {
+		t.Errorf("a recorded service resolves to %q, want its recorded name", got)
+	}
+	if got, want := ecsAppObject(context.Background(), ap, dashed), cfn.PhysicalName(dashed, dashed); got != want {
+		t.Errorf("an unrecorded service resolves to %q, want the engine's name %q", got, want)
+	}
 }
 
 // The auth-failure dialect is ECS's JSON 1.1 InvalidSignatureException (what an SDK expects for a bad

@@ -96,6 +96,11 @@ func (c *stackCtx) name(id string) string {
 	return c.namer.nameIn(id, c.template)
 }
 
+// PhysicalName is the Kubernetes name a new stack gives in-stack resource id when nothing else decides it
+// (no recorded name, no explicit name, no other logical id differing only in case). A front door that
+// looks a stack's object up by name reads the stack record first and falls back to this.
+func PhysicalName(stack, id string) string { return stackQualifiedName(stack, id) }
+
 // stackQualifiedName is <stack>-<logical id> in RFC 1123 form, shortened with a hash past
 // maxPhysNameLen. It is also a valid S3 bucket name: lowercase letters, digits and single hyphens,
 // starting and ending with a letter or digit.
