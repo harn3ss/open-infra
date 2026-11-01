@@ -129,7 +129,7 @@ services:
   - name: CloudFormation
     cell: "owned cfn engine; stacks provision under the caller's authority (impersonation)"
     tier: proven
-    probes: [cloudformation, cfn-customresource, cfn-cloudfront]
+    probes: [cloudformation, cfn-customresource, cfn-cloudfront, cfn-lift-and-shift]
   - name: AppSync
     cell: "→ open-appsync (VTL-faithful engine)"
     tier: proven
