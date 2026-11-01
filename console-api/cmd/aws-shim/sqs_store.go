@@ -16,6 +16,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -126,6 +127,10 @@ func (s *sqsStore) setQueueAttrs(ctx context.Context, url string, attrs map[stri
 		return ok, err
 	}
 	for k, v := range attrs {
+		if k == "Policy" && strings.TrimSpace(v) == "" {
+			delete(have, k) // an empty Policy removes the queue's policy, as on AWS
+			continue
+		}
 		have[k] = v
 	}
 	aj, _ := json.Marshal(have)

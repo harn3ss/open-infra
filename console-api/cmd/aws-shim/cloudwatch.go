@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/resourcepolicy"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
@@ -33,6 +34,8 @@ const cwXMLNamespace = "http://monitoring.amazonaws.com/doc/2010-08-01/"
 // snsPublisher is the slice of SNS the alarm evaluator needs — implemented by *snsHandler.
 type snsPublisher interface {
 	publishMessage(ctx context.Context, topicArn, subject, message string) (string, error)
+	// topicAccepts asks the topic's policy whether this service may publish to it (resource_policy.go).
+	topicAccepts(ctx context.Context, topicArn string, req resourcepolicy.Request) (bool, error)
 }
 
 type cwHandler struct {
@@ -635,6 +638,13 @@ func (h *cwHandler) fireActions(ctx context.Context, a cwAlarm) {
 	msg, _ := json.Marshal(notif)
 	for _, action := range a.AlarmActions {
 		if !strings.HasPrefix(action, "arn:aws:sns:") {
+			continue
+		}
+		accepts, err := h.sns.topicAccepts(ctx, action, resourcepolicy.Request{Service: "cloudwatch.amazonaws.com", Action: "sns:Publish",
+			SourceArn: "arn:aws:cloudwatch:" + h.region + ":" + h.account + ":alarm:" + a.Name, SourceAccount: h.account})
+		if err != nil || !accepts {
+			h.logger.Warn("cloudwatch: alarm action not published — the topic does not exist or its policy does not let CloudWatch publish to it",
+				"alarm", a.Name, "action", action)
 			continue
 		}
 		if _, err := h.sns.publishMessage(ctx, action, "ALARM: \""+a.Name+"\"", string(msg)); err != nil {

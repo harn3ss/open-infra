@@ -296,6 +296,10 @@ var resourceAttrs = map[string]typeAttrs{
 		"TopicArn":  static(func(e *attrEnv) string { return e.arn("sns", snsTopicName(e)) }),
 		"TopicName": static(snsTopicName),
 	}},
+	// A queue or topic policy exists only in the SQS/SNS store (its translator refuses without it); Ref is
+	// its id.
+	"AWS::SQS::QueuePolicy": {ref: static(func(e *attrEnv) string { return svcPolicyID(e.id, e.sctx) })},
+	"AWS::SNS::TopicPolicy": {ref: static(func(e *attrEnv) string { return svcPolicyID(e.id, e.sctx) })},
 	"AWS::SNS::Subscription": {ref: static(func(e *attrEnv) string {
 		return e.arn("sns", e.name()+":"+e.synthID("", 32))
 	})},

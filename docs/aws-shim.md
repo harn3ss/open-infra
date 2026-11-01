@@ -507,6 +507,19 @@ name — queue names are unique here, so any client that reaches the shim can us
 queue URLs name `SQS_QUEUE_URL_BASE` (default the shim's in-cluster address; set it to a LAN endpoint so a
 client that sends to the URL's own host reaches the shim from there).
 
+**Queue policies decide the shim's own deliveries.** A queue's `Policy` attribute (`CreateQueue`,
+`SetQueueAttributes`, or a stack's `AWS::SQS::QueuePolicy`) is what lets an SNS topic or an EventBridge rule
+send to it, as on AWS: the shim delivers an SNS publish to a subscribed queue, or a rule's event to a queue
+target, only when the queue's policy allows `sqs:SendMessage` for that service (`sns.amazonaws.com`,
+`events.amazonaws.com`) or for `"*"`, narrowed by `aws:SourceArn` (`ArnEquals`/`ArnLike`/`StringEquals`/
+`StringLike`) or `aws:SourceAccount`. A `Deny` wins, and a delivery the policy does not allow is not made (the
+publish still succeeds, as on AWS). The source is matched by its name, as everywhere here. Callers of the SQS API
+are authorized by IAM, not by the policy, so a policy that grants a user or role, grants everyone with no source
+condition (a public queue), or uses any other condition, `NotPrincipal`, `NotAction` or `NotResource` is refused
+with `InvalidAttributeValue`. An Allow to the account root is the delegate-to-IAM default and has no effect. An
+empty `Policy` removes it. A queue with **no** policy takes every delivery (on AWS it would take none from SNS);
+a policy stored before policies were honored, which the shim cannot read, is not applied and is logged.
+
 **Deliberate divergences (refused honestly, never faked):**
 - **FIFO** (`.fifo`) queues are refused at `CreateQueue` — the group-ordering + dedup contract is not
   implemented, and a FIFO queue that isn't FIFO is worse than an absent one.
@@ -554,8 +567,13 @@ CloudFormation stack reports) means the topic of that name here.
 - **Message `FilterPolicy`** is refused (accepting-and-ignoring would deliver messages a subscriber
   explicitly filtered out — a correctness + privacy defect).
 - **`.fifo` topics** are refused.
-- A **topic resource `Policy`** on `SetTopicAttributes` is refused — this is a one-policy-world (Cedar),
-  not a second authorization engine that would silently ignore the document.
+- A **topic `Policy`** (`SetTopicAttributes`, or a stack's `AWS::SNS::TopicPolicy`) decides the publishes
+  the shim itself makes to the topic: a CloudWatch alarm action publishes only when the policy lets
+  `cloudwatch.amazonaws.com` (or `"*"` with an `aws:SourceArn`/`aws:SourceAccount`/`aws:SourceOwner`
+  condition) `sns:Publish`. It reads the same part of a policy a queue policy does, and refuses the rest:
+  callers stay authorized by IAM (one policy world), so a grant to a user or role is refused rather than kept
+  and ignored. `GetTopicAttributes` returns it; an empty `Policy` removes it; a topic with no policy takes
+  every alarm's publish.
 - The delivered envelope **omits** the message `Signature`/`SigningCertURL` rather than emitting a
   meaningless one — subscribers cannot cryptographically verify, and the docs say so rather than teach a
   false "verified".

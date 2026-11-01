@@ -8,8 +8,9 @@
 //
 // The `sqs` and `lambda` subscription protocols are delivered (lambda: sns_lambda.go). Everything the
 // shim does not genuinely implement is REFUSED honestly, never accepted-and-silently-dropped:
-// http/https/email/sms/application/firehose protocols, message FilterPolicy, `.fifo` topics, and a topic resource Policy on
-// SetTopicAttributes (this is a one-policy-world; authorization is Cedar, not a second engine). The
+// http/https/email/sms/application/firehose protocols, message FilterPolicy, `.fifo` topics, and a topic
+// Policy beyond grants to services (callers are authorized by IAM, one policy world; a topic's or a
+// queue's Policy decides only the deliveries the shim itself makes — resource_policy.go). The
 // delivered envelope omits the AWS message Signature/SigningCertURL rather than emitting a meaningless
 // one — subscribers cannot verify, and we say so rather than teach a false "verified". See
 // docs/aws-shim.md and.
@@ -27,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/resourcepolicy"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
@@ -212,6 +214,9 @@ func (h *snsHandler) getTopicAttributes(ctx context.Context, w http.ResponseWrit
 		"SubscriptionsPending":   "0",
 		"DisplayName":            attrs["DisplayName"],
 	}
+	if p := attrs[policyAttr]; p != "" {
+		out[policyAttr] = p
+	}
 	h.writeAttributes(w, requestID, "GetTopicAttributes", out)
 }
 
@@ -220,11 +225,26 @@ func (h *snsHandler) setTopicAttributes(ctx context.Context, w http.ResponseWrit
 	name := r.PostFormValue("AttributeName")
 	val := r.PostFormValue("AttributeValue")
 	if name == "Policy" {
-		// One policy world: a topic resource policy is not a second authorization engine. Refuse rather
-		// than accept-and-ignore (which would let a caller believe they set access control that does nothing).
-		writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID,
-			"SNS topic resource policies are not honored by the open-infra shim; authorization is Cedar (one policy world). Refused rather than silently ignored.", snsXMLNamespace)
-		return
+		// A topic policy decides the publishes the shim itself makes to the topic (a CloudWatch alarm's;
+		// resource_policy.go). Callers stay authorized by IAM (one policy world), so a grant to a user or
+		// role — or anything else the shim cannot honor — is refused rather than kept and ignored.
+		canonical, found, err := h.canonicalTopicArn(ctx, arn)
+		if err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+		if !found {
+			writeQueryError(w, http.StatusNotFound, "NotFound", requestID, "Topic does not exist.", snsXMLNamespace)
+			return
+		}
+		if err := checkResourcePolicy(val, canonical); err != nil {
+			writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID, "Invalid parameter: Policy: "+err.Error(), snsXMLNamespace)
+			return
+		}
+		arn = canonical
+		if strings.TrimSpace(val) == "" {
+			val = "" // removes the policy
+		}
 	}
 	ok, err := h.store.setTopicAttr(ctx, arn, name, val)
 	if err != nil {
@@ -425,6 +445,17 @@ func (h *snsHandler) publishMessage(ctx context.Context, topicArn, subject, mess
 		if !ok {
 			// The target queue was deleted after subscribe; skip but do not fail the whole publish.
 			h.logger.Warn("sns: subscription endpoint queue missing, skipping", "endpoint", sub.Endpoint)
+			continue
+		}
+		// The queue's policy decides whether this topic may send to it (resource_policy.go). A refused
+		// delivery fails as on AWS: the publish succeeds, the queue gets nothing.
+		accepts, err := queueAccepts(ctx, h.sqs, h.region, h.account, url, resourcepolicy.Request{
+			Service: "sns.amazonaws.com", Action: "sqs:SendMessage", SourceArn: topicArn, SourceAccount: h.account}, h.logger)
+		if err != nil {
+			return "", err
+		}
+		if !accepts {
+			h.logger.Warn("sns: the queue's policy does not let this topic send to it; not delivered", "topic", topicArn, "endpoint", sub.Endpoint)
 			continue
 		}
 		body := message

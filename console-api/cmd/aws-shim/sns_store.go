@@ -133,7 +133,11 @@ func (s *snsStore) setTopicAttr(ctx context.Context, arn, key, val string) (bool
 	if err != nil || !ok {
 		return ok, err
 	}
-	attrs[key] = val
+	if key == "Policy" && val == "" {
+		delete(attrs, key) // an empty Policy removes the topic's policy
+	} else {
+		attrs[key] = val
+	}
 	aj, _ := json.Marshal(attrs)
 	res, err := s.db.ExecContext(ctx, `UPDATE sns_topics SET attributes = $2::jsonb WHERE arn = $1`, arn, string(aj))
 	if err != nil {

@@ -12,6 +12,9 @@
 // ApproximateReceiveCount; long polling that returns an empty success; and MD5OfMessageBody /
 // MD5OfMessageAttributes computed exactly as AWS does so SDK verification passes.
 //
+// A queue's Policy decides the deliveries the shim itself makes to it (an SNS topic's, an EventBridge
+// rule's; resource_policy.go); a policy outside what that honors is refused where it is set.
+//
 // Deliberate carve-outs, refused honestly rather than faked (never a silent divergence):
 //   - FIFO (.fifo) queues — the group-ordering contract is not implemented; refused at CreateQueue.
 //   - the legacy AWS query protocol — current SDKs use JSON; a query-only client is refused.
@@ -192,6 +195,13 @@ func (h *sqsHandler) createQueue(ctx context.Context, w http.ResponseWriter, r *
 		return
 	}
 	attrs := stringMap(body["Attributes"])
+	if err := checkResourcePolicy(attrs[policyAttr], h.queueARN(name)); err != nil {
+		writeSQSError(w, http.StatusBadRequest, "InvalidAttributeValue", requestID, "Invalid value for the parameter Policy: "+err.Error())
+		return
+	}
+	if v, ok := attrs[policyAttr]; ok && strings.TrimSpace(v) == "" {
+		delete(attrs, policyAttr)
+	}
 	url := h.queueURL(r, name)
 	existed, err := h.store.createQueue(ctx, name, url, attrs)
 	if err == errQueueExistsDiff {
@@ -270,6 +280,14 @@ func (h *sqsHandler) getQueueAttributes(ctx context.Context, w http.ResponseWrit
 func (h *sqsHandler) setQueueAttributes(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	url, _ := body["QueueUrl"].(string)
 	attrs := stringMap(body["Attributes"])
+	if doc, set := attrs[policyAttr]; set {
+		// A queue policy decides the deliveries the shim makes to the queue (resource_policy.go); one it
+		// cannot honor is refused rather than kept and ignored. An empty Policy removes it, as on AWS.
+		if err := checkResourcePolicy(doc, h.queueARN(queueNameFromURL(url))); err != nil {
+			writeSQSError(w, http.StatusBadRequest, "InvalidAttributeValue", requestID, "Invalid value for the parameter Policy: "+err.Error())
+			return
+		}
+	}
 	ok, err := h.store.setQueueAttrs(ctx, url, attrs)
 	if err != nil {
 		h.internal(w, requestID, err)

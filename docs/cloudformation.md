@@ -122,6 +122,7 @@ the names and ARNs the stack reports:
 | `AWS::SSM::Parameter` | the parameter name | `Type`, `Value` |
 | `AWS::KMS::Key` | the key id | `Arn`, `KeyId` |
 | `AWS::KMS::Alias` | the alias name | — |
+| `AWS::SQS::QueuePolicy`, `AWS::SNS::TopicPolicy` | the policy's id | — |
 
 These resolve at plan time, so a Lambda environment variable or UserData that names the queue gets
 its URL. Each step is authorized as the matching front door authorizes it, for the caller (a stack can
@@ -129,6 +130,16 @@ create no queue its deployer could not create with `sqs:CreateQueue`). Delete an
 any resource: a deleted queue, topic, parameter or alias is removed; a deleted key is **scheduled for
 deletion** with the template's `PendingWindowInDays` (default 30), as CloudFormation deletes one. A
 stack refuses to take over an object of the same name that another stack — or no stack — created.
+
+An `AWS::SQS::QueuePolicy` or `AWS::SNS::TopicPolicy` is the `Policy` of each queue or topic it names (an
+in-stack one by `Ref`, or any existing one by URL or ARN), and it decides the deliveries the shim makes to
+it — the SNS fan-out policy that lets a topic `sqs:SendMessage` to the queue, an EventBridge rule's sends,
+a CloudWatch alarm's publish — exactly as the SQS and SNS APIs apply a `Policy` (see *SQS* and *SNS* in
+[`aws-shim.md`](aws-shim.md)). Setting it is checked as `SetQueueAttributes` / `SetTopicAttributes` on each
+queue or topic; deleting it removes the policy (unless another policy has replaced it since); an update of the
+queue or topic keeps it. A policy that grants a user or role, is public, or uses a condition other than
+`aws:SourceArn` / `aws:SourceAccount` refuses at plan: callers are authorized by IAM here, not by resource
+policies.
 
 What the APIs here do not serve is refused rather than half-created: FIFO queues and topics, per-queue
 or per-topic encryption keys, SNS `FilterPolicy` and protocols other than `sqs` and `lambda`, SSM
@@ -203,6 +214,7 @@ part of another kind rather than on its own. The caveat is always printed.
 | `AWS::S3::Bucket` (+ `AWS::S3::BucketPolicy`) | `kind: Bucket` | a standalone MinIO bucket with versioning + lifecycle + object lock; an in-stack `BucketPolicy` collates in as `spec.policy` (public `*` principals only) |
 | `AWS::SQS::Queue`, `AWS::SNS::Topic` | `kind: Queue` | a standalone NATS JetStream stream (SQS=work queue, SNS=fan-out topic); through the aws-shim front door, a queue/topic in the SQS/SNS API's store instead (see *Queues, topics, parameters and keys*) |
 | `AWS::KMS::Alias` | the KMS API's alias store | through the aws-shim front door only (refused elsewhere) |
+| `AWS::SQS::QueuePolicy`, `AWS::SNS::TopicPolicy` | the queue's / topic's `Policy` in the SQS / SNS API's store | through the aws-shim front door only (refused elsewhere); grants to services, narrowed by source — grants to users or roles refuse |
 | `AWS::RDS::DBInstance` | an `Application`'s `database` | engine/size mapping is lossy |
 | `AWS::EC2::Instance` | `kind: VirtualMachine` | AMI/instance-type → os/cpu/memory is lossy |
 | `AWS::EC2::Volume` | `kind: Volume` | Longhorn block volume |

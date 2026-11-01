@@ -297,5 +297,9 @@ func TestFidelityGuard_ServiceBackedTypes(t *testing.T) {
 		yamlBaseline("AWS::KMS::Key", `{}`, ""),
 		yamlBaseline("AWS::KMS::Alias", `{ AliasName: alias/x, TargetKeyId: !Ref K }`, `
   K: { Type: AWS::KMS::Key }`),
+		yamlBaseline("AWS::SQS::QueuePolicy", `{ Queues: [ !Ref Q ], PolicyDocument: { Statement: [ { Effect: Allow, Principal: { Service: sns.amazonaws.com }, Action: sqs:SendMessage, Resource: "*" } ] } }`, `
+  Q: { Type: AWS::SQS::Queue }`),
+		yamlBaseline("AWS::SNS::TopicPolicy", `{ Topics: [ !Ref T ], PolicyDocument: { Statement: [ { Effect: Allow, Principal: { Service: events.amazonaws.com }, Action: sns:Publish, Resource: "*" } ] } }`, `
+  T: { Type: AWS::SNS::Topic }`),
 	})
 }

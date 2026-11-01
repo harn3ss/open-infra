@@ -143,6 +143,8 @@ func (c *stackCtx) resolveVal(v any) any {
 var translators = map[string]translator{
 	"AWS::KMS::Key":                         translateKMSKey,
 	"AWS::KMS::Alias":                       translateKMSAlias,
+	"AWS::SQS::QueuePolicy":                 translateSQSQueuePolicy,
+	"AWS::SNS::TopicPolicy":                 translateSNSTopicPolicy,
 	"AWS::Lambda::Function":                 translateLambdaFunction,
 	"AWS::StepFunctions::StateMachine":      translateStateMachine,
 	"AWS::EC2::Volume":                      translateVolume,

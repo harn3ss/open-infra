@@ -6,7 +6,9 @@
 # queue it redrives to), an SNS topic subscribed to the queue, an UNNAMED SSM parameter, and a KMS key
 # with an alias; then, with the same caller's key and the stack's Outputs:
 #   - sqs get-queue-url finds the queue under the URL the stack reports; its RedrivePolicy is set
-#   - sns publish to the stack's TopicArn lands the message in the queue (receive-message)
+#   - sns publish to the stack's TopicArn lands the message in the queue (receive-message); the stack's
+#     AWS::SQS::QueuePolicy is the queue's Policy, and a second subscribed topic it does not allow delivers
+#     nothing
 #   - ssm get-parameter reads the parameter under the name CloudFormation generated
 #   - kms encrypt/decrypt round-trips through the stack's alias, and list-keys lists the key
 #   - delete-stack removes the queue, topic and parameter, and schedules the key for deletion
@@ -69,6 +71,13 @@ cat > "$TMP/stack.json" <<JSON
                "RedrivePolicy": { "deadLetterTargetArn": { "Fn::GetAtt": ["DLQ", "Arn"] }, "maxReceiveCount": 5 } } },
     "Topic": { "Type": "AWS::SNS::Topic", "Properties": {
                "Subscription": [ { "Protocol": "sqs", "Endpoint": { "Fn::GetAtt": ["Queue", "Arn"] } } ] } },
+    "Other": { "Type": "AWS::SNS::Topic", "Properties": {
+               "Subscription": [ { "Protocol": "sqs", "Endpoint": { "Fn::GetAtt": ["Queue", "Arn"] } } ] } },
+    "QueuePolicy": { "Type": "AWS::SQS::QueuePolicy", "Properties": { "Queues": [ { "Ref": "Queue" } ],
+               "PolicyDocument": { "Version": "2012-10-17", "Statement": [ { "Effect": "Allow",
+                 "Principal": { "Service": "sns.amazonaws.com" }, "Action": "sqs:SendMessage",
+                 "Resource": { "Fn::GetAtt": ["Queue", "Arn"] },
+                 "Condition": { "ArnEquals": { "aws:SourceArn": { "Ref": "Topic" } } } } ] } } },
     "Param": { "Type": "AWS::SSM::Parameter", "Properties": { "Type": "String", "Value": "hello-$SFX" } },
     "Key":   { "Type": "AWS::KMS::Key", "Properties": { "Description": "probe key", "PendingWindowInDays": 7 } },
     "Alias": { "Type": "AWS::KMS::Alias", "Properties": { "AliasName": "alias/cfndata-$SFX", "TargetKeyId": { "Ref": "Key" } } }
@@ -77,6 +86,7 @@ cat > "$TMP/stack.json" <<JSON
     "QueueUrl":  { "Value": { "Ref": "Queue" } },
     "QueueArn":  { "Value": { "Fn::GetAtt": ["Queue", "Arn"] } },
     "TopicArn":  { "Value": { "Ref": "Topic" } },
+    "OtherArn":  { "Value": { "Ref": "Other" } },
     "ParamName": { "Value": { "Ref": "Param" } },
     "KeyId":     { "Value": { "Ref": "Key" } }
   }
@@ -113,6 +123,17 @@ for _ in 1 2 3 4 5; do
 done
 printf '%s' "$body" | jq -e --arg m "order-$SFX" '.Message == $m' >/dev/null 2>&1 || fail "the topic did not deliver to the queue (got: $body)"
 log "  ✓ sns publish to the stack's topic arrives in the stack's queue"
+
+pol="$(a sqs get-queue-attributes --queue-url "$QURL" --attribute-names Policy --query 'Attributes.Policy' --output text)"
+printf '%s' "$pol" | jq -e --arg t "$TARN" '.Statement[0].Condition.ArnEquals["aws:SourceArn"] == $t' >/dev/null 2>&1 \
+  || fail "the queue's Policy is not the stack's QueuePolicy (got: $pol)"
+OARN="$(out OtherArn)"
+a sns publish --topic-arn "$OARN" --message "other-$SFX" >/dev/null || fail "sns publish to the second topic was refused"
+for _ in 1 2 3; do
+  b="$(a sqs receive-message --queue-url "$QURL" --wait-time-seconds 2 --query 'Messages[].Body' --output text 2>/dev/null || true)"
+  case "$b" in *"other-$SFX"*) fail "the queue policy allows only the first topic, but the second one delivered";; esac
+done
+log "  ✓ the stack's QueuePolicy is the queue's Policy, and a topic it does not allow delivers nothing"
 
 val="$(a ssm get-parameter --name "$PNAME" --query Parameter.Value --output text 2>&1)" || fail "ssm get-parameter $PNAME: $val"
 [ "$val" = "hello-$SFX" ] || fail "the parameter's value is $val"

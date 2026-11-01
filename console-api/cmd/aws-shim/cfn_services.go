@@ -126,9 +126,9 @@ func (a *impersonatingApplier) svcFor(kind string) error {
 		ok = a.svc.doorOK(dk.service)
 	}
 	switch kind {
-	case cfn.KindSQSQueue:
+	case cfn.KindSQSQueue, cfn.KindSQSQueuePolicy:
 		ok = a.svc.sqsOK()
-	case cfn.KindSNSTopic, cfn.KindSNSSubscription:
+	case cfn.KindSNSTopic, cfn.KindSNSSubscription, cfn.KindSNSTopicPolicy:
 		ok = a.svc.snsOK()
 	case cfn.KindSSMParameter:
 		ok = a.svc.ssmOK()
@@ -181,8 +181,38 @@ func svcSteps(kind, op, name string, spec map[string]any) []svcStep {
 	case cfn.KindKMSAlias:
 		svcOp := pick(map[string]string{"create": "CreateAlias", "update": "UpdateAlias", "delete": "DeleteAlias", "get": "ListAliases"})
 		return []svcStep{step(verbForKMSOp, "kms", svcOp, "Key", str("targetKeyId"))}
+	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
+		// Setting (or removing) a queue's or topic's Policy is SetQueueAttributes / SetTopicAttributes on it.
+		service, svcOp, resType, verbOp := "sqs", "SetQueueAttributes", "Queue", verbForSQSOp
+		if kind == cfn.KindSNSTopicPolicy {
+			service, svcOp, resType, verbOp = "sns", "SetTopicAttributes", "Topic", verbForSNSOp
+		}
+		if op == "get" {
+			svcOp = strings.Replace(svcOp, "Set", "Get", 1)
+		}
+		var steps []svcStep
+		for _, t := range policyTargets(kind, spec) {
+			steps = append(steps, step(verbOp, service, svcOp, resType, nameFromArn(t)))
+		}
+		return steps
 	}
 	return nil
+}
+
+// policyTargets are the queue names / topic ARNs a queue or topic policy applies to.
+func policyTargets(kind string, spec map[string]any) []string {
+	key := "queues"
+	if kind == cfn.KindSNSTopicPolicy {
+		key = "topics"
+	}
+	var out []string
+	list, _ := spec[key].([]any)
+	for _, v := range list {
+		if s, ok := v.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // svcAuthorize checks that the caller may do every front-door call op on this resource amounts to.
@@ -269,6 +299,10 @@ func (a *impersonatingApplier) svcExistsAt(ctx context.Context, kind, name strin
 	case cfn.KindKMSAlias:
 		_, ok, err := a.svc.kms.store.aliasTarget(ctx, name)
 		return ok, err
+	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
+		// A policy is the Policy attribute of the queues or topics it names; it exists while it is recorded.
+		_, _, found, err := a.svc.owners.get(ctx, kind, name)
+		return found, err
 	}
 	return false, fmt.Errorf("unknown service kind %s", kind)
 }
@@ -362,6 +396,8 @@ func (a *impersonatingApplier) svcCreate(ctx context.Context, kind, name string,
 			return fmt.Errorf("the alias's target key %s does not exist", str("targetKeyId"))
 		}
 		return a.svc.kms.store.createAlias(ctx, name, str("targetKeyId"))
+	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
+		return a.svcApplyPolicy(ctx, kind, name, spec)
 	}
 	return fmt.Errorf("unknown service kind %s", kind)
 }
@@ -381,14 +417,28 @@ func (a *impersonatingApplier) svcUpdate(ctx context.Context, kind, name string,
 		if err != nil {
 			return err
 		}
-		_, err = a.svc.sqs.store.replaceQueueAttrs(ctx, url, specStrings(spec["attributes"]))
+		attrs := specStrings(spec["attributes"])
+		// The queue's Policy is its queue policy's (an AWS::SQS::QueuePolicy, or SetQueueAttributes), not
+		// the queue resource's: an update of the queue keeps it.
+		if cur, _, ok, err := a.svc.sqs.store.queueAttrs(ctx, url); err != nil {
+			return err
+		} else if ok && cur[policyAttr] != "" {
+			attrs[policyAttr] = cur[policyAttr]
+		}
+		_, err = a.svc.sqs.store.replaceQueueAttrs(ctx, url, attrs)
 		return err
 	case cfn.KindSNSTopic:
 		arn, _, err := a.svc.sns.store.topicARNByName(ctx, name)
 		if err != nil {
 			return err
 		}
-		_, err = a.svc.sns.store.replaceTopicAttrs(ctx, arn, specStrings(spec["attributes"]))
+		attrs := specStrings(spec["attributes"])
+		if cur, ok, err := a.svc.sns.store.topicAttrs(ctx, arn); err != nil {
+			return err
+		} else if ok && cur[policyAttr] != "" {
+			attrs[policyAttr] = cur[policyAttr] // the topic policy's, kept as for a queue
+		}
+		_, err = a.svc.sns.store.replaceTopicAttrs(ctx, arn, attrs)
 		return err
 	case cfn.KindSNSSubscription:
 		if _, err := a.svc.sns.store.unsubscribe(ctx, str("subscriptionArn")); err != nil {
@@ -402,8 +452,134 @@ func (a *impersonatingApplier) svcUpdate(ctx context.Context, kind, name string,
 	case cfn.KindKMSAlias:
 		_, err := a.svc.kms.store.updateAlias(ctx, name, str("targetKeyId"))
 		return err
+	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
+		return a.svcApplyPolicy(ctx, kind, name, spec)
 	}
 	return fmt.Errorf("unknown service kind %s", kind)
+}
+
+// svcApplyPolicy makes a queue or topic policy's document the Policy of each queue or topic it names —
+// validated as SetQueueAttributes / SetTopicAttributes validate a Policy — and removes it from any that
+// the policy's previous version named and this one does not (that removal checked as a delete).
+func (a *impersonatingApplier) svcApplyPolicy(ctx context.Context, kind, name string, spec map[string]any) error {
+	doc, _ := spec["document"].(string)
+	if strings.TrimSpace(doc) == "" {
+		return fmt.Errorf("the policy has no document")
+	}
+	targets := policyTargets(kind, spec)
+	_, prev, _, err := a.svc.owners.get(ctx, kind, name)
+	if err != nil {
+		return err
+	}
+	if prev != nil {
+		keep := map[string]bool{}
+		for _, t := range targets {
+			keep[t] = true
+		}
+		key := "queues"
+		if kind == cfn.KindSNSTopicPolicy {
+			key = "topics"
+		}
+		var dropped []any
+		for _, t := range policyTargets(kind, prev) {
+			if !keep[t] {
+				dropped = append(dropped, t)
+			}
+		}
+		if len(dropped) > 0 {
+			if err := a.svcAuthorize(ctx, kind, "delete", name, map[string]any{key: dropped}); err != nil {
+				return err
+			}
+			prevDoc, _ := prev["document"].(string)
+			for _, t := range dropped {
+				if err := a.clearResourcePolicy(ctx, kind, t.(string), prevDoc); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for _, t := range targets {
+		if err := a.setResourcePolicy(ctx, kind, t, doc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// setResourcePolicy sets doc as the Policy of the queue (by name) or topic (by ARN) target.
+func (a *impersonatingApplier) setResourcePolicy(ctx context.Context, kind, target, doc string) error {
+	if kind == cfn.KindSQSQueuePolicy {
+		q := a.svc.sqs
+		url, ok, err := q.store.queueURLByName(ctx, target)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("the policy's queue %s does not exist", target)
+		}
+		if err := checkResourcePolicy(doc, sqsResourceARN(q.region, q.account, target)); err != nil {
+			return fmt.Errorf("the policy for queue %s: %w", target, err)
+		}
+		_, err = q.store.setQueueAttrs(ctx, url, map[string]string{policyAttr: doc})
+		return err
+	}
+	arn, ok, err := a.svc.sns.canonicalTopicArn(ctx, target)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("the policy's topic %s does not exist", target)
+	}
+	if err := checkResourcePolicy(doc, arn); err != nil {
+		return fmt.Errorf("the policy for topic %s: %w", target, err)
+	}
+	_, err = a.svc.sns.store.setTopicAttr(ctx, arn, policyAttr, doc)
+	return err
+}
+
+// clearResourcePolicy removes the Policy of the queue or topic target if it is still doc (one another
+// policy has since set is left alone). A queue or topic already gone needs nothing.
+func (a *impersonatingApplier) clearResourcePolicy(ctx context.Context, kind, target, doc string) error {
+	if kind == cfn.KindSQSQueuePolicy {
+		url, ok, err := a.svc.sqs.store.queueURLByName(ctx, target)
+		if err != nil || !ok {
+			return err
+		}
+		attrs, _, ok, err := a.svc.sqs.store.queueAttrs(ctx, url)
+		if err != nil || !ok || attrs[policyAttr] != doc {
+			return err
+		}
+		_, err = a.svc.sqs.store.setQueueAttrs(ctx, url, map[string]string{policyAttr: ""})
+		return err
+	}
+	arn, ok, err := a.svc.sns.canonicalTopicArn(ctx, target)
+	if err != nil || !ok {
+		return err
+	}
+	attrs, ok, err := a.svc.sns.store.topicAttrs(ctx, arn)
+	if err != nil || !ok || attrs[policyAttr] != doc {
+		return err
+	}
+	_, err = a.svc.sns.store.setTopicAttr(ctx, arn, policyAttr, "")
+	return err
+}
+
+// resourcePolicyOf is the Policy the queue or topic target holds ("" none, or it is gone).
+func (a *impersonatingApplier) resourcePolicyOf(ctx context.Context, kind, target string) string {
+	if kind == cfn.KindSQSQueuePolicy {
+		if url, ok, err := a.svc.sqs.store.queueURLByName(ctx, target); err == nil && ok {
+			if attrs, _, ok, err := a.svc.sqs.store.queueAttrs(ctx, url); err == nil && ok {
+				return attrs[policyAttr]
+			}
+		}
+		return ""
+	}
+	if arn, ok, err := a.svc.sns.canonicalTopicArn(ctx, target); err == nil && ok {
+		if attrs, ok, err := a.svc.sns.store.topicAttrs(ctx, arn); err == nil && ok {
+			return attrs[policyAttr]
+		}
+	}
+	return ""
 }
 
 func (a *impersonatingApplier) svcSubscribe(ctx context.Context, spec map[string]any, ns string) error {
@@ -648,6 +824,13 @@ func (a *impersonatingApplier) svcDelete(ctx context.Context, kind, name string)
 		if _, err := a.svc.kms.store.deleteAlias(ctx, name); err != nil {
 			return err
 		}
+	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
+		doc, _ := ownSpec["document"].(string)
+		for _, t := range policyTargets(kind, ownSpec) {
+			if err := a.clearResourcePolicy(ctx, kind, t, doc); err != nil {
+				return err
+			}
+		}
 	}
 	return a.svc.owners.del(ctx, kind, name)
 }
@@ -697,12 +880,14 @@ func (a *impersonatingApplier) svcSpec(ctx context.Context, kind, name string) (
 	case cfn.KindSQSQueue:
 		if url, ok, err := a.svc.sqs.store.queueURLByName(ctx, name); err == nil && ok {
 			if attrs, _, ok, err := a.svc.sqs.store.queueAttrs(ctx, url); err == nil && ok {
+				delete(attrs, policyAttr) // its queue policy's, compared there
 				spec["attributes"] = stringsToAny(attrs)
 			}
 		}
 	case cfn.KindSNSTopic:
 		if arn, ok, err := a.svc.sns.store.topicARNByName(ctx, name); err == nil && ok {
 			if attrs, ok, err := a.svc.sns.store.topicAttrs(ctx, arn); err == nil && ok {
+				delete(attrs, policyAttr)
 				spec["attributes"] = stringsToAny(attrs)
 			}
 		}
@@ -727,6 +912,11 @@ func (a *impersonatingApplier) svcSpec(ctx context.Context, kind, name string) (
 	case cfn.KindKMSAlias:
 		if t, ok, err := a.svc.kms.store.aliasTarget(ctx, name); err == nil && ok {
 			spec["targetKeyId"] = t
+		}
+	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
+		// What the first queue or topic holds now (a policy changed or removed through the API is drift).
+		if ts := policyTargets(kind, spec); len(ts) > 0 {
+			spec["document"] = a.resourcePolicyOf(ctx, kind, ts[0])
 		}
 	}
 	return spec, true, nil

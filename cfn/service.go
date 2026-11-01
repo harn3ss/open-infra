@@ -59,7 +59,8 @@ func IsServiceKind(apiVersion, kind string) bool {
 	}
 	switch kind {
 	case KindSQSQueue, KindSNSTopic, KindSNSSubscription, KindSSMParameter, KindKMSKey, KindKMSAlias,
-		KindSecretsManagerSecret, KindLogsLogGroup, KindEventsRule, KindEventsEventBus, KindECRRepository, KindCloudWatchAlarm:
+		KindSecretsManagerSecret, KindLogsLogGroup, KindEventsRule, KindEventsEventBus, KindECRRepository, KindCloudWatchAlarm,
+		KindSQSQueuePolicy, KindSNSTopicPolicy:
 		return true
 	}
 	return false
@@ -119,9 +120,9 @@ func (c *stackCtx) servedBy(id string) bool {
 		return false
 	}
 	switch res.Type {
-	case "AWS::SQS::Queue":
+	case "AWS::SQS::Queue", "AWS::SQS::QueuePolicy":
 		return c.caps.SQSAPI
-	case "AWS::SNS::Topic", "AWS::SNS::Subscription":
+	case "AWS::SNS::Topic", "AWS::SNS::Subscription", "AWS::SNS::TopicPolicy":
 		return c.caps.SNSAPI
 	case "AWS::SSM::Parameter":
 		return c.caps.SSMAPI
@@ -248,6 +249,8 @@ func serviceRef(id string, ctx *stackCtx) (string, bool) {
 		return svcTopicARN(svcTopicName(id, ctx), ctx), true
 	case "AWS::SNS::Subscription":
 		return subscriptionARN(id, ctx)
+	case "AWS::SQS::QueuePolicy", "AWS::SNS::TopicPolicy":
+		return svcPolicyID(id, ctx), true
 	case "AWS::SSM::Parameter":
 		return svcParamName(id, ctx), true
 	case "AWS::KMS::Key":

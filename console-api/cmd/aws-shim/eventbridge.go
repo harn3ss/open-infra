@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/resourcepolicy"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
@@ -584,7 +585,7 @@ func (h *ebHandler) fireRuleTargets(ctx context.Context, r ebRule, envelope map[
 		if t.Input == "" {
 			payload, _ = json.Marshal(envelope)
 		}
-		if err := h.deliver(ctx, t, payload); err != nil {
+		if err := h.deliver(ctx, r, t, payload); err != nil {
 			h.logger.Warn("eventbridge: target delivery FAILED (missed execution)",
 				"rule", r.Name, "target", t.Arn, "trigger", trigger, "error", err.Error())
 			h.audit(ctx, "TargetDeliveryFailed", r.Name, "target", t.Arn, "creator", r.Creator, "error", err.Error())
@@ -594,7 +595,7 @@ func (h *ebHandler) fireRuleTargets(ctx context.Context, r ebRule, envelope map[
 	}
 }
 
-func (h *ebHandler) deliver(ctx context.Context, t ebTarget, payload []byte) error {
+func (h *ebHandler) deliver(ctx context.Context, r ebRule, t ebTarget, payload []byte) error {
 	switch t.Type {
 	case "lambda":
 		if h.async == nil {
@@ -617,6 +618,19 @@ func (h *ebHandler) deliver(ctx context.Context, t ebTarget, payload []byte) err
 		}
 		if !ok {
 			return errNoQueue
+		}
+		// The queue's policy decides whether this rule may send to it (resource_policy.go).
+		ruleArn := r.Arn
+		if ruleArn == "" {
+			ruleArn = h.ruleARN(r.Bus, r.Name)
+		}
+		accepts, err := queueAccepts(ctx, h.sqs, h.region, h.account, url, resourcepolicy.Request{
+			Service: "events.amazonaws.com", Action: "sqs:SendMessage", SourceArn: ruleArn, SourceAccount: h.account}, h.logger)
+		if err != nil {
+			return err
+		}
+		if !accepts {
+			return errQueuePolicy
 		}
 		bodyStr := string(payload)
 		_, err = h.sqs.sendMessage(ctx, url, bodyStr, md5Hex(bodyStr), "", nil, 0)
@@ -819,5 +833,6 @@ const (
 	errNoAsync           = ebErr("Lambda target delivery requires the async event bus (NATS_URL) on the shim")
 	errNoSQS             = ebErr("SQS target delivery requires the SQS data layer on the shim")
 	errNoQueue           = ebErr("the target SQS queue does not exist")
+	errQueuePolicy       = ebErr("the target SQS queue's policy does not let this rule send to it")
 	errUnsupportedTarget = ebErr("unsupported target type")
 )

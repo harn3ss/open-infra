@@ -305,9 +305,10 @@ func TestFidelityGuard_CoversEveryTranslator(t *testing.T) {
 	}
 	// The child types a distribution reads by id only (no properties of their own to translate), and a
 	// type every instance of which refuses (so no property of it is ever accepted).
-	// A KMS alias refuses without the KMS API; with it, TestFidelityGuard_ServiceBackedTypes guards it.
+	// A KMS alias and an SQS queue / SNS topic policy refuse without their API; with it,
+	// TestFidelityGuard_ServiceBackedTypes guards them.
 	for _, typ := range []string{"AWS::CloudFront::CloudFrontOriginAccessIdentity", "AWS::CloudFront::CachePolicy", "AWS::CloudFront::OriginRequestPolicy",
-		"AWS::EC2::SubnetNetworkAclAssociation", "AWS::KMS::Alias"} {
+		"AWS::EC2::SubnetNetworkAclAssociation", "AWS::KMS::Alias", "AWS::SQS::QueuePolicy", "AWS::SNS::TopicPolicy"} {
 		have[typ] = true
 	}
 	var missing []string
