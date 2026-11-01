@@ -160,7 +160,9 @@ spec:
 Like the WAF/JWT plugins, this is an **operator step** and is intentionally **not** shipped as a live
 manifest: it is a cluster-wide ingress-posture change (any namespace could then route to an
 ExternalName target), so it stays opt-in. Until it is enabled, a `backend.url` route renders an
-IngressRoute Traefik will not resolve, so use in-cluster backends until then.
+IngressRoute Traefik will not resolve, so use in-cluster backends until then. The same holds for a
+route whose backend is a `kind: Function`: Knative publishes a function's Service as an ExternalName
+pointing at the Kourier gateway, so it too needs this setting (Application backends do not).
 
 ## JWT authorizer (`spec.authorizer`)
 

@@ -142,12 +142,18 @@ spec:
                       {{- end }}
                       - kind: Rule
                         match: {{ $m | quote }}
+                        {{- /* nativeLB: Traefik runs on the host network and dials the Service's ClusterIP, so the
+                               connection reaches the backend from the kube-ovn join subnet, which the isolation
+                               policies admit; dialing a pod IP it would come from the node's own address, which no
+                               policy admits. (An IngressRoute ignores the Service's nativelb annotation, so it is
+                               set here; Traefik skips it for ExternalName Services.) */}}
                         services:
                           {{- if $route.requestModel }}
                           {{- /* Model route: forward to the apigw-validator tier, which validates then
                                  proxies to this route's real backend (configured in its ConfigMap below). */}}
                           - name: {{ $validatorSvc }}
                             port: 8080
+                            nativeLB: true
                           {{- else if $route.backend.url }}
                           {{- /* External backend (HTTP_PROXY): forward to the per-route ExternalName
                                  Service rendered below. scheme + port are parsed from the origin URL. */}}
@@ -160,9 +166,11 @@ spec:
                             port: {{ $port }}
                             scheme: {{ ternary "https" "http" $https }}
                             passHostHeader: false
+                            nativeLB: true
                           {{- else }}
                           - name: {{ $route.backend.name }}
                             port: {{ $route.backend.port | default 80 }}
+                            nativeLB: true
                           {{- end }}
                         {{- if $mwnames }}
                         middlewares:
