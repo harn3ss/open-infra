@@ -315,6 +315,109 @@ spec:
   ports:
     - { name: http, port: 5000, targetPort: http }
 ---
+# LAN-facing front of the same registry (same storage bucket, same upload secret, same token trust anchor).
+# The internal ecr-registry above is what node runtimes and in-cluster clients use; its token realm is the
+# shim's cluster-internal URL, which a LAN workstation or a VM guest cannot resolve. This instance differs
+# only in its realm: set REGISTRY_AUTH_TOKEN_REALM in the optional ConfigMap ecr-registry-public-site to the
+# shim's LAN URL (https://<shim host>/ecr/token), and publish this Service through a TLS Ingress. Both
+# instances serve the same repositories, so an image pushed through either is pullable through both.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecr-registry-public
+  namespace: open-infra-ecr
+  labels: { app: ecr-registry-public }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ecr-registry-public }
+  template:
+    metadata:
+      labels: { app: ecr-registry-public }
+    spec:
+      serviceAccountName: ecr-registry
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - { name: config, configMap: { name: ecr-registry-config } }
+        - { name: auth, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+        # The per-repo token-auth trust anchor: the shim's signing cert (published by the shim as this
+        # ConfigMap), mounted as the registry's token rootcertbundle.
+        - { name: token-cert, configMap: { name: ecr-token-cert } }
+      initContainers:
+        # Generate the bcrypt htpasswd file from the minted plaintext credential. Kept out of the image so
+        # the password rotates with the Secret, never baked into a layer.
+        - name: gen-htpasswd
+          image: docker.io/library/httpd:2.4-alpine@sha256:4e585da9d0125dec36d4500a9f5c5df7b2c0a01f67cb47865a91a4b05bdbec1b
+          command: [/bin/sh, -c]
+          args:
+            - |
+              set -eu
+              htpasswd -Bbc /auth/htpasswd "$ECR_USER" "$ECR_PASS"
+              chmod 0644 /auth/htpasswd
+          env:
+            - { name: ECR_USER, valueFrom: { secretKeyRef: { name: ecr-registry-auth, key: username } } }
+            - { name: ECR_PASS, valueFrom: { secretKeyRef: { name: ecr-registry-auth, key: password } } }
+            - { name: TMPDIR, value: /tmp } # htpasswd needs a writable temp dir (rootfs is read-only)
+          volumeMounts:
+            - { name: auth, mountPath: /auth }
+            - { name: tmp, mountPath: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: registry
+          image: ghcr.io/distribution/distribution@sha256:4ba3adf47f5c866e9a29288c758c5328ef03396cb8f5f6454463655fa8bc83e2
+          args: [serve, /etc/distribution/config.yml]
+          ports: [{ name: http, containerPort: 5000 }]
+          env:
+            - { name: REGISTRY_STORAGE_S3_ACCESSKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: accessKey } } }
+            - { name: REGISTRY_STORAGE_S3_SECRETKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: secretKey } } }
+            - { name: REGISTRY_HTTP_SECRET, valueFrom: { secretKeyRef: { name: ecr-registry-auth, key: httpSecret } } }
+            # Behind a TLS ingress: relative Location URLs so blob uploads follow the client's own scheme/host.
+            - { name: REGISTRY_HTTP_RELATIVEURLS, value: "true" }
+          # Site values (not in git): REGISTRY_AUTH_TOKEN_REALM = the shim's /ecr/token at its LAN URL.
+          envFrom:
+            - configMapRef: { name: ecr-registry-public-site, optional: true }
+          volumeMounts:
+            - { name: config, mountPath: /etc/distribution }
+            - { name: auth, mountPath: /auth }
+            - { name: tmp, mountPath: /tmp }
+            - { name: token-cert, mountPath: /token-cert, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecr-registry-public
+  namespace: open-infra-ecr
+  labels: { app: ecr-registry-public }
+spec:
+  type: ClusterIP
+  selector: { app: ecr-registry-public }
+  ports:
+    - { name: http, port: 5000, targetPort: http }
+---
 # Let the aws-shim SA read the registry credential so GetAuthorizationToken can hand it back. Scoped to
 # the single Secret (resourceNames), cross-namespace from open-infra-aws-shim. (The per-repo token
 # signing key lives in the shim's OWN namespace; only its public cert is published here, as a

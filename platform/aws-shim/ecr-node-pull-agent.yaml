@@ -47,6 +47,11 @@ spec:
             - { name: REGISTRY_HOST, value: "ecr-registry.open-infra-ecr.svc.cluster.local" }
             - { name: REGISTRY_PORT, value: "5000" }
             - { name: SHIM_HOST, value: "aws-shim.open-infra-aws-shim.svc.cluster.local" }
+          # Site value (not in git), optional ConfigMap ecr-node-pull-site: ECR_PUBLIC_HOST = the registry's
+          # TLS LAN host[:port] (the host part of the shim's ECR_PUBLIC_ENDPOINT). When set, images named with
+          # that host are pulled through the in-cluster registry, so the node never needs the LAN path.
+          envFrom:
+            - configMapRef: { name: ecr-node-pull-site, optional: true }
           command: [/bin/sh, -ceu]
           args:
             - |
@@ -77,11 +82,18 @@ spec:
                 fi
                 # (3) desired registries.yaml (http mirror forces plain HTTP; auth = pull-only node-puller)
                 PW="$(cat "$CRED_FILE")"
+                # Images named with the registry's public (LAN) host pull through the same in-cluster
+                # endpoint; containerd keys auth by endpoint host, so the credential below covers both.
+                PUBLIC_MIRROR=""
+                if [ -n "${ECR_PUBLIC_HOST:-}" ]; then
+                  # leading newline: appended to the line above, so an unset host renders byte-identically
+                  PUBLIC_MIRROR="$(printf '\n  "%s":\n    endpoint:\n      - "http://%s:%s"' "$ECR_PUBLIC_HOST" "$REGISTRY_HOST" "$REGISTRY_PORT")"
+                fi
                 DESIRED="$(cat <<YAML
               mirrors:
                 "$REGISTRY_HOST:$REGISTRY_PORT":
                   endpoint:
-                    - "http://$REGISTRY_HOST:$REGISTRY_PORT"
+                    - "http://$REGISTRY_HOST:$REGISTRY_PORT"$PUBLIC_MIRROR
               configs:
                 "$REGISTRY_HOST:$REGISTRY_PORT":
                   auth:

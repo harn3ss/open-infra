@@ -1,0 +1,49 @@
+# The cluster's own certificate authority, for LAN-facing endpoints a browser or a client must trust.
+#
+# openinfra-issuer (cluster-issuer.yaml) self-signs every certificate separately, so there is nothing a
+# client can trust once for all of them. This file adds a root CA, created once by cert-manager and kept
+# in its namespace, and a CA-type ClusterIssuer `openinfra-ca` that signs with it. Trust the root once and
+# every certificate `openinfra-ca` issues is trusted:
+#
+#   kubectl -n cert-manager get secret openinfra-root-ca -o jsonpath='{.data.ca\.crt}' | base64 -d > openinfra-root-ca.crt
+#
+# then add openinfra-root-ca.crt to the OS or browser trust store (or pass it to a client, e.g.
+# `curl --cacert`, `AWS_CA_BUNDLE`, `SSL_CERT_FILE`). Use the issuer with the annotation
+# `cert-manager.io/cluster-issuer: openinfra-ca` on an Ingress.
+#
+# Applied after cert-manager installs (sync-wave 1); SkipDryRun so it applies before the CRDs register.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openinfra-root-ca
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  isCA: true
+  commonName: open-infra root CA
+  subject:
+    organizations: [open-infra]
+  secretName: openinfra-root-ca
+  duration: 87600h      # 10 years
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never   # rotating the key would invalidate every client that trusts the root
+  issuerRef:
+    name: openinfra-issuer  # self-signed: the root signs itself
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: openinfra-ca
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  ca:
+    secretName: openinfra-root-ca

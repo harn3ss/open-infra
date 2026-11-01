@@ -658,6 +658,11 @@ spec:
           # and optionally OIDC_GROUPS_CLAIM (explicit override always wins; else inferred from issuer).
           envFrom:
             - configMapRef: { name: aws-shim-oidc, optional: true }
+            # Site values that name this installation's LAN addresses (kept out of git), in an optional
+            # ConfigMap `aws-shim-site`: S3_VHOST_SUFFIXES (comma-separated S3 hosts that also accept
+            # virtual-hosted-style <bucket>.<suffix> requests) and ECR_PUBLIC_ENDPOINT (the registry's TLS
+            # LAN URL, returned as the proxyEndpoint and repositoryUri base). Unset = in-cluster only.
+            - configMapRef: { name: aws-shim-site, optional: true }
           # Startup gate: the shim runs ~13 per-service ensureSchema calls against the DynamoDB/documentdb
           # backend before it serves, which on a cold or just-restored backend can exceed the liveness
           # budget — so liveness used to SIGTERM it mid-startup (crashloop). The startupProbe gives startup

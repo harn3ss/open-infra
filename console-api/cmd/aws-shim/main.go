@@ -579,8 +579,12 @@ func run(logger *slog.Logger) error {
 	{
 		ecrNS := getenv("ECR_NAMESPACE", "open-infra-ecr")
 		ecrURL := getenv("ECR_REGISTRY_URL", "http://ecr-registry.open-infra-ecr.svc.cluster.local:5000")
+		// The proxyEndpoint (and every repositoryUri) is what clients push/pull with. ECR_PUBLIC_ENDPOINT,
+		// a site value from the optional aws-shim-site ConfigMap, names the registry's TLS LAN address so
+		// LAN workstations and VM guests can use it; it wins over the in-cluster ECR_PROXY_ENDPOINT.
+		proxyEndpoint := getenv("ECR_PUBLIC_ENDPOINT", getenv("ECR_PROXY_ENDPOINT", ecrURL))
 		ecrH := newECRHandler(cs, authzNS, account, region, ecrNS, ecrURL,
-			getenv("ECR_PROXY_ENDPOINT", ecrURL), getenv("ECR_AUTH_SECRET", "ecr-registry-auth"), logger)
+			proxyEndpoint, getenv("ECR_AUTH_SECRET", "ecr-registry-auth"), logger)
 		ecrH.authz = authzChecker
 		// Per-repo data-plane auth (the Docker bearer-token protocol). The PRIVATE signing key lives in
 		// the shim's own namespace (keysNS — where it may create Secrets); the PUBLIC cert is published
