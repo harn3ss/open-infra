@@ -249,7 +249,9 @@ func isoLBs(t *testing.T, out string) []isoLB {
 
 // isoPublished reports whether every port of a from-less ingress rule is published to these pods by
 // a LoadBalancer in the same render: such a rule opens no more than the Service already does.
-func isoPublished(rule any, w isoWorkload, lbs []isoLB) bool { return isoPublishedBy(rule, w, lbs, false) }
+func isoPublished(rule any, w isoWorkload, lbs []isoLB) bool {
+	return isoPublishedBy(rule, w, lbs, false)
+}
 
 // isoPublishedBy is isoPublished, optionally counting only LoadBalancers that keep the client's address.
 func isoPublishedBy(rule any, w isoWorkload, lbs []isoLB, localOnly bool) bool {

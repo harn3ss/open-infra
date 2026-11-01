@@ -218,11 +218,11 @@ func TestPlatformCAPublisher_WaitsWhileTheIssuerSignsWithAnotherSecret(t *testin
 	needJQ(t)
 	sh := posixShells(t)[0]
 	dir, out, err := runPublisher(t, sh, map[string]any{
-		"root-cert.json":        rootCert(3, "openinfra-root-ca-2"),
-		"issuer.json":           map[string]any{"spec": map[string]any{"ca": map[string]any{"secretName": "openinfra-root-ca"}}},
-		"crs-cert-manager.json": items(certReq("openinfra-root-ca-3", "openinfra-root-ca", "3", rootUID, "openinfra-issuer", newRoot, newRoot, true)),
+		"root-cert.json":            rootCert(3, "openinfra-root-ca-2"),
+		"issuer.json":               map[string]any{"spec": map[string]any{"ca": map[string]any{"secretName": "openinfra-root-ca"}}},
+		"crs-cert-manager.json":     items(certReq("openinfra-root-ca-3", "openinfra-root-ca", "3", rootUID, "openinfra-issuer", newRoot, newRoot, true)),
 		"certs-open-infra-ecr.json": items(leafCert("ecr-registry-public-tls", false)),
-		"crs-open-infra-ecr.json": items(certReq("ecr-1", "ecr-registry-public-tls", "1", "x", "openinfra-ca", "leaf", oldRoot, true)),
+		"crs-open-infra-ecr.json":   items(certReq("ecr-1", "ecr-registry-public-tls", "1", "x", "openinfra-ca", "leaf", oldRoot, true)),
 	})
 	if err != nil {
 		t.Fatalf("a rotation in progress is not an error: %v\n%s", err, out)
