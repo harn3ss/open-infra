@@ -470,6 +470,73 @@ EOF
   fi
 fi
 
+# ── 2a-edge. traefik as a host-network edge (networking.traefik.hostNetwork) ──
+# The routed-ingress shape (an AWS ALB): traefik runs on the host network, so a LAN
+# request is answered by the node it reached, with no overlay DNAT on the way in and
+# no natOutgoing SNAT on the reply (kube-ovn's cross-node LoadBalancer return path is
+# asymmetric otherwise). On the host, uid 65532 cannot bind privileged ports, so
+# traefik binds 8000/8443 and a LoadBalancer Service, traefik-lb, publishes 80/443.
+# traefik-lb keeps the client's address (Local), so only a node running traefik
+# answers. Ingress backends are dialed by ClusterIP (the nativelb annotation on each
+# backend Service, nativeLB on IngressRoutes), so traefik reaches them from the
+# kube-ovn join subnet, which their isolation policies admit. Optional site values:
+# networking.traefik.lbPool (the MetalLB pool) and networking.traefik.lbIP (a pinned
+# address); both live in config.yaml, never in the repo.
+if [ "$(yget networking.lanExpose.enabled)" != "true" ] && [ "$(yget networking.traefik.hostNetwork)" = "true" ]; then
+  TRAEFIK_LB_POOL="$(yget networking.traefik.lbPool)"
+  TRAEFIK_LB_IP="$(yget networking.traefik.lbIP)"
+  LOG "traefik on the host network, published by traefik-lb${TRAEFIK_LB_IP:+ on $TRAEFIK_LB_IP}"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  + apply HelmChartConfig/traefik (hostNetwork, 8000/8443) + Service/traefik-lb (LoadBalancer, Local%s)\n' "${TRAEFIK_LB_POOL:+, pool $TRAEFIK_LB_POOL}"
+  else
+    TRAEFIK_LB_ANN=""
+    [ -n "$TRAEFIK_LB_POOL" ] && TRAEFIK_LB_ANN="$TRAEFIK_LB_ANN
+    metallb.universe.tf/address-pool: \"$TRAEFIK_LB_POOL\""
+    [ -n "$TRAEFIK_LB_IP" ] && TRAEFIK_LB_ANN="$TRAEFIK_LB_ANN
+    metallb.universe.tf/loadBalancerIPs: \"$TRAEFIK_LB_IP\""
+    cat <<EOF | $KUBECTL apply -f -
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    hostNetwork: true
+    service:
+      type: ClusterIP
+    # In hostNetwork, uid 65532 cannot bind privileged ports (NET_BIND_SERVICE is
+    # not effective for non-root in the host netns; host ip_unprivileged_port_start=1024).
+    # So traefik BINDS unprivileged 8000/8443 on the host, while the Services still
+    # EXPOSE 80/443 (LB maps the ports, like an AWS listener). traefik-lb's named
+    # targetPorts (web/websecure) follow the container ports automatically.
+    ports:
+      web:
+        port: 8000
+        exposedPort: 80
+      websecure:
+        port: 8443
+        exposedPort: 443
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik-lb
+  namespace: kube-system${TRAEFIK_LB_ANN:+
+  annotations:$TRAEFIK_LB_ANN}
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/instance: traefik-kube-system
+    app.kubernetes.io/name: traefik
+  ports:
+    - { name: web, port: 80, targetPort: web, protocol: TCP }
+    - { name: websecure, port: 443, targetPort: websecure, protocol: TCP }
+EOF
+  fi
+fi
+
 # ── 2b. KubeVirt + CDI (VMs) ─────────────────────────────────
 # Cluster virtualization for the kind: VirtualMachine (EC2) abstraction. Installed
 # from upstream release manifests (like MetalLB), not Argo. Needs hardware virt

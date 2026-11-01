@@ -50,6 +50,18 @@ networking:
   # Ingress controller bundled with k3s. Keep traefik for v1.
   ingress: traefik
 
+  # Traefik as a host-network edge (routed ingress, the AWS ALB shape). On kube-ovn a
+  # LoadBalancer in front of a pod-network traefik answers LAN clients unreliably (the
+  # cross-node return path is asymmetric); on the host network the node a request
+  # reaches is the one that answers. install.sh renders the traefik HelmChartConfig
+  # (hostNetwork, binding 8000/8443) and a traefik-lb LoadBalancer Service (80/443,
+  # externalTrafficPolicy: Local). Ignored while lanExpose.enabled is true (that mode
+  # pins traefik to the gateway node instead). EXAMPLE ONLY — set your own:
+  traefik:
+    hostNetwork: false
+    lbPool: ""                 # MetalLB IPAddressPool for traefik-lb (blank => MetalLB's default)
+    lbIP: ""                   # pin traefik-lb's address (blank => MetalLB picks one)
+
   # Direct-LAN networking for VMs (kind: VirtualMachine, network: bridge): attach
   # VMs to the physical LAN via Multus + macvlan so they pull a real DHCP lease —
   # a first-class LAN host, no MetalLB/NAT. Set enabled: true and re-run
