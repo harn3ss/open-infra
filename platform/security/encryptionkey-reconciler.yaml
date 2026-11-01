@@ -6,8 +6,14 @@
 #   * Vault: an AppRole scoped to create/read/rotate transit/keys/* — NOT destroy. Key DESTRUCTION
 #     (crypto-erase) is deliberately withheld here and gated behind kind: Destruction.
 #
-# If Vault is unreachable or sealed, or the AppRole secret is absent, the run fails and retries next
-# minute — no key is silently skipped, none is silently destroyed.
+# If Vault is unreachable or sealed, or the AppRole secret is absent, the run fails and retries — no
+# key is silently skipped, none is silently destroyed.
+#
+# Latency: an encrypted kind: Volume cannot be keyed until its EncryptionKey's Transit key exists, so
+# each run, after its full pass (ensure + rotate + state for every key), keeps polling for
+# EncryptionKeys created since — every POLL_SECONDS until WATCH_SECONDS have passed, nearly the whole
+# schedule period — and provisions each at once. A new key exists within seconds; the full pass (and
+# its Vault + API load) still runs once per 5 minutes. WATCH_SECONDS=0 = one pass per run.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -69,12 +75,13 @@ spec:
   schedule: "*/5 * * * *"
   # Replace, not Forbid: the reconcile is idempotent, and Forbid + a stuck run (DeadlineExceeded with
   # a pod wedged in Terminating) blocks every later run indefinitely — see the grant-reconciler incident.
+  # A run ends its watch (WATCH_SECONDS) before the next tick.
   concurrencyPolicy: Replace
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 240
+      activeDeadlineSeconds: 295 # > WATCH_SECONDS + a last pass, < the 5-minute period
       ttlSecondsAfterFinished: 300 # GC finished jobs so a wedged one can't accumulate
       backoffLimit: 1
       template:
@@ -106,6 +113,9 @@ spec:
                 - { name: PATH, value: "/bin-shared:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }
                 - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
                 - { name: CONSOLE_NS, value: "open-infra-console" }
+                # After the full pass, keep polling for new EncryptionKeys this long (0 = one pass).
+                - { name: WATCH_SECONDS, value: "280" }
+                - { name: POLL_SECONDS, value: "5" }
               args:
                 - |
                   # Kubernetes auth: log in with THIS pod's ServiceAccount token — no Vault credential
@@ -117,49 +127,85 @@ spec:
                     jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)")"
                   export VAULT_TOKEN
                   [ -n "$VAULT_TOKEN" ] || { echo "vault kubernetes login failed" >&2; exit 1; }
-                  now=$(date -u +%s)
+                  start=$(date +%s)
+                  W="$(mktemp -d)"
+                  : > "$W/synced"
+                  TAB="$(printf '\t')"
+                  failed=0
 
-                  kubectl get encryptionkeys.openinfra.dev -A -o json \
-                    | jq -r '.items[] | [.metadata.name, (.spec.keyType // "aes256-gcm96"), (.spec.rotationDays // 0)] | @tsv' \
-                    | while IFS="$(printf '\t')" read -r name ktype rotdays; do
-                        # Ensure the Transit key exists (idempotent; create-if-missing, never destroy).
-                        if ! vault read "transit/keys/$name" >/dev/null 2>&1; then
-                          echo "creating transit key $name ($ktype)"
-                          vault write -f "transit/keys/$name" type="$ktype" >/dev/null
+                  # sync_key <name> <keyType> <rotationDays>: ensure the Transit key, rotate it when
+                  # due, and reflect its state for the console.
+                  sync_key() {
+                    name="$1"; ktype="$2"; rotdays="$3"
+                    now=$(date -u +%s)
+                    # Ensure the Transit key exists (idempotent; create-if-missing, never destroy).
+                    if ! vault read "transit/keys/$name" >/dev/null 2>&1; then
+                      echo "creating transit key $name ($ktype)"
+                      vault write -f "transit/keys/$name" type="$ktype" >/dev/null || return 1
+                    fi
+
+                    # Rotation: rotate if rotationDays>0 and it has been that long since the last
+                    # rotation we recorded (first sight seeds the clock; it does not rotate).
+                    cm="openinfra-enckey-state-$name"
+                    last=$(kubectl get configmap "$cm" -n "$CONSOLE_NS" -o jsonpath='{.data.lastRotatedEpoch}' 2>/dev/null || echo "")
+                    [ -n "$last" ] || last="$now"
+                    if [ "$rotdays" -gt 0 ] 2>/dev/null; then
+                      age=$(( now - last ))
+                      if [ "$age" -ge $(( rotdays * 86400 )) ]; then
+                        echo "rotating transit key $name (age ${age}s ≥ ${rotdays}d)"
+                        if vault write -f "transit/keys/$name/rotate" >/dev/null; then
+                          last="$now"
+                          # Persist the new rotation time IMMEDIATELY, so if the full state write
+                          # below fails we don't re-rotate every run (unbounded version growth).
+                          kubectl patch configmap "$cm" -n "$CONSOLE_NS" --type merge \
+                            -p "{\"data\":{\"lastRotatedEpoch\":\"$now\"}}" 2>/dev/null || true
                         fi
+                      fi
+                    fi
 
-                        # Rotation: rotate if rotationDays>0 and it has been that long since the last
-                        # rotation we recorded (first sight seeds the clock; it does not rotate).
-                        cm="openinfra-enckey-state-$name"
-                        last=$(kubectl get configmap "$cm" -n "$CONSOLE_NS" -o jsonpath='{.data.lastRotatedEpoch}' 2>/dev/null || echo "")
-                        [ -n "$last" ] || last="$now"
-                        if [ "$rotdays" -gt 0 ] 2>/dev/null; then
-                          age=$(( now - last ))
-                          if [ "$age" -ge $(( rotdays * 86400 )) ]; then
-                            echo "rotating transit key $name (age ${age}s ≥ ${rotdays}d)"
-                            if vault write -f "transit/keys/$name/rotate" >/dev/null; then
-                              last="$now"
-                              # Persist the new rotation time IMMEDIATELY, so if the full state write
-                              # below fails we don't re-rotate every run (unbounded version growth).
-                              kubectl patch configmap "$cm" -n "$CONSOLE_NS" --type merge \
-                                -p "{\"data\":{\"lastRotatedEpoch\":\"$now\"}}" 2>/dev/null || true
-                            fi
-                          fi
-                        fi
+                    kj="$(vault read -format=json "transit/keys/$name")" || return 1
+                    latest=$(printf '%s' "$kj" | jq -r '.data.latest_version // 0')
+                    kubectl create configmap "$cm" -n "$CONSOLE_NS" \
+                      --from-literal=exists=true \
+                      --from-literal=keyType="$ktype" \
+                      --from-literal=latestVersion="$latest" \
+                      --from-literal=vaultKeyPath="transit/keys/$name" \
+                      --from-literal=lastRotatedEpoch="$last" \
+                      --from-literal=lastChecked="$(date -u +%FT%TZ)" \
+                      --dry-run=client -o yaml \
+                      | kubectl label --local -f - "openinfra.dev/enckey=$name" -o yaml \
+                      | kubectl apply -f - >/dev/null || return 1
+                    echo "synced $name (version $latest)"
+                    echo "$name" >> "$W/synced"
+                  }
 
-                        latest=$(vault read -format=json "transit/keys/$name" | jq -r '.data.latest_version // 0')
-                        kubectl create configmap "$cm" -n "$CONSOLE_NS" \
-                          --from-literal=exists=true \
-                          --from-literal=keyType="$ktype" \
-                          --from-literal=latestVersion="$latest" \
-                          --from-literal=vaultKeyPath="transit/keys/$name" \
-                          --from-literal=lastRotatedEpoch="$last" \
-                          --from-literal=lastChecked="$(date -u +%FT%TZ)" \
-                          --dry-run=client -o yaml \
-                          | kubectl label --local -f - "openinfra.dev/enckey=$name" -o yaml \
-                          | kubectl apply -f - >/dev/null
-                        echo "synced $name (version $latest)"
-                      done
+                  # list_keys: the current EncryptionKeys as <name> <keyType> <rotationDays> rows.
+                  list_keys() {
+                    ek="$(kubectl get encryptionkeys.openinfra.dev -A -o json)" || { echo "cannot list EncryptionKeys" >&2; return 1; }
+                    printf '%s' "$ek" \
+                      | jq -r '.items[] | [.metadata.name, (.spec.keyType // "aes256-gcm96"), (.spec.rotationDays // 0)] | @tsv' \
+                      > "$W/keys.tsv"
+                  }
+
+                  # Full pass: every EncryptionKey. Any failure fails the run (and it retries).
+                  list_keys || exit 1
+                  while IFS="$TAB" read -r k t r; do
+                    [ -n "$k" ] || continue
+                    sync_key "$k" "$t" "$r" || exit 1
+                  done < "$W/keys.tsv"
+
+                  # Watch: provision EncryptionKeys created since the full pass within seconds. A
+                  # failure here marks the run failed but keeps watching.
+                  while [ $(( $(date +%s) - start )) -lt "$WATCH_SECONDS" ]; do
+                    sleep "$POLL_SECONDS"
+                    list_keys || { failed=1; continue; }
+                    while IFS="$TAB" read -r k t r; do
+                      [ -n "$k" ] || continue
+                      grep -qxF "$k" "$W/synced" && continue
+                      sync_key "$k" "$t" "$r" || failed=1
+                    done < "$W/keys.tsv"
+                  done
+                  [ "$failed" -eq 0 ] || exit 1
               resources:
                 requests: { cpu: 20m, memory: 48Mi }
                 limits: { cpu: 300m, memory: 192Mi }

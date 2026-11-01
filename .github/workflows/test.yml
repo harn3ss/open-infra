@@ -25,6 +25,8 @@ on:
       # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
       - "platform/console/manifests/**"
       - "platform/storage/longhorn*.yaml" # volume_render_test.go pins the Volume's classes to Immediate binding
+      - "platform/security/volume-crypto.yaml" # crypto_reconcilers_test.go runs these reconciler scripts
+      - "platform/security/encryptionkey-reconciler.yaml"
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
       - "open-appsync/**" # the VTL engine + resolver probe
@@ -48,6 +50,8 @@ on:
       # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
       - "platform/console/manifests/**"
       - "platform/storage/longhorn*.yaml" # volume_render_test.go pins the Volume's classes to Immediate binding
+      - "platform/security/volume-crypto.yaml" # crypto_reconcilers_test.go runs these reconciler scripts
+      - "platform/security/encryptionkey-reconciler.yaml"
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
       - "open-appsync/**" # the VTL engine + resolver probe
@@ -111,6 +115,12 @@ jobs:
       - name: go vet
         working-directory: ${{ matrix.module }}
         run: go vet ./...
+
+      # crypto_reconcilers_test.go runs the reconciler scripts under every POSIX shell present; busybox
+      # adds ash, the shell the alpine/k8s reconciler image actually runs (dash is already present).
+      - name: busybox (the reconcilers' runtime shell)
+        if: matrix.module == 'test/render'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox || true
 
       - name: go test -race
         working-directory: ${{ matrix.module }}

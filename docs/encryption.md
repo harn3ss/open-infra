@@ -22,6 +22,7 @@ crypto-erases everything wrapped by it (the basis for [`crypto-erase`](destructi
 | **`kind: EncryptionKey`** | a customer-owned KEK = a Vault Transit key | shipped, opt-in |
 | **encryptionkey-reconciler** | provisions/rotates the Transit key per EncryptionKey | shipped, opt-in |
 | **`longhorn-encrypted` StorageClass** | LUKS volumes (SC-28); additive, not the default | shipped, opt-in |
+| **volume-crypto reconciler** | keys each encrypted volume's LUKS passphrase from its EncryptionKey | shipped, opt-in |
 | **MinIO SSE-KMS (KES → Vault)** | object encryption with customer keys | runbook below |
 | **etcd KMS provider** | Kubernetes Secrets encrypted at rest with a customer key | runbook below |
 
@@ -124,11 +125,40 @@ a snapshot first.
 
 ### Longhorn volumes (shipped SC — just use it)
 
-Set `storageClassName: longhorn-encrypted` on a PVC and provide its LUKS passphrase in a Secret named
-`<pvc-name>-crypto` (key `CRYPTO_KEY_VALUE`) in the PVC's namespace. For customer-owned keys, source
-that passphrase from a `kind: EncryptionKey` — e.g. Vault Agent / external-secrets writes the Secret
-from a Transit **datakey** (`vault write transit/datakey/plaintext/<key>`). Destroying the
-EncryptionKey then makes the LUKS master key unrecoverable → the volume is crypto-erased.
+An encrypted `kind: Volume` (`spec.encrypted: true` + `spec.encryptionKey`), an encrypted VM data disk
+(`dataDisks[].encrypted`), and an encrypted database (`storageEncrypted`) all land on the
+`longhorn-encrypted` StorageClass and are keyed for you:
+
+- **Keying.** The **volume-crypto reconciler** finds each claim on `longhorn-encrypted` that carries the
+  annotation `openinfra.dev/encryption-key: <EncryptionKey name>`, generates a Vault Transit **data
+  key** under that EncryptionKey, and writes the claim's LUKS passphrase Secret `<pvc-name>-crypto` in
+  its namespace: the data key's plaintext is the passphrase, its wrapped form is stored alongside.
+  Destroying the EncryptionKey makes the passphrase unrecoverable → the volume is crypto-erased. An
+  existing passphrase Secret is never replaced.
+- **Ready means usable.** A claim on this class binds only once its passphrase Secret exists, and a
+  `kind: Volume` reports **Ready only once its claim is Bound** — the point at which EBS reports a
+  volume `available`. A CloudFormation `AWS::EC2::Volume` therefore completes when the disk can be
+  attached, not when the request is accepted. Both reconcilers (EncryptionKey and volume-crypto) run
+  every 5 minutes and, between runs, keep watching for new work every few seconds, so a new encrypted
+  volume — and a new EncryptionKey it depends on — is normally keyed and bound within seconds of
+  creation (up to about half a minute when it lands in the short gap between runs).
+- **The passphrase lives exactly as long as its claim.** The Secret is owned by the claim
+  (`ownerReference` by UID), so deleting the volume deletes its passphrase and crypto-erases whatever
+  remains of it on disk; a claim already being deleted is never keyed. Passphrase Secrets that predate
+  ownership are removed once their claim and any PersistentVolume bound to it are gone. Deleting the
+  passphrase does not block deleting the volume — Longhorn needs it to open a volume, not to remove one.
+- **Least privilege.** The reconciler's Vault role can only *generate* data keys — it cannot read,
+  rotate, decrypt with, or destroy the EncryptionKey. Its Kubernetes Secret writes are confined by a
+  `ValidatingAdmissionPolicy` to creating Opaque, labeled `<pvc-name>-crypto` Secrets and deleting
+  Secrets that carry its label — it cannot write any other Secret (e.g. a service-account token).
+
+To key a PVC of your own the same way, set `storageClassName: longhorn-encrypted` and annotate it with
+`openinfra.dev/encryption-key`. To manage the passphrase yourself instead, omit the annotation and
+provide the `<pvc-name>-crypto` Secret (key `CRYPTO_KEY_VALUE`) before creating the PVC.
+
+**Limits.** Snapshots and backups of an encrypted volume are encrypted under its passphrase, which is
+deleted with the volume — they are not readable once the volume is gone. Restoring a snapshot into a
+new encrypted volume is not supported: the new volume is keyed with its own passphrase.
 
 ### MinIO objects (SSE-KMS via KES)
 

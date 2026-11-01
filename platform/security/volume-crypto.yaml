@@ -7,12 +7,28 @@
 # `openinfra.dev/encryption-key: <EncryptionKey name>` (set by the Volume composition), and for any
 # that lack their `<pvc-name>-crypto` Secret, generates a Transit data key under that EncryptionKey
 # and writes the Secret in the PVC's namespace. Idempotent: an existing crypto Secret is never
-# regenerated (a changed passphrase would make the volume unreadable).
+# regenerated (a changed passphrase would make the volume unreadable) — the Secret is written with
+# `kubectl create`, which can never overwrite one.
+#
+# Latency: the PVC binds only once its Secret exists (the CSI provisioner needs it), and kind: Volume
+# reports Ready only once the PVC is Bound. So each run, after its first pass, keeps polling for new
+# encrypted PVCs every POLL_SECONDS until WATCH_SECONDS have passed — nearly the whole schedule
+# period — so a new volume is keyed within seconds, not at the next run. The schedule, and so the
+# pod churn, stays one run per 5 minutes. WATCH_SECONDS=0 = one pass per run.
+#
+# Lifecycle: the Secret is OWNED by its PVC (ownerReference by UID), so Kubernetes garbage-collects
+# the passphrase together with the claim — and removes it at once if the claim was deleted between
+# this reconciler listing it and writing the Secret. PVCs being deleted are skipped. Crypto Secrets
+# written without an owner (before ownership was set) are swept once their claim AND any
+# PersistentVolume bound to it are gone. Deleting the passphrase needs nothing from Longhorn: its
+# CSI DeleteVolume takes no secret, and the provisioner proceeds without one when it is gone.
 #
 # Least privilege: Vault role scoped to transit/datakey/plaintext/* only (generate a wrapped data
-# key — NOT read/rotate/destroy the KEK). Part of the OPT-IN `encryption` component. If Vault is
-# unreachable or the volume-crypto role is absent (operator has not run the Vault step), the run
-# fails and retries — no volume is silently left unencrypted, and none is silently keyed.
+# key — NOT read/rotate/destroy the KEK). Its Kubernetes Secret writes are confined by the admission
+# policy at the end of this file to its own labeled `<pvc>-crypto` Secrets. Part of the OPT-IN
+# `encryption` component. If Vault is unreachable or the volume-crypto role is absent (operator has
+# not run the Vault step), the run fails and retries — no volume is silently left unencrypted, and
+# none is silently keyed.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -29,11 +45,19 @@ rules:
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
     verbs: [get, list]
-  # Materialize the per-volume crypto Secret in the PVC's namespace. Cluster-wide because a Volume
-  # can live in any namespace (the same reach the bucket-setup SA has for per-app creds).
+  # Read-only: an ownerless crypto Secret is never swept while a PersistentVolume still holds the
+  # volume's data (a Released or Retained PV bound to that claim).
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [list]
+  # Materialize the per-volume crypto Secret in the PVC's namespace, and sweep ownerless ones whose
+  # volume is gone. Cluster-wide because a Volume can live in any namespace (the same reach the
+  # bucket-setup SA has for per-app creds). RBAC cannot scope by name or label: list only adds
+  # enumeration to the get this identity already holds, and create/delete are confined to its own
+  # labeled `<pvc>-crypto` Secrets by the ValidatingAdmissionPolicy below.
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get, create]
+    verbs: [get, list, create, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -55,12 +79,14 @@ metadata:
   namespace: crossplane-system
 spec:
   schedule: "*/5 * * * *"
+  # Replace, not Forbid: the reconcile is idempotent, and Forbid + a stuck run blocks every later run
+  # (see the grant-reconciler incident). A run ends its watch (WATCH_SECONDS) before the next tick.
   concurrencyPolicy: Replace
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 240
+      activeDeadlineSeconds: 295 # > WATCH_SECONDS + a last pass, < the 5-minute period
       ttlSecondsAfterFinished: 300
       backoffLimit: 1
       template:
@@ -91,6 +117,9 @@ spec:
                 - { name: HOME, value: /tmp }
                 - { name: PATH, value: "/bin-shared:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }
                 - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
+                # After the first pass, keep polling for new encrypted PVCs this long (0 = one pass).
+                - { name: WATCH_SECONDS, value: "280" }
+                - { name: POLL_SECONDS, value: "5" }
               args:
                 - |
                   VAULT_TOKEN="$(vault write -field=token auth/kubernetes/login \
@@ -99,39 +128,167 @@ spec:
                   export VAULT_TOKEN
                   [ -n "$VAULT_TOKEN" ] || { echo "vault kubernetes login failed (has the operator run the volume-crypto Vault step?)" >&2; exit 1; }
 
-                  # Encrypted PVCs that name an EncryptionKey but have no crypto Secret yet.
-                  kubectl get pvc -A -o json \
-                    | jq -r '.items[]
+                  start=$(date +%s)
+                  W="$(mktemp -d)"
+                  : > "$W/waiting"
+                  TAB="$(printf '\t')"
+                  failed=0
+
+                  # One pass: key every encrypted PVC that has no crypto Secret yet. Called as
+                  # `key_pending || failed=1`, so a transient API error fails this pass (and, at the
+                  # end, the run) without ending the watch; errors are therefore returned explicitly.
+                  key_pending() {
+                    # Encrypted PVCs that name an EncryptionKey and are NOT being deleted (keying a
+                    # claim on its way out would only leave a passphrase behind).
+                    pvcs="$(kubectl get pvc -A -o json)" || { echo "cannot list PersistentVolumeClaims" >&2; return 1; }
+                    printf '%s' "$pvcs" | jq -r '.items[]
                         | select(.spec.storageClassName=="longhorn-encrypted")
                         | select(.metadata.annotations["openinfra.dev/encryption-key"] != null)
-                        | [.metadata.namespace, .metadata.name, .metadata.annotations["openinfra.dev/encryption-key"]] | @tsv' \
-                    | while IFS="$(printf '\t')" read -r ns name key; do
-                        [ -n "$name" ] || continue
-                        if kubectl get secret "${name}-crypto" -n "$ns" >/dev/null 2>&1; then
-                          continue   # already keyed — never regenerate (would orphan the LUKS data)
+                        | select(.metadata.deletionTimestamp == null)
+                        | [.metadata.namespace, .metadata.name, .metadata.uid, .metadata.annotations["openinfra.dev/encryption-key"]] | @tsv' \
+                      > "$W/pvcs.tsv"
+                    # Crypto Secrets that already exist (names only — no key material leaves the API).
+                    # A failed list just means every PVC gets the per-name check below.
+                    kubectl get secret -A -l openinfra.dev/volume-crypto \
+                      -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' \
+                      > "$W/keyed.txt" 2>/dev/null || : > "$W/keyed.txt"
+                    # FILENAME, not NR==FNR: with no crypto Secrets yet keyed.txt is empty, and NR==FNR
+                    # would then swallow every PVC as "keyed".
+                    awk -F '\t' 'FILENAME == ARGV[1] { keyed[$0]=1; next } !(($1 "/" $2 "-crypto") in keyed)' \
+                      "$W/keyed.txt" "$W/pvcs.tsv" > "$W/pending.tsv"
+
+                    while IFS="$TAB" read -r ns name uid key; do
+                      [ -n "$name" ] || continue
+                      # The authoritative check, by name: an existing crypto Secret (labeled or not) is
+                      # NEVER regenerated — that would orphan the LUKS data.
+                      if kubectl get secret "${name}-crypto" -n "$ns" >/dev/null 2>&1; then
+                        continue
+                      fi
+                      # A data key wrapped by the EncryptionKey's Transit KEK: plaintext is the LUKS
+                      # passphrase; ciphertext is the wrapped record (crypto-erase: destroy the KEK
+                      # and the passphrase can never be re-derived).
+                      dk="$(vault write -f -format=json "transit/datakey/plaintext/$key" 2>/dev/null || true)"
+                      P="$(printf '%s' "$dk" | jq -r '.data.plaintext // empty')"
+                      C="$(printf '%s' "$dk" | jq -r '.data.ciphertext // empty')"
+                      dk=""
+                      if [ -z "$P" ]; then
+                        if ! grep -qxF "$ns/$name" "$W/waiting"; then
+                          echo "waiting on ${ns}/${name}: no data key from EncryptionKey '$key' yet (does it exist / is its Transit key provisioned?)" >&2
+                          echo "$ns/$name" >> "$W/waiting"
                         fi
-                        # A data key wrapped by the EncryptionKey's Transit KEK: plaintext is the LUKS
-                        # passphrase; ciphertext is the wrapped record (crypto-erase: destroy the KEK
-                        # and the passphrase can never be re-derived).
-                        dk="$(vault write -f -format=json "transit/datakey/plaintext/$key" 2>/dev/null || true)"
-                        P="$(printf '%s' "$dk" | jq -r '.data.plaintext // empty')"
-                        C="$(printf '%s' "$dk" | jq -r '.data.ciphertext // empty')"
-                        if [ -z "$P" ]; then
-                          echo "skip ${ns}/${name}: no data key from EncryptionKey '$key' (does it exist / is its Transit key provisioned?)" >&2
-                          continue
-                        fi
-                        kubectl create secret generic "${name}-crypto" -n "$ns" \
+                        continue
+                      fi
+                      # Owned by the PVC, by UID: garbage collection deletes the passphrase with its
+                      # claim, and at once if the claim is already gone. No blockOwnerDeletion — the
+                      # claim's deletion never waits on its Secret.
+                      if kubectl create secret generic "${name}-crypto" -n "$ns" \
                           --from-literal=CRYPTO_KEY_VALUE="$P" \
                           --from-literal=CRYPTO_KEY_PROVIDER=secret \
                           --from-literal=CRYPTO_KEY_CIPHER=aes-xts-plain64 \
                           --from-literal=CRYPTO_KEY_HASH=sha256 \
                           --from-literal=WRAPPED_KEY="$C" \
                           --from-literal=OPENINFRA_ENCRYPTION_KEY="$key" \
-                          --dry-run=client -o yaml \
-                          | kubectl label --local -f - "openinfra.dev/volume-crypto=$name" -o yaml \
-                          | kubectl apply -f - >/dev/null
+                          --dry-run=client -o json \
+                        | jq --arg pvc "$name" --arg uid "$uid" '
+                            .metadata.labels["openinfra.dev/volume-crypto"] = (if ($pvc | length) <= 63 then $pvc else "true" end)
+                            | .metadata.ownerReferences = [{apiVersion: "v1", kind: "PersistentVolumeClaim", name: $pvc, uid: $uid}]' \
+                        | kubectl create -f - >/dev/null; then
                         echo "materialized ${name}-crypto in ${ns} from EncryptionKey ${key}"
-                      done
+                      elif kubectl get secret "${name}-crypto" -n "$ns" >/dev/null 2>&1; then
+                        :   # an overlapping run created it first — keep that one, never replace it
+                      else
+                        echo "failed to create ${ns}/${name}-crypto" >&2
+                        failed=1
+                      fi
+                      P=""; C=""
+                    done < "$W/pending.tsv"
+                  }
+
+                  # Remove ownerless crypto Secrets whose volume is gone. Only unmistakably ours: the
+                  # label names the claim, the Secret is that claim's `<pvc>-crypto`, and it holds the
+                  # reconciler's wrapped-key record. Owned Secrets are left to garbage collection.
+                  sweep_orphans() {
+                    if ! sj="$(kubectl get secret -A -l openinfra.dev/volume-crypto -o json 2>/dev/null)"; then
+                      echo "note: cannot list crypto Secrets — orphan sweep skipped this run" >&2
+                      return 0
+                    fi
+                    printf '%s' "$sj" | jq -r '.items[]
+                        | select(.metadata.deletionTimestamp == null)
+                        | select(((.metadata.ownerReferences // []) | map(select(.kind == "PersistentVolumeClaim")) | length) == 0)
+                        | (.metadata.labels["openinfra.dev/volume-crypto"] // "") as $pvc
+                        | select($pvc != "" and .metadata.name == ($pvc + "-crypto"))
+                        | select(.data.WRAPPED_KEY != null and .data.OPENINFRA_ENCRYPTION_KEY != null)
+                        | [.metadata.namespace, .metadata.name, $pvc] | @tsv' > "$W/ownerless.tsv"
+                    sj=""
+                    [ -s "$W/ownerless.tsv" ] || return 0
+                    # Claims a PersistentVolume still points at keep their passphrase: the data exists.
+                    if ! pvs="$(kubectl get pv -o json 2>/dev/null)"; then
+                      echo "note: cannot list PersistentVolumes — orphan sweep skipped this run" >&2
+                      return 0
+                    fi
+                    printf '%s' "$pvs" | jq -r '.items[] | select(.spec.claimRef != null)
+                        | .spec.claimRef.namespace + "/" + .spec.claimRef.name' > "$W/pv-claims.txt"
+                    while IFS="$TAB" read -r ns sname pvc; do
+                      [ -n "$sname" ] || continue
+                      grep -qxF "$ns/$pvc" "$W/pv-claims.txt" && continue
+                      # The claim must be provably absent — a failed lookup is never read as "gone".
+                      live="$(kubectl get pvc "$pvc" -n "$ns" --ignore-not-found -o name 2>/dev/null)" || continue
+                      [ -z "$live" ] || continue
+                      if kubectl delete secret "$sname" -n "$ns" --ignore-not-found >/dev/null 2>&1; then
+                        echo "removed orphaned ${ns}/${sname}: its PersistentVolumeClaim and volume no longer exist"
+                      else
+                        echo "could not remove orphaned ${ns}/${sname}" >&2
+                        failed=1
+                      fi
+                    done < "$W/ownerless.tsv"
+                  }
+
+                  key_pending || failed=1
+                  sweep_orphans || failed=1
+                  while [ $(( $(date +%s) - start )) -lt "$WATCH_SECONDS" ]; do
+                    sleep "$POLL_SECONDS"
+                    key_pending || failed=1
+                  done
+                  [ "$failed" -eq 0 ] || exit 1
               resources:
                 requests: { cpu: 20m, memory: 48Mi }
                 limits: { cpu: 300m, memory: 192Mi }
+---
+# Admission guard for the grant above. RBAC cannot scope Secret writes by name or label, and a
+# cluster-wide `create secrets` would let this identity mint any ServiceAccount's token (a
+# kubernetes.io/service-account-token Secret it could then read back). This policy confines the
+# volume-crypto ServiceAccount to: CREATE only an Opaque `<pvc>-crypto` Secret carrying the
+# openinfra.dev/volume-crypto label; DELETE only a Secret that already carries that label. Every
+# other principal is untouched (matchConditions).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-volume-crypto-secrets
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "DELETE"]
+        resources: ["secrets"]
+  matchConditions:
+    - name: volume-crypto-serviceaccount
+      expression: "request.userInfo.username == 'system:serviceaccount:crossplane-system:volume-crypto'"
+  validations:
+    - expression: >-
+        request.operation == 'DELETE'
+        ? (has(oldObject.metadata.labels) && 'openinfra.dev/volume-crypto' in oldObject.metadata.labels)
+        : ((!has(object.type) || object.type == 'Opaque')
+           && object.metadata.name.endsWith('-crypto')
+           && has(object.metadata.labels) && 'openinfra.dev/volume-crypto' in object.metadata.labels)
+      reason: Forbidden
+      message: "the volume-crypto reconciler may only create an Opaque, openinfra.dev/volume-crypto-labeled <pvc>-crypto Secret, and delete only Secrets carrying that label"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-volume-crypto-secrets
+spec:
+  policyName: openinfra-volume-crypto-secrets
+  validationActions: [Deny]
