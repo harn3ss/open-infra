@@ -77,15 +77,80 @@ type builtResource struct {
 	requires []Requirement // objects outside the stack that must exist first (Manifest.Requires)
 }
 
+// Creator is an optional Applier capability: create an object only if none of that kind and name exists
+// (created=false, err=nil when one does). A resource's first apply goes through it, so two operations
+// racing for one name cannot both take it: the existence check and the write are one step.
+type Creator interface {
+	Create(ctx context.Context, manifestYAML []byte) (created bool, err error)
+}
+
+// Lister is an optional Applier capability: the objects of a kind in the stack's namespace, with their
+// labels and spec — how a resource's explicit physical name (a BucketName) is checked against the others.
+type Lister interface {
+	List(ctx context.Context, apiVersion, kind string) ([]LiveObject, error)
+}
+
+// LiveObject is one listed object.
+type LiveObject struct {
+	Name   string
+	Labels map[string]string
+	Spec   map[string]any
+}
+
+// physicalNameField names, per kind, the spec field that carries a resource's AWS name when the template
+// sets one (BucketName, QueueName / TopicName, TableName, an SSM parameter's Name). That name, not the
+// object's, is what the platform creates: two objects with the same one share one bucket, stream, table
+// or parameter. With the field unset the object's own name is used (except a Parameter, which has none).
+var physicalNameField = map[string]string{
+	"openinfra.dev/v1/Bucket":    "bucketName",
+	"openinfra.dev/v1/Queue":     "queueName",
+	"openinfra.dev/v1/Table":     "tableName",
+	"openinfra.dev/v1/Parameter": "path",
+}
+
+// physicalName is an object's effective physical name ("" when its kind has none, or it sets none).
+func physicalName(apiVersion, kind, name string, spec map[string]any) (field, value string) {
+	field, ok := physicalNameField[apiVersion+"/"+kind]
+	if !ok {
+		return "", ""
+	}
+	if v, _ := spec[field].(string); v != "" {
+		return field, v
+	}
+	if kind == "Parameter" {
+		return field, ""
+	}
+	return field, name
+}
+
+// ownedObjects is what one stack operation may write to: the objects its stack record names (an update's
+// current resources) and those the operation itself created. Any other object carrying the stack's label
+// was left by an earlier stack of the same name — a retained resource, kept unmanaged — and is not taken
+// back: adopting it would let this stack's rollback or delete remove data the template asked to keep.
+type ownedObjects map[string]bool
+
+func ownedFrom(rs []StackResource) ownedObjects {
+	o := ownedObjects{}
+	for _, r := range rs {
+		o[r.APIVersion+"/"+r.Kind+"/"+r.Name] = true
+	}
+	return o
+}
+
 // applyOwned applies a built resource, first refusing to overwrite an object of the same kind and name
-// that is not this stack's: another stack's, or one no stack created. On AWS a create whose name is
-// taken fails; taking the object over would silently corrupt the stack that owns it. A shared companion
-// (the per-namespace default EncryptionKey) is meant to be applied by several stacks and is not checked.
-// An Applier that cannot read labels (LabelReader) is not checked either.
+// that is not this stack's: another stack's, one no stack created, or one an earlier stack of this name
+// left behind (owned says which of the stack's labelled objects are this stack's now). On AWS a create
+// whose name is taken fails; taking the object over would silently corrupt the stack that owns it. A
+// shared companion (the per-namespace default EncryptionKey) is meant to be applied by several stacks and
+// is not checked. An Applier that cannot read labels (LabelReader) is not checked either.
+//
+// A resource whose explicit physical name (BucketName, QueueName, TableName, an SSM Name) another object
+// already uses is refused the same way (Lister), and a resource not yet created is created only if it
+// still does not exist (Creator), so two operations racing for a name cannot both take it.
 //
 // It also refuses a resource while an object outside the stack that it requires does not exist (a
 // security group a parameter names): applying it would silently lose what that object provides.
-func applyOwned(ctx context.Context, ap Applier, b builtResource, stack string) error {
+func applyOwned(ctx context.Context, ap Applier, b builtResource, stack string, owned ownedObjects) error {
 	for _, rq := range b.requires {
 		_, found, err := ap.GetSpec(ctx, rq.APIVersion, rq.Kind, rq.Name)
 		if err != nil {
@@ -95,22 +160,103 @@ func applyOwned(ctx context.Context, ap Applier, b builtResource, stack string) 
 			return fmt.Errorf("%s %s does not exist — it is %s, named from outside this stack; refusing to apply %s %s without it", rq.Kind, rq.Name, rq.Why, b.res.Kind, b.res.Name)
 		}
 	}
-	if lr, ok := ap.(LabelReader); ok && !b.shared {
-		labels, found, err := lr.GetLabels(ctx, b.res.APIVersion, b.res.Kind, b.res.Name)
-		if err != nil {
-			return fmt.Errorf("checking whether %s %s already exists: %w", b.res.Kind, b.res.Name, err)
-		}
-		if found {
-			switch owner := labels[labelStack]; owner {
-			case stack:
-			case "":
-				return fmt.Errorf("%s %s already exists and no stack created it — refusing to overwrite it (rename the resource, or remove the existing object)", b.res.Kind, b.res.Name)
-			default:
-				return fmt.Errorf("%s %s already exists and belongs to stack %s — refusing to overwrite it (two stacks cannot share a resource name)", b.res.Kind, b.res.Name, owner)
-			}
+	key := b.res.APIVersion + "/" + b.res.Kind + "/" + b.res.Name
+	lr, ok := ap.(LabelReader)
+	if !ok || b.shared {
+		return ap.Apply(ctx, b.yml)
+	}
+	if err := physicalNameFree(ctx, ap, b, stack); err != nil {
+		return err
+	}
+	refuseNotOurs := func(labels map[string]string) error {
+		switch owner := labels[labelStack]; {
+		case owner == stack && (owned == nil || owned[key]):
+			return nil
+		case owner == stack:
+			return fmt.Errorf("%s %s already exists — an earlier stack named %s left it (a retained resource), and it is not part of this stack; refusing to take it over (delete or rename it, or use another stack name)", b.res.Kind, b.res.Name, stack)
+		case owner == "":
+			return fmt.Errorf("%s %s already exists and no stack created it — refusing to overwrite it (rename the resource, or remove the existing object)", b.res.Kind, b.res.Name)
+		default:
+			return fmt.Errorf("%s %s already exists and belongs to stack %s — refusing to overwrite it (two stacks cannot share a resource name)", b.res.Kind, b.res.Name, owner)
 		}
 	}
-	return ap.Apply(ctx, b.yml)
+	labels, found, err := lr.GetLabels(ctx, b.res.APIVersion, b.res.Kind, b.res.Name)
+	if err != nil {
+		return fmt.Errorf("checking whether %s %s already exists: %w", b.res.Kind, b.res.Name, err)
+	}
+	if found {
+		if err := refuseNotOurs(labels); err != nil {
+			return err
+		}
+		return ap.Apply(ctx, b.yml)
+	}
+	if cr, ok := ap.(Creator); ok {
+		created, err := cr.Create(ctx, b.yml)
+		if err != nil {
+			return err
+		}
+		if !created {
+			// Created by someone else since the check above: refuse unless it is, after all, ours.
+			labels, _, err := lr.GetLabels(ctx, b.res.APIVersion, b.res.Kind, b.res.Name)
+			if err != nil {
+				return fmt.Errorf("checking %s %s, created concurrently: %w", b.res.Kind, b.res.Name, err)
+			}
+			if err := refuseNotOurs(labels); err != nil {
+				return fmt.Errorf("%w (it was created while this stack was creating it)", err)
+			}
+			return ap.Apply(ctx, b.yml)
+		}
+		if owned != nil {
+			owned[key] = true
+		}
+		return nil
+	}
+	if err := ap.Apply(ctx, b.yml); err != nil {
+		return err
+	}
+	if owned != nil {
+		owned[key] = true
+	}
+	return nil
+}
+
+// physicalNameFree refuses b when another object of its kind in the namespace already has b's physical
+// name: on AWS, creating a bucket, queue, table or parameter whose name is taken fails, while here the two
+// objects would silently share it (one stack writing the other's data, applying its own policy to it). An
+// object of this stack with that name is the same resource (its record names it) or a second resource
+// of the stack claiming the name, which AWS refuses too.
+func physicalNameFree(ctx context.Context, ap Applier, b builtResource, stack string) error {
+	field, value := physicalName(b.res.APIVersion, b.res.Kind, b.res.Name, b.res.Spec)
+	if value == "" {
+		return nil
+	}
+	ls, ok := ap.(Lister)
+	if !ok {
+		return nil
+	}
+	objs, err := ls.List(ctx, b.res.APIVersion, b.res.Kind)
+	if err != nil {
+		return fmt.Errorf("checking that no other %s is named %q: %w", b.res.Kind, value, err)
+	}
+	for _, o := range objs {
+		if o.Name == b.res.Name {
+			continue
+		}
+		if _, v := physicalName(b.res.APIVersion, b.res.Kind, o.Name, o.Spec); v != value {
+			continue
+		}
+		owner := o.Labels[labelStack]
+		switch {
+		case owner == stack:
+			owner = "this stack"
+		case owner == "":
+			owner = "no stack"
+		default:
+			owner = "stack " + owner
+		}
+		return fmt.Errorf("%s %s's %s %q is already %s %s's (owned by %s) — refusing to create a second object over it, as AWS refuses a name that is taken (rename it, or drop the explicit name so the stack generates one)", b.res.Kind, b.res.Name, field, value, b.res.Kind, o.Name, owner)
+	}
+	return nil
 }
 
 type StackRecord struct {
@@ -373,8 +519,9 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		return rec, fmt.Errorf("deploy failed and was rolled back (no orphans): %w", cause)
 	}
 
+	owned := ownedObjects{} // a new stack owns only what it creates
 	for _, b := range order {
-		if err := applyOwned(ctx, ap, b, opts.StackName); err != nil {
+		if err := applyOwned(ctx, ap, b, opts.StackName, owned); err != nil {
 			return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, err))
 		}
 		applied = append(applied, b.res)
@@ -481,6 +628,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	}
 
 	seen := objectSet{}
+	owned := ownedObjects{} // a new stack owns only what it creates
 	for _, id := range plan.Order {
 		res := t.Resources[id]
 		tr := translatorFor(res.Type)
@@ -540,7 +688,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			return rollback(werr)
 		}
 		for _, b := range built {
-			if aerr := applyOwned(ctx, ap, b, opts.StackName); aerr != nil {
+			if aerr := applyOwned(ctx, ap, b, opts.StackName, owned); aerr != nil {
 				return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, aerr))
 			}
 			applied = append(applied, b.res)

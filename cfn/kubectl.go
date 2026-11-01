@@ -36,6 +36,41 @@ func (k kubectlApplier) Apply(ctx context.Context, manifestYAML []byte) error {
 	return k.run(ctx, manifestYAML, "apply", "-f", "-")
 }
 
+// Create makes the object only if none of that kind and name exists (Creator). --save-config records the
+// applied configuration as `kubectl apply` does, so a later Apply prunes what the template stops setting.
+func (k kubectlApplier) Create(ctx context.Context, manifestYAML []byte) (bool, error) {
+	err := k.run(ctx, manifestYAML, "create", "--save-config", "-f", "-")
+	if err != nil && strings.Contains(err.Error(), "AlreadyExists") {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// List returns the objects of a kind in the namespace (Lister).
+func (k kubectlApplier) List(ctx context.Context, apiVersion, kind string) ([]LiveObject, error) {
+	out, err := k.runOut(ctx, "get", resourceArg(apiVersion, kind), "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var l struct {
+		Items []struct {
+			Metadata struct {
+				Name   string            `json:"name"`
+				Labels map[string]string `json:"labels"`
+			} `json:"metadata"`
+			Spec map[string]any `json:"spec"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &l); err != nil {
+		return nil, fmt.Errorf("could not read the %s list: %w", kind, err)
+	}
+	objs := make([]LiveObject, 0, len(l.Items))
+	for _, it := range l.Items {
+		objs = append(objs, LiveObject{Name: it.Metadata.Name, Labels: it.Metadata.Labels, Spec: it.Spec})
+	}
+	return objs, nil
+}
+
 func (k kubectlApplier) Delete(ctx context.Context, apiVersion, kind, name string) error {
 	return k.run(ctx, nil, "delete", resourceArg(apiVersion, kind), name, "--ignore-not-found", "--wait=false")
 }

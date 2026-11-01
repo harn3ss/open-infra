@@ -30,7 +30,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/util/csaupgrade"
 	"sigs.k8s.io/yaml"
 )
 
@@ -132,6 +135,72 @@ func (a *impersonatingApplier) Apply(ctx context.Context, manifestYAML []byte) e
 		return fmt.Errorf("apply %s/%s %q: %w", obj.GetAPIVersion(), gvk.Kind, name, err)
 	}
 	return nil
+}
+
+// Create makes the object only if none of that kind and name exists (cfn.Creator), under the caller's
+// authority: the engine's first apply of a resource, so two operations racing for one name cannot both
+// take it. The fields it sets are then handed to the server-side-apply manager Apply uses, so a later
+// Apply that stops setting a field prunes it exactly as if the object had been applied. That hand-over is
+// retried while controllers update the new object; if it still does not land, the object stands as
+// created and only such pruning is lost.
+func (a *impersonatingApplier) Create(ctx context.Context, manifestYAML []byte) (bool, error) {
+	obj := &unstructured.Unstructured{}
+	if err := yaml.Unmarshal(manifestYAML, &obj.Object); err != nil {
+		return false, fmt.Errorf("parse manifest: %w", err)
+	}
+	gvk := obj.GroupVersionKind()
+	name := obj.GetName()
+	ns := obj.GetNamespace()
+	if ns == "" {
+		ns = a.ns
+	}
+	gvr, err := a.gvrFor(obj.GetAPIVersion(), gvk.Kind)
+	if err != nil {
+		return false, err
+	}
+	if isStackRecord(gvk.Kind, name) {
+		return false, fmt.Errorf("the stack record %q is written by Apply, never created as a resource", name)
+	}
+	cli := a.caller.Resource(gvr).Namespace(ns)
+	created, err := cli.Create(ctx, obj, metav1.CreateOptions{FieldManager: cfnFieldManager})
+	if apierrors.IsAlreadyExists(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("create %s/%s %q: %w", obj.GetAPIVersion(), gvk.Kind, name, err)
+	}
+	for i := 0; i < 5 && created != nil; i++ {
+		patch, perr := csaupgrade.UpgradeManagedFieldsPatch(created, sets.New(cfnFieldManager), cfnFieldManager)
+		if perr != nil || patch == nil {
+			break
+		}
+		if _, perr = cli.Patch(ctx, name, types.JSONPatchType, patch, metav1.PatchOptions{}); perr == nil || !apierrors.IsConflict(perr) {
+			break
+		}
+		if created, perr = cli.Get(ctx, name, metav1.GetOptions{}); perr != nil {
+			break
+		}
+	}
+	return true, nil
+}
+
+// List returns the objects of a kind in the stack namespace via the CALLER (cfn.Lister) — how the engine
+// checks that no other object already has a resource's explicit physical name (a BucketName).
+func (a *impersonatingApplier) List(ctx context.Context, apiVersion, kind string) ([]cfn.LiveObject, error) {
+	gvr, err := a.gvrFor(apiVersion, kind)
+	if err != nil {
+		return nil, err
+	}
+	l, err := a.caller.Resource(gvr).Namespace(a.ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list %s/%s: %w", apiVersion, kind, err)
+	}
+	out := make([]cfn.LiveObject, 0, len(l.Items))
+	for i := range l.Items {
+		spec, _, _ := unstructured.NestedMap(l.Items[i].Object, "spec")
+		out = append(out, cfn.LiveObject{Name: l.Items[i].GetName(), Labels: l.Items[i].GetLabels(), Spec: spec})
+	}
+	return out, nil
 }
 
 func (a *impersonatingApplier) Delete(ctx context.Context, apiVersion, kind, name string) error {

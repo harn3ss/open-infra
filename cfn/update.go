@@ -116,11 +116,13 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		return &rec, fmt.Errorf("update failed and was rolled back to the prior stack (no orphans): %w", cause)
 	}
 
-	// Apply Adds and Modifies in dependency order.
+	// Apply Adds and Modifies in dependency order. The stack owns what its record names (and what this
+	// update creates); another object carrying its label was left by an earlier stack of the same name.
+	owned := ownedFrom(current.Resources)
 	for _, b := range desired {
 		switch action[b.res.LogicalID] {
 		case Add, Modify:
-			if err := applyOwned(ctx, ap, b, opts.StackName); err != nil {
+			if err := applyOwned(ctx, ap, b, opts.StackName, owned); err != nil {
 				return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, err))
 			}
 			if action[b.res.LogicalID] == Add {
