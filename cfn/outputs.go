@@ -56,6 +56,11 @@ var outputPollInterval = 3 * time.Second
 
 const outputWaitCap = 10 * time.Minute
 
+// outputRecordReserve is the part of the operation's deadline the wait leaves for what follows it: the
+// stack's *_COMPLETE record. Waiting into that time would let the deadline expire before the record is
+// written, and the next front door would then roll back a stack that was fully built.
+var outputRecordReserve = time.Minute
+
 // setOutputs evaluates the template's Outputs against the deployed record and stores them (plus the
 // omissions and the exports this stack imports) on rec. customData is a custom resource's returned Data
 // from an interleaved deploy (nil otherwise).
@@ -78,6 +83,12 @@ func setOutputs(ctx context.Context, data []byte, opts DeployOptions, rec *Stack
 			wait = outputWaitCap
 		}
 		deadline = time.Now().Add(wait)
+		// Never into the time the completing record needs (outputRecordReserve).
+		if dl, ok := ctx.Deadline(); ok {
+			if last := dl.Add(-outputRecordReserve); last.Before(deadline) {
+				deadline = last
+			}
+		}
 	}
 	for {
 		outs, omitted, pending := evaluateOutputs(ctx, t, opts, rec, sr, customData)
