@@ -1299,8 +1299,9 @@ func TestTranslate_Cognito_ClientCollation(t *testing.T) {
 	if m.Spec["realm"] != "my-pool" || m.Spec["clientId"] != "web-app" {
 		t.Fatalf("client not collated into the pool: %#v", m.Spec)
 	}
-	if !strings.Contains(strings.Join(m.Caveats, "\n"), "OAuth config") {
-		t.Fatalf("the dropped client OAuth config must be a caveat: %v", m.Caveats)
+	cav := strings.Join(m.Caveats, "\n")
+	if !strings.Contains(cav, "CallbackURLs is not applied") || !strings.Contains(cav, "GenerateSecret is not applied") {
+		t.Fatalf("each client setting the realm does not apply must be its own caveat: %v", m.Caveats)
 	}
 	// The client itself is a collated no-op.
 	if cm, cfs := translateCognitoUserPoolClient("Client", ecsResolvedService(t, ctx, "Client"), ctx); cm != nil || len(cfs) != 0 {

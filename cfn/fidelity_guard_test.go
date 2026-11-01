@@ -93,9 +93,8 @@ func init() {
 // guardUnreported are collated types whose properties another translator reads without reporting the
 // accepted set — not yet checked property by property (deferred, like guardDeferred).
 var guardUnreported = map[string]string{
-	"AWS::AppSync::GraphQLSchema":  "its Definition is read by the GraphQLApi; its own property set is not reported",
-	"AWS::S3::BucketPolicy":        "its PolicyDocument is read by the bucket; its own property set is not reported",
-	"AWS::Cognito::UserPoolClient": "the pool maps its ClientName and reports the rest with one caveat; its property set is not reported",
+	"AWS::AppSync::GraphQLSchema": "its Definition is read by the GraphQLApi; its own property set is not reported",
+	"AWS::S3::BucketPolicy":       "its PolicyDocument is read by the bucket; its own property set is not reported",
 }
 
 // guardBaseline is a minimal valid stack for one type: target is the logical id whose properties the guard

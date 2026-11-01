@@ -3004,7 +3004,13 @@ func translateCognitoUserPool(id string, props map[string]any, ctx *stackCtx) (*
 			if cn, ok := concrete(cp["ClientName"]); ok && cn != "" {
 				spec["clientId"] = k8sName(cn)
 			}
-			m.Caveats = append(m.Caveats, "the UserPoolClient's OAuth config (flows/scopes/callback+logout URLs, GenerateSecret, ExplicitAuthFlows) is not translated — the realm client applies Keycloak defaults; only its name maps to spec.clientId")
+			// Each client setting the template sets is its own fidelity line: the realm client applies
+			// Keycloak's defaults, so none of them is enforced as Cognito would.
+			for _, p := range sortedKeys(cp) {
+				if userPoolClientUnmodeled[p] {
+					m.Caveats = append(m.Caveats, "UserPoolClient "+clients[0]+": "+p+" is not applied — the realm client uses Keycloak's defaults; only ClientName maps (to spec.clientId)")
+				}
+			}
 		}
 	}
 
@@ -3019,6 +3025,19 @@ func translateCognitoUserPool(id string, props map[string]any, ctx *stackCtx) (*
 	return m, f
 }
 
+// userPoolClientUnmodeled are the UserPoolClient properties the realm client does not apply; each one
+// a template sets is a line in the pool's fidelity summary. Anything else (bar UserPoolId, ClientName)
+// refuses.
+var userPoolClientUnmodeled = map[string]bool{
+	"AllowedOAuthFlows": true, "AllowedOAuthFlowsUserPoolClient": true, "AllowedOAuthScopes": true,
+	"CallbackURLs": true, "LogoutURLs": true, "DefaultRedirectURI": true, "GenerateSecret": true,
+	"ExplicitAuthFlows": true, "SupportedIdentityProviders": true, "AccessTokenValidity": true,
+	"IdTokenValidity": true, "RefreshTokenValidity": true, "TokenValidityUnits": true,
+	"AuthSessionValidity": true, "PreventUserExistenceErrors": true, "ReadAttributes": true,
+	"WriteAttributes": true, "EnableTokenRevocation": true, "EnablePropagateAdditionalUserContextData": true,
+	"AnalyticsConfiguration": true,
+}
+
 // cognitoClients returns the in-stack AWS::Cognito::UserPoolClient logical ids whose UserPoolId
 // references poolID, in deterministic order.
 func (c *stackCtx) cognitoClients(poolID string) []string {
@@ -3028,7 +3047,14 @@ func (c *stackCtx) cognitoClients(poolID string) []string {
 // translateCognitoUserPoolClient is the no-op half of the collation: a client whose UserPoolId
 // points at an in-stack UserPool provisions nothing on its own (the pool creates the app client).
 // One pointing at a pool NOT in this stack is refused rather than silently dropped.
-func translateCognitoUserPoolClient(id string, _ map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+func translateCognitoUserPoolClient(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	known := map[string]bool{"UserPoolId": true, "ClientName": true}
+	for p := range userPoolClientUnmodeled {
+		known[p] = true
+	}
+	if f := blockUnknownProps(id, props, known); len(f) > 0 {
+		return nil, f
+	}
 	raw, _ := ctx.rawProps(id)
 	if poolID, ok := getAttTarget(raw["UserPoolId"]); ok {
 		if pool, in := ctx.template.Resources[poolID]; in && pool.Type == "AWS::Cognito::UserPool" {
