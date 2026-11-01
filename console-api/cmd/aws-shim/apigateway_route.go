@@ -109,15 +109,17 @@ func validMethod(m string) bool {
 	return false
 }
 
-// functionFromURI resolves a Lambda integrationUri (an ARN or a bare name) to the function name. Strips a
-// trailing :qualifier (version/alias) since the shim does not resolve qualifiers.
+// functionFromURI resolves a Lambda integrationUri (an ARN, a bare name, or API Gateway's integration
+// ARN arn:aws:apigateway:<region>:lambda:path/2015-03-31/functions/<function ARN>/invocations) to the
+// function name. Strips a trailing :qualifier (version/alias) since the shim does not resolve qualifiers,
+// and the /invocations suffix (a function name has no "/").
 func functionFromURI(uri string) string {
 	name := uri
 	if i := strings.Index(uri, ":function:"); i >= 0 {
 		name = uri[i+len(":function:"):]
 	}
-	// arn may carry a :<qualifier> after the name.
-	if i := strings.IndexByte(name, ':'); i >= 0 {
+	// arn may carry a :<qualifier> after the name, and the integration ARN /invocations.
+	if i := strings.IndexAny(name, ":/"); i >= 0 {
 		name = name[:i]
 	}
 	return name

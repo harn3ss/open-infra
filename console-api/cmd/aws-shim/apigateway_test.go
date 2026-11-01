@@ -118,6 +118,9 @@ func TestFunctionFromURI(t *testing.T) {
 		"my-func": "my-func",
 		"arn:aws:lambda:us-east-1:open-infra:function:my-func":      "my-func",
 		"arn:aws:lambda:us-east-1:open-infra:function:my-func:PROD": "my-func",
+		// API Gateway's Lambda integration ARN (what a template's Uri usually is).
+		"arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:000000000000:function:my-func/invocations":      "my-func",
+		"arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:000000000000:function:my-func:PROD/invocations": "my-func",
 	}
 	for in, want := range cases {
 		if got := functionFromURI(in); got != want {
