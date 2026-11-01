@@ -225,12 +225,21 @@ class StubShim(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b)
 
 
+PKI = common.get_test_pki(TMP)
+
+
+@unittest.skipIf(PKI is None, "no openssl CLI and no OPENINFRA_TEST_PKI: TLS paths not exercised")
 class FetchFromShimTest(unittest.TestCase):
+    """Credentials come from the shim over TLS verified against the platform root ALONE; the token is
+    written only after the handshake verifies."""
+
     @classmethod
     def setUpClass(cls):
-        cls.srv = http.server.HTTPServer(("127.0.0.1", 0), StubShim)
-        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
-        cls.url = "http://127.0.0.1:%d/v1/vm-credentials" % cls.srv.server_address[1]
+        cls.srv = common.tls_server(StubShim, PKI["server"], PKI["server-key"])
+        cls.url = "https://127.0.0.1:%d/v1/vm-credentials" % cls.srv.server_address[1]
+        cls.rogue = common.tls_server(StubShim, PKI["rogue-server"], PKI["rogue-server-key"])
+        cls.rogue_url = "https://127.0.0.1:%d/v1/vm-credentials" % cls.rogue.server_address[1]
+        cls.ca = PKI["root"]
         cls.tok = os.path.join(TMP, "token")
         with open(cls.tok, "w") as fh:
             fh.write("header.payload.sig\n")  # a trailing newline must not reach the header
@@ -238,27 +247,50 @@ class FetchFromShimTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.srv.shutdown()
+        cls.rogue.shutdown()
 
     def setUp(self):
         StubShim.status, StubShim.body, StubShim.seen_auth = 200, json.dumps(CREDS), []
 
-    def test_sends_the_token_as_authorization_and_ignores_proxies(self):
-        old = os.environ.get("http_proxy")
-        os.environ["http_proxy"] = "http://127.0.0.1:1"  # would break the request if honored
+    def test_sends_the_token_over_verified_tls_and_ignores_proxies(self):
+        old = dict((k, os.environ.get(k)) for k in ("http_proxy", "https_proxy"))
+        os.environ["http_proxy"] = os.environ["https_proxy"] = "http://127.0.0.1:1"  # would break the request if honored
         try:
-            creds = agent.fetch_from_shim(self.url, self.tok)
+            creds = agent.fetch_from_shim(self.url, self.tok, self.ca)
         finally:
-            if old is None:
-                del os.environ["http_proxy"]
-            else:
-                os.environ["http_proxy"] = old
+            for k, v in old.items():
+                if v is None:
+                    del os.environ[k]
+                else:
+                    os.environ[k] = v
         self.assertEqual(creds, CREDS)
         self.assertEqual(StubShim.seen_auth, ["header.payload.sig"])
+
+    def test_an_impostor_never_receives_the_token(self):
+        """A server that answers for the shim's address with a certificate the platform root did not sign
+        (a LAN DHCP/DNS server, say) fails verification before any HTTP is written."""
+        with self.assertRaises(agent.CredentialsError) as ctx:
+            agent.fetch_from_shim(self.rogue_url, self.tok, self.ca)
+        self.assertIn("not the aws-shim", str(ctx.exception))
+        self.assertIn("token was not sent", str(ctx.exception))
+        self.assertEqual(StubShim.seen_auth, [], "the impostor must see no request at all")
+
+    def test_never_plaintext_and_never_without_the_root(self):
+        plain = self.url.replace("https://", "http://")
+        for url, ca, why in ((plain, self.ca, "http:// URL"), (self.url, os.path.join(TMP, "no-root.pem"), "missing root"),
+                             (self.url, "", "no caFile")):
+            with self.assertRaises(agent.CredentialsError, msg=why):
+                agent.fetch_from_shim(url, self.tok, ca)
+        self.assertEqual(StubShim.seen_auth, [], "nothing is sent when the shim cannot be verified")
+        # The public roots are not enough: only the platform root verifies the shim.
+        with self.assertRaises(agent.CredentialsError):
+            agent.fetch_from_shim(self.url, self.tok, PKI["rogue-root"])
+        self.assertEqual(StubShim.seen_auth, [])
 
     def test_shim_refusal_carries_status(self):
         StubShim.status, StubShim.body = 403, "role not assumable by this instance"
         with self.assertRaises(agent.CredentialsError) as ctx:
-            agent.fetch_from_shim(self.url, self.tok)
+            agent.fetch_from_shim(self.url, self.tok, self.ca)
         self.assertEqual(ctx.exception.status, 403)
         self.assertIn("role not assumable", str(ctx.exception))
         self.assertIn("spec.trust", str(ctx.exception), "a 403 tells the operator what to fix (journal)")
@@ -266,9 +298,9 @@ class FetchFromShimTest(unittest.TestCase):
     def test_bad_document_and_missing_token(self):
         StubShim.body = '{"AccessKeyId": "x"}'
         with self.assertRaises(agent.CredentialsError):
-            agent.fetch_from_shim(self.url, self.tok)
+            agent.fetch_from_shim(self.url, self.tok, self.ca)
         with self.assertRaises(agent.CredentialsError):
-            agent.fetch_from_shim(self.url, os.path.join(TMP, "no-such-token"))
+            agent.fetch_from_shim(self.url, os.path.join(TMP, "no-such-token"), self.ca)
 
 
 class IMDSTest(unittest.TestCase):
@@ -457,7 +489,7 @@ class FakeRun(object):
 
 
 class PlatformCATest(unittest.TestCase):
-    """#347 item 15: the guest trusts the platform root CA (fetched from the shim) at boot."""
+    """#347 item 15: the guest trusts the platform root CA (from its own spec) at boot."""
 
     def test_validate_accepts_only_ca_certificates(self):
         pem = agent.validate_ca_pem(TEST_CA)
@@ -519,6 +551,7 @@ class PlatformCATest(unittest.TestCase):
         self.assertFalse(os.path.exists(path + ".tmp"))
 
     def test_trust_platform_ca_outcomes(self):
+        """The root comes from the VM's spec (caFile, written by cloud-init); nothing is fetched."""
         store = ("debian", "/nonexistent", ["update-ca-certificates"])
         installed = []
 
@@ -526,91 +559,49 @@ class PlatformCATest(unittest.TestCase):
             installed.append(pem)
             return "installed"
 
-        def fetching(*results):
-            seq = list(results)
+        d = tempfile.mkdtemp(dir=TMP)
 
-            def fetch(url):
-                r = seq.pop(0)
-                if isinstance(r, Exception):
-                    raise r
-                return r
-            return fetch
+        def ca_file(data):
+            path = os.path.join(d, "ca-%d.pem" % len(os.listdir(d)))
+            with open(path, "wb") as fh:
+                fh.write(data)
+            return path
 
-        clock = FakeClock(0.0)
-
-        def sleep(s):
-            clock.t += s
-
-        run = lambda fetch, st=store: agent.trust_platform_ca("http://shim/v1/ca-bundle", budget=15, store=st, fetch=fetch,
-                                                              install=install, sleep=sleep, clock=clock)
-        self.assertEqual(run(fetching(TEST_CA)), "installed")
+        self.assertEqual(agent.trust_platform_ca(ca_file(TEST_CA), store=store, install=install), "installed")
         self.assertEqual(len(installed), 1)
-        self.assertEqual(run(fetching(None)), "absent", "a platform without a CA (404) installs nothing")
-        self.assertEqual(run(fetching(TEST_LEAF)), "invalid", "a non-CA certificate is never installed")
+        for name, path in (("no file", os.path.join(d, "absent.pem")), ("empty file", ca_file(b"")),
+                           ("blank file", ca_file(b"\n \n")), ("caFile unset", "")):
+            self.assertEqual(agent.trust_platform_ca(path, store=store, install=install), "absent", name)
+        self.assertEqual(agent.trust_platform_ca(ca_file(TEST_LEAF), store=store, install=install), "invalid",
+                         "a non-CA certificate is never installed")
         self.assertEqual(len(installed), 1)
-        # A briefly unreachable shim is retried within the budget...
-        down = agent.CAFetchError("connection refused")
-        self.assertEqual(run(fetching(down, down, TEST_CA)), "installed")
-        # ...but the boot never waits past it,
-        clock.t = 0.0
-        self.assertEqual(run(fetching(*([down] * 50))), "unavailable")
-        self.assertLessEqual(clock.t, 15)
-        # and a shim whose name does not resolve (the aws-shim component is not installed) gives up fast.
-        clock.t = 0.0
-        nx = agent.CAFetchError("name does not resolve", dns=True)
-        self.assertEqual(run(fetching(nx, nx, TEST_CA)), "unavailable")
-        self.assertLessEqual(clock.t, 2)
         orig = agent.trust_store
         agent.trust_store = lambda: None  # a guest with no supported trust-store tool
         try:
-            self.assertEqual(agent.trust_platform_ca("u", fetch=fetching(TEST_CA), install=install), "unsupported")
+            self.assertEqual(agent.trust_platform_ca(ca_file(TEST_CA), install=install), "unsupported")
         finally:
             agent.trust_store = orig
 
         def broken(pem, st):
             raise RuntimeError("update-ca-certificates failed")
-        self.assertEqual(agent.trust_platform_ca("u", store=store, fetch=fetching(TEST_CA), install=broken), "failed")
+        self.assertEqual(agent.trust_platform_ca(ca_file(TEST_CA), store=store, install=broken), "failed")
 
-    def test_fetch_ca_bundle(self):
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def do_GET(self):
-                status = {"/ok": 200, "/absent": 404}.get(self.path, 503)
-                body = TEST_CA if status == 200 else b"nope"
-                self.send_response(status)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-        srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-        base = "http://127.0.0.1:%d" % srv.server_address[1]
-        try:
-            self.assertEqual(agent.fetch_ca_bundle(base + "/ok"), TEST_CA)
-            self.assertIsNone(agent.fetch_ca_bundle(base + "/absent"))
-            with self.assertRaises(agent.CAFetchError) as ctx:
-                agent.fetch_ca_bundle(base + "/unavailable")
-            self.assertFalse(ctx.exception.dns)
-        finally:
-            srv.shutdown()
-            srv.server_close()
-        with self.assertRaises(agent.CAFetchError) as ctx:
-            agent.fetch_ca_bundle("http://aws-shim.example.invalid:4566/v1/ca-bundle", timeout=3)
-        self.assertTrue(ctx.exception.dns, "an unresolvable shim name is reported as such")
+    def test_the_agent_fetches_no_ca_over_the_network(self):
+        for gone in ("fetch_ca_bundle", "CAFetchError"):
+            self.assertFalse(hasattr(agent, gone), "%s must not exist: the root never comes from the network" % gone)
+        self.assertNotIn("caBundleUrl", agent.DEFAULTS)
 
     def test_boot_only_mode_when_metadata_is_disabled(self):
         calls = []
         orig = agent.trust_platform_ca
-        agent.trust_platform_ca = lambda url, **kw: calls.append(url) or "installed"
+        agent.trust_platform_ca = lambda path, **kw: calls.append(path) or "installed"
         try:
             cfg = make_config(imds={"enabled": False}, relay={"enabled": False}, trustPlatformCA=True,
-                              caBundleUrl="http://shim/v1/ca-bundle")
+                              caFile="/etc/openinfra/platform-root-ca.pem")
             a = agent.Agent(cfg, fetch=lambda: dict(CREDS), warm_timeout=0)
             a.start()  # no listener wanted: must not raise
             self.assertEqual(a.servers, [])
-            self.assertEqual(calls, ["http://shim/v1/ca-bundle"], "the platform CA is still trusted at boot")
+            self.assertEqual(calls, ["/etc/openinfra/platform-root-ca.pem"], "the platform CA is still trusted at boot")
             a.shutdown()
         finally:
             agent.trust_platform_ca = orig
@@ -681,13 +672,13 @@ class CABundleLinkTest(unittest.TestCase):
         agent.trust_store = lambda: ("debian", "/x", ["update-ca-certificates"])
         agent.publish_ca_bundle = lambda link, family=None, platform_ca=True, **kw: order.append(("link", link, family, platform_ca))
         try:
-            for outcome, trusted in (("installed", True), ("unchanged", True), ("unavailable", False), ("failed", False)):
+            for outcome, trusted in (("installed", True), ("unchanged", True), ("absent", False), ("failed", False)):
                 del order[:]
-                agent.trust_platform_ca = lambda url, outcome=outcome, **kw: order.append(("ca", url)) or outcome
+                agent.trust_platform_ca = lambda path, outcome=outcome, **kw: order.append(("ca", path)) or outcome
                 cfg = make_config(imds={"enabled": False}, relay={"enabled": False}, trustPlatformCA=True,
-                                  caBundleUrl="http://shim/v1/ca-bundle", caBundleLink="/etc/openinfra/ca-bundle.pem")
+                                  caFile="/etc/openinfra/platform-root-ca.pem", caBundleLink="/etc/openinfra/ca-bundle.pem")
                 agent.Agent(cfg, warm_timeout=0).start()
-                self.assertEqual(order, [("ca", "http://shim/v1/ca-bundle"),
+                self.assertEqual(order, [("ca", "/etc/openinfra/platform-root-ca.pem"),
                                          ("link", "/etc/openinfra/ca-bundle.pem", "debian", trusted)], outcome)
             del order[:]
             cfg = make_config(imds={"enabled": False}, relay={"enabled": False}, trustPlatformCA=False,
@@ -725,6 +716,82 @@ class NetnsPlanTest(unittest.TestCase):
             self.assertIn(want, flat)
         self.assertFalse(any(" lo" in c and "addr" in c for c in flat),
                          "169.254.169.254 must NOT go on the guest's lo (that would take port 80 from the workload)")
+
+    def test_vm_nics_are_the_device_backed_interfaces(self):
+        sysfs = tempfile.mkdtemp(dir=TMP)
+        for name, device in (("eth0", True), ("eth1", True), ("docker0", False), ("veth12ab", False),
+                             ("cni0", False), ("wg0", False), ("lo", False), (agent.NETNS_HOST_IF, True)):
+            os.makedirs(os.path.join(sysfs, name))
+            if device:
+                os.makedirs(os.path.join(sysfs, name, "device"))
+        self.assertEqual(agent.vm_nics(sysfs), ["eth0", "eth1"],
+                         "only the guest's own NICs: never bridges, veths, tunnels, lo, or the metadata veth")
+        self.assertEqual(agent.vm_nics(os.path.join(sysfs, "missing")), [])
+
+    def guard_with(self, tools, rc=0):
+        ran = []
+
+        def run_cmd(cmd, check=True):
+            ran.append(list(cmd))
+
+            class P(object):
+                # -C (check) answers "absent" so the jump is inserted; everything else answers rc
+                returncode = 1 if "-C" in cmd else rc
+                stdout, stderr = "", "" if rc == 0 else "refused"
+            return P()
+
+        ruleset = os.path.join(tempfile.mkdtemp(dir=TMP), "guard.nft")
+        orig_ip = agent.ip_binary
+        agent.ip_binary = lambda: "ip"
+        try:
+            outcome = agent.guard_forwarded_imds("openinfra-imds", "169.254.169.254", ["eth0", "eth1"],
+                                                 which=lambda t: "/usr/sbin/" + t if t in tools else None,
+                                                 run_cmd=run_cmd, ruleset_path=ruleset)
+        finally:
+            agent.ip_binary = orig_ip
+        script = ""
+        if os.path.exists(ruleset):
+            with open(ruleset) as fh:
+                script = fh.read()
+        return outcome, [" ".join(c) for c in ran], script
+
+    def test_forwarded_imds_guard_prefers_nft(self):
+        outcome, ran, script = self.guard_with({"nft", "iptables"})
+        self.assertEqual(outcome, "nft")
+        self.assertIn("/usr/sbin/nft -f ", "\n".join(ran))
+        self.assertIn('iifname { "eth0", "eth1" } ip daddr 169.254.169.254 drop', script)
+        self.assertIn("type filter hook prerouting priority -300; policy accept;", script, "raw priority, before conntrack/DNAT")
+        self.assertTrue(script.startswith("table ip openinfra_imds {}\ndelete table ip openinfra_imds\n"),
+                        "the ruleset replaces itself atomically (idempotent restarts)")
+        self.assertFalse(any("route del default" in c for c in ran), "with a firewall tool the namespace keeps its routes")
+
+    def test_forwarded_imds_guard_iptables_and_route_fallback(self):
+        outcome, ran, _ = self.guard_with({"iptables"})
+        self.assertEqual(outcome, "iptables")
+        for want in ("/usr/sbin/iptables -w -t raw -N OPENINFRA-IMDS",
+                     "/usr/sbin/iptables -w -t raw -A OPENINFRA-IMDS -i eth0 -d 169.254.169.254/32 -j DROP",
+                     "/usr/sbin/iptables -w -t raw -A OPENINFRA-IMDS -i eth1 -d 169.254.169.254/32 -j DROP",
+                     "/usr/sbin/iptables -w -t raw -I PREROUTING 1 -j OPENINFRA-IMDS"):
+            self.assertIn(want, ran)
+        outcome, ran, _ = self.guard_with(set())
+        self.assertEqual(outcome, "routes", "no nft/iptables: the namespace answers only the guest itself")
+        self.assertIn("ip -n openinfra-imds route del default", ran)
+        outcome, ran, _ = self.guard_with({"nft", "iptables"}, rc=1)
+        self.assertEqual(outcome, "failed", "every mechanism refused: reported, never raised")
+
+    def test_remove_guard(self):
+        ran = []
+
+        def run_cmd(cmd, check=True):
+            ran.append(" ".join(cmd))
+
+            class P(object):
+                returncode, stdout, stderr = (1 if "-D" in cmd else 0), "", ""
+            return P()
+
+        agent.remove_imds_guard(which=lambda t: "/usr/sbin/" + t, run_cmd=run_cmd)
+        self.assertIn("/usr/sbin/nft delete table ip openinfra_imds", ran)
+        self.assertIn("/usr/sbin/iptables -w -t raw -X OPENINFRA-IMDS", ran)
 
 
 if __name__ == "__main__":

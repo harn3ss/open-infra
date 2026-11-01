@@ -1,0 +1,157 @@
+# The platform root CA certificate, published for VM guests through their own spec.
+#
+# A Linux VM guest trusts the platform root CA: the registry's and S3's TLS addresses use it, and so does
+# the shim's in-cluster TLS port, where the guest's metadata agent fetches its role credentials. The guest
+# must get that root WITHOUT fetching it over the network, where anything that answers for the shim's name
+# (a LAN DHCP/DNS server, for one) could hand it another root. So this CronJob copies the root certificate
+# into the cluster-scoped EnvironmentConfig openinfra-platform-ca (data.platformRootCA). The VM composition
+# reads it (function-environment-configs) and writes it into each guest's cloud-init Secret.
+#
+# Source: the CertificateRequests cert-manager made for this namespace's openinfra-ca-bundle Certificate
+# (aws-shim.yaml). Their status.ca is the issuing CA's certificate, the root; the latest revision wins.
+# Public data: the publisher reads no Secret.
+#
+# Least privilege: list CertificateRequests in this namespace; create EnvironmentConfigs, and get/update
+# only openinfra-platform-ca. RBAC cannot scope create by name, so the admission policy below confines
+# this identity to openinfra-platform-ca, and lets nobody else but system:masters write that config.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-ca-publisher
+  namespace: open-infra-aws-shim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-ca-publisher
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [cert-manager.io]
+    resources: [certificaterequests]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-ca-publisher
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: platform-ca-publisher }
+subjects:
+  - kind: ServiceAccount
+    name: platform-ca-publisher
+    namespace: open-infra-aws-shim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-platform-ca-publisher
+rules:
+  - apiGroups: [apiextensions.crossplane.io]
+    resources: [environmentconfigs]
+    verbs: [create]
+  - apiGroups: [apiextensions.crossplane.io]
+    resources: [environmentconfigs]
+    resourceNames: [openinfra-platform-ca]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-platform-ca-publisher
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-platform-ca-publisher }
+subjects:
+  - kind: ServiceAccount
+    name: platform-ca-publisher
+    namespace: open-infra-aws-shim
+---
+# What every new VM guest trusts is decided by openinfra-platform-ca, so only the publisher (and
+# system:masters, for recovery) may write it, and the publisher may write nothing else.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-platform-ca-config
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [apiextensions.crossplane.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [environmentconfigs]
+  validations:
+    - expression: >-
+        request.userInfo.username != 'system:serviceaccount:open-infra-aws-shim:platform-ca-publisher'
+        || object.metadata.name == 'openinfra-platform-ca'
+      reason: Forbidden
+      message: "the platform-ca-publisher may write only the openinfra-platform-ca EnvironmentConfig"
+    - expression: >-
+        object.metadata.name != 'openinfra-platform-ca'
+        || request.userInfo.username == 'system:serviceaccount:open-infra-aws-shim:platform-ca-publisher'
+        || ('system:masters' in request.userInfo.groups)
+      reason: Forbidden
+      message: "openinfra-platform-ca (the root CA every new VM guest trusts) is written only by the platform-ca-publisher"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-platform-ca-config
+spec:
+  policyName: openinfra-platform-ca-config
+  validationActions: [Deny]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: platform-ca-publisher
+  namespace: open-infra-aws-shim
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 300
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: platform-ca-publisher
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+          volumes:
+            - { name: home, emptyDir: {} }
+          containers:
+            - name: publish
+              image: alpine/k8s:1.30.0
+              command: [/bin/sh, -ceu]
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+              volumeMounts:
+                - { name: home, mountPath: /tmp }
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: NS, value: open-infra-aws-shim }
+                - { name: CARRIER, value: openinfra-ca-bundle }
+              args:
+                - |
+                  pem="$(kubectl -n "$NS" get certificaterequests -o json \
+                    | jq -r --arg c "$CARRIER" '[.items[]
+                        | select(.metadata.annotations["cert-manager.io/certificate-name"] == $c)
+                        | select((.status.ca // "") != "")]
+                      | sort_by(.metadata.annotations["cert-manager.io/certificate-revision"] // "0" | tonumber)
+                      | last | .status.ca // empty' \
+                    | base64 -d)"
+                  [ -n "$pem" ] || { echo "no issued $CARRIER CertificateRequest with a CA yet; nothing to publish"; exit 0; }
+                  # Certificates only: anything else (a key, stray text) is refused, never published.
+                  if printf '%s\n' "$pem" | grep -q -v -x -e '-----BEGIN CERTIFICATE-----' -e '-----END CERTIFICATE-----' -e '[A-Za-z0-9+/=]*'; then
+                    echo "refusing to publish: the CA is not PEM certificates only" >&2; exit 1
+                  fi
+                  jq -n --arg pem "$pem" '{apiVersion: "apiextensions.crossplane.io/v1alpha1", kind: "EnvironmentConfig",
+                      metadata: {name: "openinfra-platform-ca", labels: {"app.kubernetes.io/managed-by": "platform-ca-publisher"}},
+                      data: {platformRootCA: ($pem + "\n")}}' \
+                    | kubectl apply --server-side --field-manager=platform-ca-publisher -f -
+                  echo "openinfra-platform-ca holds the platform root CA ($(printf '%s\n' "$pem" | grep -c 'BEGIN CERTIFICATE') certificate)"

@@ -172,7 +172,12 @@ it is readable by root only. An **instance metadata agent** (started by cloud-in
 runs) presents that token to the aws-shim, which verifies it with a Kubernetes TokenReview, reads the
 role off the ServiceAccount, and mints temporary credentials. Identity travels in the token — the source
 IP is never the credential, so one VM can never obtain another's role (masquerade VMs reach cluster
-services through their node's gateway address, which every VM on the node shares). The agent caches the
+services through their node's gateway address, which every VM on the node shares). The agent calls the
+shim's in-cluster TLS port (`https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567`) and verifies
+its certificate against the platform root CA alone, which the VM carries in its own spec (see below). The
+token is sent only once that certificate verifies, so it never crosses the network in clear text, and a
+host that merely answers for the shim's name (a DNS or DHCP server on a LAN-attached VM's second NIC, for
+one) never receives it. The shim refuses the credentials endpoint on its plaintext port. The agent caches the
 credentials and replaces them well before they expire (when a third of their lifetime is left, between 5
 and 20 minutes ahead), so callers always receive credentials with ample time remaining. It hands them out
 on the two endpoints the AWS SDKs read:
@@ -212,7 +217,7 @@ exactly as on EC2.
 spec:
   metadataOptions:            # the AWS::EC2::Instance MetadataOptions equivalent
     httpTokens: required      # optional (default) | required
-    httpPutResponseHopLimit: 2  # 1..64, default 2
+    httpPutResponseHopLimit: 2  # 1..64; default 1 (2 when metadataOptions is omitted)
     httpEndpoint: enabled     # enabled (default) | disabled
 ```
 
@@ -225,11 +230,18 @@ spec:
 - **`httpPutResponseHopLimit`** — the IP TTL of the token response. With `1`, processes in the guest
   (and host-network containers) get a session token; a container behind a bridge in the guest
   (docker's default network, a pod network) is one routing hop further and needs `2`; each further hop
-  needs one more. The default is `2`, so containers in the guest work out of the box; set `1` to keep
-  them off the IMDSv2 path. IMDSv1 requests are not hop-limited.
-- **`httpEndpoint: disabled`** — no metadata service at all: nothing on `169.254.169.254` and no
-  container-credentials endpoint, so (as on EC2) the guest gets no `instanceRole` credentials. The
-  guest still trusts the platform root CA (below).
+  needs one more. A `metadataOptions` block that leaves it out gets `1`, EC2's default; a VM with no
+  `metadataOptions` at all gets `2`, so containers in the guest work out of the box. IMDSv1 requests are
+  not hop-limited.
+- **`httpEndpoint: disabled`** — no metadata service at all: nothing on `169.254.169.254`, no
+  container-credentials endpoint and no identity token in the guest, so (as on EC2) the guest gets no
+  `instanceRole` credentials. The guest still trusts the platform root CA (below).
+
+Only the guest and its containers reach `169.254.169.254`. Packets for it that arrive on the guest's own
+NICs (traffic a guest acting as a router, VPN or NAT instance would forward) are dropped, with nftables or,
+failing that, iptables. On a guest with neither, the metadata namespace answers only the guest's own
+address: processes in the guest and containers it NATs still reach it, a routed (non-NAT) container does
+not.
 
 `cfn` maps an `AWS::EC2::Instance`'s `MetadataOptions` onto this block one-to-one. Not served: the IPv6
 endpoint `fd00:ec2::254` (`HttpProtocolIpv6`), instance tags in metadata (`InstanceMetadataTags`),
@@ -250,8 +262,10 @@ that root out of the box, the way an enterprise CA is baked into an AMI: an unmo
 `docker login` / `docker pull` against the registry, `curl`, and the AWS SDKs verify those certificates
 with no `--insecure`, no `--cacert`, and no per-registry `certs.d` file.
 
-At every boot, before cloud-init runs `userData`, the metadata agent fetches the root certificate from
-the aws-shim (`/v1/ca-bundle`, a public certificate), checks that it is a PEM CA certificate and
+The root certificate travels in the VM's own spec, never over the network: the aws-shim's
+`platform-ca-publisher` copies it into the cluster's `openinfra-platform-ca` EnvironmentConfig, and the VM
+composition writes it into the guest's cloud-init (`/etc/openinfra/platform-root-ca.pem`). At every boot,
+before cloud-init runs `userData`, the metadata agent checks that the file holds PEM CA certificates and
 nothing else, and adds it to the system trust store with the distribution's own tool:
 
 | Family | Anchor | Refreshed with | Full system bundle |
@@ -275,16 +289,17 @@ the distribution's **full** system bundle — every public root plus the platfor
 above) — refreshed after the platform root is installed. `AWS_CA_BUNDLE` *replaces* an SDK's own
 roots, so it names the full bundle, never the platform root alone: public AWS endpoints and any other
 public TLS host keep verifying. `NODE_EXTRA_CA_CERTS` adds to Node's roots. The link always resolves to
-the system bundle, including on a boot where the platform root could not be fetched (it then holds the
-public roots only), so these variables never point at a missing file. The AWS SDKs for Go and Ruby
+the system bundle, including on a guest that carries no platform root (it then holds the public roots
+only), so these variables never point at a missing file. The AWS SDKs for Go and Ruby
 honor `AWS_CA_BUNDLE` too; Java reads the system store (`update-ca-certificates` /
 `update-ca-trust` regenerate the JDK's `cacerts` when the distribution's Java CA package is installed).
 A process started before the agent, or a container in the guest, has its own environment and store.
 
-The anchor is rewritten (and the store refreshed) only when the certificate changes. If the aws-shim
-is briefly unreachable the agent retries for up to 15 seconds and then lets the boot continue
-without it (the next boot tries again); a platform without the aws-shim component publishes no CA
-and nothing is installed. Programs that load the trust store once at startup — `dockerd` among them —
+The anchor is rewritten (and the store refreshed) only when the certificate changes. A platform without
+the aws-shim component publishes no CA: nothing is installed, and an `instanceRole` gets no credentials,
+since the agent cannot verify a shim without the root. A VM created before the root was published (in
+the first minutes of an install) carries none until it is recreated. The guest keeps the root it was
+created with; a VM created after the root changes gets the new one. Programs that load the trust store once at startup — `dockerd` among them —
 see the root when they start after the agent, which is the case for anything installed or started by
 `userData`. To keep a guest from installing it, set `"trustPlatformCA": false` in
 `/etc/openinfra/metadata-agent.json` (and remove the anchor file if it is already there). Linux guests

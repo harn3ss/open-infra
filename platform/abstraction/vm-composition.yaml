@@ -23,6 +23,22 @@ spec:
     kind: XVirtualMachine
   mode: Pipeline
   pipeline:
+    # The platform root CA certificate, from the EnvironmentConfig the aws-shim's platform-ca-publisher
+    # keeps (platform/aws-shim/platform-ca-publisher.yaml). Optional: without the shim component there is
+    # no such config, and the guests trust no platform CA.
+    - step: environment
+      functionRef:
+        name: crossplane-contrib-function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          policy:
+            resolution: Optional
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: openinfra-platform-ca
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -36,6 +52,7 @@ spec:
             {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
             {{- $cpu := $spec.cpu | default 2 }}
             {{- $memory := $spec.memory | default "2Gi" }}
             {{- $disk := $spec.diskSize | default "20Gi" }}
@@ -96,9 +113,12 @@ spec:
                    per-VM ServiceAccount token (a projected disk, copied ROOT-ONLY to
                    /run/openinfra-identity/token at boot). The in-guest metadata agent presents it to the
                    aws-shim's /v1/vm-credentials endpoint, which verifies it (TokenReview) and mints the
-                   role's credentials — identity travels in the token, never in the source IP. */}}
+                   role's credentials — identity travels in the token, never in the source IP. The agent
+                   calls the shim's in-cluster TLS port and verifies it against the platform root CA from
+                   this VM's own spec ($platformCA), so the token is never sent in clear text and never to
+                   a host that merely answers for the shim's name (a LAN DHCP/DNS server, for one). */}}
             {{- $instanceRole := $spec.instanceRole | default "" }}
-            {{- $shimHostPort := "aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }}
+            {{- $shimTLSHostPort := "aws-shim.open-infra-aws-shim.svc.cluster.local:4567" }}
             {{- /* Instance metadata (spec.metadataOptions = AWS::EC2::Instance MetadataOptions). Linux guests
                    run the open-infra metadata agent: EC2 IMDS (v1 + v2) on 169.254.169.254:80, in its own
                    network namespace one routed hop off the guest (as on EC2: port 80 stays free for the
@@ -107,23 +127,36 @@ spec:
                    loopback (AWS_CONTAINER_CREDENTIALS_FULL_URI; botocore/JS refuse a non-loopback host) —
                    a plain GET, i.e. IMDSv1-equivalent, so httpTokens: required turns it off too.
                    httpEndpoint: disabled = no metadata service (nothing on 169.254.169.254, no credentials
-                   endpoint). Either way the agent adds the platform root CA (served by the aws-shim) to the
-                   guest's trust store at boot, before UserData runs. Windows guests run none of this. */}}
+                   endpoint, and no identity token in the guest). Either way the agent adds the platform root
+                   CA (from this VM's spec) to the guest's trust store at boot, before UserData runs. Windows
+                   guests run none of this.
+                   Hop limit: 1 when metadataOptions is given without one (EC2's default; the XRD defaults the
+                   field to 1), 2 when the VM has no metadataOptions at all, so containers in the guest keep
+                   IMDSv2 by default. */}}
             {{- $mdo := $spec.metadataOptions | default dict }}
             {{- $imdsEnabled := ne ($mdo.httpEndpoint | default "enabled") "disabled" }}
             {{- $httpTokens := $mdo.httpTokens | default "optional" }}
-            {{- $hopLimit := $mdo.httpPutResponseHopLimit | default 2 }}
+            {{- $hopLimit := 2 }}
+            {{- if $spec.metadataOptions }}{{- $hopLimit = $mdo.httpPutResponseHopLimit | default 1 }}{{- end }}
             {{- $metadataAgent := not $isWin }}
+            {{- /* The identity token reaches the guest only when the metadata service can use it. */}}
+            {{- $guestIdentity := and $instanceRole $metadataAgent $imdsEnabled }}
             {{- $credsRelay := false }}
             {{- if and $metadataAgent $imdsEnabled $instanceRole (eq $httpTokens "optional") }}{{- $credsRelay = true }}{{- end }}
             {{- $credsPort := "16349" }}
             {{- $credsURI := printf "http://127.0.0.1:%s/v1/vm-credentials" $credsPort }}
-            {{- /* The platform root CA (#347 item 15). The agent adds it to the system trust store and keeps
-                   $caBundle -> the distro's FULL system bundle (public roots + the platform root). SDKs that
-                   ship their own CA store and ignore the system's (aws-cli v2, boto3 with certifi, Node)
-                   are pointed at it: AWS_CA_BUNDLE REPLACES the SDK's roots — hence the full bundle, never
-                   the platform root alone — and NODE_EXTRA_CA_CERTS adds to Node's. */}}
+            {{- /* The platform root CA (#347 item 15). It travels in this VM's spec (the cloud-init Secret),
+                   never over the network: the composition reads it from the openinfra-platform-ca
+                   EnvironmentConfig and writes it to $caFile. The agent adds it to the system trust store,
+                   verifies the shim's TLS port against it, and keeps $caBundle -> the distro's FULL system
+                   bundle (public roots + the platform root). SDKs that ship their own CA store and ignore
+                   the system's (aws-cli v2, boto3 with certifi, Node) are pointed at it: AWS_CA_BUNDLE
+                   REPLACES the SDK's roots — hence the full bundle, never the platform root alone — and
+                   NODE_EXTRA_CA_CERTS adds to Node's. No CA in the environment (no aws-shim) = no file:
+                   the guest trusts no platform CA and gets no role credentials (fail closed). */}}
             {{- $trustPlatformCA := true }}
+            {{- $platformCA := index $envCfg "platformRootCA" | default "" }}
+            {{- $caFile := "/etc/openinfra/platform-root-ca.pem" }}
             {{- $caBundle := "/etc/openinfra/ca-bundle.pem" }}
             {{- /* The AWS SDK environment every guest process gets (rendered below into /etc/environment,
                    /etc/openinfra-aws.env and the systemd DefaultEnvironment drop-in). */}}
@@ -146,14 +179,14 @@ spec:
                   "accountId" "open-infra"
                   "launchTime" (.observed.composite.resource.metadata.creationTimestamp | default "")
                   "role" $instanceRole
-                  "credentialsUrl" (printf "http://%s/v1/vm-credentials" $shimHostPort)
+                  "credentialsUrl" (printf "https://%s/v1/vm-credentials" $shimTLSHostPort)
                   "tokenFile" "/run/openinfra-identity/token"
                   "userDataFile" $userDataFile
                   "securityGroups" ($spec.securityGroups | default list)
                   "imds" (dict "enabled" $imdsEnabled "address" "169.254.169.254" "port" 80 "netns" "openinfra-imds" "hostAddress" "169.254.169.1" "httpTokens" $httpTokens "hopLimit" $hopLimit)
                   "relay" (dict "enabled" $credsRelay "address" "127.0.0.1" "port" (int $credsPort))
                   "trustPlatformCA" $trustPlatformCA
-                  "caBundleUrl" (printf "http://%s/v1/ca-bundle" $shimHostPort)
+                  "caFile" $caFile
                   "caBundleLink" $caBundle }}
             {{- /* Extra boot-time data disks (#115 lift-and-shift): blank persistent volumes attached
                    as virtio devices in order (/dev/vdb, /dev/vdc, …), each following the root disk's
@@ -397,7 +430,7 @@ spec:
                               {{- /* Workload-identity token disk (spec.instanceRole): KubeVirt projects
                                      the per-VM ServiceAccount token as an iso9660 disk. The serial lets
                                      cloud-init find it deterministically (/dev/disk/by-id/virtio-SATOKEN). */}}
-                              {{- if and $instanceRole (not $isWin) }}
+                              {{- if $guestIdentity }}
                               - name: identity
                                 serial: SATOKEN
                                 disk:
@@ -440,7 +473,7 @@ spec:
                               name: {{ $name }}-root
                             {{- end }}
                           {{- /* Workload identity (spec.instanceRole): project the per-VM SA token. */}}
-                          {{- if and $instanceRole (not $isWin) }}
+                          {{- if $guestIdentity }}
                           - name: identity
                             serviceAccount:
                               serviceAccountName: vm-{{ $name }}
@@ -661,6 +694,11 @@ spec:
                                root CA is in the trust store. With the metadata service disabled it exits
                                after that boot-time step (Restart=on-failure leaves a clean exit alone). The
                                agent body below contains NO template actions — test/vm-creds runs it verbatim. */}}
+                        {{- if and $trustPlatformCA $platformCA }}
+                        - path: {{ $caFile }}
+                          permissions: '0644'
+                          content: {{ $platformCA | toJson }}
+                        {{- end }}
                         - path: /etc/openinfra/metadata-agent.json
                           permissions: '0644'
                           content: {{ $agentCfg | toJson | toJson }}
@@ -696,14 +734,19 @@ spec:
                             #    The agent adds the Authorization header itself, so callers need only the URI.
                             #
                             # At start, before it reports ready (so before cloud-init runs the user's UserData), it also adds the
-                            # platform's root CA certificate (served by the aws-shim) to the guest's system trust store, so docker,
-                            # curl and the SDKs trust the platform's TLS endpoints, e.g. the container registry, and keeps
-                            # /etc/openinfra/ca-bundle.pem -> the distro's full system bundle (public roots + the platform root):
-                            # the path AWS_CA_BUNDLE names for the SDKs that ship their own CA store (aws-cli v2, boto3).
+                            # platform's root CA certificate to the guest's system trust store, so docker, curl and the SDKs trust
+                            # the platform's TLS endpoints, e.g. the container registry, and keeps /etc/openinfra/ca-bundle.pem ->
+                            # the distro's full system bundle (public roots + the platform root): the path AWS_CA_BUNDLE names for
+                            # the SDKs that ship their own CA store (aws-cli v2, boto3). The root comes from the VM's own spec
+                            # (caFile, written by cloud-init), never from the network.
                             #
-                            # Role credentials come from the aws-shim's /v1/vm-credentials endpoint, authenticated with the
-                            # VM's own ServiceAccount token (the shim verifies it with a TokenReview; the source IP is never
-                            # the credential). They are cached and refreshed well before they expire.
+                            # Role credentials come from the aws-shim's /v1/vm-credentials endpoint over TLS, verified against that
+                            # root alone, authenticated with the VM's own ServiceAccount token (the shim verifies it with a
+                            # TokenReview; the source IP is never the credential). The token is sent only after the shim's
+                            # certificate verifies. Credentials are cached and refreshed well before they expire.
+                            #
+                            # Packets for 169.254.169.254 that arrive on the guest's own NICs (traffic the guest would forward,
+                            # e.g. as a router, VPN or NAT instance) are dropped, so only the guest and its containers reach it.
                             #
                             # Usage: metadata-agent.py <config.json>   (keys: see DEFAULTS)
 
@@ -721,6 +764,7 @@ spec:
                             import signal
                             import socket
                             import socketserver
+                            import ssl
                             import struct
                             import subprocess
                             import sys
@@ -753,10 +797,11 @@ spec:
                                     "hostAddress": "169.254.169.1",
                                     "httpTokens": "optional",
                                     "hopLimit": 2,
+                                    "guardInterfaces": [],  # interfaces whose inbound traffic may not reach IMDS; [] = the guest's NICs
                                 },
                                 "relay": {"enabled": False, "address": "127.0.0.1", "port": 16349},
                                 "trustPlatformCA": True,
-                                "caBundleUrl": "",
+                                "caFile": "",
                                 "caBundleLink": "",
                             }
 
@@ -766,6 +811,9 @@ spec:
                             CREDS_PATH = "/v1/vm-credentials"
                             NETNS_HOST_IF = "oi-imds0"
                             NETNS_PEER_IF = "oi-imds1"
+                            GUARD_TABLE = "openinfra_imds"  # nftables table (family ip) holding the forwarded-metadata drop rule
+                            GUARD_CHAIN = "OPENINFRA-IMDS"  # the same rule as an iptables chain in the raw table
+                            GUARD_RULESET = "/run/openinfra-imds-guard.nft"
                             CLONE_NEWNET = 0x40000000
                             CA_FILE_NAME = "openinfra-root-ca.crt"
                             # (distro family, anchor directory, refresh command): the first whose directory and command exist wins.
@@ -859,7 +907,26 @@ spec:
                                     self.status = status  # the shim's HTTP status, or None for a transport/local failure
 
 
-                            def fetch_from_shim(url, token_file, timeout=5.0):
+                            def shim_tls_context(ca_file):
+                                """A TLS client context that trusts ONLY the platform root CA (never the public roots) and checks
+                                the shim's host name. CredentialsError when the root is missing or unreadable."""
+                                if not ca_file or not os.path.isfile(ca_file):
+                                    raise CredentialsError("no platform root CA to verify the aws-shim with (%s is missing: this VM's "
+                                                           "spec carries no platform CA, so no credentials are fetched)" % (ca_file or "caFile"))
+                                try:
+                                    ctx = ssl.create_default_context(cafile=ca_file)
+                                except (ssl.SSLError, OSError, ValueError) as e:
+                                    raise CredentialsError("cannot load the platform root CA %s: %s" % (ca_file, e))
+                                ctx.check_hostname = True
+                                ctx.verify_mode = ssl.CERT_REQUIRED
+                                return ctx
+
+
+                            def fetch_from_shim(url, token_file, ca_file, timeout=5.0):
+                                if not (url or "").lower().startswith("https://"):
+                                    raise CredentialsError("refusing to send the instance identity token to %r: the aws-shim is "
+                                                           "called over TLS only" % (url,))
+                                ctx = shim_tls_context(ca_file)
                                 try:
                                     with open(token_file) as fh:
                                         token = "".join(fh.read().split())
@@ -868,7 +935,10 @@ spec:
                                 if not token:
                                     raise CredentialsError("the instance identity token %s is empty" % token_file)
                                 req = urllib.request.Request(url, headers={"Authorization": token, "Accept": "application/json"})
-                                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via an http_proxy
+                                # Never via a proxy, and only to a server whose certificate the platform root signed for its name:
+                                # the Authorization header is written only after the handshake verifies.
+                                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                                                     urllib.request.HTTPSHandler(context=ctx))
                                 try:
                                     resp = opener.open(req, timeout=timeout)
                                     try:
@@ -883,8 +953,13 @@ spec:
                                         403: " - the instance role does not trust the vm principal (its spec.trust must include \"vm\")",
                                     }.get(e.code, "")
                                     raise CredentialsError("aws-shim %s answered HTTP %d: %s%s" % (url, e.code, detail, hint), e.code)
-                                except (urllib.error.URLError, socket.timeout, OSError) as e:
-                                    raise CredentialsError("cannot reach the aws-shim at %s: %s" % (url, getattr(e, "reason", e)))
+                                except (urllib.error.URLError, socket.timeout, OSError, ssl.CertificateError) as e:
+                                    # Python 3.6 raises a host-name mismatch as ssl.CertificateError (a ValueError) unwrapped.
+                                    reason = getattr(e, "reason", e)
+                                    if isinstance(reason, (ssl.SSLError, ssl.CertificateError)):
+                                        raise CredentialsError("the server at %s is not the aws-shim (TLS verification against the "
+                                                               "platform root CA failed: %s); the token was not sent" % (url, reason))
+                                    raise CredentialsError("cannot reach the aws-shim at %s: %s" % (url, reason))
                                 try:
                                     data = json.loads(body.decode("utf-8"))
                                     creds = dict((k, str(data[k])) for k in ("AccessKeyId", "SecretAccessKey", "Token", "Expiration"))
@@ -1372,6 +1447,94 @@ spec:
                                     run(cmd)
 
 
+                            def vm_nics(sysfs="/sys/class/net"):
+                                """The guest's own NICs: interfaces backed by a device (virtio-net), never bridges, veths or tunnels."""
+                                try:
+                                    names = sorted(os.listdir(sysfs))
+                                except OSError:
+                                    return []
+                                return [n for n in names if n != NETNS_HOST_IF and os.path.exists(os.path.join(sysfs, n, "device"))]
+
+
+                            def nft_guard_ruleset(imds_addr, nics):
+                                """An idempotent nft script: (re)create table ip openinfra_imds with one raw-priority rule that drops
+                                packets for the metadata address arriving on the guest's NICs."""
+                                names = ", ".join('"%s"' % n for n in nics)
+                                return ("table ip %s {}\n"
+                                        "delete table ip %s\n"
+                                        "table ip %s {\n"
+                                        "  chain prerouting {\n"
+                                        "    type filter hook prerouting priority -300; policy accept;\n"
+                                        "    iifname { %s } ip daddr %s drop\n"
+                                        "  }\n"
+                                        "}\n") % (GUARD_TABLE, GUARD_TABLE, GUARD_TABLE, names, imds_addr)
+
+
+                            def remove_imds_guard(which=shutil.which, run_cmd=None):
+                                run_cmd = run_cmd or run
+                                nft = which("nft")
+                                if nft:
+                                    run_cmd([nft, "delete", "table", "ip", GUARD_TABLE], check=False)
+                                ipt = which("iptables")
+                                if ipt:
+                                    base = [ipt, "-w", "-t", "raw"]
+                                    for _ in range(8):  # every jump to the chain, in case one was added twice
+                                        if run_cmd(base + ["-D", "PREROUTING", "-j", GUARD_CHAIN], check=False).returncode != 0:
+                                            break
+                                    run_cmd(base + ["-F", GUARD_CHAIN], check=False)
+                                    run_cmd(base + ["-X", GUARD_CHAIN], check=False)
+
+
+                            def guard_forwarded_imds(netns, imds_addr, nics, which=shutil.which, run_cmd=None, ruleset_path=GUARD_RULESET):
+                                """Drop packets for the metadata address that arrive on the guest's own NICs: traffic the guest would
+                                forward (a router, VPN or NAT instance) must not reach its metadata service. Local processes never
+                                pass PREROUTING, and in-guest containers arrive on their bridge or veth, so both still reach it.
+                                nft first, then iptables; with neither, the metadata namespace loses its default route, so it
+                                answers only the guest's own address (local processes and containers the guest NATs). Never raises;
+                                returns 'nft', 'iptables', 'routes' or 'failed'."""
+                                run_cmd = run_cmd or run
+                                remove_imds_guard(which, run_cmd)
+                                if nics:
+                                    nft = which("nft")
+                                    if nft:
+                                        try:
+                                            with open(ruleset_path, "w") as fh:
+                                                fh.write(nft_guard_ruleset(imds_addr, nics))
+                                            p = run_cmd([nft, "-f", ruleset_path], check=False)
+                                            if p.returncode == 0:
+                                                LOG.info("forwarded traffic to %s is dropped on %s (nft)", imds_addr, ", ".join(nics))
+                                                return "nft"
+                                            LOG.warning("nft refused the metadata guard: %s", (p.stderr or "").strip())
+                                        except (IOError, OSError) as e:
+                                            LOG.warning("cannot write the nft metadata guard %s: %s", ruleset_path, e)
+                                    ipt = which("iptables")
+                                    if ipt:
+                                        base = [ipt, "-w", "-t", "raw"]
+                                        run_cmd(base + ["-N", GUARD_CHAIN], check=False)
+                                        ok = run_cmd(base + ["-F", GUARD_CHAIN], check=False).returncode == 0
+                                        for n in nics:
+                                            ok = ok and run_cmd(base + ["-A", GUARD_CHAIN, "-i", n, "-d", imds_addr + "/32", "-j", "DROP"],
+                                                                check=False).returncode == 0
+                                        if ok and run_cmd(base + ["-C", "PREROUTING", "-j", GUARD_CHAIN], check=False).returncode != 0:
+                                            ok = run_cmd(base + ["-I", "PREROUTING", "1", "-j", GUARD_CHAIN], check=False).returncode == 0
+                                        if ok:
+                                            LOG.info("forwarded traffic to %s is dropped on %s (iptables)", imds_addr, ", ".join(nics))
+                                            return "iptables"
+                                        LOG.warning("iptables could not install the metadata guard")
+                                else:
+                                    LOG.warning("no guest NIC found to guard (none under /sys/class/net has a device)")
+                                try:
+                                    p = run_cmd([ip_binary(), "-n", netns, "route", "del", "default"], check=False)
+                                    if p.returncode == 0:
+                                        LOG.warning("no nft or iptables: instance metadata now answers only this guest and the containers "
+                                                    "it NATs; a routed (non-NAT) container cannot reach it")
+                                        return "routes"
+                                except RuntimeError as e:
+                                    LOG.error("cannot restrict the metadata namespace's routes: %s", e)
+                                LOG.error("forwarded traffic to %s is NOT blocked: no nft, no iptables, and the route fallback failed", imds_addr)
+                                return "failed"
+
+
                             def _setns(fd):
                                 import ctypes
                                 libc = ctypes.CDLL(None, use_errno=True)
@@ -1401,40 +1564,15 @@ spec:
 
 
                             # ---------------------------------------------------------------------------------------------
-                            # The platform root CA: fetched from the aws-shim, validated, added to the system trust store.
+                            # The platform root CA: from the VM's spec (caFile), validated, added to the system trust store.
                             # ---------------------------------------------------------------------------------------------
 
                             _PEM_BLOCK = re.compile(r"-----BEGIN ([A-Z0-9 ]+)-----[ \t]*\r?\n(.*?)\r?\n-----END \1-----", re.S)
 
 
-                            class CAFetchError(Exception):
-                                def __init__(self, message, dns=False):
-                                    Exception.__init__(self, message)
-                                    self.dns = dns  # the shim's name did not resolve (the aws-shim component is not installed)
-
-
-                            def fetch_ca_bundle(url, timeout=5.0):
-                                """The CA bundle bytes, or None when the platform publishes no CA (HTTP 404). CAFetchError otherwise."""
-                                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                                try:
-                                    resp = opener.open(urllib.request.Request(url), timeout=timeout)
-                                    try:
-                                        return resp.read(1 << 20)
-                                    finally:
-                                        resp.close()
-                                except urllib.error.HTTPError as e:
-                                    if e.code == 404:
-                                        return None
-                                    raise CAFetchError("%s answered HTTP %d" % (url, e.code))
-                                except (urllib.error.URLError, socket.timeout, OSError) as e:
-                                    reason = getattr(e, "reason", e)
-                                    raise CAFetchError("cannot reach %s: %s" % (url, reason), dns=isinstance(reason, socket.gaierror))
-
-
                             def validate_ca_pem(data):
                                 """Bytes -> normalized PEM of the CA certificates in them. ValueError unless the bytes are PEM
                                 CERTIFICATE blocks only, each a parseable X.509 CA certificate: nothing else is ever installed."""
-                                import ssl
                                 try:
                                     text = data.decode("ascii")
                                 except (UnicodeDecodeError, AttributeError):
@@ -1498,33 +1636,35 @@ spec:
                                 return "installed"
 
 
-                            def trust_platform_ca(url, budget=15.0, store=None, fetch=fetch_ca_bundle, install=install_ca,
-                                                  sleep=time.sleep, clock=time.time):
-                                """Add the platform root CA to the system trust store. Never raises: an unreachable shim, a
-                                platform with no CA, or an unsupported distro is logged and the boot continues. Returns the outcome."""
+                            def read_ca_file(path):
+                                """The bytes of the platform CA file, or None when there is none (missing or empty)."""
+                                if not path:
+                                    return None
+                                try:
+                                    with open(path, "rb") as fh:
+                                        data = fh.read(1 << 20)
+                                except (IOError, OSError):
+                                    return None
+                                return data if data.strip() else None
+
+
+                            def trust_platform_ca(path, store=None, read=read_ca_file, install=install_ca):
+                                """Add the platform root CA from this VM's spec (path) to the system trust store. Never raises: a
+                                VM without a platform CA, an invalid file or an unsupported distro is logged and the boot
+                                continues. Nothing is ever fetched over the network. Returns the outcome."""
                                 store = store or trust_store()
                                 if store is None:
                                     LOG.warning("platform root CA not installed: no supported system trust store "
                                                 "(update-ca-trust or update-ca-certificates) on this guest")
                                     return "unsupported"
-                                deadline, dns_failures = clock() + budget, 0
-                                while True:
-                                    try:
-                                        data = fetch(url)
-                                        break
-                                    except CAFetchError as e:
-                                        dns_failures += 1 if e.dns else 0
-                                        if dns_failures >= 2 or clock() + 2 > deadline:
-                                            LOG.warning("platform root CA not installed (continuing without it): %s", e)
-                                            return "unavailable"
-                                        sleep(2)
+                                data = read(path)
                                 if data is None:
-                                    LOG.info("the platform publishes no root CA (%s answered 404); nothing to trust", url)
+                                    LOG.warning("this VM's spec carries no platform root CA (%s); nothing to trust", path or "caFile unset")
                                     return "absent"
                                 try:
                                     pem = validate_ca_pem(data)
                                 except ValueError as e:
-                                    LOG.error("refusing the platform CA bundle from %s: %s", url, e)
+                                    LOG.error("refusing the platform CA file %s: %s", path, e)
                                     return "invalid"
                                 try:
                                     result = install(pem, store)
@@ -1618,12 +1758,13 @@ spec:
                                     self.tokens = TokenIssuer()
                                     self.creds = None
                                     if cfg.get("role"):
-                                        url, token_file = cfg.get("credentialsUrl"), cfg.get("tokenFile")
-                                        self.creds = CredentialCache(fetch or (lambda: fetch_from_shim(url, token_file)))
+                                        url, token_file, ca_file = cfg.get("credentialsUrl"), cfg.get("tokenFile"), cfg.get("caFile")
+                                        self.creds = CredentialCache(fetch or (lambda: fetch_from_shim(url, token_file, ca_file)))
                                     self.metadata = Metadata(cfg, self.creds)
                                     self.servers = []
                                     self.stop = threading.Event()
                                     self.netns = ""
+                                    self.guard = ""
 
                                 def start_imds(self):
                                     imds = self.cfg["imds"]
@@ -1637,6 +1778,8 @@ spec:
                                             teardown_netns(imds["netns"])
                                             raise
                                         self.netns = imds["netns"]
+                                        self.guard = guard_forwarded_imds(imds["netns"], imds["address"],
+                                                                          list(imds.get("guardInterfaces") or []) or vm_nics())
                                     else:
                                         srv = bind_with_retry(make, "%s:%d" % addr)
                                     self.servers.append(srv)
@@ -1688,8 +1831,8 @@ spec:
                                     else:
                                         LOG.info("no instance role: iam/ metadata is not served")
                                     ca = None
-                                    if self.cfg.get("trustPlatformCA") and self.cfg.get("caBundleUrl"):
-                                        ca = trust_platform_ca(self.cfg["caBundleUrl"])
+                                    if self.cfg.get("trustPlatformCA"):
+                                        ca = trust_platform_ca(self.cfg.get("caFile"))
                                     if self.cfg.get("caBundleLink"):  # after the CA step, so the bundle it names carries the root
                                         store = trust_store()
                                         publish_ca_bundle(self.cfg["caBundleLink"], store[0] if store else None,
@@ -1703,6 +1846,8 @@ spec:
                                         srv.shutdown()
                                         srv.server_close()
                                     if self.netns:
+                                        if self.guard in ("nft", "iptables"):
+                                            remove_imds_guard()
                                         teardown_netns(self.netns)
 
 
@@ -1763,7 +1908,7 @@ spec:
                             {{- end }}
                         {{- end }}
                       {{- end }}
-                      {{- if $instanceRole }}
+                      {{- if $guestIdentity }}
                       {{- /* Mount the workload-identity token iso and copy the token, ROOT-ONLY (0600 in a
                              0700 dir), to /run on every boot (tmpfs; re-done each boot), then unmount the
                              iso. Only the root-run metadata agent reads it — it authenticates to the shim

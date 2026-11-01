@@ -13,11 +13,17 @@
 # and the NEGATIVES that are the point ("prove the no"):
 #   - no token            -> 401 (the endpoint never serves credentials unauthenticated)
 #   - a token whose role does NOT trust the "vm" principal -> 403 (opt-in; a role must allow it)
+#   - the plaintext port  -> 404 (credentials are served over TLS only; no token is sent to check it)
+#
+# The token goes only to the shim's in-cluster TLS port, verified (curl --cacert) against the platform
+# root CA from the openinfra-platform-ca EnvironmentConfig, exactly as a guest's metadata agent does.
 #
 # On-demand (needs a deployed shim with IMDS_ENABLED=true, the platform IAM, and the control-plane
 # grant letting the shim read ServiceAccounts). Exit 0 = pass, 1 = a real failure, 42 = INCONCLUSIVE.
 #
-#   SHIM_ENDPOINT=http://localhost:4566 ./probe/aws-shim-vm-credentials.sh
+#   In-cluster: ./probe/aws-shim-vm-credentials.sh
+#   Port-forward (svc/aws-shim 4566 4567):
+#     SHIM_ENDPOINT=http://localhost:4566 VMCREDS_CONNECT_TO=localhost:4567 ./probe/aws-shim-vm-credentials.sh
 set -euo pipefail
 
 EXIT_INCONCLUSIVE=42
@@ -25,6 +31,10 @@ SHIM_NS="${SHIM_NS:-open-infra-aws-shim}"
 USERS_NS="${USERS_NS:-open-infra-console}"
 ROLES_NS="${ROLES_NS:-default}"
 ENDPOINT="${SHIM_ENDPOINT:-http://aws-shim.${SHIM_NS}.svc.cluster.local:4566}"
+# The TLS port, always named by the Service DNS name its certificate carries; VMCREDS_CONNECT_TO
+# (host:port) redirects the connection, e.g. to a port-forward, without changing the name verified.
+VMCREDS_HOSTPORT="aws-shim.${SHIM_NS}.svc.cluster.local:4567"
+VMCREDS_CONNECT_TO="${VMCREDS_CONNECT_TO:-}"
 SFX="$(date +%s)"
 
 log()  { printf '▸ %s\n' "$*"; }
@@ -40,13 +50,28 @@ ROLE="vmcredprobe-${SFX}"
 ROLE_UNTRUSTED="vmcredprobe-untrusted-${SFX}"
 SA="vm-vmcredprobe-${SFX}"
 SA_UNTRUSTED="vm-vmcredprobe-untrusted-${SFX}"
-VMCREDS_URL="${ENDPOINT}/v1/vm-credentials"
+VMCREDS_URL="https://${VMCREDS_HOSTPORT}/v1/vm-credentials"
+CA_FILE="$(mktemp)"
 
 cleanup() {
   kubectl delete role.iam.openinfra.dev "$ROLE" "$ROLE_UNTRUSTED" -n "$ROLES_NS" --ignore-not-found >/dev/null 2>&1 || true
   kubectl delete sa "$SA" "$SA_UNTRUSTED" -n "$ROLES_NS" --ignore-not-found >/dev/null 2>&1 || true
+  rm -f "$CA_FILE"
 }
 trap cleanup EXIT
+
+# The platform root CA the guests get (public data), to verify the TLS port with.
+kubectl get environmentconfig openinfra-platform-ca -o jsonpath='{.data.platformRootCA}' > "$CA_FILE" 2>/dev/null || true
+grep -q 'BEGIN CERTIFICATE' "$CA_FILE" || inconclusive "openinfra-platform-ca carries no root CA yet (is the platform-ca-publisher running?)"
+vmcurl() {
+  if [ -n "$VMCREDS_CONNECT_TO" ]; then
+    curl --cacert "$CA_FILE" --connect-to "${VMCREDS_HOSTPORT}:${VMCREDS_CONNECT_TO}" "$@"
+  else
+    curl --cacert "$CA_FILE" "$@"
+  fi
+}
+vmcurl -sS -m 5 -o /dev/null "https://${VMCREDS_HOSTPORT}/healthz" \
+  || inconclusive "the shim's TLS port is not reachable or does not verify against the platform root (${VMCREDS_HOSTPORT})"
 
 # --- 1. Seed a vm-trusted Role + its per-VM ServiceAccount (what the composition creates) ---------
 log "seeding a vm-trusted Role + a per-VM ServiceAccount annotated with it"
@@ -83,7 +108,7 @@ TOKEN_U="$(kubectl create token "$SA_UNTRUSTED" -n "$ROLES_NS" --duration=1h 2>/
 
 # --- 2. POSITIVE: the SA token yields temporary credentials --------------------------------------
 log "exchanging the ServiceAccount token for role credentials at ${VMCREDS_URL}"
-CREDS="$(curl -s -H "Authorization: ${TOKEN}" "$VMCREDS_URL")"
+CREDS="$(vmcurl -s -H "Authorization: ${TOKEN}" "$VMCREDS_URL")"
 AK="$(printf '%s' "$CREDS" | sed -n 's/.*"AccessKeyId":"\([^"]*\)".*/\1/p')"
 SK="$(printf '%s' "$CREDS" | sed -n 's/.*"SecretAccessKey":"\([^"]*\)".*/\1/p')"
 TK="$(printf '%s' "$CREDS" | sed -n 's/.*"Token":"\([^"]*\)".*/\1/p')"
@@ -102,15 +127,21 @@ esac
 
 # --- 4. NEGATIVE: no token is refused (never serves credentials unauthenticated) -----------------
 log "NEGATIVE: an unauthenticated request must be refused"
-CODE="$(curl -s -o /dev/null -w '%{http_code}' "$VMCREDS_URL")"
+CODE="$(vmcurl -s -o /dev/null -w '%{http_code}' "$VMCREDS_URL")"
 [ "$CODE" = "401" ] || fail "unauthenticated vm-credentials must be 401, got ${CODE}"
+
+# --- 4b. NEGATIVE: the plaintext port does not serve credentials at all (no token is sent) --------
+log "NEGATIVE: the plaintext port must not serve the credentials endpoint"
+CODE_P="$(curl -s -o /dev/null -w '%{http_code}' "${ENDPOINT}/v1/vm-credentials")"
+[ "$CODE_P" = "404" ] || fail "vm-credentials on the plaintext port must be 404 (TLS only), got ${CODE_P}"
 
 # --- 5. NEGATIVE: a role that does not trust "vm" is denied (opt-in) ------------------------------
 if [ -n "$TOKEN_U" ]; then
   log "NEGATIVE: a role whose trust omits \"vm\" must be denied"
-  CODE_U="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: ${TOKEN_U}" "$VMCREDS_URL")"
+  CODE_U="$(vmcurl -s -o /dev/null -w '%{http_code}' -H "Authorization: ${TOKEN_U}" "$VMCREDS_URL")"
   [ "$CODE_U" = "403" ] || fail "a non-vm-trusted role must be 403 (role not assumable by an instance), got ${CODE_U}"
 fi
 
 printf '✓ PASS: VM workload credentials are faithful — a ServiceAccount token yields temporary\n'
-printf '        assumed-role credentials (no static keys); unauthenticated=401, non-vm-trusted=403.\n'
+printf '        assumed-role credentials (no static keys) over verified TLS; unauthenticated=401,\n'
+printf '        non-vm-trusted=403, plaintext port=404.\n'

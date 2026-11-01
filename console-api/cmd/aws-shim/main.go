@@ -695,6 +695,8 @@ func run(logger *slog.Logger) error {
 			slog.String("secret", caNS+"/"+caSecret))
 	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services, vmCredsH, caBundleH)
+	// VM credentials are served over TLS only (the internal TLS listener below); see internaltls.go.
+	router = plaintextVMCredsGuard(router, getenv("VM_CREDS_ALLOW_PLAINTEXT", "") == "true")
 
 	addr := getenv("LISTEN_ADDR", ":4566")
 	srv := &http.Server{
@@ -733,6 +735,17 @@ func run(logger *slog.Logger) error {
 		go func() {
 			logger.Info("aws-shim TLS (DNS-interception) listening", "addr", tlsSrv.Addr)
 			if lerr := tlsSrv.ListenAndServeTLS(cert, key); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
+				serverErr <- lerr
+			}
+		}()
+	}
+
+	// In-cluster TLS listener (VM metadata agents; any in-cluster caller may use it).
+	internalTLS := newInternalTLSServer(otelhttp.NewHandler(router, "aws-shim"), logger)
+	if internalTLS != nil {
+		go func() {
+			logger.Info("aws-shim internal TLS listening", "addr", internalTLS.Addr)
+			if lerr := internalTLS.ListenAndServeTLS("", ""); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
 				serverErr <- lerr
 			}
 		}()
@@ -867,6 +880,9 @@ func run(logger *slog.Logger) error {
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	if internalTLS != nil {
+		_ = internalTLS.Shutdown(shutdownCtx)
+	}
 	if tlsSrv != nil {
 		_ = tlsSrv.Shutdown(shutdownCtx)
 	}

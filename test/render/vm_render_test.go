@@ -363,12 +363,112 @@ func TestVM_MetadataAgent_Rendered(t *testing.T) {
 	if cfg["role"] != "app-role" || cfg["userDataFile"] != "/opt/openinfra-userdata" || cfg["tokenFile"] != "/run/openinfra-identity/token" {
 		t.Errorf("agent config role/userDataFile/tokenFile wrong: %#v %#v %#v", cfg["role"], cfg["userDataFile"], cfg["tokenFile"])
 	}
-	if cfg["credentialsUrl"] != "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials" {
-		t.Errorf("agent must fetch credentials from the shim's /v1/vm-credentials, got %#v", cfg["credentialsUrl"])
+	if cfg["credentialsUrl"] != "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567/v1/vm-credentials" {
+		t.Errorf("agent must fetch credentials from the shim's in-cluster TLS port, got %#v", cfg["credentialsUrl"])
 	}
-	// #347 item 15: the guest trusts the platform root CA, fetched from the shim at boot.
-	if cfg["trustPlatformCA"] != true || cfg["caBundleUrl"] != "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/ca-bundle" {
-		t.Errorf("agent must trust the platform CA from the shim's /v1/ca-bundle, got %#v %#v", cfg["trustPlatformCA"], cfg["caBundleUrl"])
+	// #347 item 15: the guest trusts the platform root CA from its own spec (never fetched).
+	if cfg["trustPlatformCA"] != true || cfg["caFile"] != "/etc/openinfra/platform-root-ca.pem" {
+		t.Errorf("agent must trust the platform CA from its caFile, got %#v %#v", cfg["trustPlatformCA"], cfg["caFile"])
+	}
+	if _, ok := cfg["caBundleUrl"]; ok {
+		t.Errorf("the agent must not fetch the CA over the network (caBundleUrl rendered: %#v)", cfg["caBundleUrl"])
+	}
+}
+
+// testRootPEM stands in for the platform root CA the openinfra-platform-ca EnvironmentConfig carries.
+const testRootPEM = "-----BEGIN CERTIFICATE-----\nMIIBfakeRootForRenderTestsOnly\n-----END CERTIFICATE-----\n"
+
+func withPlatformCA(ctx map[string]any) map[string]any {
+	ctx["context"] = map[string]any{"apiextensions.crossplane.io/environment": map[string]any{"platformRootCA": testRootPEM}}
+	return ctx
+}
+
+// Item 4 (transport): the platform root CA reaches the guest in its own spec — the cloud-init Secret,
+// from the EnvironmentConfig — and the agent calls the shim's TLS port only. No plaintext shim URL is
+// rendered anywhere, so neither the token nor the trust anchor ever crosses the network in clear text.
+// Without the EnvironmentConfig (no aws-shim) no CA file is written: the guest trusts no platform CA and
+// gets no credentials (fail closed), but the agent still knows where the file would be.
+func TestVM_PlatformCA_FromEnvironment(t *testing.T) {
+	tmpl := extractInlineTemplate(t, vmComposition)
+	const caPath = "/etc/openinfra/platform-root-ca.pem"
+	with := render(t, tmpl, withPlatformCA(vmCtxFW("ubuntu-24.04", map[string]any{"instanceRole": "app-role"})))
+	if got := vmWriteFileScalar(t, with, caPath); got != testRootPEM {
+		t.Errorf("the cloud-init must write the platform root CA from the environment to %s; got %q", caPath, got)
+	}
+	if cfg := vmAgentConfig(t, with); cfg["caFile"] != caPath {
+		t.Errorf("agent caFile = %#v, want %s", cfg["caFile"], caPath)
+	}
+	for _, absent := range []string{"http://aws-shim", ":4566", "/v1/ca-bundle"} {
+		if strings.Contains(with, absent) {
+			t.Errorf("a VM must never be pointed at the plaintext shim (%q rendered):\n%s", absent, grepCtx(with, absent))
+		}
+	}
+
+	without := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"instanceRole": "app-role"}))
+	if strings.Contains(without, "- path: "+caPath) {
+		t.Errorf("no EnvironmentConfig → no CA file (fail closed); got:\n%s", grepCtx(without, caPath))
+	}
+	if cfg := vmAgentConfig(t, without); cfg["caFile"] != caPath || cfg["trustPlatformCA"] != true {
+		t.Errorf("without a CA the agent still looks for it at %s, got %#v %#v", caPath, cfg["caFile"], cfg["trustPlatformCA"])
+	}
+
+	win := render(t, tmpl, withPlatformCA(vmCtx("windows-server-2022", "")))
+	if strings.Contains(win, "BEGIN CERTIFICATE") {
+		t.Errorf("Windows guests run no metadata agent and get no CA file")
+	}
+
+	// The composition reads the CA through an Optional environment step (no aws-shim = no config, no error).
+	raw, err := os.ReadFile(vmComposition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"name: crossplane-contrib-function-environment-configs", "resolution: Optional", "name: openinfra-platform-ca"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("vm-composition.yaml must read openinfra-platform-ca via an Optional environment step (missing %q)", want)
+		}
+	}
+	// The agent drops 169.254.169.254-bound packets arriving on the guest's own NICs (item 5).
+	src := vmWriteFileBlock(string(raw), "/usr/local/lib/openinfra/metadata-agent.py")
+	for _, want := range []string{"def guard_forwarded_imds(", "self.guard = guard_forwarded_imds(", "def vm_nics(", "priority -300"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the agent must guard IMDS against forwarded traffic (missing %q)", want)
+		}
+	}
+}
+
+// httpEndpoint: disabled serves no metadata, so the guest gets no identity token at all (no token disk,
+// no boot-time copy); the VM's ServiceAccount stays. Hop limit: 1 when metadataOptions is given without
+// one (EC2's default), 2 when the VM has no metadataOptions.
+func TestVM_MetadataOptions_IdentityAndHopDefaults(t *testing.T) {
+	tmpl := extractInlineTemplate(t, vmComposition)
+	off := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{
+		"instanceRole":    "app-role",
+		"metadataOptions": map[string]any{"httpEndpoint": "disabled"},
+	}))
+	for _, absent := range []string{"serial: SATOKEN", "serviceAccountName: vm-myvm", "openinfra-identity/token.tmp"} {
+		if strings.Contains(off, absent) {
+			t.Errorf("httpEndpoint: disabled must not put the identity token in the guest (%q rendered)", absent)
+		}
+	}
+	if !strings.Contains(off, "name: vm-myvm") {
+		t.Errorf("httpEndpoint: disabled keeps the VM's ServiceAccount")
+	}
+	on := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"instanceRole": "app-role"}))
+	for _, want := range []string{"serial: SATOKEN", "serviceAccountName: vm-myvm", "openinfra-identity/token.tmp"} {
+		if !strings.Contains(on, want) {
+			t.Errorf("an enabled metadata service needs the identity token in the guest (missing %q)", want)
+		}
+	}
+
+	hop := func(ctx map[string]any) any {
+		imds, _ := vmAgentConfig(t, render(t, tmpl, ctx))["imds"].(map[string]any)
+		return imds["hopLimit"]
+	}
+	if got := hop(vmCtxFW("ubuntu-24.04", map[string]any{"metadataOptions": map[string]any{"httpTokens": "required"}})); got != float64(1) {
+		t.Errorf("metadataOptions without a hop limit → 1 (EC2's default), got %#v", got)
+	}
+	if got := hop(vmCtx("ubuntu-24.04", "")); got != float64(2) {
+		t.Errorf("no metadataOptions → hop limit 2, got %#v", got)
 	}
 }
 

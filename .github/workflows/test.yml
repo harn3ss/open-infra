@@ -242,13 +242,16 @@ jobs:
       # Agent logic (IMDSv2 tokens, hop-limit TTL, httpTokens, metadata paths, credential cache, the
       # loopback credentials endpoint) — on the runner's python3 AND on Python 3.6, the oldest guest
       # interpreter it must run on (RHEL 8 platform-python).
+      # The TLS cases need a throwaway PKI; python:3.6-slim has no openssl CLI, so it is made here and handed in.
       - name: metadata agent unit tests (python3 + python 3.6)
         run: |
           python3 test/vm-creds/metadata_agent_test.py
-          docker run --rm -v "$PWD:/src:ro" -w /src python:3.6-slim python3 test/vm-creds/metadata_agent_test.py
+          pki="$RUNNER_TEMP/vm-creds-pki"
+          python3 test/vm-creds/vmcreds_common.py make-pki "$pki"
+          docker run --rm -v "$PWD:/src:ro" -v "$pki:/pki:ro" -e OPENINFRA_TEST_PKI=/pki -w /src python:3.6-slim python3 test/vm-creds/metadata_agent_test.py
       # The real network path, in a throwaway network namespace (never the runner's own network): the
-      # agent's metadata namespace, port 80 left free for the workload, and EC2 hop-limit semantics
-      # for a "container" one forwarding hop behind the guest.
+      # agent's metadata namespace, port 80 left free for the workload, EC2 hop-limit semantics for a
+      # "container" one forwarding hop behind the guest, and a "LAN host" routing through the guest dropped.
       - name: metadata agent network namespace + hop limit (isolated netns, root)
         run: sudo unshare --net --mount --fork python3 test/vm-creds/metadata_agent_netns_test.py
       # #347 items 13 + 14: real aws CLIs get VM role credentials from the agent via the env the

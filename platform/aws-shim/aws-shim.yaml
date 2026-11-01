@@ -27,8 +27,9 @@ metadata:
   namespace: open-infra-aws-shim
 ---
 # The platform root CA's PUBLIC certificate, published where the shim can read it: the shim serves it
-# at /v1/ca-bundle, and VM guests add it to their trust store at boot (so they trust the registry's and
-# S3's TLS addresses, which openinfra-ca issues). cert-manager writes the issuing CA's certificate into
+# at /v1/ca-bundle, and the platform-ca-publisher (platform-ca-publisher.yaml) copies it, from this
+# Certificate's CertificateRequests, into the EnvironmentConfig VM guests get it from (their own spec;
+# they trust the registry's and S3's TLS addresses, which openinfra-ca issues). cert-manager writes the issuing CA's certificate into
 # an issued Secret's ca.crt, so this Certificate from openinfra-ca carries the root certificate into the
 # shim's namespace, where the shim already reads Secrets (Role aws-shim-keys) — the shim never reads
 # cert-manager/openinfra-root-ca, which holds the root's PRIVATE key. The carrier certificate itself is
@@ -46,6 +47,35 @@ spec:
   commonName: open-infra root CA bundle
   usages: [digital signature, email protection]
   duration: 8760h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  issuerRef:
+    name: openinfra-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# The shim's in-cluster TLS port (4567). A VM's metadata agent sends its ServiceAccount token to
+# /v1/vm-credentials here, and only here: it verifies this certificate against the platform root CA from
+# its own spec, so the token is never sent in clear text or to a host that merely answers for this name.
+# The shim re-reads the Secret when cert-manager renews it.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: aws-shim-internal-tls
+  namespace: open-infra-aws-shim
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"   # after the openinfra-ca ClusterIssuer (wave 2)
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  secretName: aws-shim-internal-tls
+  dnsNames:
+    - aws-shim.open-infra-aws-shim.svc
+    - aws-shim.open-infra-aws-shim.svc.cluster.local
+  usages: [server auth, digital signature]
+  duration: 2160h    # 90 days
   renewBefore: 720h
   privateKey:
     algorithm: ECDSA
@@ -578,13 +608,21 @@ spec:
           ports:
             - name: s3
               containerPort: 4566
+            - name: https-internal
+              containerPort: 4567
           env:
             - { name: LISTEN_ADDR, value: ":4566" }
             # EC2 instance metadata (IMDS): serve rotating role credentials (/v1/vm-credentials) to the
             # in-guest metadata agent of a kind: VirtualMachine with spec.instanceRole, identified by its
             # per-VM ServiceAccount token (never the source IP). Inert for a VM that declares no
-            # instanceRole (and for every non-VM caller — it resolves to no role).
+            # instanceRole (and for every non-VM caller — it resolves to no role). Served on the TLS port
+            # below only: on plaintext :4566 the path answers 404 (VM_CREDS_ALLOW_PLAINTEXT=true undoes
+            # that, for a guest whose agent predates the TLS port).
             - { name: IMDS_ENABLED, value: "true" }
+            # The in-cluster TLS port (the aws-shim-internal-tls Certificate above, re-read on renewal).
+            - { name: INTERNAL_TLS_LISTEN_ADDR, value: ":4567" }
+            - { name: INTERNAL_TLS_CERT_FILE, value: /tls-internal/tls.crt }
+            - { name: INTERNAL_TLS_KEY_FILE, value: /tls-internal/tls.key }
             # The platform root CA certificate served at /v1/ca-bundle (public; VM guests trust it at
             # boot): ca.crt of this Secret in the shim's namespace (the openinfra-ca-bundle Certificate
             # above). "" turns the endpoint off.
@@ -725,12 +763,19 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]
+          volumeMounts:
+            - { name: internal-tls, mountPath: /tls-internal, readOnly: true }
           resources:
             # The shared AWS front door fronts ~25 services; 256Mi/64Mi was too small and scheduled it
             # as needing far less than it does. Raised to a realistic floor (GOMEMLIMIT above keeps the
             # heap under the 512Mi limit).
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: 500m, memory: 512Mi }
+      volumes:
+        # optional: the shim starts before cert-manager has issued it; until then TLS handshakes fail
+        # and VM agents retry. The kubelet fills the volume once the Secret exists.
+        - name: internal-tls
+          secret: { secretName: aws-shim-internal-tls, optional: true }
 ---
 apiVersion: v1
 kind: Service
@@ -745,6 +790,9 @@ spec:
     - name: s3
       port: 4566
       targetPort: 4566
+    - name: https-internal
+      port: 4567
+      targetPort: 4567
 ---
 # Step Functions StartSyncExecution endpoint alias. The AWS SDK/CLI resolve StartSyncExecution to a
 # SEPARATE, "sync-"prefixed host (AWS's sync-states.<region>.amazonaws.com), and apply that prefix even

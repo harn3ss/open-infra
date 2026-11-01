@@ -17,8 +17,9 @@
 #
 # The agent is the exact text extracted from platform/abstraction/vm-composition.yaml, run as a real
 # process with the golden config (pinned to the composition's render by test/render) re-pointed at a stub
-# that plays the aws-shim's /v1/vm-credentials endpoint (it refuses any request whose Authorization is
-# not the VM token) and STS (it records which access key signed the call).
+# that plays the aws-shim's /v1/vm-credentials endpoint over TLS, which the agent verifies against a
+# throwaway test root as a guest verifies the shim against the platform root (the stub refuses any request
+# whose Authorization is not the VM token), and STS (it records which access key signed the call).
 #
 # aws-cli v2 is the hard gate. A distro aws CLI (older botocore) is run too and must pass the
 # container-credentials path; its IMDS result is reported (an old botocore may not honor
@@ -81,11 +82,13 @@ class Stub(http.server.BaseHTTPRequestHandler):
 
 
 class AgentProcess(object):
-    def __init__(self, tmp, agent_path, stub_port, http_tokens, relay):
+    def __init__(self, tmp, agent_path, tls, http_tokens, relay):
         cfg = common.golden_config()
         self.relay = (cfg["relay"]["address"], int(cfg["relay"]["port"]))
         self.imds_port = common.free_port()
-        cfg["credentialsUrl"] = "http://127.0.0.1:%d/v1/vm-credentials" % stub_port
+        # The shim's /v1/vm-credentials over TLS, verified against the (test) platform root only.
+        cfg["credentialsUrl"] = "https://127.0.0.1:%d/v1/vm-credentials" % tls.port
+        cfg["caFile"] = tls.ca
         cfg["tokenFile"] = os.path.join(tmp, "token")
         cfg["userDataFile"] = os.path.join(tmp, "user-data")
         cfg["imds"].update({"netns": "", "address": "127.0.0.1", "port": self.imds_port, "httpTokens": http_tokens})
@@ -231,12 +234,15 @@ def main():
     stub = http.server.HTTPServer(("127.0.0.1", 0), Stub)
     stub_port = stub.server_address[1]
     threading.Thread(target=stub.serve_forever, daemon=True).start()
+    if not shutil.which("openssl"):
+        sys.exit("FAIL: openssl is needed to mint the TLS stub's test certificates")
+    tls = TLSStub(tmp)  # the shim's in-cluster TLS port, and a platform-CA endpoint for the CLI checks
 
     base = {"PATH": os.environ.get("PATH", ""), "HOME": tmp, "AWS_REGION": "us-east-1",
             "AWS_DEFAULT_REGION": "us-east-1", "AWS_PAGER": ""}
     failures, notes = [], []
 
-    agent = AgentProcess(tmp, agent_path, stub_port, "optional", relay=True)
+    agent = AgentProcess(tmp, agent_path, tls, "optional", relay=True)
     try:
         # --- the raw IMDSv2 contract, against the running agent ---
         checks = [
@@ -281,37 +287,30 @@ def main():
                 (failures if tag == "v2" else notes).append("%s: IMDS credentials" % ver)
 
         # --- the platform CA: AWS_CA_BUNDLE -> the full system bundle (#347 item 15) ---
-        if not shutil.which("openssl"):
-            failures.append("openssl is needed to mint the TLS stub's test certificates")
-        else:
-            tls = TLSStub(tmp)
-            try:
-                link, public = tls.publish_bundle(common.load_agent_module(tmp), tmp)
-                say("[tls] AWS_CA_BUNDLE path %s -> system bundle (%d public roots) + the test root" % (link, public))
-                if public == 0:
-                    notes.append("no system CA bundle on this host: public roots not exercised")
-                for aws_bin, tag, ver in clis:
-                    env = dict(base, AWS_EC2_METADATA_DISABLED="true", **env_rendered)
-                    https = "https://127.0.0.1:%d" % tls.port
-                    ok, detail, _ = run_cli(aws_bin, dict(env, AWS_CA_BUNDLE=link), stub_port, endpoint=https)
-                    say("[%s %s] TLS to a platform-CA endpoint with AWS_CA_BUNDLE: %s" % (ver, aws_bin, detail))
-                    if not ok:
-                        failures.append("%s: TLS with AWS_CA_BUNDLE" % ver)
-                    bad, detail, err = run_cli(aws_bin, env, stub_port, endpoint=https)
-                    refused = not bad and ("CERTIFICATE_VERIFY_FAILED" in err or "SSL" in err)
-                    say("[%s %s] ... and without it the CLI's own CA store refuses it: %s"
-                        % (ver, aws_bin, "yes" if refused else "NO (" + detail + ")"))
-                    if not refused:
-                        (failures if tag == "v2" else notes).append("%s: TLS without AWS_CA_BUNDLE was not refused" % ver)
-            finally:
-                tls.stop()
+        link, public = tls.publish_bundle(common.load_agent_module(tmp), tmp)
+        say("[tls] AWS_CA_BUNDLE path %s -> system bundle (%d public roots) + the test root" % (link, public))
+        if public == 0:
+            notes.append("no system CA bundle on this host: public roots not exercised")
+        for aws_bin, tag, ver in clis:
+            env = dict(base, AWS_EC2_METADATA_DISABLED="true", **env_rendered)
+            https = "https://127.0.0.1:%d" % tls.port
+            ok, detail, _ = run_cli(aws_bin, dict(env, AWS_CA_BUNDLE=link), stub_port, endpoint=https)
+            say("[%s %s] TLS to a platform-CA endpoint with AWS_CA_BUNDLE: %s" % (ver, aws_bin, detail))
+            if not ok:
+                failures.append("%s: TLS with AWS_CA_BUNDLE" % ver)
+            bad, detail, err = run_cli(aws_bin, env, stub_port, endpoint=https)
+            refused = not bad and ("CERTIFICATE_VERIFY_FAILED" in err or "SSL" in err)
+            say("[%s %s] ... and without it the CLI's own CA store refuses it: %s"
+                % (ver, aws_bin, "yes" if refused else "NO (" + detail + ")"))
+            if not refused:
+                (failures if tag == "v2" else notes).append("%s: TLS without AWS_CA_BUNDLE was not refused" % ver)
     finally:
         agent.stop()
     if failures:
         agent.dump()
 
     # --- httpTokens=required: IMDSv1 is refused, the CLI still succeeds (so it used IMDSv2) ---
-    agent = AgentProcess(tmp, agent_path, stub_port, "required", relay=False)
+    agent = AgentProcess(tmp, agent_path, tls, "required", relay=False)
     try:
         ok = agent.imds("GET", "/latest/meta-data/instance-id")[0] == 401
         say("[imds required] token-less GET -> 401: %s" % ("ok" if ok else "FAILED"))
@@ -327,6 +326,7 @@ def main():
     finally:
         agent.stop()
         stub.shutdown()
+        tls.stop()
 
     bad_auth = [a for a in Stub.shim_calls if a != TOKEN_VALUE]
     say("shim saw %d credential requests; Authorization was the VM token on all of them: %s"

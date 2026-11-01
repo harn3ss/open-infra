@@ -94,6 +94,59 @@ def composition_env():
     return env
 
 
+def _openssl(*args):
+    import subprocess
+    subprocess.run(["openssl"] + list(args), check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def make_test_pki(directory):
+    """A throwaway PKI in `directory` (created): a test root and a server certificate it signs for
+    127.0.0.1/localhost (the shim stand-in), plus an unrelated "rogue" root and server certificate (an
+    impostor answering for the shim's name). Needs the openssl CLI. Returns a dict of paths."""
+    os.makedirs(directory, exist_ok=True)
+    p = dict((k, os.path.join(directory, k + ".pem")) for k in
+             ("root", "root-key", "server", "server-key", "rogue-root", "rogue-root-key", "rogue-server", "rogue-server-key"))
+    ext = os.path.join(directory, "server.ext")
+    with open(ext, "w") as fh:
+        fh.write("subjectAltName=IP:127.0.0.1,DNS:localhost\nextendedKeyUsage=serverAuth\nbasicConstraints=critical,CA:FALSE\n")
+    for root, server in (("root", "server"), ("rogue-root", "rogue-server")):
+        _openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+                 "-keyout", p[root + "-key"], "-out", p[root], "-days", "2", "-subj", "/CN=vm-creds test " + root,
+                 "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign")
+        csr = os.path.join(directory, server + ".csr")
+        _openssl("req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", p[server + "-key"],
+                 "-out", csr, "-subj", "/CN=127.0.0.1")
+        _openssl("x509", "-req", "-in", csr, "-CA", p[root], "-CAkey", p[root + "-key"], "-CAcreateserial",
+                 "-out", p[server], "-days", "2", "-extfile", ext)
+    return p
+
+
+def get_test_pki(scratch):
+    """The test PKI: a ready-made one named by OPENINFRA_TEST_PKI (CI makes it on the host for the Python
+    3.6 container, which has no openssl CLI), else a fresh one in `scratch`, else None (no openssl)."""
+    ready = os.environ.get("OPENINFRA_TEST_PKI")
+    if ready and os.path.isfile(os.path.join(ready, "root.pem")):
+        return dict((k, os.path.join(ready, k + ".pem")) for k in
+                    ("root", "root-key", "server", "server-key", "rogue-root", "rogue-root-key", "rogue-server", "rogue-server-key"))
+    import shutil
+    if not shutil.which("openssl"):
+        return None
+    return make_test_pki(os.path.join(scratch, "pki"))
+
+
+def tls_server(handler, cert, key):
+    """An HTTPS server on 127.0.0.1 (ephemeral port) presenting cert/key, serving in a daemon thread."""
+    import http.server
+    import ssl
+    import threading
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert, key)
+    srv = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -118,3 +171,11 @@ def wait_port(host, port, timeout=15.0, proc=None):
 def say(*a):
     print(*a)
     sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    # CI: `python3 test/vm-creds/vmcreds_common.py make-pki <dir>` prepares OPENINFRA_TEST_PKI on the host.
+    if len(sys.argv) == 3 and sys.argv[1] == "make-pki":
+        make_test_pki(sys.argv[2])
+    else:
+        raise SystemExit("usage: vmcreds_common.py make-pki <dir>")

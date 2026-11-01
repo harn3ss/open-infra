@@ -2,8 +2,8 @@
   "accountId": "open-infra",
   "availabilityZone": "us-east-1a",
   "caBundleLink": "/etc/openinfra/ca-bundle.pem",
-  "caBundleUrl": "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/ca-bundle",
-  "credentialsUrl": "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials",
+  "caFile": "/etc/openinfra/platform-root-ca.pem",
+  "credentialsUrl": "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567/v1/vm-credentials",
   "imageId": "ami-5d0b10da7e52989c4",
   "imds": {
     "address": "169.254.169.254",
