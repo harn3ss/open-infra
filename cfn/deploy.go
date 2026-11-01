@@ -78,6 +78,11 @@ type StackRecord struct {
 	// OutputsOmitted lists the Outputs left out because their value did not resolve, with the reason.
 	Outputs        []StackOutput    `json:"outputs,omitempty"`
 	OutputsOmitted []OutputOmission `json:"outputsOmitted,omitempty"`
+	// Template and Parameters are the template body and parameter values the stack was last deployed
+	// with, as AWS keeps them: GetTemplate / GetTemplateSummary read them, and an update's
+	// UsePreviousValue parameters take their values from here.
+	Template   string            `json:"template,omitempty"`
+	Parameters map[string]string `json:"parameters,omitempty"`
 	// Imports are the export names this stack reads through Fn::ImportValue — a stack whose export is
 	// imported elsewhere is not deleted (AWS's rule).
 	Imports []string `json:"imports,omitempty"`
@@ -249,7 +254,7 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := &StackRecord{
 		Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS",
-		CreatedAt: now, UpdatedAt: now,
+		CreatedAt: now, UpdatedAt: now, Template: string(data), Parameters: copyParams(opts.Params),
 	}
 	for _, b := range order {
 		rec.Resources = append(rec.Resources, b.res)
@@ -343,7 +348,8 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	rec := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now}
+	rec := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now,
+		Template: string(data), Parameters: copyParams(opts.Params)}
 	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {
 		return nil, fmt.Errorf("could not persist stack record: %w", err)
 	}
@@ -590,6 +596,18 @@ func joinFindings(fs []Finding) string {
 			out += "\n  - "
 		}
 		out += f.Where + ": " + f.Reason
+	}
+	return out
+}
+
+// copyParams returns an independent copy of a parameter map (nil for none).
+func copyParams(m map[string]string) map[string]string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
 	}
 	return out
 }

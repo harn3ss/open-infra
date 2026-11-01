@@ -32,6 +32,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -208,6 +209,10 @@ func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.listStacks(w, r, ap, requestID)
 	case "ListExports":
 		h.listExports(w, r, requestID)
+	case "GetTemplateSummary":
+		h.getTemplateSummary(w, r, ap, requestID)
+	case "GetTemplate":
+		h.getTemplate(w, r, ap, requestID)
 	case "ValidateTemplate":
 		h.validateTemplate(w, r, requestID)
 	case "CreateChangeSet":
@@ -245,15 +250,42 @@ func (h *cfnDoorway) templateBody(r *http.Request) (string, error) {
 }
 
 func parseCFNParams(r *http.Request) map[string]string {
+	out, _ := parseCFNParamsPrev(r)
+	return out
+}
+
+// parseCFNParamsPrev parses Parameters.member.N and also returns the keys sent with
+// UsePreviousValue=true (`aws cloudformation deploy` sends every parameter it was not told to
+// override that way on an update).
+func parseCFNParamsPrev(r *http.Request) (map[string]string, []string) {
 	out := map[string]string{}
+	var prev []string
 	for i := 1; ; i++ {
 		k := r.PostFormValue(fmt.Sprintf("Parameters.member.%d.ParameterKey", i))
 		if k == "" {
 			break
 		}
+		if strings.EqualFold(r.PostFormValue(fmt.Sprintf("Parameters.member.%d.UsePreviousValue", i)), "true") {
+			prev = append(prev, k)
+			continue
+		}
 		out[k] = r.PostFormValue(fmt.Sprintf("Parameters.member.%d.ParameterValue", i))
 	}
-	return out
+	return out, prev
+}
+
+// withPreviousValues fills each UsePreviousValue parameter from the value the stack was last deployed
+// with. A key the stack never had keeps the template default, as a new parameter does.
+func withPreviousValues(params map[string]string, prev []string, current *cfn.StackRecord) map[string]string {
+	if current == nil {
+		return params
+	}
+	for _, k := range prev {
+		if v, ok := current.Parameters[k]; ok {
+			params[k] = v
+		}
+	}
+	return params
 }
 
 func (h *cfnDoorway) stackID(name string) string {
@@ -362,9 +394,10 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, err.Error(), cfnXMLNamespace)
 		return
 	}
-	params := parseCFNParams(r)
+	params, prevKeys := parseCFNParamsPrev(r)
 	ctx := r.Context()
 	current, found, _ := ap.GetStack(ctx, name)
+	params = withPreviousValues(params, prevKeys, current)
 	if !found {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist.", cfnXMLNamespace)
 		return
@@ -497,6 +530,18 @@ func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {
 		b.WriteString("<LastUpdatedTime>" + xesc(rec.UpdatedAt) + "</LastUpdatedTime>")
 	}
 	b.WriteString(outputsXML(rec)) // evaluated against the deployed stack at *_COMPLETE (#347)
+	if len(rec.Parameters) > 0 {
+		keys := make([]string, 0, len(rec.Parameters))
+		for k := range rec.Parameters {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteString("<Parameters>")
+		for _, k := range keys {
+			b.WriteString("<member><ParameterKey>" + xesc(k) + "</ParameterKey><ParameterValue>" + xesc(rec.Parameters[k]) + "</ParameterValue></member>")
+		}
+		b.WriteString("</Parameters>")
+	}
 	b.WriteString("</member>")
 	return b.String()
 }
@@ -576,7 +621,7 @@ func (h *cfnDoorway) validateTemplate(w http.ResponseWriter, r *http.Request, re
 			"template refused:\n  - "+strings.Join(plan.Blockers, "\n  - "), cfnXMLNamespace)
 		return
 	}
-	h.writeResult(w, requestID, "ValidateTemplate", "<Description>open-infra: "+xesc(string(plan.Verdict))+"</Description><Capabilities/><Parameters/>")
+	h.writeResult(w, requestID, "ValidateTemplate", "<Description>open-infra: "+xesc(string(plan.Verdict))+"</Description><Capabilities/>"+templateParametersXML([]byte(body), false))
 }
 
 // --- change sets ---
@@ -605,9 +650,14 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, err.Error(), cfnXMLNamespace)
 		return
 	}
-	params := parseCFNParams(r)
+	params, prevKeys := parseCFNParamsPrev(r)
 	ctx := r.Context()
 	ex := h.exportsFor(ctx, stack)
+	if len(prevKeys) > 0 {
+		if cur, ok, _ := ap.GetStack(ctx, stack); ok {
+			params = withPreviousValues(params, prevKeys, cur)
+		}
+	}
 
 	// BuildChangeSet computes the diff against the current stack record and APPLIES NOTHING.
 	cs, _, current, cerr := cfn.BuildChangeSet(ctx, []byte(body), h.optsFor(stack, params, ex), ap)
@@ -992,4 +1042,86 @@ func (h *cfnDoorway) deleteChangeSetsOf(ctx context.Context, stack string) {
 			h.logger.Warn("cfn: could not delete a change set", "stack", stack, "changeSet", it.GetName(), "error", err.Error())
 		}
 	}
+}
+
+// templateParametersXML renders a template's declared Parameters as the <Parameters> member AWS returns
+// from ValidateTemplate (summary=false: ParameterKey/DefaultValue/NoEcho) and GetTemplateSummary
+// (summary=true: also ParameterType). A template that does not parse renders an empty list.
+func templateParametersXML(data []byte, summary bool) string {
+	t, err := cfn.Parse(data)
+	if err != nil || len(t.Parameters) == 0 {
+		return "<Parameters/>"
+	}
+	keys := make([]string, 0, len(t.Parameters))
+	for k := range t.Parameters {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("<Parameters>")
+	for _, k := range keys {
+		p := t.Parameters[k]
+		b.WriteString("<member><ParameterKey>" + xesc(k) + "</ParameterKey>")
+		if p.Default != nil {
+			b.WriteString("<DefaultValue>" + xesc(fmt.Sprint(p.Default)) + "</DefaultValue>")
+		}
+		if summary {
+			b.WriteString("<ParameterType>" + xesc(p.Type) + "</ParameterType>")
+		}
+		b.WriteString("<NoEcho>false</NoEcho></member>")
+	}
+	b.WriteString("</Parameters>")
+	return b.String()
+}
+
+// getTemplateSummary answers GetTemplateSummary for a template body/URL or a deployed stack (its last
+// template) — `aws cloudformation deploy` calls it on every update to learn the template's parameters.
+func (h *cfnDoorway) getTemplateSummary(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
+	var body string
+	if name := r.PostFormValue("StackName"); name != "" {
+		rec, found, err := ap.GetStack(r.Context(), name)
+		if err != nil || !found {
+			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+name+" does not exist", cfnXMLNamespace)
+			return
+		}
+		body = rec.Template
+	} else {
+		b, err := h.templateBody(r)
+		if err != nil {
+			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, err.Error(), cfnXMLNamespace)
+			return
+		}
+		body = b
+	}
+	t, err := cfn.Parse([]byte(body))
+	if err != nil {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Template format error: "+err.Error(), cfnXMLNamespace)
+		return
+	}
+	types := map[string]bool{}
+	for _, res := range t.Resources {
+		types[res.Type] = true
+	}
+	tl := make([]string, 0, len(types))
+	for k := range types {
+		tl = append(tl, k)
+	}
+	sort.Strings(tl)
+	var rt strings.Builder
+	for _, k := range tl {
+		rt.WriteString("<member>" + xesc(k) + "</member>")
+	}
+	h.writeResult(w, requestID, "GetTemplateSummary", templateParametersXML([]byte(body), true)+
+		"<Capabilities/><ResourceTypes>"+rt.String()+"</ResourceTypes><Version>2010-09-09</Version>")
+}
+
+// getTemplate returns the template a stack was last deployed with.
+func (h *cfnDoorway) getTemplate(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
+	name := r.PostFormValue("StackName")
+	rec, found, err := ap.GetStack(r.Context(), name)
+	if err != nil || !found {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+name+" does not exist", cfnXMLNamespace)
+		return
+	}
+	h.writeResult(w, requestID, "GetTemplate", "<TemplateBody>"+xesc(rec.Template)+"</TemplateBody><StagesAvailable><member>Original</member><member>Processed</member></StagesAvailable>")
 }
