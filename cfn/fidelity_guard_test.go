@@ -42,6 +42,11 @@ var reportedElsewhere = map[string]string{
 	"AWS::IAM::InstanceProfile.InstanceProfileName":                                                "the profile is followed to its role (the VM binds the kind: Role); the profile's own name names nothing",
 	"AWS::IAM::InstanceProfile.Path":                                                               "IAM paths name nothing on open-infra",
 	"AWS::CloudFront::CloudFrontOriginAccessIdentity.CloudFrontOriginAccessIdentityConfig.Comment": "free text for people",
+	// A Lambda permission provisions nothing: the integration that invokes the Function (an EventBridge
+	// target, an API Gateway integration) is authorized when it is created, against its creator's own
+	// lambda:InvokeFunction, so which source may invoke is decided there, not by these conditions.
+	"AWS::Lambda::Permission.SourceArn":     "the invoking integration is authorized against its creator's own lambda:InvokeFunction when it is created",
+	"AWS::Lambda::Permission.SourceAccount": "one account; the invoking integration is authorized against its creator when it is created",
 }
 
 // guardDeferred are silent losses the guard found and that are not fixed yet, keyed like reportedElsewhere.
@@ -251,6 +256,7 @@ var guardBaselines = []guardBaseline{
 	yamlBaseline("AWS::IAM::Role", `{ AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [ { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: "sts:AssumeRole" } ] } }`, ""),
 	yamlBaseline("AWS::DynamoDB::Table", `{ BillingMode: PAY_PER_REQUEST, KeySchema: [ { AttributeName: id, KeyType: HASH } ], AttributeDefinitions: [ { AttributeName: id, AttributeType: S } ] }`, ""),
 	yamlBaseline("AWS::SQS::Queue", `{}`, ""),
+	yamlBaseline("AWS::Lambda::Permission", `{ Action: "lambda:InvokeFunction", FunctionName: !Ref F, Principal: events.amazonaws.com }`, "\n  F: { Type: AWS::Lambda::Function, Properties: { PackageType: Image, Code: { ImageUri: \"registry.example/fn:1\" } } }"),
 	yamlBaseline("AWS::SNS::Topic", `{}`, ""),
 	yamlBaseline("AWS::SSM::Parameter", `{ Name: /app/x, Type: String, Value: v }`, ""),
 	yamlBaseline("AWS::CloudFormation::WaitCondition", `{ Handle: !Ref H, Count: 1, Timeout: "300" }`, `
@@ -310,7 +316,7 @@ var guardShapedSamples = map[string][]any{
 // The guard covers every type with a create translator (a type added without a baseline fails here).
 func TestFidelityGuard_CoversEveryTranslator(t *testing.T) {
 	have := map[string]bool{}
-	for _, b := range append(append([]guardBaseline{}, guardBaselines...), cloudFrontBaselines(t)...) {
+	for _, b := range append(append(append([]guardBaseline{}, guardBaselines...), cloudFrontBaselines(t)...), serviceStoreBaselines...) {
 		have[b.typ] = true
 	}
 	// The child types a distribution reads by id only (no properties of their own to translate), and a

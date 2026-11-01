@@ -2427,6 +2427,9 @@ func inStackRef(id string, ctx *stackCtx) (string, bool) {
 	if v, ok := serviceRef(id, ctx); ok { // a stack queue/topic/parameter/key in the shim's own API store
 		return v, true
 	}
+	if v, ok := serviceStatic(id, "", ctx); ok { // a stack secret, log group, rule, bus, repository or alarm (translate_service.go)
+		return v, true
+	}
 	switch res.Type {
 	case "AWS::S3::Bucket":
 		return inStackName(id, "BucketName", ctx), true
@@ -2464,6 +2467,9 @@ func inStackName(id, prop string, ctx *stackCtx) string {
 func inStackARN(id string, ctx *stackCtx) (string, bool) {
 	if ctx == nil {
 		return "", false
+	}
+	if v, ok := serviceStatic(id, "Arn", ctx); ok {
+		return v, true
 	}
 	res, in := ctx.template.Resources[id]
 	if !in {

@@ -42,6 +42,14 @@ const (
 	KindSSMParameter    = "SSMParameter"    // an SSM parameter (name = parameter name)
 	KindKMSKey          = "KMSKey"          // a KMS key (name = key id)
 	KindKMSAlias        = "KMSAlias"        // a KMS alias (name = alias name, alias/…)
+
+	// Served through their own front doors, as the caller (translate_service.go).
+	KindSecretsManagerSecret = "SecretsManagerSecret" // a Secrets Manager secret (name = secret name)
+	KindLogsLogGroup         = "LogsLogGroup"         // a CloudWatch Logs log group (name = group name)
+	KindEventsRule           = "EventsRule"           // an EventBridge rule (name = rule name)
+	KindEventsEventBus       = "EventsEventBus"       // an EventBridge custom bus (name = bus name)
+	KindECRRepository        = "ECRRepository"        // an ECR repository (name = repository name)
+	KindCloudWatchAlarm      = "CloudWatchAlarm"      // a CloudWatch alarm (name = alarm name)
 )
 
 // IsServiceKind reports whether apiVersion/kind is a resource the shim's AWS APIs serve.
@@ -50,7 +58,8 @@ func IsServiceKind(apiVersion, kind string) bool {
 		return false
 	}
 	switch kind {
-	case KindSQSQueue, KindSNSTopic, KindSNSSubscription, KindSSMParameter, KindKMSKey, KindKMSAlias:
+	case KindSQSQueue, KindSNSTopic, KindSNSSubscription, KindSSMParameter, KindKMSKey, KindKMSAlias,
+		KindSecretsManagerSecret, KindLogsLogGroup, KindEventsRule, KindEventsEventBus, KindECRRepository, KindCloudWatchAlarm:
 		return true
 	}
 	return false
@@ -256,6 +265,9 @@ func serviceRef(id string, ctx *stackCtx) (string, bool) {
 // return values for the type). ok=false for any other resource or attribute — the caller then falls
 // back to whatever else resolves the attribute.
 func serviceAtt(id, attr string, ctx *stackCtx) (string, bool) {
+	if v, ok := serviceStatic(id, attr, ctx); ok && attr != "" { // a secret, log group, rule, bus, repository, alarm
+		return v, true
+	}
 	if !ctx.servedBy(id) {
 		return "", false
 	}

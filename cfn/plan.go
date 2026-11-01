@@ -114,6 +114,14 @@ type Capabilities struct {
 	SQSAPI, SNSAPI, SSMAPI, KMSAPI bool
 	// SQSURLBase is the endpoint a stack's queue URLs name (scheme://host[:port]); "" names AWS's.
 	SQSURLBase string
+	// SecretsManagerAPI, LogsAPI, EventsAPI, ECRAPI and CloudWatchAPI: this environment serves that AWS API
+	// from its own store, so a stack's secret, log group, EventBridge rule or bus, ECR repository or alarm
+	// is created IN that store, through that front door and under the caller's authority
+	// (translate_service.go). These types have no other mapping, so without the API (the CLI) they refuse.
+	SecretsManagerAPI, LogsAPI, EventsAPI, ECRAPI, CloudWatchAPI bool
+	// ECRRepositoryHost is the registry host an ECR repository's URI starts with (RepositoryUri is
+	// <host>/<name>); "" leaves Fn::GetAtt RepositoryUri unresolved before deploy.
+	ECRRepositoryHost string
 }
 
 // BuildPlanWithCaps is BuildPlanWithExports with explicit deploy-environment Capabilities.
