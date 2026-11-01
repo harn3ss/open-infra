@@ -2,5 +2,5 @@
   { "ParameterKey": "AwsEndpointUrl",    "ParameterValue": "https://s3.<your open-infra domain>" },
   { "ParameterKey": "SiteDomain",        "ParameterValue": "site.<your open-infra domain>" },
   { "ParameterKey": "AppRepositoryName", "ParameterValue": "<an existing ECR repository>" },
-  { "ParameterKey": "LatestUbuntuAmi",   "ParameterValue": "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id" }
+  { "ParameterKey": "LatestUbuntuAmi",   "ParameterValue": "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id" }
 ]
