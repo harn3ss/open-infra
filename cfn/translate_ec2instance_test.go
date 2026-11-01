@@ -240,3 +240,77 @@ func TestTranslate_EC2Instance_CloudConfigUserDataCaveat(t *testing.T) {
 		t.Fatalf("a #cloud-config must surface a caveat: %v", m.Caveats)
 	}
 }
+
+// #347 item 14: MetadataOptions maps 1:1 onto spec.metadataOptions (the in-guest instance metadata
+// service): HttpTokens, HttpEndpoint, and HttpPutResponseHopLimit (as a JSON number or a string).
+func TestTranslate_EC2Instance_MetadataOptionsMap(t *testing.T) {
+	for _, hop := range []any{float64(3), "3", 3} {
+		m, fs := translateEC2Instance("Web", map[string]any{
+			"ImageId": "ubuntu-24.04",
+			"MetadataOptions": map[string]any{
+				"HttpTokens": "required", "HttpEndpoint": "enabled", "HttpPutResponseHopLimit": hop,
+				"HttpProtocolIpv6": "disabled", "InstanceMetadataTags": "disabled",
+			},
+		}, nil)
+		if len(fs) != 0 {
+			t.Fatalf("a valid MetadataOptions must translate cleanly (hop %#v): %s", hop, findingsText(fs))
+		}
+		got, _ := m.Spec["metadataOptions"].(map[string]any)
+		if len(got) != 3 || got["httpTokens"] != "required" || got["httpEndpoint"] != "enabled" || got["httpPutResponseHopLimit"] != 3 {
+			t.Fatalf("MetadataOptions should map to {httpTokens: required, httpEndpoint: enabled, httpPutResponseHopLimit: 3}, got %#v", m.Spec["metadataOptions"])
+		}
+		if c := strings.Join(m.Caveats, "\n"); strings.Contains(c, "MetadataOptions") {
+			t.Fatalf("disabled IPv6/tags options need no caveat: %v", m.Caveats)
+		}
+	}
+	// No MetadataOptions -> no spec.metadataOptions (the VM's defaults: optional tokens, hop limit 2).
+	m, _ := translateEC2Instance("Web", map[string]any{"ImageId": "ubuntu-24.04"}, nil)
+	if _, ok := m.Spec["metadataOptions"]; ok {
+		t.Fatalf("no MetadataOptions must leave spec.metadataOptions unset: %#v", m.Spec)
+	}
+}
+
+// The IPv6 endpoint and instance tags in metadata are not served: enabling them is a caveat (the IPv4
+// endpoint still answers), and the rest of the block still maps.
+func TestTranslate_EC2Instance_MetadataOptionsUnservedCaveats(t *testing.T) {
+	m, fs := translateEC2Instance("Web", map[string]any{
+		"ImageId":         "ubuntu-24.04",
+		"MetadataOptions": map[string]any{"HttpTokens": "required", "HttpProtocolIpv6": "enabled", "InstanceMetadataTags": "enabled"},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("unserved MetadataOptions must caveat, not block: %s", findingsText(fs))
+	}
+	c := strings.Join(m.Caveats, "\n")
+	if !strings.Contains(c, "fd00:ec2::254") || !strings.Contains(c, "tags/instance") {
+		t.Fatalf("HttpProtocolIpv6 / InstanceMetadataTags enabled must each surface a caveat: %v", m.Caveats)
+	}
+	if mo, _ := m.Spec["metadataOptions"].(map[string]any); mo["httpTokens"] != "required" {
+		t.Fatalf("HttpTokens must still map alongside the caveats: %#v", m.Spec["metadataOptions"])
+	}
+	w, _ := translateEC2Instance("Win", map[string]any{
+		"ImageId": "windows-server-2022", "MetadataOptions": map[string]any{"HttpTokens": "required"},
+	}, nil)
+	if !strings.Contains(strings.Join(w.Caveats, "\n"), "Windows") {
+		t.Fatalf("MetadataOptions on a Windows guest must caveat that it has no effect: %v", w.Caveats)
+	}
+}
+
+// Values outside the AWS enum/range — or an unknown sub-property — refuse rather than being guessed.
+func TestTranslate_EC2Instance_MetadataOptionsInvalidRefuses(t *testing.T) {
+	for name, mo := range map[string]map[string]any{
+		"tokens":   {"HttpTokens": "sometimes"},
+		"endpoint": {"HttpEndpoint": "on"},
+		"hop-0":    {"HttpPutResponseHopLimit": float64(0)},
+		"hop-65":   {"HttpPutResponseHopLimit": float64(65)},
+		"hop-text": {"HttpPutResponseHopLimit": "two"},
+		"unknown":  {"HttpTokens": "required", "HttpFoo": "bar"},
+	} {
+		_, fs := translateEC2Instance("Web", map[string]any{"ImageId": "ubuntu-24.04", "MetadataOptions": mo}, nil)
+		if len(fs) == 0 {
+			t.Errorf("%s: an invalid MetadataOptions %#v must refuse", name, mo)
+		}
+	}
+	if _, fs := translateEC2Instance("Web", map[string]any{"ImageId": "ubuntu-24.04", "MetadataOptions": "nope"}, nil); len(fs) == 0 {
+		t.Errorf("a non-object MetadataOptions must refuse")
+	}
+}

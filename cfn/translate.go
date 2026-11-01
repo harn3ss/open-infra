@@ -709,6 +709,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		"SubnetId": true, "NetworkInterfaces": true, "Tags": true, "AvailabilityZone": true,
 		"Monitoring": true, "EbsOptimized": true, "IamInstanceProfile": true,
 		"PrivateIpAddress": true, "SourceDestCheck": true, "DisableApiTermination": true,
+		"MetadataOptions": true,
 	}
 	var f []Finding
 	var cav []string
@@ -953,13 +954,25 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	cav = append(cav, eipExposeVM(id, spec, ctx)...)
 
 	// IamInstanceProfile -> spec.instanceRole: follow the profile to its in-stack AWS::IAM::Role and
-	// bind the VM to that kind: Role (the instance assumes it via the container-credentials path, no static
+	// bind the VM to that kind: Role (the guest gets its credentials from instance metadata, no static
 	// keys). An out-of-stack profile/arn can't be resolved to a kind: Role here — caveat, don't guess.
 	if _, present := props["IamInstanceProfile"]; present {
 		if role, ok := resolveInstanceRole(id, ctx); ok {
 			spec["instanceRole"] = role
 		} else {
 			cav = append(cav, "IamInstanceProfile could not be resolved to an in-stack AWS::IAM::Role — set spec.instanceRole to the kind: Role the VM should assume (it must trust the vm principal)")
+		}
+	}
+
+	// MetadataOptions -> spec.metadataOptions: the in-guest instance metadata service (169.254.169.254).
+	if raw, present := props["MetadataOptions"]; present {
+		mo, ff, cc := ec2MetadataOptions(id, raw)
+		f, cav = append(f, ff...), append(cav, cc...)
+		if len(mo) > 0 {
+			spec["metadataOptions"] = mo
+		}
+		if vmOS, _ := spec["os"].(string); strings.HasPrefix(vmOS, "windows-") {
+			cav = append(cav, "MetadataOptions has no effect on a Windows guest — open-infra serves instance metadata to Linux guests only")
 		}
 	}
 
@@ -976,6 +989,60 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	}
 	m.Caveats = cav
 	return m, f
+}
+
+// ec2MetadataOptions maps an AWS::EC2::Instance MetadataOptions block onto spec.metadataOptions, the
+// settings of the in-guest instance metadata service. HttpTokens, HttpPutResponseHopLimit and
+// HttpEndpoint map 1:1 (same names, same values, same hop-limit semantics). HttpProtocolIpv6 (the
+// fd00:ec2::254 endpoint) and InstanceMetadataTags (tags under /latest/meta-data/tags/instance) are not
+// served: enabling them is a caveat, not a refusal — the IPv4 endpoint still answers every other path.
+// A value outside the AWS enum/range refuses rather than being guessed.
+func ec2MetadataOptions(id string, raw any) (map[string]any, []Finding, []string) {
+	mo, ok := raw.(map[string]any)
+	if !ok {
+		return nil, []Finding{{"Resource " + id, "MetadataOptions could not be resolved to an object — set spec.metadataOptions natively"}}, nil
+	}
+	f := blockUnknownProps(id+".MetadataOptions", mo, map[string]bool{
+		"HttpEndpoint": true, "HttpTokens": true, "HttpPutResponseHopLimit": true,
+		"HttpProtocolIpv6": true, "InstanceMetadataTags": true,
+	})
+	var cav []string
+	out := map[string]any{}
+	enum := func(prop string, allowed ...string) string {
+		v, present := mo[prop]
+		if !present {
+			return ""
+		}
+		if s, ok := concrete(v); ok {
+			for _, a := range allowed {
+				if s == a {
+					return s
+				}
+			}
+		}
+		f = append(f, Finding{"Resource " + id, fmt.Sprintf("MetadataOptions.%s must be one of %s (got %v)", prop, strings.Join(allowed, "|"), v)})
+		return ""
+	}
+	if s := enum("HttpTokens", "optional", "required"); s != "" {
+		out["httpTokens"] = s
+	}
+	if s := enum("HttpEndpoint", "enabled", "disabled"); s != "" {
+		out["httpEndpoint"] = s
+	}
+	if v, present := mo["HttpPutResponseHopLimit"]; present {
+		if n := toInt(v); n >= 1 && n <= 64 {
+			out["httpPutResponseHopLimit"] = n
+		} else {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("MetadataOptions.HttpPutResponseHopLimit must be an integer 1..64 (got %v)", v)})
+		}
+	}
+	if enum("HttpProtocolIpv6", "enabled", "disabled") == "enabled" {
+		cav = append(cav, "MetadataOptions.HttpProtocolIpv6=enabled: instance metadata is served on IPv4 (169.254.169.254) only — the IPv6 endpoint fd00:ec2::254 is not served")
+	}
+	if enum("InstanceMetadataTags", "enabled", "disabled") == "enabled" {
+		cav = append(cav, "MetadataOptions.InstanceMetadataTags=enabled: instance tags are not served under /latest/meta-data/tags/instance")
+	}
+	return out, f, cav
 }
 
 // primaryNIC returns the NetworkInterface with DeviceIndex 0 (the primary), or the first entry when
