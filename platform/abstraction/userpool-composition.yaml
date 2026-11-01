@@ -201,6 +201,9 @@ spec:
                     name: {{ $name }}
                     namespace: {{ $ns }}
                     labels: { openinfra.dev/userpool: "true" }
+                    # Traefik runs on the host network: told to dial the Service's ClusterIP (nativelb) rather than a
+                    # pod IP, its connection reaches the pod from the kube-ovn join subnet, which the isolation policy admits.
+                    annotations: { traefik.ingress.kubernetes.io/service.nativelb: "true" }
                   spec:
                     type: ClusterIP
                     selector: { app: {{ $name }}-userpool }
@@ -303,10 +306,10 @@ spec:
                           # host-sourced traffic (hostNetwork Traefik; NodePort, LoadBalancer and external-IP Services
                           # through kube-proxy) arrives as a node's kube-ovn join IP
                           - ipBlock: { cidr: 100.64.0.0/16 }
-                          # the ingress controller. Traefik runs on the host network and dials a pod by its IP, so the
-                          # connection comes from the node's own address, not the join subnet. kube-system's host-network
-                          # pods carry the node addresses, so admitting the namespace admits them (as the Application policy does).
+                          # the ingress controller, should it run on the pod network (on the host network it is admitted
+                          # through the join subnet: it dials the Service's ClusterIP, see the Service's nativelb annotation)
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
                           # Prometheus, scraping metrics
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
                             podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }

@@ -96,6 +96,11 @@ wait_pod() {
 
 # minio_cleanup removes the bucket and the scoped MinIO users/policies the Bucket/StaticSite setups mint, via a
 # one-shot pod in the minio namespace (root creds come from secret/minio and never leave that namespace).
+# The MinIO user a bucket-owning claim gets (bucket-composition / staticsite-composition $appUser).
+app_user() { # <Kind> <namespace> <name>
+  local base; base="$(printf '%s-%s' "$2" "$3" | tr . - | cut -c1-40)"; base="${base%-}"
+  printf 'app-%s-%s' "$base" "$(printf '%s/%s/%s' "$1" "$2" "$3" | sha256sum | cut -c1-10)"
+}
 minio_cleanup() { # <bucket> <minio-user>...
   local bucket="$1"; shift
   local pod="cfprobe-clean-$SFX"
@@ -146,7 +151,8 @@ cleanup() {
   for j in $(kubectl -n "$MINIO_NS" get jobs -o name 2>/dev/null | grep "/$BCLAIM-bucket-"); do
     kubectl -n "$MINIO_NS" delete "$j" --ignore-not-found >/dev/null 2>&1
   done
-  minio_cleanup "$BUCKET" "app-$SITE" "app-$BCLAIM"
+  minio_cleanup "$BUCKET" "app-$SITE" "app-$BCLAIM" "$(app_user StaticSite "$CFN_NS" "$SITE")" "$(app_user Bucket "$CFN_NS" "$BCLAIM")"
+  kubectl -n "$MINIO_NS" delete secret "bucket-owner-$BUCKET" --ignore-not-found >/dev/null 2>&1  # the bucket is gone, so is its owner record
   kubectl delete ns "$CLIENT_NS" --ignore-not-found --wait=false >/dev/null 2>&1
   for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1; done
   for k in "${CREATED_KEYS[@]:-}";  do [ -n "$k" ] && kubectl -n "$SHIM_NS" delete secret "$k" --ignore-not-found >/dev/null 2>&1; done

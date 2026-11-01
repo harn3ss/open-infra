@@ -587,23 +587,28 @@ func TestIsolation_EveryPodRunningCompositionIsCovered(t *testing.T) {
 	}
 }
 
-// Traefik runs on the host network and dials a backend pod by its IP, so the connection comes from the
-// node's own address, not the join subnet. A peer that names the Traefik pod by label does not match
-// that address on kube-ovn, and the policy then silently drops every request the Ingress forwards.
-// Admit kube-system as a namespace instead (its host-network pods carry the node addresses).
-func TestIsolation_IngressControllerIsAdmittedByNamespace(t *testing.T) {
-	files, err := filepath.Glob("../../platform/abstraction/*-composition.yaml")
+// Traefik runs on the host network. Dialing a pod IP, its connection comes from the node's own address
+// (kube-ovn routes the pod network with the node address as source), which no isolation policy admits,
+// so every request the Ingress forwards would be dropped. Dialing the Service's ClusterIP instead (the
+// nativelb annotation), it comes from the join subnet, which the policies admit. Every composition that
+// renders an Ingress must mark its backend Service so.
+func TestIsolation_IngressBackendsAreDialedByClusterIP(t *testing.T) {
+	files, err := filepath.Glob("../../platform/abstraction/*.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	files = append(files, "../../platform/abstraction/composition.yaml")
 	for _, f := range files {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(b), "podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }") {
-			t.Errorf("%s admits the ingress controller by pod label; admit the kube-system namespace instead", filepath.Base(f))
+		src := string(b)
+		ingresses := strings.Count(src, "kind: Ingress\n")
+		if ingresses == 0 {
+			continue
+		}
+		if n := strings.Count(src, `traefik.ingress.kubernetes.io/service.nativelb: "true"`); n < ingresses {
+			t.Errorf("%s renders %d Ingress(es) but marks %d backend Service(s) nativelb", filepath.Base(f), ingresses, n)
 		}
 	}
 }

@@ -69,6 +69,11 @@ kubectl -n "$MINIO_NS" get secret minio >/dev/null 2>&1 || inconclusive "secret/
 
 # minio_cleanup removes the bucket and the scoped MinIO users/policies a StaticSite/Bucket setup mints, via a
 # one-shot pod in the minio namespace (root creds come from secret/minio and never leave that namespace).
+# The MinIO user a bucket-owning claim gets (bucket-composition / staticsite-composition $appUser).
+app_user() { # <Kind> <namespace> <name>
+  local base; base="$(printf '%s-%s' "$2" "$3" | tr . - | cut -c1-40)"; base="${base%-}"
+  printf 'app-%s-%s' "$base" "$(printf '%s/%s/%s' "$1" "$2" "$3" | sha256sum | cut -c1-10)"
+}
 minio_cleanup() { # <bucket> <minio-user>...
   local bucket="$1"; shift
   local pod="ssprobe-clean-$SFX"
@@ -106,7 +111,8 @@ cleanup() {
   log "cleanup: StaticSite $SITE, namespace $NS, setup Job, MinIO bucket $BUCKET + user app-$SITE"
   kubectl -n "$NS" delete staticsite "$SITE" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1
   kubectl -n "$MINIO_NS" delete job "$SITE-site-setup" --ignore-not-found >/dev/null 2>&1
-  minio_cleanup "$BUCKET" "app-$SITE"
+  minio_cleanup "$BUCKET" "app-$SITE" "$(app_user StaticSite "$NS" "$SITE")"
+  kubectl -n "$MINIO_NS" delete secret "bucket-owner-$BUCKET" --ignore-not-found >/dev/null 2>&1  # the bucket is gone, so is its owner record
   kubectl delete ns "$NS" --ignore-not-found --wait=false >/dev/null 2>&1
   rm -rf "$TMP"
 }

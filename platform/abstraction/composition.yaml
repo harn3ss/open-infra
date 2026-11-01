@@ -487,7 +487,9 @@ spec:
                 manifest:
                   apiVersion: v1
                   kind: Service
-                  metadata: { name: {{ $name }}, namespace: {{ $ns }} }
+                  # Traefik runs on the host network: told to dial the Service's ClusterIP (nativelb) rather than a
+                  # pod IP, its connection reaches the pod from the kube-ovn join subnet, which the isolation policy admits.
+                  metadata: { name: {{ $name }}, namespace: {{ $ns }}, annotations: { traefik.ingress.kubernetes.io/service.nativelb: "true" } }
                   spec:
                     selector: { app.kubernetes.io/name: {{ $name }} }
                     ports:
