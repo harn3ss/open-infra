@@ -113,6 +113,20 @@ func TestPassRole_ApplicationCannotTakeAVMServiceAccount(t *testing.T) {
 	}
 }
 
+// An Execution's credentials Secret is named by the aws-shim alone and never changes: a hand-made
+// Execution naming another's Secret is refused at admission (the controller also checks ownership).
+func TestPassRole_ExecutionCredentialsAreTheShims(t *testing.T) {
+	const shimYAML = "../../platform/aws-shim/aws-shim.yaml"
+	p := yamlDoc(t, shimYAML, "ValidatingAdmissionPolicy", "openinfra-execution-credentials")
+	mustContain(t, "execution credentials policy", p,
+		"apiGroups: [openinfra.dev]", "operations: [CREATE, UPDATE]", "resources: [executions]",
+		"failurePolicy: Fail",
+		"request.userInfo.username == 'system:serviceaccount:open-infra-aws-shim:aws-shim'",
+		"variables.secret == variables.oldSecret && variables.credNS == variables.oldCredNS")
+	b := yamlDoc(t, shimYAML, "ValidatingAdmissionPolicyBinding", "openinfra-execution-credentials")
+	mustContain(t, "execution credentials binding", b, "policyName: openinfra-execution-credentials", "validationActions: [")
+}
+
 // The VM credentials endpoint confirms a token is the VM launcher pod's own, which needs the shim to
 // read VirtualMachineInstances (status.activePods, spec.volumes). Read-only.
 func TestPassRole_ShimCanReadVMIsForTheLauncherCheck(t *testing.T) {

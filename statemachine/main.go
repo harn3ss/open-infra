@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"os/signal"
@@ -145,6 +146,27 @@ func (c *controller) run(mainCtx, ctx context.Context, e Execution) {
 		return
 	}
 
+	// Load the state-machine role's STS session (minted by the shim at StartExecution) so Task
+	// invocations run under the role's authority — before claiming, because the shim writes the Secret
+	// just after the Execution: a brand-new execution whose Secret is not there yet (or not yet its own)
+	// is left for the next poll. Past that grace, or for any other read failure, the execution fails
+	// rather than running Tasks unauthenticated or under a Secret that is not its own.
+	credNS := e.Spec.CredentialsNamespace
+	if credNS == "" {
+		credNS = ns
+	}
+	creds, err := c.client.getCredentials(ctx, credNS, e.Spec.CredentialsSecret, e.Metadata.UID)
+	if err != nil {
+		if errors.Is(err, errCredsPending) && e.Status.Phase == "" && young(e.Metadata.CreationTS, credsGrace) {
+			return
+		}
+		c.finalize(ns, name, map[string]any{
+			"phase": "Failed", "error": ErrRuntime,
+			"cause": "cannot read execution credentials: " + err.Error(), "stoppedAt": now(),
+		})
+		return
+	}
+
 	resuming := e.Status.Phase == "Running" && e.Status.CurrentState != ""
 
 	var startState string
@@ -196,23 +218,6 @@ func (c *controller) run(mainCtx, ctx context.Context, e Execution) {
 	ctxObj := map[string]any{
 		"Execution":    map[string]any{"Id": e.Metadata.UID, "Name": name, "StartTime": startedAt, "Input": input},
 		"StateMachine": map[string]any{"Name": smName},
-	}
-
-	// Load the state-machine role's STS session (minted by the shim at StartExecution) so Task
-	// invocations run under the role's authority. A missing/unreadable creds Secret fails the execution
-	// rather than silently running Tasks unauthenticated — a state machine created with a role must run
-	// its Tasks under that role.
-	credNS := e.Spec.CredentialsNamespace
-	if credNS == "" {
-		credNS = ns
-	}
-	creds, err := c.client.getCredentials(ctx, credNS, e.Spec.CredentialsSecret)
-	if err != nil {
-		c.finalize(ns, name, map[string]any{
-			"phase": "Failed", "error": ErrRuntime,
-			"cause": "cannot read execution credentials: " + err.Error(), "stoppedAt": now(),
-		})
-		return
 	}
 
 	// Task states invoke Functions in the execution's namespace, under the role's STS session (creds).
@@ -288,4 +293,14 @@ func (c *controller) finalize(ns, name string, status map[string]any) {
 	if err := c.client.patchStatus(pctx, ns, name, status); err != nil {
 		log.Printf("execution %s/%s: final status patch failed: %v", ns, name, err)
 	}
+}
+
+// credsGrace is how long a brand-new execution waits for its credentials Secret (the aws-shim writes
+// it immediately after the Execution) before failing.
+const credsGrace = 30 * time.Second
+
+// young reports whether an RFC3339 creation timestamp is less than d ago. Unparseable is not young.
+func young(created string, d time.Duration) bool {
+	t, err := time.Parse(time.RFC3339, created)
+	return err == nil && time.Since(t) < d
 }

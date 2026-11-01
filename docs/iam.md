@@ -200,6 +200,7 @@ pass the Role, as on AWS:
 | `VirtualMachine` `spec.instanceRole` | admission policy `openinfra-pass-role` | the requester (the console and the CloudFormation front door write as the user) |
 | ServiceAccount annotation `openinfra.dev/instance-role` (what the VM credentials endpoint trusts) | admission policy `openinfra-instance-role-binding` | the requester; the VM composition sets it through provider-kubernetes |
 | `StateMachine` `roleArn` (CreateStateMachine / UpdateStateMachine) | the aws-shim | the caller; StartExecution also requires the Role's trust to name the caller |
+| `Execution` `credentialsSecret` (the role session a run uses) | admission policy `openinfra-execution-credentials` + the statemachine controller | set only by the aws-shim at StartExecution, never changed; the controller uses only a Secret the Execution owns |
 
 Each applies when the Role is set or changed. `Application` `spec.assumeRole` needs no PassRole: as with
 IRSA, the Role's trust names the workload's ServiceAccount, and only that identity can assume it.

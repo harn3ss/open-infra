@@ -441,21 +441,22 @@ func (h *sfnHandler) createExecution(ctx context.Context, body map[string]any, c
 
 	// Execution-role authority: mint an STS session for the state machine's role and hand it to the
 	// controller via a per-execution Secret, so every Task runs under the role (the #168 pattern).
-	credsSecret := ""
+	// Minted first (no side effects), so a trust or role failure leaves nothing behind.
+	var creds *executionCreds
 	if roleName, _, _ := unstructured.NestedString(sm.Object, "spec", "roleArn"); roleName != "" {
-		secretName, aerr := h.mintExecutionCreds(ctx, roleName, execName, claims)
+		c, aerr := h.mintExecutionCreds(ctx, roleName, execName, claims)
 		if aerr != nil {
 			return "", "", smType, aerr
 		}
-		credsSecret = secretName
+		creds = c
 	}
 
 	spec := map[string]any{
 		"stateMachineRef": map[string]any{"name": smName},
 		"input":           input,
 	}
-	if credsSecret != "" {
-		spec["credentialsSecret"] = credsSecret
+	if creds != nil {
+		spec["credentialsSecret"] = executionCredsSecretName(execName)
 		spec["credentialsNamespace"] = h.ns
 	}
 	obj := &unstructured.Unstructured{Object: map[string]any{
@@ -464,15 +465,21 @@ func (h *sfnHandler) createExecution(ctx context.Context, body map[string]any, c
 		"metadata":   map[string]any{"name": execName, "namespace": h.ns},
 		"spec":       spec,
 	}}
-	if _, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
+	created, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).Create(ctx, obj, metav1.CreateOptions{})
+	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			return "", "", smType, &sfnErr{http.StatusBadRequest, "ExecutionAlreadyExists", "Execution " + execName + " already exists."}
 		}
-		// Best-effort: don't leave an orphaned creds Secret if the Execution create failed.
-		if credsSecret != "" {
-			_ = h.cs.CoreV1().Secrets(h.ns).Delete(ctx, credsSecret, metav1.DeleteOptions{})
-		}
 		return "", "", smType, &sfnErr{http.StatusInternalServerError, "InternalFailure", err.Error()}
+	}
+	// The Secret is written after the Execution, owned by it: the controller hands the session only to
+	// the Execution whose UID owns the Secret, so naming another execution's Secret gets nothing, and the
+	// Secret is garbage-collected with its Execution.
+	if creds != nil {
+		if aerr := h.storeExecutionCreds(ctx, created, creds); aerr != nil {
+			_ = h.dyn.Resource(gvrExecutions).Namespace(h.ns).Delete(ctx, execName, metav1.DeleteOptions{})
+			return "", "", smType, aerr
+		}
 	}
 	return smName, execName, smType, nil
 }
@@ -554,50 +561,72 @@ type sfnErr struct {
 
 // mintExecutionCreds resolves the role, enforces the caller-is-trusted (PassRole analog) gate, mints an
 // STS session, and stores it in a per-execution Secret the controller injects into Tasks.
-func (h *sfnHandler) mintExecutionCreds(ctx context.Context, roleName, execName string, claims iam.Claims) (string, *sfnErr) {
+func (h *sfnHandler) mintExecutionCreds(ctx context.Context, roleName, execName string, claims iam.Claims) (*executionCreds, *sfnErr) {
 	if h.minter == nil || h.roles == nil {
-		return "", &sfnErr{http.StatusBadRequest, "InvalidArn",
+		return nil, &sfnErr{http.StatusBadRequest, "InvalidArn",
 			"this state machine has a roleArn but execution-role authority is not enabled on this shim (STS disabled)."}
 	}
 	trust, groups, ok := h.roles.Resolve(ctx, roleName)
 	if !ok {
-		return "", &sfnErr{http.StatusBadRequest, "InvalidArn", "role " + roleName + " does not exist."}
+		return nil, &sfnErr{http.StatusBadRequest, "InvalidArn", "role " + roleName + " does not exist."}
 	}
 	caller := callerName(claims)
 	if !trusted(caller, trust) {
-		return "", &sfnErr{http.StatusForbidden, "AccessDeniedException",
+		return nil, &sfnErr{http.StatusForbidden, "AccessDeniedException",
 			caller + " is not authorized to run executions under role " + roleName + " (not named by its trust policy)."}
 	}
 	akid, sk, token, exp, err := h.minter.Mint(roleName, groups, execName, caller, awssts.DefaultDuration)
 	if err != nil {
-		return "", &sfnErr{http.StatusInternalServerError, "InternalFailure", "could not mint execution credentials."}
+		return nil, &sfnErr{http.StatusInternalServerError, "InternalFailure", "could not mint execution credentials."}
 	}
-	secretName := execName + "-creds"
+	return &executionCreds{role: roleName, akid: akid, sk: sk, token: token, exp: exp}, nil
+}
+
+// executionCreds is a minted execution-role session, not yet stored.
+type executionCreds struct {
+	role, akid, sk, token string
+	exp                   time.Time
+}
+
+// Label on an execution credentials Secret. The statemachine controller reads only a Secret whose
+// controller owner reference is the Execution it runs (statemachine/k8s.go).
+const execCredsLabel = "openinfra.dev/statemachine-creds"
+
+func executionCredsSecretName(execName string) string { return execName + "-creds" }
+
+// storeExecutionCreds writes the session into a Secret owned by the Execution (controller owner
+// reference with its UID). A leftover Secret of the same name, from an earlier execution that had the
+// same name, is replaced.
+func (h *sfnHandler) storeExecutionCreds(ctx context.Context, exec *unstructured.Unstructured, c *executionCreds) *sfnErr {
+	isController := true
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: secretName, Namespace: h.ns,
+			Name: executionCredsSecretName(exec.GetName()), Namespace: h.ns,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":     "open-infra-aws-shim",
-				"openinfra.dev/statemachine-creds": "true",
+				"app.kubernetes.io/managed-by": "open-infra-aws-shim",
+				execCredsLabel:                 "true",
 			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "openinfra.dev/v1", Kind: "Execution",
+				Name: exec.GetName(), UID: exec.GetUID(), Controller: &isController,
+			}},
 		},
 		Data: map[string][]byte{
-			"accessKeyId":     []byte(akid),
-			"secretAccessKey": []byte(sk),
-			"sessionToken":    []byte(token),
-			"expiration":      []byte(exp.UTC().Format(time.RFC3339)),
-			"role":            []byte(roleName),
+			"accessKeyId":     []byte(c.akid),
+			"secretAccessKey": []byte(c.sk),
+			"sessionToken":    []byte(c.token),
+			"expiration":      []byte(c.exp.UTC().Format(time.RFC3339)),
+			"role":            []byte(c.role),
 		},
 	}
-	if _, err := h.cs.CoreV1().Secrets(h.ns).Create(ctx, sec, metav1.CreateOptions{}); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			if _, uerr := h.cs.CoreV1().Secrets(h.ns).Update(ctx, sec, metav1.UpdateOptions{}); uerr == nil {
-				return secretName, nil
-			}
-		}
-		return "", &sfnErr{http.StatusInternalServerError, "InternalFailure", "could not store execution credentials: " + err.Error()}
+	_, err := h.cs.CoreV1().Secrets(h.ns).Create(ctx, sec, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		_, err = h.cs.CoreV1().Secrets(h.ns).Update(ctx, sec, metav1.UpdateOptions{})
 	}
-	return secretName, nil
+	if err != nil {
+		return &sfnErr{http.StatusInternalServerError, "InternalFailure", "could not store execution credentials: " + err.Error()}
+	}
+	return nil
 }
 
 func (h *sfnHandler) stopExecution(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {

@@ -1091,7 +1091,10 @@ Secret the controller injects into every Task. A Task therefore runs under the *
 do exactly what the role's policies grant and no more — instead of the controller's ambient position (a
 confused deputy would let a Task act with the controller's credentials). Running a state machine under a role
 requires the caller to be trusted to pass it (fail closed if the role is unknown or its trust does not name
-the caller). `StopExecution` aborts cooperatively through the controller, which writes the terminal `ABORTED`
+the caller). The session's Secret is owned by its Execution (removed with it), and the controller gives an
+execution only the Secret its own Execution owns; only the shim may name a credentials Secret on an
+Execution (admission policy `openinfra-execution-credentials`), so an Execution created by hand cannot borrow
+another execution's role. `StopExecution` aborts cooperatively through the controller, which writes the terminal `ABORTED`
 state, so the shim never races the running execution.
 
 `probe/aws-shim-stepfunctions.sh` proves, against the deployed shim + controller: an AWS-authored workflow

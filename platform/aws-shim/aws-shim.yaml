@@ -445,6 +445,51 @@ subjects:
     name: openinfra-statemachine
     namespace: crossplane-system
 ---
+# The credentials fields of an Execution are the shim's alone: only the shim names a credentials Secret
+# (at StartExecution, after the caller passed the role's trust check), and no one changes it afterwards.
+# The controller also hands an execution only the Secret that execution owns (statemachine/k8s.go), so
+# a hand-made Execution naming another's Secret gets nothing; this refuses it at the door.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-execution-credentials
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [openinfra.dev]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [executions]
+  variables:
+    - name: secret
+      expression: "has(object.spec) && has(object.spec.credentialsSecret) ? object.spec.credentialsSecret : ''"
+    - name: credNS
+      expression: "has(object.spec) && has(object.spec.credentialsNamespace) ? object.spec.credentialsNamespace : ''"
+    - name: oldSecret
+      expression: "request.operation == 'UPDATE' && has(oldObject.spec) && has(oldObject.spec.credentialsSecret) ? oldObject.spec.credentialsSecret : ''"
+    - name: oldCredNS
+      expression: "request.operation == 'UPDATE' && has(oldObject.spec) && has(oldObject.spec.credentialsNamespace) ? oldObject.spec.credentialsNamespace : ''"
+  validations:
+    - expression: >-
+        request.operation == 'CREATE'
+        ? (variables.secret == '' && variables.credNS == '') ||
+          request.userInfo.username == 'system:serviceaccount:open-infra-aws-shim:aws-shim'
+        : variables.secret == variables.oldSecret && variables.credNS == variables.oldCredNS
+      reason: Forbidden
+      messageExpression: >-
+        request.operation == 'CREATE'
+        ? 'spec.credentialsSecret and spec.credentialsNamespace are set by the aws-shim at StartExecution, not by ' + request.userInfo.username
+        : 'spec.credentialsSecret and spec.credentialsNamespace cannot change after the Execution is created'
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-execution-credentials
+spec:
+  policyName: openinfra-execution-credentials
+  validationActions: [Warn, Audit]
+---
 # Owner resolution: read kind: User (NEVER Secrets) in the console namespace, to map an access
 # key's owner to its current groups. get+list only; nothing mutating.
 apiVersion: rbac.authorization.k8s.io/v1

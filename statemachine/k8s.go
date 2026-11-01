@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -162,10 +163,18 @@ func (c *k8sClient) getStateMachineDefinition(ctx context.Context, ns, name stri
 	return sm.Spec.Definition, nil
 }
 
+// errCredsPending: the execution's credentials Secret is missing, or is not (yet) this execution's own.
+// The aws-shim writes it just after creating the Execution, so a brand-new execution waits for it.
+var errCredsPending = errors.New("credentials secret is not this execution's own")
+
 // getCredentials reads the state-machine role's STS session from a Secret. The Secret's data holds
 // accessKeyId / secretAccessKey / sessionToken (base64, per the core/v1 Secret encoding). Returns nil
 // (no error) when name is empty — a state machine without a role runs Tasks with no injected identity.
-func (c *k8sClient) getCredentials(ctx context.Context, ns, name string) (*taskCreds, error) {
+//
+// The Secret must be owned (controller owner reference) by the Execution with UID execUID — the aws-shim
+// writes it that way. spec.credentialsSecret is just a name, so without this check an Execution could
+// name another execution's Secret and run its Tasks under that execution's role.
+func (c *k8sClient) getCredentials(ctx context.Context, ns, name, execUID string) (*taskCreds, error) {
 	if name == "" {
 		return nil, nil
 	}
@@ -174,14 +183,33 @@ func (c *k8sClient) getCredentials(ctx context.Context, ns, name string) (*taskC
 	if err != nil {
 		return nil, err
 	}
+	if code == http.StatusNotFound {
+		return nil, fmt.Errorf("read credentials secret %s/%s: %w", ns, name, errCredsPending)
+	}
 	if code != http.StatusOK {
 		return nil, fmt.Errorf("read credentials secret %s/%s: HTTP %d: %s", ns, name, code, truncate(string(b), 256))
 	}
 	var sec struct {
+		Metadata struct {
+			OwnerReferences []struct {
+				Kind       string `json:"kind"`
+				UID        string `json:"uid"`
+				Controller *bool  `json:"controller"`
+			} `json:"ownerReferences"`
+		} `json:"metadata"`
 		Data map[string]string `json:"data"`
 	}
 	if err := json.Unmarshal(b, &sec); err != nil {
 		return nil, err
+	}
+	owned := false
+	for _, o := range sec.Metadata.OwnerReferences {
+		if o.Kind == "Execution" && execUID != "" && o.UID == execUID && o.Controller != nil && *o.Controller {
+			owned = true
+		}
+	}
+	if !owned {
+		return nil, fmt.Errorf("credentials secret %s/%s: %w", ns, name, errCredsPending)
 	}
 	dec := func(k string) string {
 		v, err := base64.StdEncoding.DecodeString(sec.Data[k])
