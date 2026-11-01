@@ -186,7 +186,12 @@ printf '%s' "$H" | head -1 | grep -q " 200" && grep -q "LSFIX_SITE_$SFX" "$TMP/d
 printf '%s' "$H" | grep -qi '^x-fixture: lift-and-shift' || fail "the response-headers policy's X-Fixture header is missing"
 log "  ✓ site serves its origin, SPA fallback + response headers (TLS from the cluster issuer; see the fidelity summary)"
 U="$("${A[@]}" s3 presign "s3://$APPB/hello.txt" --expires-in 600)"
-[ "$(curl -s "${CURL_TLS[@]}" -m 10 "$U")" = "hello from $STACK" ] || fail "the pre-signed link did not open: $U"
+PS_BODY="$(curl -s "${CURL_TLS[@]}" -m 10 -o - -w '\n%{http_code} connect=%{time_connect}s tls=%{time_appconnect}s first-byte=%{time_starttransfer}s' "$U"; echo " curl-exit=$?")"
+if [ "$(printf '%s' "$PS_BODY" | head -n -1)" != "hello from $STACK" ]; then
+  # Say what happened (status, where it stalled), and whether an immediate retry opens it.
+  RETRY="$(curl -s "${CURL_TLS[@]}" -m 10 -o /dev/null -w '%{http_code} first-byte=%{time_starttransfer}s' "$U"; echo " curl-exit=$?")"
+  fail "the pre-signed link did not open (first try: $(printf '%s' "$PS_BODY" | tail -n 1); retry: $RETRY): ${U%%\?*}"
+fi
 log "  ✓ a pre-signed S3 link opens"
 
 # --- 6. teardown leaves nothing behind -----------------------------------------------------------------
