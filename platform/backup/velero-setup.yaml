@@ -1,13 +1,52 @@
 # One-time setup for Velero: create the `velero` bucket in MinIO and write the
 # velero-cloud-credentials secret (AWS-format creds for the S3 backup store),
-# reusing the openinfra-bucket-setup ServiceAccount (cluster-wide secret create)
 # and the MinIO root creds via env — so no credentials are ever committed.
+#
+# It has its OWN ServiceAccount scoped to writing that one secret in the velero namespace, rather than
+# the cluster-wide-secret openinfra-bucket-setup SA the Bucket compositions use — this Job only ever
+# writes velero-cloud-credentials in the velero namespace, so it needs no reach anywhere else.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: velero
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
+---
+# The Job runs in the minio namespace (to read the MinIO root secret via env); its SA lives there too,
+# and a RoleBinding in the velero namespace lets it write just the credentials secret there.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: velero-setup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: velero-setup-creds-writer
+  namespace: velero
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+rules:
+  # Write only the backup-store credentials secret into the velero namespace.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: velero-setup-creds-writer
+  namespace: velero
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: velero-setup-creds-writer }
+subjects:
+  - kind: ServiceAccount
+    name: velero-setup
+    namespace: minio
 ---
 apiVersion: batch/v1
 kind: Job
@@ -27,7 +66,7 @@ spec:
   backoffLimit: 20
   template:
     spec:
-      serviceAccountName: openinfra-bucket-setup
+      serviceAccountName: velero-setup
       restartPolicy: OnFailure
       containers:
         - name: setup
