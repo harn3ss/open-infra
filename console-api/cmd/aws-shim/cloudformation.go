@@ -446,6 +446,10 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 	}
 	h.runStackOp(name, "DeleteStack", "DELETE_FAILED", ap, func(bctx context.Context) error {
 		_, derr := cfn.Destroy(bctx, h.opts(name, nil), ap)
+		if derr == nil {
+			// As on AWS, deleting a stack deletes its change sets.
+			h.deleteChangeSetsOf(bctx, name)
+		}
 		return derr
 	})
 	h.writeResult(w, requestID, "DeleteStack", "")
@@ -972,4 +976,20 @@ func nameFromCFNArn(v, marker string) (string, bool) {
 		rest = rest[:j]
 	}
 	return rest, rest != ""
+}
+
+// deleteChangeSetsOf removes every change-set record of a stack (best effort; a leftover record
+// provisions nothing, it would only be listed).
+func (h *cfnDoorway) deleteChangeSetsOf(ctx context.Context, stack string) {
+	cms := h.shimDyn.Resource(configMapGVR).Namespace(h.ns)
+	list, err := cms.List(ctx, metav1.ListOptions{LabelSelector: "cfn.openinfra.dev/changeset=" + stack})
+	if err != nil {
+		h.logger.Warn("cfn: could not list the stack's change sets", "stack", stack, "error", err.Error())
+		return
+	}
+	for _, it := range list.Items {
+		if err := cms.Delete(ctx, it.GetName(), metav1.DeleteOptions{}); err != nil {
+			h.logger.Warn("cfn: could not delete a change set", "stack", stack, "changeSet", it.GetName(), "error", err.Error())
+		}
+	}
 }
