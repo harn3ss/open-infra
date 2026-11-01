@@ -24,6 +24,7 @@ on:
       - "platform/abstraction/**"
       # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
       - "platform/console/manifests/**"
+      - "platform/storage/longhorn*.yaml" # volume_render_test.go pins the Volume's classes to Immediate binding
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
       - "open-appsync/**" # the VTL engine + resolver probe
@@ -46,6 +47,7 @@ on:
       - "platform/abstraction/**"
       # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
       - "platform/console/manifests/**"
+      - "platform/storage/longhorn*.yaml" # volume_render_test.go pins the Volume's classes to Immediate binding
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
       - "open-appsync/**" # the VTL engine + resolver probe

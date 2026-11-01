@@ -47,6 +47,17 @@ spec:
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: pvc
             spec:
+              # Ready only once the claim is Bound — the disk is provisioned and usable, which is
+              # when AWS reports a volume "available". NOT the provider-kubernetes default (Ready as
+              # soon as the PVC object exists): an encrypted volume stays Pending until the
+              # volume-crypto reconciler materializes its LUKS passphrase Secret, and a Ready claim
+              # over a Pending PVC let a CloudFormation stack complete on a disk that was not usable.
+              # Every class this composition selects (longhorn, longhorn-migratable,
+              # longhorn-encrypted) binds Immediately, so Bound needs no consumer pod;
+              # test/render pins that — a WaitForFirstConsumer class here would never go Ready.
+              readiness:
+                policy: DeriveFromCelQuery
+                celQuery: has(object.status) && has(object.status.phase) && object.status.phase == 'Bound'
               forProvider:
                 manifest:
                   apiVersion: v1
