@@ -5,6 +5,70 @@ import (
 	"testing"
 )
 
+// Scoped-credential delivery (the #347 SA-scoping redesign). The setup Job writes the scoped key to a
+// platform Secret (openinfra-bucket-creds/<user>); a provider Object copies it into the claim's
+// <name>-minio Secret ONLY once that platform Secret is observed. A legacy claim (platform Secret not
+// yet seeded) renders no copy, so its existing Secret is left alone and it stays Ready via the gate.
+func TestBucketComposition_ScopedCredentialDelivery(t *testing.T) {
+	tmpl := extractInlineTemplate(t, bucketCompositionPath)
+	appUser := func(out string) string { // the pcreds Observe names the Secret after the MinIO user
+		for _, ln := range strings.Split(out, "\n") {
+			if strings.Contains(ln, "name: app-") && strings.Contains(ln, "namespace: openinfra-bucket-creds") {
+				return strings.TrimSpace(ln)
+			}
+		}
+		return ""
+	}
+	mk := func(observed map[string]any) map[string]any {
+		return map[string]any{"observed": map[string]any{
+			"composite": map[string]any{"resource": map[string]any{
+				"spec": map[string]any{"bucketName": "shared"},
+				"metadata": map[string]any{
+					"name": "data-x7k2p", "creationTimestamp": xrCreated,
+					"labels": map[string]any{"crossplane.io/claim-name": "data", "crossplane.io/claim-namespace": "team-b"},
+				},
+			}},
+			"resources": observed,
+		}}
+	}
+
+	// Legacy / pre-seed: the platform Secret is not observed. No claim-creds copy Object; the pcreds
+	// Observe is always present.
+	legacy := render(t, tmpl, mk(map[string]any{}))
+	if strings.Contains(legacy, "composition-resource-name: bucket-creds") {
+		t.Errorf("no claim-creds copy must render before the platform Secret exists:\n%s", grepCtx(legacy, "bucket-creds"))
+	}
+	if !strings.Contains(legacy, "composition-resource-name: bucket-pcreds") || appUser(legacy) == "" {
+		t.Errorf("the pcreds Observe Object must always render:\n%s", grepCtx(legacy, "pcreds"))
+	}
+
+	// Seeded: the platform Secret is observed (uid present). The claim-creds Object renders and copies
+	// MINIO_SECRET_KEY from it via patchesFrom; the non-secret fields are rendered directly.
+	seeded := render(t, tmpl, mk(map[string]any{
+		"bucket-pcreds": map[string]any{"resource": map[string]any{
+			"status": map[string]any{"atProvider": map[string]any{"manifest": map[string]any{
+				"metadata": map[string]any{"uid": "11111111-1111-1111-1111-111111111111"},
+			}}},
+		}},
+	}))
+	for _, want := range []string{
+		"composition-resource-name: bucket-creds",
+		"fieldPath: data.MINIO_SECRET_KEY",
+		"toFieldPath: data.MINIO_SECRET_KEY",
+		"namespace: openinfra-bucket-creds",
+		"name: data-minio, namespace: team-b",
+		"MINIO_ACCESS_KEY: app-team-b-data-",
+	} {
+		if !strings.Contains(seeded, want) {
+			t.Errorf("seeded render missing %q:\n%s", want, grepCtx(seeded, "bucket-creds"))
+		}
+	}
+	// The claim Secret's key is never written literally — only patched from the platform Secret.
+	if strings.Contains(seeded, "MINIO_SECRET_KEY: ") {
+		t.Errorf("the claim Secret must not carry a literal secret key; it is patched from the platform Secret:\n%s", grepCtx(seeded, "MINIO_SECRET_KEY"))
+	}
+}
+
 // The bucket policy, lifecycle JSON and object-lock JSON are tenant-controlled documents. They must
 // reach the setup Job as env VALUES and be used as "$VAR", never pasted into the shell script — a
 // single quote in spec.policy once reached a root-credentialed shell (the #347 bucket-Job injection).

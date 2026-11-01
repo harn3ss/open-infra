@@ -44,12 +44,17 @@ spec:
             {{- $dupwin := "2m" }}{{- if $fifo }}{{ $dupwin = printf "%dm" (int ($spec.deduplicationWindowMinutes | default 5)) }}{{- end }}
             {{- $hash := (printf "%s|%d|%s|%v|%s" $retpolicy (int $ret) $maxbytes $fifo $dupwin) | sha256sum | trunc 10 }}
             ---
+            # The stream-init Job talks to NATS over the network only — it needs no Kubernetes secret
+            # access. Readiness keys off the Job's own success (object.status.succeeded), so there is no
+            # need to write a Secret as a completion marker. The connection Secret (credential-less) is
+            # rendered directly as a composed resource below, so it is GC'd with the claim.
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: queue-setup
             spec:
+              readiness: { policy: DeriveFromCelQuery, celQuery: "has(object.status.succeeded) && object.status.succeeded > 0" }
               forProvider:
                 manifest:
                   apiVersion: batch/v1
@@ -63,7 +68,7 @@ spec:
                       spec:
                         serviceAccountName: openinfra-queue-setup
                         restartPolicy: OnFailure
-                        initContainers:
+                        containers:
                           - name: stream
                             image: ghcr.io/harn3ss/open-infra-nats-box@sha256:40719f9bd2f77e14db7a7741abd07f90e983d46bdf78cb884b61a92fb96c4780
                             command: [/bin/sh, -ceu]
@@ -76,38 +81,27 @@ spec:
                                   nats --server $S stream add {{ $q }} --subjects '{{ $subjects }}' --storage file --retention {{ $retpolicy }} --max-age {{ $ret }}h {{ $maxbytes }} --discard old --dupe-window {{ $dupwin }} --replicas 1 --defaults
                                 fi
                                 echo "stream {{ $q }} ready ({{ $retpolicy }}, {{ $ret }}h, fifo={{ $fifo }}, dupe-window {{ $dupwin }})"
-                        containers:
-                          - name: secret
-                            image: alpine/k8s:1.30.0
-                            command: [/bin/sh, -ceu]
-                            args:
-                              - |
-                                kubectl create secret generic {{ $name }}-queue -n {{ $ns }} \
-                                  --from-literal=NATS_URL=nats://nats.nats.svc.cluster.local:4222 \
-                                  --from-literal=QUEUE_STREAM={{ $q }} \
-                                  --from-literal=QUEUE_SUBJECT={{ $q }} \
-                                  --from-literal=QUEUE_FIFO={{ $fifo }} \
-                                  --dry-run=client -o yaml | kubectl apply -f -
             ---
-            # Readiness gate (#165 part 3): the claim is Ready only once the setup Job has SUCCEEDED
-            # (created the JetStream stream + wrote the connection Secret), not merely once the Object was
-            # applied. The durable success signal is the <name>-queue Secret the Job writes on success (it
-            # persists, unlike the ttl-GC'd Job — no readiness flip-flop, and an already-provisioned queue
-            # stays Ready). This Observe Object is Ready only when that Secret exists; function-auto-ready
-            # gates the XR on it, so a failed/blocked setup honestly reports NotReady instead of a false green.
+            # The connection Secret is credential-less (NATS is no-auth in-cluster), so it is rendered
+            # directly by the provider — no setup Job writes it, so the queue SA needs no secret access —
+            # and it is a composed resource, deleted with the claim.
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
               annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: queue-ready-gate
+                gotemplating.fn.crossplane.io/composition-resource-name: queue-conn
             spec:
-              managementPolicies: ["Observe"]
-              readiness: { policy: DeriveFromCelQuery, celQuery: "object.metadata.uid != ''" }
               forProvider:
                 manifest:
                   apiVersion: v1
                   kind: Secret
+                  type: Opaque
                   metadata: { name: {{ $name }}-queue, namespace: {{ $ns }} }
+                  stringData:
+                    NATS_URL: nats://nats.nats.svc.cluster.local:4222
+                    QUEUE_STREAM: {{ $q }}
+                    QUEUE_SUBJECT: {{ $q }}
+                    QUEUE_FIFO: "{{ $fifo }}"
             ---
             apiVersion: openinfra.dev/v1
             kind: XQueue

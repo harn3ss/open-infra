@@ -207,10 +207,21 @@ subjects:
     name: system:serviceaccounts:crossplane-system
     apiGroup: rbac.authorization.k8s.io
 ---
-# Identity used by the Application Composition's bucket-setup Job to write the
-# per-app MinIO credentials secret into application namespaces. Pre-defined here
-# (not created per-app) so the provider never needs RBAC-creation power. The Job
-# runs in the minio namespace (to read the MinIO root secret via env).
+# A dedicated namespace holding the platform-side scoped-credential Secrets the setup Jobs write, and
+# the bucket-owner records. The setup SA's secret access is a Role bound here only — so it cannot read
+# the minio namespace's own Secrets (minio-kes-*, the KES/root keys) even though its Jobs run there to
+# read MinIO root via env. Credentials reach a claim namespace only as a provider-copied, GC'd Secret.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openinfra-bucket-creds
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+---
+# Identity used by every bucket-setup Job (Bucket, StaticSite, Application storage.buckets + db-backup,
+# and the ML kinds) to provision the bucket, mint the scoped MinIO user, and write that user's key to a
+# platform-side Secret in openinfra-bucket-creds. The Job runs in the minio namespace (to read the MinIO
+# root secret via env); its only secret RBAC is the Role in openinfra-bucket-creds below.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -224,11 +235,11 @@ metadata:
 # and the ML kinds). Each Job mounts this script and calls `claim_bucket <bucket>` for every bucket
 # before it creates, configures or grants anything.
 #
-# Bucket names are global, so a bucket belongs to the namespace whose claim created it. The record is
-# a Secret bucket-owner-<bucket> here in the minio namespace, which tenants cannot write. It is created
-# atomically before the bucket, so two claims racing for one name cannot both win. A claim from another
-# namespace that names the bucket fails its Job: no policy, no credentials. Platform buckets are never
-# handed to a claim.
+# Bucket names are global, so a bucket belongs to the claim that created it. The record is a Secret
+# bucket-owner-<bucket> in the openinfra-bucket-creds namespace, which tenants cannot write. It is
+# created atomically before the bucket, so two claims racing for one name cannot both win. A claim from
+# another namespace (or another claim in the same namespace) that names the bucket fails its Job: no
+# policy, no credentials. Platform buckets are never handed to a claim.
 #
 # A bucket that exists with no record predates these records. It is adopted only if it was created
 # after this claim's composite, i.e. by this claim's own earlier setup. An older one is refused until
@@ -251,6 +262,9 @@ data:
     # query-results (platform/query), db-snapshots (managed-DB WAL + DynamoDB PITR), openinfra-audit
     # (the WORM audit store), ecr-registry (the image registry), and longhorn (Longhorn's volume backups).
     PLATFORM_BUCKETS="velero lakehouse query-data query-results db-snapshots openinfra-audit ecr-registry longhorn"
+    # Owner records (and the platform-side scoped-credential Secrets) live here, not in the minio
+    # namespace, so the setup SA needs no secret access to the minio namespace's own keys.
+    OWN_NS="${OWN_NS:-openinfra-bucket-creds}"
 
     oi_refuse() { echo "BucketAlreadyExists: $*" >&2; exit 1; }
 
@@ -278,10 +292,10 @@ data:
         # to its whole namespace — otherwise two claims in a shared namespace (every CloudFormation
         # stack lives in open-infra-cfn) could adopt each other's bucket by naming it. A legacy record
         # that predates the owner field falls back to the namespace check.
-        if ! rawowner=$(kubectl get secret "$rec" -n minio --ignore-not-found -o jsonpath='{.data.owner}'); then
+        if ! rawowner=$(kubectl get secret "$rec" -n "$OWN_NS" --ignore-not-found -o jsonpath='{.data.owner}'); then
           echo "cannot read the owner record of bucket $b" >&2; exit 1
         fi
-        if ! rawns=$(kubectl get secret "$rec" -n minio --ignore-not-found -o jsonpath='{.data.namespace}'); then
+        if ! rawns=$(kubectl get secret "$rec" -n "$OWN_NS" --ignore-not-found -o jsonpath='{.data.namespace}'); then
           echo "cannot read the owner record of bucket $b" >&2; exit 1
         fi
         if [ -n "$rawowner" ]; then
@@ -309,12 +323,12 @@ data:
             oi_refuse "bucket $b exists, has no owner record and predates $OWNER_REF." \
               "Adopt it ONLY after confirming who the bucket really belongs to — do not assume it is this" \
               "claim. If $OWNER_REF is genuinely its owner, an admin records that with:" \
-              "kubectl -n minio create secret generic $rec --from-literal=namespace=$OWNER_NS --from-literal=owner=$OWNER_REF" \
-              "&& kubectl -n minio label secret $rec openinfra.dev/bucket-owner=true" \
+              "kubectl -n $OWN_NS create secret generic $rec --from-literal=namespace=$OWNER_NS --from-literal=owner=$OWNER_REF" \
+              "&& kubectl -n $OWN_NS label secret $rec openinfra.dev/bucket-owner=true" \
               "(set namespace/owner to the TRUE owner if it is a different claim)."
           fi
         fi
-        if out=$(kubectl create secret generic "$rec" -n minio --from-literal=namespace="$OWNER_NS" --from-literal=owner="$OWNER_REF" --dry-run=client -o yaml \
+        if out=$(kubectl create secret generic "$rec" -n "$OWN_NS" --from-literal=namespace="$OWNER_NS" --from-literal=owner="$OWNER_REF" --dry-run=client -o yaml \
             | kubectl label --local -f - openinfra.dev/bucket-owner=true -o yaml | kubectl create -f - 2>&1); then
           echo "bucket $b recorded as owned by $OWNER_REF"
           return 0
@@ -327,29 +341,60 @@ data:
       echo "the owner of bucket $b did not settle" >&2
       exit 1
     }
+
+    # mint_scoped_user <user> <policy-json-file>: ensure the scoped MinIO user exists with a key held in
+    # a PLATFORM-side Secret (openinfra-bucket-creds/<user>) — the Job never writes a credential into a
+    # claim namespace (a provider Object copies it out and GCs it with the claim). Needs MC set and the
+    # `m` alias configured. The legacy rule: if the user exists but has no platform Secret yet, its key
+    # is only in the claim's own Secret (which this Job can no longer read) — NEVER rotate it; the
+    # one-time migration seeds the platform Secret, after which the claim Secret becomes a managed copy.
+    mint_scoped_user() {
+      user="$1"; polfile="$2"
+      sk=$(kubectl get secret "$user" -n "$OWN_NS" -o jsonpath='{.data.MINIO_SECRET_KEY}' 2>/dev/null | base64 -d || true)
+      if [ -n "$sk" ]; then
+        "$MC" admin user add m "$user" "$sk" >/dev/null                     # platform creds exist: same key, no rotation
+      elif "$MC" admin user info m "$user" >/dev/null 2>&1; then
+        echo "legacy user $user: platform creds not yet seeded (migration pending); leaving the password unchanged"
+      else
+        sk=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)  # new: write platform Secret FIRST, then the user
+        kubectl create secret generic "$user" -n "$OWN_NS" \
+          --from-literal=MINIO_ACCESS_KEY="$user" --from-literal=MINIO_SECRET_KEY="$sk" \
+          --dry-run=client -o yaml | kubectl apply -f -
+        "$MC" admin user add m "$user" "$sk" >/dev/null
+      fi
+      "$MC" admin policy create m "$user" "$polfile" >/dev/null 2>&1 \
+        || "$MC" admin policy info m "$user" >/dev/null 2>&1 \
+        || { echo "policy create failed for $user" >&2; exit 1; }
+      "$MC" admin policy attach m "$user" --user "$user" >/dev/null 2>&1 || true
+    }
 ---
+# The setup SA's ONLY secret access: owner records + platform-side scoped-credential Secrets, in the
+# openinfra-bucket-creds namespace. No longer a cluster-wide ClusterRole — the Job never writes into a
+# claim namespace (a provider Object copies the credential out), and it cannot read the minio namespace's
+# own Secrets. The claim-side <name>-minio Secret is written by provider-kubernetes, which already holds
+# the cluster-wide secret grant it needs for that copy.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: openinfra-bucket-setup
+  namespace: openinfra-bucket-creds
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "2"
 rules:
-  # Write the per-app MinIO creds secret into any application namespace.
-  # (v2: scope to managed app namespaces rather than cluster-wide.)
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, create, update, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: openinfra-bucket-setup
+  namespace: openinfra-bucket-creds
   annotations:
-    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-wave: "2"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: openinfra-bucket-setup
 subjects:
   - kind: ServiceAccount

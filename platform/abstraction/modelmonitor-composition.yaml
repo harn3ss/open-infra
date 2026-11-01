@@ -116,27 +116,60 @@ spec:
                                   "$MC" mb --ignore-existing "m/$b"
                                   echo "bucket $b ready"
                                 done
-                                # 2. Mint a PER-APP, NON-root user scoped to ONLY these buckets (#151 fault 3);
-                                #    reuse the existing key across re-syncs so app creds stay stable.
+                                # 2. Mint a PER-APP, NON-root user scoped to ONLY these buckets (#151 fault 3). Its key
+                                #    lives in a platform-side Secret (openinfra-bucket-creds/<user>); a provider Object
+                                #    copies it into {{ $name }}-minio and GCs it with the claim.
                                 APPUSER="{{ $bktUser }}"
-                                SK=$(kubectl get secret {{ $name }}-minio -n {{ $ns }} -o jsonpath='{.data.MINIO_SECRET_KEY}' 2>/dev/null | base64 -d || true)
-                                [ -n "$SK" ] || SK=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
-                                "$MC" admin user add m "$APPUSER" "$SK" >/dev/null
                                 RES=""
                                 for b in {{ range $buckets }}{{ . }} {{ end }}; do
                                   RES="$RES\"arn:aws:s3:::$b\",\"arn:aws:s3:::$b/*\","
                                 done
                                 printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:*"],"Resource":[%s]}]}' "${RES%,}" > /tmp/pol.json
-                                "$MC" admin policy create m "$APPUSER" /tmp/pol.json >/dev/null 2>&1 \
-                                  || "$MC" admin policy info m "$APPUSER" >/dev/null 2>&1 \
-                                  || { echo "policy create failed for $APPUSER" >&2; exit 1; }
-                                "$MC" admin policy attach m "$APPUSER" --user "$APPUSER" >/dev/null 2>&1 || true
-                                # 3. Hand the app ITS OWN scoped creds — never the root key.
-                                kubectl create secret generic {{ $name }}-minio -n {{ $ns }} \
-                                  --from-literal=MINIO_ENDPOINT=$E \
-                                  --from-literal=MINIO_ACCESS_KEY="$APPUSER" \
-                                  --from-literal=MINIO_SECRET_KEY="$SK" \
-                                  --dry-run=client -o yaml | kubectl apply -f -
+                                mint_scoped_user "$APPUSER" /tmp/pol.json
+            {{- /* Scoped-credential delivery: Observe the platform Secret; once it exists, copy its key into
+                   {{ $name }}-minio as a composed (GC'd) Secret. See bucket-composition.yaml for the model. */}}
+            {{- $pcreds := index (.observed.resources | default dict) "mon-pcreds" }}
+            {{- $pexists := false }}
+            {{- if $pcreds }}{{- with $pcreds.resource.status }}{{- with .atProvider }}{{- with .manifest }}{{- with .metadata }}{{- if .uid }}{{- $pexists = true }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: mon-pcreds
+            spec:
+              managementPolicies: ["Observe"]
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  metadata: { name: {{ $bktUser }}, namespace: openinfra-bucket-creds }
+            {{- if $pexists }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: mon-creds
+            spec:
+              references:
+                - patchesFrom:
+                    apiVersion: v1
+                    kind: Secret
+                    namespace: openinfra-bucket-creds
+                    name: {{ $bktUser }}
+                    fieldPath: data.MINIO_SECRET_KEY
+                  toFieldPath: data.MINIO_SECRET_KEY
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  type: Opaque
+                  metadata: { name: {{ $name }}-minio, namespace: {{ $ns }} }
+                  stringData:
+                    MINIO_ENDPOINT: http://minio.minio.svc.cluster.local:9000
+                    MINIO_ACCESS_KEY: {{ $bktUser }}
+            {{- end }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object

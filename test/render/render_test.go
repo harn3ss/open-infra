@@ -1445,19 +1445,32 @@ func TestApplicationBuckets_ScopedIdentityNotRoot(t *testing.T) {
 	tmpl := extractInlineTemplate(t, compositionPath)
 	out := render(t, tmpl, appBucketsCtx())
 
-	// Positive: the app is minted its own scoped identity and handed THAT, not root.
+	// Positive: the app is minted its own scoped identity (not root). The scoped key is held in a
+	// platform-side Secret via the shared mint_scoped_user helper, and delivered to the claim by a
+	// provider Object (copied below), so the Job writes no credential into the claim namespace.
 	for _, want := range []string{
-		`APPUSER="app-default-myapp-`,                // the per-app, non-root identity (namespace + claim + hash)
-		"admin user add",                             // it is minted...
-		"admin policy create",                        // ...with a policy...
-		`"Action":["s3:*"]`,                          // ...that grants object ops...
-		`arn:aws:s3:::$b`,                            // ...scoped to ONLY the declared buckets (per-bucket ARN)
-		`--from-literal=MINIO_ACCESS_KEY="$APPUSER"`, // the app secret carries the scoped user...
-		`--from-literal=MINIO_SECRET_KEY="$SK"`,      // ...and its key, never root's
+		`APPUSER="app-default-myapp-`,           // the per-app, non-root identity (namespace + claim + hash)
+		`mint_scoped_user "$APPUSER"`,           // minted + stored in the platform Secret (never root)
+		`"Action":["s3:*"]`,                     // ...with a policy that grants object ops...
+		`arn:aws:s3:::$b`,                       // ...scoped to ONLY the declared buckets (per-bucket ARN)
+		"composition-resource-name: app-pcreds", // the platform Secret is Observed for delivery
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Application storage.buckets lost the scoped-identity guarantee: %q missing "+
 				"from the rendered bucket-setup Job.\n%s", want, grepCtx(out, "APPUSER"))
+		}
+	}
+
+	// Once the platform Secret is observed, the claim's <name>-minio Secret is a composed copy carrying
+	// the scoped user and the key patched from the platform Secret — never a literal key, never root.
+	seeded := render(t, tmpl, appBucketsCtxObserved())
+	for _, want := range []string{
+		"composition-resource-name: app-creds",
+		"toFieldPath: data.MINIO_SECRET_KEY",
+		"MINIO_ACCESS_KEY: app-default-myapp-",
+	} {
+		if !strings.Contains(seeded, want) {
+			t.Errorf("Application storage.buckets scoped-credential copy missing %q:\n%s", want, grepCtx(seeded, "app-creds"))
 		}
 	}
 
@@ -1526,6 +1539,20 @@ func appBucketsCtx() map[string]any {
 			},
 		}}},
 	}
+}
+
+// appBucketsCtxObserved is appBucketsCtx with the platform-side scoped-credentials Secret observed
+// (uid present), so the composition renders the claim-side copy Object (app-creds).
+func appBucketsCtxObserved() map[string]any {
+	ctx := appBucketsCtx()
+	ctx["observed"].(map[string]any)["resources"] = map[string]any{
+		"app-pcreds": map[string]any{"resource": map[string]any{
+			"status": map[string]any{"atProvider": map[string]any{"manifest": map[string]any{
+				"metadata": map[string]any{"uid": "22222222-2222-2222-2222-222222222222"},
+			}}},
+		}},
+	}
+	return ctx
 }
 
 // TestNoComposition_ExportsMinioRoot is a repo-wide guard for #151 faults 1 & 3 across EVERY

@@ -88,11 +88,11 @@ func setupScript(t *testing.T, rendered, marker string) string {
 const bktStubKubectl = `#!/bin/sh
 echo "kubectl $*" >> "$STUB/calls.log"
 case "$*" in
-  "get secret bucket-owner-"*" -n minio --ignore-not-found -o jsonpath={.data.namespace}")
+  "get secret bucket-owner-"*" -n openinfra-bucket-creds --ignore-not-found -o jsonpath={.data.namespace}")
     [ -f "$STUB/fail-get" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
     [ -f "$STUB/records/$3" ] && printf '%s' "$(cat "$STUB/records/$3")" | base64 | tr -d '\n'
     exit 0 ;;
-  "get secret bucket-owner-"*" -n minio --ignore-not-found -o jsonpath={.data.owner}")
+  "get secret bucket-owner-"*" -n openinfra-bucket-creds --ignore-not-found -o jsonpath={.data.owner}")
     [ -f "$STUB/fail-get" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
     [ -f "$STUB/records/$3.owner" ] && printf '%s' "$(cat "$STUB/records/$3.owner")" | base64 | tr -d '\n'
     exit 0 ;;
@@ -107,6 +107,14 @@ case "$*" in
     printf '%s' "$ns" > "$STUB/records/$name"
     printf '%s' "$ow" > "$STUB/records/$name.owner"
     printf '%s\n' "$obj" >> "$STUB/created.txt" ;;
+  # The platform-side scoped-credentials Secret (openinfra-bucket-creds/<user>): read its key (empty
+  # unless a test seeded $STUB/pcreds/<user>), and record a write by emitting its literals for apply.
+  "get secret "*" -n openinfra-bucket-creds -o jsonpath={.data.MINIO_SECRET_KEY}")
+    [ -f "$STUB/pcreds/$3" ] && printf '%s' "$(cat "$STUB/pcreds/$3")" | base64 | tr -d '\n'
+    exit 0 ;;
+  "create secret generic "*"-n openinfra-bucket-creds --from-literal=MINIO_ACCESS_KEY="*"--dry-run=client -o yaml")
+    printf 'pcreds-secret %s\n' "$4"; printf '%s\n' "$@" | tr ' ' '\n' | grep -- '--from-literal=MINIO_' ;;
+  # Legacy path (compositions not yet on the scoped model): the Job writes the claim Secret directly.
   "get secret "*"-minio -n "*" -o jsonpath={.data.MINIO_SECRET_KEY}") exit 1 ;;
   "create secret generic "*"-minio -n "*" --dry-run=client -o yaml") printf 'secret %s\n' "$4"; printf '%s\n' "$@" | grep -- '--from-literal=MINIO_ACCESS_KEY=' ;;
   "apply -f -") cat >> "$STUB/applied.txt" ;;
@@ -130,11 +138,13 @@ esac
 
 const bktStubMc = `#!/bin/sh
 echo "mc $*" >> "$STUB/calls.log"
-case "$1 $2" in
-  "alias set") : ;;
-  "mb --ignore-existing") echo "${3#m/}" >> "$STUB/made.txt" ;;
-  "admin user") echo "$5" >> "$STUB/users.txt" ;; # admin user add <alias> <user> <key>
-  "admin policy") : ;;
+mkdir -p "$STUB/miniousers"
+case "$1 $2 $3" in
+  "alias set m") : ;;
+  "mb --ignore-existing"*) echo "${3#m/}" >> "$STUB/made.txt" ;;
+  "admin user add") echo "$5" >> "$STUB/users.txt"; : > "$STUB/miniousers/$5" ;;  # add <alias> <user> <key>
+  "admin user info") [ -f "$STUB/miniousers/$5" ] || { echo "user $5 not found" >&2; exit 1; } ;;  # info <alias> <user>
+  "admin policy "*) : ;;
   *) echo "stub mc: unhandled: $*" >&2; exit 99 ;;
 esac
 `
@@ -256,7 +266,7 @@ func TestBucketOwnership_Claim(t *testing.T) {
 			buckets: map[string]string{"data": "2026-10-23T02:55:58+00:00"}, wantOK: true, wantRecord: "team-a"},
 		{name: "unrecorded bucket older than the claim is refused", bucket: "data",
 			buckets:       map[string]string{"data": "2026-09-01T00:00:00+00:00"},
-			wantOutSubstr: "kubectl -n minio create secret generic bucket-owner-data --from-literal=namespace=team-a"},
+			wantOutSubstr: "kubectl -n openinfra-bucket-creds create secret generic bucket-owner-data --from-literal=namespace=team-a"},
 		{name: "unrecorded existing bucket with no composite time is refused", bucket: "data",
 			buckets:       map[string]string{"data": "2026-10-24T00:00:00+00:00"},
 			env:           []string{"OWNER_NS=team-a", "OWNER_REF=Bucket/team-a/data", "XR_CREATED="},
@@ -379,8 +389,13 @@ func TestBucketComposition_SetupRefusesForeignBucket(t *testing.T) {
 			if user == "app-data" || !strings.HasPrefix(user, "app-team-b-data-") {
 				t.Errorf("MinIO user = %q, want a per-namespace app-team-b-data-<hash>", user)
 			}
+			// The Job writes the key to the platform-side Secret (openinfra-bucket-creds/<user>), NOT the
+			// claim namespace — a provider Object copies it to the claim later.
 			if !strings.Contains(e.read("applied.txt"), "MINIO_ACCESS_KEY="+user) {
-				t.Errorf("the claim's secret does not carry its own user %q:\n%s", user, e.read("applied.txt"))
+				t.Errorf("the platform-side creds Secret does not carry the scoped user %q:\n%s", user, e.read("applied.txt"))
+			}
+			if !strings.Contains(e.read("calls.log"), "-n openinfra-bucket-creds") {
+				t.Errorf("the Job did not write the platform-side creds Secret in openinfra-bucket-creds:\n%s", e.read("calls.log"))
 			}
 		})
 	}
