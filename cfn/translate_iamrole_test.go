@@ -57,9 +57,10 @@ func TestTranslate_IAMRole_Ec2TrustToVm(t *testing.T) {
 	if len(trust) != 1 || trust[0] != "vm" {
 		t.Fatalf("ec2.amazonaws.com trust must map to spec.trust: [vm], got %#v", m.Spec["trust"])
 	}
-	// The inline policy is now a companion kind: Policy (data-plane), applied to this role.
-	if len(m.Extra) != 1 {
-		t.Fatalf("the inline Policy must become 1 companion kind: Policy, got %d", len(m.Extra))
+	// The inline policy is now a companion kind: Policy (data-plane), applied to this role, and so is the
+	// served part of the AWS managed policy (managed_policies.go).
+	if len(m.Extra) != 2 || m.Extra[1].Name != "approle-managed-amazonssmmanagedinstancecore" {
+		t.Fatalf("the inline Policy and the managed one must become 2 companion kind: Policy objects, got %d", len(m.Extra))
 	}
 	pol := m.Extra[0]
 	if pol.Kind != "Policy" || pol.Name != "approle-app-access" {
@@ -75,8 +76,8 @@ func TestTranslate_IAMRole_Ec2TrustToVm(t *testing.T) {
 		t.Fatalf("companion policy must carry the s3/sqs statements, got %#v", dp["statements"])
 	}
 	cav := strings.Join(m.Caveats, "\n")
-	if !strings.Contains(cav, "inline Policies translated to 1 companion") || !strings.Contains(cav, "ManagedPolicyArns are NOT attached") {
-		t.Fatalf("inline-translated + managed-deferred must surface as caveats: %v", m.Caveats)
+	if !strings.Contains(cav, "inline Policies translated to 1 companion") || !strings.Contains(cav, "managed policy AmazonSSMManagedInstanceCore is attached") || !strings.Contains(cav, "Session Manager") {
+		t.Fatalf("inline-translated + managed-attached (and what of it is not) must surface as caveats: %v", m.Caveats)
 	}
 }
 

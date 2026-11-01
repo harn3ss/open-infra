@@ -2191,8 +2191,11 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 		m.Extra = extras
 		m.Caveats = append(m.Caveats, fmt.Sprintf("inline Policies translated to %d companion kind: Policy object(s) (spec.dataPlane, appliesTo Role::%s) that govern this role's assumed sessions — enforced where the aws-shim data-plane front doors are enabled (opt-in, off by default)", len(extras), ctx.name(id)))
 	}
-	if _, ok := props["ManagedPolicyArns"]; ok {
-		m.Caveats = append(m.Caveats, "ManagedPolicyArns are NOT attached — AWS-managed policies (e.g. AmazonSSMManagedInstanceCore, AmazonEC2ContainerRegistryReadOnly) have no open-infra counterpart to attach. App-level data-plane access comes from the inline Policies above or a kind: Policy in spec.policies — e.g. an ECR image pull is ecr:GetAuthorizationToken on \"*\" plus ecr:BatchGetImage and ecr:GetDownloadUrlForLayer on the repository's ARN")
+	if v, ok := props["ManagedPolicyArns"]; ok {
+		extra, cav, mf := managedPolicyCompanions(id, ctx.name(id), v)
+		f = append(f, mf...)
+		m.Extra = append(m.Extra, extra...)
+		m.Caveats = append(m.Caveats, cav...)
 	}
 	if _, ok := props["PermissionsBoundary"]; ok {
 		m.Caveats = append(m.Caveats, "PermissionsBoundary not mapped — set spec.permissionBoundary to a kind: Policy natively if a boundary is required")

@@ -28,7 +28,7 @@ func TestPlan_LiftAndShiftFixture_FidelitySummary(t *testing.T) {
 		all += f.Resource + ": " + f.Detail + "\n"
 	}
 	for _, want := range []string{
-		"InstanceRole: ManagedPolicyArns are NOT attached",
+		"InstanceRole: managed policy AmazonSSMManagedInstanceCore is attached",
 		"AppBucket: PublicAccessBlockConfiguration is a no-op",
 		"SiteDistribution: certificate SiteCertificate is not requested from ACM",
 		"AppInstance: Elastic IP AppAddress maps onto this VM's LAN IP",
