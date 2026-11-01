@@ -4998,6 +4998,18 @@ components:
               type: string
               description: An S3/MinIO bucket-policy JSON document applied verbatim via put-bucket-policy. Principals must
                 be `*` (public); AWS-IAM-ARN principals do not resolve on MinIO.
+            tags:
+              type: object
+              description: 'Bucket tags (S3 bucket tagging), key to value: what GetBucketTagging returns. Up to 50; a key
+                is 1-128 characters and may not start with "aws:", a value up to 256.'
+              maxProperties: 50
+              additionalProperties:
+                type: string
+                maxLength: 256
+                pattern: ^[^\x00-\x1f\x7f]*$
+              x-kubernetes-validations:
+              - rule: self.all(k, size(k) >= 1 && size(k) <= 128 && !k.startsWith('aws:'))
+                message: 'a tag key is 1-128 characters and may not start with aws:'
         status:
           type: object
           properties:

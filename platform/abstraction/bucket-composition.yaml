@@ -70,6 +70,12 @@ spec:
                    Job re-runs idempotently (own bucket, mb --ignore-existing, the existing key is reused). */}}
             {{- $hashIn := printf "%v|%s|%s|%s|own-v3" ($spec.versioning | default false) $lifecycle $lockJson $owner }}
             {{- if $policy }}{{- $hashIn = printf "%s|%s" $hashIn $policy }}{{- end }}
+            {{- /* Bucket tags (S3 bucket tagging), as a TagSet document in key order. A claim with none renders
+                   exactly as before (no env, no step), so adding the field re-runs no existing Job. */}}
+            {{- $tagList := list }}
+            {{- range $k, $v := ($spec.tags | default dict) }}{{- $tagList = append $tagList (dict "Key" $k "Value" $v) }}{{- end }}
+            {{- $tagging := "" }}
+            {{- if $tagList }}{{- $tagging = dict "TagSet" $tagList | toJson }}{{- $hashIn = printf "%s|tags=%s" $hashIn $tagging }}{{- end }}
             {{- $hash := $hashIn | sha256sum | trunc 10 }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -123,6 +129,9 @@ spec:
                               - { name: LIFECYCLE_JSON, value: {{ $lifecycle | toJson }} }
                               - { name: LOCK_JSON, value: {{ $lockJson | toJson }} }
                               - { name: BUCKET_POLICY, value: {{ $policy | toJson }} }
+                              {{- if $tagging }}
+                              - { name: BUCKET_TAGGING, value: {{ $tagging | toJson }} }
+                              {{- end }}
                             command: ["/bin/sh", "-c"]
                             args:
                               - |
@@ -166,6 +175,9 @@ spec:
                                 # Bucket policy applied verbatim. MinIO stores it via put-bucket-policy, but only `*`
                                 # (public) principals resolve — AWS-IAM-ARN principals name identities MinIO can't map.
                                 aws --endpoint-url $E s3api put-bucket-policy --bucket {{ $bucket }} --policy "$BUCKET_POLICY"
+                                {{- end }}
+                                {{- if $tagging }}
+                                aws --endpoint-url $E s3api put-bucket-tagging --bucket {{ $bucket }} --tagging "$BUCKET_TAGGING"
                                 {{- end }}
                                 # Mint a PER-APP, NON-root user scoped to ONLY this bucket (#151 fault 3). Its key
                                 # lives in a platform-side Secret (openinfra-bucket-creds/<user>) — this Job never

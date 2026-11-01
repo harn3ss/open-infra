@@ -3787,12 +3787,55 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 		}
 	}
 
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Bucket", Name: ctx.name(id), Spec: spec}
-	if _, ok := props["Tags"]; ok {
-		m.Caveats = append(m.Caveats, "Tags dropped — no open-infra equivalent for a MinIO bucket")
+	// Tags become the bucket's S3 tags (GetBucketTagging returns them), as on AWS.
+	if raw, ok := props["Tags"]; ok {
+		tags, dropped, tf := s3BucketTags(id, raw)
+		f = append(f, tf...)
+		if len(tf) == 0 && len(tags) > 0 {
+			spec["tags"] = tags
+		}
+		noopNotes = append(noopNotes, dropped...)
 	}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Bucket", Name: ctx.name(id), Spec: spec}
 	m.Caveats = append(m.Caveats, noopNotes...)
 	return m, f
+}
+
+// s3BucketTags reads an AWS::S3::Bucket's Tags ([{Key, Value}]) into a kind: Bucket's tags map. It refuses
+// what S3 refuses — more than 50 tags, a key that is empty, longer than 128 characters or starts with
+// "aws:" (reserved), a value longer than 256, a duplicate key — and drops, with a caveat, a tag whose key
+// or value is not known when the stack is planned (an attribute of a resource not yet created).
+func s3BucketTags(id string, raw any) (tags map[string]any, dropped []string, f []Finding) {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, nil, []Finding{{"Resource " + id, "Tags must be a list of {Key, Value}"}}
+	}
+	if len(list) > 50 {
+		return nil, nil, []Finding{{"Resource " + id, fmt.Sprintf("Tags has %d tags; S3 allows at most 50", len(list))}}
+	}
+	tags = map[string]any{}
+	for i, e := range list {
+		m, _ := e.(map[string]any)
+		k, kok := concrete(m["Key"])
+		v, vok := concrete(m["Value"])
+		where := fmt.Sprintf("Resource %s.Tags[%d]", id, i)
+		switch {
+		case !kok || !vok:
+			dropped = append(dropped, fmt.Sprintf("Tags[%d] dropped — its Key or Value is not known when the stack is planned", i))
+			continue
+		case k == "" || len(k) > 128:
+			return nil, nil, []Finding{{where, "a tag Key is 1-128 characters"}}
+		case strings.HasPrefix(strings.ToLower(k), "aws:"):
+			return nil, nil, []Finding{{where, "a tag Key may not start with aws: (reserved for AWS)"}}
+		case len(v) > 256:
+			return nil, nil, []Finding{{where, "a tag Value is at most 256 characters"}}
+		}
+		if _, dup := tags[k]; dup {
+			return nil, nil, []Finding{{where, "duplicate tag Key " + k}}
+		}
+		tags[k] = v
+	}
+	return tags, dropped, nil
 }
 
 // hasUnresolvedPlaceholder reports whether any string leaf in v is an unresolved resolver placeholder
