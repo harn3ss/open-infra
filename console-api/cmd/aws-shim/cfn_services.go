@@ -603,6 +603,9 @@ func (a *impersonatingApplier) svcSubscribe(ctx context.Context, spec map[string
 		} else if !ok {
 			return fmt.Errorf("the sqs endpoint queue does not exist: %s", endpoint)
 		}
+		if strings.HasSuffix(nameFromArn(endpoint), ".fifo") {
+			return fmt.Errorf("a FIFO queue (%s) cannot subscribe to a standard SNS topic", endpoint)
+		}
 	case "lambda":
 		if a.svc.sns.invoker == nil {
 			return fmt.Errorf("lambda delivery is not configured on this shim")

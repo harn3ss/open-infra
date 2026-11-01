@@ -437,6 +437,11 @@ func (h *ebHandler) putTargets(ctx context.Context, w http.ResponseWriter, r *ht
 				"unsupported target type for "+arn+"; the open-infra shim supports Lambda and SQS targets.")
 			return
 		}
+		if ttype == "sqs" && strings.HasSuffix(arnLast(arn), ".fifo") {
+			writeEBError(w, http.StatusBadRequest, "InvalidParameterException", requestID,
+				"a FIFO queue target ("+arn+") needs SqsParameters.MessageGroupId, which this shim does not support; target a standard queue.")
+			return
+		}
 		// A stack's own Function runs in the stack's namespace: the CloudFormation front door names it for
 		// an in-stack target (never a client — the value rides only an in-process request's context).
 		// Any other Function is found by name where it is (fn_locate.go). The target records the namespace,
@@ -618,6 +623,9 @@ func (h *ebHandler) deliver(ctx context.Context, r ebRule, t ebTarget, payload [
 		}
 		if !ok {
 			return errNoQueue
+		}
+		if strings.HasSuffix(qname, ".fifo") {
+			return errFIFOTarget
 		}
 		// The queue's policy decides whether this rule may send to it (resource_policy.go).
 		ruleArn := r.Arn
@@ -834,5 +842,6 @@ const (
 	errNoSQS             = ebErr("SQS target delivery requires the SQS data layer on the shim")
 	errNoQueue           = ebErr("the target SQS queue does not exist")
 	errQueuePolicy       = ebErr("the target SQS queue's policy does not let this rule send to it")
+	errFIFOTarget        = ebErr("a FIFO queue target needs SqsParameters.MessageGroupId, which this shim does not support")
 	errUnsupportedTarget = ebErr("unsupported target type")
 )

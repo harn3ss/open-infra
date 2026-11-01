@@ -15,8 +15,10 @@
 // A queue's Policy decides the deliveries the shim itself makes to it (an SNS topic's, an EventBridge
 // rule's; resource_policy.go); a policy outside what that honors is refused where it is set.
 //
+// FIFO queues (.fifo) keep SQS's contract — group ordering, five-minute deduplication, sequence numbers
+// (sqs_fifo.go).
+//
 // Deliberate carve-outs, refused honestly rather than faked (never a silent divergence):
-//   - FIFO (.fifo) queues — the group-ordering contract is not implemented; refused at CreateQueue.
 //   - the legacy AWS query protocol — current SDKs use JSON; a query-only client is refused.
 //
 // See docs/aws-shim.md for the full divergence list.
@@ -187,14 +189,11 @@ func (h *sqsHandler) createQueue(ctx context.Context, w http.ResponseWriter, r *
 		writeSQSError(w, http.StatusBadRequest, "InvalidParameterValue", requestID, "CreateQueue requires a QueueName.")
 		return
 	}
-	if strings.HasSuffix(name, ".fifo") {
-		// A FIFO queue that isn't FIFO is precisely the unevaluable defect this program refuses. Refuse
-		// honestly until the group-ordering contract is genuinely implemented.
-		writeSQSError(w, http.StatusBadRequest, "InvalidParameterValue", requestID,
-			"FIFO (.fifo) queues are not yet supported by the open-infra shim; standard queues only.")
+	attrs := stringMap(body["Attributes"])
+	if e := checkQueueType(name, attrs, nil, true); e != nil {
+		writeSQSError(w, http.StatusBadRequest, e.code, requestID, e.msg)
 		return
 	}
-	attrs := stringMap(body["Attributes"])
 	if err := checkResourcePolicy(attrs[policyAttr], h.queueARN(name)); err != nil {
 		writeSQSError(w, http.StatusBadRequest, "InvalidAttributeValue", requestID, "Invalid value for the parameter Policy: "+err.Error())
 		return
@@ -255,6 +254,11 @@ func (h *sqsHandler) getQueueAttributes(ctx context.Context, w http.ResponseWrit
 		"ReceiveMessageWaitTimeSeconds": "0",
 		"MaximumMessageSize":            "262144",
 	}
+	if isFIFO(attrs) {
+		for k, v := range fifoQueueDefaults {
+			out[k] = v
+		}
+	}
 	for k, v := range attrs {
 		out[k] = v
 	}
@@ -280,6 +284,19 @@ func (h *sqsHandler) getQueueAttributes(ctx context.Context, w http.ResponseWrit
 func (h *sqsHandler) setQueueAttributes(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	url, _ := body["QueueUrl"].(string)
 	attrs := stringMap(body["Attributes"])
+	have, _, found, err := h.store.queueAttrs(ctx, url)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	if !found {
+		writeSQSError(w, http.StatusBadRequest, "QueueDoesNotExist", requestID, "The specified queue does not exist.")
+		return
+	}
+	if e := checkQueueType(queueNameFromURL(url), attrs, have, false); e != nil {
+		writeSQSError(w, http.StatusBadRequest, e.code, requestID, e.msg)
+		return
+	}
 	if doc, set := attrs[policyAttr]; set {
 		// A queue policy decides the deliveries the shim makes to the queue (resource_policy.go); one it
 		// cannot honor is refused rather than kept and ignored. An empty Policy removes it, as on AWS.
@@ -341,22 +358,41 @@ func (h *sqsHandler) sendMessage(ctx context.Context, w http.ResponseWriter, req
 			"One or more parameters are invalid. Reason: Message must be shorter than 262144 bytes.")
 		return
 	}
-	if _, _, ok, err := h.store.queueAttrs(ctx, url); err != nil {
+	qattrs, _, ok, err := h.store.queueAttrs(ctx, url)
+	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	} else if !ok {
 		writeSQSError(w, http.StatusBadRequest, "QueueDoesNotExist", requestID, "The specified queue does not exist.")
 		return
 	}
-	delay := h.delayFor(ctx, url, body)
 	md5Body := md5Hex(msgBody)
 	md5Attrs := md5OfMessageAttributes(attrs)
-	id, err := h.store.sendMessage(ctx, url, msgBody, md5Body, md5Attrs, attrs, delay)
-	if err != nil {
-		h.internal(w, requestID, err)
-		return
+	out := map[string]any{"MD5OfMessageBody": md5Body}
+	if isFIFO(qattrs) {
+		p, e := fifoParams(qattrs, body, msgBody)
+		if e != nil {
+			writeSQSError(w, http.StatusBadRequest, e.code, requestID, e.msg)
+			return
+		}
+		id, seq, _, err := h.store.sendFIFO(ctx, url, msgBody, md5Body, md5Attrs, attrs, h.delayFor(ctx, url, map[string]any{}), p.group, p.dedup, p.scope)
+		if err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+		out["MessageId"], out["SequenceNumber"] = id, fifoSeq(seq)
+	} else {
+		if e := standardOnly(body); e != nil {
+			writeSQSError(w, http.StatusBadRequest, e.code, requestID, e.msg)
+			return
+		}
+		id, err := h.store.sendMessage(ctx, url, msgBody, md5Body, md5Attrs, attrs, h.delayFor(ctx, url, body))
+		if err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+		out["MessageId"] = id
 	}
-	out := map[string]any{"MessageId": id, "MD5OfMessageBody": md5Body}
 	if md5Attrs != "" {
 		out["MD5OfMessageAttributes"] = md5Attrs
 	}
@@ -371,13 +407,15 @@ func (h *sqsHandler) sendMessageBatch(ctx context.Context, w http.ResponseWriter
 			"The batch request contains more entries than permissible (1..10).")
 		return
 	}
-	if _, _, ok, err := h.store.queueAttrs(ctx, url); err != nil {
+	qattrs, _, ok, err := h.store.queueAttrs(ctx, url)
+	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	} else if !ok {
 		writeSQSError(w, http.StatusBadRequest, "QueueDoesNotExist", requestID, "The specified queue does not exist.")
 		return
 	}
+	fifo := isFIFO(qattrs)
 	delay := time.Duration(-1) // resolve per-queue lazily below
 	successful := []any{}
 	failed := []any{}
@@ -399,18 +437,38 @@ func (h *sqsHandler) sendMessageBatch(ctx context.Context, w http.ResponseWriter
 		if delay < 0 {
 			delay = h.delayFor(ctx, url, map[string]any{})
 		}
-		d := delay
-		if ds, ok := em["DelaySeconds"]; ok {
-			d = time.Duration(toInt(ds)) * time.Second
-		}
 		md5Body := md5Hex(mb)
 		md5Attrs := md5OfMessageAttributes(attrs)
-		mid, err := h.store.sendMessage(ctx, url, mb, md5Body, md5Attrs, attrs, d)
-		if err != nil {
-			failed = append(failed, map[string]any{"Id": id, "SenderFault": false, "Code": "InternalError", "Message": "send failed"})
-			continue
+		s := map[string]any{"Id": id, "MD5OfMessageBody": md5Body}
+		if fifo {
+			// A batch's entries are sent in order, so a group's messages keep the order of the batch.
+			p, e := fifoParams(qattrs, em, mb)
+			if e != nil {
+				failed = append(failed, map[string]any{"Id": id, "SenderFault": true, "Code": e.code, "Message": e.msg})
+				continue
+			}
+			mid, seq, _, err := h.store.sendFIFO(ctx, url, mb, md5Body, md5Attrs, attrs, delay, p.group, p.dedup, p.scope)
+			if err != nil {
+				failed = append(failed, map[string]any{"Id": id, "SenderFault": false, "Code": "InternalError", "Message": "send failed"})
+				continue
+			}
+			s["MessageId"], s["SequenceNumber"] = mid, fifoSeq(seq)
+		} else {
+			if e := standardOnly(em); e != nil {
+				failed = append(failed, map[string]any{"Id": id, "SenderFault": true, "Code": e.code, "Message": e.msg})
+				continue
+			}
+			d := delay
+			if ds, ok := em["DelaySeconds"]; ok {
+				d = time.Duration(toInt(ds)) * time.Second
+			}
+			mid, err := h.store.sendMessage(ctx, url, mb, md5Body, md5Attrs, attrs, d)
+			if err != nil {
+				failed = append(failed, map[string]any{"Id": id, "SenderFault": false, "Code": "InternalError", "Message": "send failed"})
+				continue
+			}
+			s["MessageId"] = mid
 		}
-		s := map[string]any{"Id": id, "MessageId": mid, "MD5OfMessageBody": md5Body}
 		if md5Attrs != "" {
 			s["MD5OfMessageAttributes"] = md5Attrs
 		}
@@ -451,12 +509,18 @@ func (h *sqsHandler) receiveMessage(ctx context.Context, w http.ResponseWriter, 
 		wait = 20 * time.Second
 	}
 	maxReceive, dlqURL := h.redrive(ctx, qattrs)
+	fifo := isFIFO(qattrs)
+	if v, _ := body["ReceiveRequestAttemptId"].(string); v != "" && fifo {
+		writeSQSError(w, http.StatusBadRequest, "InvalidParameterValue", requestID,
+			"ReceiveRequestAttemptId (receive-retry deduplication) is not supported by this shim; retry the receive without it (the messages of a group stay in flight until their visibility timeout).")
+		return
+	}
 
 	// Long polling: block up to `wait`, returning as soon as a message is available. An expiry with no
 	// message is an empty SUCCESS, never an error — SDK consumer loops depend on that.
 	deadline := time.Now().Add(wait)
 	for {
-		msgs, err := h.store.receive(ctx, url, max, visibility, maxReceive, dlqURL)
+		msgs, err := h.store.receive(ctx, url, max, visibility, maxReceive, dlqURL, fifo)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
@@ -479,7 +543,9 @@ func (h *sqsHandler) receiveMessage(ctx context.Context, w http.ResponseWriter, 
 }
 
 func (h *sqsHandler) writeMessages(w http.ResponseWriter, requestID string, msgs []storedMessage, body map[string]any) {
-	wantSys := stringSlice(body["AttributeNames"]) // system attributes (ApproximateReceiveCount, ...)
+	// System attributes (ApproximateReceiveCount, ...), asked for as AttributeNames or (current SDKs)
+	// MessageSystemAttributeNames.
+	wantSys := append(stringSlice(body["AttributeNames"]), stringSlice(body["MessageSystemAttributeNames"])...)
 	wantMsgAttrs := stringSlice(body["MessageAttributeNames"])
 	out := make([]any, 0, len(msgs))
 	for _, m := range msgs {
@@ -498,6 +564,9 @@ func (h *sqsHandler) writeMessages(w http.ResponseWriter, requestID string, msgs
 				"ApproximateReceiveCount":          strconv.Itoa(m.ReceiveCount),
 				"SentTimestamp":                    strconv.FormatInt(m.SentAt.UnixMilli(), 10),
 				"ApproximateFirstReceiveTimestamp": strconv.FormatInt(m.FirstReceived.UnixMilli(), 10),
+			}
+			if m.GroupID != "" {
+				sys["MessageGroupId"], sys["MessageDeduplicationId"], sys["SequenceNumber"] = m.GroupID, m.DedupID, fifoSeq(m.Seq)
 			}
 			msg["Attributes"] = filterSystemAttributes(sys, wantSys)
 		}

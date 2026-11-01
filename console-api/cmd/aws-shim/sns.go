@@ -304,6 +304,11 @@ func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *ht
 		writeQueryError(w, http.StatusNotFound, "NotFound", requestID, "the sqs endpoint queue does not exist: "+endpoint, snsXMLNamespace)
 		return
 	}
+	if strings.HasSuffix(nameFromArn(endpoint), ".fifo") {
+		writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID,
+			"Invalid parameter: Endpoint Reason: FIFO SQS Queues can not be subscribed to standard SNS topics", snsXMLNamespace)
+		return
+	}
 	raw := strings.EqualFold(attrs["RawMessageDelivery"], "true")
 	subArn := topicArn + ":" + randHex(8)
 	if err := h.store.subscribe(ctx, subArn, topicArn, "sqs", endpoint, raw, true); err != nil {
@@ -445,6 +450,10 @@ func (h *snsHandler) publishMessage(ctx context.Context, topicArn, subject, mess
 		if !ok {
 			// The target queue was deleted after subscribe; skip but do not fail the whole publish.
 			h.logger.Warn("sns: subscription endpoint queue missing, skipping", "endpoint", sub.Endpoint)
+			continue
+		}
+		if strings.HasSuffix(url, ".fifo") {
+			h.logger.Warn("sns: a FIFO queue cannot take a standard topic's delivery; skipping", "endpoint", sub.Endpoint)
 			continue
 		}
 		// The queue's policy decides whether this topic may send to it (resource_policy.go). A refused

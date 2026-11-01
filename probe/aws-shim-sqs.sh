@@ -12,6 +12,8 @@
 #     data-loss boundary
 #   - maxReceiveCount moves a message to the DLQ, and it is receivable there with ApproximateReceiveCount
 #   - long polling returns an EMPTY SUCCESS (not an error) when no message is available
+#   - a FIFO queue keeps its group order (a group's next message waits while one is in flight), drops a
+#     duplicate MessageDeduplicationId, and refuses a send with no MessageGroupId
 # and the two NEGATIVES that are the whole point ("prove the no"):
 #   - a valid key ID with a WRONG secret is rejected (SignatureDoesNotMatch)
 #   - a receive-only principal is DENIED DeleteMessage while still able to ReceiveMessage
@@ -165,6 +167,29 @@ elapsed=$(( $(date +%s) - start ))
 [ "$elapsed" -ge 1 ] || fail "long-poll returned immediately (WaitTimeSeconds not honored)"
 log "  ✓ empty success after ~${elapsed}s"
 
+# --- 8b. FIFO: group order, one in flight per group, deduplication ----------------------------
+log "FIFO queue: group order, a group's next message waits while one is in flight, duplicates dropped"
+FQURL="$(awsq "$WAK" "$WSK" create-queue --queue-name "probe-$SFX.fifo" --attributes FifoQueue=true --query QueueUrl 2>/dev/null)" \
+  || fail "create-queue of a FIFO queue was refused"
+CREATED_QUEUES+=("$FQURL")
+for m in one two; do
+  awsq "$WAK" "$WSK" send-message --queue-url "$FQURL" --message-body "$m" --message-group-id g --message-deduplication-id "$m" >/dev/null \
+    || fail "FIFO send of $m failed"
+done
+awsq "$WAK" "$WSK" send-message --queue-url "$FQURL" --message-body one-again --message-group-id g --message-deduplication-id one >/dev/null \
+  || fail "a duplicate FIFO send must succeed (and not enqueue)"
+if awsq "$WAK" "$WSK" send-message --queue-url "$FQURL" --message-body x --message-deduplication-id x >/dev/null 2>&1; then
+  fail "a FIFO send with no MessageGroupId was accepted"
+fi
+F1="$(awsq "$WAK" "$WSK" receive-message --queue-url "$FQURL" --visibility-timeout 30 --query 'Messages[0].[Body,ReceiptHandle]' 2>/dev/null)"
+[ "$(printf '%s' "$F1" | cut -f1)" = one ] || fail "the first FIFO receive is $F1, want one"
+F2="$(awsq "$WAK" "$WSK" receive-message --queue-url "$FQURL" --query 'Messages[0].Body' 2>/dev/null || true)"
+[ -z "$F2" ] || [ "$F2" = None ] || fail "with one in flight, the group's next message was received ($F2)"
+awsq "$WAK" "$WSK" delete-message --queue-url "$FQURL" --receipt-handle "$(printf '%s' "$F1" | cut -f2)" >/dev/null || fail "FIFO delete failed"
+F3="$(awsq "$WAK" "$WSK" receive-message --queue-url "$FQURL" --max-number-of-messages 10 --query 'Messages[].Body' 2>/dev/null)"
+[ "$F3" = two ] || fail "after deleting one, the FIFO receive is '$F3', want only two (the duplicate dropped)"
+log "  ✓ FIFO order, group in-flight blocking and deduplication hold"
+
 # --- 9a. Negative: wrong secret ---------------------------------------------------------------
 log "negative: a valid key ID with a WRONG secret must be rejected"
 if awsq "$WAK" "wrong-secret-not-the-real-one" send-message --queue-url "$QURL" --message-body x >/dev/null 2>"$PWD/.sqs_neg"; then
@@ -191,4 +216,4 @@ grep -qiE 'AccessDenied' "$PWD/.sqs_rd" || fail "reader delete rejected with the
 rm -f "$PWD/.sqs_rd"
 log "  ✓ reader denied DeleteMessage (AccessDenied)"
 
-printf '\n✓ PASS — aws-shim SQS is semantically faithful (visibility, receipt-handle, DLQ, long-poll) and enforces auth + the receive/delete boundary.\n'
+printf '\n✓ PASS — aws-shim SQS is semantically faithful (visibility, receipt-handle, DLQ, long-poll, FIFO) and enforces auth + the receive/delete boundary.\n'

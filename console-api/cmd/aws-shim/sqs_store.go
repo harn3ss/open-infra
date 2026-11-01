@@ -16,6 +16,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 )
@@ -52,6 +53,20 @@ CREATE TABLE IF NOT EXISTS sqs_messages (
 );
 CREATE INDEX IF NOT EXISTS sqs_messages_recv_idx ON sqs_messages(queue_url, visible_after);
 CREATE INDEX IF NOT EXISTS sqs_messages_handle_idx ON sqs_messages(queue_url, receipt_handle);
+-- FIFO queues (sqs_fifo.go): a message's group and deduplication id, and the 5-minute deduplication
+-- window. A standard queue's messages carry neither.
+ALTER TABLE sqs_messages ADD COLUMN IF NOT EXISTS group_id text;
+ALTER TABLE sqs_messages ADD COLUMN IF NOT EXISTS dedup_id text;
+CREATE INDEX IF NOT EXISTS sqs_messages_group_idx ON sqs_messages(queue_url, group_id, id) WHERE group_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS sqs_fifo_dedup (
+  queue_url  text NOT NULL REFERENCES sqs_queues(url) ON DELETE CASCADE,
+  scope      text NOT NULL,
+  dedup_id   text NOT NULL,
+  message_id text NOT NULL,
+  seq        bigint NOT NULL,
+  expires_at timestamptz NOT NULL,
+  PRIMARY KEY (queue_url, scope, dedup_id)
+);
 `
 
 func (s *sqsStore) ensureSchema(ctx context.Context) error {
@@ -70,6 +85,10 @@ type storedMessage struct {
 	ReceiveCount  int
 	SentAt        time.Time
 	FirstReceived time.Time
+	// A FIFO queue's message: its group, deduplication id and sequence number ("" / 0 otherwise).
+	GroupID string
+	DedupID string
+	Seq     int64
 }
 
 // --- queues ---
@@ -211,33 +230,95 @@ func (s *sqsStore) sendMessage(ctx context.Context, url, body, md5Body, md5Attrs
 	return messageID, err
 }
 
+// sendFIFO enqueues a message on a FIFO queue in its group, unless a message with the same deduplication
+// id (in scope: "" for the queue, the group for DeduplicationScope messageGroup) was sent in the last five
+// minutes — then nothing is enqueued and that message's id and sequence number are returned, as SQS does
+// (dup=true). It holds the queue's lock until it commits, so a queue's messages commit in sequence order.
+func (s *sqsStore) sendFIFO(ctx context.Context, url, body, md5Body, md5Attrs string, attrs map[string]any, delay time.Duration,
+	group, dedup, scope string) (messageID string, seq int64, dup bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", 0, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err = tx.ExecContext(ctx, `SELECT 1 FROM sqs_queues WHERE url = $1 FOR UPDATE`, url); err != nil {
+		return "", 0, false, err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM sqs_fifo_dedup WHERE queue_url = $1 AND expires_at <= now()`, url); err != nil {
+		return "", 0, false, err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT message_id, seq FROM sqs_fifo_dedup WHERE queue_url = $1 AND scope = $2 AND dedup_id = $3`,
+		url, scope, dedup).Scan(&messageID, &seq)
+	switch {
+	case err == nil:
+		return messageID, seq, true, tx.Commit()
+	case !errors.Is(err, sql.ErrNoRows):
+		return "", 0, false, err
+	}
+	aj, _ := json.Marshal(attrs)
+	var mAttrs any
+	if md5Attrs != "" {
+		mAttrs = md5Attrs
+	}
+	if err = tx.QueryRowContext(ctx, `
+		INSERT INTO sqs_messages (queue_url, body, md5_body, md5_attrs, msg_attrs, visible_after, group_id, dedup_id)
+		VALUES ($1, $2, $3, $4, $5::jsonb, now() + make_interval(secs => $6), $7, $8)
+		RETURNING id, message_id`,
+		url, body, md5Body, mAttrs, string(aj), delay.Seconds(), group, dedup).Scan(&seq, &messageID); err != nil {
+		return "", 0, false, err
+	}
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO sqs_fifo_dedup (queue_url, scope, dedup_id, message_id, seq, expires_at)
+		VALUES ($1, $2, $3, $4, $5, now() + interval '5 minutes')`, url, scope, dedup, messageID, seq); err != nil {
+		return "", 0, false, err
+	}
+	return messageID, seq, false, tx.Commit()
+}
+
 // receive claims up to max currently-visible messages atomically (FOR UPDATE SKIP LOCKED), makes them
 // invisible for `visibility`, bumps receive_count, and mints a fresh opaque receipt handle per row.
 // Messages whose receive_count now EXCEEDS maxReceiveCount (when a RedrivePolicy is set) are moved to
 // the dead-letter queue instead of being returned — that is where dlqURL comes from (resolved by the
 // caller from the RedrivePolicy). maxReceive <= 0 means no redrive.
-func (s *sqsStore) receive(ctx context.Context, url string, max int, visibility time.Duration, maxReceive int, dlqURL string) ([]storedMessage, error) {
+//
+// A FIFO queue (fifo) is received in order within each message group: it takes the queue's lock (so
+// receives and sends of one queue are serialized), and a message is returned only while no message of its
+// group is in flight and none sent before it is still delayed — so a group's messages are handed out one
+// batch at a time, oldest first, and the next only once those are deleted or their visibility expires.
+func (s *sqsStore) receive(ctx context.Context, url string, max int, visibility time.Duration, maxReceive int, dlqURL string, fifo bool) ([]storedMessage, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	pick := `SELECT id FROM sqs_messages
+		  WHERE queue_url = $1 AND visible_after <= now()
+		  ORDER BY sent_at
+		  LIMIT $2
+		  FOR UPDATE SKIP LOCKED`
+	if fifo {
+		if _, err := tx.ExecContext(ctx, `SELECT 1 FROM sqs_queues WHERE url = $1 FOR UPDATE`, url); err != nil {
+			return nil, err
+		}
+		pick = `SELECT c.id FROM sqs_messages c
+		  WHERE c.queue_url = $1 AND c.visible_after <= now()
+		    AND NOT EXISTS (SELECT 1 FROM sqs_messages b
+		                    WHERE b.queue_url = $1 AND b.group_id = c.group_id AND b.visible_after > now()
+		                      AND (b.receive_count > 0 OR b.id < c.id))
+		  ORDER BY c.id
+		  LIMIT $2`
+	}
 	rows, err := tx.QueryContext(ctx, `
 		UPDATE sqs_messages m
 		SET visible_after     = now() + make_interval(secs => $3),
 		    receive_count     = m.receive_count + 1,
 		    receipt_handle    = encode(gen_random_bytes(48), 'base64'),
 		    first_received_at = COALESCE(m.first_received_at, now())
-		WHERE m.id IN (
-		  SELECT id FROM sqs_messages
-		  WHERE queue_url = $1 AND visible_after <= now()
-		  ORDER BY sent_at
-		  LIMIT $2
-		  FOR UPDATE SKIP LOCKED
-		)
+		WHERE m.id IN (`+pick+`)
 		RETURNING m.id, m.message_id, m.body, m.md5_body, m.md5_attrs, m.msg_attrs::text,
-		          m.receipt_handle, m.receive_count, m.sent_at, m.first_received_at`,
+		          m.receipt_handle, m.receive_count, m.sent_at, m.first_received_at,
+		          COALESCE(m.group_id, ''), COALESCE(m.dedup_id, '')`,
 		url, max, visibility.Seconds())
 	if err != nil {
 		return nil, err
@@ -252,9 +333,12 @@ func (s *sqsStore) receive(ctx context.Context, url string, max int, visibility 
 		var md5Attrs sql.NullString
 		var attrsJSON string
 		if err := rows.Scan(&c.id, &c.m.MessageID, &c.m.Body, &c.m.MD5Body, &md5Attrs, &attrsJSON,
-			&c.m.ReceiptHandle, &c.m.ReceiveCount, &c.m.SentAt, &c.m.FirstReceived); err != nil {
+			&c.m.ReceiptHandle, &c.m.ReceiveCount, &c.m.SentAt, &c.m.FirstReceived, &c.m.GroupID, &c.m.DedupID); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if c.m.GroupID != "" {
+			c.m.Seq = c.id
 		}
 		c.m.MD5Attrs = md5Attrs.String
 		_ = json.Unmarshal([]byte(attrsJSON), &c.m.Attrs)
@@ -264,6 +348,7 @@ func (s *sqsStore) receive(ctx context.Context, url string, max int, visibility 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	sort.Slice(all, func(i, j int) bool { return all[i].id < all[j].id }) // a FIFO batch is in send order
 
 	out := make([]storedMessage, 0, len(all))
 	var dead []int64
@@ -273,8 +358,8 @@ func (s *sqsStore) receive(ctx context.Context, url string, max int, visibility 
 		// strictly-greater. Requires a resolvable DLQ; without one, fall through and deliver.
 		if maxReceive > 0 && dlqURL != "" && c.m.ReceiveCount > maxReceive {
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO sqs_messages (queue_url, message_id, body, md5_body, md5_attrs, msg_attrs, receive_count)
-				SELECT $2, message_id, body, md5_body, md5_attrs, msg_attrs, 0 FROM sqs_messages WHERE id = $1`,
+				INSERT INTO sqs_messages (queue_url, message_id, body, md5_body, md5_attrs, msg_attrs, receive_count, group_id, dedup_id)
+				SELECT $2, message_id, body, md5_body, md5_attrs, msg_attrs, 0, group_id, dedup_id FROM sqs_messages WHERE id = $1`,
 				c.id, dlqURL); err != nil {
 				return nil, err
 			}

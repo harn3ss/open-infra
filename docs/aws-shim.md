@@ -194,7 +194,7 @@ the sections below; the one-line summary:
 | **[Lambda](#lambda-knative-function-invoke)** | Knative `Function` | Lambda REST | qualifiers/versions not resolved |
 | **[AppSync](#appsync-graphql-over-open-appsync--slice-1-runs-live-experimental)** | open-appsync engine | GraphQL | **experimental**; needs `components.openAppsync` |
 | **[DynamoDB](#dynamodb-ferretdb--documentdb-postgres-transactions)** | FerretDB + documentdb Postgres | JSON 1.0 | `ProjectionExpression` `501`; Streams via the `dynamodbstreams` API |
-| **[SQS](#sqs-postgres-backed-probe-proven)** | Postgres | JSON | FIFO refused (standard only) |
+| **[SQS](#sqs-postgres-backed-probe-proven)** | Postgres | JSON | standard and FIFO queues; `ReceiveRequestAttemptId` refused |
 | **[SNS](#sns-query-protocol-durable-sqs-fan-out-probe-proven)** | Postgres + SQS fan-out | query/XML | `sqs` protocol only; FilterPolicy/`.fifo`/http refused |
 | **[KMS](#kms-vault-transit-backed-json-protocol-probe-proven)** | Vault Transit | JSON 1.1 | symmetric only; per-key access via the Cedar data-plane (`kms:* on Key::<id>`); key-policy JSON import (CreateKey Policy/PutKeyPolicy→kind: Policy, GetKeyPolicy round-trip); CreateGrant refused |
 | **[Secrets Manager](#secrets-manager-vaultkms-backed-json-protocol-probe-proven)** | Postgres + KMS-encrypted values | JSON 1.1 | auto-rotation + custom `KmsKeyId` refused |
@@ -520,9 +520,28 @@ with `InvalidAttributeValue`. An Allow to the account root is the delegate-to-IA
 empty `Policy` removes it. A queue with **no** policy takes every delivery (on AWS it would take none from SNS);
 a policy stored before policies were honored, which the shim cannot read, is not applied and is logged.
 
+**FIFO queues** keep SQS's contract. A queue named `<name>.fifo` with `FifoQueue=true` (only such a
+queue, and `FifoQueue` cannot change later) takes messages that each name a `MessageGroupId`: within a group
+they are received in the order they were sent, and no message of a group is handed out while another of it
+is in flight (received, not yet deleted, visibility not expired), so a group is consumed one batch at a time
+even by competing consumers; different groups are independent. A message whose deduplication id —
+`MessageDeduplicationId`, or with `ContentBasedDeduplication=true` the SHA-256 of its body — was sent in the
+last five minutes is accepted and not enqueued again, with the first message's `MessageId` and
+`SequenceNumber` (`DeduplicationScope` `queue`, or `messageGroup` for one window per group). Every send
+returns a `SequenceNumber`; a receive reports `MessageGroupId`, `MessageDeduplicationId` and
+`SequenceNumber` among the system attributes. `FifoThroughputLimit` is accepted (a throughput mode). A FIFO
+queue's dead-letter queue must be FIFO, and a standard queue's standard. Refused, as SQS refuses them: a
+send with no `MessageGroupId`, with neither a deduplication id nor content-based deduplication, or with a
+per-message `DelaySeconds` (the queue's `DelaySeconds` applies), and a `MessageDeduplicationId` on a
+standard queue. The shim serializes a FIFO queue's sends and receives (one queue's ordering point), so one
+FIFO queue's throughput is lower than a standard queue's.
+
 **Deliberate divergences (refused honestly, never faked):**
-- **FIFO** (`.fifo`) queues are refused at `CreateQueue` — the group-ordering + dedup contract is not
-  implemented, and a FIFO queue that isn't FIFO is worse than an absent one.
+- **`ReceiveRequestAttemptId`** (a FIFO receive retried with the same id returns the same messages) is
+  refused: retry the receive without it; the messages of a group stay in flight until their visibility
+  timeout, as on AWS.
+- A FIFO queue cannot subscribe to an SNS topic (the topics served here are standard, and SNS refuses that
+  pairing), and an EventBridge rule cannot target one (that needs `SqsParameters.MessageGroupId`).
 - The **legacy query protocol** is refused — current SDKs use JSON.
 - Standard queues are **at-least-once and unordered**, as AWS's are (we are not stronger than AWS).
 - One shim replica today; the RBAC/data path is single-writer (matches the shim's overall posture).

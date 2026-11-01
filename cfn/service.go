@@ -138,7 +138,22 @@ var sqsQueueNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
 
 // svcQueueName is a queue's name: its QueueName when given, else the stack-qualified name the stack
 // gives the resource (the same name an imported IAM policy scopes Queue::<name> to; inStackName).
-func svcQueueName(id string, ctx *stackCtx) string { return inStackName(id, "QueueName", ctx) }
+//
+// An unnamed FIFO queue served by the SQS API gets CloudFormation's .fifo suffix (a FIFO queue's name must
+// end with it), within SQS's 80 characters.
+func svcQueueName(id string, ctx *stackCtx) string {
+	name := inStackName(id, "QueueName", ctx)
+	p, _ := ctx.resolveProps(id)
+	if n, _ := concrete(p["QueueName"]); n == "" && ctx.servedBy(id) {
+		if b, ok := cfnBoolValue(p["FifoQueue"]); ok && b && !strings.HasSuffix(name, ".fifo") {
+			if len(name) > 75 {
+				name = name[:75]
+			}
+			name += ".fifo"
+		}
+	}
+	return name
+}
 
 // svcTopicName is a topic's name: its TopicName when given, else the stack-qualified name.
 func svcTopicName(id string, ctx *stackCtx) string { return inStackName(id, "TopicName", ctx) }
@@ -345,10 +360,12 @@ func translateSQSQueueAPI(id string, props map[string]any, ctx *stackCtx) (*Mani
 	fifo, ff := boolProp(id, props, "FifoQueue", false)
 	f = append(f, ff...)
 	name := svcQueueName(id, ctx)
-	if fifo || strings.HasSuffix(name, ".fifo") {
-		f = append(f, Finding{"Resource " + id, "a FIFO queue is not served by this environment's SQS API (standard queues only) — refusing rather than creating a queue the SQS API cannot order"})
-	} else if !sqsQueueNameRe.MatchString(name) {
-		f = append(f, Finding{"Resource " + id, fmt.Sprintf("QueueName %q is not a valid SQS queue name (1-80 letters, digits, hyphens, underscores)", name)})
+	base, fifoName := strings.CutSuffix(name, ".fifo")
+	switch {
+	case fifo != fifoName:
+		f = append(f, Finding{"Resource " + id, fmt.Sprintf("QueueName %q: a FIFO queue's name ends with .fifo, and only a FIFO queue's (FifoQueue: true)", name)})
+	case len(name) > 80 || !sqsQueueNameRe.MatchString(base):
+		f = append(f, Finding{"Resource " + id, fmt.Sprintf("QueueName %q is not a valid SQS queue name (1-80 letters, digits, hyphens, underscores; .fifo for a FIFO queue)", name)})
 	}
 	if _, ok := props["KmsMasterKeyId"]; ok {
 		f = append(f, Finding{"Resource " + id, "KmsMasterKeyId is not translatable — the SQS API keeps no per-queue encryption key"})
@@ -370,8 +387,36 @@ func translateSQSQueueAPI(id string, props map[string]any, ctx *stackCtx) (*Mani
 		s, err := redrivePolicyJSON(rp)
 		if err != nil {
 			f = append(f, Finding{"Resource " + id, "RedrivePolicy: " + err.Error()})
+		} else if strings.Contains(s, `.fifo"`) != fifo {
+			f = append(f, Finding{"Resource " + id, "RedrivePolicy: the dead-letter queue of a FIFO queue must be a FIFO queue, and that of a standard queue a standard queue"})
 		} else {
 			attrs["RedrivePolicy"] = s
+		}
+	}
+	if fifo {
+		// The FIFO contract the SQS API keeps: group order, five-minute deduplication.
+		attrs["FifoQueue"] = "true"
+		if cbd, present := props["ContentBasedDeduplication"]; present && cbd != nil {
+			b, ok := cfnBoolValue(cbd)
+			if !ok {
+				f = append(f, Finding{"Resource " + id, "ContentBasedDeduplication must be true or false"})
+			}
+			attrs["ContentBasedDeduplication"] = fmt.Sprint(b)
+		}
+		for p, vals := range map[string][]string{"DeduplicationScope": {"queue", "messageGroup"}, "FifoThroughputLimit": {"perQueue", "perMessageGroupId"}} {
+			v, present := props[p]
+			if !present || v == nil {
+				continue
+			}
+			s, ok := concrete(v)
+			if !ok || (s != vals[0] && s != vals[1]) {
+				f = append(f, Finding{"Resource " + id, p + " must be " + vals[0] + " or " + vals[1]})
+				continue
+			}
+			attrs[p] = s
+		}
+		if attrs["FifoThroughputLimit"] == "perMessageGroupId" && attrs["DeduplicationScope"] != "messageGroup" {
+			f = append(f, Finding{"Resource " + id, "FifoThroughputLimit perMessageGroupId requires DeduplicationScope messageGroup"})
 		}
 	}
 	if len(f) > 0 {
@@ -382,9 +427,11 @@ func translateSQSQueueAPI(id string, props map[string]any, ctx *stackCtx) (*Mani
 		"url":        svcQueueURL(name, ctx),
 		"attributes": attrs,
 	})
-	for _, p := range []string{"ContentBasedDeduplication", "DeduplicationScope", "FifoThroughputLimit"} {
-		if _, ok := props[p]; ok {
-			m.Caveats = append(m.Caveats, p+" ignored — it applies only to a FIFO queue")
+	if !fifo {
+		for _, p := range []string{"ContentBasedDeduplication", "DeduplicationScope", "FifoThroughputLimit"} {
+			if _, ok := props[p]; ok {
+				m.Caveats = append(m.Caveats, p+" ignored — it applies only to a FIFO queue")
+			}
 		}
 	}
 	if _, ok := props["Tags"]; ok {
@@ -530,6 +577,9 @@ func snsSubscriptionSpec(proto, endpoint string, epOK bool, rawEP any, ctx *stac
 		}
 		if !epOK || !strings.Contains(endpoint, ":sqs:") {
 			return nil, "an sqs subscription's Endpoint must resolve to an SQS queue ARN (e.g. !GetAtt Queue.Arn)"
+		}
+		if strings.HasSuffix(endpoint, ".fifo") {
+			return nil, "a FIFO queue cannot subscribe to a standard SNS topic (FIFO topics are not served here)"
 		}
 		return map[string]any{"protocol": "sqs", "endpoint": endpoint}, ""
 	case "lambda":

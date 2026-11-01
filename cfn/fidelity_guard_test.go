@@ -288,6 +288,7 @@ var guardSamples = []any{
 
 // guardShapedSamples are realistic values for properties a translator reads only in their AWS shape.
 var guardShapedSamples = map[string][]any{
+	"QueueName":               {"guard.fifo"}, // a FIFO queue's name (a standard queue's takes the generic samples)
 	"LifecycleConfiguration":  {map[string]any{"Rules": []any{map[string]any{"Status": "Enabled", "ExpirationInDays": 30}}}},
 	"VersioningConfiguration": {map[string]any{"Status": "Enabled"}},
 	"Environment":             {map[string]any{"Variables": map[string]any{"A": "b"}}},

@@ -81,8 +81,12 @@ Resources:
 func TestService_SQSRefusesWhatTheAPICannotServe(t *testing.T) {
 	refuses(t, `
 Resources:
-  Q: { Type: AWS::SQS::Queue, Properties: { FifoQueue: true } }
-`, svcCaps, "FIFO queue is not served")
+  Q: { Type: AWS::SQS::Queue, Properties: { FifoQueue: true, QueueName: orders } }
+`, svcCaps, "a FIFO queue's name ends with .fifo")
+	refuses(t, `
+Resources:
+  Q: { Type: AWS::SQS::Queue, Properties: { QueueName: orders.fifo } }
+`, svcCaps, "a FIFO queue's name ends with .fifo")
 	refuses(t, `
 Resources:
   Q: { Type: AWS::SQS::Queue, Properties: { QueueName: "bad name!" } }
@@ -289,6 +293,7 @@ func TestFidelityGuard_ServiceBackedTypes(t *testing.T) {
 	t.Cleanup(func() { guardCaps = old })
 	guardCheck(t, []guardBaseline{
 		yamlBaseline("AWS::SQS::Queue", `{}`, ""),
+		yamlBaseline("AWS::SQS::Queue", `{ FifoQueue: true, ContentBasedDeduplication: true, DeduplicationScope: messageGroup, FifoThroughputLimit: perQueue }`, ""),
 		yamlBaseline("AWS::SNS::Topic", `{}`, ""),
 		yamlBaseline("AWS::SNS::Subscription", `{ TopicArn: !Ref T, Protocol: lambda, Endpoint: !GetAtt Fn.Arn }`, `
   T: { Type: AWS::SNS::Topic }
