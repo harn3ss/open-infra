@@ -37,6 +37,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
@@ -108,6 +109,15 @@ type cfnDoorway struct {
 	// in-cluster address). The SQS front door answers any URL by its queue name; this only decides what
 	// a stack reports, and is where a client that routes by the URL's host sends.
 	sqsURLBase string
+	// signals stores the resource signals SignalResource and wait-condition handle URLs deliver; the
+	// engine waits on them (cloudformation_api.go). nil = signals cannot arrive (such a stack refuses).
+	signals *signalStore
+	// signalBase is the base URL of WaitConditionHandle URLs (CFN_SIGNAL_BASE_URL): one guests reach.
+	signalBase string
+	keyOnce    sync.Once
+	sigKey     []byte
+	// s3 reads TemplateURL objects from the shim's own S3 (cloudformation_templateurl.go); nil = refused.
+	s3 *s3Handler
 }
 
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
@@ -132,9 +142,13 @@ func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region,
 	}
 	// A generous timeout: Knative scale-from-zero makes the FIRST request to a custom resource's Function
 	// block while the pod cold-starts; the request is queued, not dropped.
-	return &cfnDoorway{cfg: cfg, shimDyn: shimDyn, mapper: mapper, account: account, region: region, ns: ns,
+	h := &cfnDoorway{cfg: cfg, shimDyn: shimDyn, mapper: mapper, account: account, region: region, ns: ns,
 		svcSuffix: svcSuffix, invoker: &http.Client{Timeout: 3 * time.Minute}, logger: logger,
-		objectEncryption: os.Getenv("OBJECT_ENCRYPTION") == "true"}, nil
+		objectEncryption: os.Getenv("OBJECT_ENCRYPTION") == "true",
+		// The in-cluster TLS address VM guests already reach and trust (their credentials come from it).
+		signalBase: getenv("CFN_SIGNAL_BASE_URL", "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567")}
+	h.signals = &signalStore{h: h}
+	return h, nil
 }
 
 // invokeCustomResourceFn is the cfn.InvokeFunc for a Lambda-backed custom resource (#269): it POSTs the
@@ -211,7 +225,8 @@ func cfnVerb(action string) string {
 	switch action {
 	case "DescribeStacks", "DescribeStackResources", "ListStacks", "ListExports", "GetTemplateSummary",
 		"GetTemplate", "ValidateTemplate", "DescribeChangeSet", "DetectStackDrift",
-		"DescribeStackDriftDetectionStatus", "DescribeStackResourceDrifts":
+		"DescribeStackDriftDetectionStatus", "DescribeStackResourceDrifts",
+		"DescribeStackEvents", "ListStackResources", "DescribeStackResource", "ListChangeSets", "ListImports":
 		return "get"
 	case "CreateStack", "CreateChangeSet", "ExecuteChangeSet":
 		return "create"
@@ -248,6 +263,13 @@ func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeQueryError(w, http.StatusBadRequest, "MissingAction", requestID, "no Action in the request.", cfnXMLNamespace)
 		return
 	}
+	// SignalResource decides its own authorization (cloudformation_api.go): an instance of the stack may
+	// signal it with nothing more than its instance role, as cfn-signal does on AWS.
+	if action == "SignalResource" {
+		h.signalResource(w, r, claims, requestID)
+		return
+	}
+	r = withCallerClaims(r, claims) // a TemplateURL is read as the caller
 	// Authorization, before anything reads or writes a record. The records are the shim's own bookkeeping
 	// (read and written with its client), so the caller must be allowed the action itself — as on AWS,
 	// where cloudformation:DescribeStacks etc. are permissions of their own:
@@ -313,6 +335,16 @@ func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.describeDriftStatus(w, r, ap, requestID)
 	case "DescribeStackResourceDrifts":
 		h.describeResourceDrifts(w, r, ap, requestID)
+	case "DescribeStackEvents":
+		h.describeStackEvents(w, r, ap, requestID)
+	case "ListStackResources":
+		h.listStackResources(w, r, ap, requestID)
+	case "DescribeStackResource":
+		h.describeStackResource(w, r, ap, requestID)
+	case "ListChangeSets":
+		h.listChangeSets(w, r, ap, requestID)
+	case "ListImports":
+		h.listImports(w, r, requestID)
 	default:
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
 			"CloudFormation "+action+" is not implemented by the open-infra shim.", cfnXMLNamespace)
@@ -321,16 +353,23 @@ func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 
 // --- template + params ---
 
-// templateBody returns the inline TemplateBody, refusing TemplateURL (no remote fetch — SSRF-safe and
-// this v1 has no template store).
+// templateBody returns the request's template — inline (TemplateBody), or a TemplateURL object in this
+// shim's own S3, read as the caller (cloudformation_templateurl.go: parsed, never fetched over the
+// network) — with any nested stacks flattened into it.
 func (h *cfnDoorway) templateBody(r *http.Request) (string, error) {
-	if b := r.PostFormValue("TemplateBody"); strings.TrimSpace(b) != "" {
-		return b, nil
+	body := r.PostFormValue("TemplateBody")
+	if strings.TrimSpace(body) == "" {
+		u := r.PostFormValue("TemplateURL")
+		if strings.TrimSpace(u) == "" {
+			return "", fmt.Errorf("TemplateBody or TemplateURL is required")
+		}
+		b, err := h.readTemplateURL(r, u)
+		if err != nil {
+			return "", err
+		}
+		body = b
 	}
-	if u := r.PostFormValue("TemplateURL"); strings.TrimSpace(u) != "" {
-		return "", fmt.Errorf("TemplateURL is not supported — pass the template inline as TemplateBody")
-	}
-	return "", fmt.Errorf("TemplateBody is required")
+	return h.withNestedFlattened(r, body)
 }
 
 func parseCFNParams(r *http.Request) map[string]string {
@@ -418,6 +457,17 @@ func describedParams(rec *cfn.StackRecord) map[string]string {
 		}
 		out[k] = "****"
 	}
+	// As on AWS, every template parameter is listed: one the stack was not given a value for shows its
+	// default (masked when NoEcho).
+	for k, v := range cfn.ParameterDefaults([]byte(rec.Template)) {
+		if _, ok := out[k]; ok {
+			continue
+		}
+		if noEcho[k] {
+			v = "****"
+		}
+		out[k] = v
+	}
 	return out
 }
 
@@ -443,6 +493,11 @@ func (h *cfnDoorway) opts(name string, params map[string]string) cfn.DeployOptio
 		Invoke: h.invokeCustomResourceFn,
 		// The same Capabilities the doorway's plan/changeset/validate use (#347 Phase 1.8).
 		Caps: h.caps(),
+	}
+	// Resource signals (CreationPolicy ResourceSignal, WaitCondition) arrive through this front door.
+	if h.signals != nil {
+		o.Signals = h.signals
+		o.SignalURL = h.signalURL
 	}
 	// In-cluster: an AWS::ApiGateway::RestApi stack is provisioned via the apigateway REST v1 store (#295).
 	// Nil when the apigateway data layer is unconfigured (or on the CLI), so such a stack refuses.
@@ -538,8 +593,9 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not seed stack record: "+err.Error(), cfnXMLNamespace)
 		return
 	}
+	createOpts := h.asCaller(h.stackOpts(name, params, ex, body), ap)
 	h.runStackOp(name, "CreateStack", "CREATE_FAILED", ap, func(bctx context.Context) error {
-		rec, derr := cfn.Deploy(bctx, []byte(body), h.asCaller(h.optsFor(name, params, ex), ap), ap)
+		rec, derr := cfn.Deploy(bctx, []byte(body), createOpts, ap)
 		if derr == nil {
 			h.logOutputs("CreateStack", name, rec)
 		}
@@ -596,8 +652,9 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		h.claimRefusal(w, requestID, name, "update", err)
 		return
 	}
+	updateOpts := h.asCaller(h.stackOpts(name, params, ex, body), ap)
 	h.runStackOp(name, "UpdateStack", "UPDATE_FAILED", ap, func(bctx context.Context) error {
-		rec, derr := cfn.Update(bctx, []byte(body), h.asCaller(h.optsFor(name, params, ex), ap), ap)
+		rec, derr := cfn.Update(bctx, []byte(body), updateOpts, ap)
 		if derr == nil {
 			h.logOutputs("UpdateStack", name, rec)
 		}
@@ -649,8 +706,10 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 	h.runStackOp(name, "DeleteStack", "DELETE_FAILED", ap, func(bctx context.Context) error {
 		_, derr := cfn.Destroy(bctx, h.asCaller(h.opts(name, nil), ap), ap)
 		if derr == nil {
-			// As on AWS, deleting a stack deletes its change sets — and its stored NoEcho values.
+			// As on AWS, deleting a stack deletes its change sets — and its stored NoEcho values, events and
+			// signals.
 			h.deleteChangeSetsOf(bctx, name)
+			h.deleteStackSide(bctx, name)
 			if err := h.noecho.deleteStack(bctx, name); err != nil {
 				h.logger.Warn("cfn: could not delete the stack's NoEcho parameters", "stack", name, "error", err.Error())
 			}
@@ -700,8 +759,16 @@ func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {
 	b.WriteString("<StackId>" + xesc(h.stackID(rec.Name)) + "</StackId>")
 	b.WriteString("<StackName>" + xesc(rec.Name) + "</StackName>")
 	b.WriteString("<StackStatus>" + xesc(rec.Status) + "</StackStatus>")
-	if rec.Message != "" {
+	switch {
+	case rec.Message != "":
 		b.WriteString("<StackStatusReason>" + xesc(rec.Message) + "</StackStatusReason>")
+	case rec.Fidelity != "":
+		// What the stack accepted that open-infra does not emulate as AWS does (#347 item D), where
+		// `aws cloudformation describe-stacks` shows it.
+		b.WriteString("<StackStatusReason>" + xesc("open-infra fidelity: "+rec.Fidelity) + "</StackStatusReason>")
+	}
+	if rec.Description != "" {
+		b.WriteString("<Description>" + xesc(rec.Description) + "</Description>")
 	}
 	if rec.CreatedAt != "" {
 		b.WriteString("<CreationTime>" + xesc(rec.CreatedAt) + "</CreationTime>")
@@ -734,14 +801,22 @@ func (h *cfnDoorway) describeStackResources(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var b strings.Builder
-	for _, res := range rec.Resources {
+	only := r.PostFormValue("LogicalResourceId")
+	for _, row := range h.stackResourceRows(r.Context(), rec) {
+		if only != "" && row.logicalID != only {
+			continue
+		}
 		b.WriteString("<member>")
 		b.WriteString("<StackName>" + xesc(rec.Name) + "</StackName>")
-		b.WriteString("<LogicalResourceId>" + xesc(res.LogicalID) + "</LogicalResourceId>")
-		b.WriteString("<PhysicalResourceId>" + xesc(res.Name) + "</PhysicalResourceId>")
-		b.WriteString("<ResourceType>" + xesc(res.Kind) + "</ResourceType>")
-		b.WriteString("<ResourceStatus>" + xesc(rec.Status) + "</ResourceStatus>")
-		b.WriteString("<Timestamp>" + xesc(recTime(rec)) + "</Timestamp>")
+		b.WriteString("<StackId>" + xesc(h.stackID(rec.Name)) + "</StackId>")
+		b.WriteString("<LogicalResourceId>" + xesc(row.logicalID) + "</LogicalResourceId>")
+		b.WriteString("<PhysicalResourceId>" + xesc(row.physicalID) + "</PhysicalResourceId>")
+		b.WriteString("<ResourceType>" + xesc(row.typ) + "</ResourceType>")
+		b.WriteString("<ResourceStatus>" + xesc(row.status) + "</ResourceStatus>")
+		if row.reason != "" {
+			b.WriteString("<ResourceStatusReason>" + xesc(row.reason) + "</ResourceStatusReason>")
+		}
+		b.WriteString("<Timestamp>" + xesc(row.timestamp) + "</Timestamp>")
 		b.WriteString("</member>")
 	}
 	h.writeResult(w, requestID, "DescribeStackResources", "<StackResources>"+b.String()+"</StackResources>")
@@ -786,7 +861,8 @@ func (h *cfnDoorway) validateTemplate(w http.ResponseWriter, r *http.Request, re
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, err.Error(), cfnXMLNamespace)
 		return
 	}
-	plan, perr := cfn.BuildPlanWithCaps([]byte(body), nil, h.exportsFor(r.Context(), "").values, "validate", h.caps())
+	// Validated without parameter values, as AWS does (a parameter with no default is fine here).
+	plan, perr := cfn.ValidatePlan([]byte(body), h.exportsFor(r.Context(), "").values, "validate", h.caps())
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return
@@ -938,18 +1014,18 @@ func (h *cfnDoorway) describeChangeSet(w http.ResponseWriter, r *http.Request, a
 		b.WriteString("<ResourceType>" + xesc(c.Kind) + "</ResourceType>")
 		b.WriteString("</ResourceChange></member>")
 	}
-	status, exec, reason := "CREATE_COMPLETE", "AVAILABLE", ""
-	if cs.Type != "CREATE" && b.Len() == 0 {
+	status, exec := changeSetStatus(cs), changeSetExecutionStatus(cs)
+	reason := ""
+	if status == "FAILED" {
 		// AWS reports an update with nothing to change as a FAILED change set with this exact reason;
 		// `aws cloudformation deploy` recognizes it and reports "No changes to deploy".
-		status, exec = "FAILED", "UNAVAILABLE"
 		reason = "The submitted information didn't contain changes. Submit different information to create a change set."
 	} else if fid := changeSetFidelity(cs.Changes); fid != "" {
 		// The fidelity summary, where `aws cloudformation describe-change-set` (and the console) show it:
 		// what this change accepts that open-infra does not emulate as AWS does.
 		reason = fid
 	}
-	csID := fmt.Sprintf("arn:aws:cloudformation:%s:%s:changeSet/%s/%s", h.region, h.account, cs.Name, shortHash(cs.StackName+"/"+cs.Name))
+	csID := h.changeSetID(cs.StackName, cs.Name)
 	inner := "<ChangeSetName>" + xesc(cs.Name) + "</ChangeSetName>" +
 		"<ChangeSetId>" + xesc(csID) + "</ChangeSetId>" +
 		"<StackName>" + xesc(cs.StackName) + "</StackName>" +
@@ -958,6 +1034,32 @@ func (h *cfnDoorway) describeChangeSet(w http.ResponseWriter, r *http.Request, a
 		"<StatusReason>" + xesc(reason) + "</StatusReason>" +
 		"<Changes>" + b.String() + "</Changes>"
 	h.writeResult(w, requestID, "DescribeChangeSet", inner)
+}
+
+// changeSetID is a change set's ARN.
+func (h *cfnDoorway) changeSetID(stack, name string) string {
+	return fmt.Sprintf("arn:aws:cloudformation:%s:%s:changeSet/%s/%s", h.region, h.account, name, shortHash(stack+"/"+name))
+}
+
+// changeSetStatus is a change set's Status: an update with nothing to change is FAILED, as on AWS.
+func changeSetStatus(cs *changeSet) string {
+	if cs.Type != "CREATE" {
+		for _, c := range cs.Changes {
+			if c.Action != cfn.Unchanged {
+				return "CREATE_COMPLETE"
+			}
+		}
+		return "FAILED"
+	}
+	return "CREATE_COMPLETE"
+}
+
+// changeSetExecutionStatus is a change set's ExecutionStatus.
+func changeSetExecutionStatus(cs *changeSet) string {
+	if changeSetStatus(cs) == "FAILED" {
+		return "UNAVAILABLE"
+	}
+	return "AVAILABLE"
 }
 
 func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
@@ -1034,13 +1136,14 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		h.claimRefusal(w, requestID, stack, "update", err)
 		return
 	}
+	execOpts := h.asCaller(h.stackOpts(stack, params, ex, body), ap)
 	h.runStackOp(stack, "ExecuteChangeSet", status, ap, func(bctx context.Context) error {
 		var rec *cfn.StackRecord
 		var derr error
 		if create {
-			rec, derr = cfn.Deploy(bctx, []byte(body), h.asCaller(h.optsFor(stack, params, ex), ap), ap)
+			rec, derr = cfn.Deploy(bctx, []byte(body), execOpts, ap)
 		} else {
-			rec, derr = cfn.Update(bctx, []byte(body), h.asCaller(h.optsFor(stack, params, ex), ap), ap)
+			rec, derr = cfn.Update(bctx, []byte(body), execOpts, ap)
 		}
 		if derr == nil {
 			h.logOutputs("ExecuteChangeSet", stack, rec)

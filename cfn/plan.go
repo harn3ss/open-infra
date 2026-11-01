@@ -328,6 +328,60 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 	return plan, nil
 }
 
+// ValidatePlan is the plan ValidateTemplate reports: the template checked without parameter values, as
+// AWS validates a template — a parameter with no default is not a blocker, nor is a finding that only
+// arises because such a parameter has no value yet. Everything else (an unsupported type, a broken
+// reference, a cycle, an Output that will not resolve) still refuses.
+func ValidatePlan(data []byte, exports map[string]string, stackName string, caps Capabilities) (*Plan, error) {
+	plan, err := BuildPlanWithCaps(data, nil, exports, stackName, caps)
+	if err != nil {
+		return nil, err
+	}
+	kept := plan.Blockers[:0]
+	for _, b := range plan.Blockers {
+		if (strings.HasPrefix(b, "parameter ") && strings.Contains(b, " has no default and no value supplied")) || strings.Contains(b, "<param:") {
+			continue
+		}
+		kept = append(kept, b)
+	}
+	plan.Blockers = kept
+	switch {
+	case len(plan.Blockers) > 0:
+		plan.Verdict = Rejected
+	case plan.hasPartial() || plan.hasUndeployable() || len(plan.Fidelity) > 0:
+		plan.Verdict = ProvisionableWithCaveats
+	default:
+		plan.Verdict = Provisionable
+	}
+	return plan, nil
+}
+
+// ParameterDefaults returns each template parameter's Default as a string (a parameter with none is
+// absent) — what DescribeStacks lists for a parameter the stack was not given.
+func ParameterDefaults(data []byte) map[string]string {
+	t, err := Parse(data)
+	if err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for name, p := range t.Parameters {
+		if !p.hasDef {
+			continue
+		}
+		switch v := p.Default.(type) {
+		case []any:
+			parts := make([]string, 0, len(v))
+			for _, e := range v {
+				parts = append(parts, fmt.Sprint(e))
+			}
+			out[name] = strings.Join(parts, ",")
+		default:
+			out[name] = fmt.Sprint(v)
+		}
+	}
+	return out
+}
+
 func (p *Plan) hasPartial() bool {
 	for _, r := range p.Resources {
 		if r.Included && r.Status == Partial {

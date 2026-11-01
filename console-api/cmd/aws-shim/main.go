@@ -583,12 +583,15 @@ func run(logger *slog.Logger) error {
 			cfnH.cs, cfnH.authzNS = cs, authzNS              // a User's coarse RBAC gate, as every front door
 			cfnH.noecho = &noEchoSecrets{cs: cs, ns: keysNS} // NoEcho values: Secrets in the shim's namespace
 			cfnH.recNS = keysNS                              // stack/change-set/drift records: Secrets there too (cfn_records.go)
-			cfnH.buckets = mc                                // a stack delete refuses a non-empty bucket and removes an empty one
+			cfnH.buckets = mc                              // a stack delete refuses a non-empty bucket and removes an empty one
 			// A stack's queues/topics/parameters/keys go into the stores those front doors serve (cfn_services.go).
 			if cfnSvcOwners != nil {
 				cfnH.services = &cfnServices{sqs: sqsH, sns: snsH, ssm: ssmH, kms: kmsH, owners: cfnSvcOwners}
 			}
 			cfnH.sqsURLBase = getenv("SQS_QUEUE_URL_BASE", "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566")
+			if s3H, ok := services["s3"].(*s3Handler); ok {
+				cfnH.s3 = s3H // TemplateURL objects are read from this shim's S3, as the caller (cloudformation_templateurl.go)
+			}
 			services["cloudformation"] = cfnH
 			cfnDoor = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
@@ -726,6 +729,11 @@ func run(logger *slog.Logger) error {
 			slog.String("secret", caNS+"/"+caSecret))
 	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services, vmCredsH, caBundleH)
+	// WaitConditionHandle URLs: a guest PUTs its signal there; the signed URL is the credential, ahead of
+	// SigV4, as AWS's pre-signed handle URL is (cloudformation_api.go).
+	if cfnDoor != nil {
+		router = cfnDoor.waitConditionHandler(router)
+	}
 	// VM credentials are served over TLS only (the internal TLS listener below); see internaltls.go.
 	router = plaintextVMCredsGuard(router, getenv("VM_CREDS_ALLOW_PLAINTEXT", "") == "true")
 
