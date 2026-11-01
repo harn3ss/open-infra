@@ -14,6 +14,10 @@
 #     served through Traefik over HTTPS on the Alias: / and a deep SPA route → index.html (200), a real
 #     asset as itself, and every response carries the policy's headers (X-Probe-Header, X-Frame-Options,
 #     X-Content-Type-Options);
+#   - a re-deploy, as the standard flow ends it: a new index.html is uploaded, then `aws cloudfront
+#     create-invalidation` on the distribution id the stack reports and `aws cloudfront wait
+#     invalidation-completed` — and the very next request serves the new content; list-invalidations shows
+#     it Completed, an unknown distribution is NoSuchDistribution, and a reader may not invalidate;
 #   - delete-stack removes the StaticSite and the Bucket.
 #
 # Everything it creates is removed on exit (EXIT trap): both stacks + their records, any claims left by
@@ -83,6 +87,7 @@ kubectl -n "$MINIO_NS" get secret minio >/dev/null 2>&1 || inconclusive "secret/
 
 cfn() { AWS_ACCESS_KEY_ID="$AAK" AWS_SECRET_ACCESS_KEY="$ASK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager cloudformation "$@"; }
 s3api() { AWS_ACCESS_KEY_ID="$AAK" AWS_SECRET_ACCESS_KEY="$ASK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager s3api "$@"; }
+cf() { AWS_ACCESS_KEY_ID="$AAK" AWS_SECRET_ACCESS_KEY="$ASK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager cloudfront "$@"; }
 
 # wait_pod <ns> <pod> <seconds>: 0 when the pod Succeeded, 1 when it Failed or timed out.
 wait_pod() {
@@ -150,7 +155,7 @@ cleanup() {
   # The claim creds Secrets are now composed (GC'd with the claim); delete any that linger, plus the
   # cert-manager TLS Secret (not owned by the claim until enableCertificateOwnerRef — #348).
   kubectl -n "$CFN_NS" delete secret "$SITE-minio" "$BCLAIM-minio" "staticsite-$SITE-tls" --ignore-not-found >/dev/null 2>&1
-  kubectl -n "$SHIM_NS" delete secret "cfn-stack-$STACK" "cfn-stack-$BAD_STACK" --ignore-not-found >/dev/null 2>&1  # the doorway's records
+  kubectl -n "$SHIM_NS" delete secret "cfn-stack-$STACK" "cfn-stack-$BAD_STACK" "cfn-invalidations-$STACK" --ignore-not-found >/dev/null 2>&1  # the doorway's records
   kubectl -n "$CFN_NS" delete configmap "cfn-stack-$STACK" "cfn-stack-$BAD_STACK" --ignore-not-found >/dev/null 2>&1  # (an earlier doorway's)
   kubectl -n "$MINIO_NS" delete job "$SITE-site-setup" --ignore-not-found >/dev/null 2>&1
   for j in $(kubectl -n "$MINIO_NS" get jobs -o name 2>/dev/null | grep "/$BCLAIM-bucket-"); do
@@ -334,6 +339,32 @@ for r in "$ROOT" "$DEEP" "$ASSET"; do
 done
 log "    ✓ https://$HOST/ and a deep route → index.html (200), the asset as itself, policy headers on every response"
 
+# --- 4b. a re-deploy: upload, create-invalidation, wait invalidation-completed → served at once ----------
+DIST="$(cfn describe-stack-resource --stack-name "$STACK" --logical-resource-id "$L_CDN" --query 'StackResourceDetail.PhysicalResourceId' --output text 2>/dev/null || true)"
+[[ "$DIST" =~ ^E[A-Z0-9]{13}$ ]] || fail "the distribution's physical id is '$DIST', want a CloudFront id (E + 13 characters)"
+log "re-deploy: upload a new index.html, create-invalidation on $DIST, wait invalidation-completed"
+MARKER2="CF_PROBE_V2_$SFX"
+printf '<!doctype html><title>cf probe</title><div id="app">%s</div>\n' "$MARKER2" > "$TMP/index.html"
+s3api put-object --bucket "$BUCKET" --key index.html --body "$TMP/index.html" --content-type text/html >/dev/null 2>"$TMP/up.err" \
+  || fail "re-uploading index.html failed: $(cat "$TMP/up.err")"
+INV="$(cf create-invalidation --distribution-id "$DIST" --paths '/*' --query 'Invalidation.Id' --output text 2>"$TMP/inv.err")" \
+  || fail "create-invalidation failed: $(cat "$TMP/inv.err")"
+[[ "$INV" =~ ^I[A-Z0-9]{13}$ ]] || fail "create-invalidation returned the id '$INV'"
+cf wait invalidation-completed --distribution-id "$DIST" --id "$INV" 2>"$TMP/inv.err" \
+  || fail "wait invalidation-completed did not see $INV complete: $(cat "$TMP/inv.err")"
+ROOT="$(fetch /)"
+printf '%s' "$ROOT" | grep -q "$MARKER2" || fail "invalidation $INV is Completed, but https://$HOST/ still serves the old content: $(snip "$ROOT")"
+LST="$(cf list-invalidations --distribution-id "$DIST" --query "InvalidationList.Items[?Id=='$INV'].Status | [0]" --output text 2>&1)"
+[ "$LST" = Completed ] || fail "list-invalidations does not show $INV Completed: $LST"
+ERR="$(cf create-invalidation --distribution-id E0000000000000 --paths '/*' 2>&1 >/dev/null)"
+printf '%s' "$ERR" | grep -q NoSuchDistribution || fail "an unknown distribution should be NoSuchDistribution: $(snip "$ERR")"
+mint_key "cfprobe-cdn-reader-$SFX" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
+sleep 2
+ERR="$(AWS_ACCESS_KEY_ID="$RAK" AWS_SECRET_ACCESS_KEY="$RSK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager \
+  cloudfront create-invalidation --distribution-id "$DIST" --paths '/*' 2>&1 >/dev/null)"
+printf '%s' "$ERR" | grep -q AccessDenied || fail "a reader's create-invalidation was not AccessDenied: $(snip "$ERR")"
+log "    ✓ Completed once the site serves the new upload (served on the next request); listed Completed; unknown distribution → NoSuchDistribution; a reader → AccessDenied"
+
 # --- 5. delete-stack removes the StaticSite, the Bucket and everything they held ------------------------
 # As on AWS, a stack whose bucket still holds data does not delete (BucketNotEmpty): empty it first, as a
 # user would. Nothing is swept before the check: what the delete itself left is what is asserted.
@@ -367,5 +398,6 @@ log "    ✓ stack destroyed: StaticSite, Bucket and the MinIO bucket gone; no c
 printf '\n✓ PASS — the cfn engine'"'"'s CloudFront subset is faithful through the aws-shim CloudFormation front door: an\n'
 printf '  unmodified CloudFront-over-private-S3 template deploys as a kind: StaticSite over its kind: Bucket, content\n'
 printf '  uploaded through the S3 front door is served on the Alias over HTTPS with SPA fallback and the response\n'
-printf '  headers policy, an out-of-subset feature (Lambda@Edge) refuses the whole stack with nothing created, and\n'
-printf '  delete-stack removes what was created.\n'
+printf '  headers policy, a re-deploy'"'"'s invalidation completes once the site serves the new upload, an\n'
+printf '  out-of-subset feature (Lambda@Edge) refuses the whole stack with nothing created, and delete-stack removes\n'
+printf '  what was created.\n'

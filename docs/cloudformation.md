@@ -309,7 +309,9 @@ own properties and is read by the distribution that references it.
 **Accepted, not emulated — printed as caveats:** caching (`CachePolicyId` / `OriginRequestPolicyId`,
 `CachedMethods`, TTLs, `ForwardedValues`, `Compress`, `ErrorCachingMinTTL`) — every request is served
 from the synced copy of the bucket, which re-syncs every 30 seconds (an upload goes live within about
-30s; there is no `CreateInvalidation`); `ViewerProtocolPolicy` `redirect-to-https` / `allow-all` (the
+30s; `aws cloudfront create-invalidation` and `wait invalidation-completed` work, and the invalidation is
+Completed once the site has re-synced — see [aws-shim.md](aws-shim.md#cloudfront-invalidations-of-a-stacks-distribution-probe-proven));
+`ViewerProtocolPolicy` `redirect-to-https` / `allow-all` (the
 site answers on HTTPS only — a plain-HTTP request is neither served nor redirected); `PriceClass`,
 `HttpVersion`, `IPV6Enabled`, `Comment`, `Tags`; `Logging` (nginx logs to the pod's stdout); origin
 timeouts, `OriginShield`, `OriginCustomHeaders`; `MinimumProtocolVersion` (Traefik's TLS defaults
@@ -317,7 +319,8 @@ apply); ACM validation (no validation records are needed); OAC request signing. 
 from an S3 origin by nature: object metadata set at upload (`Content-Type`, `Cache-Control`,
 `Content-Encoding`) is not served — nginx infers `Content-Type` from the file extension — and a missing
 object is a 404 at the origin (an S3 origin without `s3:ListBucket` says 403), so 403 and 404 mappings
-collapse into one missing-object behaviour. `Ref <Distribution>` (the distribution id) has no value.
+collapse into one missing-object behaviour. `Ref <Distribution>` is a stable synthetic distribution id
+(`E…`), the id the CloudFront invalidation calls take.
 
 **Refused:** a distribution without `Aliases` (open-infra has no `*.cloudfront.net` hostname to serve
 on), a second origin or `OriginGroups`, a custom origin (`CustomOriginConfig` — an S3 website endpoint,

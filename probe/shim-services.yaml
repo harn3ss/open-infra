@@ -129,7 +129,11 @@ services:
   - name: CloudFormation
     cell: "owned cfn engine; stacks provision under the caller's authority (impersonation)"
     tier: proven
-    probes: [cloudformation, cfn-customresource, cfn-cloudfront, cfn-lift-and-shift, cfn-data-services, cfn-api]
+    probes: [cloudformation, cfn-customresource, cfn-lift-and-shift, cfn-data-services, cfn-api]
+  - name: CloudFront
+    cell: "invalidations of a stack's distribution (`kind: StaticSite`): Completed once the site serves the upload"
+    tier: proven
+    probes: [cfn-cloudfront]
   - name: AppSync
     cell: "→ open-appsync (VTL-faithful engine)"
     tier: proven

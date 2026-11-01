@@ -260,6 +260,9 @@ Outputs:
     Value: !Sub "https://${SiteDomain}"
   SiteDomainName:
     Value: !GetAtt SiteDistribution.DomainName
+  SiteDistributionId:
+    Description: The distribution to invalidate after uploading the site.
+    Value: !Ref SiteDistribution
   AppBucketName:
     Value: !Ref AppBucket
   SiteBucketName:

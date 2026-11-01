@@ -13,7 +13,10 @@
 #      distro CLI and aws-cli v2, a call outside the role's policy is denied, an image pulls from the
 #      registry, and a container in the guest gets the role's credentials through the default chain;
 #   3. the Elastic IP is a reachable LAN address; the CloudFront site serves its origin (SPA fallback +
-#      the response-headers policy); a pre-signed S3 link opens;
+#      the response-headers policy); the deploy flow's last step works — after the site upload,
+#      `aws cloudfront create-invalidation` on the distribution in the Outputs and `aws cloudfront wait
+#      invalidation-completed` — and on a re-deploy the next request after the wait serves the new content;
+#      a pre-signed S3 link opens;
 #   4. delete-stack removes everything (DELETE_COMPLETE; with KUBECONFIG set, no claim of the stack is
 #      left in the cluster).
 # Before deploying it runs `cfn plan` (when CFN_BIN is set) and prints the fidelity summary: every
@@ -169,9 +172,11 @@ ST="$("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query 'St
 [ "$ST" = CREATE_COMPLETE ] || fail "stack status $ST, want CREATE_COMPLETE"
 out() { "${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
 ADDR="$(out InstanceAddress)"; SITE_URL="$(out SiteUrl)"; APPB="$(out AppBucketName)"; SITEB="$(out SiteBucketName)"
-log "  ✓ CREATE_COMPLETE; Outputs: InstanceAddress=$ADDR SiteUrl=$SITE_URL AppBucketName=$APPB SiteBucketName=$SITEB"
+DIST="$(out SiteDistributionId)"
+log "  ✓ CREATE_COMPLETE; Outputs: InstanceAddress=$ADDR SiteUrl=$SITE_URL AppBucketName=$APPB SiteBucketName=$SITEB SiteDistributionId=$DIST"
 [ -n "$ADDR" ] && [ "$ADDR" != None ] || fail "the stack returned no InstanceAddress output (the Elastic IP)"
 [ -n "$APPB" ] && [ "$APPB" != None ] || fail "the stack returned no AppBucketName output"
+[ -n "$DIST" ] && [ "$DIST" != None ] || fail "the stack returned no SiteDistributionId output"
 
 # --- 3. the app's inputs: its config object, and the site's content ----------------------------------
 echo "hello from $STACK" > "$TMP/hello.txt"
@@ -179,6 +184,17 @@ echo "hello from $STACK" > "$TMP/hello.txt"
 printf '<!doctype html><title>fixture</title><p id="m">LSFIX_SITE_%s</p>\n' "$SFX" > "$TMP/index.html"
 "${A[@]}" s3 cp "$TMP/index.html" "s3://$SITEB/index.html" >/dev/null || fail "uploading the site to $SITEB failed"
 log "  ✓ uploaded the app's object and the site's index.html"
+# invalidate <distribution>: the standard deploy's last step — create-invalidation, then wait for it.
+invalidate() {
+  local id
+  id="$("${A[@]}" cloudfront create-invalidation --distribution-id "$1" --paths '/*' --query Invalidation.Id --output text 2>"$TMP/inv.err")" \
+    || fail "aws cloudfront create-invalidation --distribution-id $1 failed: $(tr '\n' ' ' < "$TMP/inv.err")"
+  "${A[@]}" cloudfront wait invalidation-completed --distribution-id "$1" --id "$id" 2>"$TMP/inv.err" \
+    || fail "aws cloudfront wait invalidation-completed did not see $id complete: $(tr '\n' ' ' < "$TMP/inv.err")"
+  INV_ID="$id"
+}
+invalidate "$DIST"
+log "  ✓ create-invalidation $INV_ID on $DIST, then wait invalidation-completed"
 
 # --- 4. the instance's own checks, over the Elastic IP --------------------------------------------------
 log "waiting for http://$ADDR/results.json (the instance's checks; up to ${RESULTS_TIMEOUT}s)"
@@ -209,6 +225,13 @@ H="$(curl -s -k -m 8 -D - -o "$TMP/deep.html" "$SITE_URL/some/client/route" | tr
 printf '%s' "$H" | head -1 | grep -q " 200" && grep -q "LSFIX_SITE_$SFX" "$TMP/deep.html" || fail "SPA fallback: a deep route did not serve index.html with 200"
 printf '%s' "$H" | grep -qi '^x-fixture: lift-and-shift' || fail "the response-headers policy's X-Fixture header is missing"
 log "  ✓ site serves its origin, SPA fallback + response headers (TLS from the cluster issuer; see the fidelity summary)"
+# A re-deploy of the site: new content, the invalidation, the wait — and the very next request serves it.
+printf '<!doctype html><title>fixture</title><p id="m">LSFIX_REDEPLOY_%s</p>\n' "$SFX" > "$TMP/index.html"
+"${A[@]}" s3 cp "$TMP/index.html" "s3://$SITEB/index.html" >/dev/null || fail "re-uploading the site to $SITEB failed"
+invalidate "$DIST"
+B="$(curl -s -k -m 8 "$SITE_URL/" 2>/dev/null)"
+printf '%s' "$B" | grep -q "LSFIX_REDEPLOY_$SFX" || fail "invalidation $INV_ID completed, but $SITE_URL/ still served the earlier content"
+log "  ✓ re-deploy: upload, create-invalidation $INV_ID, wait → the next request serves the new content"
 U="$("${A[@]}" s3 presign "s3://$APPB/hello.txt" --expires-in 600)"
 PS_BODY="$(curl -s "${CURL_TLS[@]}" -m 10 -o - -w '\n%{http_code} connect=%{time_connect}s tls=%{time_appconnect}s first-byte=%{time_starttransfer}s' "$U"; echo " curl-exit=$?")"
 if [ "$(printf '%s' "$PS_BODY" | head -n -1)" != "hello from $STACK" ]; then
@@ -277,7 +300,7 @@ else
   "${A[@]}" ecr delete-repository --repository-name "$REPO" --force >/dev/null 2>&1 || true
 fi
 
-MSG="unmodified lift-and-shift template deployed through the CloudFormation front door from a LAN client: CREATE_COMPLETE with Outputs; instance checks all passed over the Elastic IP (bash UserData, encrypted Nitro data disk, IMDSv2 token + role creds, s3 cp distro+v2, out-of-policy call denied, ECR pull, container default-chain creds); CloudFront site served with SPA fallback + headers; pre-signed link opened; teardown clean${FIDELITY_N:+; fidelity summary lists $FIDELITY_N not-emulated properties}"
+MSG="unmodified lift-and-shift template deployed through the CloudFormation front door from a LAN client: CREATE_COMPLETE with Outputs; instance checks all passed over the Elastic IP (bash UserData, encrypted Nitro data disk, IMDSv2 token + role creds, s3 cp distro+v2, out-of-policy call denied, ECR pull, container default-chain creds); CloudFront site served with SPA fallback + headers; create-invalidation + wait invalidation-completed after each upload, the re-deployed content served on completion; pre-signed link opened; teardown clean${FIDELITY_N:+; fidelity summary lists $FIDELITY_N not-emulated properties}"
 printf '\n✓ PASS — %s\n' "$MSG"
 evidence 0 "$MSG"
 exit 0
