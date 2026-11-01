@@ -1,0 +1,262 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Generic lift-and-shift fixture. One EC2 instance (instance role, encrypted data disk, IMDSv2,
+  security group, Elastic IP) that reads an S3 bucket and pulls a container from an ECR repository,
+  pulls from an existing ECR repository, plus a static site served by CloudFront from a private S3 bucket. The same template deploys to AWS
+  and to open-infra; only the parameter file differs. The instance's UserData checks each behavior
+  and serves the results at http://<Elastic IP>/results.json.
+
+Parameters:
+  LatestUbuntuAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+  InstanceType:
+    Type: String
+    Default: t3.small
+  AwsEndpointUrl:
+    Type: String
+    Default: ""
+    Description: Empty on AWS. Elsewhere, the endpoint the instance's AWS CLI calls (e.g. open-infra's aws-shim).
+  SiteDomain:
+    Type: String
+    Description: The static site's hostname (a CloudFront alias).
+  SiteHostedZoneId:
+    Type: String
+    Default: ""
+    Description: Route 53 zone for automatic ACM DNS validation on AWS. Empty to validate by hand.
+  AppRepositoryName:
+    Type: String
+    Description: An existing ECR repository the instance pulls its app image from (pushed by CI).
+  AppImageTag:
+    Type: String
+    Default: app
+
+Conditions:
+  HasZone: !Not [!Equals [!Ref SiteHostedZoneId, ""]]
+
+Resources:
+  AppBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: app-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject]
+                Resource: !Sub "${AppBucket.Arn}/*"
+              - Effect: Allow
+                Action: [s3:ListBucket]
+                Resource: !GetAtt AppBucket.Arn
+              - Effect: Allow
+                Action: [ecr:GetAuthorizationToken]
+                Resource: "*"
+              - Effect: Allow
+                Action: [ecr:DescribeRepositories, ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
+                Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${AppRepositoryName}"
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SSH and HTTP to the app instance
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestUbuntuAmi
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroupIds: [!GetAtt AppSecurityGroup.GroupId]
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 2
+        HttpEndpoint: enabled
+      BlockDeviceMappings:
+        - DeviceName: /dev/sdf
+          Ebs: { VolumeSize: 1, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Each check appends "name": "ok|fail" to results.json, served on port 80.
+          exec >/var/log/fixture.log 2>&1
+          set -u
+          mkdir -p /var/www && cd /var/www
+          nohup python3 -m http.server 80 >/dev/null 2>&1 &
+          EP="${AwsEndpointUrl}"
+          REGION="${AWS::Region}"
+          EPA=""
+          if [ -n "$EP" ]; then EPA="--endpoint-url $EP"; fi
+          check() { if eval "$2"; then r=ok; else r=fail; fi; echo "  \"$1\": \"$r\"," >> /var/www/r.part; echo "$1: $r"; }
+          publish() { { echo "{"; cat /var/www/r.part; echo "  \"done\": \"$1\""; echo "}"; } > /var/www/results.tmp && mv /var/www/results.tmp /var/www/results.json; }
+          : > /var/www/r.part; publish no
+
+          # 1. UserData runs under bash (the shebang is honored).
+          check userdata_bash '[ -n "$BASH_VERSION" ]'
+
+          # 2. The encrypted data disk, by its Nitro device name.
+          check data_disk 'mkfs.ext4 -q -F /dev/nvme1n1 && mkdir -p /data && mount /dev/nvme1n1 /data && echo ok > /data/probe && grep -q ok /data/probe'
+
+          # 3. IMDSv2: a token is required, and the instance role's credentials are served.
+          TOKEN=$(curl -s -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 300" http://169.254.169.254/latest/api/token)
+          check imdsv2_token_required '[ "$(curl -s -o /dev/null -w %{http_code} http://169.254.169.254/latest/meta-data/instance-id)" = 401 ]'
+          check imdsv2_role_credentials 'curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/iam/security-credentials/ | grep -q .'
+          publish no
+
+          export DEBIAN_FRONTEND=noninteractive
+          for i in 1 2 3 4 5; do apt-get update -q && apt-get install -y -q awscli docker.io unzip && break; sleep 15; done
+
+          # 4. aws s3 cp with the instance role: the distro CLI and aws-cli v2.
+          check s3_cp_distro_cli "aws $EPA --region $REGION s3 cp s3://${AppBucket}/hello.txt /tmp/hello-distro.txt && grep -q hello /tmp/hello-distro.txt"
+          curl -sSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip && unzip -q -o /tmp/awscliv2.zip -d /tmp && /tmp/aws/install -i /opt/aws-cli -b /usr/local/bin --update
+          check s3_cp_aws_cli_v2 "/usr/local/bin/aws $EPA --region $REGION s3 cp s3://${AppBucket}/hello.txt /tmp/hello-v2.txt && grep -q hello /tmp/hello-v2.txt"
+
+          # 5. A call outside the role's policy is denied (the role cannot read the site bucket).
+          check denied_outside_policy "/usr/local/bin/aws $EPA --region $REGION s3 ls s3://${SiteBucket} 2>&1 | grep -q -E 'AccessDenied|Forbidden'"
+          publish no
+
+          # 6. An image pulls from the registry (pushed after the stack creates the repository).
+          URI=$(/usr/local/bin/aws $EPA --region $REGION ecr describe-repositories --repository-names ${AppRepositoryName} --query 'repositories[0].repositoryUri' --output text)
+          REG=$(echo "$URI" | cut -d/ -f1)
+          for i in $(seq 1 90); do
+            /usr/local/bin/aws $EPA --region $REGION ecr get-login-password | docker login --username AWS --password-stdin "$REG" && docker pull "$URI:${AppImageTag}" && break
+            sleep 10
+          done
+          check ecr_pull "docker image inspect '$URI:${AppImageTag}' >/dev/null"
+
+          # 7. A container in the guest gets the role's credentials through the default chain (IMDS, hop limit 2).
+          ENVEP=""
+          if [ -n "$EP" ]; then ENVEP="-e AWS_ENDPOINT_URL=$EP"; fi
+          check container_default_chain "docker run --rm -e AWS_REGION=$REGION $ENVEP '$URI:${AppImageTag}' s3 cp s3://${AppBucket}/hello.txt - | grep -q hello"
+          publish yes
+
+  AppAddress:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  AppAddressAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt AppAddress.AllocationId
+      InstanceId: !Ref AppInstance
+
+  SiteOriginAccess:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-site"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  SiteCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref SiteDomain
+      ValidationMethod: DNS
+      DomainValidationOptions: !If
+        - HasZone
+        - [ { DomainName: !Ref SiteDomain, HostedZoneId: !Ref SiteHostedZoneId } ]
+        - !Ref AWS::NoValue
+
+  SiteHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-site-headers"
+        SecurityHeadersConfig:
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { FrameOption: DENY, Override: true }
+          StrictTransportSecurity: { AccessControlMaxAgeSec: 31536000, IncludeSubdomains: true, Override: true }
+        CustomHeadersConfig:
+          Items:
+            - { Header: X-Fixture, Value: lift-and-shift, Override: true }
+
+  SiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Aliases: [!Ref SiteDomain]
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        Origins:
+          - Id: site-bucket
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            S3OriginConfig: { OriginAccessIdentity: "" }
+            OriginAccessControlId: !GetAtt SiteOriginAccess.Id
+        DefaultCacheBehavior:
+          TargetOriginId: site-bucket
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6   # AWS managed CachingOptimized
+          ResponseHeadersPolicyId: !Ref SiteHeaders
+        CustomErrorResponses:
+          - { ErrorCode: 403, ResponseCode: 200, ResponsePagePath: /index.html }
+          - { ErrorCode: 404, ResponseCode: 200, ResponsePagePath: /index.html }
+        ViewerCertificate:
+          AcmCertificateArn: !Ref SiteCertificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${SiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${SiteDistribution}"
+
+Outputs:
+  InstanceAddress:
+    Description: The instance's static address (Elastic IP).
+    Value: !Ref AppAddress
+  SiteUrl:
+    Value: !Sub "https://${SiteDomain}"
+  SiteDomainName:
+    Value: !GetAtt SiteDistribution.DomainName
+  AppBucketName:
+    Value: !Ref AppBucket
+  SiteBucketName:
+    Value: !Ref SiteBucket

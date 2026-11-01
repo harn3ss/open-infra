@@ -100,6 +100,7 @@ func evaluateOutputs(ctx context.Context, t *Template, opts DeployOptions, rec *
 	r.evalConditions()
 	r.customData = customData
 	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps}
+	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
 	d := &deployedAttrs{ctx: ctx, sr: sr, sctx: sctx, byID: map[string]StackResource{}, status: map[string]map[string]any{}}
 	for _, res := range rec.Resources {
 		d.byID[res.LogicalID] = res

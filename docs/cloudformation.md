@@ -50,6 +50,23 @@ function (e.g. a macro/SAM `Fn::Transform`), an `Fn::ImportValue` whose export w
 supplied, a required parameter with no value, a reference to something that does not
 exist, or a dependency cycle.
 
+### The fidelity summary
+
+A provisionable plan ends with a **fidelity summary**: every property of *this* template that
+open-infra accepts but does not emulate as AWS does, per resource — no-ops (e.g.
+`PublicAccessBlockConfiguration`, already the MinIO default), properties with no counterpart (e.g.
+`ManagedPolicyArns`, which are not attached), and approximations (e.g. a CloudFront distribution's
+certificate is issued in-cluster, not requested from ACM, and there is no edge cache). Read it as
+the boundary of what a test on open-infra proves: anything listed behaves differently from AWS or is
+not exercised, so a pass here never claims more than it tested. `-json` returns the same list as
+`Fidelity` (and each resource's `Caveats`).
+
+A `Ref` to an in-stack resource whose value is fixed before deploy — a bucket's, table's or
+function's name (its explicit name, or the name its open-infra kind is created with) and a topic's
+ARN — resolves at plan time, so UserData, environment variables and policies that use it are applied
+as written. Other `Ref`s and most `Fn::GetAtt` values exist only after deploy; stack Outputs that use
+them are filled from the deployed resources (see *Deploying a stack*).
+
 ## Usage
 
 ```console

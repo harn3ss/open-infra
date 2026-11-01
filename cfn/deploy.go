@@ -170,6 +170,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
 	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps}
+	r.staticRef = func(id string) (string, bool) { return inStackRef(id, ctx) }
 
 	byID := map[string][]builtResource{}
 	var findings []Finding
@@ -321,6 +322,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	r.evalConditions()
 	r.customData = map[string]map[string]any{}
 	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps}
+	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now}

@@ -47,6 +47,16 @@ type PlannedResource struct {
 	// translate gate (the same gate deploy runs in buildManifests). Non-empty means deploy WOULD
 	// refuse this resource; each refusal is also a plan Blocker, so the verdict reflects it.
 	TranslateRefusals []string `json:",omitempty"`
+	// Caveats are this template's own declared losses for the resource, from its create translator:
+	// properties accepted but not emulated (no-ops, approximations). They make up the plan's fidelity
+	// summary, so a pass on open-infra never reads as covering more than it did.
+	Caveats []string `json:",omitempty"`
+}
+
+// FidelityItem is one property the plan accepted but open-infra does not emulate faithfully.
+type FidelityItem struct {
+	Resource string
+	Detail   string
 }
 
 type Plan struct {
@@ -55,6 +65,9 @@ type Plan struct {
 	Resources []PlannedResource // all resources, in template order
 	Findings  []Finding         // intrinsic/reference problems
 	Blockers  []string          // human-readable REJECTED reasons
+	// Fidelity lists every accepted-but-not-emulated property across the included resources, in
+	// template order (each resource's Caveats). Empty only when every translator reported none.
+	Fidelity []FidelityItem `json:",omitempty"`
 }
 
 // BuildPlan parses a template and produces a dry-run plan. params supplies parameter values
@@ -185,6 +198,7 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 		tr := newResolver(t, pvals, strMapToAny(exports), pseudoParams(stackName))
 		tr.evalConditions()
 		tctx := &stackCtx{template: t, resolver: tr, caps: caps}
+		tr.staticRef = func(id string) (string, bool) { return inStackRef(id, tctx) }
 		for _, id := range t.rawOrder {
 			res := t.Resources[id]
 			if res.Condition != "" && !tr.conds[res.Condition] {
@@ -196,7 +210,13 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 			}
 			tr.where = "Resource " + id
 			resolved, _ := tr.resolve(res.Properties).(map[string]any)
-			_, fs := tf(id, resolved, tctx)
+			m, fs := tf(id, resolved, tctx)
+			if pr := byID[id]; pr != nil {
+				pr.Caveats = manifestCaveats(m)
+				for _, c := range pr.Caveats {
+					plan.Fidelity = append(plan.Fidelity, FidelityItem{Resource: id, Detail: c})
+				}
+			}
 			for _, f := range fs {
 				if pr := byID[id]; pr != nil {
 					pr.TranslateRefusals = append(pr.TranslateRefusals, f.Reason)
@@ -307,4 +327,31 @@ func noteOr(note, fallback string) string {
 		return fallback
 	}
 	return note
+}
+
+// manifestCaveats collects a translated resource's declared losses, its companions' included, without
+// repeats. A translator that folds a resource into another (nil manifest) reports its caveats there.
+func manifestCaveats(m *Manifest) []string {
+	if m == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	var walk func(*Manifest)
+	walk = func(x *Manifest) {
+		if x == nil {
+			return
+		}
+		for _, c := range x.Caveats {
+			if c != "" && !seen[c] {
+				seen[c] = true
+				out = append(out, c)
+			}
+		}
+		for _, e := range x.Extra {
+			walk(e)
+		}
+	}
+	walk(m)
+	return out
 }

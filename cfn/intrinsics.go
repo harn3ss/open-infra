@@ -43,6 +43,12 @@ type resolver struct {
 	// set only when evaluating stack Outputs after a create/update completes (outputs.go). Nil elsewhere,
 	// so plan/translate keep the unresolved placeholder.
 	deployed func(id, attr string) (any, bool)
+	// staticRef returns a resource's Ref value when it is fixed before deploy — a bucket's, table's or
+	// function's name (explicit, or the name its open-infra kind is created with), a topic's ARN — so a
+	// UserData script or an environment variable can use it the way it would on AWS. Set by the stack
+	// context; nil leaves every resource Ref unresolved until deploy.
+	staticRef     func(id string) (string, bool)
+	staticRefBusy map[string]bool // re-entrancy guard (a name that refers to another resource)
 	// imported, when non-nil, collects every export name Fn::ImportValue asks for (outputs.go records it
 	// on the stack, so a stack whose exports are in use is not deleted from under its importers).
 	imported map[string]bool
@@ -212,6 +218,17 @@ func (r *resolver) ref(name string) any {
 		r.refs[name] = true
 		if r.deployed != nil {
 			if v, ok := r.deployed(name, ""); ok {
+				return v
+			}
+		}
+		if r.staticRef != nil && !r.staticRefBusy[name] {
+			if r.staticRefBusy == nil {
+				r.staticRefBusy = map[string]bool{}
+			}
+			r.staticRefBusy[name] = true
+			v, ok := r.staticRef(name)
+			delete(r.staticRefBusy, name)
+			if ok && v != "" && !strings.Contains(v, "<") {
 				return v
 			}
 		}
