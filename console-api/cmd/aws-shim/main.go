@@ -659,9 +659,9 @@ func run(logger *slog.Logger) error {
 		logger.Info("EKS front door enabled", slog.String("cluster", eksName), slog.String("endpoint", eksEndpoint))
 	}
 	// VM workload credentials: serves rotating role credentials to a kind: VirtualMachine with
-	// spec.instanceRole, identified by a per-VM ServiceAccount token (the AWS container-credentials
-	// provider — not source-IP IMDS, which kube-ovn's gateway SNAT makes unusable). Opt-in
-	// (IMDS_ENABLED) and reuses the STS Minter + TokenReview + dynamic client; inert until a VM
+	// spec.instanceRole, identified by a per-VM ServiceAccount token — never by source IP, which VMs on
+	// a node share. The VM's in-guest metadata agent fetches them here and serves them as EC2 IMDS.
+	// Opt-in (IMDS_ENABLED) and reuses the STS Minter + TokenReview + dynamic client; inert until a VM
 	// presents a token.
 	var vmCredsH *vmCredsHandler
 	if getenv("IMDS_ENABLED", "") == "true" && stsMinter != nil && dyn != nil {
@@ -672,7 +672,7 @@ func run(logger *slog.Logger) error {
 			ttl:      awssts.DefaultDuration,
 			logger:   logger,
 		}
-		logger.Info("VM workload credentials enabled: VMs with spec.instanceRole get rotating credentials (container-credentials provider)")
+		logger.Info("VM workload credentials enabled: VMs with spec.instanceRole get rotating credentials (in-guest instance metadata)")
 	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services, vmCredsH)
 

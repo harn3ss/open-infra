@@ -1,0 +1,445 @@
+#!/usr/bin/env python3
+# Unit tests for the in-guest instance metadata agent (#347 items 13 + 14), run against the EXACT
+# agent text the VM composition ships (extracted from platform/abstraction/vm-composition.yaml) and
+# the config shape it renders (testdata/metadata-agent.golden.json, pinned by test/render).
+#
+# stdlib only and Python 3.6-compatible, like the agent: CI also runs this file under python:3.6 (the
+# RHEL 8 platform-python floor). No root needed — the network-namespace path is covered by
+# metadata_agent_netns_test.py.
+
+import http.client
+import http.server
+import json
+import os
+import shutil
+import socket
+import tempfile
+import threading
+import unittest
+
+import vmcreds_common as common
+
+TMP = tempfile.mkdtemp(prefix="oi-agent-test-")
+agent = common.load_agent_module(TMP)
+
+CREDS = {
+    "AccessKeyId": "ASIAUNITTESTKEY00001",
+    "SecretAccessKey": "unit-test-secret",
+    "Token": "unit-test-session-token",
+    "Expiration": "2099-01-01T00:00:00Z",
+}
+
+
+class FakeClock(object):
+    def __init__(self, t=1000000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+
+def make_config(**over):
+    """The golden (composition-rendered) config, re-pointed at loopback test listeners."""
+    cfg = common.golden_config()
+    cfg["imds"].update({"netns": "", "address": "127.0.0.1", "port": 0})
+    cfg["relay"].update({"port": 0})
+    ud = os.path.join(TMP, "user-data")
+    with open(ud, "w") as fh:
+        fh.write("#!/bin/bash\necho hi\n")
+    cfg["userDataFile"] = ud
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+            cfg[k].update(v)
+        else:
+            cfg[k] = v
+    path = os.path.join(TMP, "config-%d.json" % id(cfg))
+    with open(path, "w") as fh:
+        json.dump(cfg, fh)
+    return agent.load_config(path)
+
+
+class Running(object):
+    """An Agent with in-process listeners on ephemeral loopback ports."""
+
+    def __init__(self, cfg, fetch=None):
+        self.fetches = []
+
+        def default_fetch():
+            self.fetches.append(1)
+            return dict(CREDS)
+
+        self.agent = agent.Agent(cfg, fetch=fetch or default_fetch, warm_timeout=0)
+
+    def __enter__(self):
+        self.agent.start()
+        self.imds = self.relay = None
+        for srv in self.agent.servers:
+            if srv.RequestHandlerClass is agent.IMDSHandler:
+                self.imds = srv
+            else:
+                self.relay = srv
+        return self
+
+    def __exit__(self, *exc):
+        self.agent.shutdown()
+
+    def request(self, srv, method, path, headers=None):
+        host, port = srv.server_address[:2]
+        conn = http.client.HTTPConnection(host, port, timeout=5)
+        try:
+            conn.request(method, path, headers=headers or {})
+            r = conn.getresponse()
+            return r.status, r.read().decode("utf-8", "replace"), dict((k.lower(), v) for k, v in r.getheaders())
+        finally:
+            conn.close()
+
+    def get(self, path, headers=None):
+        return self.request(self.imds, "GET", path, headers)
+
+    def put_token(self, ttl="21600", extra=None):
+        h = {} if ttl is None else {agent.TOKEN_TTL_HEADER: ttl}
+        h.update(extra or {})
+        return self.request(self.imds, "PUT", "/latest/api/token", h)
+
+
+class ConfigTest(unittest.TestCase):
+    def test_golden_config_loads_with_composition_defaults(self):
+        cfg = make_config()
+        self.assertEqual(cfg["imds"]["hopLimit"], 2)
+        self.assertEqual(cfg["imds"]["httpTokens"], "optional")
+        self.assertEqual(cfg["region"], "us-east-1")
+        self.assertEqual(cfg["availabilityZone"], "us-east-1a")
+        self.assertTrue(cfg["relay"]["enabled"])
+
+    def test_bad_values_fall_back_safely(self):
+        cfg = make_config(imds={"hopLimit": 99, "httpTokens": "sometimes"})
+        self.assertEqual(cfg["imds"]["hopLimit"], 2)
+        self.assertEqual(cfg["imds"]["httpTokens"], "required")  # unknown -> fail closed
+
+    def test_defaults_are_not_mutated(self):
+        p = os.path.join(TMP, "minimal.json")
+        with open(p, "w") as fh:
+            json.dump({"imds": {"hopLimit": 7}}, fh)
+        agent.load_config(p)
+        self.assertEqual(agent.DEFAULTS["imds"]["hopLimit"], 2)
+
+
+class TimestampTest(unittest.TestCase):
+    def test_parse(self):
+        self.assertEqual(agent.parse_timestamp("1970-01-01T00:01:00Z"), 60)
+        self.assertEqual(agent.parse_timestamp("1970-01-01T01:00:00+01:00"), 0)
+        self.assertEqual(agent.parse_timestamp("1970-01-01T00:00:00.123Z"), 0)
+        self.assertEqual(agent.iso8601(60), "1970-01-01T00:01:00Z")
+        with self.assertRaises(ValueError):
+            agent.parse_timestamp("tomorrow")
+
+
+class TokenTest(unittest.TestCase):
+    def test_issue_validate_expire(self):
+        clock = FakeClock()
+        issuer = agent.TokenIssuer(clock=clock)
+        tok = issuer.issue(10)
+        self.assertTrue(issuer.valid(tok))
+        clock.t += 11
+        self.assertFalse(issuer.valid(tok), "a token must expire after its TTL")
+
+    def test_rejects_forged_and_foreign_tokens(self):
+        a, b = agent.TokenIssuer(), agent.TokenIssuer()
+        tok = a.issue(60)
+        self.assertFalse(b.valid(tok), "a token from another agent instance (key) must not validate")
+        self.assertFalse(a.valid(tok[:-4] + "AAAA"))
+        for junk in ("", "x", "not base64 !!", "éé"):
+            self.assertFalse(a.valid(junk))
+
+
+class CredentialCacheTest(unittest.TestCase):
+    def setUp(self):
+        self.clock = FakeClock(1000000.0)
+        self.calls = 0
+        self.fail = None
+
+    def fetch(self):
+        self.calls += 1
+        if self.fail:
+            raise agent.CredentialsError("shim down", self.fail)
+        c = dict(CREDS)
+        c["Expiration"] = agent.iso8601(self.clock.t + 3600)  # the shim's default 1h session
+        c["AccessKeyId"] = "ASIA%016d" % self.calls
+        return c
+
+    def test_caches_then_refreshes_early(self):
+        cache = agent.CredentialCache(self.fetch, clock=self.clock)
+        first = cache.get()
+        self.assertEqual(cache.get(), first)
+        self.assertEqual(self.calls, 1, "a second get() inside the validity window must not refetch")
+        # A 1h session refreshes 20 min before expiry: at +39 min still cached, and the cached
+        # credentials then always have > 15 min left (the botocore refresh window never fires).
+        self.clock.t += 39 * 60
+        self.assertEqual(cache.get(), first)
+        self.assertGreater(cache.next_wait(), 0)
+        self.clock.t += 2 * 60
+        served = cache.get()  # past the refresh point: still served at once, refresh is backgrounded
+        self.assertEqual(served, first)
+        self.assertTrue(cache._wake.is_set(), "past the refresh point the background refresher is woken")
+        cache.refresh()
+        self.assertNotEqual(cache.get()["AccessKeyId"], first["AccessKeyId"])
+
+    def test_failed_refresh_keeps_serving_valid_credentials(self):
+        cache = agent.CredentialCache(self.fetch, clock=self.clock)
+        first = cache.get()
+        self.clock.t += 45 * 60
+        self.fail = 503
+        with self.assertRaises(agent.CredentialsError):
+            cache.refresh()
+        self.assertEqual(cache.get(), first, "still-valid credentials keep being served while the shim is down")
+        self.clock.t += 20 * 60  # now expired
+        with self.assertRaises(agent.CredentialsError):
+            cache.get()
+
+    def test_no_credentials_raises_with_status(self):
+        self.fail = 403
+        cache = agent.CredentialCache(self.fetch, clock=self.clock)
+        with self.assertRaises(agent.CredentialsError) as ctx:
+            cache.get()
+        self.assertEqual(ctx.exception.status, 403)
+
+
+class StubShim(http.server.BaseHTTPRequestHandler):
+    status = 200
+    body = json.dumps(CREDS)
+    seen_auth = []
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        StubShim.seen_auth.append(self.headers.get("Authorization"))
+        b = self.body.encode()
+        self.send_response(self.status)
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+
+class FetchFromShimTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = http.server.HTTPServer(("127.0.0.1", 0), StubShim)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        cls.url = "http://127.0.0.1:%d/v1/vm-credentials" % cls.srv.server_address[1]
+        cls.tok = os.path.join(TMP, "token")
+        with open(cls.tok, "w") as fh:
+            fh.write("header.payload.sig\n")  # a trailing newline must not reach the header
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+
+    def setUp(self):
+        StubShim.status, StubShim.body, StubShim.seen_auth = 200, json.dumps(CREDS), []
+
+    def test_sends_the_token_as_authorization_and_ignores_proxies(self):
+        old = os.environ.get("http_proxy")
+        os.environ["http_proxy"] = "http://127.0.0.1:1"  # would break the request if honored
+        try:
+            creds = agent.fetch_from_shim(self.url, self.tok)
+        finally:
+            if old is None:
+                del os.environ["http_proxy"]
+            else:
+                os.environ["http_proxy"] = old
+        self.assertEqual(creds, CREDS)
+        self.assertEqual(StubShim.seen_auth, ["header.payload.sig"])
+
+    def test_shim_refusal_carries_status(self):
+        StubShim.status, StubShim.body = 403, "role not assumable by this instance"
+        with self.assertRaises(agent.CredentialsError) as ctx:
+            agent.fetch_from_shim(self.url, self.tok)
+        self.assertEqual(ctx.exception.status, 403)
+        self.assertIn("role not assumable", str(ctx.exception))
+        self.assertIn("spec.trust", str(ctx.exception), "a 403 tells the operator what to fix (journal)")
+
+    def test_bad_document_and_missing_token(self):
+        StubShim.body = '{"AccessKeyId": "x"}'
+        with self.assertRaises(agent.CredentialsError):
+            agent.fetch_from_shim(self.url, self.tok)
+        with self.assertRaises(agent.CredentialsError):
+            agent.fetch_from_shim(self.url, os.path.join(TMP, "no-such-token"))
+
+
+class IMDSTest(unittest.TestCase):
+    def test_imdsv2_token_handshake(self):
+        with Running(make_config()) as r:
+            st, tok, hdrs = r.put_token("21600")
+            self.assertEqual(st, 200)
+            self.assertEqual(hdrs.get(agent.TOKEN_TTL_HEADER.lower()), "21600")
+            st, body, _ = r.get("/latest/meta-data/instance-id", {agent.TOKEN_HEADER: tok})
+            self.assertEqual((st, body), (200, common.golden_config()["instanceId"]))
+            st, _, _ = r.get("/latest/meta-data/instance-id", {agent.TOKEN_HEADER: "bogus"})
+            self.assertEqual(st, 401, "an invalid token is refused even when tokens are optional")
+
+    def test_token_put_validation(self):
+        with Running(make_config()) as r:
+            for ttl in (None, "0", "21601", "abc", "-5", ""):
+                self.assertEqual(r.put_token(ttl)[0], 400, "TTL %r must be a 400" % (ttl,))
+            self.assertEqual(r.put_token("1")[0], 200)
+            # EC2 refuses a token PUT that came through a proxy (open-proxy / SSRF guard).
+            self.assertEqual(r.put_token("60", {"X-Forwarded-For": "203.0.113.9"})[0], 403)
+            self.assertEqual(r.request(r.imds, "PUT", "/latest/meta-data/", {agent.TOKEN_TTL_HEADER: "60"})[0], 405)
+            self.assertEqual(r.request(r.imds, "POST", "/latest/api/token")[0], 405)
+
+    def test_hop_limit_is_the_token_response_ip_ttl(self):
+        for hops in (1, 2, 5):
+            with Running(make_config(imds={"hopLimit": hops})) as r:
+                self.assertEqual(r.put_token("60")[0], 200)
+                self.assertEqual(r.imds.last_put_ttl, hops,
+                                 "the PUT token response must leave with IP TTL = hop limit")
+                r.imds.last_put_ttl = None
+                r.get("/latest/meta-data/")
+                self.assertIsNone(r.imds.last_put_ttl, "only the token PUT response is hop-limited")
+
+    def test_apply_hop_limit_sets_ip_ttl(self):
+        s = socket.socket()
+        try:
+            self.assertEqual(agent.apply_hop_limit(s, 3), 3)
+            self.assertEqual(s.getsockopt(socket.IPPROTO_IP, socket.IP_TTL), 3)
+        finally:
+            s.close()
+
+    def test_http_tokens_required_refuses_imdsv1(self):
+        with Running(make_config(imds={"httpTokens": "required"})) as r:
+            self.assertEqual(r.get("/latest/meta-data/instance-id")[0], 401)
+            tok = r.put_token("60")[1]
+            self.assertEqual(r.get("/latest/meta-data/instance-id", {agent.TOKEN_HEADER: tok})[0], 200)
+
+    def test_http_tokens_optional_allows_imdsv1(self):
+        with Running(make_config()) as r:
+            self.assertEqual(r.get("/latest/meta-data/instance-id")[0], 200)
+
+    def test_listings(self):
+        with Running(make_config()) as r:
+            st, body, _ = r.get("/")
+            self.assertEqual(st, 200)
+            self.assertIn("latest", body.split("\n"))
+            self.assertEqual(r.get("/latest")[1].split("\n"), ["dynamic", "meta-data", "user-data"])
+            md = r.get("/latest/meta-data/")[1].split("\n")
+            for entry in ("ami-id", "hostname", "iam/", "instance-id", "local-hostname", "local-ipv4",
+                          "placement/", "security-groups", "services/"):
+                self.assertIn(entry, md)
+            self.assertEqual(r.get("/latest/meta-data")[1].split("\n"), md, "a trailing slash is optional")
+            self.assertEqual(r.get("/latest/meta-data/iam/")[1].split("\n"), ["info", "security-credentials/"])
+            self.assertEqual(r.get("/latest/meta-data/placement/region")[1], "us-east-1")
+            self.assertEqual(r.get("/latest/meta-data/placement/availability-zone")[1], "us-east-1a")
+            self.assertEqual(r.get("/latest/meta-data/security-groups")[1], "web")
+            self.assertEqual(r.get("/latest/meta-data/hostname")[1], socket.gethostname())
+            self.assertEqual(r.get("/2009-04-04/meta-data/instance-id")[0], 200, "dated versions resolve too")
+            self.assertEqual(r.get("/latest/meta-data/nope")[0], 404)
+            self.assertEqual(r.get("/latest/meta-data/instance-id/extra")[0], 404)
+            self.assertEqual(r.get("/1999-01-01/meta-data/")[0], 404)
+
+    def test_role_credentials_in_ec2_shape(self):
+        with Running(make_config()) as r:
+            st, body, _ = r.get("/latest/meta-data/iam/security-credentials/")
+            self.assertEqual((st, body), (200, "app-role"))
+            st, body, _ = r.get("/latest/meta-data/iam/security-credentials/app-role")
+            self.assertEqual(st, 200)
+            doc = json.loads(body)
+            self.assertEqual(doc["Code"], "Success")
+            self.assertEqual(doc["Type"], "AWS-HMAC")
+            for k in ("AccessKeyId", "SecretAccessKey", "Token", "Expiration"):
+                self.assertEqual(doc[k], CREDS[k])
+            agent.parse_timestamp(doc["LastUpdated"])
+            self.assertEqual(r.get("/latest/meta-data/iam/security-credentials/other-role")[0], 404)
+            info = json.loads(r.get("/latest/meta-data/iam/info")[1])
+            self.assertEqual(info["Code"], "Success")
+            self.assertEqual(info["InstanceProfileArn"], "arn:aws:iam::open-infra:instance-profile/app-role")
+            self.assertTrue(info["InstanceProfileId"].startswith("AIPA"))
+            self.assertEqual(len(r.fetches), 1, "credentials are fetched once (at start) and then cached")
+
+    def test_role_refusal_is_reported_in_ec2_shape(self):
+        def refused():
+            raise agent.CredentialsError("role not assumable by this instance", 403)
+
+        with Running(make_config(), fetch=refused) as r:
+            st, body, _ = r.get("/latest/meta-data/iam/security-credentials/app-role")
+            self.assertEqual(st, 200)
+            doc = json.loads(body)
+            self.assertEqual(doc["Code"], "AssumeRoleUnauthorizedAccess")
+            self.assertNotIn("AccessKeyId", doc)
+
+    def test_identity_document_and_user_data(self):
+        golden = common.golden_config()
+        with Running(make_config()) as r:
+            doc = json.loads(r.get("/latest/dynamic/instance-identity/document")[1])
+            self.assertEqual(doc["instanceId"], golden["instanceId"])
+            self.assertEqual(doc["imageId"], golden["imageId"])
+            self.assertEqual(doc["accountId"], "open-infra")
+            self.assertEqual(doc["region"], "us-east-1")
+            self.assertEqual(doc["availabilityZone"], "us-east-1a")
+            self.assertEqual(doc["pendingTime"], "2026-10-31T12:00:00Z")
+            self.assertIn(doc["architecture"], ("x86_64", "arm64"))
+            self.assertIn("privateIp", doc)
+            self.assertEqual(r.get("/latest/dynamic/")[1], "instance-identity/")
+            self.assertEqual(r.get("/latest/user-data")[1], "#!/bin/bash\necho hi\n")
+        with Running(make_config(userDataFile="")) as r:
+            self.assertEqual(r.get("/latest/user-data")[0], 404, "no user-data -> 404, as on EC2")
+            self.assertNotIn("user-data", r.get("/latest/")[1].split("\n"))
+
+    def test_no_role_serves_no_iam(self):
+        with Running(make_config(role="", relay={"enabled": False})) as r:
+            self.assertIsNone(r.relay, "no role -> no credentials endpoint")
+            self.assertNotIn("iam/", r.get("/latest/meta-data/")[1].split("\n"))
+            self.assertEqual(r.get("/latest/meta-data/iam/security-credentials/")[0], 404)
+            self.assertEqual(r.get("/latest/meta-data/instance-id")[0], 200)
+
+
+class RelayTest(unittest.TestCase):
+    def test_container_credentials_without_authorization(self):
+        with Running(make_config()) as r:
+            st, body, hdrs = r.request(r.relay, "GET", "/v1/vm-credentials")  # no Authorization header
+            self.assertEqual(st, 200)
+            self.assertEqual(json.loads(body), CREDS)
+            self.assertEqual(r.request(r.relay, "GET", "/latest/meta-data/")[0], 404)
+
+    def test_shim_refusal_and_outage(self):
+        for status, want in ((403, 403), (401, 401), (None, 502), (500, 502)):
+            def fetch(status=status):
+                raise agent.CredentialsError("nope", status)
+
+            with Running(make_config(), fetch=fetch) as r:
+                self.assertEqual(r.request(r.relay, "GET", "/v1/vm-credentials")[0], want)
+
+
+class NetnsPlanTest(unittest.TestCase):
+    """The namespace plumbing, without root: record the ip(8) commands instead of running them."""
+
+    def test_setup_commands(self):
+        ran = []
+        orig_run, orig_ip = agent.run, agent.ip_binary
+        agent.run = lambda cmd, check=True: ran.append(cmd)
+        agent.ip_binary = lambda: "ip"
+        try:
+            agent.setup_netns("openinfra-imds", "169.254.169.254", "169.254.169.1")
+        finally:
+            agent.run, agent.ip_binary = orig_run, orig_ip
+        flat = [" ".join(c) for c in ran]
+        self.assertEqual(flat[:2], ["ip netns delete openinfra-imds", "ip link delete oi-imds0"],
+                         "setup starts from a clean slate (idempotent restarts)")
+        for want in (
+            "ip netns add openinfra-imds",
+            "ip link add oi-imds0 type veth peer name oi-imds1",
+            "ip link set oi-imds1 netns openinfra-imds",
+            "ip -n openinfra-imds addr add 169.254.169.254/32 dev oi-imds1",
+            "ip -n openinfra-imds route add default via 169.254.169.1 dev oi-imds1",
+            "ip route replace 169.254.169.254/32 dev oi-imds0 src 169.254.169.1",
+        ):
+            self.assertIn(want, flat)
+        self.assertFalse(any(" lo" in c and "addr" in c for c in flat),
+                         "169.254.169.254 must NOT go on the guest's lo (that would take port 80 from the workload)")
+
+
+if __name__ == "__main__":
+    try:
+        unittest.main(verbosity=2)
+    finally:
+        shutil.rmtree(TMP, ignore_errors=True)

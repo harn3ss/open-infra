@@ -1,182 +1,260 @@
 #!/usr/bin/env python3
-# #347 Phase 2.12 (§3.4): prove the container-credentials env the VM composition renders actually
-# works with REAL aws CLIs — the class of bug #11 fixed (a wrong env-var name no unit test catches).
+# #347 items 13 + 14: real aws CLIs get a VM's role credentials from the in-guest metadata agent the VM
+# composition ships, through both paths a guest uses:
 #
-# We extract the EXACT env the composition writes (var names + the loopback port + the token path)
-# from platform/abstraction/vm-composition.yaml, stand up a stub that plays both the shim's
-# /v1/vm-credentials endpoint and an STS GetCallerIdentity endpoint, then run each installed aws CLI
-# with that env and assert it fetched credentials with the token as its Authorization header.
+#   1. Container credentials with AWS_CONTAINER_CREDENTIALS_FULL_URI ALONE (the only env the composition
+#      renders — no token variable). The agent adds the Authorization header to the shim itself, so even
+#      an SDK that predates AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE gets credentials.
+#   2. EC2 instance metadata, with NO container-credentials env: the CLI's instance-profile provider
+#      fetches an IMDSv2 token and the role credentials. CI runners have their own cloud's metadata
+#      service at 169.254.169.254, so the agent listens on loopback here and the CLI is pointed at it
+#      with AWS_EC2_METADATA_SERVICE_ENDPOINT. A second run with httpTokens=required proves the CLI
+#      completed the IMDSv2 handshake (token-less IMDSv1 GETs are refused).
 #
-# Drift guard: the env var names come from the composition. If the token-file var regresses to a name
-# the SDK doesn't honor (e.g. the old AWS_CONTAINER_CREDENTIALS_TOKEN_FILE), the CLI sends no auth and
-# the stub assertion fails — exactly the #11 regression.
+# The agent is the exact text extracted from platform/abstraction/vm-composition.yaml, run as a real
+# process with the golden config (pinned to the composition's render by test/render) re-pointed at a stub
+# that plays the aws-shim's /v1/vm-credentials endpoint (it refuses any request whose Authorization is
+# not the VM token) and STS (it records which access key signed the call).
 #
-# aws-cli v2 is a HARD gate. A distro v1 (older botocore) is run best-effort and reported: old SDKs
-# that don't support AUTHORIZATION_TOKEN_FILE are the motivation for the #13 relay-injects-header
-# follow-on, so we document v1's result rather than failing on an SDK-age limitation.
+# aws-cli v2 is the hard gate. A distro aws CLI (older botocore) is run too and must pass the
+# container-credentials path; its IMDS result is reported (an old botocore may not honor
+# AWS_EC2_METADATA_SERVICE_ENDPOINT, which only this test needs).
 
+import http.client
 import http.server
 import json
 import os
-import re
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 
-REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-COMPOSITION = os.path.join(REPO, "platform", "abstraction", "vm-composition.yaml")
-TOKEN_VALUE = "oidc-test-token-A1B2C3.notarealjwt.payload"  # single line, no whitespace
+import vmcreds_common as common
+from vmcreds_common import say
 
-
-def extract_env_from_composition():
-    """Pull the rendered container-credentials env out of the VM composition."""
-    text = open(COMPOSITION).read()
-    m_tok = re.search(r"(AWS_CONTAINER_\w*TOKEN_FILE)=(\S+?)(?:\\n|\s|\")", text)
-    if not m_tok:
-        sys.exit("FAIL: no AWS_CONTAINER_*TOKEN_FILE assignment found in vm-composition.yaml")
-    token_var, token_path = m_tok.group(1), m_tok.group(2)
-    if not re.search(r"AWS_CONTAINER_CREDENTIALS_FULL_URI", text):
-        sys.exit("FAIL: no AWS_CONTAINER_CREDENTIALS_FULL_URI in vm-composition.yaml")
-    m_port = re.search(r'\$credsPort\s*:=\s*"(\d+)"', text)
-    if not m_port:
-        sys.exit("FAIL: could not extract $credsPort from vm-composition.yaml")
-    m_path = re.search(r'printf\s+"http://127\.0\.0\.1:%s(/\S+?)"', text)
-    cred_path = m_path.group(1) if m_path else "/v1/vm-credentials"
-    return token_var, token_path, int(m_port.group(1)), cred_path
+TOKEN_VALUE = "oidc-test-token-A1B2C3.notarealjwt.payload"
+CREDS = {
+    "AccessKeyId": "ASIAVMCREDSCLITEST01",
+    "SecretAccessKey": "secretExampleKey",
+    "Token": "sessionExampleToken",
+    "Expiration": "2099-01-01T00:00:00Z",
+}
 
 
 class Stub(http.server.BaseHTTPRequestHandler):
-    cred_auth_seen = None  # the Authorization header the CLI sent on the creds request
-    cred_path = "/v1/vm-credentials"
+    shim_calls = []  # Authorization header of every /v1/vm-credentials request
+    sts_calls = []   # (Authorization, X-Amz-Security-Token) of every signed STS call
 
     def log_message(self, *a):
         pass
 
+    def _send(self, status, body, ctype):
+        b = body.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
     def do_GET(self):
-        if self.path == self.cred_path:
-            Stub.cred_auth_seen = self.headers.get("Authorization")
-            body = json.dumps({
-                "AccessKeyId": "AKIAEXAMPLE",
-                "SecretAccessKey": "secretExampleKey",
-                "Token": "sessionExampleToken",
-                "Expiration": "2099-01-01T00:00:00Z",
-            }).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        self.send_response(404)
-        self.end_headers()
+        if self.path != "/v1/vm-credentials":
+            return self._send(404, "not found", "text/plain")
+        auth = self.headers.get("Authorization")
+        Stub.shim_calls.append(auth)
+        if auth != TOKEN_VALUE:
+            return self._send(401, "missing credential token", "text/plain")
+        self._send(200, json.dumps(CREDS), "application/json")
 
-    def do_POST(self):  # the signed STS GetCallerIdentity call lands here
+    def do_POST(self):  # the signed STS GetCallerIdentity call
         self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
-        body = (b'<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">'
-                b"<GetCallerIdentityResult><Arn>arn:aws:iam::000000000000:role/vm</Arn>"
-                b"<UserId>AROAEXAMPLE</UserId><Account>000000000000</Account>"
-                b"</GetCallerIdentityResult></GetCallerIdentityResponse>")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/xml")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        Stub.sts_calls.append((self.headers.get("Authorization") or "", self.headers.get("X-Amz-Security-Token")))
+        self._send(200, '<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">'
+                        "<GetCallerIdentityResult><Arn>arn:aws:sts::open-infra:assumed-role/app-role/vm</Arn>"
+                        "<UserId>AROAEXAMPLE:vm</UserId><Account>open-infra</Account>"
+                        "</GetCallerIdentityResult></GetCallerIdentityResponse>", "text/xml")
 
 
-def run_cli(aws_bin, env, port):
-    Stub.cred_auth_seen = None
-    proc = subprocess.run(
-        [aws_bin, "sts", "get-caller-identity", "--endpoint-url", f"http://127.0.0.1:{port}"],
-        env=env, capture_output=True, text=True, timeout=60,
-    )
-    return proc, Stub.cred_auth_seen
+class AgentProcess(object):
+    def __init__(self, tmp, agent_path, stub_port, http_tokens, relay):
+        cfg = common.golden_config()
+        self.relay = (cfg["relay"]["address"], int(cfg["relay"]["port"]))
+        self.imds_port = common.free_port()
+        cfg["credentialsUrl"] = "http://127.0.0.1:%d/v1/vm-credentials" % stub_port
+        cfg["tokenFile"] = os.path.join(tmp, "token")
+        cfg["userDataFile"] = os.path.join(tmp, "user-data")
+        cfg["imds"].update({"netns": "", "address": "127.0.0.1", "port": self.imds_port, "httpTokens": http_tokens})
+        cfg["relay"]["enabled"] = relay
+        self.cfg_path = os.path.join(tmp, "agent-%s.json" % http_tokens)
+        with open(self.cfg_path, "w") as fh:
+            json.dump(cfg, fh)
+        self.log_path = os.path.join(tmp, "agent-%s.log" % http_tokens)
+        self.log = open(self.log_path, "w")
+        self.proc = subprocess.Popen([sys.executable, agent_path, self.cfg_path], stdout=self.log, stderr=self.log)
+        common.wait_port("127.0.0.1", self.imds_port, proc=self.proc)
+        if relay:
+            common.wait_port(self.relay[0], self.relay[1], proc=self.proc)
 
-
-def main():
-    token_var, token_path, port, cred_path = extract_env_from_composition()
-    Stub.cred_path = cred_path
-    print(f"composition renders: FULL_URI port={port} path={cred_path}  token-file var={token_var}")
-
-    # Hard-fail if the token-file var regressed to a name the SDKs don't honor.
-    if token_var != "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE":
-        sys.exit(f"FAIL: token-file env var is {token_var}, but the AWS SDKs only honor "
-                 f"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE (#347 Phase 2.11 regression)")
-
-    tmp = tempfile.mkdtemp()
-    tok = os.path.join(tmp, "token")
-    with open(tok, "w") as fh:
-        fh.write(TOKEN_VALUE)  # no trailing newline, as the composition materializes it
-
-    srv = http.server.HTTPServer(("127.0.0.1", port), Stub)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    # wait for the listener
-    for _ in range(50):
+    def imds(self, method, path, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.imds_port, timeout=5)
         try:
-            socket.create_connection(("127.0.0.1", port), 0.2).close()
-            break
-        except OSError:
-            time.sleep(0.1)
+            conn.request(method, path, headers=headers or {})
+            r = conn.getresponse()
+            return r.status, r.read().decode()
+        finally:
+            conn.close()
 
-    base_env = {
-        "PATH": os.environ.get("PATH", ""),
-        "HOME": tmp,
-        "AWS_REGION": "us-east-1",
-        "AWS_DEFAULT_REGION": "us-east-1",
-        "AWS_EC2_METADATA_DISABLED": "true",
-        "AWS_CONTAINER_CREDENTIALS_FULL_URI": f"http://127.0.0.1:{port}{cred_path}",
-        token_var: tok,
-    }
+    def stop(self):
+        self.proc.terminate()
+        try:
+            self.proc.wait(10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        self.log.close()
 
-    # Discover installed CLIs by probing the usual locations (PATH order can let an apt v1 shadow the
-    # preinstalled v2, so we check both explicitly). aws-cli v2 is the hard gate; a distro v1 is
-    # best-effort. Dedup by resolved path.
-    candidates = []
-    seen = set()
+    def dump(self):
+        with open(self.log_path) as fh:
+            say("---- agent log ----\n" + fh.read() + "-------------------")
+
+
+def find_clis():
+    """Installed aws CLIs as [(path, "v1"|"v2")]: PATH order can let an apt v1 shadow a v2, so probe the
+    usual locations explicitly. Dedup by resolved path."""
+    out, seen = [], set()
     for p in filter(None, [shutil.which("aws"), "/usr/local/bin/aws", "/usr/bin/aws"]):
         rp = os.path.realpath(p)
         if not os.path.exists(p) or rp in seen:
             continue
         seen.add(rp)
-        ver = subprocess.run([p, "--version"], capture_output=True, text=True)
-        tag = "v2" if "aws-cli/2" in (ver.stderr + ver.stdout) else "v1"
-        candidates.append(("aws", p, tag))
+        ver = subprocess.run([p, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        text = ver.stdout + ver.stderr
+        out.append((p, "v2" if "aws-cli/2" in text else "v1", text.strip().split(" ")[0]))
+    return out
 
-    if not any(c[2] == "v2" for c in candidates):
-        sys.exit("FAIL: aws-cli v2 not found on PATH — the CI job must install it")
 
-    hard_ok = False
-    for label, aws_bin, tag in candidates:
-        env = dict(base_env)
-        proc, auth = run_cli(aws_bin, env, port)
-        got_creds = auth is not None
-        auth_ok = auth == TOKEN_VALUE
-        ok = proc.returncode == 0 and auth_ok
-        print(f"[{label} {tag} {aws_bin}] exit={proc.returncode} creds-fetched={got_creds} "
-              f"auth-matches-token={auth_ok}")
-        if not ok and proc.returncode != 0:
-            print("  stderr:", proc.stderr.strip()[:400])
-        if tag == "v2":
+def run_cli(aws_bin, env, stub_port):
+    """`aws sts get-caller-identity` -> (ok, detail). ok = exit 0 AND signed with the role credentials."""
+    del Stub.sts_calls[:]
+    p = subprocess.run([aws_bin, "sts", "get-caller-identity", "--endpoint-url", "http://127.0.0.1:%d" % stub_port],
+                       env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=90)
+    signed = any(("Credential=%s/" % CREDS["AccessKeyId"]) in a and t == CREDS["Token"] for a, t in Stub.sts_calls)
+    ok = p.returncode == 0 and signed
+    detail = "exit=%d signed-with-role-creds=%s" % (p.returncode, signed)
+    if not ok:
+        detail += "\n    stderr: " + p.stderr.strip()[-600:]
+    return ok, detail
+
+
+def main():
+    env_rendered = common.composition_env()
+    full_uri = env_rendered["AWS_CONTAINER_CREDENTIALS_FULL_URI"]
+    golden = common.golden_config()
+    relay_uri = "http://%s:%d/v1/vm-credentials" % (golden["relay"]["address"], golden["relay"]["port"])
+    say("composition renders AWS_CONTAINER_CREDENTIALS_FULL_URI=%s (and no token variable)" % full_uri)
+    if full_uri != relay_uri:
+        sys.exit("FAIL: FULL_URI %s is not the agent's credentials endpoint %s" % (full_uri, relay_uri))
+
+    clis = find_clis()
+    for path, tag, ver in clis:
+        say("found %s (%s) at %s" % (ver, tag, path))
+    if not any(tag == "v2" for _, tag, _ in clis):
+        sys.exit("FAIL: aws-cli v2 not found — the CI job must provide it")
+
+    tmp = tempfile.mkdtemp(prefix="vm-creds-cli-")
+    with open(os.path.join(tmp, "token"), "w") as fh:
+        fh.write(TOKEN_VALUE + "\n")  # the agent strips whitespace before sending it
+    with open(os.path.join(tmp, "user-data"), "w") as fh:
+        fh.write("#!/bin/bash\necho hello\n")
+    agent_path = common.write_agent(tmp)
+
+    stub = http.server.HTTPServer(("127.0.0.1", 0), Stub)
+    stub_port = stub.server_address[1]
+    threading.Thread(target=stub.serve_forever, daemon=True).start()
+
+    base = {"PATH": os.environ.get("PATH", ""), "HOME": tmp, "AWS_REGION": "us-east-1",
+            "AWS_DEFAULT_REGION": "us-east-1", "AWS_PAGER": ""}
+    failures, notes = [], []
+
+    agent = AgentProcess(tmp, agent_path, stub_port, "optional", relay=True)
+    try:
+        # --- the raw IMDSv2 contract, against the running agent ---
+        checks = [
+            ("PUT token without TTL header -> 400", agent.imds("PUT", "/latest/api/token")[0] == 400),
+            ("PUT token with X-Forwarded-For -> 403",
+             agent.imds("PUT", "/latest/api/token", {"X-aws-ec2-metadata-token-ttl-seconds": "60",
+                                                     "X-Forwarded-For": "203.0.113.7"})[0] == 403),
+        ]
+        st, token = agent.imds("PUT", "/latest/api/token", {"X-aws-ec2-metadata-token-ttl-seconds": "21600"})
+        checks.append(("PUT token -> 200", st == 200 and len(token) > 20))
+        st, body = agent.imds("GET", "/latest/meta-data/iam/security-credentials/", {"X-aws-ec2-metadata-token": token})
+        checks.append(("role listed under iam/security-credentials/", (st, body) == (200, golden["role"])))
+        st, body = agent.imds("GET", "/latest/meta-data/iam/security-credentials/" + golden["role"],
+                              {"X-aws-ec2-metadata-token": token})
+        doc = json.loads(body) if st == 200 else {}
+        checks.append(("role credentials in the EC2 shape",
+                       doc.get("Code") == "Success" and doc.get("Type") == "AWS-HMAC"
+                       and doc.get("AccessKeyId") == CREDS["AccessKeyId"]))
+        checks.append(("user-data served", agent.imds("GET", "/latest/user-data")[1] == "#!/bin/bash\necho hello\n"))
+        checks.append(("IMDSv1 GET allowed with httpTokens=optional",
+                       agent.imds("GET", "/latest/meta-data/instance-id") == (200, golden["instanceId"])))
+        for name, ok in checks:
+            say("[imds] %s: %s" % (name, "ok" if ok else "FAILED"))
             if not ok:
-                sys.exit(f"FAIL: aws-cli v2 did not resolve container credentials with the "
-                         f"composition env (creds-fetched={got_creds}, auth-matches={auth_ok}). "
-                         f"This is the end-to-end check for the #11 env-var fix.")
-            hard_ok = True
-        else:
-            if ok:
-                print("  v1 honors AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE too.")
-            else:
-                print("  NOTE: this distro v1 did not authenticate via the token file — an old-SDK "
-                      "limitation that the #13 relay-injects-Authorization follow-on addresses. "
-                      "Not failing the gate on SDK age.")
+                failures.append("imds: " + name)
 
-    srv.shutdown()
-    print("PASS: aws-cli v2 resolves VM container credentials with the composition's rendered env"
-          if hard_ok else "FAIL")
-    sys.exit(0 if hard_ok else 1)
+        # --- the CLIs, through both credential paths ---
+        for aws_bin, tag, ver in clis:
+            env = dict(base)
+            env.update(env_rendered)                 # FULL_URI only — exactly what the guest gets
+            env["AWS_EC2_METADATA_DISABLED"] = "true"  # so only the container provider can answer
+            ok, detail = run_cli(aws_bin, env, stub_port)
+            say("[%s %s] container credentials via FULL_URI alone: %s" % (ver, aws_bin, detail))
+            if not ok:
+                failures.append("%s: container credentials via FULL_URI alone" % ver)
+
+            env = dict(base)
+            env["AWS_EC2_METADATA_SERVICE_ENDPOINT"] = "http://127.0.0.1:%d/" % agent.imds_port
+            ok, detail = run_cli(aws_bin, env, stub_port)
+            say("[%s %s] instance metadata (IMDS), no container env: %s" % (ver, aws_bin, detail))
+            if not ok:
+                (failures if tag == "v2" else notes).append("%s: IMDS credentials" % ver)
+    finally:
+        agent.stop()
+    if failures:
+        agent.dump()
+
+    # --- httpTokens=required: IMDSv1 is refused, the CLI still succeeds (so it used IMDSv2) ---
+    agent = AgentProcess(tmp, agent_path, stub_port, "required", relay=False)
+    try:
+        ok = agent.imds("GET", "/latest/meta-data/instance-id")[0] == 401
+        say("[imds required] token-less GET -> 401: %s" % ("ok" if ok else "FAILED"))
+        if not ok:
+            failures.append("imds required: token-less GET not refused")
+        for aws_bin, tag, ver in clis:
+            env = dict(base)
+            env["AWS_EC2_METADATA_SERVICE_ENDPOINT"] = "http://127.0.0.1:%d/" % agent.imds_port
+            ok, detail = run_cli(aws_bin, env, stub_port)
+            say("[%s %s] IMDS with httpTokens=required (IMDSv2 handshake): %s" % (ver, aws_bin, detail))
+            if not ok:
+                (failures if tag == "v2" else notes).append("%s: IMDSv2 with httpTokens=required" % ver)
+    finally:
+        agent.stop()
+        stub.shutdown()
+
+    bad_auth = [a for a in Stub.shim_calls if a != TOKEN_VALUE]
+    say("shim saw %d credential requests; Authorization was the VM token on all of them: %s"
+        % (len(Stub.shim_calls), not bad_auth))
+    if not Stub.shim_calls or bad_auth:
+        failures.append("the agent must authenticate to the shim with the VM token (saw %r)" % bad_auth[:3])
+
+    for n in notes:
+        say("NOTE (best-effort, distro CLI): " + n)
+    if failures:
+        agent.dump()
+        sys.exit("FAIL:\n  " + "\n  ".join(failures))
+    say("PASS: aws CLIs resolve VM role credentials from the composition's metadata agent "
+        "(FULL_URI alone, and IMDSv2)")
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

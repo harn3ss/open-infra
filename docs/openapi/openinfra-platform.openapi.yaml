@@ -8955,6 +8955,43 @@ components:
                 \ service at boot (no static keys on disk), exactly as an EC2 instance does via its instance profile. The\
                 \ named Role MUST trust the VM service principal (spec.trust including \"vm\"); a Role that does not is never\
                 \ assumable this way (fail closed). Omit for a VM with no AWS identity."
+            metadataOptions:
+              type: object
+              description: "The instance metadata service inside the guest \u2014 the AWS::EC2::Instance MetadataOptions equivalent.\
+                \ A Linux guest serves EC2 instance metadata (IMDSv1 and IMDSv2) at http://169.254.169.254: instance id, region\
+                \ and availability zone, local IPv4, user-data, the instance identity document and, with instanceRole, the\
+                \ role's rotating credentials \u2014 where the AWS SDKs, the aws CLI and cloud tooling look for it, including\
+                \ from containers inside the guest. Omitted = the defaults below. Windows guests have no metadata service\
+                \ (these settings are ignored)."
+              properties:
+                httpEndpoint:
+                  type: string
+                  enum:
+                  - enabled
+                  - disabled
+                  default: enabled
+                  description: "enabled (default) serves instance metadata. disabled turns the metadata service off entirely\
+                    \ \u2014 nothing on 169.254.169.254 and no container-credentials endpoint \u2014 so, as on EC2, the guest\
+                    \ gets no instanceRole credentials."
+                httpTokens:
+                  type: string
+                  enum:
+                  - optional
+                  - required
+                  default: optional
+                  description: "optional (default): IMDSv1 (plain GET) and IMDSv2 (session token) both work, and a VM with\
+                    \ an instanceRole also gets the loopback container-credentials endpoint (AWS_CONTAINER_CREDENTIALS_FULL_URI).\
+                    \ required: IMDSv2 only \u2014 a request without a valid session token gets 401, and the container-credentials\
+                    \ endpoint (a plain GET) is not served. required is the SSRF-hardened setting."
+                httpPutResponseHopLimit:
+                  type: integer
+                  minimum: 1
+                  maximum: 64
+                  default: 2
+                  description: IP hop limit (TTL) of the IMDSv2 session-token response, as on EC2. Default 2. With 1, only
+                    processes in the guest itself (and host-network containers) get a session token; a container behind a
+                    bridge in the guest (docker's default network, a pod network) is one routing hop further and needs 2;
+                    each further hop needs one more. IMDSv1 requests are not hop-limited.
             securityGroups:
               type: array
               items:

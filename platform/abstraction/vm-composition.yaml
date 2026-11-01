@@ -92,16 +92,49 @@ spec:
             {{- $ha := $spec.highAvailability | default false }}
             {{- /* adopt an existing root PVC (migration/restore) instead of cloning the image */}}
             {{- $adopt := $spec.existingRootClaim | default "" }}
-            {{- /* Instance identity: the kind: Role this VM assumes via the AWS container-credentials
-                   provider. The guest's AWS SDK/CLI reads creds from a LOOPBACK endpoint — botocore (and
-                   the JS v3 http provider) refuse a container-credentials URL whose host is not loopback /
-                   link-local, so the shim (a ClusterIP service) is reached through a small systemd
-                   socket-proxy on 127.0.0.1:$credsPort. The SDK sends the projected SA token (from
-                   TOKEN_FILE) as the Authorization header, which the proxy forwards to the shim verbatim. */}}
+            {{- /* Instance identity: the kind: Role this VM assumes (spec.instanceRole). The VM carries a
+                   per-VM ServiceAccount token (a projected disk, copied ROOT-ONLY to
+                   /run/openinfra-identity/token at boot). The in-guest metadata agent presents it to the
+                   aws-shim's /v1/vm-credentials endpoint, which verifies it (TokenReview) and mints the
+                   role's credentials — identity travels in the token, never in the source IP. */}}
             {{- $instanceRole := $spec.instanceRole | default "" }}
             {{- $shimHostPort := "aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }}
+            {{- /* Instance metadata (spec.metadataOptions = AWS::EC2::Instance MetadataOptions). Linux guests
+                   run the open-infra metadata agent: EC2 IMDS (v1 + v2) on 169.254.169.254:80, in its own
+                   network namespace one routed hop off the guest (as on EC2: port 80 stays free for the
+                   workload, and the IMDSv2 PUT response hop limit is the token response's IP TTL). With a
+                   role AND httpTokens: optional it also serves the container-credentials endpoint on
+                   loopback (AWS_CONTAINER_CREDENTIALS_FULL_URI; botocore/JS refuse a non-loopback host) —
+                   a plain GET, i.e. IMDSv1-equivalent, so httpTokens: required turns it off too.
+                   httpEndpoint: disabled = no metadata agent at all. Windows guests run none of this. */}}
+            {{- $mdo := $spec.metadataOptions | default dict }}
+            {{- $imdsEnabled := ne ($mdo.httpEndpoint | default "enabled") "disabled" }}
+            {{- $httpTokens := $mdo.httpTokens | default "optional" }}
+            {{- $hopLimit := $mdo.httpPutResponseHopLimit | default 2 }}
+            {{- $metadataAgent := and (not $isWin) $imdsEnabled }}
+            {{- $credsRelay := false }}
+            {{- if and $metadataAgent $instanceRole (eq $httpTokens "optional") }}{{- $credsRelay = true }}{{- end }}
             {{- $credsPort := "16349" }}
             {{- $credsURI := printf "http://127.0.0.1:%s/v1/vm-credentials" $credsPort }}
+            {{- /* What the guest cannot observe, rendered into the agent's config. Region and account match
+                   the aws-shim's AWS_REGION / ACCOUNT_ID defaults; the instance id is stable for the life of
+                   this VM (derived from its UID) and the image id from its catalog OS. */}}
+            {{- $imdsRegion := "us-east-1" }}
+            {{- $userDataFile := "" }}{{- if $spec.userData }}{{- $userDataFile = "/opt/openinfra-userdata" }}{{- end }}
+            {{- $agentCfg := dict
+                  "instanceId" (printf "i-%s" (printf "%s-instance" .observed.composite.resource.metadata.uid | sha256sum | trunc 17))
+                  "imageId" (printf "ami-%s" (printf "%s-image" $spec.os | sha256sum | trunc 17))
+                  "region" $imdsRegion
+                  "availabilityZone" (printf "%sa" $imdsRegion)
+                  "accountId" "open-infra"
+                  "launchTime" (.observed.composite.resource.metadata.creationTimestamp | default "")
+                  "role" $instanceRole
+                  "credentialsUrl" (printf "http://%s/v1/vm-credentials" $shimHostPort)
+                  "tokenFile" "/run/openinfra-identity/token"
+                  "userDataFile" $userDataFile
+                  "securityGroups" ($spec.securityGroups | default list)
+                  "imds" (dict "enabled" true "address" "169.254.169.254" "port" 80 "netns" "openinfra-imds" "hostAddress" "169.254.169.1" "httpTokens" $httpTokens "hopLimit" $hopLimit)
+                  "relay" (dict "enabled" $credsRelay "address" "127.0.0.1" "port" (int $credsPort)) }}
             {{- /* Extra boot-time data disks (#115 lift-and-shift): blank persistent volumes attached
                    as virtio devices in order (/dev/vdb, /dev/vdc, …), each following the root disk's
                    HA storage policy. Unnamed disks get data1, data2, … so the attach order is stable. */}}
@@ -222,8 +255,8 @@ spec:
                           {{- range $sg := ($spec.securityGroups | default list) }}
                           openinfra.dev/sg-{{ $sg }}: ""
                           {{- end }}
-                          {{- /* Instance identity: the metadata responder maps the caller pod's IP to
-                                 this VMI and mints credentials for the named role. */}}
+                          {{- /* Instance role, as a label for selection/inventory. The credentials
+                                 themselves are resolved from the VM's ServiceAccount token. */}}
                           {{- if $instanceRole }}
                           openinfra.dev/instance-role: {{ $instanceRole }}
                           {{- end }}
@@ -549,43 +582,891 @@ spec:
                           {{ $user }}:{{ $pass }}
                       packages:
                         - qemu-guest-agent
-                      {{- if or $spec.userData $instanceRole $dataDisks }}
+                      {{- if or $spec.userData $instanceRole $dataDisks $metadataAgent }}
                       write_files:
-                        {{- if $instanceRole }}
+                        {{- if $credsRelay }}
                         {{- /* The container-credentials env, written to THREE places so every consumer
                                sees it: /etc/environment (login shells), a systemd Manager drop-in (every
                                systemd service — the Docker daemon, the app's units), and a standalone file
                                the boot-script wrapper sources (cloud-final.service is already running when
-                               runcmd fires, so it predates the drop-in). FULL_URI is the loopback relay. */}}
+                               runcmd fires, so it predates the drop-in). FULL_URI is the agent's loopback
+                               endpoint, which authenticates to the shim itself: no token env, so any SDK
+                               that knows FULL_URI works and the token stays root-only. */}}
                         - path: /etc/environment
                           append: true
-                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\nAWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/run/openinfra-identity/token\n"
+                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\n"
                         - path: /etc/openinfra-aws.env
-                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\nAWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/run/openinfra-identity/token\n"
+                          content: "AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}\n"
                         - path: /etc/systemd/system.conf.d/10-openinfra-aws.conf
                           content: |
                             [Manager]
-                            DefaultEnvironment=AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }} AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/run/openinfra-identity/token
-                        {{- /* Loopback relay: botocore/JS only trust a loopback container-creds host, and
-                               the shim is a ClusterIP service, so systemd-socket-proxyd forwards
-                               127.0.0.1:$credsPort -> the shim (DNS resolved per connection). The SA token
-                               the SDK sends as Authorization is forwarded unchanged. */}}
-                        - path: /etc/systemd/system/openinfra-aws-creds.socket
+                            DefaultEnvironment=AWS_CONTAINER_CREDENTIALS_FULL_URI={{ $credsURI }}
+                        {{- end }}
+                        {{- if $metadataAgent }}
+                        {{- /* The instance metadata agent: its config (what the guest can't observe +
+                               metadataOptions), its systemd unit, and the agent itself (stdlib Python 3.6+;
+                               every cloud image has python3 because cloud-init is Python; RHEL 8 family
+                               ships /usr/libexec/platform-python). Type=notify: `systemctl start` returns
+                               once the listeners are up and the first credentials are cached. The agent
+                               body below contains NO template actions — test/vm-creds runs it verbatim. */}}
+                        - path: /etc/openinfra/metadata-agent.json
+                          permissions: '0644'
+                          content: {{ $agentCfg | toJson | toJson }}
+                        - path: /etc/systemd/system/openinfra-metadata.service
                           content: |
                             [Unit]
-                            Description=open-infra VM credentials loopback relay (socket)
-                            [Socket]
-                            ListenStream=127.0.0.1:{{ $credsPort }}
-                            [Install]
-                            WantedBy=sockets.target
-                        - path: /etc/systemd/system/openinfra-aws-creds.service
-                          content: |
-                            [Unit]
-                            Description=open-infra VM credentials loopback relay
-                            Requires=openinfra-aws-creds.socket
-                            After=openinfra-aws-creds.socket network-online.target
+                            Description=open-infra instance metadata agent (EC2 instance metadata service, 169.254.169.254)
+                            Wants=network-online.target
+                            After=network-online.target
+                            StartLimitIntervalSec=0
                             [Service]
-                            ExecStart=/usr/lib/systemd/systemd-socket-proxyd {{ $shimHostPort }}
+                            Type=notify
+                            ExecStart=/bin/sh -c 'for py in python3 /usr/libexec/platform-python; do command -v "$$py" >/dev/null 2>&1 && exec "$$py" /usr/local/lib/openinfra/metadata-agent.py /etc/openinfra/metadata-agent.json; done; echo "openinfra-metadata: no python3 interpreter (tried python3, /usr/libexec/platform-python)" >&2; exit 1'
+                            Restart=always
+                            RestartSec=5
+                            TimeoutStartSec=90
+                            [Install]
+                            WantedBy=multi-user.target
+                        - path: /usr/local/lib/openinfra/metadata-agent.py
+                          permissions: '0755'
+                          content: |
+                            #!/usr/bin/env python3
+                            # open-infra instance metadata agent for kind: VirtualMachine (Linux guests). Runs as root under
+                            # openinfra-metadata.service; written by the VM composition's cloud-init. stdlib only, Python 3.6+.
+                            #
+                            # Two listeners, one credential cache:
+                            #  * EC2 instance metadata (IMDSv1 + IMDSv2) on 169.254.169.254:80. The listener lives in its own
+                            #    network namespace joined to the guest by a veth pair, so it sits one routed hop off the
+                            #    instance, where EC2's metadata service sits: port 80 in the guest stays free for the
+                            #    workload, and the IMDSv2 PUT response hop limit (the IP TTL of the token response) behaves
+                            #    as on EC2 - a container behind a bridge in the guest gets a token only when the limit is >= 2.
+                            #  * The container-credentials endpoint on 127.0.0.1:16349 (AWS_CONTAINER_CREDENTIALS_FULL_URI).
+                            #    The agent adds the Authorization header itself, so callers need only the URI.
+                            #
+                            # Role credentials come from the aws-shim's /v1/vm-credentials endpoint, authenticated with the
+                            # VM's own ServiceAccount token (the shim verifies it with a TokenReview; the source IP is never
+                            # the credential). They are cached and refreshed well before they expire.
+                            #
+                            # Usage: metadata-agent.py <config.json>   (keys: see DEFAULTS)
+
+                            import base64
+                            import calendar
+                            import hashlib
+                            import hmac
+                            import http.server
+                            import json
+                            import logging
+                            import os
+                            import platform
+                            import re
+                            import shutil
+                            import signal
+                            import socket
+                            import socketserver
+                            import struct
+                            import subprocess
+                            import sys
+                            import threading
+                            import time
+                            import urllib.error
+                            import urllib.parse
+                            import urllib.request
+
+                            LOG = logging.getLogger("openinfra-metadata")
+
+                            DEFAULTS = {
+                                "instanceId": "",
+                                "imageId": "",
+                                "instanceType": "",
+                                "region": "us-east-1",
+                                "availabilityZone": "",
+                                "accountId": "",
+                                "launchTime": "",
+                                "role": "",
+                                "credentialsUrl": "",
+                                "tokenFile": "/run/openinfra-identity/token",
+                                "userDataFile": "",
+                                "securityGroups": [],
+                                "imds": {
+                                    "enabled": True,
+                                    "address": "169.254.169.254",
+                                    "port": 80,
+                                    "netns": "",
+                                    "hostAddress": "169.254.169.1",
+                                    "httpTokens": "optional",
+                                    "hopLimit": 2,
+                                },
+                                "relay": {"enabled": False, "address": "127.0.0.1", "port": 16349},
+                            }
+
+                            TOKEN_HEADER = "X-aws-ec2-metadata-token"
+                            TOKEN_TTL_HEADER = "X-aws-ec2-metadata-token-ttl-seconds"
+                            MAX_TOKEN_TTL = 21600
+                            CREDS_PATH = "/v1/vm-credentials"
+                            NETNS_HOST_IF = "oi-imds0"
+                            NETNS_PEER_IF = "oi-imds1"
+                            CLONE_NEWNET = 0x40000000
+                            VERSIONS = [
+                                "1.0", "2007-01-19", "2007-03-01", "2007-08-29", "2007-10-10", "2007-12-15", "2008-02-01",
+                                "2008-09-01", "2009-04-04", "2011-01-01", "2011-05-01", "2012-01-12", "2014-02-25",
+                                "2014-11-05", "2015-10-20", "2016-04-19", "2016-06-30", "2016-09-02", "2018-03-28",
+                                "2018-08-17", "2018-09-24", "2019-10-01", "2020-10-27", "2021-01-03", "2021-03-23",
+                                "2021-07-15", "2022-09-24", "latest",
+                            ]
+                            NOT_FOUND_BODY = (
+                                '<?xml version="1.0" encoding="iso-8859-1"?>\n'
+                                '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"\n'
+                                '\t"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">\n'
+                                '<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">\n'
+                                " <head>\n  <title>404 - Not Found</title>\n </head>\n"
+                                " <body>\n  <h1>404 - Not Found</h1>\n </body>\n</html>\n"
+                            )
+
+
+                            def load_config(path):
+                                with open(path) as fh:
+                                    raw = json.load(fh)
+                                cfg = dict((k, dict(v) if isinstance(v, dict) else v) for k, v in DEFAULTS.items())
+                                for k, v in raw.items():
+                                    if isinstance(cfg.get(k), dict) and isinstance(v, dict):
+                                        cfg[k].update(v)
+                                    else:
+                                        cfg[k] = v
+                                imds = cfg["imds"]
+                                try:
+                                    hop = int(imds.get("hopLimit"))
+                                except (TypeError, ValueError):
+                                    hop = 0
+                                if not 1 <= hop <= 64:
+                                    LOG.warning("imds.hopLimit %r is outside 1..64; using 2", imds.get("hopLimit"))
+                                    hop = 2
+                                imds["hopLimit"] = hop
+                                if imds.get("httpTokens") not in ("optional", "required"):
+                                    LOG.warning("imds.httpTokens %r is not optional|required; using required", imds.get("httpTokens"))
+                                    imds["httpTokens"] = "required"
+                                if not cfg["availabilityZone"]:
+                                    cfg["availabilityZone"] = cfg["region"] + "a"
+                                return cfg
+
+
+                            def iso8601(ts):
+                                return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+                            _TS_RE = re.compile(r"^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(?:\.\d+)?(Z|[+-]\d\d:?\d\d)?$")
+
+
+                            def parse_timestamp(s):
+                                """RFC 3339 timestamp -> epoch seconds (UTC when no offset is given). ValueError if malformed."""
+                                m = _TS_RE.match((s or "").strip())
+                                if not m:
+                                    raise ValueError("unparseable timestamp %r" % (s,))
+                                ts = calendar.timegm(tuple(int(x) for x in m.groups()[:6]) + (0, 0, 0))
+                                tz = m.group(7)
+                                if tz and tz != "Z":
+                                    sign = -1 if tz[0] == "+" else 1
+                                    hh, mm = int(tz[1:3]), int(tz[-2:])
+                                    ts += sign * (hh * 3600 + mm * 60)
+                                return ts
+
+
+                            # ---------------------------------------------------------------------------------------------
+                            # Role credentials: fetched from the aws-shim with the VM's ServiceAccount token, cached.
+                            # ---------------------------------------------------------------------------------------------
+
+                            class CredentialsError(Exception):
+                                def __init__(self, message, status=None):
+                                    Exception.__init__(self, message)
+                                    self.status = status  # the shim's HTTP status, or None for a transport/local failure
+
+
+                            def fetch_from_shim(url, token_file, timeout=5.0):
+                                try:
+                                    with open(token_file) as fh:
+                                        token = "".join(fh.read().split())
+                                except (IOError, OSError) as e:
+                                    raise CredentialsError("cannot read the instance identity token %s: %s" % (token_file, e))
+                                if not token:
+                                    raise CredentialsError("the instance identity token %s is empty" % token_file)
+                                req = urllib.request.Request(url, headers={"Authorization": token, "Accept": "application/json"})
+                                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via an http_proxy
+                                try:
+                                    resp = opener.open(req, timeout=timeout)
+                                    try:
+                                        body = resp.read()
+                                    finally:
+                                        resp.close()
+                                except urllib.error.HTTPError as e:
+                                    detail = e.read()[:300].decode("utf-8", "replace").strip()
+                                    hint = {
+                                        401: " - the shim did not accept this VM's ServiceAccount token (TokenReview failed, or the"
+                                             " ServiceAccount carries no openinfra.dev/instance-role annotation)",
+                                        403: " - the instance role does not trust the vm principal (its spec.trust must include \"vm\")",
+                                    }.get(e.code, "")
+                                    raise CredentialsError("aws-shim %s answered HTTP %d: %s%s" % (url, e.code, detail, hint), e.code)
+                                except (urllib.error.URLError, socket.timeout, OSError) as e:
+                                    raise CredentialsError("cannot reach the aws-shim at %s: %s" % (url, getattr(e, "reason", e)))
+                                try:
+                                    data = json.loads(body.decode("utf-8"))
+                                    creds = dict((k, str(data[k])) for k in ("AccessKeyId", "SecretAccessKey", "Token", "Expiration"))
+                                    parse_timestamp(creds["Expiration"])
+                                except (ValueError, KeyError, TypeError, AttributeError) as e:
+                                    raise CredentialsError("aws-shim returned an unusable credentials document: %s" % e)
+                                return creds
+
+
+                            class CredentialCache:
+                                """Serves the role's current credentials; refreshes them in the background before they expire.
+
+                                Credentials are refreshed when a third of their lifetime remains (at least 5 and at most 20
+                                minutes before Expiration), so a caller always receives credentials with ample time left and the
+                                SDKs' own refresh windows (botocore refreshes 15 minutes ahead) never fire against stale ones. A
+                                failed refresh keeps serving the cached credentials until they actually expire.
+                                """
+
+                                def __init__(self, fetch, clock=time.time):
+                                    self._fetch = fetch
+                                    self._clock = clock
+                                    self._lock = threading.Lock()
+                                    self._fetch_lock = threading.Lock()
+                                    self._wake = threading.Event()
+                                    self._creds = None
+                                    self._expires = 0.0
+                                    self._refresh_at = 0.0
+                                    self.last_updated = 0.0
+                                    self.last_error = None
+
+                                def _valid(self, now):
+                                    return self._creds is not None and now < self._expires - 60
+
+                                def _store(self, creds):
+                                    now = self._clock()
+                                    exp = parse_timestamp(creds["Expiration"])
+                                    margin = min(max((exp - now) / 3.0, 300.0), 1200.0)
+                                    with self._lock:
+                                        self._creds, self._expires, self._refresh_at = creds, exp, exp - margin
+                                        self.last_updated, self.last_error = now, None
+                                    LOG.info("credentials refreshed (expire %s, next refresh %s)", creds["Expiration"], iso8601(exp - margin))
+
+                                def _refresh_locked(self):
+                                    try:
+                                        creds = self._fetch()
+                                    except CredentialsError as e:
+                                        with self._lock:
+                                            self.last_error = e
+                                        LOG.error("credential refresh failed: %s", e)
+                                        raise
+                                    self._store(creds)
+                                    return creds
+
+                                def refresh(self):
+                                    """Fetch new credentials now (one fetch at a time). Raises CredentialsError."""
+                                    with self._fetch_lock:
+                                        return self._refresh_locked()
+
+                                def get(self):
+                                    now = self._clock()
+                                    with self._lock:
+                                        if self._valid(now):
+                                            if now >= self._refresh_at:
+                                                self._wake.set()  # still valid: serve them, refresh in the background
+                                            return dict(self._creds)
+                                    with self._fetch_lock:
+                                        with self._lock:  # another caller may have refreshed while this one waited
+                                            if self._valid(self._clock()):
+                                                return dict(self._creds)
+                                        return dict(self._refresh_locked())
+
+                                def next_wait(self):
+                                    with self._lock:
+                                        if self._creds is None:
+                                            return 5.0
+                                        return max(1.0, min(self._refresh_at - self._clock(), 300.0))
+
+                                def run_refresher(self, stop):
+                                    backoff = 5.0
+                                    while not stop.is_set():
+                                        self._wake.wait(self.next_wait())
+                                        self._wake.clear()
+                                        if stop.is_set():
+                                            return
+                                        with self._lock:
+                                            due = self._creds is None or self._clock() >= self._refresh_at
+                                        if not due:
+                                            continue
+                                        try:
+                                            self.refresh()
+                                            with self._lock:
+                                                fresh = self._valid(self._clock())
+                                            if fresh:
+                                                backoff = 5.0
+                                                continue
+                                            LOG.warning("the credentials just received have already expired by this guest's clock"
+                                                        " - check the guest's time synchronization")
+                                        except CredentialsError:
+                                            pass
+                                        stop.wait(backoff)
+                                        backoff = min(backoff * 2, 60.0)
+
+
+                            # ---------------------------------------------------------------------------------------------
+                            # IMDSv2 session tokens: stateless HMAC tokens bound to this agent process.
+                            # ---------------------------------------------------------------------------------------------
+
+                            class TokenIssuer:
+                                def __init__(self, clock=time.monotonic):
+                                    self._key = os.urandom(32)
+                                    self._clock = clock
+
+                                def issue(self, ttl):
+                                    body = struct.pack(">Q", int((self._clock() + ttl) * 1000))
+                                    mac = hmac.new(self._key, body, hashlib.sha256).digest()[:24]
+                                    return base64.urlsafe_b64encode(body + mac).decode("ascii")
+
+                                def valid(self, token):
+                                    try:
+                                        raw = base64.urlsafe_b64decode(token.strip().encode("ascii"))
+                                    except (ValueError, TypeError, UnicodeError):
+                                        return False
+                                    if len(raw) != 32:
+                                        return False
+                                    body, mac = raw[:8], raw[8:]
+                                    if not hmac.compare_digest(mac, hmac.new(self._key, body, hashlib.sha256).digest()[:24]):
+                                        return False
+                                    return struct.unpack(">Q", body)[0] / 1000.0 > self._clock()
+
+
+                            def apply_hop_limit(sock, hops):
+                                """Set the IP TTL of everything sent on this connection to the PUT response hop limit."""
+                                sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, hops)
+                                return sock.getsockopt(socket.IPPROTO_IP, socket.IP_TTL)
+
+
+                            # ---------------------------------------------------------------------------------------------
+                            # Instance facts the guest can observe at request time.
+                            # ---------------------------------------------------------------------------------------------
+
+                            def default_route_iface():
+                                try:
+                                    with open("/proc/net/route") as fh:
+                                        for line in fh.readlines()[1:]:
+                                            f = line.split()
+                                            if len(f) > 7 and f[1] == "00000000" and f[7] == "00000000":
+                                                return f[0]
+                                except (IOError, OSError):
+                                    pass
+                                return None
+
+
+                            def primary_ipv4():
+                                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                                try:
+                                    s.connect(("192.0.2.1", 9))  # TEST-NET-1: selects the default-route source; sends nothing
+                                    return s.getsockname()[0]
+                                except OSError:
+                                    return None
+                                finally:
+                                    s.close()
+
+
+                            def primary_mac():
+                                iface = default_route_iface()
+                                if not iface:
+                                    return None
+                                try:
+                                    with open("/sys/class/net/%s/address" % iface) as fh:
+                                        return fh.read().strip() or None
+                                except (IOError, OSError):
+                                    return None
+
+
+                            def boot_time():
+                                try:
+                                    with open("/proc/uptime") as fh:
+                                        return time.time() - float(fh.read().split()[0])
+                                except (IOError, OSError, ValueError, IndexError):
+                                    return time.time()
+
+
+                            def architecture():
+                                m = platform.machine().lower()
+                                return {"aarch64": "arm64", "arm64": "arm64", "amd64": "x86_64"}.get(m, m or "x86_64")
+
+
+                            def short_id(prefix, seed, n=17):
+                                return prefix + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:n]
+
+
+                            def aws_json(doc):
+                                return json.dumps(doc, indent=2, separators=(",", " : ")) + "\n"
+
+
+                            # ---------------------------------------------------------------------------------------------
+                            # The metadata tree.
+                            # ---------------------------------------------------------------------------------------------
+
+                            class Metadata:
+                                def __init__(self, cfg, creds):
+                                    self.cfg = cfg
+                                    self.creds = creds  # CredentialCache, or None when the VM has no instance role
+                                    self.role = cfg.get("role") or ""
+
+                                def _creds_doc(self):
+                                    try:
+                                        c = self.creds.get()
+                                    except CredentialsError as e:
+                                        code = "AssumeRoleUnauthorizedAccess" if e.status in (401, 403) else "InternalError"
+                                        return aws_json({"Code": code, "Message": str(e), "LastUpdated": iso8601(time.time())})
+                                    return aws_json({
+                                        "Code": "Success",
+                                        "LastUpdated": iso8601(self.creds.last_updated or time.time()),
+                                        "Type": "AWS-HMAC",
+                                        "AccessKeyId": c["AccessKeyId"],
+                                        "SecretAccessKey": c["SecretAccessKey"],
+                                        "Token": c["Token"],
+                                        "Expiration": c["Expiration"],
+                                    })
+
+                                def _iam_info(self):
+                                    account = self.cfg.get("accountId") or ""
+                                    return aws_json({
+                                        "Code": "Success",
+                                        "LastUpdated": iso8601(self.creds.last_updated or time.time()),
+                                        "InstanceProfileArn": "arn:aws:iam::%s:instance-profile/%s" % (account, self.role),
+                                        "InstanceProfileId": short_id("AIPA", account + "/" + self.role, 17).upper(),
+                                    })
+
+                                def identity_document(self):
+                                    cfg = self.cfg
+                                    launch = cfg.get("launchTime") or ""
+                                    try:
+                                        pending = iso8601(parse_timestamp(launch))
+                                    except ValueError:
+                                        pending = iso8601(boot_time())
+                                    return aws_json({
+                                        "accountId": cfg.get("accountId") or "",
+                                        "architecture": architecture(),
+                                        "availabilityZone": cfg["availabilityZone"],
+                                        "billingProducts": None,
+                                        "devpayProductCodes": None,
+                                        "marketplaceProductCodes": None,
+                                        "imageId": cfg.get("imageId") or "",
+                                        "instanceId": cfg.get("instanceId") or "",
+                                        "instanceType": cfg.get("instanceType") or None,
+                                        "kernelId": None,
+                                        "pendingTime": pending,
+                                        "privateIp": primary_ipv4(),
+                                        "ramdiskId": None,
+                                        "region": cfg["region"],
+                                        "version": "2017-09-30",
+                                    })
+
+                                def tree(self):
+                                    cfg = self.cfg
+                                    host = socket.gethostname()
+                                    ip = primary_ipv4()
+                                    mac = primary_mac()
+                                    md = {
+                                        "ami-id": cfg.get("imageId") or None,
+                                        "ami-launch-index": "0",
+                                        "hostname": host,
+                                        "instance-action": "none",
+                                        "instance-id": cfg.get("instanceId") or None,
+                                        "instance-life-cycle": "on-demand",
+                                        "instance-type": cfg.get("instanceType") or None,
+                                        "local-hostname": host,
+                                        "local-ipv4": ip,
+                                        "mac": mac,
+                                        "placement": {"availability-zone": cfg["availabilityZone"], "region": cfg["region"]},
+                                        "security-groups": "\n".join(cfg.get("securityGroups") or []) or None,
+                                        "services": {"domain": "amazonaws.com", "partition": "aws"},
+                                    }
+                                    if mac:
+                                        nic = {"device-number": "0", "local-hostname": host, "local-ipv4s": ip, "mac": mac}
+                                        md["network"] = {"interfaces": dict(macs=dict([(mac, nic)]))}
+                                    if self.role and self.creds is not None:
+                                        md["iam"] = {"info": self._iam_info, "security-credentials": dict([(self.role, self._creds_doc)])}
+                                    identity = {"document": self.identity_document}
+                                    latest = {"dynamic": {"instance-identity": identity}, "meta-data": md}
+                                    if self._user_data() is not None:
+                                        latest["user-data"] = self._user_data
+                                    return latest
+
+                                def _user_data(self):
+                                    path = self.cfg.get("userDataFile") or ""
+                                    if not path:
+                                        return None
+                                    try:
+                                        with open(path, "rb") as fh:
+                                            return fh.read()
+                                    except (IOError, OSError):
+                                        return None
+
+                                def lookup(self, path):
+                                    """Path -> (status, body bytes)."""
+                                    parts = [p for p in path.split("/") if p]
+                                    if not parts:
+                                        return 200, "\n".join(VERSIONS).encode()
+                                    if parts[0] not in VERSIONS:
+                                        return 404, NOT_FOUND_BODY.encode()
+                                    node = self.tree()
+                                    if len(parts) == 1:  # the version root lists its categories without trailing slashes
+                                        return 200, "\n".join(sorted(node)).encode()
+                                    for p in parts[1:]:
+                                        if not isinstance(node, dict) or node.get(p) is None:
+                                            return 404, NOT_FOUND_BODY.encode()
+                                        node = node[p]
+                                    if isinstance(node, dict):
+                                        names = [k + ("/" if isinstance(v, dict) else "") for k, v in sorted(node.items()) if v is not None]
+                                        return 200, "\n".join(names).encode()
+                                    if callable(node):
+                                        node = node()
+                                    if node is None:
+                                        return 404, NOT_FOUND_BODY.encode()
+                                    return 200, node if isinstance(node, bytes) else str(node).encode("utf-8")
+
+
+                            # ---------------------------------------------------------------------------------------------
+                            # HTTP servers.
+                            # ---------------------------------------------------------------------------------------------
+
+                            class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+                                daemon_threads = True
+                                allow_reuse_address = True
+                                max_concurrent = 64
+
+                                def __init__(self, addr, handler, agent):
+                                    self.agent = agent
+                                    self.last_put_ttl = None  # the IP TTL applied to the latest token response (tests read it)
+                                    self._slots = threading.BoundedSemaphore(self.max_concurrent)
+                                    http.server.HTTPServer.__init__(self, addr, handler)
+
+                                def server_bind(self):
+                                    # HTTPServer.server_bind reverse-resolves the address (socket.getfqdn), which can stall for
+                                    # seconds inside the metadata namespace where no resolver is reachable. Skip it.
+                                    socketserver.TCPServer.server_bind(self)
+                                    self.server_name, self.server_port = self.server_address[:2]
+
+                                def process_request(self, request, client_address):
+                                    if not self._slots.acquire(False):
+                                        self.shutdown_request(request)
+                                        return
+                                    try:
+                                        socketserver.ThreadingMixIn.process_request(self, request, client_address)
+                                    except Exception:
+                                        self._slots.release()
+                                        raise
+
+                                def process_request_thread(self, request, client_address):
+                                    try:
+                                        socketserver.ThreadingMixIn.process_request_thread(self, request, client_address)
+                                    finally:
+                                        self._slots.release()
+
+
+                            class BaseHandler(http.server.BaseHTTPRequestHandler):
+                                server_version = "EC2ws"
+                                sys_version = ""
+                                timeout = 10
+
+                                def log_message(self, fmt, *args):
+                                    LOG.debug("%s %s", self.client_address[0], fmt % args)
+
+                                def reply(self, status, body=b"", ctype="text/plain", headers=None):
+                                    if isinstance(body, str):
+                                        body = body.encode("utf-8")
+                                    self.send_response(status)
+                                    self.send_header("Content-Type", ctype)
+                                    self.send_header("Content-Length", str(len(body)))
+                                    for k, v in (headers or {}).items():
+                                        self.send_header(k, v)
+                                    self.send_header("Connection", "close")
+                                    self.end_headers()
+                                    if self.command != "HEAD":
+                                        self.wfile.write(body)
+                                    self.close_connection = True
+
+                                def discard_body(self):
+                                    try:
+                                        n = int(self.headers.get("Content-Length") or 0)
+                                    except ValueError:
+                                        n = 0
+                                    if 0 < n <= 65536:
+                                        self.rfile.read(n)
+
+                                def method_not_allowed(self):
+                                    self.reply(405, "Method Not Allowed\n", headers={"Allow": "GET, PUT"})
+
+                                do_POST = do_DELETE = do_PATCH = do_OPTIONS = method_not_allowed
+
+
+                            class IMDSHandler(BaseHandler):
+                                def do_PUT(self):
+                                    agent = self.server.agent
+                                    self.discard_body()
+                                    if urllib.parse.urlsplit(self.path).path != "/latest/api/token":
+                                        return self.method_not_allowed()
+                                    if self.headers.get("X-Forwarded-For") is not None:
+                                        return self.reply(403, "Forbidden\n")  # EC2 refuses proxied token requests (SSRF guard)
+                                    ttl = (self.headers.get(TOKEN_TTL_HEADER) or "").strip()
+                                    if not ttl.isdigit() or not 1 <= int(ttl) <= MAX_TOKEN_TTL:
+                                        return self.reply(400, "Bad Request\n")
+                                    token = agent.tokens.issue(int(ttl))
+                                    self.server.last_put_ttl = apply_hop_limit(self.connection, agent.cfg["imds"]["hopLimit"])
+                                    self.reply(200, token, headers={TOKEN_TTL_HEADER: ttl})
+
+                                def do_GET(self):
+                                    agent = self.server.agent
+                                    token = self.headers.get(TOKEN_HEADER)
+                                    if token is not None:
+                                        if not agent.tokens.valid(token):
+                                            return self.reply(401, "Unauthorized\n")
+                                    elif agent.cfg["imds"]["httpTokens"] == "required":
+                                        return self.reply(401, "Unauthorized\n")
+                                    status, body = agent.metadata.lookup(urllib.parse.urlsplit(self.path).path)
+                                    self.reply(status, body, "text/html" if status == 404 else "text/plain")
+
+                                do_HEAD = do_GET
+
+
+                            class RelayHandler(BaseHandler):
+                                def do_GET(self):
+                                    agent = self.server.agent
+                                    if urllib.parse.urlsplit(self.path).path != CREDS_PATH:
+                                        return self.reply(404, "Not Found\n")
+                                    if agent.creds is None:
+                                        return self.reply(404, '{"code":"NoRole","message":"this VM has no instance role"}', "application/json")
+                                    try:
+                                        c = agent.creds.get()
+                                    except CredentialsError as e:
+                                        status = e.status if e.status in (401, 403) else 502
+                                        return self.reply(status, json.dumps({"code": "CredentialsUnavailable", "message": str(e)}), "application/json")
+                                    self.reply(200, json.dumps(c), "application/json")
+
+                                def do_PUT(self):
+                                    self.discard_body()
+                                    self.method_not_allowed()
+
+
+                            # ---------------------------------------------------------------------------------------------
+                            # The metadata network namespace: 169.254.169.254 one routed hop off the instance.
+                            # ---------------------------------------------------------------------------------------------
+
+                            def run(cmd, check=True):
+                                p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+                                if check and p.returncode != 0:
+                                    raise RuntimeError("%s failed (exit %d): %s" % (" ".join(cmd), p.returncode, p.stderr.strip()))
+                                return p
+
+
+                            def ip_binary():
+                                for cand in (shutil.which("ip"), "/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip", "/bin/ip"):
+                                    if cand and os.access(cand, os.X_OK):
+                                        return cand
+                                raise RuntimeError("the iproute2 'ip' command was not found")
+
+
+                            def teardown_netns(name):
+                                ip = ip_binary()
+                                run([ip, "netns", "delete", name], check=False)
+                                run([ip, "link", "delete", NETNS_HOST_IF], check=False)
+
+
+                            def setup_netns(name, imds_addr, host_addr):
+                                """(Re)create the metadata namespace: veth oi-imds0 (guest, host_addr) <-> oi-imds1 (namespace,
+                                imds_addr), a guest route to imds_addr via oi-imds0, and the namespace's return route."""
+                                ip = ip_binary()
+                                teardown_netns(name)
+                                for cmd in (
+                                    [ip, "netns", "add", name],
+                                    [ip, "link", "add", NETNS_HOST_IF, "type", "veth", "peer", "name", NETNS_PEER_IF],
+                                    [ip, "link", "set", NETNS_PEER_IF, "netns", name],
+                                    [ip, "addr", "add", host_addr + "/32", "dev", NETNS_HOST_IF],
+                                    [ip, "link", "set", NETNS_HOST_IF, "up"],
+                                    [ip, "-n", name, "link", "set", "lo", "up"],
+                                    [ip, "-n", name, "addr", "add", imds_addr + "/32", "dev", NETNS_PEER_IF],
+                                    [ip, "-n", name, "link", "set", NETNS_PEER_IF, "up"],
+                                    [ip, "-n", name, "route", "add", host_addr + "/32", "dev", NETNS_PEER_IF],
+                                    [ip, "-n", name, "route", "add", "default", "via", host_addr, "dev", NETNS_PEER_IF],
+                                    [ip, "route", "replace", imds_addr + "/32", "dev", NETNS_HOST_IF, "src", host_addr],
+                                ):
+                                    run(cmd)
+
+
+                            def _setns(fd):
+                                import ctypes
+                                libc = ctypes.CDLL(None, use_errno=True)
+                                if libc.setns(fd, CLONE_NEWNET) != 0:
+                                    err = ctypes.get_errno()
+                                    raise OSError(err, "setns: " + os.strerror(err))
+
+
+                            def in_netns(name, fn):
+                                """Run fn() with this thread inside network namespace `name` (sockets it creates stay there)."""
+                                own_path = "/proc/thread-self/ns/net" if os.path.exists("/proc/thread-self/ns/net") else "/proc/self/ns/net"
+                                own = os.open(own_path, os.O_RDONLY)
+                                target = os.open("/run/netns/" + name, os.O_RDONLY)
+                                try:
+                                    _setns(target)
+                                    try:
+                                        return fn()
+                                    finally:
+                                        try:
+                                            _setns(own)
+                                        except OSError as e:
+                                            LOG.critical("cannot return to the guest network namespace: %s", e)
+                                            os._exit(1)
+                                finally:
+                                    os.close(own)
+                                    os.close(target)
+
+
+                            # ---------------------------------------------------------------------------------------------
+                            # The agent.
+                            # ---------------------------------------------------------------------------------------------
+
+                            def bind_with_retry(make, what, attempts=15):
+                                for i in range(attempts):
+                                    try:
+                                        return make()
+                                    except OSError as e:
+                                        if i == attempts - 1:
+                                            raise
+                                        LOG.warning("cannot listen on %s yet (%s); retrying", what, e)
+                                        time.sleep(1)
+
+
+                            def sd_notify(msg):
+                                addr = os.environ.get("NOTIFY_SOCKET")
+                                if not addr:
+                                    return
+                                if addr.startswith("@"):
+                                    addr = "\0" + addr[1:]
+                                s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                                try:
+                                    s.connect(addr)
+                                    s.sendall(msg.encode())
+                                except OSError as e:
+                                    LOG.warning("sd_notify failed: %s", e)
+                                finally:
+                                    s.close()
+
+
+                            class Agent:
+                                def __init__(self, cfg, fetch=None, warm_timeout=10.0):
+                                    self.cfg = cfg
+                                    self.warm_timeout = warm_timeout
+                                    self.tokens = TokenIssuer()
+                                    self.creds = None
+                                    if cfg.get("role"):
+                                        url, token_file = cfg.get("credentialsUrl"), cfg.get("tokenFile")
+                                        self.creds = CredentialCache(fetch or (lambda: fetch_from_shim(url, token_file)))
+                                    self.metadata = Metadata(cfg, self.creds)
+                                    self.servers = []
+                                    self.stop = threading.Event()
+                                    self.netns = ""
+
+                                def start_imds(self):
+                                    imds = self.cfg["imds"]
+                                    addr = (imds["address"], int(imds["port"]))
+                                    make = lambda: Server(addr, IMDSHandler, self)
+                                    if imds.get("netns"):
+                                        try:
+                                            setup_netns(imds["netns"], imds["address"], imds["hostAddress"])
+                                            srv = bind_with_retry(lambda: in_netns(imds["netns"], make), "%s:%d" % addr)
+                                        except Exception:
+                                            teardown_netns(imds["netns"])
+                                            raise
+                                        self.netns = imds["netns"]
+                                    else:
+                                        srv = bind_with_retry(make, "%s:%d" % addr)
+                                    self.servers.append(srv)
+                                    LOG.info("instance metadata service on %s:%d%s (httpTokens=%s, hop limit %d)", addr[0], addr[1],
+                                             " in network namespace " + imds["netns"] if imds.get("netns") else "",
+                                             imds["httpTokens"], imds["hopLimit"])
+                                    return srv
+
+                                def start_relay(self):
+                                    relay = self.cfg["relay"]
+                                    addr = (relay["address"], int(relay["port"]))
+                                    srv = bind_with_retry(lambda: Server(addr, RelayHandler, self), "%s:%d" % addr)
+                                    self.servers.append(srv)
+                                    LOG.info("container-credentials endpoint on http://%s:%d%s", addr[0], addr[1], CREDS_PATH)
+                                    return srv
+
+                                def start(self):
+                                    if self.cfg["imds"].get("enabled", True):
+                                        try:
+                                            self.start_imds()
+                                        except Exception as e:  # keep the credentials relay up even if the IMDS listener can't start
+                                            LOG.error("instance metadata service NOT started: %s", e)
+                                    if self.cfg["relay"].get("enabled") and self.creds is not None:
+                                        try:
+                                            self.start_relay()
+                                        except Exception as e:  # likewise keep IMDS up if the loopback port is taken
+                                            LOG.error("container-credentials endpoint NOT started: %s", e)
+                                    if not self.servers:
+                                        raise RuntimeError("no listener could be started")
+                                    for srv in self.servers:
+                                        threading.Thread(target=srv.serve_forever, daemon=True).start()
+                                    if self.creds is not None:
+                                        LOG.info("instance role %s; credentials from %s", self.cfg["role"], self.cfg.get("credentialsUrl"))
+                                        deadline = time.time() + self.warm_timeout  # warm the cache: the first SDK call is answered at once
+                                        while True:
+                                            try:
+                                                self.creds.refresh()
+                                                break
+                                            except CredentialsError:
+                                                if time.time() + 2 > deadline:
+                                                    LOG.warning("starting without credentials; retrying in the background")
+                                                    break
+                                                time.sleep(2)
+                                        threading.Thread(target=self.creds.run_refresher, args=(self.stop,), daemon=True).start()
+                                    else:
+                                        LOG.info("no instance role: iam/ metadata is not served")
+
+                                def shutdown(self):
+                                    self.stop.set()
+                                    if self.creds is not None:
+                                        self.creds._wake.set()
+                                    for srv in self.servers:
+                                        srv.shutdown()
+                                        srv.server_close()
+                                    if self.netns:
+                                        teardown_netns(self.netns)
+
+
+                            def main(argv):
+                                logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(levelname)s %(message)s")
+                                path = argv[1] if len(argv) > 1 else os.environ.get("OPENINFRA_METADATA_CONFIG", "/etc/openinfra/metadata-agent.json")
+                                try:
+                                    cfg = load_config(path)
+                                except (IOError, OSError, ValueError) as e:
+                                    LOG.error("cannot load config %s: %s", path, e)
+                                    return 1
+                                agent = Agent(cfg)
+                                stopped = threading.Event()
+
+                                def on_signal(signum, frame):
+                                    stopped.set()
+
+                                signal.signal(signal.SIGTERM, on_signal)
+                                signal.signal(signal.SIGINT, on_signal)
+                                try:
+                                    agent.start()
+                                except Exception as e:
+                                    LOG.error("metadata agent failed to start: %s", e)
+                                    return 1
+                                sd_notify("READY=1")
+                                while not stopped.wait(1):
+                                    pass
+                                sd_notify("STOPPING=1")
+                                agent.shutdown()
+                                return 0
+
+
+                            if __name__ == "__main__":
+                                sys.exit(main(sys.argv))
                         {{- end }}
                         {{- if $spec.userData }}
                         - path: /opt/openinfra-userdata
@@ -611,22 +1492,22 @@ spec:
                         {{- end }}
                       {{- end }}
                       {{- if $instanceRole }}
-                      {{- /* Mount the workload-identity token iso and COPY the token to a readable
-                             path on every boot. KubeVirt's iso carries Rock Ridge perms (token is
-                             0640 root-ish), so a mount mode= does not make it app-readable — copy it
-                             to /run (tmpfs; re-done each boot, survives reboots). Strip any trailing
-                             whitespace/newline: the SDK sends the file's bytes verbatim as the
-                             container-credentials Authorization header, so a stray newline corrupts
-                             it (a JWT has no internal whitespace, so stripping all is safe). */}}
+                      {{- /* Mount the workload-identity token iso and copy the token, ROOT-ONLY (0600 in a
+                             0700 dir), to /run on every boot (tmpfs; re-done each boot), then unmount the
+                             iso. Only the root-run metadata agent reads it — it authenticates to the shim
+                             on every caller's behalf — so no workload process can read the raw token.
+                             Whitespace is stripped (a JWT has none; a stray newline would corrupt the
+                             Authorization header). */}}
                       bootcmd:
-                        - [ bash, -c, "mkdir -p /mnt/openinfra-identity /run/openinfra-identity; mountpoint -q /mnt/openinfra-identity || mount -o ro /dev/disk/by-id/virtio-SATOKEN /mnt/openinfra-identity 2>/dev/null || mount -o ro -L cfgdata /mnt/openinfra-identity 2>/dev/null || true; cp -f /mnt/openinfra-identity/token /run/openinfra-identity/token 2>/dev/null && tr -d '[:space:]' < /run/openinfra-identity/token > /run/openinfra-identity/token.strip && mv /run/openinfra-identity/token.strip /run/openinfra-identity/token && chmod 0644 /run/openinfra-identity/token || true" ]
+                        - [ bash, -c, "umask 077; mkdir -p /mnt/openinfra-identity /run/openinfra-identity; chmod 0700 /run/openinfra-identity; mountpoint -q /mnt/openinfra-identity || mount -o ro /dev/disk/by-id/virtio-SATOKEN /mnt/openinfra-identity 2>/dev/null || mount -o ro -L cfgdata /mnt/openinfra-identity 2>/dev/null || true; tr -d '[:space:]' < /mnt/openinfra-identity/token > /run/openinfra-identity/token.tmp && chown root:root /run/openinfra-identity/token.tmp && chmod 0600 /run/openinfra-identity/token.tmp && mv -f /run/openinfra-identity/token.tmp /run/openinfra-identity/token; umount /mnt/openinfra-identity 2>/dev/null; true" ]
                       {{- end }}
                       runcmd:
-                        {{- if $instanceRole }}
-                        # Pick up the DefaultEnvironment drop-in and start the loopback credentials relay
-                        # BEFORE the boot script, so an `aws s3 cp` at first boot can reach it.
+                        {{- if $metadataAgent }}
+                        # Start the instance metadata agent (and pick up the credentials env drop-in) BEFORE
+                        # the boot script, so an `aws s3 cp` at first boot finds IMDS and the credentials
+                        # endpoint ready (Type=notify: this returns once the agent is listening).
                         - [ systemctl, daemon-reload ]
-                        - [ systemctl, enable, --now, openinfra-aws-creds.socket ]
+                        - [ systemctl, enable, --now, openinfra-metadata.service ]
                         {{- end }}
                         {{- if $dataDisks }}
                         # Materialize the AWS Nitro device-name symlinks BEFORE the user's UserData runs,
@@ -648,11 +1529,12 @@ spec:
             {{- if $instanceRole }}
             ---
             # --- Per-VM workload identity (spec.instanceRole): a dedicated ServiceAccount whose token
-            #     KubeVirt projects into the guest (serviceAccount volume below). The guest's AWS SDK
-            #     presents that token to the aws-shim's /v1/vm-credentials endpoint and receives rotating
-            #     credentials for the Role named here — the ECS/EKS container-credentials pattern, so no
-            #     static keys ever touch the disk. The shim verifies the token (TokenReview) and reads
-            #     this instance-role annotation to decide which Role to mint (that Role must trust "vm").
+            #     KubeVirt projects into the guest (serviceAccount volume below). The in-guest metadata
+            #     agent presents that token to the aws-shim's /v1/vm-credentials endpoint and serves the
+            #     rotating credentials it receives for the Role named here over EC2 IMDS (and the loopback
+            #     container-credentials endpoint) — so no static keys ever touch the disk. The shim
+            #     verifies the token (TokenReview) and reads this instance-role annotation to decide which
+            #     Role to mint (that Role must trust "vm").
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:

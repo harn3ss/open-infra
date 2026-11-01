@@ -544,9 +544,10 @@ spec:
               containerPort: 4566
           env:
             - { name: LISTEN_ADDR, value: ":4566" }
-            # EC2 instance metadata (IMDS): serve rotating role credentials to a kind: VirtualMachine
-            # with spec.instanceRole, identified by its launcher-pod source IP. Inert for a VM that
-            # declares no instanceRole (and for every non-VM caller — it resolves to no role).
+            # EC2 instance metadata (IMDS): serve rotating role credentials (/v1/vm-credentials) to the
+            # in-guest metadata agent of a kind: VirtualMachine with spec.instanceRole, identified by its
+            # per-VM ServiceAccount token (never the source IP). Inert for a VM that declares no
+            # instanceRole (and for every non-VM caller — it resolves to no role).
             - { name: IMDS_ENABLED, value: "true" }
             # Go's GC does NOT read the cgroup limit, so under the default GOGC it can grow the heap to
             # ~2x the live set and OOMKill under memory.limits — taking the SHARED front door down for

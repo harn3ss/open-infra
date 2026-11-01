@@ -161,13 +161,84 @@ spec:
   policies: [app-s3-read]  # kind: Policy objects granting the access
 ```
 
-How it works (the ECS/EKS Pod Identity pattern, not EC2 IMDS — kube-ovn's SNAT makes source-IP IMDS
-unworkable): the VM gets a dedicated ServiceAccount whose token KubeVirt projects into the guest;
-cloud-init points the AWS SDK's **container-credentials provider** at the aws-shim
-(`AWS_CONTAINER_CREDENTIALS_FULL_URI` / `_TOKEN_FILE`); the shim verifies the token, reads the role off
-the ServiceAccount, and mints temporary credentials. So inside the VM, `aws s3 cp …` (or any SDK) just
-works — `aws sts get-caller-identity` returns `assumed-role/<role>/<vm>`. Linux only (Windows is a
-follow-on). The role's permissions are enforced at the aws-shim exactly as for any assumed-role session.
+Inside the VM, the AWS CLI and every SDK resolve the role's credentials with no configuration — at first
+boot from `userData`, from systemd services, from login shells, and from containers running in the guest
+(`docker run amazon/aws-cli …`) — and `aws sts get-caller-identity` against the aws-shim returns
+`assumed-role/<role>/<vm>`. The role's permissions are enforced at the aws-shim exactly as for any
+assumed-role session.
+
+How it works: the VM gets a dedicated ServiceAccount whose token KubeVirt projects into the guest, where
+it is readable by root only. An **instance metadata agent** (started by cloud-init before `userData`
+runs) presents that token to the aws-shim, which verifies it with a Kubernetes TokenReview, reads the
+role off the ServiceAccount, and mints temporary credentials. Identity travels in the token — the source
+IP is never the credential, so one VM can never obtain another's role (masquerade VMs reach cluster
+services through their node's gateway address, which every VM on the node shares). The agent caches the
+credentials and replaces them well before they expire (when a third of their lifetime is left, between 5
+and 20 minutes ahead), so callers always receive credentials with ample time remaining. It hands them out
+on the two endpoints the AWS SDKs read:
+
+- **EC2 instance metadata (IMDSv1 + IMDSv2) at `http://169.254.169.254`** — the instance-profile
+  provider every SDK falls back to, and the one containers in the guest use.
+- **The container-credentials endpoint `http://127.0.0.1:16349/v1/vm-credentials`**, advertised as
+  `AWS_CONTAINER_CREDENTIALS_FULL_URI` in `/etc/environment` and in systemd's default environment. The
+  agent adds the authorization to the shim itself, so the URI alone is enough — SDKs of any age that
+  know the container-credentials provider pick it up, with no token variable and no readable token
+  file. It is served only with `httpTokens: optional` (it is a plain GET, i.e. IMDSv1-equivalent).
+
+Linux guests only; a Windows VM has no instance metadata service.
+
+## Instance metadata (`metadataOptions`) — EC2 IMDS at 169.254.169.254
+
+Every Linux VM serves EC2 instance metadata at `http://169.254.169.254`, as an EC2 instance does — with
+or without an `instanceRole`. It answers the paths SDKs and lift-and-shift scripts use:
+
+| Path (under `/latest/`) | Value |
+|---|---|
+| `api/token` (`PUT`) | IMDSv2 session token (`X-aws-ec2-metadata-token-ttl-seconds`: 1–21600) |
+| `meta-data/instance-id`, `ami-id` | stable EC2-shaped ids (`i-…` from the VM's UID, `ami-…` from its catalog OS) |
+| `meta-data/placement/region`, `placement/availability-zone` | `us-east-1`, `us-east-1a` (the aws-shim's region) |
+| `meta-data/local-ipv4`, `mac`, `hostname`, `local-hostname`, `network/interfaces/macs/…` | the guest's primary interface |
+| `meta-data/security-groups` | the VM's `securityGroups` |
+| `meta-data/iam/info`, `iam/security-credentials/<role>` | the instance profile and the role's credentials (only with `instanceRole`) |
+| `dynamic/instance-identity/document` | JSON: `accountId` (`open-infra`), `region`, `availabilityZone`, `instanceId`, `imageId`, `privateIp`, `architecture`, `pendingTime` |
+| `user-data` | the VM's `userData` (404 when there is none) |
+
+The listener runs in its own network namespace, joined to the guest by a veth pair and routed one hop
+off the guest — where EC2's metadata service sits relative to an instance. Port 80 in the guest stays
+free for the workload, and the IMDSv2 hop limit is the real IP TTL of the token response, so it behaves
+exactly as on EC2.
+
+```yaml
+spec:
+  metadataOptions:            # the AWS::EC2::Instance MetadataOptions equivalent
+    httpTokens: required      # optional (default) | required
+    httpPutResponseHopLimit: 2  # 1..64, default 2
+    httpEndpoint: enabled     # enabled (default) | disabled
+```
+
+- **`httpTokens`** — `optional` (default): IMDSv1 (plain GET) and IMDSv2 both work, and a VM with an
+  `instanceRole` also gets the loopback container-credentials endpoint. `required`: IMDSv2 only — a
+  request without a valid session token gets `401`, and the container-credentials endpoint is not
+  served. `required` is the SSRF-hardened setting: a token can only be obtained with a `PUT` carrying
+  the TTL header, and a `PUT` that arrives with `X-Forwarded-For` (i.e. through a proxy) is refused.
+  Every AWS SDK released since late 2019 speaks IMDSv2.
+- **`httpPutResponseHopLimit`** — the IP TTL of the token response. With `1`, processes in the guest
+  (and host-network containers) get a session token; a container behind a bridge in the guest
+  (docker's default network, a pod network) is one routing hop further and needs `2`; each further hop
+  needs one more. The default is `2`, so containers in the guest work out of the box; set `1` to keep
+  them off the IMDSv2 path. IMDSv1 requests are not hop-limited.
+- **`httpEndpoint: disabled`** — no metadata service at all: nothing on `169.254.169.254` and no
+  container-credentials endpoint, so (as on EC2) the guest gets no `instanceRole` credentials.
+
+`cfn` maps an `AWS::EC2::Instance`'s `MetadataOptions` onto this block one-to-one. Not served: the IPv6
+endpoint `fd00:ec2::254` (`HttpProtocolIpv6`), instance tags in metadata (`InstanceMetadataTags`),
+`meta-data/instance-type` (a VM is sized by `cpu`/`memory`; the identity document's `instanceType` is
+`null`), and the signed identity document (`dynamic/instance-identity/pkcs7`, `signature`).
+
+The agent is a single Python 3 script (standard library only, Python 3.6+ — every cloud image ships
+Python because cloud-init is Python; on the RHEL 8 family it uses `/usr/libexec/platform-python`) run by
+`openinfra-metadata.service`; check it with `systemctl status openinfra-metadata` and
+`journalctl -u openinfra-metadata`. Its settings are in `/etc/openinfra/metadata-agent.json`.
 
 ## Extra data disks (`dataDisks`) — the EC2 BlockDeviceMapping analog
 

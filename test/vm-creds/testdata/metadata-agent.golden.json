@@ -1,0 +1,29 @@
+{
+  "accountId": "open-infra",
+  "availabilityZone": "us-east-1a",
+  "credentialsUrl": "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials",
+  "imageId": "ami-5d0b10da7e52989c4",
+  "imds": {
+    "address": "169.254.169.254",
+    "enabled": true,
+    "hopLimit": 2,
+    "hostAddress": "169.254.169.1",
+    "httpTokens": "optional",
+    "netns": "openinfra-imds",
+    "port": 80
+  },
+  "instanceId": "i-52d54f98e9e21ad3d",
+  "launchTime": "2026-10-31T12:00:00Z",
+  "region": "us-east-1",
+  "relay": {
+    "address": "127.0.0.1",
+    "enabled": true,
+    "port": 16349
+  },
+  "role": "app-role",
+  "securityGroups": [
+    "web"
+  ],
+  "tokenFile": "/run/openinfra-identity/token",
+  "userDataFile": "/opt/openinfra-userdata"
+}

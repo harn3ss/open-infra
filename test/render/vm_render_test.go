@@ -1,6 +1,9 @@
 package render
 
 import (
+	"encoding/json"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -126,8 +129,9 @@ func TestVM_DataDisks_NitroDeviceNameAliases(t *testing.T) {
 }
 
 // spec.instanceRole wires the VM's workload identity: a per-VM ServiceAccount (annotated with the
-// role), its token projected onto an "identity" serviceAccount disk, and cloud-init pointing the AWS
-// container-credentials provider at the shim. No instanceRole → none of this (a VM with no identity).
+// role), its token projected onto an "identity" serviceAccount disk and copied ROOT-ONLY into the
+// guest, and the metadata agent serving the role's credentials over IMDS and the loopback
+// container-credentials endpoint. No instanceRole → none of the identity wiring.
 func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
 	with := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"instanceRole": "app-role"}))
@@ -140,35 +144,272 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 		// cloud-init lives in a Secret (KubeVirt's 2048-byte inline cap), referenced by the VMI:
 		"secretRef",
 		"name: myvm-cloudinit",
-		// The credentials endpoint is the LOOPBACK relay (botocore/JS reject a non-loopback host):
-		"AWS_CONTAINER_CREDENTIALS_FULL_URI=http://127.0.0.1:16349/v1/vm-credentials",
-		// #347 Phase 2.11: the token-file env var is AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE (the name
-		// the AWS SDKs actually honor) — the old AWS_CONTAINER_CREDENTIALS_TOKEN_FILE was never read.
-		"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE=/run/openinfra-identity/token",
-		// ...served by a systemd socket-proxy to the shim, env also in a systemd Manager drop-in:
-		"ListenStream=127.0.0.1:16349",
-		"systemd-socket-proxyd aws-shim.open-infra-aws-shim.svc.cluster.local:4566",
+		// The credentials endpoint is the agent's LOOPBACK listener (botocore/JS reject a non-loopback
+		// host), in /etc/environment, the boot-script env file, and a systemd Manager drop-in:
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI=http://127.0.0.1:16349/v1/vm-credentials\\n",
 		"DefaultEnvironment=AWS_CONTAINER_CREDENTIALS_FULL_URI=http://127.0.0.1:16349/v1/vm-credentials",
-		"openinfra-aws-creds.socket",
-		// #347 Phase 2.11 (§3.3): the token is stripped of trailing whitespace when materialized —
-		// the SDK sends the file's bytes verbatim as the Authorization header, so a stray newline breaks it.
-		"tr -d '[:space:]' < /run/openinfra-identity/token",
+		"path: /etc/openinfra-aws.env",
+		// The agent is started before the boot script runs.
+		"[ systemctl, enable, --now, openinfra-metadata.service ]",
+		// The token is stripped of whitespace and materialized root-only (0600 in a 0700 dir).
+		"tr -d '[:space:]' < /mnt/openinfra-identity/token > /run/openinfra-identity/token.tmp",
+		"chmod 0600 /run/openinfra-identity/token.tmp",
+		"chmod 0700 /run/openinfra-identity",
+		"umask 077",
 		"/dev/disk/by-id/virtio-SATOKEN", // the boot-time mount
 	} {
 		if !strings.Contains(with, want) {
 			t.Errorf("instanceRole wiring missing %q; got:\n%s", want, grepCtx(with, "identity"))
 		}
 	}
-	// A VM with no instanceRole still uses the cloud-init Secret (Linux), but carries none of the
-	// workload-identity wiring.
+	// #347 item 13: the agent adds the Authorization header itself, so no token env var is rendered
+	// (old SDKs don't know *_TOKEN_FILE, and a token file every process can read is a credential leak),
+	// and the socket-proxy relay is gone.
+	for _, absent := range []string{
+		"TOKEN_FILE", "AWS_CONTAINER_AUTHORIZATION_TOKEN", "systemd-socket-proxyd", "openinfra-aws-creds",
+		"chmod 0644 /run/openinfra-identity",
+	} {
+		if strings.Contains(with, absent) {
+			t.Errorf("instanceRole VM must not render %q; got:\n%s", absent, grepCtx(with, absent))
+		}
+	}
+	// A VM with no instanceRole still uses the cloud-init Secret (Linux) and still runs the metadata
+	// agent (IMDS serves instance identity and user-data without a role, as on EC2), but carries none
+	// of the workload-identity wiring and no credentials endpoint.
 	without := render(t, tmpl, vmCtx("ubuntu-24.04", ""))
 	if !strings.Contains(without, "name: myvm-cloudinit") {
 		t.Errorf("every Linux VM should render a cloud-init Secret; got:\n%s", grepCtx(without, "cloudinit"))
 	}
-	for _, absent := range []string{"vm-myvm", "SATOKEN", "AWS_CONTAINER", "instance-role"} {
+	for _, absent := range []string{"vm-myvm", "SATOKEN", "AWS_CONTAINER_CREDENTIALS_FULL_URI=", "openinfra.dev/instance-role:", "openinfra-identity/token.tmp"} {
 		if strings.Contains(without, absent) {
 			t.Errorf("a VM with no instanceRole must not render %q; got:\n%s", absent, grepCtx(without, absent))
 		}
+	}
+	cfg := vmAgentConfig(t, without)
+	if cfg["role"] != "" {
+		t.Errorf("no instanceRole → agent config role must be empty, got %#v", cfg["role"])
+	}
+	if relay, _ := cfg["relay"].(map[string]any); relay["enabled"] != false {
+		t.Errorf("no instanceRole → the credentials endpoint must be off, got %#v", relay)
+	}
+}
+
+// ---- #347 item 14: the in-guest instance metadata agent (EC2 IMDS on 169.254.169.254) ----
+
+const vmComposition = "../../platform/abstraction/vm-composition.yaml"
+
+// vmWriteFileBlock returns the dedented `content: |` body of the cloud-init write_files entry for path
+// (in rendered output, or in the raw composition file), or "" if absent.
+func vmWriteFileBlock(s, path string) string {
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) != "- path: "+path {
+			continue
+		}
+		for j := i + 1; j < len(lines) && j < i+4; j++ {
+			if strings.TrimSpace(lines[j]) != "content: |" {
+				continue
+			}
+			keyIndent := len(lines[j]) - len(strings.TrimLeft(lines[j], " "))
+			var out []string
+			for _, b := range lines[j+1:] {
+				if strings.TrimSpace(b) == "" {
+					out = append(out, "")
+					continue
+				}
+				if len(b)-len(strings.TrimLeft(b, " ")) <= keyIndent {
+					break
+				}
+				out = append(out, b[keyIndent+2:])
+			}
+			for len(out) > 0 && out[len(out)-1] == "" {
+				out = out[:len(out)-1]
+			}
+			return strings.Join(out, "\n") + "\n"
+		}
+	}
+	return ""
+}
+
+// vmAgentConfig decodes the rendered /etc/openinfra/metadata-agent.json (a JSON document embedded
+// as a JSON-quoted YAML scalar).
+func vmAgentConfig(t *testing.T, out string) map[string]any {
+	t.Helper()
+	lines := strings.Split(out, "\n")
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) != "- path: /etc/openinfra/metadata-agent.json" {
+			continue
+		}
+		for j := i + 1; j < len(lines) && j < i+4; j++ {
+			c := strings.TrimSpace(lines[j])
+			if !strings.HasPrefix(c, "content: ") {
+				continue
+			}
+			var doc string
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(c, "content: ")), &doc); err != nil {
+				t.Fatalf("agent config is not a JSON-quoted scalar: %v\n%s", err, c)
+			}
+			var cfg map[string]any
+			if err := json.Unmarshal([]byte(doc), &cfg); err != nil {
+				t.Fatalf("agent config is not JSON: %v\n%s", err, doc)
+			}
+			return cfg
+		}
+	}
+	t.Fatalf("no /etc/openinfra/metadata-agent.json in the rendered cloud-init:\n%s", grepCtx(out, "write_files"))
+	return nil
+}
+
+// Every Linux VM runs the metadata agent: the script, its config and a Type=notify unit enabled before
+// UserData. The agent body must render VERBATIM (no template actions inside it), because
+// test/vm-creds runs the body it extracts from the composition file.
+func TestVM_MetadataAgent_Rendered(t *testing.T) {
+	tmpl := extractInlineTemplate(t, vmComposition)
+	out := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"instanceRole": "app-role", "userData": "#!/bin/bash\necho hi\n"}))
+	for _, want := range []string{
+		"path: /usr/local/lib/openinfra/metadata-agent.py",
+		"path: /etc/openinfra/metadata-agent.json",
+		"path: /etc/systemd/system/openinfra-metadata.service",
+		"Type=notify",
+		"/usr/libexec/platform-python", // RHEL 8 family fallback interpreter
+		"[ systemctl, enable, --now, openinfra-metadata.service ]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metadata agent render missing %q; got:\n%s", want, grepCtx(out, "metadata"))
+		}
+	}
+	// The agent starts BEFORE the user's UserData script runs.
+	if a, u := strings.Index(out, "openinfra-metadata.service ]"), strings.Index(out, "exec /opt/openinfra-userdata"); a < 0 || u < 0 || a > u {
+		t.Errorf("the metadata agent must be enabled before UserData runs (agent@%d, userdata@%d)", a, u)
+	}
+
+	raw, err := os.ReadFile(vmComposition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := vmWriteFileBlock(string(raw), "/usr/local/lib/openinfra/metadata-agent.py")
+	if !strings.HasPrefix(src, "#!/usr/bin/env python3\n") || len(src) < 1000 {
+		t.Fatalf("could not extract the agent body from the composition file (got %d bytes)", len(src))
+	}
+	if strings.Contains(src, "{{") {
+		t.Errorf("the agent body must contain no template actions (it is run verbatim by test/vm-creds)")
+	}
+	if got := vmWriteFileBlock(out, "/usr/local/lib/openinfra/metadata-agent.py"); got != src {
+		t.Errorf("the rendered agent differs from the composition source (%d vs %d bytes)", len(got), len(src))
+	}
+
+	cfg := vmAgentConfig(t, out)
+	if id, _ := cfg["instanceId"].(string); !strings.HasPrefix(id, "i-") || len(id) != 19 {
+		t.Errorf("instanceId must be an EC2-shaped i-<17 hex>, got %q", id)
+	}
+	if id, _ := cfg["imageId"].(string); !strings.HasPrefix(id, "ami-") || len(id) != 21 {
+		t.Errorf("imageId must be an ami-<17 hex>, got %q", id)
+	}
+	imds, _ := cfg["imds"].(map[string]any)
+	relay, _ := cfg["relay"].(map[string]any)
+	for k, want := range map[string]any{
+		"imds.address": "169.254.169.254", "imds.port": float64(80), "imds.netns": "openinfra-imds",
+		"imds.httpTokens": "optional", "imds.hopLimit": float64(2), "imds.enabled": true,
+		"relay.address": "127.0.0.1", "relay.port": float64(16349), "relay.enabled": true,
+	} {
+		m, key := imds, strings.TrimPrefix(k, "imds.")
+		if strings.HasPrefix(k, "relay.") {
+			m, key = relay, strings.TrimPrefix(k, "relay.")
+		}
+		if m[key] != want {
+			t.Errorf("agent config %s = %#v, want %#v", k, m[key], want)
+		}
+	}
+	if cfg["role"] != "app-role" || cfg["userDataFile"] != "/opt/openinfra-userdata" || cfg["tokenFile"] != "/run/openinfra-identity/token" {
+		t.Errorf("agent config role/userDataFile/tokenFile wrong: %#v %#v %#v", cfg["role"], cfg["userDataFile"], cfg["tokenFile"])
+	}
+	if cfg["credentialsUrl"] != "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/vm-credentials" {
+		t.Errorf("agent must fetch credentials from the shim's /v1/vm-credentials, got %#v", cfg["credentialsUrl"])
+	}
+}
+
+// spec.metadataOptions maps onto the agent: httpTokens + the PUT response hop limit go into its config;
+// httpTokens: required also turns off the loopback credentials endpoint (a plain GET is IMDSv1-
+// equivalent); httpEndpoint: disabled renders no agent at all.
+func TestVM_MetadataOptions(t *testing.T) {
+	tmpl := extractInlineTemplate(t, vmComposition)
+
+	req := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{
+		"instanceRole":    "app-role",
+		"metadataOptions": map[string]any{"httpTokens": "required", "httpPutResponseHopLimit": float64(3)},
+	}))
+	imds, _ := vmAgentConfig(t, req)["imds"].(map[string]any)
+	if imds["httpTokens"] != "required" || imds["hopLimit"] != float64(3) {
+		t.Errorf("metadataOptions must render into the agent config, got %#v", imds)
+	}
+	if relay, _ := vmAgentConfig(t, req)["relay"].(map[string]any); relay["enabled"] != false {
+		t.Errorf("httpTokens: required must disable the credentials endpoint, got %#v", relay)
+	}
+	if strings.Contains(req, "AWS_CONTAINER_CREDENTIALS_FULL_URI=") {
+		t.Errorf("httpTokens: required must not advertise the container-credentials endpoint; got:\n%s", grepCtx(req, "FULL_URI"))
+	}
+	if !strings.Contains(req, "openinfra-metadata.service ]") {
+		t.Errorf("httpTokens: required still runs the agent (IMDSv2 only)")
+	}
+
+	off := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{
+		"instanceRole":    "app-role",
+		"metadataOptions": map[string]any{"httpEndpoint": "disabled"},
+	}))
+	for _, absent := range []string{"metadata-agent", "openinfra-metadata", "AWS_CONTAINER_CREDENTIALS_FULL_URI="} {
+		if strings.Contains(off, absent) {
+			t.Errorf("httpEndpoint: disabled must render no metadata agent (%q); got:\n%s", absent, grepCtx(off, absent))
+		}
+	}
+	if !strings.Contains(off, "name: vm-myvm") {
+		t.Errorf("httpEndpoint: disabled leaves the VM's identity (ServiceAccount) in place")
+	}
+
+	// Omitted metadataOptions = the defaults: optional tokens, hop limit 2, agent on.
+	def := vmAgentConfig(t, render(t, tmpl, vmCtx("debian-12", "")))
+	if imds, _ := def["imds"].(map[string]any); imds["httpTokens"] != "optional" || imds["hopLimit"] != float64(2) {
+		t.Errorf("default metadataOptions must be httpTokens optional + hop limit 2, got %#v", imds)
+	}
+}
+
+// Windows guests are untouched: no cloud-init, so no metadata agent and no token disk.
+func TestVM_MetadataAgent_WindowsUnaffected(t *testing.T) {
+	tmpl := extractInlineTemplate(t, vmComposition)
+	out := render(t, tmpl, vmCtxFW("windows-server-2022", map[string]any{
+		"instanceRole":    "app-role",
+		"metadataOptions": map[string]any{"httpTokens": "required"},
+	}))
+	for _, absent := range []string{"metadata-agent", "openinfra-metadata", "SATOKEN", "AWS_CONTAINER", "cloudinit"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("a Windows VM must not render %q; got:\n%s", absent, grepCtx(out, absent))
+		}
+	}
+}
+
+// The agent config the composition renders is pinned by a golden file that test/vm-creds runs the real
+// agent against — so the agent is always tested on exactly the config shape the guest receives.
+func TestVM_MetadataAgent_GoldenConfig(t *testing.T) {
+	const golden = "../vm-creds/testdata/metadata-agent.golden.json"
+	tmpl := extractInlineTemplate(t, vmComposition)
+	ctx := vmCtxFW("ubuntu-24.04", map[string]any{
+		"instanceRole":   "app-role",
+		"userData":       "#!/bin/bash\necho hi\n",
+		"securityGroups": []any{"web"},
+	})
+	meta := ctx["observed"].(map[string]any)["composite"].(map[string]any)["resource"].(map[string]any)["metadata"].(map[string]any)
+	meta["creationTimestamp"] = "2026-10-31T12:00:00Z" // the instance's launch time (identity document pendingTime)
+	got := vmAgentConfig(t, render(t, tmpl, ctx))
+	b, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatalf("read %s: %v", golden, err)
+	}
+	var want map[string]any
+	if err := json.Unmarshal(b, &want); err != nil {
+		t.Fatalf("%s: %v", golden, err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		pretty, _ := json.MarshalIndent(got, "", "  ")
+		t.Errorf("rendered agent config drifted from %s — if intended, update it to:\n%s", golden, pretty)
 	}
 }
 

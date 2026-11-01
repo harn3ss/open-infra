@@ -223,11 +223,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # #347 Phase 2.12 (§3.4): the real aws CLIs must resolve VM container credentials using the
-      # EXACT env the VM composition renders — the end-to-end guard for the #11
-      # AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE fix. ubuntu-latest ships aws-cli v2 (the hard gate);
-      # install the distro v1 for the best-effort old-SDK check.
-      - name: install distro awscli (v1) for the best-effort old-SDK check
+      # The in-guest instance metadata agent ships inside vm-composition.yaml; every step below runs
+      # the exact agent text extracted from it, with the config shape test/render pins
+      # (test/vm-creds/testdata/metadata-agent.golden.json).
+      #
+      # Agent logic (IMDSv2 tokens, hop-limit TTL, httpTokens, metadata paths, credential cache, the
+      # loopback credentials endpoint) — on the runner's python3 AND on Python 3.6, the oldest guest
+      # interpreter it must run on (RHEL 8 platform-python).
+      - name: metadata agent unit tests (python3 + python 3.6)
+        run: |
+          python3 test/vm-creds/metadata_agent_test.py
+          docker run --rm -v "$PWD:/src:ro" -w /src python:3.6-slim python3 test/vm-creds/metadata_agent_test.py
+      # The real network path, in a throwaway network namespace (never the runner's own network): the
+      # agent's metadata namespace, port 80 left free for the workload, and EC2 hop-limit semantics
+      # for a "container" one forwarding hop behind the guest.
+      - name: metadata agent network namespace + hop limit (isolated netns, root)
+        run: sudo unshare --net --mount --fork python3 test/vm-creds/metadata_agent_netns_test.py
+      # #347 items 13 + 14: real aws CLIs get VM role credentials from the agent via the env the
+      # composition renders (FULL_URI alone, no token variable) and via IMDSv2 with no container env.
+      # ubuntu-latest ships aws-cli v2 (the hard gate); the distro CLI is checked too.
+      - name: install distro awscli for the older-SDK check
         run: sudo apt-get update -qq && sudo apt-get install -y -qq awscli || true
-      - name: VM container-credentials CLI test
+      - name: VM credentials CLI test (container credentials + IMDSv2)
         run: python3 test/vm-creds/container_creds_cli_test.py

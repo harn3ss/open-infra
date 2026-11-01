@@ -16,15 +16,16 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// VM workload credentials — the "aws s3 cp at first boot, no static keys" path, done the way AWS does
-// it for containers (the ECS/EKS container-credentials provider) rather than EC2 IMDS.
+// VM workload credentials — the "aws s3 cp at first boot, no static keys" path. A VM with
+// spec.instanceRole runs the open-infra metadata agent in its guest, which serves EC2 instance metadata
+// (169.254.169.254) and the container-credentials endpoint to the guest's SDKs; the agent obtains the
+// role's credentials from THIS endpoint.
 //
-// WHY NOT IMDS: IMDS identifies the caller by source IP, but a masquerade VM's traffic to any cluster
-// Service is SNAT'd by kube-ovn to its NODE'S gateway IP — shared by every VM on the node. So source
-// IP cannot identify a VM (and matching it would hand one VM another's credentials). Instead, identity
-// travels IN A TOKEN: the VM carries a per-VM ServiceAccount token (projected into the guest), and the
-// AWS SDK's container-credentials provider sends it in the Authorization header to
-// AWS_CONTAINER_CREDENTIALS_FULL_URI. Identity is in the token, immune to the network path.
+// Identity travels IN A TOKEN, never the source IP: masquerade VMs reach cluster Services through
+// their node's gateway address, shared by every VM on the node, so a source IP cannot identify a VM
+// (and matching it would hand one VM another's credentials). The VM carries a per-VM ServiceAccount
+// token (projected into the guest, readable only by root there), and the agent sends it in the
+// Authorization header. Identity is in the token, immune to the network path.
 //
 // This endpoint verifies that token via a Kubernetes TokenReview (exactly as sts:AssumeRoleWithWebIdentity
 // does), reads the VM's role off the ServiceAccount's openinfra.dev/instance-role annotation, and mints
