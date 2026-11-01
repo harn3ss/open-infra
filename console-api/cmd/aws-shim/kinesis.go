@@ -115,12 +115,11 @@ func (h *kinesisHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 		writeKinesisError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
-	if stream != "" {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "kinesis:"+op, "Stream", stream, r); denied {
-			h.auditDeny(ctx, op, stream, reason)
-			writeKinesisError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
-		}
+	// Fine-grained, per stream; an assumed role is checked on every op (ListStreams on Stream::*).
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "kinesis:"+op, "Stream", stream, r); denied {
+		h.auditDeny(ctx, op, stream, reason)
+		writeKinesisError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
 	}
 
 	switch op {

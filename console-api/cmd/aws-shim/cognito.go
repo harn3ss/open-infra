@@ -131,11 +131,11 @@ func (h *cognitoHandler) dispatch(w http.ResponseWriter, r *http.Request, reques
 			writeCognitoError(w, http.StatusForbidden, "NotAuthorizedException", requestID, reason)
 			return
 		}
-		if pool != "" {
-			if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "cognito-idp:"+op, "UserPool", pool, r); denied {
-				writeCognitoError(w, http.StatusForbidden, "NotAuthorizedException", requestID, reason)
-				return
-			}
+		// Fine-grained, per pool; an assumed role is checked on every admin op (CreateUserPool/ListUserPools
+		// on UserPool::*).
+		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "cognito-idp:"+op, "UserPool", pool, r); denied {
+			writeCognitoError(w, http.StatusForbidden, "NotAuthorizedException", requestID, reason)
+			return
 		}
 	} else if !cognitoPublicOp(op) {
 		writeCognitoError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "Cognito "+op+" is not implemented by the open-infra shim.")

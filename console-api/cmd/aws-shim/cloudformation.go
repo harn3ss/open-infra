@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -62,6 +63,9 @@ type cfnDoorway struct {
 	invoker   *http.Client // invokes a custom resource's backing Function synchronously
 	logger    *slog.Logger
 	restV1    *apigwV1Handler // drives the apigateway REST v1 store for AWS::ApiGateway::* resources (#295); nil = unconfigured
+	// authz is the data-plane engine: an assumed role's stack operations are default-deny under it
+	// (cloudformation:<Action> on Stack::<name>). nil = no engine — a role is then denied every action.
+	authz *dataplaneauthz.Checker
 	// objectEncryption (OBJECT_ENCRYPTION=true) asserts that every NEW MinIO bucket is SSE-KMS-encrypted
 	// at rest by default — an outcome, not "KMS is configured": KES being deployed, or MinIO carrying the
 	// MINIO_KMS_KES_* config while only buckets with `mc encrypt set` are encrypted, is not enough, since
@@ -150,6 +154,17 @@ func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	if action == "" {
 		writeQueryError(w, http.StatusBadRequest, "MissingAction", requestID, "no Action in the request.", cfnXMLNamespace)
 		return
+	}
+	// A stack op provisions under the caller's own authority (impersonation); for a User that is its RBAC.
+	// An assumed role's authority is its data-plane policy, so its stack operations are default-deny under
+	// it: cloudformation:<Action> on the stack it names (normalizeStackArgs has reduced a stack ARN to its
+	// name), ListStacks/ListExports/ValidateTemplate on Stack::*.
+	if claims.AssumedRole != "" {
+		if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "cloudformation:"+action, "Stack",
+			r.PostFormValue("StackName"), r); denied {
+			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
+			return
+		}
 	}
 	ap, err := h.applierFor(claims)
 	if err != nil {

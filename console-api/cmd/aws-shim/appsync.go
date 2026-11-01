@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
 )
@@ -35,7 +36,10 @@ type appsyncHandler struct {
 	endpoint string   // open-appsync engine base URL (…/graphql is appended)
 	authzNS  string   // namespace the coarse platform-membership gate is evaluated in
 	apis     apiStore // Stage-2 management: read-modify-write of GraphQLApi claims
-	logger   *slog.Logger
+	// authz is the data-plane engine: an assumed role's GraphQL requests and API management are
+	// default-deny under it. nil = no engine — a role is then denied.
+	authz  *dataplaneauthz.Checker
+	logger *slog.Logger
 }
 
 func newAppsyncHandler(cs kubernetes.Interface, endpoint, authzNS string, logger *slog.Logger) *appsyncHandler {
@@ -106,6 +110,17 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 		writeAppsyncError(w, http.StatusForbidden, "UnauthorizedException", requestID,
 			"not authorized to use the GraphQL API")
 		return
+	}
+	// An assumed role's authority is its data-plane policy (CanDo passes a role): a GraphQL request needs
+	// appsync:GraphQL, checked on GraphQLApi::* — this endpoint does not name one API, so a grant on a
+	// specific API ARN does not reach it. Default-deny; users keep the gate above.
+	if claims.AssumedRole != "" {
+		if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "appsync:GraphQL", "GraphQLApi", "", r); denied {
+			h.logger.Warn("appsync denied (assumed role)", "user", claims.Sub, "reason", reason)
+			writeAppsyncError(w, http.StatusForbidden, "UnauthorizedException", requestID,
+				"not authorized to use the GraphQL API")
+			return
+		}
 	}
 
 	// Fresh upstream request — never forward client headers. The GraphQL body streams straight

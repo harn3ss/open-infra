@@ -127,12 +127,11 @@ func (h *ebHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		writeEBError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
-	if resID != "" {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "events:"+op, resType, resID, r); denied {
-			h.auditDeny(ctx, op, resID, reason)
-			writeEBError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
-		}
+	// Fine-grained, per rule/bus; an assumed role is checked on every op (ListRules on Rule::*).
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "events:"+op, resType, resID, r); denied {
+		h.auditDeny(ctx, op, resID, reason)
+		writeEBError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
 	}
 	if h.store == nil {
 		writeEBError(w, http.StatusNotImplemented, "InternalException", requestID,

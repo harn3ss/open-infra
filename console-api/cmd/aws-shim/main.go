@@ -494,11 +494,13 @@ func run(logger *slog.Logger) error {
 			cognitoH.authz = authzChecker
 		}
 	}
+	appsyncH := newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger)
+	appsyncH.authz = authzChecker
 	services := map[string]awsService{
 		"s3":              &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger, vhostSuffixes: splitCommaTrim(getenv("S3_VHOST_SUFFIXES", ""))},
 		"sts":             &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
 		"lambda":          lambdaH,
-		"appsync":         newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger),
+		"appsync":         appsyncH,
 		"dynamodb":        dynamoH,
 		"dynamodbstreams": ddbStreamsH,
 		"sqs":             sqsH,
@@ -551,7 +553,8 @@ func run(logger *slog.Logger) error {
 		if cfnH, cerr := newCFNDoorway(kc.Config, dyn, account, region, cfnNS, svcSuffix, logger); cerr != nil {
 			logger.Warn("CloudFormation front door disabled", slog.String("error", cerr.Error()))
 		} else {
-			cfnH.restV1 = apigwV1H // AWS::ApiGateway::* stacks provision via the REST v1 store (#295)
+			cfnH.restV1 = apigwV1H    // AWS::ApiGateway::* stacks provision via the REST v1 store (#295)
+			cfnH.authz = authzChecker // an assumed role's stack operations are default-deny under its policy
 			services["cloudformation"] = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
 		}

@@ -93,6 +93,32 @@ func verbForIAMOp(op string) (verb, resource string, ok bool) {
 	return "", "", false
 }
 
+// iamResource is the (type, name) an IAM op is authorized on for an assumed role: the Role, Policy, or User
+// it names (SimulatePrincipalPolicy: the principal being simulated). An op that names none (ListRoles,
+// ListPolicies, ListUsers, an access-key op with no UserName) returns "" — checked on <Type>::*.
+func iamResource(op string, r *http.Request) (string, string) {
+	_, resource, _ := verbForIAMOp(op)
+	switch op {
+	case "SimulatePrincipalPolicy":
+		if t, id := principalFromArn(r.PostFormValue("PolicySourceArn")); t != "" {
+			return t, id
+		}
+		return "Role", ""
+	case "CreatePolicy":
+		return "Policy", r.PostFormValue("PolicyName")
+	}
+	switch resource {
+	case "roles":
+		return "Role", r.PostFormValue("RoleName")
+	case "policies":
+		if a := r.PostFormValue("PolicyArn"); a != "" {
+			return "Policy", policyNameFromArn(a)
+		}
+		return "Policy", ""
+	}
+	return "User", r.PostFormValue("UserName")
+}
+
 func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	op := r.PostFormValue("Action")
 	if op == "" {
@@ -116,6 +142,17 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.audit(ctx, op, "", "deny", reason)
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, iamXMLNamespace)
 		return
+	}
+	// An assumed role's authority is its data-plane policy alone (CanDo passes a role), so IAM management —
+	// which writes with the shim's own identity — is default-deny for it: iam:<Op> on the Role/Policy/User it
+	// names, the List* ops on <Type>::*. Without this a role session could mint itself (or anyone) authority.
+	if claims.AssumedRole != "" {
+		resType, resID := iamResource(op, r)
+		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "iam:"+op, resType, resID, r); denied {
+			h.audit(ctx, op, resID, "deny", reason)
+			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, iamXMLNamespace)
+			return
+		}
 	}
 
 	switch op {

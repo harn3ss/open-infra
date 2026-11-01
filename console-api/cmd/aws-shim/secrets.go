@@ -137,12 +137,11 @@ func (h *secretsHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	}
 	// Fine-grained Cedar dataPlane — additive, per-secret. This is where GetSecretValue is separable from
 	// DescribeSecret and where a principal scoped to secret A is denied secret B.
-	if secretName != "" {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "secretsmanager:"+op, "Secret", secretName, r); denied {
-			h.auditDeny(ctx, op, secretName, reason)
-			writeSMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
-		}
+	// An assumed role is checked on every op — ListSecrets/GetRandomPassword on Secret::*.
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "secretsmanager:"+op, "Secret", secretName, r); denied {
+		h.auditDeny(ctx, op, secretName, reason)
+		writeSMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
 	}
 	if h.transit == nil {
 		writeSMError(w, http.StatusNotImplemented, "InternalServiceError", requestID,

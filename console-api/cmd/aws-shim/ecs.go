@@ -177,13 +177,12 @@ func (h *ecsDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
 		return
 	}
-	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped when a resource is named.
-	if res != "" {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "ecs:"+op, "Service", res, r); denied {
-			h.audit(ctx, op, res, "deny", reason)
-			writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
-			return
-		}
+	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped when a resource is named; an assumed
+	// role is checked on every op (ListServices/ListClusters/… on Service::*).
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "ecs:"+op, "Service", res, r); denied {
+		h.audit(ctx, op, res, "deny", reason)
+		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
+		return
 	}
 
 	switch op {

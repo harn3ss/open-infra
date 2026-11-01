@@ -62,6 +62,15 @@ func (h *appsyncHandler) serveManagement(w http.ResponseWriter, r *http.Request,
 			"not authorized to manage this GraphQL API")
 		return
 	}
+	// An assumed role's authority is its data-plane policy (CanDo passes a role): appsync:<Op> on the API.
+	if claims.AssumedRole != "" {
+		if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "appsync:"+verb, "GraphQLApi", p.apiID, r); denied {
+			h.logger.Warn("appsync management denied (assumed role)", "user", claims.Sub, "api", p.apiID, "verb", verb, "reason", reason)
+			writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID,
+				"not authorized to manage this GraphQL API")
+			return
+		}
+	}
 
 	// GetResolver is read-only; everything else is read-modify-write on the CR.
 	if verb == "GetResolver" {

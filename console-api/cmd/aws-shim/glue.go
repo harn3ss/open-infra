@@ -180,13 +180,15 @@ func (h *glueHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.C
 		writeGlueError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
 		return
 	}
-	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the resource when we have one.
-	if res != "" {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "glue:"+op, resType, res, r); denied {
-			h.audit(ctx, op, res, "deny", reason)
-			writeGlueError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
-			return
-		}
+	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the resource when we have one; an
+	// assumed role is checked on every op (GetDatabases on Database::*).
+	if resType == "" {
+		resType = "Database"
+	}
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "glue:"+op, resType, res, r); denied {
+		h.audit(ctx, op, res, "deny", reason)
+		writeGlueError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
+		return
 	}
 
 	switch op {

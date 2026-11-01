@@ -100,11 +100,10 @@ func (h *snsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID, reason, snsXMLNamespace)
 		return
 	}
-	if res != "" {
-		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "sns:"+op, "Topic", res, r); denied {
-			writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID, reason, snsXMLNamespace)
-			return
-		}
+	// Fine-grained, per topic; an assumed role is checked on every op (ListTopics/ListSubscriptions on Topic::*).
+	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "sns:"+op, "Topic", res, r); denied {
+		writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID, reason, snsXMLNamespace)
+		return
 	}
 	if h.store == nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID,

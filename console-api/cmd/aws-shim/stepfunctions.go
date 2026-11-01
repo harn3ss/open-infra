@@ -133,6 +133,15 @@ func (h *sfnHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
+	// An assumed role's authority is its data-plane policy alone (CanDo passes a role), default-deny on every
+	// op: states:<Op> on the state machine it names (an execution resolves to its state machine), and
+	// ListStateMachines on StateMachine::*. Users keep the RBAC gate above.
+	if claims.AssumedRole != "" {
+		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "states:"+op, "StateMachine", sfnStateMachine(op, body), r); denied {
+			writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+			return
+		}
+	}
 
 	switch op {
 	case "CreateStateMachine":
@@ -169,6 +178,24 @@ func (h *sfnHandler) smArn(name string) string {
 }
 func (h *sfnHandler) execArn(sm, name string) string {
 	return fmt.Sprintf("arn:aws:states:%s:%s:execution:%s:%s", h.region, h.account, sm, name)
+}
+
+// sfnStateMachine is the state machine an op is authorized on: the name being created, the one a
+// stateMachineArn names, or the one an executionArn belongs to. "" for ListStateMachines.
+func sfnStateMachine(op string, body map[string]any) string {
+	switch op {
+	case "CreateStateMachine":
+		return str(body["name"])
+	case "StopExecution", "DescribeExecution", "GetExecutionHistory", "DescribeStateMachineForExecution":
+		sm, _ := execParts(str(body["executionArn"]))
+		return sm
+	case "ListStateMachines":
+		return ""
+	}
+	if a := str(body["stateMachineArn"]); a != "" {
+		return smNameFromArn(a)
+	}
+	return ""
 }
 
 // smNameFromArn extracts the state-machine name from an ARN, or returns the input if it is a bare name.

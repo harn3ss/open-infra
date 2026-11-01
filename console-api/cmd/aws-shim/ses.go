@@ -69,11 +69,17 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, sesXMLNamespace)
 		return
 	}
+	identity := ""
 	if source != "" {
-		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "ses:"+op, "Identity", emailAddr(source), r); denied {
-			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, sesXMLNamespace)
-			return
-		}
+		identity = emailAddr(source)
+	} else if claims.AssumedRole != "" {
+		// An assumed role is checked on every op: a Verify*Identity on the identity it names, the
+		// identity-less ops (GetSendQuota, ListIdentities, …) on Identity::*.
+		identity = formFirst(r, "EmailAddress", "Domain")
+	}
+	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "ses:"+op, "Identity", identity, r); denied {
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, sesXMLNamespace)
+		return
 	}
 
 	switch op {

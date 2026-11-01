@@ -12,19 +12,51 @@ import (
 )
 
 // deniedByDataPlane runs the fine-grained data-plane policy check AFTER the coarse SubjectAccessReview
-// has already allowed the request. It returns true only when a kind: Policy governs this principal
-// and denies the (action, resource) — so it can only TIGHTEN a coarse grant, never widen it. It
-// fails closed (a load/compile error denies), and a nil checker is a no-op.
+// has already allowed the request. For a User it returns true only when a kind: Policy governs the
+// principal and denies the (action, resource) — so it can only TIGHTEN a coarse grant, never widen it;
+// it fails closed (a load/compile error denies), and a nil checker is a no-op. For an assumed role it is
+// the closed check (allowedForAssumedRole): the role's policies are its whole authority, so anything they
+// do not allow is denied — including when no data-plane engine is configured.
 func deniedByDataPlane(ctx context.Context, authz *dataplaneauthz.Checker, claims iam.Claims,
 	action, resType, resID string, r *http.Request) (bool, string) {
-	// The principal is the User normally, or the assumed kind: Role for an sts:AssumeRole session —
-	// so a role's data-plane policies govern what that session may do, exactly as in AWS.
+	if claims.AssumedRole != "" {
+		ok, reason := allowedForAssumedRole(ctx, authz, claims, action, resType, resID, r)
+		return !ok, reason
+	}
 	allowed, governed, reason := authz.Authorize(ctx, claims.PrincipalType(), claims.PrincipalID(), claims.Groups,
 		action, resType, resID, requestContext(claims, r))
 	if governed && !allowed {
 		return true, reason
 	}
 	return false, ""
+}
+
+// anyResource is the resource id an assumed role's data-plane check uses for an operation that names no
+// single resource — a List/Describe-all, or a create whose resource has no name yet (CreateKey). It is
+// AWS's Resource "*": a policy resource "*" or <Type>::* matches it; a grant scoped to one resource
+// (<Type>::<name>) does not, so such an action needs a grant on "*" exactly as on AWS.
+const anyResource = "*"
+
+// scopeFor is the resource id the fine-grained check runs on: the named resource, or — for an assumed role
+// only — anyResource when the op names none. A User's empty scope stays empty (unchanged behavior).
+func scopeFor(claims iam.Claims, resID string) string {
+	if resID == "" && claims.AssumedRole != "" {
+		return anyResource
+	}
+	return resID
+}
+
+// dataPlaneDenied is the fine-grained check for a front door whose operations may name no resource. A User
+// keeps the additive model exactly: checked where the op names a resource, not at all where it names none.
+// An assumed role is ALWAYS checked, closed — an op that names no resource is checked on <resType>::*, so
+// a role with no policy can list nothing and create nothing (AWS evaluates those actions on Resource "*").
+func dataPlaneDenied(ctx context.Context, authz *dataplaneauthz.Checker, claims iam.Claims,
+	action, resType, resID string, r *http.Request) (bool, string) {
+	resID = scopeFor(claims, resID)
+	if resID == "" {
+		return false, ""
+	}
+	return deniedByDataPlane(ctx, authz, claims, action, resType, resID, r)
 }
 
 // allowedForAssumedRole is the CLOSED (default-deny) data-plane check for an sts:AssumeRole session. An

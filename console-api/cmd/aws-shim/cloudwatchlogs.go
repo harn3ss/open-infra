@@ -115,12 +115,11 @@ func (h *cwlHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeCWLError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
-	if group != "" {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "logs:"+op, "LogGroup", group, r); denied {
-			h.audit(ctx, op, group, "deny", reason)
-			writeCWLError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
-		}
+	// Fine-grained, per log group; an assumed role is checked on every op (DescribeLogGroups on LogGroup::*).
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "logs:"+op, "LogGroup", group, r); denied {
+		h.audit(ctx, op, group, "deny", reason)
+		writeCWLError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
 	}
 	if h.store == nil {
 		writeCWLError(w, http.StatusNotImplemented, "ServiceUnavailableException", requestID,

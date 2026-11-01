@@ -114,11 +114,10 @@ func (h *ddbStreamsHandler) serve(w http.ResponseWriter, r *http.Request, claims
 		writeStreamsError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
-	if table != "" {
-		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "dynamodb:"+op, "Table", table, r); denied {
-			writeStreamsError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
-		}
+	// Fine-grained, per table; an assumed role is checked on every op (ListStreams with no table on Table::*).
+	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "dynamodb:"+op, "Table", table, r); denied {
+		writeStreamsError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
 	}
 	if h.store == nil {
 		writeStreamsError(w, http.StatusNotImplemented, "InternalServerError", requestID,

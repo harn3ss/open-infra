@@ -70,6 +70,17 @@ func verbForCWOp(op string) (string, bool) {
 	return "", false
 }
 
+// cwPerItemOp reports the ops whose namespace fence runs per alarm / per metric query inside the op (the
+// request itself carries no single namespace): DescribeAlarms filters to the alarms the caller may read,
+// DeleteAlarms / SetAlarmState / GetMetricData refuse any item outside the caller's namespaces.
+func cwPerItemOp(op string) bool {
+	switch op {
+	case "DescribeAlarms", "DeleteAlarms", "SetAlarmState", "GetMetricData":
+		return true
+	}
+	return false
+}
+
 func (h *cwHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	// The modern AWS SDK/CLI sends CloudWatch in JSON "query mode" (X-Amz-Target:
 	// GraniteServiceVersion20100801.<Op>, a JSON body, header x-amzn-query-mode: true) and expects the
@@ -114,9 +125,11 @@ func (h *cwHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		return
 	}
 	// Fine-grained Cedar at namespace granularity (the cross-tenant read/write fence). Ops with a namespace
-	// are gated here; namespace-less ops (DescribeAlarms/DeleteAlarms) gate per-alarm inside the op.
-	if ns != "" {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "cloudwatch:"+op, "Namespace", ns, r); denied {
+	// are gated here; namespace-less ops (DescribeAlarms/DeleteAlarms/SetAlarmState/GetMetricData) gate
+	// per-alarm / per-query inside the op. An assumed role is also gated here on every other op — a
+	// namespace-less ListMetrics (every namespace) is checked on Namespace::*.
+	if ns != "" || (claims.AssumedRole != "" && !cwPerItemOp(op)) {
+		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "cloudwatch:"+op, "Namespace", ns, r); denied {
 			h.auditDeny(ctx, op, ns, reason)
 			writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
 			return

@@ -86,6 +86,31 @@ The console, the Terraform provider, and the shim all resolve through that one p
 shim shares the console-api Go module precisely so it *imports* that authorization core rather than
 reimplementing a weaker parallel one.
 
+**Users and assumed roles are authorized differently, as on AWS.**
+
+- **A User** gets the coarse RBAC gate above, then the **additive** fine-grained `kind: Policy`
+  `spec.dataPlane` check (Cedar) wherever an operation names a resource. A data-plane policy can only
+  narrow what RBAC allows; an operation that names no resource is decided by RBAC alone.
+- **An assumed role** (an `sts:AssumeRole` or web-identity session, or a VM's `instanceRole`) is an
+  independent principal whose **entire** authority is its data-plane policies — Kubernetes RBAC is not
+  its authority, so the coarse gate passes it and every front door runs the **closed, default-deny**
+  check on **every operation**, in AWS action names. An operation that names a resource is checked on
+  that resource (`sqs:SendMessage` on `Queue::jobs`). An operation that names none — a `List*`, an
+  unfiltered `Describe*`, a create whose resource has no name yet such as `kms:CreateKey` — is checked
+  on `<Type>::*`, AWS's `Resource: "*"`: a policy resource `"*"` or `Queue::*` matches it, a grant on
+  one named resource does not. Lists are gated, not filtered — a role allowed `sqs:ListQueues` sees every
+  queue, as on AWS (CloudWatch `DescribeAlarms` is the exception: it returns only alarms in namespaces
+  the caller may read, and `DeleteAlarms`/`SetAlarmState`/`GetMetricData` refuse any item outside them).
+  DynamoDB's multi-table operations are checked on every table they touch (`BatchGetItem` /
+  `BatchWriteItem` on each table, a transaction through its items' `GetItem` / `PutItem` / `UpdateItem` /
+  `DeleteItem` / `ConditionCheckItem`, `RestoreTableToPointInTime` on source and target). IAM management,
+  Step Functions, CloudFormation and AppSync — which have no fine-grained check for a User — check a role
+  too (`iam:<Op>` on `Role::`/`Policy::`/`User::<name>`, `states:<Op>` on `StateMachine::<name>`,
+  `cloudformation:<Action>` on `Stack::<name>`, `appsync:GraphQL` on `GraphQLApi::*`, `appsync:<Op>` on
+  `GraphQLApi::<apiId>`). A role with no policy can do nothing except ask who it is
+  (`sts:GetCallerIdentity`, which needs no permission on AWS either), and with no data-plane engine
+  configured a role is denied everything.
+
 ### The credential store
 
 An access key is a sub-resource of a `kind: User`, stored as one Kubernetes Secret per key

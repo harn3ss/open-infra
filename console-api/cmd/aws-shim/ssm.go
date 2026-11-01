@@ -133,9 +133,10 @@ func (h *ssmHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 	// Fine-grained Cedar dataPlane — additive, per-parameter / per-path. For batch ops (GetParameters,
-	// DeleteParameters) the check is per-name inside the op; here we gate only the single-resource ops.
-	if resName != "" && !ssmBatchOp(op) {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "ssm:"+op, "Parameter", resName, r); denied {
+	// DeleteParameters) the check is per-name inside the op; here we gate only the single-resource ops. An
+	// assumed role is checked on every non-batch op — DescribeParameters on Parameter::*.
+	if !ssmBatchOp(op) {
+		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "ssm:"+op, "Parameter", resName, r); denied {
 			h.auditDeny(ctx, op, resName, reason)
 			writeSSMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 			return

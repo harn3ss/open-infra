@@ -165,13 +165,12 @@ func (h *kmsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the key when we have one; this
-	// is where kms:Encrypt is separable from kms:Decrypt for the same principal on the same key.
-	if scopeKeyID != "" {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "kms:"+op, "Key", scopeKeyID, r); denied {
-			h.auditDeny(ctx, op, scopeKeyID, reason)
-			writeKMSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
-		}
+	// is where kms:Encrypt is separable from kms:Decrypt for the same principal on the same key. An assumed
+	// role is checked on every op — CreateKey/ListKeys/ListAliases/GenerateRandom on Key::*.
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "kms:"+op, "Key", scopeKeyID, r); denied {
+		h.auditDeny(ctx, op, scopeKeyID, reason)
+		writeKMSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
 	}
 	if h.transit == nil {
 		writeKMSError(w, http.StatusNotImplemented, "KMSInternalException", requestID,

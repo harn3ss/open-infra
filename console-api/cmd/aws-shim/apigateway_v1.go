@@ -92,7 +92,8 @@ func (h *apigwV1Handler) serve(w http.ResponseWriter, r *http.Request, claims ia
 		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "apigateway:"+v.Op, "Api", resID, r); denied {
+	// An assumed role's api-less ops (GetRestApis, CreateRestApi with no name) are checked on Api::*.
+	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "apigateway:"+v.Op, "Api", scopeFor(claims, resID), r); denied {
 		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}

@@ -96,12 +96,12 @@ func (h *rdsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, rdsXMLNamespace)
 		return
 	}
-	if res != "" {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "rds:"+op, "DBInstance", res, r); denied {
-			h.audit(ctx, op, res, "deny", reason)
-			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, rdsXMLNamespace)
-			return
-		}
+	// Fine-grained, per instance; an assumed role is checked on every op (DescribeDBInstances /
+	// DescribeDBSnapshots with no identifier on DBInstance::*).
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "rds:"+op, "DBInstance", res, r); denied {
+		h.audit(ctx, op, res, "deny", reason)
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, rdsXMLNamespace)
+		return
 	}
 	if h.cnpg == nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID,

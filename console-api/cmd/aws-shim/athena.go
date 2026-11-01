@@ -204,13 +204,15 @@ func (h *athenaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		writeAthenaError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
 		return
 	}
-	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the workgroup when we have one.
-	if res != "" {
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "athena:"+op, resType, res, r); denied {
-			h.audit(ctx, op, res, "deny", reason)
-			writeAthenaError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
-			return
-		}
+	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the workgroup when we have one; an
+	// assumed role is checked on every op (ListWorkGroups on WorkGroup::*).
+	if resType == "" {
+		resType = "WorkGroup"
+	}
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "athena:"+op, resType, res, r); denied {
+		h.audit(ctx, op, res, "deny", reason)
+		writeAthenaError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
+		return
 	}
 
 	switch op {

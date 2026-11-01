@@ -25,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -172,6 +173,68 @@ func verbForOp(op string) (verb string, known bool) {
 	return "", false
 }
 
+// dynamoCheck is one fine-grained (action, table) an assumed role must be allowed for an op.
+type dynamoCheck struct{ action, table string }
+
+// dynamoTxnKinds maps a transaction item's kind to the DynamoDB action AWS authorizes it as.
+var dynamoTxnKinds = []struct{ kind, action string }{
+	{"Get", "dynamodb:GetItem"}, {"Put", "dynamodb:PutItem"}, {"Update", "dynamodb:UpdateItem"},
+	{"Delete", "dynamodb:DeleteItem"}, {"ConditionCheck", "dynamodb:ConditionCheckItem"},
+}
+
+// dynamoRoleChecks lists every (action, table) an assumed role needs for an op, the way AWS authorizes
+// DynamoDB: a single-table op is its own action on its table; BatchGetItem / BatchWriteItem are their own
+// action on EACH table in RequestItems; a transaction is authorized through its items' underlying actions
+// (TransactGetItems → dynamodb:GetItem; TransactWriteItems → PutItem / UpdateItem / DeleteItem /
+// ConditionCheckItem) on each item's table; RestoreTableToPointInTime is checked on both its source and
+// its target. An op that names no table (ListTables, or a malformed multi-table request) is checked on
+// Table::*, so it is never unchecked.
+func dynamoRoleChecks(op, table string, body map[string]any) []dynamoCheck {
+	var out []dynamoCheck
+	add := func(action, t string) {
+		if t != "" {
+			out = append(out, dynamoCheck{action, t})
+		}
+	}
+	switch op {
+	case "BatchGetItem", "BatchWriteItem":
+		items, _ := body["RequestItems"].(map[string]any)
+		names := make([]string, 0, len(items))
+		for t := range items {
+			names = append(names, t)
+		}
+		sort.Strings(names)
+		for _, t := range names {
+			add("dynamodb:"+op, t)
+		}
+	case "TransactGetItems", "TransactWriteItems":
+		list, _ := body["TransactItems"].([]any)
+		for _, e := range list {
+			it, _ := e.(map[string]any)
+			for _, k := range dynamoTxnKinds {
+				if m, ok := it[k.kind].(map[string]any); ok {
+					t, _ := m["TableName"].(string)
+					if t == "" {
+						t = anyResource // an item naming no table is checked on Table::*, never skipped
+					}
+					add(k.action, t)
+				}
+			}
+		}
+	case "RestoreTableToPointInTime":
+		src, _ := body["SourceTableName"].(string)
+		tgt, _ := body["TargetTableName"].(string)
+		add("dynamodb:"+op, src)
+		add("dynamodb:"+op, tgt)
+	default:
+		add("dynamodb:"+op, table)
+	}
+	if len(out) == 0 {
+		out = append(out, dynamoCheck{"dynamodb:" + op, ""}) // → Table::* for an assumed role
+	}
+	return out
+}
+
 func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	op := opFromTarget(r.Header.Get("X-Amz-Target"))
 	if op == "" {
@@ -199,9 +262,20 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		writeDynamoError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
-	// Fine-grained data-plane policy (kind: Policy dataPlane) — additive: can only tighten. A table
-	// name is required to scope it; the table-agnostic ops (ListTables) skip resource-level policy.
-	if table != "" {
+	// Fine-grained data-plane policy (kind: Policy dataPlane). An assumed role is checked on EVERY op, per
+	// table and in AWS action names (dynamoRoleChecks): the multi-table ops on each table they touch, the
+	// table-less ones (ListTables) on Table::*. A User stays additive (can only tighten): a table name is
+	// required to scope it; the table-agnostic ops (ListTables) skip resource-level policy.
+	if claims.AssumedRole != "" {
+		for _, c := range dynamoRoleChecks(op, table, body) {
+			if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, c.action, "Table", c.table, r); denied {
+				h.logger.Warn("dynamo data-plane denied (assumed role)", "op", op, "action", c.action, "table", c.table,
+					"principal", claims.PrincipalID(), "reason", reason)
+				writeDynamoError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+				return
+			}
+		}
+	} else if table != "" {
 		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "dynamodb:"+op, "Table", table, r); denied {
 			h.logger.Warn("dynamo data-plane denied", "op", op, "table", table,
 				"principal", claims.PrincipalID(), "reason", reason)

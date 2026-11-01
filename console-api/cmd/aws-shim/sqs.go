@@ -129,12 +129,11 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the queue when we have one;
-	// this is where sqs:ReceiveMessage is separable from sqs:DeleteMessage.
-	if queueName != "" {
-		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "sqs:"+op, "Queue", queueName, r); denied {
-			writeSQSError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
-			return
-		}
+	// this is where sqs:ReceiveMessage is separable from sqs:DeleteMessage. An assumed role is checked on
+	// every op — ListQueues on Queue::* (dataPlaneDenied).
+	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "sqs:"+op, "Queue", queueName, r); denied {
+		writeSQSError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
+		return
 	}
 	if h.store == nil {
 		writeSQSError(w, http.StatusNotImplemented, "InternalFailure", requestID,

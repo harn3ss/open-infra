@@ -124,7 +124,8 @@ func (h *apigwHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.
 		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "apigateway:"+op, "Api", resID, r); denied {
+	// An assumed role's api-less ops (GetApis, CreateApi with no name) are checked on Api::*.
+	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "apigateway:"+op, "Api", scopeFor(claims, resID), r); denied {
 		h.auditDeny(ctx, op, resID, reason)
 		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
