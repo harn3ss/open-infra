@@ -663,7 +663,12 @@ func sgRefName(rawVal any, ctx *stackCtx) (name string, raw bool) {
 
 // resolveSGList resolves a list-valued security-group property (SecurityGroupIds, SecurityGroups, or a
 // NetworkInterface GroupSet) from a raw property list to kind: SecurityGroup names. A raw sg- id in
-// the list is a blocking Finding (opaque, like an AMI); in-stack !Refs and plain names map.
+// the list is a blocking Finding (opaque, like an AMI); in-stack !Refs and plain names map. An entry
+// that is not a direct in-stack SG !Ref is RESOLVED — a parameter (or Fn::ImportValue) whose value names
+// a kind: SecurityGroup (the cross-stack case, as an SG rule's SourceSecurityGroupId does), or an
+// intrinsic (!If) wrapping an in-stack SG reference; AWS::NoValue drops it. An entry that still names no
+// SecurityGroup REFUSES: silently launching the VM without a firewall attachment the template declared
+// is fail-open.
 func resolveSGList(id, label string, rawList any, ctx *stackCtx) (names []string, findings []Finding) {
 	list, ok := rawList.([]any)
 	if !ok {
@@ -671,14 +676,28 @@ func resolveSGList(id, label string, rawList any, ctx *stackCtx) (names []string
 	}
 	for _, entry := range list {
 		n, isRaw := sgRefName(entry, ctx)
+		if n == "" && !isRaw && ctx != nil {
+			rv := ctx.resolveVal(entry)
+			if rv == nil {
+				continue // AWS::NoValue (e.g. via Fn::If) removes the entry
+			}
+			if t, ok := placeholderTarget(rv); ok && ctx.isType(t, "AWS::EC2::SecurityGroup") {
+				n = k8sName(t)
+			} else {
+				n, isRaw = sgRefName(rv, ctx)
+			}
+		}
 		if isRaw {
 			findings = append(findings, Finding{"Resource " + id,
 				label + " contains a raw AWS security-group id (opaque) — reference an in-stack AWS::EC2::SecurityGroup or name a kind: SecurityGroup"})
 			continue
 		}
-		if n != "" {
-			names = append(names, n)
+		if n == "" {
+			findings = append(findings, Finding{"Resource " + id,
+				label + " contains an entry that resolves to no kind: SecurityGroup (it must !Ref an in-stack AWS::EC2::SecurityGroup, or be a parameter/import naming one) — refusing rather than launching the VM without that firewall attachment"})
+			continue
 		}
+		names = append(names, n)
 	}
 	return names, findings
 }
@@ -3903,6 +3922,27 @@ func getAttTarget(rawProp any) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// placeholderTargetRe recovers the logical id from a resolver placeholder ("<ref:X>" / "<X.attr>").
+var placeholderTargetRe = regexp.MustCompile(`^<(?:ref:([A-Za-z0-9]+)|([A-Za-z0-9]+)\.[A-Za-z0-9.]+)>$`)
+
+// placeholderTarget returns the logical id a RESOLVED value references when it is exactly a resolver
+// placeholder for an in-stack resource — e.g. a reference wrapped in another intrinsic
+// (!If [Cond, !Ref X, !Ref AWS::NoValue] resolves to "<ref:X>"), whose raw form getAttTarget can't see.
+func placeholderTarget(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return "", false
+	}
+	m := placeholderTargetRe.FindStringSubmatch(s)
+	if m == nil {
+		return "", false
+	}
+	if m[1] != "" {
+		return m[1], true
+	}
+	return m[2], true
 }
 
 // sortStrs insertion-sorts a small string slice in place (keeps the dependency tiny, matching

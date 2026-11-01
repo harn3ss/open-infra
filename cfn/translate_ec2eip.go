@@ -29,7 +29,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -46,10 +45,6 @@ func eipAllocationID(stackName, logicalID string) string {
 	sum := sha256.Sum256([]byte(stackName + "/" + logicalID))
 	return "eipalloc-" + hex.EncodeToString(sum[:])[:17]
 }
-
-// placeholderTargetRe recovers the logical id from a resolver placeholder ("<ref:X>" / "<X.attr>"), for a
-// reference wrapped in another intrinsic (e.g. !If [Cond, !Ref X, !Ref AWS::NoValue]).
-var placeholderTargetRe = regexp.MustCompile(`^<(?:ref:([A-Za-z0-9]+)|([A-Za-z0-9]+)\.[A-Za-z0-9.]+)>$`)
 
 // refID returns the logical id resource rid's property prop references: a raw {Ref}/{Fn::GetAtt}, or —
 // when the reference is wrapped in another intrinsic — the target of the resolved placeholder.
@@ -68,15 +63,7 @@ func (c *stackCtx) refID(rid, prop string) (string, bool) {
 	prev := c.resolver.where // resolveProps relabels the resolver; restore the caller's location
 	rp, _ := c.resolveProps(rid)
 	c.resolver.where = prev
-	if s, ok := rp[prop].(string); ok {
-		if m := placeholderTargetRe.FindStringSubmatch(s); m != nil {
-			if m[1] != "" {
-				return m[1], true
-			}
-			return m[2], true
-		}
-	}
-	return "", false
+	return placeholderTarget(rp[prop])
 }
 
 // includedType reports whether rid is an in-stack resource of cfnType that its Condition includes.
