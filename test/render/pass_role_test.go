@@ -127,6 +127,21 @@ func TestPassRole_ExecutionCredentialsAreTheShims(t *testing.T) {
 	mustContain(t, "execution credentials binding", b, "policyName: openinfra-execution-credentials", "validationActions: [")
 }
 
+// The shim and the console impersonate only openinfra:<user>. RBAC cannot hold impersonate-users to a
+// prefix, so each impersonator ClusterRole carries the annotation rbac-to-cedar uses to narrow the Cedar
+// corpus; without it a stolen token could act as a control-plane user (system:kube-controller-manager).
+func TestImpersonators_UsersHeldToTheOpeninfraPrefix(t *testing.T) {
+	for _, c := range []struct{ path, name string }{
+		{"../../platform/aws-shim/aws-shim.yaml", "open-infra-aws-shim-impersonator"},
+		{"../../platform/console/manifests/rbac-roles.yaml", "open-infra-console-impersonator"},
+	} {
+		mustContain(t, c.name, yamlDoc(t, c.path, "ClusterRole", c.name),
+			"openinfra.dev/impersonate-users: \"openinfra:*\"",
+			"resources: [groups]\n    verbs: [impersonate]",
+			"resources: [users]\n    verbs: [impersonate]")
+	}
+}
+
 // The VM credentials endpoint confirms a token is the VM launcher pod's own, which needs the shim to
 // read VirtualMachineInstances (status.activePods, spec.volumes). Read-only.
 func TestPassRole_ShimCanReadVMIsForTheLauncherCheck(t *testing.T) {

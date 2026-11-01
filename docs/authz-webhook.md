@@ -171,6 +171,14 @@ not a silent pass.
       Hardened during the cutover: a subresource is keyed as a distinct `resource/subresource` type
       (not collapsed onto the base), and a namespace-less RoleBinding ServiceAccount subject defaults to
       the binding's namespace (both bugs had silently dropped real grants under enforce).
+      `resourceNames` narrow a grant to those names, exactly as RBAC does; a `*` in a name is kept as a
+      wildcard only on signers (`certificates.k8s.io`, `cert-manager.io`), whose checkers test the
+      `<domain>/*` form literally, and is dropped on any other type (never broader than RBAC). A test runs
+      tens of thousands of requests through the webhook's evaluator over a generated corpus and through a
+      reference RBAC authorizer and requires the same answers.
+      One deliberate narrowing: a ClusterRole annotated `openinfra.dev/impersonate-users: "<prefix>*"` has
+      its impersonate-users grant held to matching names in the corpus (RBAC cannot express a prefix). The
+      console and aws-shim impersonators carry `openinfra:*`, the only form they act as.
 - [x] **Shadow run** — the divergence-measurement mode (log-only, no-opinion) is retained as
       `AUTHZ_MODE=shadow`; it was the pre-cutover baseline and stays available for validating a corpus.
 - [x] **Webhook first-in-chain, ENFORCE — LIVE + verified.** Wired into the live k3s API server via the

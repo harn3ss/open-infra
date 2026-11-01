@@ -265,13 +265,17 @@ subjects:
 # own authority, never the shim's. The shim's cfn front door drives the owned cfn engine through an Applier
 # that IMPERSONATES the caller for every resource op, so the API server's RBAC + Cedar admission bound the
 # whole stack to exactly what the caller may do. This is the SAME bounded impersonation the console uses on
-# /api/k8s: impersonate-GROUPS is pinned by resourceNames to the four openinfra groups (the pin is what
-# bounds privilege — the holder can never impersonate system:masters); usernames stay unconstrained because
-# every identity is minted openinfra:<user> and no RBAC binds a bare name.
+# /api/k8s: impersonate-GROUPS is pinned by resourceNames to the four openinfra groups (the holder can never
+# impersonate system:masters). Every identity the shim acts as is openinfra:<user>, so impersonate-USERS is
+# held to that prefix too: RBAC cannot express a name prefix, so the annotation below narrows the Cedar
+# corpus (the authoritative authorizer; rbac-to-cedar reads it). Without it a stolen shim token could act
+# as a control-plane user such as system:kube-controller-manager, which can mint any ServiceAccount's token.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: open-infra-aws-shim-impersonator
+  annotations:
+    openinfra.dev/impersonate-users: "openinfra:*"
 rules:
   - apiGroups: [""]
     resources: [groups]

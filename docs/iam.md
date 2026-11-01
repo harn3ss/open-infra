@@ -56,6 +56,12 @@ Two further RBAC limits worth stating, because they look like they work and then
 ### Stage 0 — harden what exists
 - ✅ **Pin impersonation.** `impersonate` on groups with no `resourceNames` is effectively
   cluster-admin (the holder can become `system:masters`). Pinned to the four `openinfra:*` groups.
+  User names are held to `openinfra:*` too, the only form the console and the aws-shim act as:
+  RBAC cannot express a name prefix, so the impersonator ClusterRoles carry
+  `openinfra.dev/impersonate-users: "openinfra:*"` and the control-plane Cedar corpus enforces it.
+  A stolen console or shim token therefore cannot act as a control-plane user such as
+  `system:kube-controller-manager`, which can mint any ServiceAccount's token. (While the authorization
+  webhook is down, RBAC alone decides, and RBAC still allows any user name.)
 - ✅ **SAR-gate the BFF's own endpoints.** Handlers that act as the ServiceAccount should issue a
   `SubjectAccessReview` *as the impersonated user* before acting, and fail closed. This is the
   documented way to defer an authorization decision, and it shrinks the one real hole in

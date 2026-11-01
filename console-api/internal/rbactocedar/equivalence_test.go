@@ -274,3 +274,66 @@ func TestCorpusMatchesRBAC(t *testing.T) {
 	}
 	t.Logf("%d decisions match RBAC", checked)
 }
+
+// A ClusterRole annotated openinfra.dev/impersonate-users narrows its impersonate-users grant in the
+// corpus to matching names: the aws-shim and the console only ever impersonate openinfra:<user>, so a
+// stolen token for either cannot impersonate a control-plane user (system:kube-controller-manager mints
+// any ServiceAccount's token). Everything else about the role — the pinned groups — is unchanged, and
+// the corpus is only ever narrower than RBAC.
+func TestCorpusImpersonationNarrowing(t *testing.T) {
+	in := equivalenceInputs()
+	imp := in.ClusterRoles["impersonate"]
+	imp.Annotations = map[string]string{ImpersonateUsersAnnotation: "openinfra:*"}
+	in.ClusterRoles["impersonate"] = imp
+
+	var docs []controlplaneauthz.PolicyDoc
+	for _, g := range Generate(in) {
+		docs = append(docs, controlplaneauthz.PolicyDoc{Statements: g.Statements, AppliesTo: []string{g.Principal}})
+	}
+	checker := controlplaneauthz.New(func(context.Context) ([]controlplaneauthz.PolicyDoc, error) { return docs, nil }, time.Hour)
+	door := "system:serviceaccount:front:door"
+	for _, c := range []struct {
+		resource, name string
+		corpus, rbac   bool
+	}{
+		{"users", "openinfra:alice", true, true},
+		{"users", "openinfra:role:deployer", true, true},
+		{"users", "system:kube-controller-manager", false, true},
+		{"users", "kube-apiserver", false, true},
+		{"users", "system:admin", false, true},
+		{"users", "openinfra", false, true}, // the prefix includes the colon
+		{"groups", "openinfra:admins", true, true},
+		{"groups", "system:masters", false, false},
+	} {
+		spec := authzv1.SubjectAccessReviewSpec{User: door, Groups: l("system:serviceaccounts"),
+			ResourceAttributes: &authzv1.ResourceAttributes{Verb: "impersonate", Resource: c.resource, Name: c.name}}
+		if got := checker.Evaluate(context.Background(), spec).Allowed; got != c.corpus {
+			t.Errorf("corpus impersonate %s %q = %v, want %v", c.resource, c.name, got, c.corpus)
+		}
+		if got := rbacAllows(in, spec); got != c.rbac {
+			t.Errorf("rbac impersonate %s %q = %v, want %v", c.resource, c.name, got, c.rbac)
+		}
+	}
+	var caveats []string
+	for _, g := range Generate(in) {
+		if g.Principal == "ServiceAccount::front/door" {
+			caveats = g.Caveats
+		}
+	}
+	if !strings.Contains(strings.Join(caveats, " "), "impersonate users narrowed") {
+		t.Errorf("the narrowing must be recorded as a caveat; got %v", caveats)
+	}
+}
+
+// An unusable pattern (empty, "*" alone, a "*" mid-name, odd characters) is ignored with a caveat — it
+// never widens and never silently drops the grant.
+func TestImpersonationNarrowing_UnusablePatternsAreIgnored(t *testing.T) {
+	for _, p := range l("", "*", "open*infra:*", "openinfra:**", "openinfra\"x*") {
+		c := cr("imp", rule(l("impersonate"), l(""), l("users"), nil))
+		c.Annotations = map[string]string{ImpersonateUsersAnnotation: p}
+		rest, narrowed, cav := narrowImpersonation(c)
+		if len(narrowed) != 0 || len(rest) != 1 || len(cav) != 1 {
+			t.Errorf("pattern %q: rest=%v narrowed=%v caveats=%v", p, rest, narrowed, cav)
+		}
+	}
+}

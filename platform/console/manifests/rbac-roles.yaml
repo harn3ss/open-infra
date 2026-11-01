@@ -21,14 +21,19 @@
 #    own groups. resourceNames works here because impersonation is a get-shaped
 #    named check, not a list.
 #
-#    Usernames can't be enumerated the same way (they're open-ended), so they stay
-#    unconstrained — but every console identity is minted as `openinfra:<user>`,
-#    and no RBAC binding grants anything to a bare, unprefixed name. The group
-#    pin is what actually bounds privilege.
+#    Usernames can't be enumerated the same way (they're open-ended), and RBAC
+#    cannot express a prefix. But every console identity is minted as
+#    `openinfra:<user>`, and Kubernetes binds real power to control-plane user
+#    names (system:kube-controller-manager can mint any ServiceAccount's token),
+#    so the annotation below holds impersonate-users to `openinfra:*` in the Cedar
+#    corpus — the authoritative authorizer (rbac-to-cedar reads it). RBAC alone, the
+#    fallback while the webhook is down, still allows any user name.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: open-infra-console-impersonator
+  annotations:
+    openinfra.dev/impersonate-users: "openinfra:*"
 rules:
   - apiGroups: [""]
     resources: [groups]

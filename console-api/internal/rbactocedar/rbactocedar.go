@@ -55,8 +55,13 @@ func Generate(in Inputs) []Grant {
 
 	for _, crb := range in.ClusterRoleBindings {
 		if cr, ok := in.ClusterRoles[crb.RoleRef.Name]; ok {
+			rules, narrowed, cav := narrowImpersonation(cr)
 			for _, s := range crb.Subjects {
-				add(s, cr.Rules, "") // "" scope = cluster-wide
+				add(s, rules, "") // "" scope = cluster-wide
+				if p := principal(s); p != "" {
+					byPrincipal[p].Statements = append(byPrincipal[p].Statements, narrowed...)
+					byPrincipal[p].Caveats = append(byPrincipal[p].Caveats, cav...)
+				}
 			}
 		}
 	}
@@ -92,6 +97,54 @@ func Generate(in Inputs) []Grant {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Principal < out[j].Principal })
 	return out
+}
+
+// ImpersonateUsersAnnotation, on a ClusterRole, narrows the Cedar translation of its "impersonate users"
+// grant to user names matching a pattern, e.g. "openinfra:*". RBAC cannot restrict impersonation to a
+// name prefix (resourceNames are exact, and the names are open-ended), so the role keeps its RBAC rule and
+// Cedar — the authoritative control-plane authorizer — enforces the narrower set. It only ever narrows.
+const ImpersonateUsersAnnotation = "openinfra.dev/impersonate-users"
+
+// narrowImpersonation splits a ClusterRole carrying ImpersonateUsersAnnotation: its plain
+// "impersonate users" rules (core group, no resourceNames, verb impersonate only) become one Allow on
+// "users::<pattern>"; every other rule is returned for the normal translation. A missing or unusable
+// pattern leaves the role as it is (with a caveat if the annotation was set but unusable).
+func narrowImpersonation(cr rbacv1.ClusterRole) (rest []rbacv1.PolicyRule, narrowed []policyengine.Statement, caveats []string) {
+	pattern, ok := cr.Annotations[ImpersonateUsersAnnotation]
+	if !ok {
+		return cr.Rules, nil, nil
+	}
+	if !usablePattern(pattern) {
+		return cr.Rules, nil, []string{fmt.Sprintf("%s %q on ClusterRole %s is not a usable pattern (a non-empty literal prefix, at most one trailing \"*\"); ignored", ImpersonateUsersAnnotation, pattern, cr.Name)}
+	}
+	for _, r := range cr.Rules {
+		if len(r.Verbs) == 1 && r.Verbs[0] == "impersonate" && len(r.ResourceNames) == 0 && len(r.NonResourceURLs) == 0 &&
+			len(r.Resources) == 1 && r.Resources[0] == "users" && len(r.APIGroups) == 1 && r.APIGroups[0] == "" {
+			narrowed = append(narrowed, policyengine.Statement{Effect: policyengine.Allow, Actions: []string{"impersonate"}, Resources: []string{"users::" + pattern}})
+			continue
+		}
+		rest = append(rest, r)
+	}
+	if len(narrowed) == 0 {
+		caveats = append(caveats, fmt.Sprintf("%s on ClusterRole %s matched no plain impersonate-users rule; nothing narrowed", ImpersonateUsersAnnotation, cr.Name))
+	} else {
+		caveats = append(caveats, fmt.Sprintf("impersonate users narrowed to %q by %s on ClusterRole %s (RBAC itself allows any user name)", pattern, ImpersonateUsersAnnotation, cr.Name))
+	}
+	return rest, narrowed, caveats
+}
+
+// usablePattern: a literal prefix of safe name characters, optionally ending in one "*". Never "*" alone.
+func usablePattern(p string) bool {
+	lit := strings.TrimSuffix(p, "*")
+	if lit == "" || strings.Contains(lit, "*") {
+		return false
+	}
+	for _, c := range lit {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune(":-_.@", c)) {
+			return false
+		}
+	}
+	return true
 }
 
 func principal(s rbacv1.Subject) string {
