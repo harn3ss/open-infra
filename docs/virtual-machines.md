@@ -325,6 +325,42 @@ see the root when they start after the agent, which is the case for anything ins
 `/etc/openinfra/metadata-agent.json` (and remove the anchor file if it is already there). Linux guests
 only.
 
+## AWS endpoints inside the guest
+
+On EC2 an unmodified `aws s3 cp s3://bucket/key .` in `userData` reaches AWS through the SDK's default
+endpoints. A Linux guest here makes the same call reach the aws-shim with nothing in the template: its
+environment (the same three places as `AWS_CA_BUNDLE` above) also carries
+
+```sh
+AWS_ENDPOINT_URL=https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567
+```
+
+the shim's in-cluster TLS port, which serves the whole AWS surface and verifies against the platform root
+through `AWS_CA_BUNDLE`. aws-cli v2 2.13 and later, and current releases of the AWS SDKs, read it for
+every service (no per-service `AWS_ENDPOINT_URL_<SERVICE>` is needed: one shim serves them all), and use
+path-style S3 addressing against it.
+
+**Containers.** A container does not inherit the guest's environment, so the metadata agent configures
+the container engines before `userData` runs, and every container gets the same three variables and a
+read-only mount of `/etc/openinfra/ca-bundle.pem` unless it sets them itself:
+
+- **Docker:** `/etc/docker/daemon.json` gains the runtime `openinfra-aws` (an OCI runtime wrapper,
+  `/usr/local/lib/openinfra/oci-aws-env`, that adds the variables and the mount to the container's spec,
+  then runs the real `runc`) and makes it the default runtime. Existing `daemon.json` settings are kept,
+  a running daemon is reloaded, and a default runtime the guest set itself (e.g. `nvidia`) is left alone
+  (`docker run --runtime openinfra-aws` still works).
+- **Podman:** a drop-in, `/etc/containers/containers.conf.d/50-openinfra-aws.conf`.
+
+A container with `OPENINFRA_AWS_ENV=off` in its environment is left as it is. Other engines (containerd
+or CRI-O used directly, a Kubernetes inside the guest) are not configured. The container still gets its
+role credentials from the instance metadata service through the default chain, which needs
+`metadataOptions.httpPutResponseHopLimit: 2` as on EC2.
+
+**What does not read `AWS_ENDPOINT_URL`.** Older SDKs and CLIs, among them the distro `awscli` v1 that
+Ubuntu 22.04 ships, call AWS's own endpoint names (`s3.amazonaws.com`, `sts.us-east-1.amazonaws.com`, …).
+Those reach open-infra only when AWS's names resolve to the shim inside guests, and the guest trusts a
+certificate for them: the opt-in guest AWS endpoints below.
+
 ## Extra data disks (`dataDisks`) — the EC2 BlockDeviceMapping analog
 
 Attach additional persistent disks at boot, beyond the root — e.g. a dedicated disk for a database:

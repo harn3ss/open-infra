@@ -46,16 +46,32 @@ hand-run.
 ## Pointing a client at it
 
 This is entirely client-side — the AWS console has no part in it. Set the SDK's **endpoint
-override** and use **path-style** S3 addressing:
+override** in the environment, `AWS_ENDPOINT_URL` (aws-cli v2 2.13+ and every current SDK read it),
+and use **path-style** S3 addressing:
 
 ```sh
 export AWS_ENDPOINT_URL=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566
 export AWS_ACCESS_KEY_ID=<your open-infra access key id>
 export AWS_SECRET_ACCESS_KEY=<your open-infra secret>
 
-aws --endpoint-url "$AWS_ENDPOINT_URL" s3api put-object \
-  --bucket my-bucket --key hello.txt --body ./hello.txt
+aws s3api put-object --bucket my-bucket --key hello.txt --body ./hello.txt
 ```
+
+From a LAN workstation, use the shim's LAN TLS endpoint instead, and trust the platform root CA:
+
+```sh
+export AWS_ENDPOINT_URL=https://s3.<your open-infra domain>
+export AWS_CA_BUNDLE=$PWD/openinfra-root-ca.crt   # kubectl get environmentconfig openinfra-platform-ca -o jsonpath='{.data.platformRootCA}'
+```
+
+Prefer `AWS_ENDPOINT_URL` to `--endpoint-url`. The flag redirects only the service the command
+names, so a command that also talks to another service still reaches AWS: `aws cloudformation
+deploy --s3-bucket …` sends CloudFormation to the shim but uploads the template to AWS's own S3,
+and `aws cloudformation package` does the same with every artifact. The environment variable
+redirects every service.
+
+Inside a `kind: VirtualMachine` guest nothing needs setting: the guest's environment already names
+the shim (see [virtual-machines.md](virtual-machines.md#aws-endpoints-inside-the-guest)).
 
 Two things to get right, both one-liners:
 

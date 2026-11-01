@@ -13,6 +13,20 @@ The CLI below is the operator-run path (it uses your kubeconfig's ambient identi
 For the broader migration picture — CDK, Amplify hosting, and what is deliberately
 out of scope — see [`docs/aws-migration.md`](aws-migration.md).
 
+To drive the front door from a workstation, point the whole AWS client at the shim, not just one
+command:
+
+```sh
+export AWS_ENDPOINT_URL=https://s3.<your open-infra domain>   # every service, not one command
+export AWS_CA_BUNDLE=$PWD/openinfra-root-ca.crt                 # the platform root CA
+aws cloudformation deploy --template-file template.yaml --stack-name app --parameter-overrides …
+```
+
+`--endpoint-url` would redirect only CloudFormation: `deploy --s3-bucket` (needed for templates over
+51,200 bytes) and `package` would upload to AWS's own S3. A stack's EC2 instances need no endpoint in
+the template either — the guest's environment names the shim
+([virtual-machines.md](virtual-machines.md#aws-endpoints-inside-the-guest)).
+
 - **`cfn plan`** (read-only) parses a template, maps every resource onto an open-infra
   kind, resolves the intrinsic functions and the dependency order, and prints a verdict.
   It provisions nothing.
