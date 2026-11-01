@@ -71,6 +71,14 @@ type StackRecord struct {
 	CreatedAt string          `json:"createdAt"`
 	UpdatedAt string          `json:"updatedAt"`
 	Resources []StackResource `json:"resources"`
+	// Outputs are the template's Outputs evaluated against the deployed stack when it reached *_COMPLETE
+	// (outputs.go) — what DescribeStacks returns; an Output with an ExportName is a cross-stack export.
+	// OutputsOmitted lists the Outputs left out because their value did not resolve, with the reason.
+	Outputs        []StackOutput    `json:"outputs,omitempty"`
+	OutputsOmitted []OutputOmission `json:"outputsOmitted,omitempty"`
+	// Imports are the export names this stack reads through Fn::ImportValue — a stack whose export is
+	// imported elsewhere is not deleted (AWS's rule).
+	Imports []string `json:"imports,omitempty"`
 }
 
 type DeployOptions struct {
@@ -262,7 +270,8 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		}
 	}
 
-	// 4. Complete.
+	// 4. Complete — with the template's Outputs evaluated against the deployed stack.
+	setOutputs(ctx, data, opts, rec, ap, nil)
 	rec.Status = "CREATE_COMPLETE"
 	rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {
@@ -392,6 +401,8 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			}
 		}
 	}
+	// Outputs may read a custom resource's returned Data (Fn::GetAtt), so evaluate them with it.
+	setOutputs(ctx, data, opts, rec, ap, r.customData)
 	rec.Status = "CREATE_COMPLETE"
 	rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {

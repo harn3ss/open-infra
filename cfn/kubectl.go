@@ -112,6 +112,28 @@ func (k kubectlApplier) GetSpec(ctx context.Context, apiVersion, kind, name stri
 	return obj.Spec, true, nil
 }
 
+// GetStatus reads a live resource's .status (StatusReader) — stack Outputs naming a post-deploy
+// attribute (a VM's LAN IP) resolve through it. `--ignore-not-found`: an absent object is found=false.
+func (k kubectlApplier) GetStatus(ctx context.Context, apiVersion, kind, name string) (map[string]any, bool, error) {
+	out, err := k.runOut(ctx, "get", resourceArg(apiVersion, kind), name, "--ignore-not-found", "-o", "json")
+	if err != nil {
+		return nil, false, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, false, nil
+	}
+	var obj struct {
+		Status map[string]any `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(out), &obj); err != nil {
+		return nil, false, fmt.Errorf("could not read %s/%s status: %w", kind, name, err)
+	}
+	if obj.Status == nil {
+		obj.Status = map[string]any{}
+	}
+	return obj.Status, true, nil
+}
+
 // GetStack reads the persisted stack record ConfigMap. Uses `--ignore-not-found`, so a
 // missing record is an empty result, not an error to string-match.
 func (k kubectlApplier) GetStack(ctx context.Context, stackName string) (*StackRecord, bool, error) {

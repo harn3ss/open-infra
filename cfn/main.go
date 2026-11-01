@@ -613,4 +613,17 @@ func printStack(rec *StackRecord) {
 	if rec.Message != "" {
 		fmt.Printf("  message: %s\n", rec.Message)
 	}
+	if len(rec.Outputs) > 0 || len(rec.OutputsOmitted) > 0 {
+		fmt.Println("Outputs:")
+		for _, o := range rec.Outputs {
+			export := ""
+			if o.ExportName != "" {
+				export = "  (export " + o.ExportName + ")"
+			}
+			fmt.Printf("  %-20s %s%s\n", o.OutputKey, o.OutputValue, export)
+		}
+		for _, o := range rec.OutputsOmitted {
+			fmt.Printf("  %-20s (omitted: %s)\n", o.OutputKey, o.Reason)
+		}
+	}
 }

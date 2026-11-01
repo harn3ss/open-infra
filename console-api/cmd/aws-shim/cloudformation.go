@@ -168,6 +168,8 @@ func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.describeStackResources(w, r, ap, requestID)
 	case "ListStacks":
 		h.listStacks(w, r, ap, requestID)
+	case "ListExports":
+		h.listExports(w, r, requestID)
 	case "ValidateTemplate":
 		h.validateTemplate(w, r, requestID)
 	case "CreateChangeSet":
@@ -260,11 +262,13 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		return
 	}
 	params := parseCFNParams(r)
+	ctx := r.Context()
+	ex := h.exportsFor(ctx, name) // other stacks' exports, for Fn::ImportValue
 
 	// Synchronous validation gate — an unsupported type / bad template is refused WHOLE here, before
 	// anything is created (the DoD's "refused at validation, nothing created"). This mirrors the engine's
 	// own plan gate but surfaces it as an immediate ValidationError to the caller.
-	plan, perr := cfn.BuildPlanWithCaps([]byte(body), params, nil, name, h.caps())
+	plan, perr := cfn.BuildPlanWithCaps([]byte(body), params, ex.values, name, h.caps())
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return
@@ -274,8 +278,11 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 			"template refused (nothing created):\n  - "+strings.Join(plan.Blockers, "\n  - "), cfnXMLNamespace)
 		return
 	}
+	if msg := exportCollision(body, params, ex, name); msg != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
+		return
+	}
 
-	ctx := r.Context()
 	if _, found, _ := ap.GetStack(ctx, name); found {
 		writeQueryError(w, http.StatusBadRequest, "AlreadyExistsException", requestID,
 			"Stack ["+name+"] already exists.", cfnXMLNamespace)
@@ -289,10 +296,13 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 	go func() {
 		bctx, cancel := context.WithTimeout(context.Background(), cfnAsyncTimeout)
 		defer cancel()
-		if _, derr := cfn.Deploy(bctx, []byte(body), h.opts(name, params), ap); derr != nil {
+		rec, derr := cfn.Deploy(bctx, []byte(body), h.optsFor(name, params, ex), ap)
+		if derr != nil {
 			h.logger.Warn("cfn CreateStack failed", "stack", name, "error", derr.Error())
 			ap.backstopTerminal(bctx, name, "CREATE_FAILED", derr.Error())
+			return
 		}
+		h.logOutputs("CreateStack", name, rec)
 	}()
 	h.writeResult(w, requestID, "CreateStack", "<StackId>"+xesc(h.stackID(name))+"</StackId>")
 }
@@ -306,11 +316,13 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 	}
 	params := parseCFNParams(r)
 	ctx := r.Context()
-	if _, found, _ := ap.GetStack(ctx, name); !found {
+	current, found, _ := ap.GetStack(ctx, name)
+	if !found {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist.", cfnXMLNamespace)
 		return
 	}
-	plan, perr := cfn.BuildPlanWithCaps([]byte(body), params, nil, name, h.caps())
+	ex := h.exportsFor(ctx, name)
+	plan, perr := cfn.BuildPlanWithCaps([]byte(body), params, ex.values, name, h.caps())
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return
@@ -320,13 +332,20 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 			"template refused (nothing changed):\n  - "+strings.Join(plan.Blockers, "\n  - "), cfnXMLNamespace)
 		return
 	}
+	if msg := h.exportGuards(ctx, current, body, params, ex, name); msg != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
+		return
+	}
 	go func() {
 		bctx, cancel := context.WithTimeout(context.Background(), cfnAsyncTimeout)
 		defer cancel()
-		if _, derr := cfn.Update(bctx, []byte(body), h.opts(name, params), ap); derr != nil {
+		rec, derr := cfn.Update(bctx, []byte(body), h.optsFor(name, params, ex), ap)
+		if derr != nil {
 			h.logger.Warn("cfn UpdateStack failed", "stack", name, "error", derr.Error())
 			ap.backstopTerminal(bctx, name, "UPDATE_FAILED", derr.Error())
+			return
 		}
+		h.logOutputs("UpdateStack", name, rec)
 	}()
 	h.writeResult(w, requestID, "UpdateStack", "<StackId>"+xesc(h.stackID(name))+"</StackId>")
 }
@@ -334,9 +353,15 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
 	name := r.PostFormValue("StackName")
 	ctx := r.Context()
-	if _, found, _ := ap.GetStack(ctx, name); !found {
+	rec, found, _ := ap.GetStack(ctx, name)
+	if !found {
 		// AWS treats deleting an absent stack as a successful no-op.
 		h.writeResult(w, requestID, "DeleteStack", "")
+		return
+	}
+	// AWS's export rule: a stack whose export another stack imports can't be deleted from under it.
+	if msg := exportsInUse(h.allRecords(ctx), name, exportNames(rec)); msg != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
 	go func() {
@@ -391,6 +416,7 @@ func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {
 	if rec.UpdatedAt != "" {
 		b.WriteString("<LastUpdatedTime>" + xesc(rec.UpdatedAt) + "</LastUpdatedTime>")
 	}
+	b.WriteString(outputsXML(rec)) // evaluated against the deployed stack at *_COMPLETE (#347)
 	b.WriteString("</member>")
 	return b.String()
 }
@@ -460,7 +486,7 @@ func (h *cfnDoorway) validateTemplate(w http.ResponseWriter, r *http.Request, re
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, err.Error(), cfnXMLNamespace)
 		return
 	}
-	plan, perr := cfn.BuildPlanWithCaps([]byte(body), nil, nil, "validate", h.caps())
+	plan, perr := cfn.BuildPlanWithCaps([]byte(body), nil, h.exportsFor(r.Context(), "").values, "validate", h.caps())
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return
@@ -501,11 +527,19 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 	}
 	params := parseCFNParams(r)
 	ctx := r.Context()
+	ex := h.exportsFor(ctx, stack)
 
 	// BuildChangeSet computes the diff against the current stack record and APPLIES NOTHING.
-	cs, _, _, cerr := cfn.BuildChangeSet(ctx, []byte(body), h.opts(stack, params), ap)
+	cs, _, current, cerr := cfn.BuildChangeSet(ctx, []byte(body), h.optsFor(stack, params, ex), ap)
 	if cerr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, cerr.Error(), cfnXMLNamespace)
+		return
+	}
+	if !cs.Exists {
+		current = nil
+	}
+	if msg := h.exportGuards(ctx, current, body, params, ex, stack); msg != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
 	csType := "UPDATE"
@@ -559,14 +593,27 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 	body := cs.TemplateBody
 	params := cs.Params
 	create := cs.Type == "CREATE"
+	// Re-check the export rules at execute time: another stack may have taken an export name, or started
+	// importing one this change set would drop, since the change set was created.
+	ctx := r.Context()
+	ex := h.exportsFor(ctx, stack)
+	var current *cfn.StackRecord
+	if !create {
+		current, _, _ = ap.GetStack(ctx, stack)
+	}
+	if msg := h.exportGuards(ctx, current, body, params, ex, stack); msg != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
+		return
+	}
 	go func() {
 		bctx, cancel := context.WithTimeout(context.Background(), cfnAsyncTimeout)
 		defer cancel()
+		var rec *cfn.StackRecord
 		var derr error
 		if create {
-			_, derr = cfn.Deploy(bctx, []byte(body), h.opts(stack, params), ap)
+			rec, derr = cfn.Deploy(bctx, []byte(body), h.optsFor(stack, params, ex), ap)
 		} else {
-			_, derr = cfn.Update(bctx, []byte(body), h.opts(stack, params), ap)
+			rec, derr = cfn.Update(bctx, []byte(body), h.optsFor(stack, params, ex), ap)
 		}
 		if derr != nil {
 			h.logger.Warn("cfn ExecuteChangeSet failed", "stack", stack, "error", derr.Error())
@@ -575,7 +622,9 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 				status = "CREATE_FAILED"
 			}
 			ap.backstopTerminal(bctx, stack, status, derr.Error())
+			return
 		}
+		h.logOutputs("ExecuteChangeSet", stack, rec)
 	}()
 	h.writeResult(w, requestID, "ExecuteChangeSet", "")
 }

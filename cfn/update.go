@@ -50,7 +50,20 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		}
 	}
 	if !cs.hasChanges() {
-		return current, nil // no-op: nothing to do
+		// No resource changes — but the template's Outputs (or their live values) may have changed; an
+		// Outputs-only change is still an update. Otherwise a true no-op: nothing is written.
+		next := *current
+		setOutputs(ctx, data, opts, &next, ap, nil)
+		if outputsEqual(&next, current) {
+			return current, nil
+		}
+		next.Status = "UPDATE_COMPLETE"
+		next.Message = ""
+		next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := writeStackRecord(ctx, ap, &next, opts); err != nil {
+			return &next, fmt.Errorf("stack outputs updated but recording COMPLETE failed: %w", err)
+		}
+		return &next, nil
 	}
 
 	desiredByID := map[string]builtResource{}
@@ -140,6 +153,7 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	for _, b := range desired {
 		newRec.Resources = append(newRec.Resources, b.res)
 	}
+	setOutputs(ctx, data, opts, newRec, ap, nil)
 	if err := writeStackRecord(ctx, ap, newRec, opts); err != nil {
 		return newRec, fmt.Errorf("stack updated but recording COMPLETE failed: %w", err)
 	}

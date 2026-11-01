@@ -200,6 +200,28 @@ func (a *impersonatingApplier) GetSpec(ctx context.Context, apiVersion, kind, na
 	return spec, true, nil
 }
 
+// GetStatus reads a live resource's .status via the CALLER (cfn.StatusReader) — how a completing stack
+// resolves an Output naming a post-deploy attribute (a VM's status.lanIp for an Elastic IP), under the
+// same authority that created the resource.
+func (a *impersonatingApplier) GetStatus(ctx context.Context, apiVersion, kind, name string) (map[string]any, bool, error) {
+	gvr, err := a.gvrFor(apiVersion, kind)
+	if err != nil {
+		return nil, false, err
+	}
+	u, gerr := a.caller.Resource(gvr).Namespace(a.ns).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(gerr) {
+		return nil, false, nil
+	}
+	if gerr != nil {
+		return nil, false, gerr
+	}
+	st, _, _ := unstructured.NestedMap(u.Object, "status")
+	if st == nil {
+		st = map[string]any{}
+	}
+	return st, true, nil
+}
+
 // GetReady reports whether a resource's Ready condition is True (or status.ready), read via the CALLER —
 // so a doorway can report a workload's readiness without the shim SA needing read access to the workload.
 func (a *impersonatingApplier) GetReady(ctx context.Context, apiVersion, kind, name string) (ready, found bool, err error) {

@@ -29,6 +29,30 @@ type fakeApplier struct {
 	notReady   string                    // fail WaitReady for this name
 	stored     *StackRecord              // the persisted stack record (a mini cluster for update tests)
 	liveSpecs  map[string]map[string]any // "Kind/name" -> live .spec (a mini cluster for drift tests)
+	// liveStatus is "Kind/name" -> live .status (StatusReader, for stack Outputs). statusFn, when set,
+	// overrides it (e.g. a status that appears only after N reads).
+	liveStatus  map[string]map[string]any
+	statusFn    func(key string) (map[string]any, bool)
+	statusReads int
+}
+
+// GetStatus makes fakeApplier a StatusReader: the live status of an APPLIED object (absent objects are
+// found=false), from liveStatus / statusFn.
+func (f *fakeApplier) GetStatus(_ context.Context, _, kind, name string) (map[string]any, bool, error) {
+	key := kind + "/" + name
+	f.statusReads++
+	if f.statusFn != nil {
+		st, ok := f.statusFn(key)
+		return st, ok, nil
+	}
+	if _, applied := f.liveSpecs[key]; !applied {
+		return nil, false, nil
+	}
+	st := f.liveStatus[key]
+	if st == nil {
+		st = map[string]any{}
+	}
+	return st, true, nil
 }
 
 func idOf(y []byte) string {

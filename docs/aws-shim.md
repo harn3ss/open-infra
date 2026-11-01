@@ -1071,10 +1071,22 @@ The AWS CloudFormation API (SigV4 service `cloudformation`, query protocol) over
 engine (`github.com/harn3ss/open-infra/cfn` — the same engine behind the `cfn` CLI, refactored into an
 importable package). Implemented: `CreateStack`/`UpdateStack`/`DeleteStack`, `CreateChangeSet`/
 `DescribeChangeSet`/`ExecuteChangeSet`/`DeleteChangeSet`, `DescribeStacks`/`DescribeStackResources`/
-`ListStacks`, `ValidateTemplate`, and `DetectStackDrift`/`DescribeStackDriftDetectionStatus`/
+`ListStacks`, `ListExports`, `ValidateTemplate`, and `DetectStackDrift`/`DescribeStackDriftDetectionStatus`/
 `DescribeStackResourceDrifts`. Long operations are asynchronous like AWS (validate synchronously, run the
 engine in the background, poll `DescribeStacks`); the ~50-entry resource-type→kind mapping table (its plan
 contract) lives in `cfn/mapping.go`.
+
+**Stack outputs and exports.** When a create or update completes, the engine evaluates the template's
+`Outputs` against the deployed stack and stores them with it; `DescribeStacks` returns them in the AWS shape
+(`OutputKey` / `OutputValue` / `Description` / `ExportName`), so `aws cloudformation describe-stacks
+--query 'Stacks[0].Outputs'` reads a stack's addresses the way it does on AWS — for example the LAN IP an
+Elastic IP maps to. Template-determined values resolve directly; the post-deploy attributes that resolve are
+listed in [cloudformation.md](cloudformation.md#stack-outputs). An Output whose value does not resolve is
+**left out** (the reason is logged and kept with the stack record), never filled with a placeholder. An
+Output with an `Export.Name` is a cross-stack export in the doorway's namespace: `ListExports` lists the
+exports, and every template the doorway evaluates resolves `Fn::ImportValue` against them. AWS's export
+rules hold — a create or update that would export a name another stack already exports is refused, and a
+stack (or an update) that would remove an export another stack imports is refused.
 
 **Authority — the way AWS does it, and the reason a CloudFormation doorway is safe.** CloudFormation is an
 *orchestrator*: it provisions a whole stack of heterogeneous resources on the caller's behalf. AWS never

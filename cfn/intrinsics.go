@@ -39,6 +39,13 @@ type resolver struct {
 	customData map[string]map[string]any
 	// cfResolving guards cloudFrontGetAtt against a distribution whose Aliases reference its own DomainName.
 	cfResolving map[string]bool
+	// deployed resolves a post-deploy attribute (attr "" = Ref) from the deployed stack's live status —
+	// set only when evaluating stack Outputs after a create/update completes (outputs.go). Nil elsewhere,
+	// so plan/translate keep the unresolved placeholder.
+	deployed func(id, attr string) (any, bool)
+	// imported, when non-nil, collects every export name Fn::ImportValue asks for (outputs.go records it
+	// on the stack, so a stack whose exports are in use is not deleted from under its importers).
+	imported map[string]bool
 }
 
 func newResolver(t *Template, params, exports, pseudo map[string]any) *resolver {
@@ -203,6 +210,11 @@ func (r *resolver) ref(name string) any {
 	}
 	if _, ok := r.t.Resources[name]; ok {
 		r.refs[name] = true
+		if r.deployed != nil {
+			if v, ok := r.deployed(name, ""); ok {
+				return v
+			}
+		}
 		return "<ref:" + name + ">"
 	}
 	r.find("Ref to undefined name " + name)
@@ -238,6 +250,11 @@ func (r *resolver) getAtt(arg any) any {
 	}
 	if res, ok := r.t.Resources[id]; ok {
 		r.refs[id] = true
+		if r.deployed != nil { // stack Outputs, after deploy: a documented post-deploy attribute
+			if v, ok := r.deployed(id, attr); ok {
+				return v
+			}
+		}
 		// An Elastic IP's AllocationId names the allocation — a stable synthetic eipalloc- id per stack +
 		// logical id (#347 1.6). Its address (Ref / PublicIp) is a LAN IP assigned at apply: unresolved.
 		if res.Type == "AWS::EC2::EIP" && attr == "AllocationId" {
@@ -256,6 +273,9 @@ func (r *resolver) getAtt(arg any) any {
 // them from what it is given.)
 func (r *resolver) importValue(arg any) any {
 	name := fmt.Sprint(r.resolve(arg))
+	if r.imported != nil {
+		r.imported[name] = true
+	}
 	if v, ok := r.exports[name]; ok {
 		return v
 	}
