@@ -244,9 +244,24 @@ root once on the client. Only the platform namespaces listed in that file's admi
 ### STS (faithful)
 
 `aws sts get-caller-identity` — the first call most SDKs and tools make to confirm "who am I / does
-auth work." It has no backend: the shim reflects the identity it already proved via SigV4 as an
-open-infra-shaped ARN (`arn:openinfra:iam::open-infra:user/<name>`), so there is nothing to
-translate and nothing to get subtly wrong. Any authenticated principal may call it (as on AWS).
+auth work." It has no backend: the shim reflects the identity it already proved via SigV4 in AWS's
+form — `arn:aws:iam::<account>:user/<name>`, or `arn:aws:sts::<account>:assumed-role/<role>/<session>`
+for a role session — with `Account` the install's account id. Any authenticated principal may call it
+(as on AWS).
+
+#### The account, region and partition
+
+An install presents one AWS identity: a 12-digit account id (default `000000000000`), a region
+(default `us-east-1`) and the `aws` partition, set in `platform/aws-shim/aws-identity.yaml`. Everything
+reports it: STS, every ARN and SQS queue URL the shim returns, ECR registry ids, the CloudFormation
+StackId and the pseudo-parameters a template resolves (`AWS::AccountId`, `AWS::Region`,
+`AWS::Partition`, `AWS::URLSuffix`, `AWS::StackId`), and a VM's instance metadata. So an ARN a template
+builds with `${AWS::AccountId}` and `${AWS::Region}` is the ARN the shim reports, as on AWS. To present
+another account or region, change both objects in that file (they must match) and restart the shim.
+
+Earlier releases presented the account as `open-infra`, and STS ARNs in an `openinfra` partition. The
+shim still accepts those forms: a role ARN in AssumeRole, and a topic ARN or queue URL whether it was
+stored under the old account or the new one.
 
 #### AssumeRole — temporary session credentials (opt-in)
 

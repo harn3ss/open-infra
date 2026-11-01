@@ -209,7 +209,7 @@ or without an `instanceRole`. It answers the paths SDKs and lift-and-shift scrip
 | `meta-data/local-ipv4`, `mac`, `hostname`, `local-hostname`, `network/interfaces/macs/…` | the guest's primary interface |
 | `meta-data/security-groups` | the VM's `securityGroups` |
 | `meta-data/iam/info`, `iam/security-credentials/<role>` | the instance profile and the role's credentials (only with `instanceRole`) |
-| `dynamic/instance-identity/document` | JSON: `accountId` (`open-infra`), `region`, `availabilityZone`, `instanceId`, `imageId`, `privateIp`, `architecture`, `pendingTime` |
+| `dynamic/instance-identity/document` | JSON: `accountId` and `region` (the install's AWS identity, [`aws-identity.yaml`](aws-shim.md#the-account-region-and-partition)), `availabilityZone`, `instanceId`, `imageId`, `privateIp`, `architecture`, `pendingTime` |
 | `user-data` | the VM's `userData` (404 when there is none) |
 
 The listener runs in its own network namespace, joined to the guest by a veth pair and routed one hop

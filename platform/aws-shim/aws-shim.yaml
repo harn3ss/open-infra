@@ -700,10 +700,12 @@ spec:
             - { name: USERS_NAMESPACE, value: "open-infra-console" }
             # Coarse v1 S3 authorization gate is evaluated on applications in this namespace.
             - { name: AUTHZ_NAMESPACE, value: "default" }
-            # Lambda (Invoke over kind: Function / Knative): the namespace Functions live in, and
-            # the account id surfaced in STS GetCallerIdentity ARNs.
+            # Lambda (Invoke over kind: Function / Knative): the namespace Functions live in.
             - { name: FUNCTIONS_NAMESPACE, value: "default" }
-            - { name: ACCOUNT_ID, value: "open-infra" }
+            # The install's AWS identity (aws-identity.yaml): the account and region every ARN, queue URL
+            # and StackId is built in, and the CloudFormation pseudo-parameters resolve to.
+            - { name: ACCOUNT_ID, valueFrom: { configMapKeyRef: { name: openinfra-aws-identity, key: ACCOUNT_ID } } }
+            - { name: AWS_REGION, valueFrom: { configMapKeyRef: { name: openinfra-aws-identity, key: AWS_REGION } } }
             # DynamoDB data layer: FerretDB (Mongo wire) for the data path + the DocumentDB Postgres
             # behind it for atomic Transact* — both provisioned by dynamodb-backend.yaml (the
             # dynamo-mongo-app Secret). Without these the dynamodb front door answers an honest 501.

@@ -39,6 +39,11 @@ spec:
             - type: Reference
               ref:
                 name: openinfra-platform-ca
+            # The install's AWS identity (platform/aws-shim/aws-identity.yaml): the account and region
+            # the guest's instance metadata reports, the same the aws-shim does.
+            - type: Reference
+              ref:
+                name: openinfra-aws-identity
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -180,17 +185,19 @@ spec:
             {{- if and $metadataAgent $trustPlatformCA }}
             {{-   $containerEnv = list (printf "AWS_ENDPOINT_URL=%s" $guestEndpoint) (printf "AWS_CA_BUNDLE=%s" $caBundle) (printf "NODE_EXTRA_CA_CERTS=%s" $caBundle) }}
             {{- end }}
-            {{- /* What the guest cannot observe, rendered into the agent's config. Region and account match
-                   the aws-shim's AWS_REGION / ACCOUNT_ID defaults; the instance id is stable for the life of
-                   this VM (derived from its UID) and the image id from its catalog OS. */}}
-            {{- $imdsRegion := "us-east-1" }}
+            {{- /* What the guest cannot observe, rendered into the agent's config. Region and account are the
+                   install's AWS identity (the openinfra-aws-identity EnvironmentConfig — the aws-shim reads the
+                   same values), so the identity document matches the ARNs the shim reports; the instance id is
+                   stable for the life of this VM (derived from its UID) and the image id from its catalog OS. */}}
+            {{- $imdsRegion := index $envCfg "awsRegion" | default "us-east-1" }}
+            {{- $imdsAccount := index $envCfg "awsAccountId" | default "000000000000" }}
             {{- $userDataFile := "" }}{{- if $spec.userData }}{{- $userDataFile = "/opt/openinfra-userdata" }}{{- end }}
             {{- $agentCfg := dict
                   "instanceId" (printf "i-%s" (printf "%s-instance" .observed.composite.resource.metadata.uid | sha256sum | trunc 17))
                   "imageId" (printf "ami-%s" (printf "%s-image" $spec.os | sha256sum | trunc 17))
                   "region" $imdsRegion
                   "availabilityZone" (printf "%sa" $imdsRegion)
-                  "accountId" "open-infra"
+                  "accountId" $imdsAccount
                   "launchTime" (.observed.composite.resource.metadata.creationTimestamp | default "")
                   "role" $instanceRole
                   "credentialsUrl" (printf "https://%s/v1/vm-credentials" $shimTLSHostPort)

@@ -1,0 +1,29 @@
+# The AWS identity this install presents: one 12-digit account id and one region, in the `aws`
+# partition. Every surface reads it from here:
+#   - the aws-shim (ACCOUNT_ID / AWS_REGION, from the ConfigMap): STS GetCallerIdentity, every ARN and
+#     queue URL it reports, ECR registry ids, the CloudFormation StackId, and the CloudFormation
+#     pseudo-parameters AWS::AccountId / AWS::Region / AWS::StackId it resolves;
+#   - the VM composition (awsAccountId / awsRegion, from the EnvironmentConfig): the guest's instance
+#     metadata (identity document, placement/region, instance-profile ARN).
+# So an ARN a template builds with ${AWS::AccountId} and ${AWS::Region} is the ARN the shim reports, as
+# on AWS. To present another account or region, change BOTH objects below (they must match; a render
+# test checks), then restart the aws-shim. Earlier releases presented the account as "open-infra"; the
+# shim still accepts ARNs and queue URLs in that form (cfn/awsidentity).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openinfra-aws-identity
+  namespace: open-infra-aws-shim
+data:
+  ACCOUNT_ID: "000000000000"
+  AWS_REGION: "us-east-1"
+---
+apiVersion: apiextensions.crossplane.io/v1alpha1
+kind: EnvironmentConfig
+metadata:
+  name: openinfra-aws-identity
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+data:
+  awsAccountId: "000000000000"
+  awsRegion: "us-east-1"

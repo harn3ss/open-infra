@@ -388,7 +388,7 @@ class IMDSTest(unittest.TestCase):
             self.assertEqual(r.get("/latest/meta-data/iam/security-credentials/other-role")[0], 404)
             info = json.loads(r.get("/latest/meta-data/iam/info")[1])
             self.assertEqual(info["Code"], "Success")
-            self.assertEqual(info["InstanceProfileArn"], "arn:aws:iam::open-infra:instance-profile/app-role")
+            self.assertEqual(info["InstanceProfileArn"], "arn:aws:iam::000000000000:instance-profile/app-role")
             self.assertTrue(info["InstanceProfileId"].startswith("AIPA"))
             self.assertEqual(len(r.fetches), 1, "credentials are fetched once (at start) and then cached")
 
@@ -409,7 +409,7 @@ class IMDSTest(unittest.TestCase):
             doc = json.loads(r.get("/latest/dynamic/instance-identity/document")[1])
             self.assertEqual(doc["instanceId"], golden["instanceId"])
             self.assertEqual(doc["imageId"], golden["imageId"])
-            self.assertEqual(doc["accountId"], "open-infra")
+            self.assertEqual(doc["accountId"], "000000000000")
             self.assertEqual(doc["region"], "us-east-1")
             self.assertEqual(doc["availabilityZone"], "us-east-1a")
             self.assertEqual(doc["pendingTime"], "2026-10-31T12:00:00Z")

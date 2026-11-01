@@ -271,6 +271,13 @@ condition functions `Fn::If` / `Fn::Equals` / `Fn::And` / `Fn::Or` / `Fn::Not`, 
 `AWS::*` pseudo-parameters. `Conditions` are evaluated, so a resource gated on a false
 condition is reported as skipped and left out of the provisioning order.
 
+- **Pseudo-parameters** are the install's AWS identity (`platform/aws-shim/aws-identity.yaml`, see
+  [the account, region and partition](aws-shim.md#the-account-region-and-partition)):
+  `AWS::AccountId` is its 12-digit account, `AWS::Region` its region, `AWS::Partition` is `aws` and
+  `AWS::URLSuffix` `amazonaws.com`, and `AWS::StackId` is the stack's StackId, the ARN the front door
+  returns. A custom resource's event carries the same StackId. The `cfn` CLI reads `ACCOUNT_ID` and
+  `AWS_REGION` from its environment, so set them as the shim has them.
+
 - **`Fn::Cidr`** — real IPv4 subnet math: `[ipBlock, count, cidrBits]` carves `count`
   sequential `/(32-cidrBits)` blocks from `ipBlock` (IPv6 blocks, or a count/bits that
   overflow the block, are refused).

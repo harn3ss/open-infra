@@ -1,5 +1,5 @@
 {
-  "accountId": "open-infra",
+  "accountId": "000000000000",
   "availabilityZone": "us-east-1a",
   "caBundleLink": "/etc/openinfra/ca-bundle.pem",
   "caFile": "/etc/openinfra/platform-root-ca.pem",

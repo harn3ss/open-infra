@@ -76,8 +76,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
         self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
         Stub.sts_calls.append((self.headers.get("Authorization") or "", self.headers.get("X-Amz-Security-Token")))
         self._send(200, '<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">'
-                        "<GetCallerIdentityResult><Arn>arn:aws:sts::open-infra:assumed-role/app-role/vm</Arn>"
-                        "<UserId>AROAEXAMPLE:vm</UserId><Account>open-infra</Account>"
+                        "<GetCallerIdentityResult><Arn>arn:aws:sts::000000000000:assumed-role/app-role/vm</Arn>"
+                        "<UserId>AROAEXAMPLE:vm</UserId><Account>000000000000</Account>"
                         "</GetCallerIdentityResult></GetCallerIdentityResponse>", "text/xml")
 
 
