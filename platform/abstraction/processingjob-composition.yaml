@@ -280,6 +280,34 @@ spec:
             kind: XProcessingJob
             status:
               jobName: {{ $job }}
+            ---
+            # --- Tenant isolation (ingress) for the processing pods: this namespace and the platform callers
+            #     named below only; every other namespace is refused. Pod->Service calls keep the caller's pod IP
+            #     (kube-ovn enable-lb), so the namespace is what tells tenants apart. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: {{ $name }}-processingjob-isolation
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/isolation: tenant }
+                  spec:
+                    podSelector: { matchLabels: { openinfra.dev/processingjob: "{{ $name }}" } }
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          # this namespace
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
+                          # Prometheus, scraping metrics
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

@@ -249,7 +249,7 @@ spec:
                     strategy: { type: Recreate }
                     selector: { matchLabels: { app: {{ $name }}-flow-{{ $node }}-dbz } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-flow-{{ $node }}-dbz } }
+                      metadata: { labels: { app: {{ $name }}-flow-{{ $node }}-dbz, openinfra.dev/dataflow: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -295,6 +295,7 @@ spec:
                   spec:
                     backoffLimit: 30
                     template:
+                      metadata: { labels: { openinfra.dev/dataflow: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -344,7 +345,7 @@ spec:
                     replicas: 1
                     selector: { matchLabels: { app: {{ $name }}-flow-reconciler } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-flow-reconciler } }
+                      metadata: { labels: { app: {{ $name }}-flow-reconciler, openinfra.dev/dataflow: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -397,7 +398,7 @@ spec:
                     replicas: 1
                     selector: { matchLabels: { app: {{ $name }}-flow-drift } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-flow-drift } }
+                      metadata: { labels: { app: {{ $name }}-flow-drift, openinfra.dev/dataflow: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -449,7 +450,7 @@ spec:
                     replicas: 1
                     selector: { matchLabels: { app: {{ $name }}-flow-{{ $fn }}-pump } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-flow-{{ $fn }}-pump } }
+                      metadata: { labels: { app: {{ $name }}-flow-{{ $fn }}-pump, openinfra.dev/dataflow: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -501,6 +502,7 @@ spec:
                   spec:
                     backoffLimit: 30
                     template:
+                      metadata: { labels: { openinfra.dev/dataflow: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -547,7 +549,7 @@ spec:
                     replicas: 1
                     selector: { matchLabels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-rsink } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-rsink } }
+                      metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-rsink, openinfra.dev/dataflow: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -595,6 +597,7 @@ spec:
                   spec:
                     backoffLimit: 30
                     template:
+                      metadata: { labels: { openinfra.dev/dataflow: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -634,7 +637,7 @@ spec:
                     replicas: 1
                     selector: { matchLabels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-msink } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-msink } }
+                      metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-msink, openinfra.dev/dataflow: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -679,7 +682,7 @@ spec:
                     replicas: 1
                     selector: { matchLabels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-load } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-load } }
+                      metadata: { labels: { app: {{ $name }}-flow-{{ $sn }}-{{ $dn }}-load, openinfra.dev/dataflow: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -704,6 +707,34 @@ spec:
             {{-     end }}
             {{-   end }}
             {{- end }}
+            ---
+            # --- Tenant isolation (ingress) for every pod of the flow: this namespace and the platform callers
+            #     named below only; every other namespace is refused. Pod->Service calls keep the caller's pod IP
+            #     (kube-ovn enable-lb), so the namespace is what tells tenants apart. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: {{ $name }}-dataflow-isolation
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/isolation: tenant }
+                  spec:
+                    podSelector: { matchLabels: { openinfra.dev/dataflow: "{{ $name }}" } }
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          # this namespace
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
+                          # Prometheus, scraping metrics
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

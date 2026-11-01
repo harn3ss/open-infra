@@ -122,6 +122,13 @@ already gets a tenant NetworkPolicy allowing same-namespace + the ingress
 controller. Security Groups layer *additional* allowed sources and (the clean
 win) **egress restrictions** on top.
 
+A `VirtualMachine` (or an `AutoscalingGroup`'s members) with **no** security group
+gets a baseline policy instead: its own namespace, host-sourced traffic (NodePort
+and LoadBalancer through kube-proxy), and the ports it publishes on its LAN address
+(`spec.expose` / `spec.ports`), which stay open to every source as that address is.
+Other namespaces are refused. A VM with security groups is governed by its groups
+alone, as on AWS.
+
 ## How it works
 
 ```

@@ -170,6 +170,7 @@ spec:
                         activeDeadlineSeconds: 1800
                         ttlSecondsAfterFinished: 600
                         template:
+                          metadata: { labels: { app: {{ $name }}-site-build } }
                           spec:
                             # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                             enableServiceLinks: false
@@ -428,6 +429,44 @@ spec:
                       - hosts: [ {{ join ", " $hosts }} ]
                         secretName: staticsite-{{ $name }}-tls
                     {{- end }}
+            ---
+            # --- Tenant isolation (ingress) for the site server and its build pods: this namespace and the
+            #     platform callers named below only; every other namespace is refused. Pod->Service calls keep the
+            #     caller's pod IP (kube-ovn enable-lb), so the namespace is what tells tenants apart. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: {{ $name }}-staticsite-isolation
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/isolation: tenant }
+                  spec:
+                    {{- if $spec.build }}
+                    podSelector: { matchExpressions: [ { key: app, operator: In, values: [ "{{ $name }}-site", "{{ $name }}-site-build" ] } ] }
+                    {{- else }}
+                    podSelector: { matchLabels: { app: "{{ $name }}-site" } }
+                    {{- end }}
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          # this namespace
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
+                          # host-sourced traffic (hostNetwork Traefik; NodePort, LoadBalancer and external-IP Services
+                          # through kube-proxy) arrives as a node's kube-ovn join IP
+                          - ipBlock: { cidr: 100.64.0.0/16 }
+                          # the ingress controller, should it run on the pod network
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
+                          # Prometheus, scraping metrics
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

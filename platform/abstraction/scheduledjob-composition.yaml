@@ -167,6 +167,31 @@ spec:
             kind: XScheduledJob
             status:
               cronJob: {{ $cron }}
+            ---
+            # --- Tenant isolation (ingress) for the job pods: this namespace and the platform callers named below
+            #     only; every other namespace is refused. Pod->Service calls keep the caller's pod IP (kube-ovn
+            #     enable-lb), so the namespace is what tells tenants apart. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: {{ $name }}-scheduledjob-isolation
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/isolation: tenant }
+                  spec:
+                    podSelector: { matchLabels: { openinfra.dev/scheduledjob: "{{ $name }}" } }
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          # this namespace
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

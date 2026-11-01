@@ -437,5 +437,41 @@ spec:
                     stripPrefix:
                       prefixes: [ "{{ $basePath }}" ]
             {{- end }}
+            {{- if $hasValidated }}
+            ---
+            # --- Tenant isolation (ingress) for the request validator (Traefik routes to it): this namespace and
+            #     the platform callers named below only; every other namespace is refused. Pod->Service calls keep
+            #     the caller's pod IP (kube-ovn enable-lb), so the namespace is what tells tenants apart. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: {{ $name }}-httpapi-isolation
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/isolation: tenant }
+                  spec:
+                    podSelector: { matchLabels: { app: "{{ $validatorSvc }}" } }
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          # this namespace
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
+                          # host-sourced traffic (hostNetwork Traefik; NodePort, LoadBalancer and external-IP Services
+                          # through kube-proxy) arrives as a node's kube-ovn join IP
+                          - ipBlock: { cidr: 100.64.0.0/16 }
+                          # the ingress controller, should it run on the pod network
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
+                          # Prometheus, scraping metrics
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+            {{- end }}
     - step: ready
       functionRef: { name: crossplane-contrib-function-auto-ready }

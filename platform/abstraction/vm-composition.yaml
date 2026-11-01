@@ -2023,6 +2023,47 @@ spec:
             kind: XVirtualMachine
             status:
               lanIp: {{ $lanIp | quote }}
+            {{- if not $spec.securityGroups }}
+            ---
+            # --- Tenant isolation (ingress) for a VM with no security group. A VM with one is governed by
+            #     its groups' policies alone, as on AWS. Without one, only this namespace and host-sourced
+            #     traffic reach it, plus the ports it publishes on its LAN address (spec.expose /
+            #     spec.ports), which are open to every source, as that LoadBalancer is (it keeps the
+            #     client's IP, so those callers are not join IPs). Pod->Service calls keep the caller's
+            #     pod IP (kube-ovn enable-lb), so the namespace is what tells tenants apart. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: {{ $name }}-vm-isolation
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/isolation: tenant }
+                  spec:
+                    podSelector: { matchLabels: { kubevirt.io/domain: "{{ $name }}" } }
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          # this namespace
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
+                          # host-sourced traffic (hostNetwork Traefik; NodePort, LoadBalancer and external-IP Services
+                          # through kube-proxy) arrives as a node's kube-ovn join IP
+                          - ipBlock: { cidr: 100.64.0.0/16 }
+                      {{- if or $spec.expose $ports }}
+                      # the ports published on the VM's LAN LoadBalancer (vm-lan above), from any source
+                      - ports:
+                          - { protocol: TCP, port: {{ $port }} }
+                          {{- range $p := $ports }}
+                          - { protocol: {{ $p.protocol | default "TCP" }}, port: {{ $p.port }} }
+                          {{- end }}
+                      {{- end }}
+            {{- end }}
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

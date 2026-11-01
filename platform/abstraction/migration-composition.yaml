@@ -225,7 +225,7 @@ spec:
                     strategy: { type: Recreate }
                     selector: { matchLabels: { app: {{ $name }}-migration-dbz } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-migration-dbz } }
+                      metadata: { labels: { app: {{ $name }}-migration-dbz, openinfra.dev/migration: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -275,7 +275,7 @@ spec:
                   spec:
                     backoffLimit: 30
                     template:
-                      metadata: { labels: { app: {{ $name }}-migration-schemasync } }
+                      metadata: { labels: { app: {{ $name }}-migration-schemasync, openinfra.dev/migration: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -321,7 +321,7 @@ spec:
                     replicas: 1
                     selector: { matchLabels: { app: {{ $name }}-migration-applysink } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-migration-applysink } }
+                      metadata: { labels: { app: {{ $name }}-migration-applysink, openinfra.dev/migration: "{{ $name }}" } }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -346,6 +346,34 @@ spec:
                             resources:
                               requests: { cpu: 50m, memory: 32Mi }
                               limits: { cpu: "1", memory: 256Mi }
+            ---
+            # --- Tenant isolation (ingress) for every pod of the migration: this namespace and the platform
+            #     callers named below only; every other namespace is refused. Pod->Service calls keep the caller's
+            #     pod IP (kube-ovn enable-lb), so the namespace is what tells tenants apart. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: {{ $name }}-migration-isolation
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/isolation: tenant }
+                  spec:
+                    podSelector: { matchLabels: { openinfra.dev/migration: "{{ $name }}" } }
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          # this namespace
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
+                          # Prometheus, scraping metrics
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

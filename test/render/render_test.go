@@ -1988,6 +1988,22 @@ func sprigLite() template.FuncMap {
 		"trimSuffix": func(suffix, s string) string { return strings.TrimSuffix(s, suffix) },
 		"splitList":  func(sep, s string) []string { return strings.Split(s, sep) },
 		"hasSuffix":  func(suffix, s string) bool { return strings.HasSuffix(s, suffix) },
+		// sprig: [0, n) (directory uses it).
+		"until": func(n int) []int {
+			out := make([]int, 0, n)
+			for i := 0; i < n; i++ {
+				out = append(out, i)
+			}
+			return out
+		},
+		// sprig: the first element of a list, nil when empty (directory and stream use it).
+		"first": func(list any) any {
+			rv := reflect.ValueOf(list)
+			if (rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array) || rv.Len() == 0 {
+				return nil
+			}
+			return rv.Index(0).Interface()
+		},
 		// sprig: is `needle` an element of `list`? (dataflow uses `has "*" $tables`).
 		"has": func(needle any, list any) bool {
 			rv := reflect.ValueOf(list)

@@ -691,6 +691,61 @@ spec:
                           # IP (100.64.0.x). Without it LAN and ingress traffic is blocked.
                           - ipBlock: { cidr: 100.64.0.0/16 }
             {{- if $spec.database }}
+            ---
+            # --- Tenant isolation (ingress) for the database tier: the app's netpol above selects only the
+            #     app's pods, and each engine labels its pods its own way, so the DB gets its own policy.
+            #     This namespace (the app, its jobs and snapshots), host-sourced traffic (NodePort /
+            #     LoadBalancer through kube-proxy; LAN publishing adds its own allow), the console and
+            #     Prometheus, and the engine's operator. Every other namespace is refused. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: db-netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: {{ $name }}-db-isolation
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/isolation: tenant }
+                  spec:
+                    {{- if eq $dbEngine "mongo" }}
+                    podSelector: { matchExpressions: [ { key: app.kubernetes.io/name, operator: In, values: [ "{{ $name }}-docdb", "{{ $name }}-mongo" ] } ] }
+                    {{- else if eq $dbEngine "mysql" }}
+                    podSelector: { matchLabels: { app.kubernetes.io/instance: "{{ $name }}-mysql" } }
+                    {{- else if eq $dbEngine "babelfish" }}
+                    podSelector: { matchLabels: { app: "{{ $name }}-babelfish" } }
+                    {{- else if eq $dbEngine "sqlserver" }}
+                    podSelector: { matchLabels: { app: "{{ $name }}-sqlserver" } }
+                    {{- else }}
+                    podSelector: { matchLabels: { cnpg.io/cluster: "{{ $name }}-db" } }
+                    {{- end }}
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          # this namespace
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $ns }} } }
+                          # host-sourced traffic (NodePort, LoadBalancer and external-IP Services through
+                          # kube-proxy) arrives as a node's kube-ovn join IP
+                          - ipBlock: { cidr: 100.64.0.0/16 }
+                          # the console (database stats, Peek, point-in-time restore)
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-console } }
+                            podSelector: { matchLabels: { app: console } }
+                          # Prometheus, scraping metrics
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+                          {{- if eq $dbEngine "mysql" }}
+                          # the MariaDB operator (users, grants, replication)
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: mariadb-operator } }
+                          {{- else if eq $dbEngine "postgres" }}
+                          # the CloudNativePG operator (instance status, backups, failover)
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: cnpg-system } }
+                          {{- end }}
+            {{- end }}
+            {{- if $spec.database }}
             {{- if eq $dbEngine "mongo" }}
             ---
             # --- NoSQL ("DynamoDB"): FerretDB (Mongo wire protocol) on the
