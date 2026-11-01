@@ -286,12 +286,16 @@ func translateKMSKey(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	if d, ok := concrete(props["Description"]); ok && d != "" {
 		spec["description"] = d
 	}
-	if cfnBool(props["EnableKeyRotation"]) {
+	rot, ff := boolProp(id, props, "EnableKeyRotation", false)
+	f = append(f, ff...)
+	if rot {
 		spec["rotationDays"] = 365 // AWS annual rotation
 	}
 	// A disabled key cannot be used on AWS; a kind: EncryptionKey is always usable, so creating one would
 	// grant what the template withheld.
-	if v, ok := props["Enabled"]; ok && !cfnBool(v) {
+	enabled, ff := boolProp(id, props, "Enabled", true)
+	f = append(f, ff...)
+	if !enabled {
 		f = append(f, Finding{"Resource " + id, "Enabled: false (a disabled key) has no open-infra form — a kind: EncryptionKey is always usable; refusing rather than creating a usable key"})
 	}
 	if ks, ok := concrete(props["KeySpec"]); ok && ks != "" {
@@ -476,7 +480,9 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	} else {
 		f = append(f, Finding{"Resource " + id, "Size is required to create a Volume"})
 	}
-	if cfnBool(props["MultiAttachEnabled"]) {
+	multi, ff := boolProp(id, props, "MultiAttachEnabled", false)
+	f = append(f, ff...)
+	if multi {
 		spec["shared"] = true
 	}
 	// Encryption: open-infra encrypts with a CUSTOMER key (kind: EncryptionKey / Vault Transit). A
@@ -484,7 +490,8 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	// ARN/alias to an out-of-stack or AWS-managed key) still refuses — we can't fabricate a specific
 	// external key. But Encrypted with NO KmsKeyId uses the per-namespace default key (below), the way
 	// AWS uses the account-default aws/ebs key.
-	encrypted := cfnBool(props["Encrypted"]) // CloudFormation accepts true or "true"
+	encrypted, ff := boolProp(id, props, "Encrypted", false) // CloudFormation accepts true or "true"
+	f = append(f, ff...)
 	_, hasKms := props["KmsKeyId"]
 	needDefaultKey := false
 	if encrypted || hasKms {
@@ -916,10 +923,27 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		mappedExtraDevName := false
 		for i, raw := range bdms {
 			bdm, _ := raw.(map[string]any)
+			if bdm == nil {
+				f = append(f, Finding{"Resource " + id, fmt.Sprintf("BlockDeviceMappings[%d] does not resolve to a mapping — refusing rather than launching the VM without the disk it declares", i)})
+				continue
+			}
+			f = append(f, blockUnknownProps(fmt.Sprintf("%s.BlockDeviceMappings[%d]", id, i), bdm, bdmKnown)...)
 			ebs, _ := bdm["Ebs"].(map[string]any)
 			if ebs == nil {
 				cav = append(cav, "a BlockDeviceMapping without an Ebs block was dropped (ephemeral/NoDevice has no open-infra equivalent)")
 				continue
+			}
+			f = append(f, blockUnknownProps(fmt.Sprintf("%s.BlockDeviceMappings[%d].Ebs", id, i), ebs, ebsKnown)...)
+			ebsBool := func(k string) bool {
+				v, present := ebs[k]
+				if !present || v == nil {
+					return false
+				}
+				b, ok := cfnBoolValue(v)
+				if !ok {
+					f = append(f, Finding{"Resource " + id, fmt.Sprintf("BlockDeviceMappings[%d].Ebs.%s must be true or false (got %v)", i, k, v)})
+				}
+				return b
 			}
 			if _, has := ebs["SnapshotId"]; has {
 				// A volume restored from an EBS snapshot: open-infra has no snapshot to restore from, and a
@@ -929,7 +953,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 			}
 			if i == rootIdx {
 				// The VM kind has no encrypted root disk: refuse rather than boot from an unencrypted one.
-				if cfnBool(ebs["Encrypted"]) || ebs["KmsKeyId"] != nil {
+				if ebsBool("Encrypted") || ebs["KmsKeyId"] != nil {
 					f = append(f, Finding{"Resource " + id, "the root BlockDeviceMapping is Encrypted (or names a KmsKeyId) — an open-infra VM's root disk is not encrypted (only data disks are: LUKS on longhorn-encrypted); refusing rather than booting from an unencrypted root. Keep sensitive data on an encrypted data disk"})
 					continue
 				}
@@ -941,14 +965,14 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 						cav = append(cav, "root disk: "+p+" dropped — a VM root disk is a StorageClass PVC, not provisioned-IOPS EBS")
 					}
 				}
-				if dot, ok := ebs["DeleteOnTermination"]; ok && !cfnBool(dot) {
+				if _, ok := ebs["DeleteOnTermination"]; ok && !ebsBool("DeleteOnTermination") {
 					cav = append(cav, "root disk: DeleteOnTermination=false does NOT map — the root disk is deleted with the VM")
 				}
 				continue
 			}
 			// A non-root EBS device -> a data disk. An Encrypted device -> a LUKS data disk keyed by a
 			// customer kind: EncryptionKey (KmsKeyId must !Ref an in-stack AWS::KMS::Key).
-			enc := cfnBool(ebs["Encrypted"])
+			enc := ebsBool("Encrypted")
 			_, hasKms := ebs["KmsKeyId"]
 			var encKey string
 			if enc || hasKms {
@@ -996,7 +1020,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 					cav = append(cav, "data disk "+fmt.Sprint(disk["name"])+": "+p+" dropped — a VM data disk is a StorageClass PVC (Longhorn/local-path), not provisioned-IOPS EBS")
 				}
 			}
-			if dot, ok := ebs["DeleteOnTermination"]; ok && !cfnBool(dot) {
+			if _, ok := ebs["DeleteOnTermination"]; ok && !ebsBool("DeleteOnTermination") {
 				cav = append(cav, "data disk "+fmt.Sprint(disk["name"])+": DeleteOnTermination=false does NOT map — a VM data disk shares the VM's lifecycle (it is deleted with the VM); detach-and-keep is not modeled")
 			}
 		}
@@ -1207,6 +1231,16 @@ func ec2MetadataOptions(id string, raw any) (map[string]any, []Finding, []string
 	return out, f, cav
 }
 
+// bdmKnown and ebsKnown are the BlockDeviceMapping and Ebs properties the instance translator reads or
+// reports. Anything else in either block refuses.
+var (
+	bdmKnown = map[string]bool{"DeviceName": true, "Ebs": true, "NoDevice": true, "VirtualName": true}
+	ebsKnown = map[string]bool{
+		"DeleteOnTermination": true, "Encrypted": true, "Iops": true, "KmsKeyId": true,
+		"SnapshotId": true, "Throughput": true, "VolumeSize": true, "VolumeType": true,
+	}
+)
+
 // nicKnown are the NetworkInterface properties the instance translator reads (SubnetId, GroupSet,
 // AssociatePublicIpAddress, DeviceIndex) or reports as dropped. Anything else refuses.
 var nicKnown = map[string]bool{
@@ -1362,8 +1396,10 @@ func translateEC2Subnet(id string, props map[string]any, ctx *stackCtx) (*Manife
 		}
 	}
 	// A public subnet (MapPublicIpOnLaunch) is NOT private; otherwise private (default) — OVN isolated.
-	if v, ok := props["MapPublicIpOnLaunch"].(bool); ok {
-		spec["private"] = !v
+	if _, ok := props["MapPublicIpOnLaunch"]; ok {
+		pub, ff := boolProp(id, props, "MapPublicIpOnLaunch", false)
+		f = append(f, ff...)
+		spec["private"] = !pub
 	}
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Subnet", Name: ctx.name(id), Spec: spec}
 	for _, p := range []string{"AvailabilityZone", "Tags", "AssignIpv6AddressOnCreation", "Ipv6CidrBlock", "OutpostArn"} {
@@ -1877,7 +1913,8 @@ func translateDynamoDBTable(id string, props map[string]any, ctx *stackCtx) (*Ma
 
 	// TTL maps to the shim's reaper (#104). Enabled without an attribute is a malformed request.
 	if ttl, ok := props["TimeToLiveSpecification"].(map[string]any); ok {
-		enabled := cfnBool(ttl["Enabled"])
+		enabled, ff := boolProp(id, ttl, "Enabled", false)
+		f = append(f, ff...)
 		attr, _ := concrete(ttl["AttributeName"])
 		if enabled {
 			if attr == "" {
@@ -3378,13 +3415,18 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 	if n, ok := concrete(props["DBName"]); ok && n != "" {
 		db["name"] = n
 	}
-	if v, ok := props["MultiAZ"].(bool); ok && v {
+	multiAZ, ff := boolProp(id, props, "MultiAZ", false)
+	f = append(f, ff...)
+	if multiAZ {
 		db["highAvailability"] = true
 	}
 	// Storage encryption: LUKS on longhorn-encrypted keyed by a customer kind: EncryptionKey (via an
 	// in-stack KMS::Key). v1 supports the postgres engine only (CloudNativePG propagates the key
 	// annotation to its PVCs); other engines' DB encryption is a follow-up, so they block.
-	enc := cfnBool(props["StorageEncrypted"]) // CloudFormation accepts true or "true"
+	enc, ff := boolProp(id, props, "StorageEncrypted", false) // CloudFormation accepts true or "true"
+	f = append(f, ff...)
+	protected, ff := boolProp(id, props, "DeletionProtection", false)
+	f = append(f, ff...)
 	_, hasKms := props["KmsKeyId"]
 	if enc || hasKms {
 		if db["engine"] != "postgres" {
@@ -3457,7 +3499,7 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 	}
 	// DeletionProtection is honored by the stack: a delete (or an update removing this database) is
 	// refused while it is set, as AWS refuses to delete a protected instance.
-	if cfnBool(props["DeletionProtection"]) {
+	if protected {
 		m.Protected = true
 	}
 	if n, ok := concrete(props["DBInstanceIdentifier"]); ok && n != "" && n != m.Name {
@@ -3890,10 +3932,8 @@ func translateSQSQueue(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	// FIFO (#116): FifoQueue:true, or a QueueName ending in .fifo, maps to a JetStream FIFO stream
 	// (per-group subject ordering + a 5m publish-dedup window). The .fifo suffix is stripped — a NATS
 	// stream name cannot contain a dot (the per-group subject token is appended by the producer).
-	fifo := false
-	if v, ok := props["FifoQueue"].(bool); ok && v {
-		fifo = true
-	}
+	fifo, ff := boolProp(id, props, "FifoQueue", false)
+	f = append(f, ff...)
 	qn, _ := concrete(props["QueueName"])
 	if strings.HasSuffix(qn, ".fifo") {
 		fifo = true
@@ -3958,7 +3998,9 @@ func translateSNSTopic(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
-	if v, ok := props["FifoTopic"].(bool); ok && v {
+	fifoTopic, ff := boolProp(id, props, "FifoTopic", false)
+	f = append(f, ff...)
+	if fifoTopic {
 		f = append(f, Finding{"Resource " + id, "a FIFO topic is not translatable — JetStream ordering/dedup differs from SNS FIFO"})
 	}
 	if _, ok := props["KmsMasterKeyId"]; ok {

@@ -19,6 +19,7 @@ package cfn
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 type Verdict string
@@ -194,7 +195,12 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 	// is missing (already a blocker; placeholder values would add noise), and for the interleaved deploy
 	// path (custom resources / REST v1 API), whose Fn::GetAtt values resolve only during apply — running
 	// the translators now could refuse falsely, so those stacks keep the mapping-only verdict.
-	if len(missing) == 0 && t.Transform == nil && !hasCustomResources(t) && !hasAPIGatewayRestV1(t) {
+	// A REST v1 stack's API Gateway resources collate from their own properties and the logical graph
+	// alone (no attribute that resolves during deploy), so their gate runs even when the rest of the stack's
+	// cannot: their refusals and caveats reach the plan and the change set.
+	gateAll := len(missing) == 0 && t.Transform == nil && !hasCustomResources(t) && !hasAPIGatewayRestV1(t)
+	gateAPIGateway := !gateAll && len(missing) == 0 && t.Transform == nil && !hasCustomResources(t) && hasAPIGatewayRestV1(t)
+	if gateAll || gateAPIGateway {
 		byID := map[string]*PlannedResource{}
 		for i := range plan.Resources {
 			byID[plan.Resources[i].LogicalID] = &plan.Resources[i]
@@ -210,6 +216,9 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 		for _, id := range t.rawOrder {
 			res := t.Resources[id]
 			if res.Condition != "" && !tr.conds[res.Condition] {
+				continue
+			}
+			if gateAPIGateway && !strings.HasPrefix(res.Type, "AWS::ApiGateway::") {
 				continue
 			}
 			tf := translatorFor(res.Type)
@@ -235,7 +244,22 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 				}
 			}
 		}
-	} else {
+	}
+	if gateAPIGateway {
+		plan.GateSkipped = "the stack has an API Gateway REST API, whose other resources' attributes resolve only during deploy"
+		plan.Fidelity = append(plan.Fidelity, FidelityItem{Resource: FidelityStack,
+			Detail: "property-level fidelity was checked at plan time for the API Gateway resources only (" + plan.GateSkipped + "); deploy still refuses any property it cannot translate, but losses it accepts in the other resources are not listed here"})
+		for i := range plan.Resources {
+			pr := &plan.Resources[i]
+			if !pr.Included || strings.HasPrefix(t.Resources[pr.LogicalID].Type, "AWS::ApiGateway::") {
+				continue
+			}
+			for _, c := range attributeCaveats(t.Resources[pr.LogicalID]) {
+				pr.Caveats = append(pr.Caveats, c)
+				plan.Fidelity = append(plan.Fidelity, FidelityItem{Resource: pr.LogicalID, Detail: c})
+			}
+		}
+	} else if !gateAll {
 		// The gate did not run, so the summary cannot list property-level losses: say so, and still
 		// list the resource attributes (they do not need the translators).
 		switch {
