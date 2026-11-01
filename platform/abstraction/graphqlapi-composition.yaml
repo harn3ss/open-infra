@@ -69,6 +69,12 @@ spec:
             {{- $needsAuth := false }}
             {{- range $r := ($spec.resolvers | default list) }}{{- if $r.auth }}{{- $needsAuth = true }}{{- end }}{{- end }}
             {{- range $s := ($spec.subscriptions | default list) }}{{- if $s.auth }}{{- $needsAuth = true }}{{- end }}{{- end }}
+            {{- /* A lambda data source calls a Function by its in-cluster URL, through the Kourier
+                   gateway's internal listener, which admits only pods carrying the function-invoker
+                   label (platform/serverless/function-gateway-isolation.yaml). Only an API with one
+                   gets the label. */}}
+            {{- $invokesFunctions := false }}
+            {{- range $ds := ($spec.dataSources | default list) }}{{- if eq ($ds.type | default "") "lambda" }}{{- $invokesFunctions = true }}{{- end }}{{- end }}
             {{- /* Checksum over schema + every data source + every resolver, so ANY authoring change
                    rolls the pod (the reload mechanism, since the engine reads a directory once). */ -}}
             {{- $blob := $spec.schema | default "" }}
@@ -170,7 +176,11 @@ spec:
                       matchLabels: { app: open-appsync-{{ $name }} }
                     template:
                       metadata:
-                        labels: { app: open-appsync-{{ $name }} }
+                        labels:
+                          app: open-appsync-{{ $name }}
+                          {{- if $invokesFunctions }}
+                          openinfra.dev/function-invoker: graphqlapi
+                          {{- end }}
                         annotations:
                           # Roll the pod whenever the authored config changes (the reload mechanism).
                           openinfra.dev/config-checksum: "{{ $checksum }}"

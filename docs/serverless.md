@@ -124,5 +124,24 @@ are deliberately not fronted — Functions are managed declaratively as `kind: F
 
 Knative routes via net-kourier, whose gateway gets its own MetalLB IP. For external
 URLs, point Knative's `config-domain` at that IP's sslip.io (environment-specific,
-set out-of-band). In-cluster, a function is reachable at
-`http://<name>.<namespace>.svc.cluster.local` — which already triggers scale-up.
+set out-of-band).
+
+**Who can call a function.** Kourier is one gateway shared by every tenant, routing by
+the request's `Host`, so it is where calls are fenced
+(`platform/serverless/function-gateway-isolation.yaml`):
+
+- **`expose: true`** (the default) publishes the function on the gateway's external
+  listener: it is public, like a Lambda function URL with no auth, reachable from the
+  LAN and from any pod. Set `expose: false` for a function only its invokers may call.
+- **The in-cluster URL** `http://<name>.<namespace>.svc.cluster.local` (the internal
+  listener, which also wakes a scaled-to-zero function) answers only the platform's
+  invokers: the aws-shim (Lambda `Invoke`, API Gateway integrations, Lambda
+  authorizers), Step Functions Task states, the console's Test button, the function's
+  own trigger pump, GraphQLApi `lambda` data sources, and Traefik (HttpApi routes and
+  Ingresses that target a function).
+- **Your own code calls a function through `Invoke`** (the AWS SDK pointed at the
+  aws-shim), as on AWS: it is authorized there, against the function's policy. A pod
+  calling the in-cluster URL directly, even from the function's own namespace, is refused.
+
+The activator, which buffers requests for scaled-to-zero revisions, admits only the
+gateway, so it is no way around this either.

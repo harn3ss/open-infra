@@ -1,0 +1,94 @@
+# Ingress isolation for Knative's shared data path: the Kourier gateway and the activator.
+#
+# Each Function's own policy (openinfra-function-isolation, rendered by the Function composition)
+# admits its namespace and Knative's data path. That data path is shared by every tenant, and it routes
+# by the request's Host header (the gateway) or by its Knative-Serving-* headers (the activator), so
+# without a policy here any pod in any namespace could invoke any Function through it, skipping
+# Invoke's authorization: `curl -H 'Host: <fn>.<ns>.svc.cluster.local' kourier-internal.knative-serving`.
+#
+# The gateway has two listeners:
+#   - external (8080/8443): the hosts of Functions published with expose: true, which are public by
+#     design (a Lambda function URL with no auth). The LAN reaches it through its load balancer, so it is
+#     open to every source; private (cluster-local) Functions are not routed there.
+#   - internal (8081/8444): every Function's in-cluster URL. Only the platform's invokers reach it:
+#       aws-shim        Lambda Invoke, API Gateway integrations, Lambda authorizers (all authorized there)
+#       statemachine    Step Functions Task states
+#       console         the Functions page's Test button
+#       knative-serving net-kourier's prober (programs the gateway only once each route answers)
+#       join subnet     the host network: Traefik, for HttpApi routes and Ingresses that target a Function
+#       pod label openinfra.dev/function-invoker, set only by compositions (tenants create kinds, never pods):
+#         pump          a Function's trigger pump (it calls only its own Function)
+#         graphqlapi    a GraphQLApi engine's lambda data sources
+#     A tenant's own pods call a Function through Invoke (the AWS SDK against the aws-shim), as on AWS.
+# The activator buffers requests for scaled-to-zero revisions; only the gateway sends it traffic.
+#
+# Kubelet probes come from the pod's own node, which kube-ovn always admits.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kourier-gateway-isolation
+  namespace: knative-serving
+  labels: { openinfra.dev/isolation: platform }
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector: { matchLabels: { app: 3scale-kourier-gateway } }
+  policyTypes: [Ingress]
+  ingress:
+    # external listener: public Functions (expose: true), from anywhere
+    - ports:
+        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 8443 }
+    # internal listener: the platform's invokers
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-aws-shim } }
+          podSelector: { matchLabels: { app: aws-shim } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: crossplane-system } }
+          podSelector: { matchLabels: { app: openinfra-statemachine } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-console } }
+          podSelector: { matchLabels: { app: console } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+        - namespaceSelector: {}
+          podSelector: { matchExpressions: [ { key: openinfra.dev/function-invoker, operator: In, values: [pump, graphqlapi] } ] }
+        - ipBlock: { cidr: 100.64.0.0/16 }
+      ports:
+        - { protocol: TCP, port: 8081 }
+        - { protocol: TCP, port: 8444 }
+    # Envoy's probe listener (net-kourier's prober)
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+      ports:
+        - { protocol: TCP, port: 8090 }
+        - { protocol: TCP, port: 9443 }
+    # Prometheus, scraping Envoy's metrics
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+          podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+      ports:
+        - { protocol: TCP, port: 9000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: activator-isolation
+  namespace: knative-serving
+  labels: { openinfra.dev/isolation: platform }
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  podSelector: { matchLabels: { app: activator } }
+  policyTypes: [Ingress]
+  ingress:
+    # the gateway, forwarding requests for revisions the activator fronts
+    - from:
+        - podSelector: { matchLabels: { app: 3scale-kourier-gateway } }
+      ports:
+        - { protocol: TCP, port: 8012 }
+        - { protocol: TCP, port: 8013 }
+        - { protocol: TCP, port: 8112 }
+    # Prometheus, scraping the activator's metrics
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+          podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+      ports:
+        - { protocol: TCP, port: 9090 }
