@@ -2587,7 +2587,7 @@ func importAWSPolicyResource(id string, props map[string]any, ctx *stackCtx, cfn
 		f = append(f, Finding{"Resource " + id, "PolicyDocument has no statements the data plane can honor"})
 	}
 
-	appliesTo := iamPolicyPrincipals(id, props, &f)
+	appliesTo, requires := iamPolicyPrincipals(id, props, ctx, &f)
 	if len(appliesTo) == 0 && len(f) == 0 {
 		f = append(f, Finding{"Resource " + id, cfnType + " names no Users or Groups — a policy must attach to at least one principal (a standalone policy attached elsewhere via ManagedPolicyArns is not translatable here; open-infra has no unattached policy grant)"})
 	}
@@ -2601,7 +2601,7 @@ func importAWSPolicyResource(id string, props map[string]any, ctx *stackCtx, cfn
 			"statements": statementsToSpec(stmts),
 		},
 	}
-	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "Policy", Name: ctx.name(id), Spec: spec}
+	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "Policy", Name: ctx.name(id), Spec: spec, Requires: requires}
 	m.Caveats = append(m.Caveats,
 		"enforced only at the aws-shim data-plane front doors (S3/DynamoDB/Lambda), which are opt-in (off by default); it does not grant or restrict the Kubernetes control plane (that stays RBAC + the permission boundary)",
 		"appliesTo names must match existing open-infra Users/Groups; the policy tightens within a coarse RBAC grant (it can Deny, never widen)")
@@ -2618,31 +2618,60 @@ func importAWSPolicyResource(id string, props map[string]any, ctx *stackCtx, cfn
 }
 
 // iamPolicyPrincipals turns an inline policy's Users/Groups/Roles into dataPlane appliesTo principals.
-// A Roles attachment is now honored: the shim authenticates assumed-role sessions (sts:AssumeRole,
-// #111) and the data-plane engine governs "Role::<name>" principals, so the attachment maps to
-// appliesTo: ["Role::<name>"] and governs the assumed session — faithful, not a silent no-op. (The
-// Role must exist and carry a trust policy natively for a session to assume it; that is a declared
-// caveat surfaced by importAWSPolicyResource, not a silent partial.)
-func iamPolicyPrincipals(id string, props map[string]any, f *[]Finding) []any {
+// A Roles attachment is honored: the shim authenticates assumed-role sessions (sts:AssumeRole, #111) and
+// the data-plane engine governs "Role::<name>" principals, so the attachment governs the assumed session.
+//
+// The kind: Policy is created in the stack's namespace, and a Policy outside the IAM home namespace
+// governs only principals of its own namespace (dataplaneauthz canonAppliesTo): a home User or Group
+// named here would be governed by nothing, so a Deny guardrail would silently not apply. So a User or
+// Role is either an in-stack AWS::IAM::User / AWS::IAM::Role (followed by Ref or named by its name), or a
+// principal that must already exist in the stack's namespace — deploy refuses while it does not, as AWS
+// refuses a policy naming a user that does not exist. A Groups attachment refuses: groups are IAM home
+// identities, out of a stack's reach.
+func iamPolicyPrincipals(id string, props map[string]any, ctx *stackCtx, f *[]Finding) ([]any, []Requirement) {
 	var out []any
-	add := func(prop, kind string) {
+	var requires []Requirement
+	var raw map[string]any
+	if ctx != nil {
+		raw, _ = ctx.rawProps(id)
+	}
+	add := func(prop, kind, cfnType string) {
 		list, ok := props[prop].([]any)
 		if !ok {
 			return
 		}
-		for _, e := range list {
-			n, cok := concrete(e)
-			if !cok || n == "" {
+		rawList, _ := raw[prop].([]any)
+		for i, e := range list {
+			n := ""
+			if i < len(rawList) {
+				if t, ok := getAttTarget(rawList[i]); ok && ctx.isType(t, cfnType) {
+					n = ctx.name(t)
+				}
+			}
+			if n == "" {
+				if s, cok := concrete(e); cok {
+					n = s
+				}
+			}
+			if n == "" {
 				*f = append(*f, Finding{"Resource " + id, prop + " references a cross-resource value with no concrete name"})
 				continue
+			}
+			if kind == "Group" {
+				*f = append(*f, Finding{"Resource " + id, "Groups attaches the policy to IAM group " + n + ", which a stack's policy cannot govern — the policy is created in the stack's namespace, and a policy there governs only that namespace's principals, while groups are IAM home identities. Attach the policy to the group natively (a kind: Policy in the IAM home namespace) rather than deploy a policy that would apply to no one"})
+				continue
+			}
+			if !ctx.isInStackName(n, cfnType) {
+				requires = append(requires, Requirement{APIVersion: "iam.openinfra.dev/v1", Kind: kind, Name: n,
+					Why: "a principal this policy governs (a stack's policy governs only principals in the stack's own namespace; a policy for an IAM home " + strings.ToLower(kind) + " is attached natively)"})
 			}
 			out = append(out, kind+"::"+n)
 		}
 	}
-	add("Users", "User")
-	add("Groups", "Group")
-	add("Roles", "Role")
-	return out
+	add("Users", "User", "AWS::IAM::User")
+	add("Groups", "Group", "")
+	add("Roles", "Role", "AWS::IAM::Role")
+	return out, requires
 }
 
 // unresolvedPolicyResources lists the imported resources (and NotResource exclusions) that still carry an

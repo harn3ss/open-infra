@@ -1,16 +1,17 @@
 package cfn
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
 
 // A pure data-plane inline policy (s3 + dynamodb, recognizable ARNs, no conditions) attached to a
-// group translates into an enforced kind: Policy spec.dataPlane — the whole point of the engine.
+// user translates into an enforced kind: Policy spec.dataPlane — the whole point of the engine.
 func TestTranslate_IAMPolicy_DataPlaneFaithful(t *testing.T) {
 	m, fs := translateIAMPolicy("AnalystScope", map[string]any{
 		"PolicyName": "analyst-scope",
-		"Groups":     []any{"analysts"},
+		"Users":      []any{"analyst"},
 		"PolicyDocument": map[string]any{
 			"Version": "2012-10-17",
 			"Statement": []any{
@@ -31,7 +32,7 @@ func TestTranslate_IAMPolicy_DataPlaneFaithful(t *testing.T) {
 		t.Fatalf("no dataPlane block: %#v", m.Spec)
 	}
 	at, _ := dp["appliesTo"].([]any)
-	if len(at) != 1 || at[0] != "Group::analysts" {
+	if len(at) != 1 || at[0] != "User::analyst" {
 		t.Fatalf("appliesTo wrong: %#v", dp["appliesTo"])
 	}
 	st, _ := dp["statements"].([]any)
@@ -139,12 +140,11 @@ func TestTranslate_IAMPolicy_RoleTranslatesToAppliesTo(t *testing.T) {
 	}
 }
 
-// Users/Groups/Roles can be attached together — each maps to its typed principal on the same dataPlane.
+// Users and Roles can be attached together — each maps to its typed principal on the same dataPlane.
 func TestTranslate_IAMPolicy_MixedPrincipals(t *testing.T) {
 	m, fs := translateIAMPolicy("Mixed", map[string]any{
-		"Users":  []any{"alice"},
-		"Groups": []any{"eng"},
-		"Roles":  []any{"app-role"},
+		"Users": []any{"alice"},
+		"Roles": []any{"app-role"},
 		"PolicyDocument": map[string]any{
 			"Statement": []any{map[string]any{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/*"}},
 		},
@@ -158,21 +158,21 @@ func TestTranslate_IAMPolicy_MixedPrincipals(t *testing.T) {
 	for _, p := range at {
 		got[p.(string)] = true
 	}
-	for _, want := range []string{"User::alice", "Group::eng", "Role::app-role"} {
+	for _, want := range []string{"User::alice", "Role::app-role"} {
 		if !got[want] {
 			t.Fatalf("appliesTo missing %s, got: %#v", want, at)
 		}
 	}
 }
 
-// A ManagedPolicy with inline Groups + a pure data-plane document translates exactly like an inline
+// A ManagedPolicy with inline Users + a pure data-plane document translates exactly like an inline
 // Policy — same engine, same importer — with its ManagedPolicyName/Description surfaced as caveats.
 func TestTranslate_ManagedPolicy_InlineAttachedFaithful(t *testing.T) {
 	m, fs := translateManagedPolicy("ReadReports", map[string]any{
 		"ManagedPolicyName": "read-reports",
 		"Description":       "analysts can read the reports bucket",
 		"Path":              "/team/",
-		"Groups":            []any{"analysts"},
+		"Users":             []any{"analyst"},
 		"PolicyDocument": map[string]any{
 			"Statement": []any{
 				map[string]any{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::reports/*"},
@@ -187,12 +187,64 @@ func TestTranslate_ManagedPolicy_InlineAttachedFaithful(t *testing.T) {
 	}
 	dp, _ := m.Spec["dataPlane"].(map[string]any)
 	at, _ := dp["appliesTo"].([]any)
-	if len(at) != 1 || at[0] != "Group::analysts" {
+	if len(at) != 1 || at[0] != "User::analyst" {
 		t.Fatalf("appliesTo wrong: %#v", dp["appliesTo"])
 	}
 	joined := strings.Join(m.Caveats, " | ")
 	if !strings.Contains(joined, "Description") || !strings.Contains(joined, "ManagedPolicyName") {
 		t.Fatalf("ManagedPolicy metadata should be declared caveats, got: %s", joined)
+	}
+}
+
+// A stack's kind: Policy lives in the stack's namespace, where it governs only that namespace's
+// principals. So an in-stack User or Role (by Ref) is governed; a User named from outside the stack must
+// exist in the stack's namespace (deploy refuses while it does not, as AWS refuses a policy naming a
+// missing user); a Groups attachment refuses — groups are IAM home identities, and a guardrail attached
+// to one from a stack would silently govern no one.
+func TestTranslate_IAMPolicy_PrincipalsAreTheStackNamespaces(t *testing.T) {
+	tmpl := `
+Resources:
+  Svc: { Type: AWS::IAM::User }
+  Ro:
+    Type: AWS::IAM::Role
+    Properties: { AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [ { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: "sts:AssumeRole" } ] } }
+  Guard:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: guard
+      Users: [ !Ref Svc, alice ]
+      Roles: [ !Ref Ro ]
+      PolicyDocument: { Version: "2012-10-17", Statement: [ { Effect: Deny, Action: "s3:DeleteObject", Resource: "*" } ] }
+`
+	f := &fakeApplier{}
+	_, err := Deploy(context.Background(), []byte(tmpl), deployOpts(), f)
+	if err == nil || !strings.Contains(err.Error(), "User alice does not exist") {
+		t.Fatalf("a policy naming a user absent from the stack's namespace must refuse, got %v", err)
+	}
+	f = &fakeApplier{liveSpecs: map[string]map[string]any{"User/alice": {"source": "local"}}}
+	rec, err := Deploy(context.Background(), []byte(tmpl), deployOpts(), f)
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	var at []any
+	for _, r := range rec.Resources {
+		if r.Kind == "Policy" {
+			at, _ = r.Spec["dataPlane"].(map[string]any)["appliesTo"].([]any)
+		}
+	}
+	got := map[string]bool{}
+	for _, p := range at {
+		got[p.(string)] = true
+	}
+	for _, want := range []string{"User::s-svc", "User::alice", "Role::s-ro"} {
+		if !got[want] {
+			t.Errorf("appliesTo is missing %s: %v", want, at)
+		}
+	}
+
+	grp := strings.Replace(tmpl, "Roles: [ !Ref Ro ]", "Groups: [ admins ]", 1)
+	if _, err := Deploy(context.Background(), []byte(grp), deployOpts(), &fakeApplier{}); err == nil || !strings.Contains(err.Error(), "which a stack's policy cannot govern") {
+		t.Fatalf("a Groups attachment must refuse, got %v", err)
 	}
 }
 

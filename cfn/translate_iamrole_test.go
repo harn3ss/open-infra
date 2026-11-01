@@ -425,7 +425,7 @@ Resources:
     Type: AWS::IAM::Policy
     Properties:
       PolicyName: read-assets
-      Groups: [analysts]
+      Users: [analyst]
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -434,7 +434,7 @@ Resources:
     Type: AWS::IAM::Policy
     Properties:
       PolicyName: broken
-      Groups: [analysts]
+      Users: [analyst]
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
