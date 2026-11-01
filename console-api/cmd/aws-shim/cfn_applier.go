@@ -62,6 +62,11 @@ type impersonatingApplier struct {
 	// claims is the caller's identity as the front door authenticated it, for the data-plane checks on
 	// the steps that act with the shim's authority (cfn_authz.go); nil = derived from user/groups.
 	claims *iam.Claims
+	// svc + door route the service kinds (a stack's queues, topics, parameters, keys — cfn.IsServiceKind)
+	// to the shim's own AWS API stores, checked as those front doors check them (cfn_services.go). nil
+	// svc = this applier cannot provision them (it refuses).
+	svc  *cfnServices
+	door *cfnDoorway
 }
 
 // recordStore is where this applier keeps stack records.
@@ -108,6 +113,10 @@ func (a *impersonatingApplier) Apply(ctx context.Context, manifestYAML []byte) e
 	}
 	gvk := obj.GroupVersionKind()
 	name := obj.GetName()
+	if cfn.IsServiceKind(obj.GetAPIVersion(), gvk.Kind) {
+		_, err := a.svcPut(ctx, obj, false)
+		return err
+	}
 	if isStackRecord(gvk.Kind, name) {
 		data, _, _ := unstructured.NestedStringMap(obj.Object, "data")
 		labels := map[string]any{}
@@ -150,6 +159,9 @@ func (a *impersonatingApplier) Create(ctx context.Context, manifestYAML []byte) 
 	}
 	gvk := obj.GroupVersionKind()
 	name := obj.GetName()
+	if cfn.IsServiceKind(obj.GetAPIVersion(), gvk.Kind) {
+		return a.svcPut(ctx, obj, true)
+	}
 	ns := obj.GetNamespace()
 	if ns == "" {
 		ns = a.ns
@@ -187,6 +199,9 @@ func (a *impersonatingApplier) Create(ctx context.Context, manifestYAML []byte) 
 // List returns the objects of a kind in the stack namespace via the CALLER (cfn.Lister) — how the engine
 // checks that no other object already has a resource's explicit physical name (a BucketName).
 func (a *impersonatingApplier) List(ctx context.Context, apiVersion, kind string) ([]cfn.LiveObject, error) {
+	if cfn.IsServiceKind(apiVersion, kind) {
+		return nil, nil // a service resource's name is its identity: Create is create-only (no list check)
+	}
 	gvr, err := a.gvrFor(apiVersion, kind)
 	if err != nil {
 		return nil, err
@@ -204,6 +219,9 @@ func (a *impersonatingApplier) List(ctx context.Context, apiVersion, kind string
 }
 
 func (a *impersonatingApplier) Delete(ctx context.Context, apiVersion, kind, name string) error {
+	if cfn.IsServiceKind(apiVersion, kind) {
+		return a.svcDelete(ctx, kind, name)
+	}
 	if isStackRecord(kind, name) {
 		if err := a.recordStore().client().Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("delete stack record %q: %w", name, err)
@@ -225,6 +243,9 @@ func (a *impersonatingApplier) Delete(ctx context.Context, apiVersion, kind, nam
 // OR the Crossplane Ready condition — the same dual check the kubectl Applier uses (some kinds set
 // status.ready=true while the composite's Ready condition stays "Creating").
 func (a *impersonatingApplier) WaitReady(ctx context.Context, apiVersion, kind, name string, timeout time.Duration) error {
+	if cfn.IsServiceKind(apiVersion, kind) {
+		return a.svcWaitReady(ctx, kind, name, timeout)
+	}
 	gvr, err := a.gvrFor(apiVersion, kind)
 	if err != nil {
 		return err
@@ -274,6 +295,9 @@ func readyCondition(obj map[string]any) string {
 }
 
 func (a *impersonatingApplier) WaitGone(ctx context.Context, apiVersion, kind, name string, timeout time.Duration) error {
+	if cfn.IsServiceKind(apiVersion, kind) {
+		return a.svcWaitGone(ctx, kind, name, timeout)
+	}
 	var cli dynamic.ResourceInterface
 	if isStackRecord(kind, name) {
 		cli = a.recordStore().client()
@@ -302,6 +326,9 @@ func (a *impersonatingApplier) WaitGone(ctx context.Context, apiVersion, kind, n
 }
 
 func (a *impersonatingApplier) GetSpec(ctx context.Context, apiVersion, kind, name string) (map[string]any, bool, error) {
+	if cfn.IsServiceKind(apiVersion, kind) {
+		return a.svcSpec(ctx, kind, name)
+	}
 	gvr, err := a.gvrFor(apiVersion, kind)
 	if err != nil {
 		return nil, false, err
@@ -321,6 +348,10 @@ func (a *impersonatingApplier) GetSpec(ctx context.Context, apiVersion, kind, na
 // resolves an Output naming a post-deploy attribute (a VM's status.lanIp for an Elastic IP), under the
 // same authority that created the resource.
 func (a *impersonatingApplier) GetStatus(ctx context.Context, apiVersion, kind, name string) (map[string]any, bool, error) {
+	if cfn.IsServiceKind(apiVersion, kind) {
+		_, found, err := a.svcSpec(ctx, kind, name)
+		return map[string]any{"ready": found}, found, err
+	}
 	gvr, err := a.gvrFor(apiVersion, kind)
 	if err != nil {
 		return nil, false, err
@@ -342,6 +373,9 @@ func (a *impersonatingApplier) GetStatus(ctx context.Context, apiVersion, kind, 
 // GetLabels reads a live resource's metadata.labels via the CALLER (cfn.LabelReader) — how recovery checks
 // an object carries this stack's label before rolling it back, under the operation's own authority.
 func (a *impersonatingApplier) GetLabels(ctx context.Context, apiVersion, kind, name string) (map[string]string, bool, error) {
+	if cfn.IsServiceKind(apiVersion, kind) {
+		return a.svcLabels(ctx, kind, name)
+	}
 	var u *unstructured.Unstructured
 	var gerr error
 	if isStackRecord(kind, name) {
@@ -365,6 +399,10 @@ func (a *impersonatingApplier) GetLabels(ctx context.Context, apiVersion, kind, 
 // GetReady reports whether a resource's Ready condition is True (or status.ready), read via the CALLER —
 // so a doorway can report a workload's readiness without the shim SA needing read access to the workload.
 func (a *impersonatingApplier) GetReady(ctx context.Context, apiVersion, kind, name string) (ready, found bool, err error) {
+	if cfn.IsServiceKind(apiVersion, kind) {
+		_, found, err := a.svcSpec(ctx, kind, name)
+		return found, found, err
+	}
 	gvr, gerr := a.gvrFor(apiVersion, kind)
 	if gerr != nil {
 		return false, false, gerr

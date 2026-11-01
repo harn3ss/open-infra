@@ -137,6 +137,21 @@ func (s *sqsStore) setQueueAttrs(ctx context.Context, url string, attrs map[stri
 	return n > 0, nil
 }
 
+// replaceQueueAttrs sets a queue's attributes to exactly attrs (a stack update: an attribute the
+// template stopped setting returns to its default, where SetQueueAttributes would keep the old value).
+func (s *sqsStore) replaceQueueAttrs(ctx context.Context, url string, attrs map[string]string) (bool, error) {
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	aj, _ := json.Marshal(attrs)
+	res, err := s.db.ExecContext(ctx, `UPDATE sqs_queues SET attributes = $2::jsonb WHERE url = $1`, url, string(aj))
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 func (s *sqsStore) deleteQueue(ctx context.Context, url string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM sqs_queues WHERE url = $1`, url)
 	if err != nil {

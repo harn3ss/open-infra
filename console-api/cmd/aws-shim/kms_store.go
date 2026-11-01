@@ -150,6 +150,12 @@ func (s *kmsStore) setState(ctx context.Context, keyID, state string, deletionDa
 	return n > 0, nil
 }
 
+// setDescription sets a key's description (a stack update; UpdateKeyDescription).
+func (s *kmsStore) setDescription(ctx context.Context, keyID, desc string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE kms_keys SET description=$2 WHERE key_id=$1`, keyID, desc)
+	return err
+}
+
 func (s *kmsStore) setRotation(ctx context.Context, keyID string, on bool) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE kms_keys SET rotation=$2 WHERE key_id=$1`, keyID, on)
 	if err != nil {

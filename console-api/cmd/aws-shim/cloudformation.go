@@ -101,12 +101,21 @@ type cfnDoorway struct {
 	// buckets is the S3 store a stack's kind: Bucket claims hold their buckets in: a stack delete refuses a
 	// bucket that still holds data and removes an empty one, as AWS does. nil = left to the bucket reaper.
 	buckets *minio.Client
+	// services are the shim's own AWS API stores a stack's queues, topics, parameters and keys are
+	// provisioned into (cfn_services.go); nil = none (the engine then keeps its kind mappings).
+	services *cfnServices
+	// sqsURLBase is the endpoint a stack's queue URLs name (SQS_QUEUE_URL_BASE, default the shim's
+	// in-cluster address). The SQS front door answers any URL by its queue name; this only decides what
+	// a stack reports, and is where a client that routes by the URL's host sends.
+	sqsURLBase string
 }
 
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
 // deploy all use the same value, so a PROVISIONABLE* plan still means deploy won't refuse.
 func (h *cfnDoorway) caps() cfn.Capabilities {
-	return cfn.Capabilities{ObjectEncryption: h.objectEncryption}
+	return cfn.Capabilities{ObjectEncryption: h.objectEncryption,
+		SQSAPI: h.services.sqsOK(), SNSAPI: h.services.snsOK(), SSMAPI: h.services.ssmOK(), KMSAPI: h.services.kmsOK(),
+		SQSURLBase: h.sqsURLBase}
 }
 
 func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region, ns, svcSuffix string, logger *slog.Logger) (*cfnDoorway, error) {
@@ -192,7 +201,7 @@ func (h *cfnDoorway) applierForIdentity(user string, groups []string) (*imperson
 	}
 	rs := h.recs()
 	return &impersonatingApplier{caller: cdyn, shim: h.shimDyn, mapper: h.mapper, ns: h.ns, user: user, groups: groups,
-		noecho: h.noecho, records: &rs}, nil
+		noecho: h.noecho, records: &rs, svc: h.services, door: h}, nil
 }
 
 // cfnVerb is the coarse RBAC verb a User needs for a CloudFormation action: get for the reads (as AWS's

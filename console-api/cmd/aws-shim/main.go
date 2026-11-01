@@ -176,6 +176,7 @@ func run(logger *slog.Logger) error {
 	var kinesisSt *kinesisStore
 	var ddbStreamSt *ddbStreamStore
 	var cognitoSt *cognitoStore
+	var cfnSvcOwners *cfnServiceOwners
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		// A backing-store outage must NOT take the whole shim down. Build these shared-Postgres stores in
 		// a closure; on ANY failure, log and leave them nil — each service is nil-guarded at registration,
@@ -266,12 +267,19 @@ func run(logger *slog.Logger) error {
 			if serr := cognitoSt.ensureSchema(context.Background()); serr != nil {
 				return fmt.Errorf("Cognito schema init failed: %w", serr)
 			}
+			// The CloudFormation front door's record of which stack made each queue/topic/parameter/key it
+			// provisioned into these stores (cfn_services.go).
+			cfnSvcOwners = &cfnServiceOwners{db: db}
+			if serr := cfnSvcOwners.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("CloudFormation service-resource schema init failed: %w", serr)
+			}
 			logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/Cognito Postgres")
 			return nil
 		}()
 		if initErr != nil {
 			logger.Warn("shared SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/DynamoDBStreams/Cognito Postgres unavailable — those services answer 501 until recovery; the shim + Cedar enforcement stay up", slog.String("err", initErr.Error()))
 			sqsSt, snsSt, kmsSt, secretsSt, ebSt, cwlSt, ssmSt, apigwSt, apigwV1St, cwSt, kinesisSt, ddbStreamSt, cognitoSt = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
+			cfnSvcOwners = nil
 		}
 	}
 
@@ -442,6 +450,9 @@ func run(logger *slog.Logger) error {
 	sqsH.authz = authzChecker
 	snsH := newSNSHandler(cs, authzNS, account, region, snsSt, sqsSt, logger)
 	snsH.authz = authzChecker
+	// lambda subscriptions: SNS invokes the Function at its cluster-local address (sns_lambda.go). A
+	// generous timeout covers a scale-from-zero cold start.
+	snsH.lambdaNS, snsH.svcSuffix, snsH.invoker = fnNS, svcSuffix, &http.Client{Timeout: 5 * time.Minute}
 	// usersNS is where kind: Policy CRs live (the IAM doorway materializes there; the data plane loads
 	// policies cluster-wide), so imported KMS key policies reuse it + the shim SA's existing policy RBAC.
 	kmsH := newKMSHandler(cs, dyn, usersNS, authzNS, account, region, kmsTransit, kmsSt, logger)
@@ -573,6 +584,11 @@ func run(logger *slog.Logger) error {
 			cfnH.noecho = &noEchoSecrets{cs: cs, ns: keysNS} // NoEcho values: Secrets in the shim's namespace
 			cfnH.recNS = keysNS                              // stack/change-set/drift records: Secrets there too (cfn_records.go)
 			cfnH.buckets = mc                                // a stack delete refuses a non-empty bucket and removes an empty one
+			// A stack's queues/topics/parameters/keys go into the stores those front doors serve (cfn_services.go).
+			if cfnSvcOwners != nil {
+				cfnH.services = &cfnServices{sqs: sqsH, sns: snsH, ssm: ssmH, kms: kmsH, owners: cfnSvcOwners}
+			}
+			cfnH.sqsURLBase = getenv("SQS_QUEUE_URL_BASE", "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566")
 			services["cloudformation"] = cfnH
 			cfnDoor = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))

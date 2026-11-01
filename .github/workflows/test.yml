@@ -126,6 +126,18 @@ jobs:
         working-directory: ${{ matrix.module }}
         run: go test -race -count=1 ./...
 
+      # The aws-shim's store-backed tests (cfn_services_pg_test.go: a stack's queues, topics, parameters
+      # and keys used through the SQS/SNS/SSM/KMS front doors) need a real Postgres — the runner's
+      # preinstalled one, started for this step. Each test makes and drops its own database.
+      - name: aws-shim store-backed tests (Postgres)
+        if: matrix.module == 'console-api'
+        working-directory: console-api
+        run: |
+          sudo systemctl start postgresql.service
+          sudo -u postgres psql -qc "CREATE ROLE shimtest LOGIN SUPERUSER PASSWORD 'shimtest'"
+          OPENINFRA_TEST_PG_URI='postgres://shimtest:shimtest@127.0.0.1:5432/postgres?sslmode=disable' \
+            go test -race -count=1 -run 'TestServicesPG' ./cmd/aws-shim/
+
       # The oracle mode engine (recover/tolerate/deny) lives under the `convergence` build tag with
       # the rest of the chaos harness, but the mode-engine tests use in-memory fakes (no DB), so run
       # just those under the tag. -run isolates them from the DB-backed convergence/migration tests.
