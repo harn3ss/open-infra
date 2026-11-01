@@ -218,22 +218,61 @@ if [ "$(printf '%s' "$PS_BODY" | head -n -1)" != "hello from $STACK" ]; then
 fi
 log "  ✓ a pre-signed S3 link opens"
 
-# --- 6. teardown leaves nothing behind -----------------------------------------------------------------
+# --- 6. teardown: AWS's bucket rules, and nothing left behind ------------------------------------------
+# empty_bucket <bucket>: remove every object version and delete marker (what DeleteBucket requires).
+empty_bucket() {
+  local b="$1" v
+  "${A[@]}" s3 rm "s3://$b" --recursive >/dev/null 2>&1 || true
+  "${A[@]}" s3api list-object-versions --bucket "$b" --query '[Versions,DeleteMarkers][][].[Key,VersionId]' --output text 2>/dev/null \
+    | while read -r k v; do
+        [ -n "$k" ] && [ "$k" != None ] && "${A[@]}" s3api delete-object --bucket "$b" --key "$k" --version-id "$v" >/dev/null 2>&1
+      done
+  return 0
+}
+stack_state() { "${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].[StackStatus,StackStatusReason]' --output text 2>&1; }
 if [ "${KEEP:-0}" = 1 ]; then
   log "KEEP=1: leaving stack $STACK up"; STATE=""
 else
-  log "delete-stack $STACK"
-  "${A[@]}" s3 rm "s3://$APPB" --recursive >/dev/null 2>&1; "${A[@]}" s3 rm "s3://$SITEB" --recursive >/dev/null 2>&1
+  # AWS refuses to delete a stack while one of its buckets still holds data: DELETE_FAILED, BucketNotEmpty,
+  # the bucket and its data kept. $APPB still holds the app's object.
+  log "delete-stack $STACK while $APPB still holds data (AWS: DELETE_FAILED with BucketNotEmpty)"
   "${A[@]}" cloudformation delete-stack --stack-name "$STACK" || fail "delete-stack failed"
   "${A[@]}" cloudformation wait stack-delete-complete --stack-name "$STACK" 2>/dev/null \
-    || { st="$("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text 2>&1)"; printf '%s' "$st" | grep -q -E "does not exist|DELETE_COMPLETE" || fail "stack did not delete cleanly: $st"; }
+    && fail "the stack was deleted although bucket $APPB still held data (AWS refuses: BucketNotEmpty)"
+  st="$(stack_state)"
+  printf '%s' "$st" | grep -q DELETE_FAILED && printf '%s' "$st" | grep -q BucketNotEmpty \
+    || fail "a delete with a non-empty bucket ended as '$st', want DELETE_FAILED naming BucketNotEmpty"
+  "${A[@]}" s3api head-bucket --bucket "$APPB" >/dev/null 2>&1 || fail "the non-empty bucket $APPB was removed by the refused delete"
+  log "  ✓ refused as AWS refuses it: DELETE_FAILED (BucketNotEmpty); $APPB and its data kept"
+
+  log "empty both buckets, delete-stack $STACK again"
+  empty_bucket "$APPB"; empty_bucket "$SITEB"
+  "${A[@]}" cloudformation delete-stack --stack-name "$STACK" || fail "delete-stack (retry) failed"
+  "${A[@]}" cloudformation wait stack-delete-complete --stack-name "$STACK" 2>/dev/null \
+    || { st="$(stack_state)"; printf '%s' "$st" | grep -q -E "does not exist|DELETE_COMPLETE" || fail "stack did not delete cleanly: $st"; }
   STATE=""
+  # Nothing is swept here before checking: what the delete itself left is what is asserted.
+  for b in "$APPB" "$SITEB"; do
+    if "${A[@]}" s3api head-bucket --bucket "$b" >/dev/null 2>&1; then fail "bucket $b still exists after the stack was deleted"; fi
+  done
+  log "  ✓ stack deleted; its buckets are gone (HeadBucket → 404 through the S3 API)"
   if command -v kubectl >/dev/null && [ -n "${KUBECONFIG:-}" ]; then
     left="$(kubectl get virtualmachines.openinfra.dev,buckets.openinfra.dev,staticsites.openinfra.dev,roles.iam.openinfra.dev,policies.iam.openinfra.dev,securitygroups.openinfra.dev,volumes.openinfra.dev -A -l "cfn.openinfra.dev/stack=$STACK" --no-headers 2>/dev/null | wc -l)"
     [ "$left" -eq 0 ] || fail "teardown left $left claim(s) of $STACK in the cluster"
-    log "  ✓ stack deleted; no claim of $STACK left in the cluster"
+    # The claim Secrets are composed (deleted with their claims); the scoped MinIO users' credentials and
+    # owner records are removed by the bucket reaper within a minute or two of the claims going.
+    pat_cfn="/(${STACK}[-a-z0-9]*-(minio|db-backup-creds)|staticsite-${STACK}[-a-z0-9]*-tls)$"
+    pat_creds="/(app-open-infra-cfn-${STACK}|bucket-owner-${APPB}$|bucket-owner-${SITEB}$)"
+    leftover=""
+    for _ in $(seq 1 24); do
+      leftover="$(kubectl -n "$CFN_NS" get secret -o name 2>/dev/null | grep -E "$pat_cfn"; kubectl -n "$CREDS_NS" get secret -o name 2>/dev/null | grep -E "$pat_creds")"
+      [ -z "$leftover" ] && break
+      sleep 5
+    done
+    [ -z "$leftover" ] || fail "teardown left Secrets behind: $(echo $leftover)"
+    log "  ✓ no claim, credentials Secret, owner record or TLS Secret of $STACK left in the cluster"
   else
-    log "  ✓ stack deleted (set KUBECONFIG to also check the cluster for leftovers)"
+    log "  (set KUBECONFIG to also check the cluster for leftover claims and Secrets)"
   fi
   "${A[@]}" ecr delete-repository --repository-name "$REPO" --force >/dev/null 2>&1 || true
 fi

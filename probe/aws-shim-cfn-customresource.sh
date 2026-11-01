@@ -12,8 +12,11 @@
 # ENDPOINT = !GetAtt Custom::Probe.Endpoint. After CREATE_COMPLETE the Consumer's env MUST carry the Data
 # value, proving the custom resource was invoked mid-deploy and its Data flowed through GetAtt.
 #
-# Needs: a deployed aws-shim with the CloudFormation doorway enabled, the probe handler image published
-# where the cluster can pull it (build+push below; needs ghcr push access), and the aws CLI + kubectl.
+# Needs: a deployed aws-shim with the CloudFormation doorway enabled, the aws CLI + kubectl, and crane or
+# docker. The probe handler image is built and pushed to the platform's own registry (an ECR repository
+# through the shim, as CI would push an image), so no outside registry access is needed. Set PROBE_IMAGE to
+# use an image already published where the cluster can pull it instead. AWS_CA_BUNDLE: the platform root CA,
+# for TLS to the registry.
 # Exit 0 = pass, 1 = a real failure, 42 = INCONCLUSIVE.
 #
 #   SHIM_ENDPOINT=http://localhost:4566 ./probe/aws-shim-cfn-customresource.sh
@@ -24,7 +27,8 @@ SHIM_NS="${SHIM_NS:-open-infra-aws-shim}"
 CFN_NS="${CFN_NS:-open-infra-aws-shim}"        # the namespace the CFN doorway deploys into
 ENDPOINT="${SHIM_ENDPOINT:-http://aws-shim.${SHIM_NS}.svc.cluster.local:4566}"
 REGION="${AWS_REGION:-us-east-1}"
-PROBE_IMAGE="${PROBE_IMAGE:-ghcr.io/harn3ss/cfn-cr-probe:v1}"
+PROBE_IMAGE="${PROBE_IMAGE:-}"
+PROBE_REPO="${PROBE_REPO:-cfn-cr-probe}"
 STACK="cfn-cr-probe-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
@@ -36,22 +40,53 @@ command -v aws     >/dev/null || inconclusive "the aws CLI is required"
 command -v kubectl >/dev/null || inconclusive "kubectl is required"
 curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not reachable at ${ENDPOINT}"
 
+CREATED_REPO=""
 cleanup() {
   AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-x}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-x}" \
     aws --endpoint-url "$ENDPOINT" --no-cli-pager cloudformation delete-stack --stack-name "$STACK" >/dev/null 2>&1 || true
+  if [ -n "$CREATED_REPO" ]; then # the handler image's repository, created by this run
+    AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-x}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-x}" \
+      aws --endpoint-url "$ENDPOINT" --region "$REGION" --no-cli-pager ecr delete-repository --repository-name "$CREATED_REPO" --force >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
-# 1. Publish the handler image where the cluster can pull it (idempotent; skip if already present).
-if ! curl -fsS -m 5 "https://ghcr.io/v2/" >/dev/null 2>&1; then :; fi
-log "building + pushing the probe handler image ${PROBE_IMAGE}"
-if command -v docker >/dev/null 2>&1; then
-  docker build -t "$PROBE_IMAGE" "$HERE/cfn-cr-probe" >/dev/null 2>&1 \
-    && docker push "$PROBE_IMAGE" >/dev/null 2>&1 \
-    || inconclusive "could not build/push ${PROBE_IMAGE} (ghcr push access required) — the engine logic is unit-proven in cfn/translate_customresource_test.go; this probe needs the handler image published for the cluster to pull"
-else
-  inconclusive "docker not available to publish the handler image"
+# 1. Publish the handler image where the cluster can pull it: the platform registry, through the shim's
+# ECR front door (create the repository, log in with its token, push). Referenced by digest, so nothing
+# has to resolve a tag against the registry.
+if [ -z "$PROBE_IMAGE" ]; then
+  AWSC=(aws --endpoint-url "$ENDPOINT" --region "$REGION" --no-cli-pager)
+  export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-x}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-x}"
+  if "${AWSC[@]}" ecr create-repository --repository-name "$PROBE_REPO" >/dev/null 2>"$PWD/.cr_ecr"; then
+    CREATED_REPO="$PROBE_REPO"
+  else
+    grep -q RepositoryAlreadyExists "$PWD/.cr_ecr" || inconclusive "ecr create-repository $PROBE_REPO failed: $(head -c 300 "$PWD/.cr_ecr")"
+  fi
+  URI="$("${AWSC[@]}" ecr describe-repositories --repository-names "$PROBE_REPO" --query 'repositories[0].repositoryUri' --output text)" \
+    || inconclusive "ecr describe-repositories $PROBE_REPO failed"
+  REG="${URI%%/*}"
+  [ -n "${AWS_CA_BUNDLE:-}" ] && export SSL_CERT_FILE="$AWS_CA_BUNDLE"
+  log "building the probe handler image and pushing it to $URI"
+  if command -v crane >/dev/null 2>&1; then
+    export DOCKER_CONFIG="$(mktemp -d)"
+    "${AWSC[@]}" ecr get-login-password | crane auth login "$REG" -u AWS --password-stdin >/dev/null 2>&1 \
+      || inconclusive "registry login to $REG failed (is AWS_CA_BUNDLE the platform root CA?)"
+    LAYER="$(mktemp)"; tar -C "$HERE/cfn-cr-probe" -cf "$LAYER" handler.py
+    crane append -b python:3.12-alpine -f "$LAYER" -t "$URI:v1" >/dev/null 2>&1 \
+      && crane mutate "$URI:v1" --cmd python,/handler.py --exposed-ports 8080 -t "$URI:v1" >/dev/null 2>&1 \
+      || inconclusive "building/pushing the handler image to $URI failed"
+    PROBE_IMAGE="$URI@$(crane digest "$URI:v1")"
+  elif command -v docker >/dev/null 2>&1; then
+    "${AWSC[@]}" ecr get-login-password | docker login -u AWS --password-stdin "$REG" >/dev/null 2>&1 \
+      || inconclusive "docker login $REG failed (is the platform root CA trusted by docker?)"
+    docker build -q -t "$URI:v1" "$HERE/cfn-cr-probe" >/dev/null && docker push -q "$URI:v1" >/dev/null \
+      || inconclusive "building/pushing the handler image to $URI failed"
+    PROBE_IMAGE="$(docker inspect --format '{{index .RepoDigests 0}}' "$URI:v1")"
+  else
+    inconclusive "crane or docker is needed to build the handler image"
+  fi
 fi
+log "  ✓ handler image $PROBE_IMAGE"
 
 # 2. Deploy the stack through the shim's CloudFormation doorway.
 TMPL="$(mktemp)"; cat > "$TMPL" <<YAML

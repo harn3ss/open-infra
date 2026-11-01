@@ -430,6 +430,31 @@ spec:
                     selector: { app: {{ $name }}-site }
                     ports:
                       - { name: http, port: 80, targetPort: 80 }
+            {{- if $tls }}
+            ---
+            # The Ingress's TLS Secret, created here — empty — so it is a composed resource and goes with the
+            # site. cert-manager fills and renews it (its issuance applies the data with force); the provider
+            # only creates and deletes it, never updates it, so the two never fight. Left to cert-manager's
+            # ingress-shim it would outlive the site: cert-manager owns no Secret unless the cluster-wide
+            # --enable-certificate-owner-ref is on.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: tls-secret
+            spec:
+              managementPolicies: ["Observe", "Create", "Delete"]
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Secret
+                  type: kubernetes.io/tls
+                  metadata:
+                    name: staticsite-{{ $name }}-tls
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/staticsite: {{ $name }} }
+                  data: { tls.crt: "", tls.key: "" }
+            {{- end }}
             ---
             # Ingress: the public front door, TLS via cert-manager (mirrors HttpApi).
             apiVersion: kubernetes.crossplane.io/v1alpha2

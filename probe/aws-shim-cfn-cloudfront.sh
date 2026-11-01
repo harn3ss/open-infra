@@ -334,12 +334,15 @@ for r in "$ROOT" "$DEEP" "$ASSET"; do
 done
 log "    ✓ https://$HOST/ and a deep route → index.html (200), the asset as itself, policy headers on every response"
 
-# --- 5. delete-stack removes the StaticSite and the Bucket ---------------------------------------------
-log "delete-stack $STACK → the StaticSite and the Bucket are removed"
+# --- 5. delete-stack removes the StaticSite, the Bucket and everything they held ------------------------
+# As on AWS, a stack whose bucket still holds data does not delete (BucketNotEmpty): empty it first, as a
+# user would. Nothing is swept before the check: what the delete itself left is what is asserted.
+log "empty $BUCKET, then delete-stack $STACK → the StaticSite, the Bucket and their leftovers are removed"
+for k in index.html assets/app.js; do s3api delete-object --bucket "$BUCKET" --key "$k" >/dev/null 2>&1 || fail "could not delete $k from $BUCKET"; done
 cfn delete-stack --stack-name "$STACK" >/dev/null 2>&1 || fail "delete-stack failed"
 i=0; while [ $i -lt 240 ]; do
-  st="$(cfn describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo GONE)"
-  case "$st" in GONE|DELETE_COMPLETE) break;; DELETE_FAILED) fail "delete-stack ended DELETE_FAILED";; esac
+  st="$(cfn describe-stacks --stack-name "$STACK" --query 'Stacks[0].[StackStatus,StackStatusReason]' --output text 2>/dev/null || echo GONE)"
+  case "$st" in GONE*|DELETE_COMPLETE*) break;; DELETE_FAILED*) fail "delete-stack ended DELETE_FAILED: $st";; esac
   sleep 5; i=$((i+5))
 done
 for i in $(seq 1 24); do
@@ -348,7 +351,18 @@ for i in $(seq 1 24); do
 done
 kubectl -n "$CFN_NS" get staticsites.openinfra.dev "$SITE" >/dev/null 2>&1 && fail "StaticSite $SITE still present after delete-stack"
 kubectl -n "$CFN_NS" get buckets.openinfra.dev "$BCLAIM" >/dev/null 2>&1 && fail "Bucket $BCLAIM still present after delete-stack"
-log "    ✓ stack destroyed (StaticSite + Bucket gone)"
+s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1 && fail "bucket $BUCKET still exists after delete-stack (an empty stack bucket is deleted with the stack)"
+# The claim Secrets and the TLS Secret are composed (deleted with the claims); the scoped users' credentials
+# and the owner record are removed by the bucket reaper shortly after.
+su="$(app_user StaticSite "$CFN_NS" "$SITE")"; bu="$(app_user Bucket "$CFN_NS" "$BCLAIM")"
+left=""
+for i in $(seq 1 30); do
+  left="$(kubectl -n "$CFN_NS" get secret "$SITE-minio" "$BCLAIM-minio" "staticsite-$SITE-tls" -o name 2>/dev/null; kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$su" "$bu" -o name 2>/dev/null)"
+  [ -z "$left" ] && break
+  sleep 5
+done
+[ -z "$left" ] || fail "delete-stack left Secrets behind: $(echo $left)"
+log "    ✓ stack destroyed: StaticSite, Bucket and the MinIO bucket gone; no credentials, owner record or TLS Secret left"
 
 printf '\n✓ PASS — the cfn engine'"'"'s CloudFront subset is faithful through the aws-shim CloudFormation front door: an\n'
 printf '  unmodified CloudFront-over-private-S3 template deploys as a kind: StaticSite over its kind: Bucket, content\n'

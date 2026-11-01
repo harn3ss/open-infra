@@ -263,6 +263,42 @@ log "  ✓ an unrelated hostname does not reach the site (status $(status_of "$N
 H="$(fetch --resolve "$HOST1:80:$TRAEFIK_IP" "http://$HOST1/")"
 log "  (info) plain http://$HOST1/ via Traefik → $(status_of "$H") (a TLS site has no plain-HTTP route)"
 
+# --- 7. deleting the site leaves nothing behind ---------------------------------------------------
+# Empty the bucket first, with the site's own credentials (a bucket that still holds data is never deleted
+# by the platform; it is kept for its owner). Then delete the claim and check — sweeping nothing first —
+# that its Secrets go with it and the bucket reaper removes the bucket, the scoped user's credentials and
+# the owner record (the record is removed only once the bucket is gone).
+log "emptying $BUCKET, deleting StaticSite $SITE: nothing of it may remain"
+kubectl -n "$NS" delete pod "$CLIENT" --ignore-not-found --wait=false >/dev/null 2>&1
+cat <<YAML | kubectl apply -f - >/dev/null || fail "could not start the emptying pod"
+apiVersion: v1
+kind: Pod
+metadata: { name: "empty-$SFX", namespace: "$NS" }
+spec:
+  restartPolicy: Never
+  enableServiceLinks: false
+  containers:
+    - name: empty
+      image: "$AWSCLI_IMAGE"
+      env:
+        - { name: MINIO_ENDPOINT, valueFrom: { secretKeyRef: { name: "$SITE-minio", key: MINIO_ENDPOINT } } }
+        - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: "$SITE-minio", key: MINIO_ACCESS_KEY } } }
+        - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: "$SITE-minio", key: MINIO_SECRET_KEY } } }
+        - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+      command: [sh, -c, 'aws --endpoint-url "\$MINIO_ENDPOINT" s3 rm "s3://$BUCKET" --recursive']
+YAML
+wait_pod "$NS" "empty-$SFX" 180 || fail "emptying $BUCKET failed: $(kubectl -n "$NS" logs "empty-$SFX" 2>&1 | tail -3 | tr '\n' ' ')"
+kubectl -n "$NS" delete staticsite "$SITE" --wait=true --timeout=180s >/dev/null 2>&1 || fail "deleting StaticSite $SITE failed"
+USER_="$(app_user StaticSite "$NS" "$SITE")"
+left=""
+for i in $(seq 1 30); do
+  left="$(kubectl -n "$NS" get secret "$SITE-minio" "staticsite-$SITE-tls" -o name 2>/dev/null; kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$USER_" -o name 2>/dev/null)"
+  [ -z "$left" ] && break
+  sleep 5
+done
+[ -z "$left" ] || fail "deleting the site left behind: $(echo $left)"
+log "  ✓ deleted: its credentials, TLS Secret, scoped user, owner record and (empty) bucket are gone"
+
 printf '\n✓ PASS — kind: StaticSite serves its bucket faithfully: uploads with its own scoped credentials go live,\n'
 printf '  a deep client route falls back to index.html (200) while real assets are served as themselves, the\n'
 printf '  configured response headers ride every response, and both hostnames serve over cert-manager TLS through\n'
