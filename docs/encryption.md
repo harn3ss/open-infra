@@ -23,7 +23,8 @@ crypto-erases everything wrapped by it (the basis for [`crypto-erase`](destructi
 | **encryptionkey-reconciler** | provisions/rotates the Transit key per EncryptionKey | shipped, opt-in |
 | **`longhorn-encrypted` StorageClass** | LUKS volumes (SC-28); additive, not the default | shipped, opt-in |
 | **volume-crypto reconciler** | keys each encrypted volume's LUKS passphrase from its EncryptionKey | shipped, opt-in |
-| **MinIO SSE-KMS (KES → Vault)** | object encryption with customer keys | runbook below |
+| **MinIO object encryption** | every new bucket encrypted by default, with the platform MinIO's own key (`storage/minio-kms.yaml`) | shipped, opt-in |
+| **MinIO KES → Vault** | an optional keystore for customer-held object keys (crypto-erase) | shipped, opt-in, not wired |
 | **etcd KMS provider** | Kubernetes Secrets encrypted at rest with a customer key | runbook below |
 
 ## `kind: EncryptionKey`
@@ -119,12 +120,8 @@ a snapshot first.
 - **etcd KMS** is an API-server flag (`--encryption-provider-config`) plus a KMS-plugin static pod on the
   control-plane node — node/control-plane configuration that a GitOps controller cannot apply (k3s/RKE2
   serve it from a file on the server node). It is inherently an operator step.
-- **MinIO SSE-KMS (KES)** now ships as an opt-in stack (`components.objectEncryption`): a KES Deployment
-  keyed to Vault, its `minio-kes` Kubernetes-auth identity, and self-signed KES↔MinIO mTLS — all in ns
-  `minio`. Deploying the stack is safe: it does NOT touch the live MinIO. Turning SSE-KMS ON for the
-  platform MinIO (adding the `MINIO_KMS_KES_*` env) stays a deliberate, snapshot-first operator step,
-  because the live MinIO holds your backups + the tamper-evident audit WORM chain and SSE-KMS encrypts
-  only NEW writes — see below.
+- **MinIO object encryption** ships as a manifest (`components.objectEncryption`, below): it never
+  re-encrypts existing objects, and it restarts MinIO once, deliberately, to load the key.
 - **Longhorn** is the one layer that already ships as a manifest (the `longhorn-encrypted` StorageClass
   below) — because it is per-PVC and never touches a shared, live system.
 
@@ -166,34 +163,55 @@ provide the `<pvc-name>-crypto` Secret (key `CRYPTO_KEY_VALUE`) before creating 
 deleted with the volume — they are not readable once the volume is gone. Restoring a snapshot into a
 new encrypted volume is not supported: the new volume is keyed with its own passphrase.
 
-### MinIO objects (SSE-KMS via KES)
+### MinIO objects (default bucket encryption)
 
-Set `components.objectEncryption: true` and re-run `./install.sh`. This deploys [MinIO KES](https://github.com/minio/kes)
-(ns `minio`) with a **Vault KV** keystore — KES stores and wraps its own keys there; note KES uses Vault's
-**KV** engine, not Transit — plus the `minio-kes` Kubernetes-auth identity and a self-signed CA + KES↔MinIO
-mTLS (issued by a one-shot cert Job). Deploying the stack does not touch the live MinIO.
+Set `components.objectEncryption: true` and re-run `./install.sh` (or sync). This turns on object
+encryption at rest for the platform MinIO with a **static 256-bit key that MinIO holds itself**
+(`MINIO_KMS_SECRET_KEY`, in `secret/minio-kms` in ns `minio`). It has no availability dependency: no
+Vault to unseal, no KES to reach. What it does:
 
-To then turn SSE-KMS ON for the platform MinIO — deliberately, under a snapshot, and never on the buckets
-holding backups or the audit WORM chain (SSE-KMS encrypts only NEW writes):
+- **Every new bucket is encrypted by default** (AES256, i.e. SSE-S3, under that key; what AWS gives every
+  new bucket). `kind: Bucket`'s setup Job sets it on a bucket it creates, or one that is still empty.
+  Buckets that already hold objects, including the backups and the audit WORM chain, are not touched,
+  and existing objects are never re-encrypted.
+- **`GetBucketEncryption` answers it**, and `GetObject`/`HeadObject` carry `x-amz-server-side-encryption`.
+- **CloudFormation `BucketEncryption` deploys**: the aws-shim's front door accepts it with a caveat (an
+  `aws:kms` key is not used; the platform key is). Off, it refuses the template rather than create an
+  unencrypted bucket it asked to encrypt. The offline `cfn` CLI can't vouch for the cluster and always
+  refuses.
 
-1. Add to the MinIO env (`platform/storage/minio.yaml` values, applied deliberately):
-   `MINIO_KMS_KES_ENDPOINT=https://kes.minio.svc:7373`, `MINIO_KMS_KES_KEY_NAME=<key>`,
-   `MINIO_KMS_KES_CERT_FILE` / `_KEY_FILE` (from the `minio-kes-client` Secret) and `MINIO_KMS_KES_CAPATH`
-   (its `ca.crt`).
-2. `mc encrypt set sse-kms <key> myminio/<bucket>` on a target bucket.
-3. *(Optional — CloudFormation `BucketEncryption`.)* The aws-shim's CloudFormation front door honors an
-   `AWS::S3::Bucket` `BucketEncryption` only when `OBJECT_ENCRYPTION=true` is set on the aws-shim
-   Deployment, and **that flag asserts that every *new* bucket is SSE-KMS-encrypted by default.** Steps 1–2
-   are not enough on their own: step 2 encrypts the buckets you name, but a bucket the front door creates
-   later is not covered (`kind: Bucket` does not set bucket encryption). So set the flag only once new
-   buckets really are encrypted by default. Unset/false (the default) is fail-closed: the front door
-   *refuses* a `BucketEncryption` template rather than create an unencrypted bucket it asked to encrypt.
-   (Plan, change sets, validation and deploy all read the same flag, so a plan that passes won't refuse at
-   deploy.) The offline `cfn` CLI can't vouch for this and always refuses.
+**How it turns on.** One Job, `minio-kms-enable` (an Argo PostSync hook in ns `minio`), does it in an
+order that keeps every MinIO server on one configuration:
 
-New objects are then wrapped by a key held in Vault; **destroying that key crypto-erases them** — the
-object persists but reads fail `failed to decrypt ciphertext`. `probe/sse-kms.sh` validates the whole flow
-(round-trip + crypto-erase) against a throwaway MinIO, never the live one. NIST SC-28(1).
+1. waits until MinIO mounts the (optional) key Secret and has finished rolling out;
+2. creates the key if there is none. It never overwrites one, and once encryption has been on it
+   refuses to create a replacement (a new key could decrypt nothing);
+3. if any server started before the key existed, **restarts all MinIO servers at once**. MinIO needs one
+   configuration across servers, so a rolling restart would leave them disagreeing. Expect about a
+   minute without object storage, once;
+4. checks the key encrypts and decrypts (`mc admin kms key status`), and only then writes
+   `configmap/openinfra-object-encryption` (`enabled: "true"`, `default: AES256`) in ns `minio` (read by the
+   bucket setup) and ns `open-infra-aws-shim` (read live by the shim; no restart).
+
+**Back up the key.** `secret/minio-kms` is the only copy. Lose it and every object written under it, and
+MinIO's own IAM data written since (the per-bucket users), is unreadable. Copy it off the cluster as soon
+as it exists, and restore it before MinIO starts if you rebuild:
+
+```sh
+kubectl -n minio get secret minio-kms -o yaml > minio-kms.backup.yaml   # store offline, like a root key
+```
+
+**Turning it off** is not a flag flip: objects written while it was on stay encrypted under the key, so
+keep the key mounted. Removing the Secret makes them, and IAM entries written since, unreadable.
+
+**Customer-held keys (KES → Vault).** `components.objectEncryptionKes: true` ships
+[MinIO KES](https://github.com/minio/kes) with a **Vault KV** keystore (KES stores and wraps its own keys
+there; it uses Vault's **KV** engine, not Transit), its `minio-kes` Kubernetes-auth identity and self-signed
+KES↔MinIO mTLS. It is not wired to the platform MinIO: switching MinIO's key source to KES is an operator
+step, and it makes object storage depend on Vault being unsealed (Vault needs a person to unseal it after
+every restart). With KES, destroying a key crypto-erases its objects (reads fail `failed to decrypt
+ciphertext`). `probe/sse-kms.sh` validates that flow (round-trip + crypto-erase) against a throwaway
+MinIO, never the live one. NIST SC-28(1).
 
 ### etcd (Kubernetes Secrets at rest)
 

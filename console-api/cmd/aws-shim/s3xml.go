@@ -44,8 +44,9 @@ var s3Errors = map[string]s3ErrorInfo{
 	"MalformedXML":          {http.StatusBadRequest, "The XML you provided was not well-formed or did not validate against our published schema."},
 	"InvalidTag":            {http.StatusBadRequest, "The tag provided was not a valid tag."},
 	"NoSuchTagSet":          {http.StatusNotFound, "The TagSet does not exist."},
-	"BucketNotEmpty":        {http.StatusConflict, "The bucket you tried to delete is not empty."},
-	"InternalError":         {http.StatusInternalServerError, "We encountered an internal error. Please try again."},
+	"ServerSideEncryptionConfigurationNotFoundError": {http.StatusNotFound, "The server side encryption configuration was not found"},
+	"BucketNotEmpty": {http.StatusConflict, "The bucket you tried to delete is not empty."},
+	"InternalError":  {http.StatusInternalServerError, "We encountered an internal error. Please try again."},
 }
 
 // writeS3Error writes an S3-faithful error response: the documented HTTP status, the XML error

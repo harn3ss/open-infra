@@ -76,13 +76,17 @@ type cfnDoorway struct {
 	// authz is the data-plane engine: an assumed role's stack operations are default-deny under it
 	// (cloudformation:<Action> on Stack::<name>). nil = no engine — a role is then denied every action.
 	authz *dataplaneauthz.Checker
-	// objectEncryption (OBJECT_ENCRYPTION=true) asserts that every NEW MinIO bucket is SSE-KMS-encrypted
-	// at rest by default — an outcome, not "KMS is configured": KES being deployed, or MinIO carrying the
-	// MINIO_KMS_KES_* config while only buckets with `mc encrypt set` are encrypted, is not enough, since
-	// a bucket this front door creates later would be unencrypted (docs/encryption.md). Default false =
-	// fail-closed: an S3 BucketEncryption request refuses rather than deploy an unencrypted bucket the
-	// template asked to encrypt (#347 Phase 1.8).
+	// objectEncryption (OBJECT_ENCRYPTION=true) asserts that every NEW MinIO bucket is encrypted at rest
+	// by default — an outcome, not "KMS is configured": MinIO carrying a key while only buckets someone
+	// ran `mc encrypt set` on are encrypted is not enough, since a bucket this front door creates later
+	// would be unencrypted (docs/encryption.md). Default false = fail-closed: an S3 BucketEncryption
+	// request refuses rather than deploy an unencrypted bucket the template asked to encrypt.
 	objectEncryption bool
+	// objectEncryptionFile, when set, is a file that says "true" once the platform has turned object
+	// encryption on: the enabled key of configmap/openinfra-object-encryption, mounted here. The
+	// minio-kms-enable Job writes it only after MinIO's key works and new buckets get default encryption
+	// (storage/minio-kms.yaml), so it is the same outcome as OBJECT_ENCRYPTION, read live (no restart).
+	objectEncryptionFile string
 	// ops makes the long stack operations durable across a front-door restart: ownership leases on the
 	// stack records, the recovery pass for interrupted operations, and refusal of new operations while
 	// shutting down (cloudformation_ops.go).
@@ -127,7 +131,7 @@ type cfnDoorway struct {
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
 // deploy all use the same value, so a PROVISIONABLE* plan still means deploy won't refuse.
 func (h *cfnDoorway) caps() cfn.Capabilities {
-	c := cfn.Capabilities{ObjectEncryption: h.objectEncryption,
+	c := cfn.Capabilities{ObjectEncryption: h.objectEncryption || fileSaysTrue(h.objectEncryptionFile),
 		SQSAPI: h.services.sqsOK(), SNSAPI: h.services.snsOK(), SSMAPI: h.services.ssmOK(), KMSAPI: h.services.kmsOK(),
 		SQSURLBase:        h.sqsURLBase,
 		SecretsManagerAPI: h.services.doorOK("secretsmanager"), LogsAPI: h.services.doorOK("logs"),
@@ -136,6 +140,16 @@ func (h *cfnDoorway) caps() cfn.Capabilities {
 		c.ECRRepositoryHost = stripScheme(ecr.proxyEndpoint)
 	}
 	return c
+}
+
+// fileSaysTrue reports whether path holds "true" (surrounding whitespace ignored). A missing or
+// unreadable file, or an empty path, is false.
+func fileSaysTrue(path string) bool {
+	if path == "" {
+		return false
+	}
+	b, err := os.ReadFile(path)
+	return err == nil && strings.TrimSpace(string(b)) == "true"
 }
 
 func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region, ns, svcSuffix string, logger *slog.Logger) (*cfnDoorway, error) {
@@ -154,7 +168,8 @@ func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region,
 	// block while the pod cold-starts; the request is queued, not dropped.
 	h := &cfnDoorway{cfg: cfg, shimDyn: shimDyn, mapper: mapper, account: account, region: region, ns: ns,
 		svcSuffix: svcSuffix, invoker: &http.Client{Timeout: 3 * time.Minute}, logger: logger,
-		objectEncryption: os.Getenv("OBJECT_ENCRYPTION") == "true",
+		objectEncryption:     os.Getenv("OBJECT_ENCRYPTION") == "true",
+		objectEncryptionFile: getenv("OBJECT_ENCRYPTION_FILE", "/etc/openinfra/object-encryption/enabled"),
 		// The in-cluster TLS address VM guests already reach and trust (their credentials come from it).
 		signalBase: getenv("CFN_SIGNAL_BASE_URL", "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567")}
 	h.signals = &signalStore{h: h}

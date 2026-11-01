@@ -94,6 +94,8 @@ func decodeTarget(method, bucket, key string, q url.Values) (s3op, bool) {
 			return s3op{kind: "delete-bucket-tagging", bucket: bucket, write: true}, true
 		case sub == "location" && method == http.MethodGet:
 			return s3op{kind: "get-bucket-location", bucket: bucket}, true
+		case sub == "encryption" && method == http.MethodGet:
+			return s3op{kind: "get-bucket-encryption", bucket: bucket}, true
 		}
 		return s3op{}, false
 	}
@@ -138,6 +140,8 @@ func (op s3op) action() string {
 		return "s3:PutBucketTagging"
 	case "get-bucket-location":
 		return "s3:GetBucketLocation"
+	case "get-bucket-encryption":
+		return "s3:GetEncryptionConfiguration"
 	case "delete-bucket":
 		return "s3:DeleteBucket"
 	}
@@ -311,6 +315,43 @@ func (h *s3Handler) getBucketLocation(w http.ResponseWriter, r *http.Request, op
 	}
 	// AWS returns an empty LocationConstraint for us-east-1, the region the shim reports.
 	writeXML(w, http.StatusOK, requestID, locationConstraint{})
+}
+
+// serverSideEncryptionConfiguration is GetBucketEncryption's document.
+type serverSideEncryptionConfiguration struct {
+	XMLName xml.Name  `xml:"http://s3.amazonaws.com/doc/2006-03-01/ ServerSideEncryptionConfiguration"`
+	Rules   []sseRule `xml:"Rule"`
+}
+
+type sseRule struct {
+	Default struct {
+		SSEAlgorithm   string `xml:"SSEAlgorithm"`
+		KMSMasterKeyID string `xml:"KMSMasterKeyID,omitempty"`
+	} `xml:"ApplyServerSideEncryptionByDefault"`
+	BucketKeyEnabled bool `xml:"BucketKeyEnabled"`
+}
+
+// getBucketEncryption returns the bucket's default encryption: AES256 on a bucket created while the
+// platform's object encryption is on (storage/minio-kms.yaml). A bucket with none answers
+// ServerSideEncryptionConfigurationNotFoundError, as S3 did before default encryption.
+func (h *s3Handler) getBucketEncryption(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {
+	cfg, err := h.mc.GetBucketEncryption(r.Context(), op.bucket)
+	if err != nil {
+		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
+		return
+	}
+	var out serverSideEncryptionConfiguration
+	for _, rule := range cfg.Rules {
+		var x sseRule
+		x.Default.SSEAlgorithm = rule.Apply.SSEAlgorithm
+		x.Default.KMSMasterKeyID = rule.Apply.KmsMasterKeyID
+		out.Rules = append(out.Rules, x)
+	}
+	if len(out.Rules) == 0 {
+		writeS3Error(w, "ServerSideEncryptionConfigurationNotFoundError", requestID, r.URL.Path)
+		return
+	}
+	writeXML(w, http.StatusOK, requestID, out)
 }
 
 // ---- DeleteBucket ----

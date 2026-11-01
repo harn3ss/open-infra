@@ -869,6 +869,7 @@ spec:
               drop: [ALL]
           volumeMounts:
             - { name: internal-tls, mountPath: /tls-internal, readOnly: true }
+            - { name: object-encryption, mountPath: /etc/openinfra/object-encryption, readOnly: true }
           resources:
             # The shared AWS front door fronts ~25 services; 256Mi/64Mi was too small and scheduled it
             # as needing far less than it does. Raised to a realistic floor (GOMEMLIMIT above keeps the
@@ -880,6 +881,38 @@ spec:
         # and VM agents retry. The kubelet fills the volume once the Secret exists.
         - name: internal-tls
           secret: { secretName: aws-shim-internal-tls, optional: true }
+        # optional: written by storage/minio-kms.yaml once MinIO encrypts new buckets by default; the
+        # kubelet refreshes it, so the shim sees the switch without a restart (OBJECT_ENCRYPTION_FILE).
+        - name: object-encryption
+          configMap: { name: openinfra-object-encryption, optional: true }
+---
+# Object encryption switch (components.objectEncryption): the minio-kms-enable Job
+# (storage/minio-kms.yaml) writes configmap/openinfra-object-encryption here once MinIO's key works. It
+# may touch only that ConfigMap. Inert when the object-encryption component is off (no such SA).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: minio-kms-enable
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [openinfra-object-encryption]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: minio-kms-enable
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: minio-kms-enable }
+subjects:
+  - kind: ServiceAccount
+    name: minio-kms-enable
+    namespace: minio
 ---
 apiVersion: v1
 kind: Service

@@ -1,0 +1,216 @@
+# Object encryption at rest with the platform MinIO's own key (components.objectEncryption).
+#
+# MinIO encrypts objects with a KMS key. This ships the simplest one that has no availability
+# dependency: a static 256-bit key that MinIO holds itself (MINIO_KMS_SECRET_KEY), kept in
+# secret/minio-kms and read through the chart's optional mount (storage/minio-ha.yaml). With it on,
+# every NEW bucket gets default encryption (AES256, i.e. SSE-S3 under that key — what AWS gives every
+# new bucket since 2023), and the aws-shim accepts a template's BucketEncryption. Existing buckets and
+# objects are not touched or re-encrypted.
+#
+# The key is the only copy: lose secret/minio-kms and every object written under it, and MinIO's own
+# IAM data written since, is unreadable. Back it up off-cluster (docs/encryption.md). Nothing here ever
+# overwrites or rotates it, and once encryption has been on, a missing key fails loud instead of being
+# replaced by a new one (which could not decrypt anything).
+#
+# One Job, minio-kms-enable (PostSync hook, re-run on each sync as a no-op once done):
+#  1. waits until the MinIO StatefulSet mounts the key and is fully rolled out, so every server runs
+#     the same template;
+#  2. creates the key if there is none (get + create, never update);
+#  3. if any server started before the key existed, restarts ALL servers at once. MinIO requires one
+#     configuration across servers, so a rolling restart would leave them disagreeing. That is a brief
+#     (about a minute) object-store outage, once;
+#  4. checks the key encrypts and decrypts (mc admin kms key status), and only then writes
+#     configmap/openinfra-object-encryption (minio ns: the bucket setup Job reads it; aws-shim ns: the
+#     shim reads it), so nothing claims encryption before MinIO actually has the key.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: minio-kms-enable
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: minio-kms-enable
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [minio-kms]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    # create cannot be limited by name; it can never replace an existing Secret (no update/patch).
+    verbs: [create]
+  - apiGroups: [apps]
+    resources: [statefulsets, deployments] # distributed (minio-ha.yaml) or standalone (minio.yaml)
+    resourceNames: [minio]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, delete]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [openinfra-object-encryption]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: minio-kms-enable
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: minio-kms-enable
+subjects:
+  - kind: ServiceAccount
+    name: minio-kms-enable
+    namespace: minio
+---
+# The aws-shim reads the same switch from its own namespace (only when the awsShim component is on;
+# its Role there, granting this SA that one ConfigMap, ships with the shim in aws-shim/aws-shim.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: minio-kms-enable-shim
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [open-infra-aws-shim]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: minio-kms-enable-shim
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: minio-kms-enable-shim
+subjects:
+  - kind: ServiceAccount
+    name: minio-kms-enable
+    namespace: minio
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-kms-enable
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 30
+  activeDeadlineSeconds: 7200
+  template:
+    spec:
+      serviceAccountName: minio-kms-enable
+      restartPolicy: OnFailure
+      volumes:
+        - { name: mc, emptyDir: {} }
+      initContainers:
+        - name: fetch-mc
+          image: ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
+          command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+          volumeMounts: [{ name: mc, mountPath: /mc }]
+      containers:
+        - name: enable
+          image: alpine/k8s:1.30.0
+          volumeMounts: [{ name: mc, mountPath: /mc }]
+          env:
+            - name: RU
+              valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
+            - name: RP
+              valueFrom: { secretKeyRef: { name: minio, key: rootPassword } }
+            - { name: MC_CONFIG_DIR, value: /tmp/.mc }
+          command: [sh, -c]
+          args:
+            - |
+              set -eu
+              MC=/mc/mc
+              SEL=app=minio,release=minio
+              # The MinIO workload: a StatefulSet (distributed) or a Deployment (standalone).
+              wl() { kubectl -n minio get statefulset minio -o json 2>/dev/null || kubectl -n minio get deployment minio -o json 2>/dev/null || true; }
+              # 1. Every server runs the current template, which mounts the key (the minio Application
+              #    syncs on its own, so wait for it).
+              ok=false
+              for i in $(seq 1 240); do
+                w="$(wl)"
+                if [ -n "$w" ] && [ "$(printf '%s' "$w" | jq -r '
+                    ([.spec.template.spec.volumes[]? | select(.secret.secretName=="minio-kms")] | length) == 1
+                    and (.status.observedGeneration // 0) == .metadata.generation
+                    and (.status.replicas // 0) == .spec.replicas
+                    and (.status.readyReplicas // 0) == .spec.replicas
+                    and (.status.updatedReplicas // 0) == .spec.replicas
+                    and (if .kind == "StatefulSet" then .status.updateRevision == .status.currentRevision else true end)')" = true ]; then ok=true; break; fi
+                echo "waiting for MinIO to mount secret/minio-kms and finish rolling out ($i)"
+                sleep 15
+              done
+              [ "$ok" = true ] || { echo "MinIO did not pick up the key mount; retrying" >&2; exit 1; }
+              # 2. The key. Create it only if encryption was never on: a replacement key could not decrypt
+              #    anything written under the old one, so a missing key after that is an operator problem.
+              if ! kubectl -n minio get secret minio-kms >/dev/null 2>&1; then
+                was="$(kubectl -n minio get configmap openinfra-object-encryption -o jsonpath='{.data.enabled}' 2>/dev/null || true)"
+                if [ "$was" = true ]; then
+                  echo "secret/minio-kms is missing but object encryption was on: restore the key from its backup (docs/encryption.md); refusing to create a new one" >&2
+                  exit 1
+                fi
+                key="$(head -c 32 /dev/urandom | base64 | tr -d '\n')" # never printed
+                kubectl -n minio create secret generic minio-kms \
+                  --from-literal=config.env="MINIO_KMS_SECRET_KEY=openinfra-object-key:${key}" >/dev/null
+                unset key
+                echo "secret/minio-kms created: back it up off-cluster (docs/encryption.md)"
+              fi
+              # 3. A server that started before the key existed runs without it. Restart all at once.
+              keyAt="$(kubectl -n minio get secret minio-kms -o jsonpath='{.metadata.creationTimestamp}')"
+              stale() {
+                kubectl -n minio get pods -l "$SEL" -o json | jq -r --arg k "$keyAt" \
+                  '[.items[] | select(([.status.containerStatuses[]? | select(.name=="minio") | .state.running.startedAt // ""][0] // "") < $k)] | length'
+              }
+              n="$(stale)"
+              if [ "$n" != 0 ]; then
+                echo "$n MinIO server(s) started before the key existed: restarting all servers together"
+                kubectl -n minio delete pods -l "$SEL" --wait=false
+                back=false
+                for i in $(seq 1 60); do
+                  sleep 10
+                  w="$(wl)"
+                  if [ "$(stale)" = 0 ] && [ "$(printf '%s' "$w" | jq -r '(.status.readyReplicas // 0) == .spec.replicas')" = true ]; then back=true; break; fi
+                  echo "waiting for every MinIO server to come back with the key ($i)"
+                done
+                [ "$back" = true ] || { echo "MinIO servers did not all come back with the key" >&2; exit 1; }
+              fi
+              # 4. The key must work before anything is told encryption is on.
+              E=http://minio.minio.svc.cluster.local:9000
+              for i in $(seq 1 40); do "$MC" alias set m "$E" "$RU" "$RP" >/dev/null 2>&1 && break; sleep 5; done
+              out="$("$MC" admin kms key status m 2>&1)" || { echo "KMS key status failed: $out" >&2; exit 1; }
+              printf '%s\n' "$out" | grep -q 'Encryption ✔' && printf '%s\n' "$out" | grep -q 'Decryption ✔' \
+                || { echo "the KMS key does not encrypt and decrypt: $out" >&2; exit 1; }
+              echo "MinIO KMS key works"
+              switch() { # namespace: create the switch if absent, else make sure it says on
+                if kubectl -n "$1" get configmap openinfra-object-encryption >/dev/null 2>&1; then
+                  kubectl -n "$1" patch configmap openinfra-object-encryption --type merge \
+                    -p '{"data":{"enabled":"true","default":"AES256"}}' >/dev/null
+                else
+                  kubectl -n "$1" create configmap openinfra-object-encryption \
+                    --from-literal=enabled=true --from-literal=default=AES256 >/dev/null
+                fi
+                echo "configmap/openinfra-object-encryption on in $1"
+              }
+              switch minio
+              if kubectl get namespace open-infra-aws-shim >/dev/null 2>&1; then switch open-infra-aws-shim; fi

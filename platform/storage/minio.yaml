@@ -29,6 +29,16 @@ spec:
         # ROLLOUT: annotate secret/minio with argocd.argoproj.io/sync-options: Prune=false before
         # syncing (with existingSecret the chart stops rendering the Secret; prune would delete it).
         existingSecret: minio
+        # Object encryption (components.objectEncryption, storage/minio-kms.yaml): MinIO reads its KMS
+        # key from secret/minio-kms when that exists. The mount is optional and MinIO skips a missing
+        # env file, so a cluster without the key starts exactly as before.
+        extraVolumes:
+          - name: kms
+            secret: { secretName: minio-kms, optional: true }
+        extraVolumeMounts:
+          - { name: kms, mountPath: /etc/openinfra/minio-kms, readOnly: true }
+        environment:
+          MINIO_CONFIG_ENV_FILE: /etc/openinfra/minio-kms/config.env
         persistence:
           enabled: true
           size: 50Gi

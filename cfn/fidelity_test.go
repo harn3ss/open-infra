@@ -13,10 +13,21 @@ func TestPlan_LiftAndShiftFixture_FidelitySummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := BuildPlan(data, map[string]string{
+	params := map[string]string{
 		"SiteDomain":        "site.example.test",
 		"AppRepositoryName": "fixture-app",
-	}, "fixture")
+	}
+	// The fixture's buckets ask for default encryption, so it plans only where the environment vouches
+	// that new buckets are encrypted (the in-cluster front door with object encryption on). Offline,
+	// nothing vouches for that, and the plan refuses rather than promise an unencrypted bucket.
+	off, err := BuildPlan(data, params, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off.Verdict == ProvisionableWithCaveats || !strings.Contains(strings.Join(off.Blockers, " "), "BucketEncryption") {
+		t.Fatalf("without object encryption the fixture must refuse on BucketEncryption: verdict %s, blockers %v", off.Verdict, off.Blockers)
+	}
+	p, err := BuildPlanWithCaps(data, params, nil, "fixture", Capabilities{ObjectEncryption: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,6 +43,7 @@ func TestPlan_LiftAndShiftFixture_FidelitySummary(t *testing.T) {
 		"AppBucket: PublicAccessBlockConfiguration is a no-op",
 		"SiteDistribution: certificate SiteCertificate is not requested from ACM",
 		"AppInstance: Elastic IP AppAddress maps onto this VM's LAN IP",
+		"AppBucket: BucketEncryption is honored by the platform's object encryption",
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("fidelity summary is missing %q; got:\n%s", want, all)

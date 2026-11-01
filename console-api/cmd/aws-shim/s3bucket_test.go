@@ -111,13 +111,14 @@ type fakeS3 struct {
 	objects    map[string][]fakeVersion // bucket -> versions (newest last)
 	versioning map[string]string
 	tags       map[string]string // bucket -> raw Tagging XML ("" = none)
+	encryption map[string]string // bucket -> default SSE algorithm ("" = none)
 	removed    []string
 }
 
 type fakeVersion struct{ key, id string }
 
 func newFakeS3() *fakeS3 {
-	return &fakeS3{buckets: map[string]bool{}, objects: map[string][]fakeVersion{}, versioning: map[string]string{}, tags: map[string]string{}}
+	return &fakeS3{buckets: map[string]bool{}, objects: map[string][]fakeVersion{}, versioning: map[string]string{}, tags: map[string]string{}, encryption: map[string]string{}}
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +131,7 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, hasVersions := q["versions"]
 	_, hasTagging := q["tagging"]
 	_, hasLocation := q["location"]
+	_, hasEncryption := q["encryption"]
 	notFound := func() {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`<Error><Code>NoSuchBucket</Code><Message>no</Message></Error>`))
@@ -173,6 +175,13 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		sb.WriteString(`</ListVersionsResult>`)
 		_, _ = w.Write([]byte(sb.String()))
+	case hasEncryption && r.Method == http.MethodGet:
+		if f.encryption[bucket] == "" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`<Error><Code>ServerSideEncryptionConfigurationNotFoundError</Code><Message>none</Message></Error>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>` + f.encryption[bucket] + `</SSEAlgorithm></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>`))
 	case hasTagging && r.Method == http.MethodGet:
 		if f.tags[bucket] == "" {
 			w.WriteHeader(http.StatusNotFound)
@@ -378,5 +387,27 @@ func TestPlatformBucketsMatchOwnership(t *testing.T) {
 	sort.Strings(got)
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("platformBuckets = %v; provider-setup.yaml PLATFORM_BUCKETS = %v", got, want)
+	}
+}
+
+// GetBucketEncryption answers the bucket's default encryption in S3's document, and a bucket with none
+// answers ServerSideEncryptionConfigurationNotFoundError (404), the code SDKs key on.
+func TestS3GetBucketEncryption(t *testing.T) {
+	f := newFakeS3()
+	f.buckets["enc"], f.buckets["plain"] = true, true
+	f.encryption["enc"] = "AES256"
+	h := &s3Handler{mc: fakeMinio(t, f), logger: discardLogger()}
+	if op, ok := decodeTarget(http.MethodGet, "enc", "", url.Values{"encryption": {""}}); !ok || op.kind != "get-bucket-encryption" || op.action() != "s3:GetEncryptionConfiguration" {
+		t.Fatalf("GET ?encryption decodes to %+v %v", op, ok)
+	}
+	w := httptest.NewRecorder()
+	h.getBucketEncryption(w, httptest.NewRequest("GET", "/enc?encryption", nil), s3op{kind: "get-bucket-encryption", bucket: "enc"}, "r")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "<ServerSideEncryptionConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>AES256</SSEAlgorithm>") {
+		t.Fatalf("GetBucketEncryption = %d %s", w.Code, w.Body)
+	}
+	w = httptest.NewRecorder()
+	h.getBucketEncryption(w, httptest.NewRequest("GET", "/plain?encryption", nil), s3op{kind: "get-bucket-encryption", bucket: "plain"}, "r")
+	if w.Code != 404 || !strings.Contains(w.Body.String(), "ServerSideEncryptionConfigurationNotFoundError") {
+		t.Fatalf("GetBucketEncryption (none) = %d %s", w.Code, w.Body)
 	}
 }

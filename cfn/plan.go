@@ -99,13 +99,13 @@ func BuildPlanWithExports(data []byte, params, exports map[string]string, stackN
 // absent. The in-cluster aws-shim CloudFormation doorway sets them from its environment; the CLI
 // (outside the cluster, unable to vouch for them) leaves them zero.
 type Capabilities struct {
-	// ObjectEncryption: this environment GUARANTEES that a NEW MinIO bucket is encrypted at rest with
-	// SSE-KMS by default. That is an outcome, not a component: the objectEncryption stack being on,
-	// KES merely being deployed, or MinIO carrying the MINIO_KMS_KES_* config while only the buckets
-	// someone ran `mc encrypt set` on are encrypted — none of those is enough, because a bucket the
-	// CloudFormation front door creates later would still be unencrypted (kind: Bucket does not set
-	// bucket encryption). When true, an S3 BucketEncryption maps with a caveat; when false it REFUSES,
-	// rather than deploying an unencrypted bucket the template asked to encrypt (#347 Phase 1.8).
+	// ObjectEncryption: this environment GUARANTEES that a NEW MinIO bucket is encrypted at rest by
+	// default. That is an outcome, not a component: MinIO carrying a key while only the buckets someone
+	// ran `mc encrypt set` on are encrypted is not enough, because a bucket the CloudFormation front door
+	// creates later would still be unencrypted. The platform's object-encryption switch (written once
+	// MinIO's key works and kind: Bucket's setup gives new buckets default encryption) is that guarantee.
+	// When true, an S3 BucketEncryption maps with a caveat; when false it REFUSES, rather than deploying
+	// an unencrypted bucket the template asked to encrypt.
 	ObjectEncryption bool
 	// SQSAPI, SNSAPI, SSMAPI and KMSAPI: this environment serves that AWS API from its own store, so a
 	// stack's queue, topic (and subscriptions), parameter, or key (and aliases) is created IN that store —

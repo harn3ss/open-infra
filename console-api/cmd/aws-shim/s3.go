@@ -51,7 +51,7 @@ type s3Handler struct {
 type s3op struct {
 	// kind: "list-buckets" | "head-bucket" | "list-objects" | "get" | "head" | "put" | "delete", or a bucket
 	// operation: "delete-bucket", "get-/put-bucket-versioning", "list-object-versions",
-	// "get-/put-/delete-bucket-tagging", "get-bucket-location" (s3bucket.go).
+	// "get-/put-/delete-bucket-tagging", "get-bucket-location", "get-bucket-encryption" (s3bucket.go).
 	kind      string
 	bucket    string
 	key       string
@@ -143,6 +143,8 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		h.deleteBucketTagging(w, r, op, requestID)
 	case "get-bucket-location":
 		h.getBucketLocation(w, r, op, requestID)
+	case "get-bucket-encryption":
+		h.getBucketEncryption(w, r, op, requestID)
 	default:
 		writeS3Error(w, "NotImplemented", requestID, r.URL.Path)
 	}
@@ -355,6 +357,10 @@ func setObjectHeaders(w http.ResponseWriter, stat minio.ObjectInfo) {
 	w.Header().Set("Accept-Ranges", "bytes")
 	if stat.VersionID != "" {
 		w.Header().Set("x-amz-version-id", stat.VersionID)
+	}
+	// An object stored encrypted (a bucket with default encryption) says so, as S3 does.
+	if sse := stat.Metadata.Get("X-Amz-Server-Side-Encryption"); sse != "" {
+		w.Header().Set("x-amz-server-side-encryption", sse)
 	}
 }
 

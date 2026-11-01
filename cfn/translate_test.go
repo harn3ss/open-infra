@@ -1068,8 +1068,8 @@ func TestTranslate_S3_EncryptionCaveatWhenObjectEncryptionOn(t *testing.T) {
 		t.Fatalf("with objectEncryption on, BucketEncryption must map (caveat), not refuse: %s", findingsText(fs))
 	}
 	cav := strings.Join(m.Caveats, " ")
-	if !strings.Contains(cav, "objectEncryption") || !strings.Contains(cav, "tenant") {
-		t.Fatalf("caveat must name the tenant-wide objectEncryption, caveats: %v", m.Caveats)
+	if !strings.Contains(cav, "platform's object encryption") || !strings.Contains(cav, "every NEW bucket") {
+		t.Fatalf("caveat must say the encryption is the platform's default for new buckets, caveats: %v", m.Caveats)
 	}
 	if !strings.Contains(cav, "aws:kms") {
 		t.Fatalf("caveat should surface the requested SSE algorithm, caveats: %v", m.Caveats)

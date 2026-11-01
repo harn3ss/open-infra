@@ -138,11 +138,14 @@ incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-co
 # reconciler, and the synchronous ca-issuer. OFF unless components.pki: true; RIDES ON the encryption
 # component (reuses its Vault + Kubernetes-auth wiring — see docs/certificate-authority.md).
 incl pki "abstraction/certificateauthority-xrd.yaml,abstraction/certificateauthority-composition.yaml,security/ca-reconciler.yaml,security/ca-issuer.yaml"
-# Object encryption at rest: MinIO SSE-KMS via MinIO KES → Vault KV, with crypto-erase (destroy the key
-# → objects unreadable). OFF unless components.objectEncryption: true; RIDES ON the encryption component
-# (reuses its Vault + the minio-kes k8s-auth identity). Ships KES + certs; it does NOT touch the live
-# MinIO — turning SSE-KMS on for the platform MinIO is a deliberate, snapshot-first step (docs/encryption.md).
-incl objectEncryption "security/minio-kes.yaml"
+# Object encryption at rest: the platform MinIO's own static KMS key (secret/minio-kms), so every NEW
+# bucket is encrypted by default (AES256) and the aws-shim accepts a template's BucketEncryption.
+# OFF unless components.objectEncryption: true. Turning it on restarts all MinIO servers together once
+# (about a minute); existing objects are not re-encrypted. Back the key up (docs/encryption.md).
+incl objectEncryption "storage/minio-kms.yaml"
+# Optional KES -> Vault KV keystore (customer-held keys, crypto-erase). Shipped but not wired to the
+# platform MinIO; OFF unless components.objectEncryptionKes: true; RIDES ON the encryption component.
+incl objectEncryptionKes "security/minio-kes.yaml"
 # Transactional email: kind: EmailSender (its XRD/composition) + the shared in-cluster SMTP relay.
 # OFF unless components.mail: true. Reliable internet delivery needs a smarthost/SPF/DKIM — an
 # operator concern; see docs/email.md.

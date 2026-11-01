@@ -3782,7 +3782,7 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 // bucket is COLLATED in as spec.policy (a public "*"-principal policy only — an AWS IAM ARN principal
 // doesn't resolve to a MinIO principal, so such a policy would be stored and silently NOT enforce; it
 // refuses instead). BucketEncryption maps with a CAVEAT only when the deploy environment reports
-// objectEncryption on (Capabilities.ObjectEncryption — encryption is tenant-level, not per-bucket);
+// objectEncryption on (Capabilities.ObjectEncryption — encryption is the platform default for new buckets, not per-bucket);
 // otherwise it REFUSES rather than deploy an unencrypted bucket the template asked to encrypt.
 // CorsConfiguration REFUSES — per-bucket CORS is a MinIO ceiling (PutBucketCors returns
 // MalformedXML; MinIO does CORS globally via MINIO_API_CORS_ALLOW_ORIGIN), so it is refused loudly
@@ -3799,13 +3799,12 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	var noopNotes []string
 	f = append(f, blockUnknownProps(id, props, known)...)
 
-	// #347 Phase 1.8 (#344 4.3): BucketEncryption is honored ONLY when the deploy environment has
-	// objectEncryption on (Capabilities.ObjectEncryption — MinIO actually carries SSE-KMS config, not
-	// merely KES deployed). open-infra encrypts at rest at the MinIO-tenant level (SSE-KMS via
-	// KES→Vault), not per-bucket, so when it's on the bucket maps with a CAVEAT (the template's
-	// SSEAlgorithm/KMSMasterKeyID aren't applied individually; the tenant KES key is). When it's off
-	// or unknown it REFUSES — a template that asks for encryption at rest must never deploy an
-	// unencrypted bucket with only a note to show for it (review of 236d5b5b).
+	// BucketEncryption is honored ONLY when the deploy environment has objectEncryption on
+	// (Capabilities.ObjectEncryption: every NEW MinIO bucket gets default encryption, AES256 under the
+	// platform MinIO's key — not merely a key being configured). Encryption is the platform's default,
+	// not per-bucket, so when it's on the bucket maps with a CAVEAT (an aws:kms KMSMasterKeyID is not
+	// used; the platform key is). When it's off or unknown it REFUSES — a template that asks for
+	// encryption at rest must never deploy an unencrypted bucket with only a note to show for it.
 	if be, ok := props["BucketEncryption"]; ok {
 		alg := ""
 		if m, _ := be.(map[string]any); m != nil {
@@ -3822,9 +3821,9 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 			algNote = " (" + alg + ")"
 		}
 		if ctx != nil && ctx.caps.ObjectEncryption {
-			noopNotes = append(noopNotes, "BucketEncryption is honored by the tenant's objectEncryption: this deploy environment declares that MinIO encrypts every NEW bucket at rest with SSE-KMS (KES→Vault) by default — objects are encrypted with the tenant KES key; the template's SSEAlgorithm"+algNote+"/KMSMasterKeyID are not applied to this bucket individually")
+			noopNotes = append(noopNotes, "BucketEncryption is honored by the platform's object encryption: every NEW bucket here gets default encryption at rest (AES256, i.e. SSE-S3, under the platform MinIO's key), so this bucket's objects are encrypted; the template's SSEAlgorithm"+algNote+"/KMSMasterKeyID are not applied individually (an aws:kms key is not used — the platform key is)")
 		} else {
-			f = append(f, Finding{"Resource " + id, "BucketEncryption" + algNote + " requires that new MinIO buckets be encrypted at rest with SSE-KMS (the objectEncryption stack, KES→Vault), and this deploy environment does not declare that — refusing rather than creating an unencrypted bucket the template asked to encrypt. Once new buckets are SSE-KMS-encrypted by default, set OBJECT_ENCRYPTION=true on the aws-shim (see docs/encryption.md); then this bucket maps with a caveat."})
+			f = append(f, Finding{"Resource " + id, "BucketEncryption" + algNote + " requires that new MinIO buckets be encrypted at rest by default (components.objectEncryption), and this deploy environment does not declare that — refusing rather than creating an unencrypted bucket the template asked to encrypt. Turn object encryption on (docs/encryption.md); then this bucket maps with a caveat."})
 		}
 	}
 	if _, ok := props["CorsConfiguration"]; ok {
