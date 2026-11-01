@@ -256,6 +256,9 @@ var guardBaselines = []guardBaseline{
 	yamlBaseline("AWS::IAM::Role", `{ AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [ { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: "sts:AssumeRole" } ] } }`, ""),
 	yamlBaseline("AWS::DynamoDB::Table", `{ BillingMode: PAY_PER_REQUEST, KeySchema: [ { AttributeName: id, KeyType: HASH } ], AttributeDefinitions: [ { AttributeName: id, AttributeType: S } ] }`, ""),
 	yamlBaseline("AWS::SQS::Queue", `{}`, ""),
+	yamlBaseline("AWS::EC2::VolumeAttachment", `{ InstanceId: !Ref W, VolumeId: !Ref V }`, `
+  W: { Type: AWS::EC2::Instance, Properties: { ImageId: ubuntu-24.04 } }
+  V: { Type: AWS::EC2::Volume, Properties: { Size: 20 } }`),
 	yamlBaseline("AWS::Lambda::Permission", `{ Action: "lambda:InvokeFunction", FunctionName: !Ref F, Principal: events.amazonaws.com }`, "\n  F: { Type: AWS::Lambda::Function, Properties: { PackageType: Image, Code: { ImageUri: \"registry.example/fn:1\" } } }"),
 	yamlBaseline("AWS::SNS::Topic", `{}`, ""),
 	yamlBaseline("AWS::SSM::Parameter", `{ Name: /app/x, Type: String, Value: v }`, ""),

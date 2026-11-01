@@ -8982,6 +8982,22 @@ components:
               description: 'Root disk size, retained across reboots and stop/start. Default 20Gi. Linux grows its rootfs to
                 fit via cloud-init; Windows ignores this and uses a fixed 100Gi root (a generalized image''s C: can''t be
                 reliably auto-grown).'
+            volumes:
+              type: array
+              description: 'Existing kind: Volumes in the VM''s namespace, attached as additional virtio disks after the dataDisks
+                (the EC2 VolumeAttachment equivalent). A Volume must be Block mode (its default). A volume is attached when
+                the VM starts: attaching one to, or removing one from, a running VM takes effect at its next restart (the
+                VM reports RestartRequired).'
+              items:
+                type: object
+                required:
+                - name
+                properties:
+                  name:
+                    type: string
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    maxLength: 58
+                    description: 'The kind: Volume''s name.'
             dataDisks:
               type: array
               description: "Additional persistent data disks attached at boot, beyond the root disk (the EC2 extra-BlockDeviceMapping\

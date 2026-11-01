@@ -1242,6 +1242,11 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		}
 	}
 
+	if vols, vcav, vreq := ctx.attachedVolumes(id); len(vols) > 0 {
+		spec["volumes"] = vols
+		cav = append(cav, vcav...)
+		requires = append(requires, vreq...)
+	}
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: ctx.name(id), Spec: spec, Requires: requires}
 	if defaultSG != nil {
 		m.Extra = append(m.Extra, defaultSG)

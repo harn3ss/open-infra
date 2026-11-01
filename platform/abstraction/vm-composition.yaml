@@ -218,6 +218,8 @@ spec:
             {{- /* Extra boot-time data disks (#115 lift-and-shift): blank persistent volumes attached
                    as virtio devices in order (/dev/vdb, /dev/vdc, …), each following the root disk's
                    HA storage policy. Unnamed disks get data1, data2, … so the attach order is stable. */}}
+            {{- /* Existing kind: Volumes attached as disks (spec.volumes — the EC2 VolumeAttachment equivalent). */}}
+            {{- $attached := $spec.volumes | default list }}
             {{- $dataDisks := list }}
             {{- range $i, $dd := ($spec.dataDisks | default list) }}
             {{-   $ddname := $dd.name | default (printf "data%d" (add $i 1)) }}
@@ -454,6 +456,12 @@ spec:
                                 disk:
                                   bus: virtio
                               {{- end }}
+                              {{- /* Attached kind: Volumes, after the data disks. */}}
+                              {{- range $av := $attached }}
+                              - name: {{ printf "vol-%s" $av.name | toJson }}
+                                disk:
+                                  bus: virtio
+                              {{- end }}
                               {{- /* Workload-identity token disk (spec.instanceRole): KubeVirt projects
                                      the per-VM ServiceAccount token as an iso9660 disk. The serial lets
                                      cloud-init find it deterministically (/dev/disk/by-id/virtio-SATOKEN). */}}
@@ -539,6 +547,12 @@ spec:
                             dataVolume:
                               name: {{ $name }}-{{ $dd.name }}
                             {{- end }}
+                          {{- end }}
+                          {{- /* Each attached kind: Volume is its own PVC (named after the Volume). */}}
+                          {{- range $av := $attached }}
+                          - name: {{ printf "vol-%s" $av.name | toJson }}
+                            persistentVolumeClaim:
+                              claimName: {{ $av.name | toJson }}
                           {{- end }}
             {{- range $dd := $dataDisks }}
             {{- if $dd.encrypted }}

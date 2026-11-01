@@ -305,6 +305,29 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 		}
 	}
 
+	// An instance collates the volumes attached to it (AWS::EC2::VolumeAttachment), so it is created after
+	// them: its VM starts with their disks. A volume that names the instance only for its Availability Zone
+	// (a value open-infra does not use) no longer waits for it.
+	for _, id := range t.rawOrder {
+		res := t.Resources[id]
+		if res.Type != "AWS::EC2::VolumeAttachment" {
+			continue
+		}
+		inst, _ := refTarget(res.Properties["InstanceId"])
+		vol, _ := refTarget(res.Properties["VolumeId"])
+		if _, ok := deps[inst]; !ok || t.Resources[vol].Type != "AWS::EC2::Volume" {
+			continue
+		}
+		deps[inst] = append(deps[inst], vol)
+		var keep []string
+		for _, d := range deps[vol] {
+			if d != inst {
+				keep = append(keep, d)
+			}
+		}
+		deps[vol] = keep
+	}
+
 	// Dependency ordering over included resources only.
 	var included []string
 	incDeps := map[string][]string{}
