@@ -43,6 +43,8 @@ REGION="${AWS_REGION:-us-east-1}"
 SFX="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 STACK="${STACK:-lsfix-$SFX}"
 REPO="${REPO:-lsfix-app-$SFX}"
+CFN_NS="${CFN_NS:-open-infra-cfn}"
+CREDS_NS="${CREDS_NS:-openinfra-bucket-creds}"
 APP_IMAGE="${APP_IMAGE:-docker.io/amazon/aws-cli:2.27.50}"
 RESULTS_TIMEOUT="${RESULTS_TIMEOUT:-1800}"
 TMP="$(mktemp -d)"
@@ -93,9 +95,12 @@ A=(aws --endpoint-url "$SHIM_ENDPOINT" --region "$REGION" --no-cli-pager)
 INSTANCE_ENDPOINT="${INSTANCE_ENDPOINT:-http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566}"
 
 cleanup() {
+  local appb="" siteb=""
   if [ "${KEEP:-0}" != 1 ] && [ -n "$STATE" ]; then
-    for b in $("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].Outputs[?OutputKey=='AppBucketName' || OutputKey=='SiteBucketName'].OutputValue" --output text 2>/dev/null); do
-      "${A[@]}" s3 rm "s3://$b" --recursive >/dev/null 2>&1 || true
+    appb="$("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].Outputs[?OutputKey=='AppBucketName'].OutputValue" --output text 2>/dev/null)"
+    siteb="$("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].Outputs[?OutputKey=='SiteBucketName'].OutputValue" --output text 2>/dev/null)"
+    for b in $appb $siteb; do
+      [ -n "$b" ] && [ "$b" != None ] && "${A[@]}" s3 rm "s3://$b" --recursive >/dev/null 2>&1 || true
     done
     "${A[@]}" cloudformation delete-stack --stack-name "$STACK" >/dev/null 2>&1 || true
     "${A[@]}" ecr delete-repository --repository-name "$REPO" --force >/dev/null 2>&1 || true
@@ -103,6 +108,22 @@ cleanup() {
   if [ -n "$MINTED_USER" ]; then
     kubectl -n open-infra-console delete user.iam.openinfra.dev "$MINTED_USER" --ignore-not-found >/dev/null 2>&1 || true
     kubectl -n open-infra-aws-shim delete secret "$MINTED_KEY" --ignore-not-found >/dev/null 2>&1 || true
+  fi
+  if [ "${KEEP:-0}" != 1 ]; then
+    # Teardown leftovers (#347/#348): the claim creds Secrets are now composed (GC'd with the stack);
+    # sweep any that linger, the cert-manager TLS Secrets, and this stack's platform-side scoped-cred
+    # Secrets + owner records. Then assert none remain. Matched by this stack's name / bucket names.
+    local pat_cfn pat_creds
+    pat_cfn="/(${STACK}[-a-z0-9]*-(minio|db-backup-creds)|staticsite-${STACK}[-a-z0-9]*-tls)$"
+    pat_creds="/(app-open-infra-cfn-${STACK}|bkp-open-infra-cfn-${STACK}"
+    { [ -n "$appb" ] && [ "$appb" != None ] && pat_creds="$pat_creds|bucket-owner-${appb}"; } || true
+    { [ -n "$siteb" ] && [ "$siteb" != None ] && pat_creds="$pat_creds|bucket-owner-${siteb}"; } || true
+    pat_creds="$pat_creds)"
+    for s in $(kubectl -n "$CFN_NS" get secret -o name 2>/dev/null | grep -E "$pat_cfn"); do kubectl -n "$CFN_NS" delete "$s" --ignore-not-found >/dev/null 2>&1; done
+    for s in $(kubectl -n "$CREDS_NS" get secret -o name 2>/dev/null | grep -E "$pat_creds"); do kubectl -n "$CREDS_NS" delete "$s" --ignore-not-found >/dev/null 2>&1; done
+    local left
+    left="$(kubectl -n "$CFN_NS" get secret -o name 2>/dev/null | grep -E "$pat_cfn"; kubectl -n "$CREDS_NS" get secret -o name 2>/dev/null | grep -E "$pat_creds")"
+    [ -z "$left" ] || log "WARNING: leftover Secrets remain after teardown: $(echo $left)"
   fi
   rm -rf "$TMP"
 }

@@ -32,6 +32,7 @@ EXIT_INCONCLUSIVE=42
 SHIM_NS="${SHIM_NS:-open-infra-aws-shim}"
 USERS_NS="${USERS_NS:-open-infra-console}"
 CFN_NS="${CFN_NS:-open-infra-cfn}"
+CREDS_NS="${CREDS_NS:-openinfra-bucket-creds}"
 MINIO_NS="${MINIO_NS:-minio}"
 TRAEFIK_NS="${TRAEFIK_NS:-kube-system}"
 TRAEFIK_SVC="${TRAEFIK_SVC:-traefik}"
@@ -145,6 +146,9 @@ cleanup() {
     kubectl -n "$CFN_NS" delete "$k" -l "cfn.openinfra.dev/stack=$STACK" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1
     kubectl -n "$CFN_NS" delete "$k" -l "cfn.openinfra.dev/stack=$BAD_STACK" --ignore-not-found --wait=false >/dev/null 2>&1
   done
+  local su bu; su="$(app_user StaticSite "$CFN_NS" "$SITE")"; bu="$(app_user Bucket "$CFN_NS" "$BCLAIM")"
+  # The claim creds Secrets are now composed (GC'd with the claim); delete any that linger, plus the
+  # cert-manager TLS Secret (not owned by the claim until enableCertificateOwnerRef — #348).
   kubectl -n "$CFN_NS" delete secret "$SITE-minio" "$BCLAIM-minio" "staticsite-$SITE-tls" --ignore-not-found >/dev/null 2>&1
   kubectl -n "$SHIM_NS" delete secret "cfn-stack-$STACK" "cfn-stack-$BAD_STACK" --ignore-not-found >/dev/null 2>&1  # the doorway's records
   kubectl -n "$CFN_NS" delete configmap "cfn-stack-$STACK" "cfn-stack-$BAD_STACK" --ignore-not-found >/dev/null 2>&1  # (an earlier doorway's)
@@ -152,11 +156,16 @@ cleanup() {
   for j in $(kubectl -n "$MINIO_NS" get jobs -o name 2>/dev/null | grep "/$BCLAIM-bucket-"); do
     kubectl -n "$MINIO_NS" delete "$j" --ignore-not-found >/dev/null 2>&1
   done
-  minio_cleanup "$BUCKET" "app-$SITE" "app-$BCLAIM" "$(app_user StaticSite "$CFN_NS" "$SITE")" "$(app_user Bucket "$CFN_NS" "$BCLAIM")"
-  kubectl -n "$MINIO_NS" delete secret "bucket-owner-$BUCKET" --ignore-not-found >/dev/null 2>&1  # the bucket is gone, so is its owner record
+  minio_cleanup "$BUCKET" "app-$SITE" "app-$BCLAIM" "$su" "$bu"
+  # Owner records and platform-side scoped-credential Secrets now live in the creds namespace.
+  kubectl -n "$CREDS_NS" delete secret "bucket-owner-$BUCKET" "$su" "$bu" --ignore-not-found >/dev/null 2>&1
   kubectl delete ns "$CLIENT_NS" --ignore-not-found --wait=false >/dev/null 2>&1
   for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1; done
   for k in "${CREATED_KEYS[@]:-}";  do [ -n "$k" ] && kubectl -n "$SHIM_NS" delete secret "$k" --ignore-not-found >/dev/null 2>&1; done
+  # Assert the teardown left nothing behind for this stack.
+  local left
+  left="$(kubectl -n "$CFN_NS" get secret "$SITE-minio" "$BCLAIM-minio" "staticsite-$SITE-tls" -o name 2>/dev/null; kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$su" "$bu" -o name 2>/dev/null)"
+  [ -z "$left" ] || printf '  (cleanup) WARNING: leftover Secrets remain after teardown: %s\n' "$(echo $left)" >&2
   rm -rf "$TMP"
 }
 trap cleanup EXIT

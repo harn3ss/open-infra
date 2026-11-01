@@ -106,14 +106,21 @@ YAML
   kubectl -n "$MINIO_NS" delete pod "$pod" --ignore-not-found --wait=false >/dev/null 2>&1 || true
 }
 
+CREDS_NS="${CREDS_NS:-openinfra-bucket-creds}"
 cleanup() {
   set +e
-  log "cleanup: StaticSite $SITE, namespace $NS, setup Job, MinIO bucket $BUCKET + user app-$SITE"
+  local user; user="$(app_user StaticSite "$NS" "$SITE")"
+  log "cleanup: StaticSite $SITE, namespace $NS, setup Job, MinIO bucket $BUCKET + user $user"
   kubectl -n "$NS" delete staticsite "$SITE" --ignore-not-found --wait=true --timeout=120s >/dev/null 2>&1
   kubectl -n "$MINIO_NS" delete job "$SITE-site-setup" --ignore-not-found >/dev/null 2>&1
-  minio_cleanup "$BUCKET" "app-$SITE" "$(app_user StaticSite "$NS" "$SITE")"
-  kubectl -n "$MINIO_NS" delete secret "bucket-owner-$BUCKET" --ignore-not-found >/dev/null 2>&1  # the bucket is gone, so is its owner record
+  minio_cleanup "$BUCKET" "app-$SITE" "$user"
+  # Owner records and the platform-side scoped-credential Secret now live in the creds namespace.
+  kubectl -n "$CREDS_NS" delete secret "bucket-owner-$BUCKET" "$user" --ignore-not-found >/dev/null 2>&1
   kubectl delete ns "$NS" --ignore-not-found --wait=false >/dev/null 2>&1
+  # Assert nothing was left behind in the creds namespace for this site.
+  local left
+  left="$(kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$user" -o name 2>/dev/null)"
+  [ -z "$left" ] || printf '  (cleanup) WARNING: leftover creds-namespace Secrets remain: %s\n' "$left" >&2
   rm -rf "$TMP"
 }
 trap cleanup EXIT
