@@ -28,9 +28,12 @@ see [`encryption.md`](encryption.md)) picks up the request and:
    destroys exactly the Transit key that key records (`ek_<namespace>_<name>`), so a Destruction can
    never erase another namespace's key by naming it. With no such key it records `Error` and destroys
    nothing. (A key whose EncryptionKey was already deleted is still found, through the key
-   reconciler's record of that namespace + name.) A Transit key that more than one EncryptionKey
-   records — possible only for same-named keys created before namespacing, which shared one — is
-   refused (`Error`): destroying it would erase another namespace's data too.
+   reconciler's record of that namespace + name.) A Transit key that another namespace is also on —
+   possible only for same-named keys created before namespacing, which shared one — is refused
+   (`Error`): destroying it would erase that namespace's data too. Two things count: any other
+   EncryptionKey that records the key, and any encrypted volume in another namespace keyed under it,
+   including one whose own EncryptionKey has since been deleted (data outlives the key object). If the
+   volume list cannot be read, the run destroys nothing.
 2. **Crypto-erases** — records what it observes (the key's version count) as `InProgress` *before*
    deleting, then sets `deletion_allowed` and deletes the Vault Transit key. Every DEK/volume/object
    wrapped by it is now undecryptable. If the key is **absent and no destruction was in progress**

@@ -11,7 +11,8 @@
 #     that namespace, at the Transit path that key's composite records (transit/keys/ek_<namespace>_
 #     <name>; a key created before namespacing keeps transit/keys/<name>). Naming another namespace's
 #     key finds nothing and destroys nothing.
-#   * Kubernetes: read Destructions + EncryptionKeys; write only the destruction state ConfigMaps; and
+#   * Kubernetes: read Destructions + EncryptionKeys, and list volume claims (to see whose data is
+#     under a key); write only the destruction state ConfigMaps; and
 #     GET exactly ONE secret (the audit off-siter's scoped put+retain MinIO identity) to write the
 #     certificate — resourceName-fenced.
 #   * Certificate: written under certificates/ in the WORM bucket with COMPLIANCE retention, so the
@@ -34,6 +35,11 @@ rules:
   - apiGroups: [openinfra.dev]
     resources: [destructions, encryptionkeys, xencryptionkeys]
     verbs: [get, list]
+  # Encrypted volumes name their EncryptionKey (annotation openinfra.dev/encryption-key): a key whose
+  # Transit path another namespace's volumes are under is never destroyed. Claims only, no Secrets.
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -182,6 +188,16 @@ spec:
                       | [.spec.claimRef.namespace, .spec.claimRef.name, .status.vaultKeyPath] | @tsv' \
                     > "$W/keymap.tsv"
                   xek=""
+                  # Every encrypted volume and the EncryptionKey name it is keyed under (in its own
+                  # namespace): a key another namespace's data is under is never destroyed. A failed list
+                  # fails the run, like the key list.
+                  vpvc="$(kubectl get persistentvolumeclaims -A -o json)" || { echo "cannot list volumes" >&2; exit 1; }
+                  printf '%s' "$vpvc" | jq -r '.items[]
+                      | select(.spec.storageClassName == "longhorn-encrypted")
+                      | select((.metadata.annotations["openinfra.dev/encryption-key"] // "") != "")
+                      | [.metadata.namespace, .metadata.name, .metadata.annotations["openinfra.dev/encryption-key"]] | @tsv' \
+                    > "$W/volumes.tsv"
+                  vpvc=""
 
                   # resolve_key <namespace> <name>: the Transit path of the EncryptionKey <name> in
                   # <namespace> — its composite's record; or, if that EncryptionKey has since been deleted,
@@ -271,12 +287,27 @@ spec:
                           continue
                         fi
                         # Keys created before namespacing could share one Transit key across namespaces (two
-                        # EncryptionKeys of the same name). Destroying a key another live EncryptionKey also
-                        # records would erase that namespace's data too — refuse; an operator resolves it.
-                        shared=$(LP="$path" awk -F '\t' '$3 == ENVIRON["LP"]' "$W/keymap.tsv" | wc -l | tr -d ' ')
-                        if [ "${shared:-0}" -gt 1 ]; then
-                          echo "REFUSED-SHARED $ns/$name: $path is the Transit key of $shared EncryptionKeys — nothing destroyed"
-                          writestate "Error" "$path is shared by $shared EncryptionKeys (created before namespacing) — destroying it would erase another namespace's data; nothing was destroyed" "" "" "" "" "$path"
+                        # EncryptionKeys of the same name). Destroying it would erase the other namespace's
+                        # data too — refuse; an operator resolves it. Counted: every OTHER live EncryptionKey
+                        # that records this path (this Destruction's own key is never one of them, whether
+                        # or not it still exists), and every encrypted volume of another namespace whose key
+                        # is, or may be, this path. Data outlives its EncryptionKey object, so the volumes
+                        # count even when the other namespace's EncryptionKey is gone.
+                        others=$(LP="$path" LNS="$ns" LKEY="$key" awk -F '\t' \
+                          '$3 == ENVIRON["LP"] && !($1 == ENVIRON["LNS"] && $2 == ENVIRON["LKEY"])' "$W/keymap.tsv" | wc -l | tr -d ' ')
+                        vols=0
+                        while IFS="$(printf '\t')" read -r vns vname vkey; do
+                          [ -n "$vname" ] && [ "$vns" != "$ns" ] || continue
+                          vpath="$(resolve_key "$vns" "$vkey")"
+                          # A volume whose key can no longer be resolved, under a pre-namespacing key of
+                          # the same name, may be under this very key: counted (fail closed).
+                          if [ "$vpath" = "$path" ] || { [ -z "$vpath" ] && [ "$path" = "transit/keys/$vkey" ]; }; then
+                            vols=$((vols + 1))
+                          fi
+                        done < "$W/volumes.tsv"
+                        if [ "${others:-0}" -gt 0 ] || [ "$vols" -gt 0 ]; then
+                          echo "REFUSED-SHARED $ns/$name: $path is also the Transit key of $others other EncryptionKey(s) and $vols volume(s) in other namespaces — nothing destroyed"
+                          writestate "Error" "$path is shared with another namespace ($others other EncryptionKey(s), $vols encrypted volume(s); a key created before namespacing) — destroying it would erase that namespace's data; nothing was destroyed" "" "" "" "" "$path"
                           continue
                         fi
 

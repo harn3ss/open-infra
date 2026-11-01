@@ -648,6 +648,9 @@ case "$*" in
   "get secret audit-offsite-minio-creds -n monitoring -o jsonpath="*) printf 'YWs=' ;;
   "get xencryptionkeys.openinfra.dev -o json") cat "$STUB/xenckeys.json" ;;
   "get destructions.openinfra.dev -A -o json") cat "$STUB/destructions.json" ;;
+  "get persistentvolumeclaims -A -o json")
+    [ -f "$STUB/fail-pvc-list" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
+    if [ -f "$STUB/pvcs.json" ]; then cat "$STUB/pvcs.json"; else echo '{"items":[]}'; fi ;;
   "get configmap "*" -n "*" --ignore-not-found -o name") [ ! -f "$cm" ] || echo "configmap/$3" ;;
   "get configmap "*" -n "*" -o json") [ -f "$cm" ] && cat "$cm" ;;
   "get configmap "*" -n "*" -o jsonpath="*)
@@ -866,7 +869,103 @@ func TestDestroyer_RefusesASharedPreNamespacingKey(t *testing.T) {
 		t.Fatalf("a shared key must not be destroyed; deleted %q\nlog:\n%s", got, out)
 	}
 	if d := cmData(e.cm(t, "openinfra-destruction-state-team-a.erase-app")); d["phase"] != "Error" ||
-		!strings.Contains(d["message"].(string), "shared by 2 EncryptionKeys") || d["certificate"] != "" {
+		!strings.Contains(d["message"].(string), "shared with another namespace (1 other EncryptionKey(s), 0 encrypted volume(s)") || d["certificate"] != "" {
 		t.Errorf("want Error naming the sharing, no certificate; got %v", d)
+	}
+}
+
+// The off-by-one the shared-key check had: when the Destruction's OWN EncryptionKey was already
+// deleted (its path found through the key reconciler's record), the one other namespace still on that
+// pre-namespacing key was the only one counted, so "more than one" never held and the erase went
+// ahead. Other keys are counted now, never this Destruction's own.
+func TestDestroyer_RefusesASharedKeyWhenItsOwnKeyIsGone(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, destroyerPath)
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := destroyerEnv(t, map[string]any{
+				"xenckeys.json":     items(xek("team-b", "app", "transit/keys/app")), // team-a's key is gone
+				"destructions.json": items(destruction("team-a", "erase-app", "app", "2026-11-01T00:00:00Z")),
+			}, map[string]map[string]any{
+				"openinfra-enckey-state-team-a.app": {"metadata": map[string]any{"name": "openinfra-enckey-state-team-a.app",
+					"namespace": "open-infra-console"},
+					"data": map[string]any{"exists": "true", "namespace": "team-a", "name": "app", "vaultKeyPath": "transit/keys/app"}},
+			}, "app")
+			out, err := e.run(t, sh, script, destroyerEnvVars...)
+			if err != nil {
+				t.Fatalf("destroyer run failed: %v\n%s", err, out)
+			}
+			if got := e.read("vault-deleted.txt"); got != "" {
+				t.Fatalf("team-b is still on transit/keys/app: it must not be destroyed; deleted %q\nlog:\n%s", got, out)
+			}
+			if d := cmData(e.cm(t, "openinfra-destruction-state-team-a.erase-app")); d["phase"] != "Error" ||
+				!strings.Contains(d["message"].(string), "1 other EncryptionKey(s)") || d["certificate"] != "" {
+				t.Errorf("want Error naming the other key, no certificate; got %v\nlog:\n%s", d, out)
+			}
+		})
+	}
+}
+
+// Data outlives its EncryptionKey object: another namespace's encrypted volume that may still be under
+// the key (its own EncryptionKey deleted, nothing records where it pointed, and the key is the
+// pre-namespacing one of that name) stops the erase. Volumes keyed elsewhere, and the Destruction's
+// own namespace's volumes (the data it means to erase), do not.
+func TestDestroyer_RefusesWhileAnotherNamespacesVolumesAreUnderTheKey(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, destroyerPath)
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := destroyerEnv(t, map[string]any{
+				"xenckeys.json": items(
+					xek("team-a", "app", "transit/keys/app"),           // pre-namespacing
+					xek("team-c", "app", "transit/keys/ek_team-c_app"), // namespaced: never this key
+					xek("team-a", "logs", "transit/keys/ek_team-a_logs"),
+				),
+				"pvcs.json": items(
+					pvc("team-a", "data", "u1", "longhorn-encrypted", "app", false),  // own data: erased
+					pvc("team-b", "data", "u2", "longhorn-encrypted", "app", false),  // key gone, may be under transit/keys/app
+					pvc("team-c", "data", "u3", "longhorn-encrypted", "app", false),  // keyed under ek_team-c_app
+					pvc("team-d", "data", "u4", "longhorn", "app", false),            // not encrypted
+					pvc("team-e", "data", "u5", "longhorn-encrypted", "logs", false), // a different key name
+				),
+				"destructions.json": items(
+					destruction("team-a", "erase-app", "app", "2026-11-01T00:00:00Z"),
+					destruction("team-a", "erase-logs", "logs", "2026-11-01T00:00:00Z"),
+				),
+			}, nil, "app", "ek_team-a_logs")
+			out, err := e.run(t, sh, script, destroyerEnvVars...)
+			if err != nil {
+				t.Fatalf("destroyer run failed: %v\n%s", err, out)
+			}
+			if got := strings.TrimSpace(e.read("vault-deleted.txt")); got != "ek_team-a_logs" {
+				t.Fatalf("want only ek_team-a_logs destroyed (transit/keys/app may hold team-b's data); deleted %q\nlog:\n%s", got, out)
+			}
+			if d := cmData(e.cm(t, "openinfra-destruction-state-team-a.erase-app")); d["phase"] != "Error" ||
+				!strings.Contains(d["message"].(string), "0 other EncryptionKey(s), 1 encrypted volume(s)") || d["certificate"] != "" {
+				t.Errorf("want Error naming the one other namespace's volume, no certificate; got %v\nlog:\n%s", d, out)
+			}
+			if d := cmData(e.cm(t, "openinfra-destruction-state-team-a.erase-logs")); d["phase"] != "Destroyed" {
+				t.Errorf("team-a's own namespaced key has no other namespace's data under it: must be destroyed; got %v\nlog:\n%s", d, out)
+			}
+		})
+	}
+}
+
+// No volume list, no erase: a key is never destroyed on a guess about whose data is under it.
+func TestDestroyer_VolumeListFailureDestroysNothing(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, destroyerPath)
+	sh := posixShells(t)[0]
+	e := destroyerEnv(t, map[string]any{
+		"xenckeys.json":     items(xek("team-a", "app", "transit/keys/ek_team-a_app")),
+		"destructions.json": items(destruction("team-a", "erase-app", "app", "2026-11-01T00:00:00Z")),
+		"fail-pvc-list":     "",
+	}, nil, "ek_team-a_app")
+	out, err := e.run(t, sh, script, destroyerEnvVars...)
+	if err == nil {
+		t.Fatalf("a run whose volume list failed must exit non-zero; log:\n%s", out)
+	}
+	if got := e.read("vault-deleted.txt"); got != "" {
+		t.Fatalf("a failed volume list must destroy nothing; deleted %q", got)
 	}
 }
