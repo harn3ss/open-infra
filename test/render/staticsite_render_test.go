@@ -127,3 +127,85 @@ func TestStaticSite_NoBuildByDefault(t *testing.T) {
 		t.Errorf("no build block must render no build CronJob; got:\n%s", grepCtx(out, "CronJob"))
 	}
 }
+
+// Extra hostnames (spec.domains — e.g. a CloudFront distribution's second Alias) each get an Ingress
+// rule and join the TLS certificate's hosts; responseHeaders are added by nginx at server level with
+// `always`, so error responses carry them too. A CSP value with quotes/semicolons stays one quoted
+// nginx string.
+func TestStaticSite_DomainsAndResponseHeaders(t *testing.T) {
+	tmpl := extractInlineTemplate(t, staticsiteCompositionPath)
+	out := render(t, tmpl, staticsiteCtx(map[string]any{
+		"domain":  "app.example.com",
+		"domains": []any{"www.example.com"},
+		"responseHeaders": []any{
+			map[string]any{"name": "Strict-Transport-Security", "value": "max-age=31536000; includeSubDomains"},
+			map[string]any{"name": "Content-Security-Policy", "value": "default-src 'self'; img-src 'self' data:"},
+			map[string]any{"name": "X-Frame-Options", "value": "DENY"},
+		},
+	}))
+	for _, want := range []string{
+		"- host: app.example.com",
+		"- host: www.example.com",
+		"- hosts: [ app.example.com, www.example.com ]",
+		`add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;`,
+		`add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:" always;`,
+		`add_header X-Frame-Options "DENY" always;`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q; got:\n%s", want, grepCtx(out, strings.Fields(want)[1]))
+		}
+	}
+	// The headers sit at server level (before `location /`), so they apply to every location and to
+	// the error_page / try_files internal redirects.
+	if strings.Index(out, "add_header X-Frame-Options") > strings.Index(out, "location / {") {
+		t.Errorf("responseHeaders must be rendered at server level, before location /; got:\n%s", grepCtx(out, "add_header"))
+	}
+}
+
+// nginx reads its config only at start, so with responseHeaders set the pod template carries a hash of
+// the config inputs: changing a header rolls the pod (an UpdateStack that changes a headers policy takes
+// effect) instead of leaving the old headers served.
+func TestStaticSite_ResponseHeadersRollThePod(t *testing.T) {
+	tmpl := extractInlineTemplate(t, staticsiteCompositionPath)
+	hdr := func(v string) map[string]any {
+		return staticsiteCtx(map[string]any{
+			"domain":          "app.example.com",
+			"responseHeaders": []any{map[string]any{"name": "X-Frame-Options", "value": v}},
+		})
+	}
+	hash := func(out string) string {
+		i := strings.Index(out, "openinfra.dev/site-config: \"")
+		if i < 0 {
+			t.Fatalf("pod template has no site-config hash; got:\n%s", grepCtx(out, "template:"))
+		}
+		rest := out[i+len("openinfra.dev/site-config: \""):]
+		return rest[:strings.Index(rest, "\"")]
+	}
+	a, b := hash(render(t, tmpl, hdr("DENY"))), hash(render(t, tmpl, hdr("SAMEORIGIN")))
+	if a == "" || a == b {
+		t.Fatalf("a changed header must change the pod's config hash (got %q vs %q)", a, b)
+	}
+	if a2 := hash(render(t, tmpl, hdr("DENY"))); a2 != a {
+		t.Fatalf("the config hash must be stable for the same headers (%q vs %q)", a, a2)
+	}
+}
+
+// Without domains/responseHeaders the site renders exactly as before: one Ingress rule, the single
+// domain in the TLS hosts, and no add_header lines.
+func TestStaticSite_SingleDomainNoHeaders(t *testing.T) {
+	tmpl := extractInlineTemplate(t, staticsiteCompositionPath)
+	out := render(t, tmpl, staticsiteCtx(map[string]any{"domain": "app.example.com"}))
+	if n := strings.Count(out, "- host: "); n != 1 {
+		t.Errorf("a single-domain site must render exactly one Ingress rule, got %d", n)
+	}
+	if !strings.Contains(out, "- hosts: [ app.example.com ]") {
+		t.Errorf("TLS hosts should be the single domain; got:\n%s", grepCtx(out, "hosts:"))
+	}
+	if strings.Contains(out, "add_header") {
+		t.Errorf("no responseHeaders must render no add_header; got:\n%s", grepCtx(out, "add_header"))
+	}
+	// Existing sites render an unchanged pod template (no config-hash annotation -> no rollout on upgrade).
+	if !strings.Contains(out, "metadata: { labels: { app: web-site } }") || strings.Contains(out, "site-config") {
+		t.Errorf("a site without responseHeaders must keep its pod template unchanged; got:\n%s", grepCtx(out, "app: web-site"))
+	}
+}

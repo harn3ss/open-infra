@@ -5,7 +5,9 @@
 #
 # Upload your built assets to the bucket (the <name>-minio connection secret gives
 # the endpoint + credentials); the server picks them up. Client-side routes work:
-# unknown paths fall back to index.html when spec.spa is true.
+# unknown paths fall back to index.html when spec.spa is true. A CloudFormation
+# AWS::CloudFront::Distribution over an in-stack S3 bucket translates to this kind
+# (the cfn engine's static-site subset: spec.domains, spec.responseHeaders, TLS).
 #
 # Synced after Crossplane's CRDs exist (sync-wave 2).
 apiVersion: apiextensions.crossplane.io/v1
@@ -38,6 +40,29 @@ spec:
                 domain:
                   type: string
                   description: "Hostname the site is served on, e.g. app.example.com."
+                domains:
+                  type: array
+                  description: "Additional hostnames the site is also served on (e.g. www.example.com alongside app.example.com). Each gets an Ingress rule and is added to the TLS certificate."
+                  items:
+                    type: string
+                    pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
+                responseHeaders:
+                  type: array
+                  description: "HTTP headers added to every response, error responses included — security headers (Strict-Transport-Security, Content-Security-Policy, X-Frame-Options, Referrer-Policy, …) or custom ones. Headers the server sets itself (Content-Type, Content-Length, Server, Date, Last-Modified, ETag, …) can't be replaced this way."
+                  items:
+                    type: object
+                    required: [name, value]
+                    properties:
+                      name:
+                        type: string
+                        pattern: '^[A-Za-z0-9-]{1,128}$'
+                        description: "Header name: letters, digits and hyphens."
+                      value:
+                        type: string
+                        minLength: 1
+                        maxLength: 4096
+                        pattern: '^[ !#%-\[\]-~]*$'
+                        description: "Header value: printable ASCII, without double quotes, backslashes or dollar signs."
                 bucket:
                   type: string
                   description: "MinIO bucket holding the built assets. Defaults to <name>-site; created if absent, with a <name>-minio connection secret (endpoint + credentials) for uploads."

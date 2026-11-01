@@ -8205,6 +8205,35 @@ components:
             domain:
               type: string
               description: Hostname the site is served on, e.g. app.example.com.
+            domains:
+              type: array
+              description: Additional hostnames the site is also served on (e.g. www.example.com alongside app.example.com).
+                Each gets an Ingress rule and is added to the TLS certificate.
+              items:
+                type: string
+                pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$
+            responseHeaders:
+              type: array
+              description: "HTTP headers added to every response, error responses included \u2014 security headers (Strict-Transport-Security,\
+                \ Content-Security-Policy, X-Frame-Options, Referrer-Policy, \u2026) or custom ones. Headers the server sets\
+                \ itself (Content-Type, Content-Length, Server, Date, Last-Modified, ETag, \u2026) can't be replaced this\
+                \ way."
+              items:
+                type: object
+                required:
+                - name
+                - value
+                properties:
+                  name:
+                    type: string
+                    pattern: ^[A-Za-z0-9-]{1,128}$
+                    description: 'Header name: letters, digits and hyphens.'
+                  value:
+                    type: string
+                    minLength: 1
+                    maxLength: 4096
+                    pattern: ^[ !#%-\[\]-~]*$
+                    description: 'Header value: printable ASCII, without double quotes, backslashes or dollar signs.'
             bucket:
               type: string
               description: MinIO bucket holding the built assets. Defaults to <name>-site; created if absent, with a <name>-minio

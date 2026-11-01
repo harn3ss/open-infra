@@ -41,6 +41,12 @@ spec:
             {{- $interval := $spec.syncIntervalSeconds | default 30 }}
             {{- $tls := true }}{{- if hasKey $spec "tls" }}{{- $tls = $spec.tls }}{{- end }}
             {{- $spa := true }}{{- if hasKey $spec "spa" }}{{- $spa = $spec.spa }}{{- end }}
+            {{- /* Every hostname the site answers on: domain first, then any extra domains (Ingress rules + TLS SANs). */}}
+            {{- $hosts := list $spec.domain }}
+            {{- range $d := ($spec.domains | default list) }}{{- $hosts = append $hosts $d }}{{- end }}
+            {{- /* nginx reads its config only at start: with responseHeaders set, a hash of the config inputs
+                   rides the pod template so a changed header (or spa/index/error document) rolls the pod. */}}
+            {{- $confHash := printf "%s|%v|%s|%s" $index $spa $error (toJson ($spec.responseHeaders | default list)) | sha256sum | trunc 10 }}
             {{- /* Amplify-style build: derive the poll cron (pollSeconds -> whole minutes, min 1). */}}
             {{- $build := $spec.build | default dict }}
             {{- $pollMin := 5 }}
@@ -231,7 +237,9 @@ spec:
             {{- end }}
             ---
             # nginx server config: SPA history-fallback (try_files -> index) or a
-            # plain multi-file site with an optional error document.
+            # plain multi-file site with an optional error document. responseHeaders are
+            # added at server level with `always`, so error responses carry them too (the
+            # XRD restricts names/values so each one is a single safe nginx token/string).
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -252,6 +260,9 @@ spec:
                         server_name _;
                         root /usr/share/nginx/html;
                         index {{ $index }};
+                        {{- range $h := ($spec.responseHeaders | default list) }}
+                        add_header {{ $h.name }} {{ $h.value | quote }} always;
+                        {{- end }}
                         location / {
                           {{- if $spa }}
                           try_files $uri $uri/ /{{ $index }};
@@ -284,7 +295,7 @@ spec:
                     replicas: 1
                     selector: { matchLabels: { app: {{ $name }}-site } }
                     template:
-                      metadata: { labels: { app: {{ $name }}-site } }
+                      metadata: { labels: { app: {{ $name }}-site }{{ if $spec.responseHeaders }}, annotations: { openinfra.dev/site-config: "{{ $confHash }}" }{{ end }} }
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
@@ -386,7 +397,8 @@ spec:
                   spec:
                     ingressClassName: traefik
                     rules:
-                      - host: {{ $spec.domain }}
+                      {{- range $h := $hosts }}
+                      - host: {{ $h }}
                         http:
                           paths:
                             - path: /
@@ -396,9 +408,10 @@ spec:
                                   name: {{ $name }}-site
                                   port:
                                     number: 80
+                      {{- end }}
                     {{- if $tls }}
                     tls:
-                      - hosts: [ {{ $spec.domain }} ]
+                      - hosts: [ {{ join ", " $hosts }} ]
                         secretName: staticsite-{{ $name }}-tls
                     {{- end }}
     - step: ready
