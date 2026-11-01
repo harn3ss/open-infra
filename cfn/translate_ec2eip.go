@@ -72,13 +72,14 @@ func (c *stackCtx) includedType(rid, cfnType string) bool {
 	return in && r.Type == cfnType && c.included(r)
 }
 
-// sortedResourceIDs returns the stack's logical ids in a deterministic order.
+// sortedResourceIDs returns the stack's logical ids in a deterministic order (sort.Strings, not the
+// insertion-sort sortStrs: this runs once per instance/EIP and estate templates can be large).
 func (c *stackCtx) sortedResourceIDs() []string {
 	ids := make([]string, 0, len(c.template.Resources))
 	for rid := range c.template.Resources {
 		ids = append(ids, rid)
 	}
-	sortStrs(ids)
+	sort.Strings(ids)
 	return ids
 }
 
