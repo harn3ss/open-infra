@@ -258,10 +258,10 @@ spec:
                       - metadata: { name: data }
                         spec:
                           accessModes: [ReadWriteOnce]
-                          storageClassName: {{ $spec.storageClass | default "longhorn" }}
+                          storageClassName: {{ $spec.storageClass | default "longhorn" | toJson }}
                           resources:
                             requests:
-                              storage: {{ $size }}
+                              storage: {{ $size | toJson }}
             ---
             # Service: the AD ports. LoadBalancer (LAN IP) when expose, else
             # ClusterIP. Either way it has a stable ClusterIP that in-cluster VMs

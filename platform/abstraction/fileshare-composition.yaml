@@ -59,10 +59,10 @@ spec:
                     labels: { openinfra.dev/fileshare: "true" }
                   spec:
                     accessModes: [ReadWriteOnce]
-                    storageClassName: {{ $spec.storageClass | default "longhorn" }}
+                    storageClassName: {{ $spec.storageClass | default "longhorn" | toJson }}
                     resources:
                       requests:
-                        storage: {{ $size }}
+                        storage: {{ $size | toJson }}
             ---
             # Samba server exporting the PVC as the SMB share "<name>".
             apiVersion: kubernetes.crossplane.io/v1alpha2

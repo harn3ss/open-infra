@@ -37,10 +37,10 @@ spec:
                     name: {{ $name }}
                     labels: { openinfra.dev/elasticip: {{ $name }} }
                   spec:
-                    natGwDp: {{ $spec.natGateway }}
-                    externalSubnet: {{ $extnet }}
+                    natGwDp: {{ $spec.natGateway | toJson }}
+                    externalSubnet: {{ $extnet | toJson }}
                     {{- if $spec.address }}
-                    v4ip: {{ $spec.address }}
+                    v4ip: {{ $spec.address | toJson }}
                     {{- end }}
             {{- if $spec.target }}
             {{- if eq $mode "fip" }}
@@ -60,7 +60,7 @@ spec:
                     labels: { openinfra.dev/elasticip: {{ $name }} }
                   spec:
                     eip: {{ $name }}
-                    internalIp: {{ $spec.target }}
+                    internalIp: {{ $spec.target | toJson }}
             {{- else }}
             {{- range $i, $p := ($spec.ports | default list) }}
             ---
@@ -79,7 +79,7 @@ spec:
                     labels: { openinfra.dev/elasticip: {{ $name }} }
                   spec:
                     eip: {{ $name }}
-                    internalIp: {{ $spec.target }}
+                    internalIp: {{ $spec.target | toJson }}
                     internalPort: "{{ $p.internal }}"
                     externalPort: "{{ $p.external }}"
                     protocol: {{ $p.protocol | default "tcp" }}

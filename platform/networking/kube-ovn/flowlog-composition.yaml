@@ -37,7 +37,7 @@ spec:
                   kind: ConfigMap
                   metadata:
                     name: {{ $name }}-flowlog-decoder
-                    namespace: {{ $ns }}
+                    namespace: {{ $ns | toJson }}
                     labels: { openinfra.dev/flowlog: {{ $name }} }
                   data:
                     decode.py: |
@@ -95,7 +95,7 @@ spec:
                   kind: DaemonSet
                   metadata:
                     name: {{ $name }}-flowlog
-                    namespace: {{ $ns }}
+                    namespace: {{ $ns | toJson }}
                     labels: { openinfra.dev/flowlog: {{ $name }} }
                   spec:
                     selector:

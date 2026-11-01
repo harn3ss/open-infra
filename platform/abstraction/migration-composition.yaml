@@ -75,6 +75,11 @@ spec:
             {{- $tables := $spec.tables | default (list) }}
             {{- $sPwSecret := $src.passwordSecretRef.name }}{{- $sPwKey := (($src.passwordSecretRef).key) | default "password" }}
             {{- $tPwSecret := $tgt.passwordSecretRef.name }}{{- $tPwKey := (($tgt.passwordSecretRef).key) | default "password" }}
+            {{- /* These are written into the Debezium application.properties block below: a line break
+                   would end that block scalar and could add fields to the manifest. */}}
+            {{- range $f, $v := dict "source.host" $shost "source.database" $sdb "source.username" $suser "source.schemas" $schemas "tables" $tables }}
+            {{-   if regexMatch "[\r\n\u0085\u2028\u2029]" (printf "%v" $v) }}{{ fail (printf "kind: Migration %s: spec.%s may not contain a line break" $name $f) }}{{ end }}
+            {{- end }}
             {{- $slot := printf "migdbz_%s" (regexReplaceAll "[^a-zA-Z0-9_]" $name "_") }}
             {{- $streamName := printf "mig-%s" $name }}
             {{- $subjects := printf "mig.%s.>" $name }}
@@ -119,7 +124,7 @@ spec:
                     namespace: {{ $ns }}
                   spec:
                     accessModes: [ReadWriteOnce]
-                    storageClassName: {{ $spec.storageClass | default "longhorn" }}
+                    storageClassName: {{ $spec.storageClass | default "longhorn" | toJson }}
                     resources:
                       requests:
                         storage: 1Gi
@@ -246,8 +251,8 @@ spec:
                               - name: DEBEZIUM_SOURCE_DATABASE_PASSWORD
                                 valueFrom:
                                   secretKeyRef:
-                                    name: {{ $sPwSecret }}
-                                    key: {{ $sPwKey }}
+                                    name: {{ $sPwSecret | toJson }}
+                                    key: {{ $sPwKey | toJson }}
                             volumeMounts:
                               - { name: config, mountPath: /debezium/conf/application.properties, subPath: application.properties }
                               - { name: data, mountPath: /debezium/data }
@@ -287,19 +292,19 @@ spec:
                             image: ghcr.io/harn3ss/open-infra-apply-sink:latest{{ $arch }}
                             env:
                               - { name: MODE, value: schema-sync }
-                              - { name: SOURCE_ENGINE, value: "{{ $sengine }}" }
-                              - { name: SOURCE_DSN, value: "{{ $srcDSN }}" }
+                              - { name: SOURCE_ENGINE, value: {{ $sengine | toJson }} }
+                              - { name: SOURCE_DSN, value: {{ $srcDSN | toJson }} }
                               - name: SOURCE_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ $sPwSecret }}, key: {{ $sPwKey }} } }
-                              - { name: TARGET_ENGINE, value: "{{ $tengine }}" }
-                              - { name: TARGET_DSN, value: "{{ $tgtDSN }}" }
+                                valueFrom: { secretKeyRef: { name: {{ $sPwSecret | toJson }}, key: {{ $sPwKey | toJson }} } }
+                              - { name: TARGET_ENGINE, value: {{ $tengine | toJson }} }
+                              - { name: TARGET_DSN, value: {{ $tgtDSN | toJson }} }
                               - name: TARGET_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ $tPwSecret }}, key: {{ $tPwKey }} } }
+                                valueFrom: { secretKeyRef: { name: {{ $tPwSecret | toJson }}, key: {{ $tPwKey | toJson }} } }
                           {{- if $include }}
-                              - { name: TABLES, value: "{{ $include }}" }
+                              - { name: TABLES, value: {{ $include | toJson }} }
                           {{- end }}
                           {{- if $tgt.schema }}
-                              - { name: TARGET_SCHEMA, value: "{{ $tgt.schema }}" }
+                              - { name: TARGET_SCHEMA, value: {{ $tgt.schema | toJson }} }
                           {{- end }}
             ---
             # apply-sink: consume the change events and apply them to the target.
@@ -332,16 +337,16 @@ spec:
                             image: ghcr.io/harn3ss/open-infra-apply-sink:latest{{ $arch }}
                             env:
                               - { name: MODE, value: stream }
-                              - { name: TARGET_ENGINE, value: "{{ $tengine }}" }
-                              - { name: TARGET_DSN, value: "{{ $tgtDSN }}" }
+                              - { name: TARGET_ENGINE, value: {{ $tengine | toJson }} }
+                              - { name: TARGET_DSN, value: {{ $tgtDSN | toJson }} }
                               - name: TARGET_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ $tPwSecret }}, key: {{ $tPwKey }} } }
+                                valueFrom: { secretKeyRef: { name: {{ $tPwSecret | toJson }}, key: {{ $tPwKey | toJson }} } }
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: STREAM, value: "{{ $streamName }}" }
-                              - { name: SUBJECT, value: "{{ $subjects }}" }
-                              - { name: DURABLE, value: "{{ $streamName }}" }
+                              - { name: STREAM, value: {{ $streamName | toJson }} }
+                              - { name: SUBJECT, value: {{ $subjects | toJson }} }
+                              - { name: DURABLE, value: {{ $streamName | toJson }} }
                           {{- if $tgt.schema }}
-                              - { name: TARGET_SCHEMA, value: "{{ $tgt.schema }}" }
+                              - { name: TARGET_SCHEMA, value: {{ $tgt.schema | toJson }} }
                           {{- end }}
                             resources:
                               requests: { cpu: 50m, memory: 32Mi }

@@ -76,7 +76,7 @@ spec:
                     cpu:      { type: integer, default: 2, minimum: 1, description: "vCPU cores per member. Default 2." }
                     memory:   { type: string, default: "2Gi", description: "Guest RAM per member, e.g. 2Gi. Default 2Gi." }
                     diskSize: { type: string, default: "20Gi", description: "Per-member root disk size. Default 20Gi (Windows uses a fixed 100Gi)." }
-                    sshKey:   { type: string, description: "SSH public key injected via cloud-init (Linux only). Every member gets the same key." }
+                    sshKey:   { type: string, pattern: "^[^\r\n\u0085\u2028\u2029]*$", description: "SSH public key (one line) injected via cloud-init (Linux only). Every member gets the same key." }
                     userData:
                       type: string
                       description: "First-boot user data (EC2 UserData), Linux only — a #! shell script run once after base cloud-init. Every member runs the same script."
@@ -87,7 +87,8 @@ spec:
                       description: "Network attachment per member. masquerade (default) puts each member behind the pod network; macvtap attaches each to the physical LAN (requires vmLan enabled). bridge is excluded (broken on this stack)."
                     securityGroups:
                       type: array
-                      items: { type: string }
+                      # SecurityGroup names: each becomes the label key openinfra.dev/sg-<name>.
+                      items: { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 60 }
                       description: "SecurityGroups (firewall rule sets) applied to every member."
                     subnet:
                       type: string

@@ -43,8 +43,8 @@ func TestVM_DataDisks_ProvisionInOrder(t *testing.T) {
 		"name: myvm-data1", // unnamed → data1 (DataVolume)
 		"name: myvm-extra", // named disk (DataVolume)
 		"blank: {}",        // data disks are blank-sourced
-		"storage: 50Gi",
-		"storage: 30Gi",
+		`storage: "50Gi"`,
+		`storage: "30Gi"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("data-disk render missing %q; got:\n%s", want, grepCtx(out, "dataVolumeTemplates"))
@@ -175,9 +175,9 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
 	with := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"instanceRole": "app-role"}))
 	for _, want := range []string{
-		"kind: ServiceAccount",                  // the per-VM SA object
-		"name: vm-myvm",                         // SA named for the VM
-		"openinfra.dev/instance-role: app-role", // SA annotation the shim reads
+		"kind: ServiceAccount",                    // the per-VM SA object
+		"name: vm-myvm",                           // SA named for the VM
+		`openinfra.dev/instance-role: "app-role"`, // SA annotation the shim reads
 		// The VMI the shim checks the token's launcher pod against is named by this annotation (the
 		// VirtualMachine, hence its VMI, carries the same name: asserted below).
 		"openinfra.dev/vm: myvm\n",

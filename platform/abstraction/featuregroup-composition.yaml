@@ -132,8 +132,8 @@ spec:
                             image: {{ $img }}
                             env:
                               - { name: FEATURE_GROUP, value: "{{ $name }}" }
-                              - { name: RECORD_IDENTIFIER, value: "{{ $spec.recordIdentifier }}" }
-                              - { name: EVENT_TIME, value: "{{ $spec.eventTime | default "" }}" }
+                              - { name: RECORD_IDENTIFIER, value: {{ $spec.recordIdentifier | toJson }} }
+                              - { name: EVENT_TIME, value: {{ $spec.eventTime | default "" | toJson }} }
                               - { name: VALKEY_ADDR, value: "{{ $valkey }}.{{ $ns }}.svc.cluster.local:6379" }
                               {{- if $spec.ttlSeconds }}
                               - { name: TTL_SECONDS, value: "{{ $spec.ttlSeconds }}" }

@@ -38,7 +38,7 @@ func TestFunction_UnsupportedRuntime(t *testing.T) {
 	// Accepted: the isolated posture.
 	out := render(t, tmpl, ctx(byo(map[string]any{"unsupportedRuntime": true})))
 	for _, want := range []string{
-		"image: node:8-slim",                               // the BYO base image is used verbatim
+		`image: "node:8-slim"`,                             // the BYO base image is used verbatim
 		`openinfra.dev/non-production: "true"`,             // marked
 		"networking.knative.dev/visibility: cluster-local", // expose forced off
 		`autoscaling.knative.dev/min-scale: "0"`,           // asleep by default

@@ -208,7 +208,7 @@ spec:
                         priorityClassName: openinfra-function
                         {{- end }}
                         containers:
-                          - image: {{ $img }}
+                          - image: {{ $img | toJson }}
                             ports: [ { containerPort: {{ $spec.port | default 8080 }} } ]
                             {{- if or $code $spec.env $spec.queues }}
                             env:

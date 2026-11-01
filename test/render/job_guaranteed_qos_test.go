@@ -35,10 +35,10 @@ func TestProcessingJob_VolumesAndMounts(t *testing.T) {
 	for _, want := range []string{
 		"configMap: { name: migrations }",
 		"persistentVolumeClaim: { claimName: sql-dump-pvc }",
-		"mountPath: /seed",
+		`mountPath: "/seed"`,
 		"readOnly: true",
-		"mountPath: /dump",
-		"subPath: backup.sql",
+		`mountPath: "/dump"`,
+		`subPath: "backup.sql"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("ProcessingJob volume render missing %q; got:\n%s", want, grepCtx(out, "volume"))

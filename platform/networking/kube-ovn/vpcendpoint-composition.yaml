@@ -42,7 +42,7 @@ spec:
                     namespace: {{ $ns }}
                     labels:
                       openinfra.dev/vpc-endpoint: {{ $name }}
-                      openinfra.dev/vpc-endpoint-service: {{ $spec.service }}
+                      openinfra.dev/vpc-endpoint-service: {{ $spec.service | toJson }}
                   spec:
                     type: ExternalName
                     externalName: {{ $shim }}

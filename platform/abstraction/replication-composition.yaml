@@ -48,6 +48,14 @@ spec:
             {{- $vcol := $spec.versionColumn | default "_mm_version" }}
             {{- $ocol := $spec.originColumn | default "_mm_origin" }}
             {{- $tables := $spec.tables }}
+            {{- /* These are written into each site's Debezium application.properties block: a line break
+                   would end that block scalar and could add fields to the manifest. */}}
+            {{- range $site := list "siteA" "siteB" }}{{- $s := index $spec $site | default dict }}
+            {{-   range $f, $v := dict "host" $s.host "database" $s.database "username" $s.username "schema" $s.schema }}
+            {{-     if regexMatch "[\r\n\u0085\u2028\u2029]" (printf "%v" $v) }}{{ fail (printf "kind: Replication %s: spec.%s.%s may not contain a line break" $name $site $f) }}{{ end }}
+            {{-   end }}
+            {{- end }}
+            {{- if regexMatch "[\r\n\u0085\u2028\u2029]" (printf "%v" $tables) }}{{ fail (printf "kind: Replication %s: spec.tables may not contain a line break" $name) }}{{ end }}
             {{- $sched := $spec.scheduling | default dict }}
             {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
             {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
@@ -192,7 +200,7 @@ spec:
                             image: quay.io/debezium/server:2.7.3.Final
                             env:
                               - name: DEBEZIUM_SOURCE_DATABASE_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ $spwSecret }}, key: {{ $spwKey }} } }
+                                valueFrom: { secretKeyRef: { name: {{ $spwSecret | toJson }}, key: {{ $spwKey | toJson }} } }
                             volumeMounts:
                               - { name: config, mountPath: /debezium/conf/application.properties, subPath: application.properties }
                               - { name: data, mountPath: /debezium/data }
@@ -231,19 +239,19 @@ spec:
                             image: {{ $img }}
                             env:
                               - { name: MODE, value: mm-prep }
-                              - { name: PREP_ENGINE, value: "{{ $sengine }}" }
-                              - { name: SITE, value: "{{ $sname }}" }
-                              - { name: VERSION_COLUMN, value: "{{ $vcol }}" }
-                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
-                              - { name: TABLES, value: "{{ $include }}" }
+                              - { name: PREP_ENGINE, value: {{ $sengine | toJson }} }
+                              - { name: SITE, value: {{ $sname | toJson }} }
+                              - { name: VERSION_COLUMN, value: {{ $vcol | toJson }} }
+                              - { name: ORIGIN_COLUMN, value: {{ $ocol | toJson }} }
+                              - { name: TABLES, value: {{ $include | toJson }} }
                               - name: PREP_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ $spwSecret }}, key: {{ $spwKey }} } }
+                                valueFrom: { secretKeyRef: { name: {{ $spwSecret | toJson }}, key: {{ $spwKey | toJson }} } }
                   {{- if eq $sengine "sqlserver" }}
-                              - { name: PREP_DSN, value: "sqlserver://{{ $src.username }}:${PREP_PASSWORD}@{{ $src.host }}:{{ $sport }}?database={{ $src.database }}&encrypt={{ ternary "true" "disable" ($src.ssl | default false) }}" }
+                              - { name: PREP_DSN, value: {{ printf "sqlserver://%v:${PREP_PASSWORD}@%v:%v?database=%v&encrypt=%v" ($src.username) ($src.host) ($sport) ($src.database) (ternary "true" "disable" ($src.ssl | default false)) | toJson }} }
                   {{- else if or (eq $sengine "mysql") (eq $sengine "mariadb") }}
-                              - { name: PREP_DSN, value: "{{ $src.username }}:${PREP_PASSWORD}@tcp({{ $src.host }}:{{ $sport }})/{{ $src.database }}?parseTime=true" }
+                              - { name: PREP_DSN, value: {{ printf "%v:${PREP_PASSWORD}@tcp(%v:%v)/%v?parseTime=true" ($src.username) ($src.host) ($sport) ($src.database) | toJson }} }
                   {{- else }}
-                              - { name: PREP_DSN, value: "postgres://{{ $src.username }}:${PREP_PASSWORD}@{{ $src.host }}:{{ $sport }}/{{ $src.database }}?sslmode={{ ternary "require" "disable" ($src.ssl | default false) }}" }
+                              - { name: PREP_DSN, value: {{ printf "postgres://%v:${PREP_PASSWORD}@%v:%v/%v?sslmode=%v" ($src.username) ($src.host) ($sport) ($src.database) (ternary "require" "disable" ($src.ssl | default false)) | toJson }} }
                   {{- end }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -278,19 +286,19 @@ spec:
                             image: {{ $img }}
                             env:
                               - { name: MODE, value: stream }
-                              - { name: TARGET_ENGINE, value: "{{ $dengine }}" }
-                              - { name: TARGET_DSN, value: "{{ $tdsn }}" }
+                              - { name: TARGET_ENGINE, value: {{ $dengine | toJson }} }
+                              - { name: TARGET_DSN, value: {{ $tdsn | toJson }} }
                               - name: TARGET_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ $dpwSecret }}, key: {{ $dpwKey }} } }
+                                valueFrom: { secretKeyRef: { name: {{ $dpwSecret | toJson }}, key: {{ $dpwKey | toJson }} } }
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: STREAM, value: "{{ $stream }}" }
-                              - { name: SUBJECT, value: "{{ $prefix }}.>" }
-                              - { name: DURABLE, value: "{{ $name }}-{{ $sname }}-{{ $dname }}" }
-                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
-                              - { name: SKIP_ORIGIN, value: "{{ $dname }}" }
-                              - { name: CONFLICT_COLUMN, value: "{{ $vcol }}" }
-                              - { name: TARGET_SCHEMA, value: "{{ $dschema }}" }
-                              - { name: REPL_APPLY, value: "{{ $replApply }}" }
+                              - { name: STREAM, value: {{ $stream | toJson }} }
+                              - { name: SUBJECT, value: {{ printf "%v.>" ($prefix) | toJson }} }
+                              - { name: DURABLE, value: {{ printf "%v-%v-%v" ($name) ($sname) ($dname) | toJson }} }
+                              - { name: ORIGIN_COLUMN, value: {{ $ocol | toJson }} }
+                              - { name: SKIP_ORIGIN, value: {{ $dname | toJson }} }
+                              - { name: CONFLICT_COLUMN, value: {{ $vcol | toJson }} }
+                              - { name: TARGET_SCHEMA, value: {{ $dschema | toJson }} }
+                              - { name: REPL_APPLY, value: {{ $replApply | toJson }} }
                             resources:
                               requests: { cpu: 50m, memory: 32Mi }
                               limits: { cpu: "1", memory: 256Mi }

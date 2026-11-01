@@ -66,7 +66,7 @@ spec:
               ready: false
               phase: NotGrantable
               boundTo: ""
-              message: "clusterRole '{{ $cr }}' is not grantable; use a kind: Role (openinfra-role-*) or open-infra-readonly / open-infra-poweruser"
+              message: {{ printf "clusterRole '%s' is not grantable; use a kind: Role (openinfra-role-*) or open-infra-readonly / open-infra-poweruser" $cr | toJson }}
             {{- else if not $approved }}
             ---
             # Not yet approved by a distinct second party — confer nothing (AC-2(2)/AC-5).
@@ -77,7 +77,7 @@ spec:
               {{- if eq $approvedBy $requestedBy }}
               phase: NotGrantable
               boundTo: ""
-              message: "approver '{{ $approvedBy }}' must differ from the requester (separation of duties, AC-5)"
+              message: {{ printf "approver '%s' must differ from the requester (separation of duties, AC-5)" $approvedBy | toJson }}
               {{- else }}
               phase: AwaitingApproval
               boundTo: ""
@@ -124,7 +124,7 @@ spec:
               ready: true
               phase: Active
               boundTo: "{{ $subjectName }}"
-              message: "approved by {{ $approvedBy }}{{ if $approvedAt }} at {{ $approvedAt }}{{ end }}"
+              message: {{ if $approvedAt }}{{ printf "approved by %v at %v" $approvedBy $approvedAt | toJson }}{{ else }}{{ printf "approved by %v" $approvedBy | toJson }}{{ end }}
             {{- end }}
     - step: ready
       functionRef:

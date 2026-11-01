@@ -39,7 +39,7 @@ func TestScheduledJob_RendersCronJob(t *testing.T) {
 		"concurrencyPolicy: Forbid",
 		"backoffLimit: 3",             // retries
 		"activeDeadlineSeconds: 3600", // timeout
-		"image: ghcr.io/x/rollup:latest",
+		`image: "ghcr.io/x/rollup:latest"`,
 		`command: ["/bin/rollup"]`,
 		`{ name: "REGION", value: "us" }`,
 		"secretRef: { name: \"shop-db\" }",  // envFrom

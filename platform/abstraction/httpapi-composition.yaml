@@ -168,7 +168,7 @@ spec:
                             passHostHeader: false
                             nativeLB: true
                           {{- else }}
-                          - name: {{ $route.backend.name }}
+                          - name: {{ $route.backend.name | toJson }}
                             port: {{ $route.backend.port | default 80 }}
                             nativeLB: true
                           {{- end }}

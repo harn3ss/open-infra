@@ -49,8 +49,8 @@ func TestBackupPlan_RendersSchedulesDefaultSelection(t *testing.T) {
 		`schedule: "0 3 * * *"`, `schedule: "0 4 * * 0"`,
 		"ttl: 168h0m0s", // 7 days
 		"ttl: 720h0m0s", // 30 days
-		"storageLocation: openinfra-vault-prod",
-		"storageLocation: openinfra-vault-archive",
+		`storageLocation: "openinfra-vault-prod"`,
+		`storageLocation: "openinfra-vault-archive"`,
 		"defaultVolumesToFsBackup: true",
 		"openinfra.dev/backupplan: app-backup",
 		"scheduleCount: 2", // status

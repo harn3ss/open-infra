@@ -57,6 +57,9 @@ spec:
                   properties:
                     name:
                       type: string
+                      # Lowercase letters and digits: it is part of resource names, NATS stream names and
+                      # the Postgres replication slot name (mm_<claim>_<site>), which allows no hyphen.
+                      pattern: '^[a-z0-9]{1,16}$'
                       description: "Short site id used as the origin marker (e.g. 'a', 'east'). Must be unique across the pair."
                     engine:
                       type: string

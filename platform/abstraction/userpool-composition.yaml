@@ -180,10 +180,10 @@ spec:
                       - metadata: { name: data }
                         spec:
                           accessModes: [ReadWriteOnce]
-                          storageClassName: {{ $spec.storageClass | default "longhorn" }}
+                          storageClassName: {{ $spec.storageClass | default "longhorn" | toJson }}
                           resources:
                             requests:
-                              storage: {{ $size }}
+                              storage: {{ $size | toJson }}
             ---
             # Service: the in-cluster OIDC issuer. ClusterIP on 8080 — consumers
             # (the aws-shim, open-appsync) reach the discovery URL here.

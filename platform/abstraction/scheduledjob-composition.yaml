@@ -125,7 +125,7 @@ spec:
                             {{- end }}
                             containers:
                               - name: job
-                                image: {{ $spec.image }}
+                                image: {{ $spec.image | toJson }}
                                 {{- if $spec.command }}
                                 command: {{ $spec.command | toJson }}
                                 {{- end }}
@@ -139,7 +139,7 @@ spec:
                                   {{- end }}
                                   {{- if $spec.queues }}
                                   - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                                  - { name: OPENINFRA_QUEUES, value: "{{ join "," $spec.queues }}" }
+                                  - { name: OPENINFRA_QUEUES, value: {{ join "," $spec.queues | toJson }} }
                                   {{- end }}
                                 {{- end }}
                                 {{- $envFrom := $spec.secrets | default (list) }}
@@ -155,9 +155,9 @@ spec:
                                   # reserving what the job may use keeps request <= limit (a fixed floor
                                   # above a small user limit would render an invalid pod) and stops
                                   # concurrent runs from OOMing a node. GPU is an extended resource: limit only.
-                                  requests: { cpu: "{{ $cpu }}", memory: {{ $mem | quote }} }
+                                  requests: { cpu: {{ $cpu | toJson }}, memory: {{ $mem | quote }} }
                                   limits:
-                                    cpu: "{{ $cpu }}"
+                                    cpu: {{ $cpu | toJson }}
                                     memory: {{ $mem | quote }}
                                     {{- if $useGpu }}
                                     nvidia.com/gpu: {{ $gpu }}

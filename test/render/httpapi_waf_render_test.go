@@ -45,7 +45,7 @@ func TestHttpApi_BaseIngressRoute(t *testing.T) {
 	if !strings.Contains(out, "Host(`api.example.com`) && PathPrefix(`/`)") {
 		t.Errorf("route match should be Host + PathPrefix; got:\n%s", grepCtx(out, "match"))
 	}
-	if !strings.Contains(out, "name: fn") {
+	if !strings.Contains(out, `name: "fn"`) {
 		t.Errorf("route should target the backend service; got:\n%s", grepCtx(out, "services"))
 	}
 	if !strings.Contains(out, "kind: Certificate") || !strings.Contains(out, "secretName: httpapi-api-tls") {
@@ -258,7 +258,7 @@ func TestHttpApi_ExternalBackend(t *testing.T) {
 			}
 		}
 		// an external route must NOT emit an in-cluster backend name
-		if strings.Contains(out, "name: fn") {
+		if strings.Contains(out, `name: "fn"`) || strings.Contains(out, "name: fn\n") {
 			t.Errorf("external route should not reference the in-cluster backend; got:\n%s", out)
 		}
 	})
@@ -366,7 +366,7 @@ func TestHttpApi_RequestModel(t *testing.T) {
 		t.Errorf("a model route must not add a HeaderRegexp match predicate (validator handles params → 400)")
 	}
 	// The non-model /health route is unaffected.
-	if !strings.Contains(out, "name: fn") {
+	if !strings.Contains(out, `name: "fn"`) {
 		t.Errorf("non-model route should still target its backend; got:\n%s", grepCtx(out, "name: fn"))
 	}
 }

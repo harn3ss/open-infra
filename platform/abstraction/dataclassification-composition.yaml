@@ -55,7 +55,7 @@ spec:
                     networkRestricted: "{{ $req.networkRestricted | default false }}"
                     noPublicExposure: "{{ $req.noPublicExposure | default false }}"
                     backup: "{{ $req.backup | default false }}"
-                    residencyNodeLabel: "{{ $req.residencyNodeLabel | default "" }}"
+                    residencyNodeLabel: {{ $req.residencyNodeLabel | default "" | toJson }}
                     retentionDays: "{{ $req.retentionDays | default 0 }}"
             ---
             apiVersion: openinfra.dev/v1

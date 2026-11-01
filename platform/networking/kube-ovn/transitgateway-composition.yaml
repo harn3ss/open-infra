@@ -37,13 +37,13 @@ spec:
                   spec:
                     vpcPeerings:
                     {{- range $spec.attachments }}
-                      - remoteVpc: {{ .vpc }}
-                        localConnectIP: {{ .hubConnectIP }}
+                      - remoteVpc: {{ .vpc | toJson }}
+                        localConnectIP: {{ .hubConnectIP | toJson }}
                     {{- end }}
                     staticRoutes:
                     {{- range $spec.attachments }}
-                      - cidr: {{ .cidr }}
-                        nextHopIP: {{ .spokeConnectIP }}
+                      - cidr: {{ .cidr | toJson }}
+                        nextHopIP: {{ .spokeConnectIP | toJson }}
                         policy: policyDst
                     {{- end }}
     - step: ready

@@ -227,7 +227,7 @@ spec:
                     namespace: {{ $ns }}
                   spec:
                     accessModes: ["ReadWriteOnce"]
-                    storageClassName: {{ $spec.storageClass | default "longhorn" }}
+                    storageClassName: {{ $spec.storageClass | default "longhorn" | toJson }}
                     resources: { requests: { storage: 1Gi } }
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -264,7 +264,7 @@ spec:
                             image: quay.io/debezium/server:2.7.3.Final
                             env:
                               - name: DEBEZIUM_SOURCE_DATABASE_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ index $sec $node }}, key: {{ index $seck $node }} } }
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $node | toJson }}, key: {{ index $seck $node | toJson }} } }
                             volumeMounts:
                               - { name: config, mountPath: /debezium/conf/application.properties, subPath: application.properties }
                               - { name: data, mountPath: /debezium/data }
@@ -307,14 +307,14 @@ spec:
                             image: {{ $img }}
                             env:
                               - { name: MODE, value: mm-prep }
-                              - { name: PREP_ENGINE, value: "{{ index $eng $node }}" }
-                              - { name: PREP_DSN, value: "{{ replace "${PW}" "${PREP_PASSWORD}" (index $dsn $node) }}" }
+                              - { name: PREP_ENGINE, value: {{ index $eng $node | toJson }} }
+                              - { name: PREP_DSN, value: {{ replace "${PW}" "${PREP_PASSWORD}" (index $dsn $node) | toJson }} }
                               - name: PREP_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ index $sec $node }}, key: {{ index $seck $node }} } }
-                              - { name: SITE, value: "{{ $node }}" }
-                              - { name: VERSION_COLUMN, value: "{{ $vcol }}" }
-                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
-                              - { name: TABLES, value: "{{ index $inc $node }}" }
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $node | toJson }}, key: {{ index $seck $node | toJson }} } }
+                              - { name: SITE, value: {{ $node | toJson }} }
+                              - { name: VERSION_COLUMN, value: {{ $vcol | toJson }} }
+                              - { name: ORIGIN_COLUMN, value: {{ $ocol | toJson }} }
+                              - { name: TABLES, value: {{ index $inc $node | toJson }} }
             {{- end }}
             {{- end }}
             {{- /* ============ table-sync reconciler: auto-create + mm-prep tables added on ANY member ============ */}}
@@ -357,13 +357,13 @@ spec:
                             env:
                               - { name: MODE, value: reconcile }
                               - { name: MEMBERS, value: {{ toJson $members | quote }} }
-                              - { name: VERSION_COLUMN, value: "{{ $vcol }}" }
-                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
+                              - { name: VERSION_COLUMN, value: {{ $vcol | toJson }} }
+                              - { name: ORIGIN_COLUMN, value: {{ $ocol | toJson }} }
                               - { name: RECONCILE_INTERVAL, value: "20" }
                               {{- range $n := $nodes }}
                               {{-   if and (hasKey $replSet $n.name) (eq ($n.role | default "database") "database") }}
                               - name: PW_{{ regexReplaceAll "[^a-zA-Z0-9_]" $n.name "_" }}
-                                valueFrom: { secretKeyRef: { name: {{ index $sec $n.name }}, key: {{ index $seck $n.name }} } }
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $n.name | toJson }}, key: {{ index $seck $n.name | toJson }} } }
                               {{-   end }}
                               {{- end }}
                             resources:
@@ -410,13 +410,13 @@ spec:
                             env:
                               - { name: MODE, value: schema-drift }
                               - { name: MEMBERS, value: {{ toJson $dmembers | quote }} }
-                              - { name: VERSION_COLUMN, value: "{{ $vcol }}" }
-                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
+                              - { name: VERSION_COLUMN, value: {{ $vcol | toJson }} }
+                              - { name: ORIGIN_COLUMN, value: {{ $ocol | toJson }} }
                               - { name: DRIFT_INTERVAL, value: "60" }
                               {{- range $n := $nodes }}
                               {{-   if and (hasKey $replSet $n.name) (eq ($n.role | default "database") "database") }}
                               - name: PW_{{ regexReplaceAll "[^a-zA-Z0-9_]" $n.name "_" }}
-                                valueFrom: { secretKeyRef: { name: {{ index $sec $n.name }}, key: {{ index $seck $n.name }} } }
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $n.name | toJson }}, key: {{ index $seck $n.name | toJson }} } }
                               {{-   end }}
                               {{- end }}
                             resources:
@@ -467,11 +467,11 @@ spec:
                             env:
                               - { name: MODE, value: pump }
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: STREAM, value: "flow-{{ $fqd }}-{{ $in }}" }
-                              - { name: SUBJECT, value: "f.{{ $fqd }}.{{ $in }}.>" }
-                              - { name: DURABLE, value: "{{ $fqd }}-pump-{{ $fn }}" }
-                              - { name: FUNCTION_URL, value: "{{ $url }}" }
-                              - { name: OUTPUT_SUBJECT, value: "{{ $oprefix }}" }
+                              - { name: STREAM, value: {{ printf "flow-%v-%v" ($fqd) ($in) | toJson }} }
+                              - { name: SUBJECT, value: {{ printf "f.%v.%v.>" ($fqd) ($in) | toJson }} }
+                              - { name: DURABLE, value: {{ printf "%v-pump-%v" ($fqd) ($fn) | toJson }} }
+                              - { name: FUNCTION_URL, value: {{ $url | toJson }} }
+                              - { name: OUTPUT_SUBJECT, value: {{ $oprefix | toJson }} }
                             resources:
                               requests: { cpu: 50m, memory: 32Mi }
                               limits: { cpu: "1", memory: 256Mi }
@@ -514,15 +514,15 @@ spec:
                             image: {{ $img }}
                             env:
                               - { name: MODE, value: schema-sync }
-                              - { name: SOURCE_ENGINE, value: "{{ index $eng $e.from }}" }
-                              - { name: SOURCE_DSN, value: "{{ $bsdsn }}" }
+                              - { name: SOURCE_ENGINE, value: {{ index $eng $e.from | toJson }} }
+                              - { name: SOURCE_DSN, value: {{ $bsdsn | toJson }} }
                               - name: SOURCE_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ index $sec $e.from }}, key: {{ index $seck $e.from }} } }
-                              - { name: TARGET_ENGINE, value: "{{ index $eng $e.to }}" }
-                              - { name: TARGET_DSN, value: "{{ $btdsn }}" }
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $e.from | toJson }}, key: {{ index $seck $e.from | toJson }} } }
+                              - { name: TARGET_ENGINE, value: {{ index $eng $e.to | toJson }} }
+                              - { name: TARGET_DSN, value: {{ $btdsn | toJson }} }
                               - name: TARGET_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ index $sec $e.to }}, key: {{ index $seck $e.to }} } }
-                              - { name: TABLES, value: "{{ index $inc $e.from }}" }
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $e.to | toJson }}, key: {{ index $seck $e.to | toJson }} } }
+                              - { name: TABLES, value: {{ index $inc $e.from | toJson }} }
             {{-     end }}
             {{-     range $dir := (list (dict "s" $e.from "d" $e.to) (dict "s" $e.to "d" $e.from)) }}
             {{-       $sn := $dir.s }}{{- $dn := $dir.d }}
@@ -559,19 +559,19 @@ spec:
                           - name: apply-sink
                             image: {{ $img }}
                             env:
-                              - { name: TARGET_ENGINE, value: "{{ index $eng $dn }}" }
-                              - { name: TARGET_DSN, value: "{{ $tdsn }}" }
+                              - { name: TARGET_ENGINE, value: {{ index $eng $dn | toJson }} }
+                              - { name: TARGET_DSN, value: {{ $tdsn | toJson }} }
                               - name: TARGET_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn }}, key: {{ index $seck $dn }} } }
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn | toJson }}, key: {{ index $seck $dn | toJson }} } }
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: STREAM, value: "flow-{{ $fqd }}-{{ $sn }}" }
-                              - { name: SUBJECT, value: "f.{{ $fqd }}.{{ $sn }}.>" }
-                              - { name: DURABLE, value: "{{ $fqd }}-{{ $sn }}-{{ $dn }}" }
-                              - { name: ORIGIN_COLUMN, value: "{{ $ocol }}" }
-                              - { name: SKIP_ORIGIN, value: "{{ $dn }}" }
-                              - { name: CONFLICT_COLUMN, value: "{{ $vcol }}" }
-                              - { name: TARGET_SCHEMA, value: "{{ index $sch $dn }}" }
-                              - { name: REPL_APPLY, value: "{{ $replApply }}" }
+                              - { name: STREAM, value: {{ printf "flow-%v-%v" ($fqd) ($sn) | toJson }} }
+                              - { name: SUBJECT, value: {{ printf "f.%v.%v.>" ($fqd) ($sn) | toJson }} }
+                              - { name: DURABLE, value: {{ printf "%v-%v-%v" ($fqd) ($sn) ($dn) | toJson }} }
+                              - { name: ORIGIN_COLUMN, value: {{ $ocol | toJson }} }
+                              - { name: SKIP_ORIGIN, value: {{ $dn | toJson }} }
+                              - { name: CONFLICT_COLUMN, value: {{ $vcol | toJson }} }
+                              - { name: TARGET_SCHEMA, value: {{ index $sch $dn | toJson }} }
+                              - { name: REPL_APPLY, value: {{ $replApply | toJson }} }
                             resources:
                               requests: { cpu: 50m, memory: 32Mi }
                               limits: { cpu: "1", memory: 256Mi }
@@ -609,15 +609,15 @@ spec:
                             image: {{ $img }}
                             env:
                               - { name: MODE, value: schema-sync }
-                              - { name: SOURCE_ENGINE, value: "{{ index $eng $sn }}" }
-                              - { name: SOURCE_DSN, value: "{{ $sdsn }}" }
+                              - { name: SOURCE_ENGINE, value: {{ index $eng $sn | toJson }} }
+                              - { name: SOURCE_DSN, value: {{ $sdsn | toJson }} }
                               - name: SOURCE_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ index $sec $sn }}, key: {{ index $seck $sn }} } }
-                              - { name: TARGET_ENGINE, value: "{{ index $eng $dn }}" }
-                              - { name: TARGET_DSN, value: "{{ $tdsn }}" }
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $sn | toJson }}, key: {{ index $seck $sn | toJson }} } }
+                              - { name: TARGET_ENGINE, value: {{ index $eng $dn | toJson }} }
+                              - { name: TARGET_DSN, value: {{ $tdsn | toJson }} }
                               - name: TARGET_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn }}, key: {{ index $seck $dn }} } }
-                              - { name: TABLES, value: "{{ index $inc $sn }}" }
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn | toJson }}, key: {{ index $seck $dn | toJson }} } }
+                              - { name: TABLES, value: {{ index $inc $sn | toJson }} }
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
@@ -647,15 +647,15 @@ spec:
                           - name: apply-sink
                             image: {{ $img }}
                             env:
-                              - { name: TARGET_ENGINE, value: "{{ index $eng $dn }}" }
-                              - { name: TARGET_DSN, value: "{{ $tdsn }}" }
+                              - { name: TARGET_ENGINE, value: {{ index $eng $dn | toJson }} }
+                              - { name: TARGET_DSN, value: {{ $tdsn | toJson }} }
                               - name: TARGET_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn }}, key: {{ index $seck $dn }} } }
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn | toJson }}, key: {{ index $seck $dn | toJson }} } }
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: STREAM, value: "flow-{{ $fqd }}-{{ $sn }}" }
-                              - { name: SUBJECT, value: "f.{{ $fqd }}.{{ $sn }}.>" }
-                              - { name: DURABLE, value: "{{ $fqd }}-mig-{{ $sn }}-{{ $dn }}" }
-                              - { name: TARGET_SCHEMA, value: "{{ index $sch $dn }}" }
+                              - { name: STREAM, value: {{ printf "flow-%v-%v" ($fqd) ($sn) | toJson }} }
+                              - { name: SUBJECT, value: {{ printf "f.%v.%v.>" ($fqd) ($sn) | toJson }} }
+                              - { name: DURABLE, value: {{ printf "%v-mig-%v-%v" ($fqd) ($sn) ($dn) | toJson }} }
+                              - { name: TARGET_SCHEMA, value: {{ index $sch $dn | toJson }} }
                             resources:
                               requests: { cpu: 50m, memory: 32Mi }
                               limits: { cpu: "1", memory: 256Mi }
@@ -692,15 +692,15 @@ spec:
                           - name: apply-sink
                             image: {{ $img }}
                             env:
-                              - { name: TARGET_ENGINE, value: "{{ index $eng $dn }}" }
-                              - { name: TARGET_DSN, value: "{{ $tdsn }}" }
+                              - { name: TARGET_ENGINE, value: {{ index $eng $dn | toJson }} }
+                              - { name: TARGET_DSN, value: {{ $tdsn | toJson }} }
                               - name: TARGET_PASSWORD
-                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn }}, key: {{ index $seck $dn }} } }
+                                valueFrom: { secretKeyRef: { name: {{ index $sec $dn | toJson }}, key: {{ index $seck $dn | toJson }} } }
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: STREAM, value: "flow-{{ $fqd }}-{{ $sn }}" }
-                              - { name: SUBJECT, value: "f.{{ $fqd }}.{{ $sn }}.>" }
-                              - { name: DURABLE, value: "{{ $fqd }}-load-{{ $sn }}-{{ $dn }}" }
-                              - { name: TARGET_SCHEMA, value: "{{ index $sch $dn }}" }
+                              - { name: STREAM, value: {{ printf "flow-%v-%v" ($fqd) ($sn) | toJson }} }
+                              - { name: SUBJECT, value: {{ printf "f.%v.%v.>" ($fqd) ($sn) | toJson }} }
+                              - { name: DURABLE, value: {{ printf "%v-load-%v-%v" ($fqd) ($sn) ($dn) | toJson }} }
+                              - { name: TARGET_SCHEMA, value: {{ index $sch $dn | toJson }} }
                             resources:
                               requests: { cpu: 50m, memory: 32Mi }
                               limits: { cpu: "1", memory: 256Mi }

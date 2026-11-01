@@ -622,7 +622,7 @@ func TestHttpApi_RendersIngressRouteWithRoutes(t *testing.T) {
 	}
 	// Every declared route becomes a Host+PathPrefix match → its backend Service (both Function
 	// and Application backends resolve to a Service named after the resource).
-	for _, want := range []string{"Host(`api.example.com`) && PathPrefix(`/`)", "PathPrefix(`/fn`)", "name: web", "name: hello"} {
+	for _, want := range []string{"Host(`api.example.com`) && PathPrefix(`/`)", "PathPrefix(`/fn`)", `name: "web"`, `name: "hello"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("HttpApi IngressRoute missing route %q; got:\n%s", want, grepCtx(out, "match"))
 		}
@@ -862,7 +862,7 @@ func TestFunction_Code(t *testing.T) {
 				"source": map[string]any{"configMap": "fn-code"}},
 		}))
 		for _, want := range []string{
-			"image: ghcr.io/harn3ss/open-infra-lambda-python:latest",
+			`image: "ghcr.io/harn3ss/open-infra-lambda-python:latest`,
 			"name: OPENINFRA_HANDLER", `value: "app.handler"`,
 			"name: OPENINFRA_FUNCTION_NAME",
 			"mountPath: /var/task", "name: openinfra-code",
@@ -947,7 +947,7 @@ func TestFunction_Code(t *testing.T) {
 				"source": map[string]any{"bucket": "fn-artifacts", "key": "f.zip", "secret": "fn-s3"}},
 		}))
 		for _, want := range []string{
-			"image: ghcr.io/harn3ss/open-infra-lambda-nodejs:latest",
+			`image: "ghcr.io/harn3ss/open-infra-lambda-nodejs:latest`,
 			"name: OPENINFRA_HANDLER", `value: "index.handler"`,
 			"name: OPENINFRA_CODE_BUCKET", `value: "fn-artifacts"`,
 		} {
@@ -967,7 +967,7 @@ func TestFunction_Code(t *testing.T) {
 				"source": map[string]any{"bucket": "fn-artifacts", "key": "f.zip", "secret": "fn-s3"}},
 		}))
 		for _, want := range []string{
-			"image: ghcr.io/harn3ss/open-infra-lambda-dotnet:latest",
+			`image: "ghcr.io/harn3ss/open-infra-lambda-dotnet:latest`,
 			"name: OPENINFRA_HANDLER", `value: "MyFn::MyFn.Functions::Handle"`,
 		} {
 			if !strings.Contains(out, want) {

@@ -258,7 +258,7 @@ spec:
                             {{- end }}
                             resources:
                               requests:
-                                storage: {{ $disk }}
+                                storage: {{ $disk | toJson }}
                             storageClassName: {{ if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
                           source:
                             {{- if $isWin }}
@@ -284,7 +284,7 @@ spec:
                             {{- end }}
                             resources:
                               requests:
-                                storage: {{ $dd.size }}
+                                storage: {{ $dd.size | toJson }}
                             storageClassName: {{ if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
                           source:
                             blank: {}
@@ -298,18 +298,18 @@ spec:
                           {{- /* SecurityGroup membership: launcher pod inherits VMI labels,
                                  so attached SGs' NetworkPolicies select the VM. */}}
                           {{- range $sg := ($spec.securityGroups | default list) }}
-                          openinfra.dev/sg-{{ $sg }}: ""
+                          {{ printf "openinfra.dev/sg-%s" $sg | toJson }}: ""
                           {{- end }}
                           {{- /* Instance role, as a label for selection/inventory. The credentials
                                  themselves are resolved from the VM's ServiceAccount token. */}}
                           {{- if $instanceRole }}
-                          openinfra.dev/instance-role: {{ $instanceRole }}
+                          openinfra.dev/instance-role: {{ $instanceRole | toJson }}
                           {{- end }}
                         {{- if $spec.subnet }}
                         annotations:
                           # Place the VM's launcher pod in a kind: Subnet (kube-ovn) — the VM inherits
                           # that subnet's OVN-enforced isolation (the AWS "launch in this subnet" model).
-                          ovn.kubernetes.io/logical_switch: {{ $spec.subnet }}
+                          ovn.kubernetes.io/logical_switch: {{ $spec.subnet | toJson }}
                         {{- end }}
                       spec:
                         {{- if $vmArch }}
@@ -350,7 +350,7 @@ spec:
                           cpu:
                             cores: {{ $cpu }}
                             {{- if $cpuModel }}
-                            model: {{ $cpuModel }}
+                            model: {{ $cpuModel | toJson }}
                             {{- else if $ha }}
                             # Live migration/reschedule needs a CPU model every target node
                             # supports; host-model (default) pins the VM to its source node.
@@ -360,7 +360,7 @@ spec:
                             {{- end }}
                           resources:
                             requests:
-                              memory: {{ $memory }}
+                              memory: {{ $memory | toJson }}
                           {{- if $efi }}
                           # UEFI/OVMF boot (spec.firmware.mode: uefi). secureBoot → OVMF secure-boot
                           # firmware (needs SMM, set in features below). A migrated UEFI disk (GPT + EFI
@@ -538,7 +538,7 @@ spec:
                     accessModes: [ReadWriteOnce]
                     volumeMode: Block
                     storageClassName: longhorn-encrypted
-                    resources: { requests: { storage: {{ $dd.size }} } }
+                    resources: { requests: { storage: {{ $dd.size | toJson }} } }
             {{- end }}
             {{- end }}
             {{- if $isWin }}
@@ -2222,7 +2222,7 @@ spec:
                       app.kubernetes.io/name: {{ $name }}
                       openinfra.dev/vm: "true"
                     annotations:
-                      openinfra.dev/instance-role: {{ $instanceRole }}
+                      openinfra.dev/instance-role: {{ $instanceRole | toJson }}
                       openinfra.dev/vm: {{ $name }}
             {{- end }}
             {{- if or $spec.expose $ports }}

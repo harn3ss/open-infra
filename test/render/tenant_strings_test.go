@@ -346,39 +346,11 @@ func asList(v any) []any {
 	return l
 }
 
-// yamlInjectionQuarantine lists compositions that still let an unconstrained tenant string break or
-// inject the rendered manifest (a newline or quote in a free-form field). These are NOT a script
-// (TestTenantStrings_NeverReachScripts, below, still holds for them), but a crafted value can add or
-// corrupt a composed resource. The root cause is the same as the bucket-Job shell injection: a tenant
-// scalar reaches structured text without quoting or an XRD pattern. The fix is per field — an XRD
-// pattern on an identifier/quantity, or `| toJson` where the sink is a flow scalar — and it touches
-// ~30 compositions that re-render live tenant resources, so it is an estate-wide change with its own
-// rollout, tracked separately (#347 follow-up / #349). A file is removed from this list once clean; a
-// NEW composition is never added here (it must be clean), and a file that leaves the list can never
-// come back (the test fails if a quarantined file turns out to already be clean).
-var yamlInjectionQuarantine = map[string]bool{
-	"replication-composition.yaml": true, "migration-composition.yaml": true,
-	"dataflow-composition.yaml": true, "stream-composition.yaml": true,
-	"vm-composition.yaml": true, "vmimage-composition.yaml": true,
-	"autoscalinggroup-composition.yaml": true, "scheduledjob-composition.yaml": true,
-	"subnet-composition.yaml": true, "vpc-composition.yaml": true,
-	"transitgateway-composition.yaml": true, "natgateway-composition.yaml": true,
-	"elasticip-composition.yaml": true, "vpcendpoint-composition.yaml": true,
-	"flowlog-composition.yaml": true, "securitygroup-composition.yaml": true,
-	"fileshare-composition.yaml": true, "directory-composition.yaml": true,
-	"userpool-composition.yaml": true, "graphqlapi-composition.yaml": true,
-	"httpapi-composition.yaml": true, "featuregroup-composition.yaml": true,
-	"function-composition.yaml": true, "group-composition.yaml": true,
-	"volume-composition.yaml": true, "databaseproxy-composition.yaml": true,
-	"certificateauthority-composition.yaml": true, "backupplan-composition.yaml": true,
-	"dataclassification-composition.yaml": true, "faultinjection-composition.yaml": true,
-}
-
-// A tenant's free-form string must never reach a shell/interpreter script body (RCE), and — for every
-// composition not in the YAML-injection quarantine above — must never break or inject the rendered
-// manifest. For each composition and each XRD string field admission does not already constrain, the
-// test sets that one field to a payload of shell/YAML metacharacters, renders, and asserts the marker
-// never lands in a script and (outside quarantine) never corrupts the YAML.
+// A tenant's free-form string must never reach a shell/interpreter script body (RCE), and must never
+// break or inject the rendered manifest (an injected document can be a provider-kubernetes Object,
+// applied with the provider's ServiceAccount). For each composition and each XRD string field
+// admission does not already constrain, the test sets that one field to a payload of shell/YAML
+// metacharacters, renders, and asserts the marker never lands in a script and never corrupts the YAML.
 //
 // Coverage note: one field is set on a base (minimal) spec, so a field that only renders under a
 // deeper condition (e.g. database.restoreFrom) is not exercised here — those fields are guarded at
@@ -390,14 +362,12 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 		t.Fatalf("found only %d compositions with inline templates; the glob is wrong", len(comps))
 	}
 	checked, refused := 0, 0
-	brokeYAML := map[string]bool{}
 	for _, c := range comps {
 		sc, ok := schemas[c.kind]
 		if !ok {
 			t.Errorf("%s: no XRD for composite kind %s", c.file, c.kind)
 			continue
 		}
-		quarantined := yamlInjectionQuarantine[c.file]
 		var paths []string
 		freeStringPaths(sc.spec, "", &paths)
 		for _, p := range paths {
@@ -412,10 +382,7 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 			docs, perr := parseYAMLDocs(out)
 			if perr != nil || injectedStructure(docs) {
 				if strings.Contains(out, tenantMarker) {
-					brokeYAML[c.file] = true
-					if !quarantined {
-						t.Errorf("%s spec.%s: the value breaks or injects the rendered manifest (quote it with | toJson, or add an XRD pattern): %v", c.file, p, perr)
-					}
+					t.Errorf("%s spec.%s: the value breaks or injects the rendered manifest (quote it with | toJson, or add an XRD pattern): %v", c.file, p, perr)
 				}
 				continue
 			}
@@ -436,14 +403,7 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 			}
 		}
 	}
-	// Keep the quarantine honest: a file listed as still-vulnerable that no longer breaks on ANY field
-	// should be taken off the list, so the list only ever shrinks and never hides a clean file.
-	for f := range yamlInjectionQuarantine {
-		if !brokeYAML[f] {
-			t.Errorf("%s is in yamlInjectionQuarantine but no field breaks the manifest anymore — remove it from the list", f)
-		}
-	}
-	t.Logf("rendered %d field payloads; %d refused or not reachable from a base spec; %d files still in YAML-injection quarantine", checked, refused, len(yamlInjectionQuarantine))
+	t.Logf("rendered %d field payloads; %d refused or not reachable from a base spec", checked, refused)
 	if checked < 150 {
 		t.Errorf("only %d payloads rendered; the base specs no longer reach most templates", checked)
 	}

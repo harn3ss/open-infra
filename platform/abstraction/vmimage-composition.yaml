@@ -70,7 +70,7 @@ spec:
                   kind: DataVolume
                   metadata: { name: {{ $os }}-winiso, namespace: {{ $ns }} }
                   spec:
-                    source: { http: { url: "{{ $url }}" } }
+                    source: { http: { url: {{ $url | toJson }} } }
                     storage:
                       accessModes: [ReadWriteOnce]
                       resources: { requests: { storage: 9Gi } }
@@ -115,7 +115,7 @@ spec:
                   spec:
                     source:
                       {{- if $adoptGolden }}
-                      pvc: { name: {{ $adoptGolden }}, namespace: {{ $ns }} }
+                      pvc: { name: {{ $adoptGolden | toJson }}, namespace: {{ $ns }} }
                       {{- else }}
                       blank: {}
                       {{- end }}

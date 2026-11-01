@@ -78,7 +78,7 @@ spec:
                     type: object
                     required: [size]
                     properties:
-                      name: { type: string, description: "Stable name for this disk (the DataVolume/PVC suffix and the in-guest device order key). Defaults to data1, data2, … in list order. Renaming replaces the disk." }
+                      name: { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 63, description: "Stable name for this disk (the DataVolume/PVC suffix and the in-guest device order key). Defaults to data1, data2, … in list order. Renaming replaces the disk." }
                       size: { type: string, description: "Disk size, e.g. 50Gi." }
                       encrypted:
                         type: boolean
@@ -93,7 +93,7 @@ spec:
                       encryptionKey:
                         type: string
                         description: "Name of the kind: EncryptionKey (a Vault Transit KEK) whose data key protects this disk. Required when encrypted is true; ignored otherwise."
-                sshKey:   { type: string, description: "SSH public key injected via cloud-init on first boot (Linux only). If omitted, the only login is a generated password stored in the connection secret (<name>-vm)." }
+                sshKey:   { type: string, pattern: "^[^\r\n\u0085\u2028\u2029]*$", description: "SSH public key (one line) injected via cloud-init on first boot (Linux only). If omitted, the only login is a generated password stored in the connection secret (<name>-vm)." }
                 userData:
                   type: string
                   description: "First-boot user data (the EC2 UserData equivalent), Linux only. A shell script (starting with #!) is written to disk and run once at first boot, AFTER the base cloud-init (user/ssh/qemu-guest-agent) — so the VM stays reachable. Ignored on Windows. A full #cloud-config document is not accepted here (it can't be safely merged with the base config)."
@@ -150,7 +150,8 @@ spec:
                       description: "IP hop limit (TTL) of the IMDSv2 session-token response, as on EC2. Default 1, EC2's default, with or without a metadataOptions block. With 1, only processes in the guest itself (and host-network containers) get a session token; a container behind a bridge in the guest (docker's default network, a pod network) is one routing hop further and needs 2; each further hop needs one more. IMDSv1 requests are not hop-limited."
                 securityGroups:
                   type: array
-                  items: { type: string }
+                  # SecurityGroup names: each becomes the label key openinfra.dev/sg-<name>.
+                  items: { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 60 }
                   description: "Names of SecurityGroups (firewall rule sets) to attach to this VM."
                 subnet:
                   type: string

@@ -37,7 +37,7 @@ spec:
                     labels: { openinfra.dev/subnet: {{ $name }} }
                   spec:
                     protocol: IPv4
-                    cidrBlock: {{ $spec.cidr }}
+                    cidrBlock: {{ $spec.cidr | toJson }}
                     natOutgoing: true
                     {{- /* NB: do NOT use `default true` here — sprig's default treats the bool false
                            as empty, so `private: false` would render as true (a public subnet would be
@@ -48,10 +48,10 @@ spec:
                     private: true
                     {{- end }}
                     {{- if $spec.vpc }}
-                    vpc: {{ $spec.vpc }}
+                    vpc: {{ $spec.vpc | toJson }}
                     {{- end }}
                     {{- if $spec.gateway }}
-                    gateway: {{ $spec.gateway }}
+                    gateway: {{ $spec.gateway | toJson }}
                     {{- end }}
                     {{- if $spec.namespaces }}
                     namespaces: {{ toYaml $spec.namespaces | nindent 22 }}
@@ -73,7 +73,7 @@ spec:
                     {{- $m := $acl.match | default (join " && " $parts) }}
                       - direction: {{ $dir }}
                         priority: {{ $acl.priority | default 1000 }}
-                        match: "{{ $m }}"
+                        match: {{ $m | toJson }}
                         action: {{ $acl.action }}
                     {{- end }}
                     {{- else }}

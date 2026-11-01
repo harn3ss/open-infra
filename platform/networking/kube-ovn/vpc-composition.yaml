@@ -40,16 +40,16 @@ spec:
                     {{- if $spec.routes }}
                     staticRoutes:
                     {{- range $spec.routes }}
-                      - cidr: {{ .cidr }}
-                        nextHopIP: {{ .nextHop }}
+                      - cidr: {{ .cidr | toJson }}
+                        nextHopIP: {{ .nextHop | toJson }}
                         policy: policyDst
                     {{- end }}
                     {{- end }}
                     {{- if $spec.peerings }}
                     vpcPeerings:
                     {{- range $spec.peerings }}
-                      - remoteVpc: {{ .remoteVpc }}
-                        localConnectIP: {{ .localConnectIP }}
+                      - remoteVpc: {{ .remoteVpc | toJson }}
+                        localConnectIP: {{ .localConnectIP | toJson }}
                     {{- end }}
                     {{- end }}
     - step: ready

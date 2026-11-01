@@ -55,7 +55,7 @@ spec:
                   kind: {{ $ckind }}
                   metadata:
                     name: {{ $name }}
-                    namespace: {{ $ns }}
+                    namespace: {{ $ns | toJson }}
                   spec:
                     {{- /* ---- per-type head ---- */}}
                     {{- if eq $type "pod-kill" }}
@@ -99,7 +99,7 @@ spec:
                     {{- end }}
                     selector:
                       namespaces:
-                        - {{ $ns }}
+                        - {{ $ns | toJson }}
                       labelSelectors:
                         {{- range $k, $v := $spec.target.labelSelector }}
                         {{ $k }}: {{ $v | quote }}
@@ -115,7 +115,7 @@ spec:
                       mode: all
                       selector:
                         namespaces:
-                          - {{ $ns }}
+                          - {{ $ns | toJson }}
                         labelSelectors:
                           {{- range $k, $v := $spec.partitionPeer }}
                           {{ $k }}: {{ $v | quote }}

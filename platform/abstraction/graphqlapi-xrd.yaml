@@ -132,9 +132,11 @@ spec:
                     properties:
                       type:
                         type: string
+                        pattern: '^[_A-Za-z][_0-9A-Za-z]*$'   # a GraphQL name (also a ConfigMap key)
                         description: "The type this field lives on: Query or Mutation for a root resolver, or any object type (e.g. Post) for a per-nested-field resolver that runs when that field is selected below the root — it receives the parent object as $ctx.source."
                       field:
                         type: string
+                        pattern: '^[_A-Za-z][_0-9A-Za-z]*$'   # a GraphQL name (also a ConfigMap key)
                         description: "The GraphQL field name, e.g. getTodo."
                       runtime:
                         type: string
@@ -204,6 +206,7 @@ spec:
                     properties:
                       field:
                         type: string
+                        pattern: '^[_A-Za-z][_0-9A-Za-z]*$'   # a GraphQL name (also a ConfigMap key)
                         description: "The Subscription field name, e.g. onCreateTodo."
                       subject:
                         type: string

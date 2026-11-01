@@ -37,14 +37,14 @@ spec:
                     name: {{ $name }}
                     labels: { openinfra.dev/natgateway: {{ $name }} }
                   spec:
-                    vpc: {{ $spec.vpc }}
-                    subnet: {{ $spec.subnet }}
-                    lanIp: {{ $spec.internalIp }}
-                    externalSubnets: [{{ $extnet }}]
+                    vpc: {{ $spec.vpc | toJson }}
+                    subnet: {{ $spec.subnet | toJson }}
+                    lanIp: {{ $spec.internalIp | toJson }}
+                    externalSubnets: [{{ $extnet | toJson }}]
                     {{- if $spec.nodeSelector }}
                     selector:
                     {{- range $k, $v := $spec.nodeSelector }}
-                      - "{{ $k }}: {{ $v }}"
+                      - {{ printf "%s: %s" $k $v | toJson }}
                     {{- end }}
                     {{- end }}
             {{- if $spec.egress }}
@@ -64,9 +64,9 @@ spec:
                     labels: { openinfra.dev/natgateway: {{ $name }} }
                   spec:
                     natGwDp: {{ $name }}
-                    externalSubnet: {{ $extnet }}
+                    externalSubnet: {{ $extnet | toJson }}
                     {{- if $spec.egress.publicIp }}
-                    v4ip: {{ $spec.egress.publicIp }}
+                    v4ip: {{ $spec.egress.publicIp | toJson }}
                     {{- end }}
             {{- range $i, $cidr := ($spec.egress.sourceCidrs | default list) }}
             ---
@@ -85,7 +85,7 @@ spec:
                     labels: { openinfra.dev/natgateway: {{ $name }} }
                   spec:
                     eip: {{ $name }}-egress
-                    internalCIDR: {{ $cidr }}
+                    internalCIDR: {{ $cidr | toJson }}
             {{- end }}
             {{- end }}
     - step: ready

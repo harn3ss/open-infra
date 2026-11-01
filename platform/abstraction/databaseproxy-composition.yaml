@@ -98,7 +98,7 @@ spec:
                             image: ghcr.io/harn3ss/open-infra-tds-proxy:latest{{ $arch }}
                             args:
                               - -listen=:1433
-                              - -backend={{ $backend }}
+                              - {{ printf "-backend=%s" $backend | toJson }}
                               - -metrics=:9114
                               - -pool-max={{ $poolMax }}
                               - -acquire-timeout-ms={{ $acquireMs }}
@@ -210,7 +210,7 @@ spec:
                   stringData:
                     HOST: {{ $name }}-proxy.{{ $ns }}.svc.cluster.local
                     TDS_PORT: "1433"
-                    TARGET: {{ $target }}
+                    TARGET: {{ $target | toJson }}
                     POOL_MAX: "{{ $poolMax }}"
                     ENCRYPT: "{{ if $tlsOn }}supported{{ else }}disable{{ end }}"
             ---

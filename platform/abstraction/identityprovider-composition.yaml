@@ -57,7 +57,7 @@ spec:
                     name: {{ $name | quote }}
                     issuerURL: {{ $spec.issuerURL | quote }}
                     audiences: {{ $auds | join "," | quote }}
-                    subjectClaim: "{{ $spec.subjectClaim | default "sub" }}"
+                    subjectClaim: {{ $spec.subjectClaim | default "sub" | toJson }}
             ---
             apiVersion: openinfra.dev/v1
             kind: XIdentityProvider

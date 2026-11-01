@@ -19,7 +19,7 @@ func TestVpcEndpoint_AliasesShim(t *testing.T) {
 		"type: ExternalName",
 		"name: vpce-s3ep",
 		"externalName: aws-shim.open-infra-aws-shim.svc.cluster.local",
-		"openinfra.dev/vpc-endpoint-service: s3",
+		`openinfra.dev/vpc-endpoint-service: "s3"`,
 		"dnsName: \"vpce-s3ep.team-a.svc.cluster.local:4566\"",
 	} {
 		if !strings.Contains(out, want) {

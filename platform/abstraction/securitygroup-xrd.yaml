@@ -66,8 +66,8 @@ spec:
                           type: object
                           properties:
                             cidr:          { type: string, description: "edge/LAN source, e.g. 192.0.2.0/24 or 0.0.0.0/0", pattern: '^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])$' }
-                            securityGroup: { type: string, description: "members of another SecurityGroup (same namespace)" }
-                            namespace:     { type: string, description: "all pods in this namespace" }
+                            securityGroup: { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 60, description: "members of another SecurityGroup (same namespace)" }
+                            namespace:     { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 63, description: "all pods in this namespace" }
                 egress:
                   type: array
                   description: "Outbound allow-rules. If set, members become egress-restricted (DNS auto-allowed)."
@@ -86,8 +86,8 @@ spec:
                           type: object
                           properties:
                             cidr:          { type: string, pattern: '^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])$' }
-                            securityGroup: { type: string }
-                            namespace:     { type: string }
+                            securityGroup: { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 60 }
+                            namespace:     { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 63 }
             status:
               type: object
               properties:

@@ -25,7 +25,7 @@ func TestFunction_RuntimeImages(t *testing.T) {
 		"dotnet8":    "ghcr.io/harn3ss/open-infra-lambda-dotnet:latest",
 	} {
 		out := render(t, tmpl, ctx(runtime))
-		if !strings.Contains(out, "image: "+image) {
+		if !strings.Contains(out, `image: "`+image) {
 			t.Errorf("runtime %s must render base image %q; got:\n%s", runtime, image, grepCtx(out, "image:"))
 		}
 	}

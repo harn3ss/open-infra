@@ -251,9 +251,9 @@ spec:
                             volumeMounts:
                               {{- range $m := $spec.volumeMounts }}
                               - name: {{ $m.name }}
-                                mountPath: {{ $m.mountPath }}
+                                mountPath: {{ $m.mountPath | toJson }}
                                 {{- if $m.subPath }}
-                                subPath: {{ $m.subPath }}
+                                subPath: {{ $m.subPath | toJson }}
                                 {{- end }}
                                 {{- if $m.readOnly }}
                                 readOnly: true

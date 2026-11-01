@@ -4614,7 +4614,9 @@ components:
                   description: Per-member root disk size. Default 20Gi (Windows uses a fixed 100Gi).
                 sshKey:
                   type: string
-                  description: SSH public key injected via cloud-init (Linux only). Every member gets the same key.
+                  pattern: "^[^\r\n\N\L\P]*$"
+                  description: SSH public key (one line) injected via cloud-init (Linux only). Every member gets the same
+                    key.
                 userData:
                   type: string
                   description: "First-boot user data (EC2 UserData), Linux only \u2014 a #! shell script run once after base\
@@ -4632,6 +4634,8 @@ components:
                   type: array
                   items:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    maxLength: 60
                   description: SecurityGroups (firewall rule sets) applied to every member.
                 subnet:
                   type: string
@@ -6335,11 +6339,13 @@ components:
                 properties:
                   type:
                     type: string
+                    pattern: ^[_A-Za-z][_0-9A-Za-z]*$
                     description: "The type this field lives on: Query or Mutation for a root resolver, or any object type\
                       \ (e.g. Post) for a per-nested-field resolver that runs when that field is selected below the root \u2014\
                       \ it receives the parent object as $ctx.source."
                   field:
                     type: string
+                    pattern: ^[_A-Za-z][_0-9A-Za-z]*$
                     description: The GraphQL field name, e.g. getTodo.
                   runtime:
                     type: string
@@ -6436,6 +6442,7 @@ components:
                 properties:
                   field:
                     type: string
+                    pattern: ^[_A-Za-z][_0-9A-Za-z]*$
                     description: The Subscription field name, e.g. onCreateTodo.
                   subject:
                     type: string
@@ -7808,6 +7815,7 @@ components:
               properties:
                 name:
                   type: string
+                  pattern: ^[a-z0-9]{1,16}$
                   description: Short site id used as the origin marker (e.g. 'a', 'east'). Must be unique across the pair.
                 engine:
                   type: string
@@ -8140,9 +8148,13 @@ components:
                           pattern: ^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])$
                         securityGroup:
                           type: string
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          maxLength: 60
                           description: members of another SecurityGroup (same namespace)
                         namespace:
                           type: string
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          maxLength: 63
                           description: all pods in this namespace
             egress:
               type: array
@@ -8174,8 +8186,12 @@ components:
                           pattern: ^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])/(3[0-2]|[12]?[0-9])$
                         securityGroup:
                           type: string
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          maxLength: 60
                         namespace:
                           type: string
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          maxLength: 63
         status:
           type: object
           properties:
@@ -8881,6 +8897,8 @@ components:
               pattern: ^[a-zA-Z0-9._-]+$
             hostname:
               type: string
+              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+              maxLength: 253
               description: External hostname for the hosted login/admin UI, exposed over an Ingress with TLS. If omitted,
                 the pool is reachable in-cluster only (the OIDC issuer that consumers point OIDC_ISSUER at).
             registrationAllowed:
@@ -8969,6 +8987,8 @@ components:
                 properties:
                   name:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    maxLength: 63
                     description: "Stable name for this disk (the DataVolume/PVC suffix and the in-guest device order key).\
                       \ Defaults to data1, data2, \u2026 in list order. Renaming replaces the disk."
                   size:
@@ -8988,8 +9008,9 @@ components:
                       Required when encrypted is true; ignored otherwise.'
             sshKey:
               type: string
-              description: SSH public key injected via cloud-init on first boot (Linux only). If omitted, the only login is
-                a generated password stored in the connection secret (<name>-vm).
+              pattern: "^[^\r\n\N\L\P]*$"
+              description: SSH public key (one line) injected via cloud-init on first boot (Linux only). If omitted, the only
+                login is a generated password stored in the connection secret (<name>-vm).
             userData:
               type: string
               description: "First-boot user data (the EC2 UserData equivalent), Linux only. A shell script (starting with\
@@ -9085,6 +9106,8 @@ components:
               type: array
               items:
                 type: string
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                maxLength: 60
               description: Names of SecurityGroups (firewall rule sets) to attach to this VM.
             subnet:
               type: string

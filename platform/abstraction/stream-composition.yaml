@@ -54,6 +54,11 @@ spec:
             {{- $streamName := printf "cdc-%s" $name }}
             {{- $subjects := printf "cdc.%s.>" $name }}
             {{- $rs := $src.replicaSet | default "rs0" }}
+            {{- /* These are written into the Debezium application.properties block below: a line break
+                   would end that block scalar and could add fields to the manifest. */}}
+            {{- range $f, $v := dict "host" $host "database" $db "username" $user "schemas" $schemas "tables" $tables "replicaSet" $rs }}
+            {{-   if regexMatch "[\r\n\u0085\u2028\u2029]" (printf "%v" $v) }}{{ fail (printf "kind: Stream %s: spec.source.%s may not contain a line break" $name $f) }}{{ end }}
+            {{- end }}
             {{- /* mongo's password property is debezium.source.mongodb.password; the
                    relational engines use debezium.source.database.password. Quarkus
                    maps the matching UPPER_SNAKE env var onto the property. */}}
@@ -86,7 +91,7 @@ spec:
                     namespace: {{ $ns }}
                   spec:
                     accessModes: [ReadWriteOnce]
-                    storageClassName: {{ $spec.storageClass | default "longhorn" }}
+                    storageClassName: {{ $spec.storageClass | default "longhorn" | toJson }}
                     resources:
                       requests:
                         storage: 1Gi
@@ -217,8 +222,8 @@ spec:
                               - name: {{ $pwEnv }}
                                 valueFrom:
                                   secretKeyRef:
-                                    name: {{ $pwSecret }}
-                                    key: {{ $pwKey }}
+                                    name: {{ $pwSecret | toJson }}
+                                    key: {{ $pwKey | toJson }}
                             volumeMounts:
                               - { name: config, mountPath: /debezium/conf/application.properties, subPath: application.properties }
                               - { name: data, mountPath: /debezium/data }

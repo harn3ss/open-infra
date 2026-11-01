@@ -66,6 +66,9 @@ spec:
                   pattern: '^[a-zA-Z0-9._-]+$'
                 hostname:
                   type: string
+                  # A DNS name (it is the Ingress host and the TLS certificate's name).
+                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
+                  maxLength: 253
                   description: "External hostname for the hosted login/admin UI, exposed over an Ingress with TLS. If omitted, the pool is reachable in-cluster only (the OIDC issuer that consumers point OIDC_ISSUER at)."
                 registrationAllowed:
                   type: boolean

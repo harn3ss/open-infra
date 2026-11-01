@@ -48,6 +48,10 @@ spec:
             {{- $xr := .observed.composite.resource }}
             {{- $spec := $xr.spec }}
             {{- $lt := $spec.launchTemplate }}
+            {{- /* launchTemplate.userData is re-indented into a block scalar with nindent, which breaks
+                   lines on LF only: any other YAML line break (a lone CR, NEL, LS, PS) would end the block
+                   and could add fields to the manifest. CRLF scripts are fine. */}}
+            {{- if regexMatch "\r([^\n]|$)|[\u0085\u2028\u2029]" (printf "%v" ($lt.userData | default "")) }}{{ fail "kind: AutoScalingGroup: launchTemplate.userData contains a line break other than LF or CRLF" }}{{ end }}
             {{- $labels := $xr.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
@@ -183,7 +187,7 @@ spec:
                                 {{- end }}
                                 resources:
                                   requests:
-                                    storage: {{ $disk }}
+                                    storage: {{ $disk | toJson }}
                                 storageClassName: {{ if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
                               source:
                                 {{- if $isWin }}
@@ -204,13 +208,13 @@ spec:
                               {{- /* SecurityGroup membership: the launcher pod inherits VMI labels, so
                                      each member is selected by the attached SGs' NetworkPolicies. */}}
                               {{- range $sg := ($lt.securityGroups | default list) }}
-                              openinfra.dev/sg-{{ $sg }}: ""
+                              {{ printf "openinfra.dev/sg-%s" $sg | toJson }}: ""
                               {{- end }}
                             {{- if $lt.subnet }}
                             annotations:
                               # Place each member's launcher pod in a kind: Subnet (kube-ovn) — the member
                               # inherits that subnet's OVN-enforced isolation ("launch in this subnet").
-                              ovn.kubernetes.io/logical_switch: {{ $lt.subnet }}
+                              ovn.kubernetes.io/logical_switch: {{ $lt.subnet | toJson }}
                             {{- end }}
                           spec:
                             {{- if $vmArch }}
@@ -237,7 +241,7 @@ spec:
                               cpu:
                                 cores: {{ $cpu }}
                                 {{- if $cpuModel }}
-                                model: {{ $cpuModel }}
+                                model: {{ $cpuModel | toJson }}
                                 {{- else if $ha }}
                                 # Live migration needs a CPU model every node supports; host-model pins
                                 # the member to its source node. Nehalem is a universally-safe baseline;
@@ -246,7 +250,7 @@ spec:
                                 {{- end }}
                               resources:
                                 requests:
-                                  memory: {{ $memory }}
+                                  memory: {{ $memory | toJson }}
                               {{- if $isWin }}
                               # Windows: q35 BIOS (no EFI — matches the MBR golden) + Hyper-V enlightenments.
                               machine:

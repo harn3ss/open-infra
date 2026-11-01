@@ -88,10 +88,10 @@ spec:
                     storageClassName: {{ if $encrypted }}longhorn-encrypted{{ else if $migratable }}longhorn-migratable{{ else }}longhorn{{ end }}
                     resources:
                       requests:
-                        storage: {{ $size }}
+                        storage: {{ $size | toJson }}
                     {{- if and $spec.source $spec.source.snapshot }}
                     dataSource:
-                      name: {{ $spec.source.snapshot }}
+                      name: {{ $spec.source.snapshot | toJson }}
                       kind: VolumeSnapshot
                       apiGroup: snapshot.storage.k8s.io
                     {{- end }}

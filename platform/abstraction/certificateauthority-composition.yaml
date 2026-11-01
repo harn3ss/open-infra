@@ -54,7 +54,7 @@ spec:
                     hierarchy: "{{ $spec.hierarchy | default "root" }}"
                     parent: {{ $spec.parent | default "" | quote }}
                     keyType: "{{ $spec.keyType | default "rsa-4096" }}"
-                    maxTtl: "{{ $spec.maxTtl | default "8760h" }}"
+                    maxTtl: {{ $spec.maxTtl | default "8760h" | toJson }}
                     allowedDomains: {{ $domains | quote }}
                     pkiMount: "{{ $pkiMount }}"
             ---

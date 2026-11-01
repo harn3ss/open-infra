@@ -59,7 +59,7 @@ spec:
                     template:
                       # retentionDays -> Velero TTL (a Go duration). Default 30d when unset.
                       ttl: {{ mul (int ($r.retentionDays | default 30)) 24 }}h0m0s
-                      storageLocation: openinfra-vault-{{ $r.targetVault }}
+                      storageLocation: {{ printf "openinfra-vault-%s" $r.targetVault | toJson }}
                       defaultVolumesToFsBackup: true
                       {{- if $sel.includedNamespaces }}
                       includedNamespaces:
