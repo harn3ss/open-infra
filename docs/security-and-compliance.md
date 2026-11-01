@@ -133,7 +133,7 @@ remain **not-live-verified**).
 | Control | Implementation | Status |
 |---------|----------------|--------|
 | CM-2 Baseline Configuration | The entire platform is a declarative GitOps baseline, reconciled continuously by Argo CD. | Implemented |
-| CM-3 Configuration Change Control | Changes land via git (review) and apply only through Argo sync; `selfHeal` reverts out-of-band drift. | Implemented |
+| CM-3 Configuration Change Control | Changes land via git (review) and apply only through Argo sync; `selfHeal` reverts out-of-band drift. RBAC created out of band — which no Argo app tracks, so `selfHeal` cannot see it — is surfaced by the read-only [`probe/rbac-unmanaged.sh`](../probe/rbac-unmanaged.sh) with each object's subjects or rules. | Implemented |
 | CM-4 Impact Analysis | CI (`test.yml`: Go race tests + UI typecheck/build) and drift checkers gate changes before merge. | Implemented |
 | CM-5 Access Restrictions for Change | Git plus Kubernetes RBAC restrict who can change configuration. | Implemented / Operator |
 | CM-6 Configuration Settings | Settings are declarative manifests, not imperative host state. | Implemented |
