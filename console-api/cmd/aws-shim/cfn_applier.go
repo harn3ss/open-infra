@@ -173,6 +173,9 @@ func (a *impersonatingApplier) Create(ctx context.Context, manifestYAML []byte) 
 	if isStackRecord(gvk.Kind, name) {
 		return false, fmt.Errorf("the stack record %q is written by Apply, never created as a resource", name)
 	}
+	if err := a.functionNameFree(ctx, gvr, ns, name); err != nil {
+		return false, err
+	}
 	cli := a.caller.Resource(gvr).Namespace(ns)
 	created, err := cli.Create(ctx, obj, metav1.CreateOptions{FieldManager: cfnFieldManager})
 	if apierrors.IsAlreadyExists(err) {
@@ -193,7 +196,25 @@ func (a *impersonatingApplier) Create(ctx context.Context, manifestYAML []byte) 
 			break
 		}
 	}
+	if gvr == functionClaimGVR && a.door != nil {
+		a.door.fns.forget(name) // the next invoke by name finds it here
+	}
 	return true, nil
+}
+
+// functionNameFree refuses a stack's new kind: Function whose name a function in another of the
+// namespaces the Lambda API invokes in already has: a function is invoked by name, and a name is unique
+// in an account, as on AWS. When those namespaces cannot be read, nothing is refused (the earlier
+// behavior: the stack's function is created, and an invoke by name looks where it always did).
+func (a *impersonatingApplier) functionNameFree(ctx context.Context, gvr schema.GroupVersionResource, ns, name string) error {
+	if gvr != functionClaimGVR || a.door == nil || a.door.fns == nil {
+		return nil
+	}
+	other, err := a.door.fns.elsewhere(ctx, name, ns)
+	if err != nil || other == "" {
+		return nil
+	}
+	return fmt.Errorf("Function %s already exists (outside this stack) — a function name is unique, as on AWS, and every invoke by name would reach that one; refusing to create another (give the stack's function another FunctionName)", name)
 }
 
 // List returns the objects of a kind in the stack namespace via the CALLER (cfn.Lister) — how the engine
@@ -235,6 +256,9 @@ func (a *impersonatingApplier) Delete(ctx context.Context, apiVersion, kind, nam
 	err = a.caller.Resource(gvr).Namespace(a.ns).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) { // --ignore-not-found semantics
 		return fmt.Errorf("delete %s/%s %q: %w", apiVersion, kind, name, err)
+	}
+	if gvr == functionClaimGVR && a.door != nil {
+		a.door.fns.forget(name)
 	}
 	return nil
 }

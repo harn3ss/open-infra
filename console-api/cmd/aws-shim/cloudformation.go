@@ -118,6 +118,10 @@ type cfnDoorway struct {
 	sigKey     []byte
 	// s3 reads TemplateURL objects from the shim's own S3 (cloudformation_templateurl.go); nil = refused.
 	s3 *s3Handler
+	// fns finds a function by name across the namespaces the Lambda API invokes in (fn_locate.go): a
+	// stack's function is refused a name another of them already has, since a function name is unique,
+	// as on AWS. nil = not checked.
+	fns *fnLocator
 }
 
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and

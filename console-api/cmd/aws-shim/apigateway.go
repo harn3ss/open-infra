@@ -54,6 +54,7 @@ type apigwHandler struct {
 	authz      *dataplaneauthz.Checker
 	logger     *slog.Logger
 	client     *http.Client
+	fns        *fnLocator // where an integration's Function lives (fn_locate.go); nil = fnNS
 
 	oidcMu    sync.Mutex
 	providers map[string]*oidc.Provider // issuer -> provider (JWKS discovery is network; cache)
@@ -308,7 +309,7 @@ func (h *apigwHandler) authorizeIntegrationTarget(ctx context.Context, r *http.R
 	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "lambda:InvokeFunction", "Function", fn, r); denied {
 		return reason, false
 	}
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", h.fnNS, fn); !allowed {
+	if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", h.fns.namespaceOf(ctx, fn, h.fnNS), fn); !allowed {
 		return reason, false
 	}
 	return "", true
@@ -546,7 +547,7 @@ func (h *apigwHandler) serveInvoke(w http.ResponseWriter, r *http.Request, apiID
 	event := buildProxyEvent(integ.PayloadFormatVersion, r, apiID, stage, match.RouteKey, routePath, pathParams, reqBody, requestID)
 	evJSON, _ := json.Marshal(event)
 
-	target := "http://" + integ.IntegrationURI + "." + h.fnNS + "." + h.svcSuffix + "/"
+	target := "http://" + integ.IntegrationURI + "." + h.fns.namespaceOf(r.Context(), integ.IntegrationURI, h.fnNS) + "." + h.svcSuffix + "/"
 	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(evJSON))
 	if err != nil {
 		writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")

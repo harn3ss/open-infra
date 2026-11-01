@@ -335,6 +335,43 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# Finding a function by name: a Lambda Invoke, an SNS/EventBridge/API Gateway delivery or a stack's
+# function name check looks for the kind: Function in the Lambda API's namespace (FUNCTIONS_NAMESPACE)
+# and the stack namespace (CFN_NAMESPACE), so a function a stack creates is invoked by the name its stack
+# reports. Read one claim by name — get only, bound in just those two namespaces; the caller's right to
+# invoke is still checked where the function is found. Without it every invoke looks in
+# FUNCTIONS_NAMESPACE only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-infra-aws-shim-functions
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [functions]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-functions
+  namespace: default
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-functions }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-functions
+  namespace: open-infra-cfn
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-functions }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # Athena doorway: Trino runs scale-to-zero (console trino-autostop). The doorway scales
 # Trino up on StartQueryExecution and stamps the athena.openinfra.dev/last-query annotation the autostop
 # honors — so it needs get/list/patch on the ONE trino Deployment in the lakehouse namespace, nothing more.

@@ -46,6 +46,7 @@ type ebHandler struct {
 	sqs     *sqsStore     // SQS target delivery; nil => SQS targets refused
 	authz   *dataplaneauthz.Checker
 	logger  *slog.Logger
+	fns     *fnLocator // where a lambda target's Function lives (fn_locate.go); nil = fnNS
 
 	schedMu sync.Mutex
 }
@@ -437,9 +438,14 @@ func (h *ebHandler) putTargets(ctx context.Context, w http.ResponseWriter, r *ht
 		}
 		// A stack's own Function runs in the stack's namespace: the CloudFormation front door names it for
 		// an in-stack target (never a client — the value rides only an in-process request's context).
+		// Any other Function is found by name where it is (fn_locate.go). The target records the namespace,
+		// so it is delivered where the caller's right to invoke it is checked here.
 		fnNS := ""
 		if m, ok := ctx.Value(cfnTargetNamespaceKey{}).(map[string]string); ok && ttype == "lambda" {
 			fnNS = m[id]
+		}
+		if ttype == "lambda" && fnNS == "" {
+			fnNS = h.fns.namespaceOf(ctx, lambdaNameFromArn(arn), h.fnNS)
 		}
 		// Escalation fence: the caller must be able to invoke/send to this target themselves. A rule is
 		// then not a way to reach something you could not reach directly.
@@ -594,10 +600,12 @@ func (h *ebHandler) deliver(ctx context.Context, t ebTarget, payload []byte) err
 		if h.async == nil {
 			return errNoAsync
 		}
-		if t.NS != "" {
-			return h.async.publishIn(t.NS, lambdaNameFromArn(t.Arn), "application/json", payload, "")
+		fn := lambdaNameFromArn(t.Arn)
+		ns := t.NS // where PutTargets checked the creator's right to invoke it
+		if ns == "" {
+			ns = h.fns.namespaceOf(ctx, fn, h.fnNS) // a target recorded before targets kept a namespace
 		}
-		return h.async.publish(lambdaNameFromArn(t.Arn), "application/json", payload, "")
+		return h.async.publish(fn, ns, "application/json", payload, "")
 	case "sqs":
 		if h.sqs == nil {
 			return errNoSQS
@@ -711,7 +719,7 @@ func (h *ebHandler) authorizeTarget(ctx context.Context, r *http.Request, claims
 			return reason, false
 		}
 		if fnNS == "" {
-			fnNS = h.fnNS
+			fnNS = h.fns.namespaceOf(ctx, fn, h.fnNS) // where the Function is (fn_locate.go)
 		}
 		if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", fnNS, fn); !allowed {
 			return reason, false

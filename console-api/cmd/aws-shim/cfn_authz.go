@@ -104,16 +104,16 @@ func (h *cfnDoorway) canProvisionRestAPI(ctx context.Context, ap *impersonatingA
 			return false, reason
 		}
 	}
-	fnNS := h.ns
-	if h.restV1 != nil && h.restV1.fnNS != "" {
-		fnNS = h.restV1.fnNS // where the REST v1 invoke path runs an integration's Function
-	}
 	for _, m := range plan.Methods {
 		ig := m.Integration
 		if ig == nil || (ig.Type != "AWS" && ig.Type != "AWS_PROXY") {
 			continue
 		}
 		fn := functionFromURI(ig.URI)
+		fnNS := h.ns // where the REST v1 invoke path will run the integration's Function
+		if h.restV1 != nil && h.restV1.fnNS != "" {
+			fnNS = h.restV1.fnNamespace(ctx, fn)
+		}
 		if ok, reason := h.callerCan(ctx, ap, "create", "openinfra.dev", "functions", fnNS, fn); !ok {
 			return false, "not authorized to integrate function " + fn + ": " + reason
 		}

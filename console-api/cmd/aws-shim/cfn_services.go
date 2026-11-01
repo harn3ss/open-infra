@@ -211,7 +211,7 @@ func (a *impersonatingApplier) svcAuthorize(ctx context.Context, kind, op, name 
 	if kind == cfn.KindSNSSubscription && (op == "create" || op == "update") {
 		if p, _ := spec["protocol"].(string); p == "lambda" {
 			fn, _ := spec["function"].(string)
-			ns := a.svc.lambdaNamespace(spec, a.ns)
+			ns := a.svc.lambdaNamespace(ctx, spec, a.ns)
 			if ok, reason := a.door.callerCan(ctx, a, "create", "openinfra.dev", "functions", ns, fn); !ok {
 				return cfn.Unauthorized(fmt.Sprintf("subscription %s not created: not authorized to deliver to function %s: %s", name, fn, reason))
 			}
@@ -224,12 +224,14 @@ func (a *impersonatingApplier) svcAuthorize(ctx context.Context, kind, op, name 
 }
 
 // lambdaNamespace is where a lambda subscription's Function lives: the stack's namespace for one of the
-// stack's own Functions, else the Lambda API's.
-func (s *cfnServices) lambdaNamespace(spec map[string]any, stackNS string) string {
+// stack's own Functions, else where a Function of that name is (as a Subscribe through the SNS front
+// door finds it: the Lambda API's namespace, then the stacks').
+func (s *cfnServices) lambdaNamespace(ctx context.Context, spec map[string]any, stackNS string) string {
 	if in, _ := spec["inStack"].(bool); in {
 		return stackNS
 	}
-	return s.sns.lambdaNS
+	fn, _ := spec["function"].(string)
+	return s.sns.fns.namespaceOf(ctx, fn, s.sns.lambdaNS)
 }
 
 // svcExists reports whether the service resource exists in its store (under any owner).
@@ -429,7 +431,7 @@ func (a *impersonatingApplier) svcSubscribe(ctx context.Context, spec map[string
 		if a.svc.sns.invoker == nil {
 			return fmt.Errorf("lambda delivery is not configured on this shim")
 		}
-		attrs[snsFnNamespaceAttr] = a.svc.lambdaNamespace(spec, ns)
+		attrs[snsFnNamespaceAttr] = a.svc.lambdaNamespace(ctx, spec, ns)
 	default:
 		return fmt.Errorf("SNS protocol %q is not delivered by this shim", proto)
 	}

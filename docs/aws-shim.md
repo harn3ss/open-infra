@@ -341,9 +341,25 @@ payload to the Function's cluster-local Knative address (which drives scale-from
 the response, with Lambda's JSON error dialect and `X-Amz-Function-Error` semantics. Authorization
 is the same impersonated `SubjectAccessReview` (invoke → `create` on `functions` — invoking runs code,
 so it is a write, not a read). v1 supports `RequestResponse` (sync), `Event` (async — durably queued via
-JetStream with retries + a per-function DLQ), and `DryRun`, resolving Functions in a single configured
-namespace; version qualifiers and cross-namespace resolution are the flagged next steps. `probe/aws-shim-lambda.sh`
-proves it live (a real SDK `Invoke` of a deployed `kind: Function` round-trips).
+JetStream with retries + a per-function DLQ), and `DryRun`; an alias qualifier routes a synchronous invoke
+to the alias's traffic tag. `probe/aws-shim-lambda.sh` proves it live (a real SDK `Invoke` of a deployed
+`kind: Function` round-trips).
+
+**Finding a function.** A function is named by its name, an ARN (`arn:aws:lambda:<region>:<account>:function:<name>[:<qualifier>]`)
+or a partial ARN; only the name matters. It is looked for in the Lambda API's namespace
+(`FUNCTIONS_NAMESPACE`, default `default`) and then the namespace CloudFormation stacks deploy into
+(`CFN_NAMESPACE`, default `open-infra-cfn`), so the `FunctionName` or `Arn` a stack's outputs report is
+invocable. Every path that invokes a function by name finds it the same way: `Invoke` (sync and
+`Event`), SNS lambda subscriptions, EventBridge Lambda targets, API Gateway (HTTP and REST) integrations,
+and a stack's REST API integrations. Only a `kind: Function` counts (a Service of that name is not a
+function), and the caller still needs invoke rights where the function is found: `create` on `functions`
+in that namespace plus `lambda:InvokeFunction` on `Function::<name>`. An asynchronous invocation and an
+SNS lambda subscription are delivered to the namespace where that check passed. A stack refuses to create a
+function whose name a function in the other namespace already has, since a function name is unique in an
+account, as on AWS. A function created outside a stack (with `kubectl` or GitOps) under a stack function's
+name takes precedence, because the Lambda API's namespace is searched first. Lookups use the shim's `get`
+on `functions` in those two namespaces (`open-infra-aws-shim-functions`); without it, a function is looked
+for in `FUNCTIONS_NAMESPACE` only.
 
 ### AppSync (GraphQL; over open-appsync — slice 1 runs live, experimental)
 

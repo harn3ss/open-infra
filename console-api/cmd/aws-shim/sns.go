@@ -44,9 +44,11 @@ type snsHandler struct {
 	authz   *dataplaneauthz.Checker
 	logger  *slog.Logger
 	// lambda delivery (sns_lambda.go): a lambda subscription's Function is invoked at its cluster-local
-	// address in its namespace. lambdaNS is the Lambda API's namespace (a Subscribe through this front
-	// door); a stack's subscription records its own. nil invoker = lambda subscriptions refused.
+	// address in its namespace, recorded when it is subscribed: where fns finds a Function of that name
+	// (the Lambda API's namespace, lambdaNS, or a stack's), else lambdaNS. nil invoker = lambda
+	// subscriptions refused.
 	lambdaNS  string
+	fns       *fnLocator
 	svcSuffix string
 	invoker   *http.Client
 }

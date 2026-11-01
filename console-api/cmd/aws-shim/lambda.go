@@ -37,11 +37,11 @@ var fnNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 // JSON dialect (x-amzn-errortype header + a JSON message body).
 //
 // Invocation types: RequestResponse (synchronous), Event (asynchronous — durably queued via
-// asyncInvoker), and DryRun (authorize-only) are all supported. Functions are resolved in a single
-// configured namespace; a downstream HTTP error is surfaced as Lambda's X-Amz-Function-Error.
-// Qualifiers are supported for the synchronous path: an alias (or $LATEST) routes to the Knative
-// traffic tag the Function composition publishes at <alias>-<name>. Cross-namespace resolution and
-// qualified async delivery are the flagged next steps.
+// asyncInvoker), and DryRun (authorize-only) are all supported. A function is found by name in the
+// Lambda API's namespace or a CloudFormation stack's (fn_locate.go); a downstream HTTP error is surfaced
+// as Lambda's X-Amz-Function-Error. Qualifiers are supported for the synchronous path: an alias (or
+// $LATEST) routes to the Knative traffic tag the Function composition publishes at <alias>-<name>.
+// Qualified async delivery is the flagged next step.
 type lambdaHandler struct {
 	cs        kubernetes.Interface
 	client    *http.Client
@@ -50,6 +50,9 @@ type lambdaHandler struct {
 	async     *asyncInvoker           // durable async (Event) delivery; nil = async unavailable (no NATS)
 	authz     *dataplaneauthz.Checker // fine-grained kind: Policy data-plane check (additive; may be nil)
 	logger    *slog.Logger
+	// fns finds which namespace a function lives in (the Lambda API's or a CloudFormation stack's,
+	// fn_locate.go); nil = always fnNS.
+	fns *fnLocator
 }
 
 func newLambdaHandler(cs kubernetes.Interface, fnNS, svcSuffix string, async *asyncInvoker, logger *slog.Logger) *lambdaHandler {
@@ -88,7 +91,10 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "create", "openinfra.dev", "functions", h.fnNS, name); !allowed {
+	// The function is found by name where it lives (the Lambda API's namespace or a stack's), and the
+	// caller needs invoke rights there.
+	ns := h.fns.namespaceOf(r.Context(), name, h.fnNS)
+	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "create", "openinfra.dev", "functions", ns, name); !allowed {
 		h.logger.Warn("lambda denied", "user", claims.Sub, "function", name, "reason", reason)
 		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID,
 			"not authorized to invoke function '"+name+"'")
@@ -123,7 +129,7 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 				"async invocation payload exceeds the 256 KB limit")
 			return
 		}
-		if err := h.async.publish(name, r.Header.Get("Content-Type"), body, requestID); err != nil {
+		if err := h.async.publish(name, ns, r.Header.Get("Content-Type"), body, requestID); err != nil {
 			h.logger.Warn("lambda async enqueue failed", "function", name, "error", err.Error())
 			writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID,
 				"could not enqueue the asynchronous invocation")
@@ -141,11 +147,11 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	// Knative's activator, which would queue the request until it times out into a 503 (the documented
 	// 503-not-429 gap). Async (Event) invokes were durably queued above and DryRun already returned, so
 	// only the sync path reaches here. Inert when the tenant has not opted into the quota.
-	if throttled, retryAfter := h.concurrencyThrottled(r.Context()); throttled {
+	if throttled, retryAfter := h.concurrencyThrottled(r.Context(), ns); throttled {
 		if retryAfter != "" {
 			w.Header().Set("Retry-After", retryAfter)
 		}
-		h.logger.Info("lambda throttled at tenant concurrency cap", "function", name, "namespace", h.fnNS)
+		h.logger.Info("lambda throttled at tenant concurrency cap", "function", name, "namespace", ns)
 		writeLambdaError(w, http.StatusTooManyRequests, "TooManyRequestsException", requestID,
 			"Rate Exceeded: the tenant function-concurrency limit has been reached")
 		return
@@ -158,7 +164,7 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	if qualified {
 		host = qualifier + "-" + name
 	}
-	target := "http://" + host + "." + h.fnNS + "." + h.svcSuffix + "/"
+	target := "http://" + host + "." + ns + "." + h.svcSuffix + "/"
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, r.Body)
 	if err != nil {
 		writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID, "could not build upstream request")
@@ -206,8 +212,8 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 // missing or unreadable quota means "no cap enforced here" (not throttled), so a tenant that has not
 // opted into the quota behaves exactly as before. retryAfter is a conservative seconds hint for the
 // caller's back-off (AWS sends one on a throttle).
-func (h *lambdaHandler) concurrencyThrottled(ctx context.Context) (throttled bool, retryAfter string) {
-	rq, err := h.cs.CoreV1().ResourceQuotas(h.fnNS).Get(ctx, "function-concurrency-quota", metav1.GetOptions{})
+func (h *lambdaHandler) concurrencyThrottled(ctx context.Context, ns string) (throttled bool, retryAfter string) {
+	rq, err := h.cs.CoreV1().ResourceQuotas(ns).Get(ctx, "function-concurrency-quota", metav1.GetOptions{})
 	if err != nil {
 		return false, "" // no quota (not opted in) or unreadable — the native quota remains the backstop
 	}
@@ -237,6 +243,11 @@ func parseInvokePath(r *http.Request) (name, qualifier string, ok bool) {
 	fn, rest, found := strings.Cut(p, "/")
 	if !found || rest != "invocations" {
 		return "", "", false
+	}
+	// A function ARN or partial ARN (arn:aws:lambda:<region>:<acct>:function:<name>[:<qualifier>],
+	// <acct>:function:<name>) names the function as its name does — the form a stack's Arn output gives.
+	if i := strings.Index(fn, ":function:"); i >= 0 {
+		fn = fn[i+len(":function:"):]
 	}
 	name, qualifier, _ = strings.Cut(fn, ":") // "name" or "name:qualifier"
 	if q := r.URL.Query().Get("Qualifier"); q != "" {

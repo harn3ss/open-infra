@@ -356,6 +356,40 @@ func TestServicesPG_SNSLambdaSubscribeFence(t *testing.T) {
 	}
 }
 
+// A lambda subscription to a function by name — through the SNS front door, or a stack's subscription to
+// a function outside that stack — delivers where the function is: here, another stack's.
+func TestServicesPG_SNSLambdaFindsAStackFunction(t *testing.T) {
+	f := newSvcFixture(t)
+	ctx := context.Background()
+	f.sns.fns = newFnLocator(fnDyn(fnClaim("open-infra-cfn", "other-fn")), discardLogger(), "default", "open-infra-cfn")
+	if code, body := f.callQuery(t, url.Values{"Action": {"CreateTopic"}, "Name": {"api-t"}}); code != 200 {
+		t.Fatalf("CreateTopic = %d %s", code, body)
+	}
+	topic := "arn:aws:sns:us-east-1:123456789012:api-t"
+	sub := url.Values{"Action": {"Subscribe"}, "TopicArn": {topic}, "Protocol": {"lambda"}, "Endpoint": {"arn:aws:lambda:us-east-1:123456789012:function:other-fn"}}
+	if code, body := f.callQuery(t, sub); code != 200 {
+		t.Fatalf("Subscribe lambda = %d %s", code, body)
+	}
+	stackTopic := "arn:aws:sns:us-east-1:123456789012:st-t"
+	if _, err := f.ap.Create(ctx, svcManifest(cfn.KindSNSTopic, "st-t", "st", map[string]any{"topicName": "st-t", "topicArn": stackTopic, "attributes": map[string]any{}})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.ap.Create(ctx, svcManifest(cfn.KindSNSSubscription, "sub-fn", "st", map[string]any{"protocol": "lambda", "endpoint": "arn:aws:lambda:us-east-1:123456789012:function:other-fn", "function": "other-fn", "topicArn": stackTopic, "subscriptionArn": stackTopic + ":sub-fn"})); err != nil {
+		t.Fatal(err)
+	}
+	for _, tp := range []string{topic, stackTopic} {
+		if code, _ := f.callQuery(t, url.Values{"Action": {"Publish"}, "TopicArn": {tp}, "Message": {"m"}}); code != 200 {
+			t.Fatalf("publish to %s failed", tp)
+		}
+	}
+	f.fn.waitFor(t, 2)
+	for _, h := range f.fn.hosts {
+		if h != "other-fn.open-infra-cfn.svc.test" {
+			t.Errorf("invoked %s, want the function where it is", h)
+		}
+	}
+}
+
 // A stack parameter is a parameter the SSM API serves; a SecureString is stored encrypted and decrypts
 // for a caller who may.
 func TestServicesPG_SSMParameter(t *testing.T) {

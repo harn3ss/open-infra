@@ -141,6 +141,12 @@ deleting the key through the KMS API does not lock or erase those volumes (delet
 The CLI (`cfn deploy`), which has no such stores, keeps the kind mappings in the tables below — those
 resources are not visible through the AWS APIs.
 
+A stack's `AWS::Lambda::Function` is invocable by the `FunctionName` or `Arn` the stack reports, through
+the Lambda API, an SNS lambda subscription, an EventBridge target or an API Gateway integration, like a
+function the Lambda API serves: the shim finds a function by name in the stack namespace as well
+(see *Lambda* in [`aws-shim.md`](aws-shim.md)). Because a function name is unique in an account, a stack
+refuses to create a function whose name a function outside the stack already has.
+
 ## Usage
 
 ```console

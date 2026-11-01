@@ -34,7 +34,9 @@ func (h *snsHandler) canonicalTopicArn(ctx context.Context, arn string) (string,
 }
 
 // subscribeLambda is Subscribe for the lambda protocol: the endpoint is a function ARN, the caller must
-// be able to invoke it, and the subscription records the Lambda API's namespace as the Function's.
+// be able to invoke it, and the subscription records the Function's namespace — where a Function of
+// that name is (the Lambda API's namespace or a stack's), else the Lambda API's — so delivery goes
+// where the caller's right to invoke was checked.
 func (h *snsHandler) subscribeLambda(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims, topicArn, endpoint string) {
 	if h.invoker == nil || h.lambdaNS == "" {
 		writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID,
@@ -52,7 +54,8 @@ func (h *snsHandler) subscribeLambda(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 	fn := lambdaNameFromArn(endpoint)
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", h.lambdaNS, fn); !allowed {
+	ns := h.fns.namespaceOf(ctx, fn, h.lambdaNS)
+	if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", ns, fn); !allowed {
 		writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID,
 			"not authorized to subscribe the function "+endpoint+" (a subscription cannot invoke what its creator cannot): "+reason, snsXMLNamespace)
 		return
@@ -64,7 +67,7 @@ func (h *snsHandler) subscribeLambda(ctx context.Context, w http.ResponseWriter,
 	}
 	raw := strings.EqualFold(attrs["RawMessageDelivery"], "true")
 	subArn := topicArn + ":" + randHex(8)
-	if err := h.store.subscribeWith(ctx, subArn, topicArn, "lambda", endpoint, raw, map[string]string{snsFnNamespaceAttr: h.lambdaNS}); err != nil {
+	if err := h.store.subscribeWith(ctx, subArn, topicArn, "lambda", endpoint, raw, map[string]string{snsFnNamespaceAttr: ns}); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}

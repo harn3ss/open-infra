@@ -38,19 +38,29 @@ func TestAsyncInvoker_RoundTrip(t *testing.T) {
 		t.Fatalf("newAsyncInvoker: %v", err)
 	}
 	defer ai.Close()
-	ai.urlFor = func(string) string { return fn.URL + "/" } // deliver to the local fake function
+	gotNS := make(chan string, 1)
+	ai.urlFor = func(_, ns string) string { // deliver to the local fake function, noting the namespace
+		select {
+		case gotNS <- ns:
+		default:
+		}
+		return fn.URL + "/"
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go ai.run(ctx)
 
-	if err := ai.publish("orders", "application/json", []byte(`{"hello":"async"}`), "r-int"); err != nil {
+	if err := ai.publish("orders", "open-infra-cfn", "application/json", []byte(`{"hello":"async"}`), "r-int"); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	select {
 	case body := <-got:
 		if !strings.Contains(body, "async") {
 			t.Errorf("function received %q, want the published payload", body)
+		}
+		if ns := <-gotNS; ns != "open-infra-cfn" {
+			t.Errorf("delivered to namespace %q, want the one the invocation was authorized in", ns)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("async invocation was not delivered to the function within 10s")

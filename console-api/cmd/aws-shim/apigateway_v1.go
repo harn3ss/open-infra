@@ -38,9 +38,15 @@ type apigwV1Handler struct {
 	authz             *dataplaneauthz.Checker
 	logger            *slog.Logger
 	client            *http.Client
+	fns               *fnLocator // where an integration's Function lives (fn_locate.go); nil = fnNS
 
 	oidcMu    sync.Mutex
 	providers map[string]*oidc.Provider // issuer -> provider (JWKS discovery is network; cache). Reused by the COGNITO_USER_POOLS authorizer, the SAME coreos/go-oidc path the v2 handler uses.
+}
+
+// fnNamespace is where the kind: Function named fn lives — the Lambda API's namespace or a stack's.
+func (h *apigwV1Handler) fnNamespace(ctx context.Context, fn string) string {
+	return h.fns.namespaceOf(ctx, fn, h.fnNS)
 }
 
 func newAPIGWV1Handler(cs kubernetes.Interface, authzNS, fnNS, svcSuffix, cognitoIssuerBase string, store *apigwV1Store, authz *dataplaneauthz.Checker, logger *slog.Logger) *apigwV1Handler {
@@ -350,7 +356,7 @@ func (h *apigwV1Handler) putIntegration(ctx context.Context, w http.ResponseWrit
 			writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, "not authorized to integrate function "+fn+": "+reason)
 			return
 		}
-		if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", h.fnNS, fn); !allowed {
+		if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", h.fnNamespace(ctx, fn), fn); !allowed {
 			writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, "not authorized to integrate function "+fn+": "+reason)
 			return
 		}
@@ -986,7 +992,8 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 		}
 		event := buildProxyEvent(pfv, r, apiID, stage, r.Method+" "+routePath, routePath, pathParams, reqBody, requestID)
 		evJSON, _ := json.Marshal(event)
-		target := "http://" + functionFromURI(integ.URI) + "." + h.fnNS + "." + h.svcSuffix + "/"
+		fn := functionFromURI(integ.URI)
+		target := "http://" + fn + "." + h.fnNamespace(r.Context(), fn) + "." + h.svcSuffix + "/"
 		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(evJSON))
 		if err != nil {
 			writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")
@@ -1035,7 +1042,8 @@ func (h *apigwV1Handler) invokeAWSIntegration(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
-	target := "http://" + functionFromURI(integ.URI) + "." + h.fnNS + "." + h.svcSuffix + "/"
+	fn := functionFromURI(integ.URI)
+	target := "http://" + fn + "." + h.fnNamespace(r.Context(), fn) + "." + h.svcSuffix + "/"
 	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(eventBody))
 	if err != nil {
 		writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")

@@ -440,8 +440,17 @@ func run(logger *slog.Logger) error {
 	// cfn-deployed / GitOps-applied table is usable without a runtime CreateTable. No-op when the
 	// data layer is unset. TABLE_CONFIG_NAMESPACE is where the Table composition writes its mirrors.
 	dynamoH.startTableSync(context.Background(), getenv("TABLE_CONFIG_NAMESPACE", "open-infra-aws-shim"), 30*time.Second)
+	// A function is found by name in the Lambda API's namespace or the one CloudFormation stacks deploy
+	// into (fn_locate.go), so the FunctionName/Arn a stack reports is invocable by every path that invokes
+	// by name. Reading needs the shim's `get functions` in both (platform/aws-shim); until granted, every
+	// path looks in fnNS only, as before.
+	var fns *fnLocator
+	if dyn != nil {
+		fns = newFnLocator(dyn, logger, fnNS, ident.StackNamespace)
+	}
 	lambdaH := newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger)
 	lambdaH.authz = authzChecker
+	lambdaH.fns = fns
 	region := ident.Region
 	// DynamoDB Streams front door (reads the change-record logs the dynamodb write path emits).
 	ddbStreamsH := newDDBStreamsHandler(cs, authzNS, account, region, ddbStreamSt, dynamoH, logger)
@@ -453,6 +462,7 @@ func run(logger *slog.Logger) error {
 	// lambda subscriptions: SNS invokes the Function at its cluster-local address (sns_lambda.go). A
 	// generous timeout covers a scale-from-zero cold start.
 	snsH.lambdaNS, snsH.svcSuffix, snsH.invoker = fnNS, svcSuffix, &http.Client{Timeout: 5 * time.Minute}
+	snsH.fns = fns
 	// usersNS is where kind: Policy CRs live (the IAM doorway materializes there; the data plane loads
 	// policies cluster-wide), so imported KMS key policies reuse it + the shim SA's existing policy RBAC.
 	kmsH := newKMSHandler(cs, dyn, usersNS, authzNS, account, region, kmsTransit, kmsSt, logger)
@@ -465,6 +475,7 @@ func run(logger *slog.Logger) error {
 	// delivery). Its in-process scheduler is started below once the run context exists.
 	ebH := newEBHandler(cs, authzNS, fnNS, account, region, ebSt, asyncInv, sqsSt, logger)
 	ebH.authz = authzChecker
+	ebH.fns = fns
 	// RDS provisions real PostgreSQL via CloudNativePG (the data path is Postgres by construction). The
 	// shim's SA holds the CNPG-management RBAC in RDS_NAMESPACE; requires the dynamic client.
 	var rdsCnpg *rdsCNPG
@@ -486,9 +497,11 @@ func run(logger *slog.Logger) error {
 	apigwInvokeBase := getenv("APIGW_INVOKE_BASE", "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566")
 	apigwH := newAPIGWHandler(cs, authzNS, account, region, fnNS, svcSuffix, apigwInvokeBase, apigwSt, logger)
 	apigwH.authz = authzChecker
+	apigwH.fns = fns
 	// REST API (v1) shares the "apigateway" SigV4 signing name with HTTP API (v2); one mux path-routes
 	// /restapis/... to v1 and /v2/apis/... to v2 (and picks the right data plane by api id on invoke).
 	apigwV1H := newAPIGWV1Handler(cs, authzNS, fnNS, svcSuffix, getenv("COGNITO_ISSUER_BASE", apigwInvokeBase), apigwV1St, authzChecker, logger)
+	apigwV1H.fns = fns
 	apigwMuxH := &apigwMux{v1: apigwV1H, v2: apigwH}
 	// CloudWatch metrics + alarms (SigV4 service name "monitoring"). The alarm evaluator (started below)
 	// fires SNS AlarmActions through the SNS handler.
@@ -594,6 +607,7 @@ func run(logger *slog.Logger) error {
 			if s3H, ok := services["s3"].(*s3Handler); ok {
 				cfnH.s3 = s3H // TemplateURL objects are read from this shim's S3, as the caller (cloudformation_templateurl.go)
 			}
+			cfnH.fns = fns // a stack's function may not take a name a Lambda-API function has
 			services["cloudformation"] = cfnH
 			cfnDoor = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
