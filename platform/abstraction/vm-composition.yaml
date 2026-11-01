@@ -147,6 +147,11 @@ spec:
             {{-   $ddname := $dd.name | default (printf "data%d" (add $i 1)) }}
             {{-   $dataDisks = append $dataDisks (dict "name" $ddname "size" $dd.size "encrypted" ($dd.encrypted | default false) "encryptionKey" ($dd.encryptionKey | default "")) }}
             {{- end }}
+            {{- /* An encrypted data disk is a plain PVC attached directly (rendered below), not a CDI
+                   DataVolume: a blank disk needs no import, and CDI's non-root importer cannot open a
+                   dm-crypt (LUKS) block device. Only unencrypted data disks are DataVolumes. */}}
+            {{- $cdiDisks := list }}
+            {{- range $dd := $dataDisks }}{{ if not $dd.encrypted }}{{ $cdiDisks = append $cdiDisks $dd }}{{ end }}{{ end }}
             {{- /* explicit CPU model for cross-node portability (else host-model / Nehalem when HA) */}}
             {{- $cpuModel := $spec.cpuModel | default "" }}
             {{- /* Boot firmware (bios|uefi + secureBoot + vTPM). A MIGRATED disk (existingRootClaim)
@@ -193,7 +198,7 @@ spec:
                     runStrategy: {{ if $running }}Always{{ else }}Halted{{ end }}
                     {{- /* Root DV when not adopting; data-disk DVs always. Render the key if either
                            exists so an adopted-root VM can still get fresh data disks. */}}
-                    {{- if or (not $adopt) $dataDisks }}
+                    {{- if or (not $adopt) $cdiDisks }}
                     dataVolumeTemplates:
                       {{- if not $adopt }}
                       - metadata:
@@ -221,30 +226,19 @@ spec:
                       {{- end }}
                       {{- /* Blank data disks (#115). Same HA storage policy as root, so an HA VM's
                              data disks live-migrate with it. Guest formats/mounts them. */}}
-                      {{- range $dd := $dataDisks }}
+                      {{- range $dd := $cdiDisks }}
                       - metadata:
                           name: {{ $name }}-{{ $dd.name }}
-                          {{- if $dd.encrypted }}
-                          annotations:
-                            # LUKS at rest: the volume-crypto reconciler keys this disk from the named
-                            # EncryptionKey (CDI copies DataVolume annotations onto the PVC it creates,
-                            # which is what the reconciler selects on). Destroying the key crypto-erases it.
-                            openinfra.dev/encryption-key: {{ $dd.encryptionKey | quote }}
-                          {{- end }}
                         spec:
                           storage:
-                            {{- /* An encrypted disk is longhorn-encrypted (LUKS) and RWO — there is no
-                                   encrypted+migratable class — so it ignores the HA/local-path policy
-                                   (and pins live migration, as documented). Otherwise: HA → migratable
-                                   RWX block; non-HA → local-path. */}}
-                            accessModes: [{{ if $dd.encrypted }}ReadWriteOnce{{ else if $ha }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
-                            {{- if or $ha $dd.encrypted }}
+                            accessModes: [{{ if $ha }}ReadWriteMany{{ else }}ReadWriteOnce{{ end }}]
+                            {{- if $ha }}
                             volumeMode: Block
                             {{- end }}
                             resources:
                               requests:
                                 storage: {{ $dd.size }}
-                            storageClassName: {{ if $dd.encrypted }}longhorn-encrypted{{ else if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
+                            storageClassName: {{ if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
                           source:
                             blank: {}
                       {{- end }}
@@ -458,12 +452,48 @@ spec:
                                   eth1: { dhcp4: true }
                               {{- end }}
                           {{- end }}
-                          {{- /* Extra data disks (#115): bind each virtio device to its DataVolume. */}}
+                          {{- /* Extra data disks (#115): bind each virtio device to its DataVolume, or
+                                 an encrypted disk to its PVC. */}}
                           {{- range $dd := $dataDisks }}
                           - name: {{ $dd.name }}
+                            {{- if $dd.encrypted }}
+                            persistentVolumeClaim:
+                              claimName: {{ $name }}-{{ $dd.name }}
+                            {{- else }}
                             dataVolume:
                               name: {{ $name }}-{{ $dd.name }}
+                            {{- end }}
                           {{- end }}
+            {{- range $dd := $dataDisks }}
+            {{- if $dd.encrypted }}
+            ---
+            # --- An encrypted data disk (LUKS at rest): a Block PVC on longhorn-encrypted that the
+            #     volume-crypto reconciler keys from the named EncryptionKey (destroying the key
+            #     crypto-erases the disk). RWO — there is no encrypted+migratable class — so it pins an HA
+            #     VM's live migration, as documented. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: datadisk-{{ $dd.name }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: PersistentVolumeClaim
+                  metadata:
+                    name: {{ $name }}-{{ $dd.name }}
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }} }
+                    annotations:
+                      openinfra.dev/encryption-key: {{ $dd.encryptionKey | quote }}
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    volumeMode: Block
+                    storageClassName: longhorn-encrypted
+                    resources: { requests: { storage: {{ $dd.size }} } }
+            {{- end }}
+            {{- end }}
             {{- if $isWin }}
             ---
             # --- Windows OOBE answer file (per-VM): the generalized golden reads this

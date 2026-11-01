@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -82,6 +83,42 @@ func TestVM_DataDisks_Encrypted(t *testing.T) {
 	// An encrypted disk is RWO even though nothing forced HA here (no RWX migratable encrypted class).
 	if strings.Contains(grepCtx(out, "myvm-db"), "ReadWriteMany") {
 		t.Errorf("an encrypted data disk must be RWO, not RWX; got:\n%s", grepCtx(out, "myvm-db"))
+	}
+	// It is a plain Block PVC attached by claim name — NOT a CDI DataVolume (CDI's non-root importer
+	// cannot open a dm-crypt device, and a blank disk needs no import).
+	for _, want := range []string{
+		"composition-resource-name: datadisk-db",
+		"kind: PersistentVolumeClaim",
+		"claimName: myvm-db",
+		"volumeMode: Block",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("encrypted data disk must render as an attached PVC; missing %q", want)
+		}
+	}
+	if strings.Contains(out, "blank: {}") {
+		t.Errorf("an encrypted data disk must not be a blank DataVolume; got:\n%s", grepCtx(out, "blank"))
+	}
+}
+
+// Encrypted and unencrypted data disks on one VM: the unencrypted one stays a blank DataVolume, the
+// encrypted one is an attached PVC.
+func TestVM_DataDisks_MixedEncryption(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	out := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{
+		"dataDisks": []any{
+			map[string]any{"name": "logs", "size": "5Gi"},
+			map[string]any{"name": "db", "size": "10Gi", "encrypted": true, "encryptionKey": "db-key"},
+		},
+	}))
+	if strings.Count(out, "blank: {}") != 1 {
+		t.Errorf("exactly the unencrypted disk is a blank DataVolume; got:\n%s", grepCtx(out, "blank"))
+	}
+	if !regexp.MustCompile(`dataVolume:\s*\n\s*name: myvm-logs`).MatchString(out) {
+		t.Errorf("the unencrypted disk must be bound as a dataVolume; got:\n%s", grepCtx(out, "myvm-logs"))
+	}
+	if !strings.Contains(out, "claimName: myvm-db") {
+		t.Errorf("the encrypted disk must be bound by claimName")
 	}
 }
 
