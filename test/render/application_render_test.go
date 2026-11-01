@@ -234,3 +234,154 @@ func TestApplication_DomainRequiresPort(t *testing.T) {
 		t.Error("xrd.yaml must carry the x-kubernetes-validations rule rejecting spec.domain without spec.port at admission")
 	}
 }
+
+// manifestDoc returns the rendered YAML document (between --- separators) that contains needle.
+func manifestDoc(t *testing.T, out, needle string) string {
+	t.Helper()
+	for _, doc := range strings.Split(out, "\n---") {
+		if strings.Contains(doc, needle) {
+			return doc
+		}
+	}
+	t.Fatalf("no rendered document contains %q", needle)
+	return ""
+}
+
+// #347 follow-up: expose puts the pod on a LAN IP through a LAN Service (<name>-lan), the
+// lan-expose controller's handle on the pod. The EIP is a 1:1 floating IP onto the pod, so LAN
+// clients reach the container's own port numbers; the LAN Service declares exactly those (the
+// deduped container ports, port == targetPort). A ClusterIP Service needs at least one port, so
+// expose with neither spec.port nor additionalPorts is refused — in the composition and the XRD.
+func TestApplication_ExposeRequiresPort(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+
+	for name, spec := range map[string]map[string]any{
+		"expose, no ports":              {"image": "ghcr.io/x/app:latest", "expose": true},
+		"expose, empty additionalPorts": {"image": "ghcr.io/x/app:latest", "expose": true, "additionalPorts": []any{}},
+		"expose on a data-only app":     {"expose": true, "queues": []any{"jobs"}},
+	} {
+		err := renderErr(tmpl, appCtx(spec))
+		if err == nil {
+			t.Errorf("%s: must be refused (the LAN Service would have no port)", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "spec.expose requires spec.port or spec.additionalPorts") {
+			t.Errorf("%s: refusal must name the fix; got: %v", name, err)
+		}
+	}
+
+	// spec.port only: the single-port LAN Service, unnamed (as it has always rendered).
+	single := manifestDoc(t, render(t, tmpl, appCtx(map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080, "expose": true})), "name: myapp-lan")
+	if !strings.Contains(single, "ports: [ { port: 8080, targetPort: 8080 } ]") {
+		t.Errorf("expose + port must render the LAN Service on the container port; got:\n%s", single)
+	}
+
+	// additionalPorts only: the LAN Service carries their CONTAINER ports (targetPort), named.
+	addl := manifestDoc(t, render(t, tmpl, appCtx(map[string]any{
+		"image":  "ghcr.io/x/app:latest",
+		"expose": true,
+		"additionalPorts": []any{
+			map[string]any{"name": "smtp", "port": 25, "targetPort": 1025},
+			map[string]any{"name": "dns", "port": 5353, "protocol": "UDP"},
+		},
+	})), "name: myapp-lan")
+	for _, want := range []string{
+		"- { name: smtp, port: 1025, targetPort: 1025 }",
+		"- { name: dns, port: 5353, targetPort: 5353, protocol: UDP }",
+	} {
+		if !strings.Contains(addl, want) {
+			t.Errorf("expose + additionalPorts must carry container port %q on the LAN Service; got:\n%s", want, addl)
+		}
+	}
+	if strings.Contains(addl, "port: 25,") {
+		t.Errorf("the LAN Service must carry the container port (1025), not the Service port (25); got:\n%s", addl)
+	}
+
+	// spec.port + additionalPorts: every container port once — an entry targeting spec.port adds nothing.
+	both := manifestDoc(t, render(t, tmpl, appCtx(map[string]any{
+		"image":  "ghcr.io/x/app:latest",
+		"port":   8080,
+		"expose": true,
+		"additionalPorts": []any{
+			map[string]any{"name": "alt", "port": 8081, "targetPort": 8080},
+			map[string]any{"name": "smtp", "port": 1025},
+		},
+	})), "name: myapp-lan")
+	if !strings.Contains(both, "- { name: http, port: 8080, targetPort: 8080 }") || !strings.Contains(both, "- { name: smtp, port: 1025, targetPort: 1025 }") {
+		t.Errorf("expose + port + additionalPorts must carry each container port, named; got:\n%s", both)
+	}
+	if n := strings.Count(both, "port: 8080,"); n != 1 || strings.Contains(both, "name: alt") {
+		t.Errorf("the LAN Service must list container port 8080 once (alt maps onto it); got:\n%s", both)
+	}
+
+	xrd := mustRead(t, "../../platform/abstraction/xrd.yaml")
+	rule := regexp.MustCompile(`rule: "!has\(self\.expose\) \|\| !self\.expose \|\| \(has\(self\.port\) && self\.port > 0\) \|\| \(has\(self\.additionalPorts\) && size\(self\.additionalPorts\) > 0\)"`)
+	if !rule.MatchString(xrd) {
+		t.Error("xrd.yaml must carry the x-kubernetes-validations rule rejecting spec.expose without a port at admission")
+	}
+}
+
+// #347 follow-up: the Service's ports — 80 named http (-> spec.port) plus each additionalPorts
+// entry — need unique names and unique port/protocol pairs, or the API server rejects the Service.
+// The composition refuses a collision and names both sides; the XRD rejects an entry that takes
+// http or 80/TCP beside spec.port at admission.
+func TestApplication_ServicePortCollisions(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	ap := func(entries ...map[string]any) []any {
+		out := make([]any, len(entries))
+		for i, e := range entries {
+			out[i] = e
+		}
+		return out
+	}
+	for _, c := range []struct {
+		name string
+		spec map[string]any
+		want []string // substrings the refusal must contain
+	}{
+		{"name http beside spec.port",
+			map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080, "additionalPorts": ap(map[string]any{"name": "http", "port": 8081})},
+			[]string{"spec.additionalPorts[0]", "name http", "spec.port (Service port 80, named http)"}},
+		{"port 80 beside spec.port",
+			map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080, "additionalPorts": ap(map[string]any{"name": "web", "port": 80})},
+			[]string{"spec.additionalPorts[0]", "Service port 80/TCP", "spec.port (Service port 80, named http)"}},
+		{"port 80/TCP explicit beside spec.port",
+			map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080, "additionalPorts": ap(map[string]any{"name": "web", "port": 80, "protocol": "TCP"})},
+			[]string{"Service port 80/TCP"}},
+		{"two entries share a name",
+			map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080, "additionalPorts": ap(map[string]any{"name": "smtp", "port": 1025}, map[string]any{"name": "smtp", "port": 1026})},
+			[]string{"spec.additionalPorts[1]", "name smtp", "spec.additionalPorts[0]"}},
+		{"two entries share a port",
+			map[string]any{"image": "ghcr.io/x/app:latest", "additionalPorts": ap(map[string]any{"name": "a", "port": 1025}, map[string]any{"name": "b", "port": 1025})},
+			[]string{"spec.additionalPorts[1]", "Service port 1025/TCP", "spec.additionalPorts[0]"}},
+	} {
+		err := renderErr(tmpl, appCtx(c.spec))
+		if err == nil {
+			t.Errorf("%s: must be refused (the Service would carry a duplicate port)", c.name)
+			continue
+		}
+		for _, w := range c.want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: refusal must mention %q; got: %v", c.name, w, err)
+			}
+		}
+	}
+
+	// Allowed: the same number on another protocol, and http/80 when there is no spec.port.
+	udp := render(t, tmpl, appCtx(map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080,
+		"additionalPorts": ap(map[string]any{"name": "web-udp", "port": 80, "protocol": "UDP"})}))
+	if !strings.Contains(udp, "- { name: http, port: 80, targetPort: 8080 }") || !strings.Contains(udp, "- { name: web-udp, port: 80, targetPort: 80, protocol: UDP }") {
+		t.Errorf("port 80/UDP beside spec.port (80/TCP) is a distinct Service port and must render; got:\n%s", grepCtx(udp, "kind: Service"))
+	}
+	noPort := render(t, tmpl, appCtx(map[string]any{"image": "ghcr.io/x/app:latest",
+		"additionalPorts": ap(map[string]any{"name": "http", "port": 80, "targetPort": 8080})}))
+	if !strings.Contains(noPort, "- { name: http, port: 80, targetPort: 8080 }") {
+		t.Errorf("without spec.port, an additionalPorts entry may use http/80; got:\n%s", grepCtx(noPort, "kind: Service"))
+	}
+
+	xrd := mustRead(t, "../../platform/abstraction/xrd.yaml")
+	rule := regexp.MustCompile(`self\.additionalPorts\.all\(p, p\.name != 'http' && \(p\.port != 80 \|\| \(has\(p\.protocol\) && p\.protocol != 'TCP'\)\)\)`)
+	if !rule.MatchString(xrd) {
+		t.Error("xrd.yaml must carry the x-kubernetes-validations rule rejecting an additionalPorts entry that takes http or 80/TCP beside spec.port")
+	}
+}

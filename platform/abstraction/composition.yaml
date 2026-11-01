@@ -126,6 +126,55 @@ spec:
             {{- if and $spec.domain (not $spec.port) }}
             {{-   fail "kind: Application spec.domain requires spec.port: the domain's Ingress routes HTTPS to the app's HTTP port (Service port 80 -> spec.port), and without spec.port there is no such port. Set spec.port to the port the container serves HTTP on, or remove spec.domain." }}
             {{- end }}
+            {{- /* expose puts the app's pod on a LAN IP. The LAN Service (<name>-lan) is the
+                   lan-expose controller's handle on the pod, and a ClusterIP Service must declare at
+                   least one port, so expose needs a port to carry: spec.port or additionalPorts. The
+                   XRD rejects the same combination at admission; this is the backstop. */}}
+            {{- if and $spec.expose (not $spec.port) (not $spec.additionalPorts) }}
+            {{-   fail "kind: Application spec.expose requires spec.port or spec.additionalPorts: the LAN IP reaches the app on its container ports, and without one there is nothing to expose. Set spec.port (or additionalPorts), or remove spec.expose." }}
+            {{- end }}
+            {{- /* The Service's ports — 80 named http (-> spec.port) plus each additionalPorts entry —
+                   must have unique names and unique port/protocol pairs, or the API server rejects
+                   the Service. Refuse a collision here, naming both sides. The XRD rejects an
+                   additionalPorts entry that takes http or 80/TCP beside spec.port at admission. */}}
+            {{- $svcPortNames := dict }}
+            {{- $svcPortNums := dict }}
+            {{- if $spec.port }}
+              {{- $_ := set $svcPortNames "http" "spec.port (Service port 80, named http)" }}
+              {{- $_ := set $svcPortNums "80/TCP" "spec.port (Service port 80, named http)" }}
+            {{- end }}
+            {{- range $i, $p := ($spec.additionalPorts | default list) }}
+              {{- $pName := $p.name | default "" }}
+              {{- $pKey := printf "%d/%s" (int $p.port) ($p.protocol | default "TCP") }}
+              {{- $who := printf "spec.additionalPorts[%d] (name %s, port %s)" $i $pName $pKey }}
+              {{- if hasKey $svcPortNames $pName }}
+                {{- fail (printf "kind: Application %s reuses the Service port name %s, already taken by %s. Every Service port needs a unique name: rename the entry." $who $pName (index $svcPortNames $pName)) }}
+              {{- end }}
+              {{- if hasKey $svcPortNums $pKey }}
+                {{- fail (printf "kind: Application %s reuses Service port %s, already taken by %s. Every Service port needs a unique port/protocol: choose another port (targetPort can still point at the same container port)." $who $pKey (index $svcPortNums $pKey)) }}
+              {{- end }}
+              {{- $_ := set $svcPortNames $pName $who }}
+              {{- $_ := set $svcPortNums $pKey $who }}
+            {{- end }}
+            {{- /* The container's ports, each declared ONCE per protocol: spec.port, then each
+                   additionalPorts targetPort (default: its port). Several Service ports may map to one
+                   container port (an entry targeting spec.port, or two sharing a targetPort), but a
+                   container listing the same containerPort/protocol twice is invalid. Shared by the
+                   Deployment and the LAN Service. name = the first Service port that maps here. */}}
+            {{- $containerPorts := list }}
+            {{- $seenPorts := dict }}
+            {{- if $spec.port }}
+              {{- $_ := set $seenPorts (printf "%d/TCP" (int $spec.port)) true }}
+              {{- $containerPorts = append $containerPorts (dict "port" (int $spec.port) "protocol" "" "name" "http") }}
+            {{- end }}
+            {{- range $p := ($spec.additionalPorts | default list) }}
+              {{- $cport := int ($p.targetPort | default $p.port) }}
+              {{- $portKey := printf "%d/%s" $cport ($p.protocol | default "TCP") }}
+              {{- if not (hasKey $seenPorts $portKey) }}
+                {{- $_ := set $seenPorts $portKey true }}
+                {{- $containerPorts = append $containerPorts (dict "port" $cport "protocol" ($p.protocol | default "") "name" $p.name) }}
+              {{- end }}
+            {{- end }}
             {{- /* The workload (Deployment/Service/Ingress/HPA) renders only when an
                    image is given. An Application may be database-only — just declare
                    a `database:` block and the platform provisions the DB, no app. */}}
@@ -191,25 +240,12 @@ spec:
                             {{- if $spec.args }}
                             args: {{ $spec.args | toJson }}
                             {{- end }}
-                            {{- if or $spec.port $spec.additionalPorts }}
-                            {{- /* Each container port is declared ONCE per protocol. Several Service ports
-                                   may map to the same container port (an additionalPorts entry whose
-                                   targetPort is spec.port, or two entries sharing a targetPort), but a
-                                   container listing the same containerPort/protocol twice is invalid.
-                                   The Service below keeps every port. */}}
-                            {{- $seenPorts := dict }}
+                            {{- if $containerPorts }}
+                            # Each container port once per protocol ($containerPorts, deduped above);
+                            # the Service below keeps every Service port.
                             ports:
-                              {{- if $spec.port }}
-                              {{- $_ := set $seenPorts (printf "%d/TCP" (int $spec.port)) true }}
-                              - { containerPort: {{ $spec.port }} }
-                              {{- end }}
-                              {{- range $p := ($spec.additionalPorts | default list) }}
-                              {{- $cport := int ($p.targetPort | default $p.port) }}
-                              {{- $portKey := printf "%d/%s" $cport ($p.protocol | default "TCP") }}
-                              {{- if not (hasKey $seenPorts $portKey) }}
-                              {{- $_ := set $seenPorts $portKey true }}
-                              - { containerPort: {{ $cport }}{{ if $p.protocol }}, protocol: {{ $p.protocol }}{{ end }} }
-                              {{- end }}
+                              {{- range $cp := $containerPorts }}
+                              - { containerPort: {{ $cp.port }}{{ if $cp.protocol }}, protocol: {{ $cp.protocol }}{{ end }} }
                               {{- end }}
                             {{- end }}
                             # Requests drive the HPA; limits bound the app (tenant). spec.cpu/memory
@@ -488,7 +524,19 @@ spec:
                   spec:
                     type: ClusterIP
                     selector: { app.kubernetes.io/name: {{ $name }} }
-                    ports: [ { port: {{ $spec.port }}, targetPort: {{ $spec.port }} } ]
+                    {{- /* The EIP is a 1:1 floating IP onto the pod, so LAN clients reach the
+                           container's own port numbers. The LAN Service declares exactly those (the
+                           deduped container ports, port == targetPort); a multi-port Service needs
+                           each port named, so names appear only when there is more than one. */}}
+                    {{- if eq (len $containerPorts) 1 }}
+                    {{- $cp := index $containerPorts 0 }}
+                    ports: [ { port: {{ $cp.port }}, targetPort: {{ $cp.port }}{{ if $cp.protocol }}, protocol: {{ $cp.protocol }}{{ end }} } ]
+                    {{- else }}
+                    ports:
+                      {{- range $cp := $containerPorts }}
+                      - { name: {{ $cp.name }}, port: {{ $cp.port }}, targetPort: {{ $cp.port }}{{ if $cp.protocol }}, protocol: {{ $cp.protocol }}{{ end }} }
+                      {{- end }}
+                    {{- end }}
             {{- end }}
             {{- if $spec.domain }}
             ---

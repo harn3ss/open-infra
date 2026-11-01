@@ -53,6 +53,16 @@ spec:
                 # nothing. The composition refuses the same combination as a backstop.
                 - rule: "!has(self.domain) || size(self.domain) == 0 || (has(self.port) && self.port > 0)"
                   message: "spec.domain requires spec.port: the domain's Ingress routes HTTPS to the app's HTTP port (Service port 80 -> spec.port). Set spec.port to the port the container serves HTTP on, or remove spec.domain."
+                # expose puts the pod on a LAN IP via a LAN Service, which must declare at least one
+                # port: spec.port or an additionalPorts entry. The composition refuses it too.
+                - rule: "!has(self.expose) || !self.expose || (has(self.port) && self.port > 0) || (has(self.additionalPorts) && size(self.additionalPorts) > 0)"
+                  message: "spec.expose requires spec.port or spec.additionalPorts: the LAN IP reaches the app on its container ports, and without one there is nothing to expose. Set spec.port (or additionalPorts), or remove spec.expose."
+                # spec.port renders Service port 80 named http; an additionalPorts entry reusing either
+                # makes a Service the API server rejects (duplicate name or port/protocol). Other
+                # collisions (two additionalPorts entries sharing a name or port) are refused by the
+                # composition, which names both entries.
+                - rule: "!has(self.port) || self.port == 0 || !has(self.additionalPorts) || self.additionalPorts.all(p, p.name != 'http' && (p.port != 80 || (has(p.protocol) && p.protocol != 'TCP')))"
+                  message: "spec.additionalPorts must not use the name http or Service port 80/TCP while spec.port is set: spec.port already takes them (Service port 80, named http). Rename the entry or give it another port (its targetPort can still be any container port)."
               properties:
                 image:   { type: string, description: "Container image to run, e.g. ghcr.io/me/my-api:latest. Omit for a data-only app (just a database, buckets, or queues)." }
                 port:    { type: integer, description: "The port your container listens on (e.g. 8080). Needed to serve the app over HTTPS or a LAN IP. OMIT it for a worker with no listening socket (a queue consumer) — no Service or TCP health probe is created, and k8s still restarts the container if it exits." }
@@ -72,7 +82,7 @@ spec:
                   description: "How long a slow first boot may take before the liveness probe can kill the container (a startup probe's budget; default 150). The budget is counted in 10-second probe periods, rounded up (15 -> 20s), with a minimum of one period (so 0 gives no extra grace: the port must answer the first startup probe). Raise it for images whose first start is slow — a database's initial data-dir init, an antivirus signature download — so they are not killed mid-initialization. Applies only when spec.port is set."
                 additionalPorts:
                   type: array
-                  description: "Extra Service ports beyond the HTTP port (80 -> spec.port) — e.g. an SMTP 1025 or a second protocol the app serves. Each also becomes a declared containerPort; a container port shared by several Service ports (including spec.port) is declared once per protocol."
+                  description: "Extra Service ports beyond the HTTP port (80 -> spec.port) — e.g. an SMTP 1025 or a second protocol the app serves. Each also becomes a declared containerPort; a container port shared by several Service ports (including spec.port) is declared once per protocol. Service port names and port/protocol pairs must be unique — while spec.port is set, the name http and port 80/TCP are taken by it."
                   items:
                     type: object
                     required: [name, port]
@@ -130,7 +140,7 @@ spec:
                 expose:
                   type: boolean
                   default: false
-                  description: "Also expose the app's port on a LAN IP (MetalLB LoadBalancer), in addition to any Ingress — for raw TCP, non-HTTP, or no-DNS access."
+                  description: "Also make the app reachable on a LAN IP, in addition to any Ingress — for raw TCP, non-HTTP, or no-DNS access. LAN clients connect to the container's own port numbers: spec.port and each additionalPorts targetPort (not the Service ports). Requires spec.port or additionalPorts."
                 scaling:
                   type: object
                   description: "Horizontal autoscaling (HPA) based on CPU."

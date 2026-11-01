@@ -4057,6 +4057,15 @@ components:
           - rule: '!has(self.domain) || size(self.domain) == 0 || (has(self.port) && self.port > 0)'
             message: 'spec.domain requires spec.port: the domain''s Ingress routes HTTPS to the app''s HTTP port (Service
               port 80 -> spec.port). Set spec.port to the port the container serves HTTP on, or remove spec.domain.'
+          - rule: '!has(self.expose) || !self.expose || (has(self.port) && self.port > 0) || (has(self.additionalPorts) &&
+              size(self.additionalPorts) > 0)'
+            message: 'spec.expose requires spec.port or spec.additionalPorts: the LAN IP reaches the app on its container
+              ports, and without one there is nothing to expose. Set spec.port (or additionalPorts), or remove spec.expose.'
+          - rule: '!has(self.port) || self.port == 0 || !has(self.additionalPorts) || self.additionalPorts.all(p, p.name !=
+              ''http'' && (p.port != 80 || (has(p.protocol) && p.protocol != ''TCP'')))'
+            message: 'spec.additionalPorts must not use the name http or Service port 80/TCP while spec.port is set: spec.port
+              already takes them (Service port 80, named http). Rename the entry or give it another port (its targetPort can
+              still be any container port).'
           properties:
             image:
               type: string
@@ -4098,7 +4107,8 @@ components:
               type: array
               description: "Extra Service ports beyond the HTTP port (80 -> spec.port) \u2014 e.g. an SMTP 1025 or a second\
                 \ protocol the app serves. Each also becomes a declared containerPort; a container port shared by several\
-                \ Service ports (including spec.port) is declared once per protocol."
+                \ Service ports (including spec.port) is declared once per protocol. Service port names and port/protocol\
+                \ pairs must be unique \u2014 while spec.port is set, the name http and port 80/TCP are taken by it."
               items:
                 type: object
                 required:
@@ -4187,8 +4197,9 @@ components:
             expose:
               type: boolean
               default: false
-              description: "Also expose the app's port on a LAN IP (MetalLB LoadBalancer), in addition to any Ingress \u2014\
-                \ for raw TCP, non-HTTP, or no-DNS access."
+              description: "Also make the app reachable on a LAN IP, in addition to any Ingress \u2014 for raw TCP, non-HTTP,\
+                \ or no-DNS access. LAN clients connect to the container's own port numbers: spec.port and each additionalPorts\
+                \ targetPort (not the Service ports). Requires spec.port or additionalPorts."
             scaling:
               type: object
               description: Horizontal autoscaling (HPA) based on CPU.
