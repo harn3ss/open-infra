@@ -217,7 +217,12 @@ else
   # (installed next) is the CNI and enforces NetworkPolicy (incl. ipBlock/CIDR, the
   # basis for kind: SecurityGroup). kube-proxy is KEPT (kube-ovn relies on it for
   # ClusterIP services, --enable-lb-svc=false) — unlike a Cilium kube-proxy-replacement.
-  RUN "curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL='$K3S_CHANNEL' sh -s - server --disable servicelb --flannel-backend=none --disable-network-policy --write-kubeconfig-mode 0644"
+  # --cluster-cidr matches kube-ovn's POD_CIDR (10.16.0.0/16, below) so the controller-manager
+  # and kube-proxy (which k3s configures from it on every node) agree with the real pod
+  # network: kube-proxy uses it to tell pod traffic from LAN traffic on the paths it still
+  # handles (NodePort, LoadBalancer IPs, zero-endpoint Services). Tenant isolation does not
+  # depend on it: pod->Service calls are load-balanced in OVN (enable-lb=true, below).
+  RUN "curl -sfL https://get.k3s.io | INSTALL_K3S_CHANNEL='$K3S_CHANNEL' sh -s - server --cluster-cidr=10.16.0.0/16 --disable servicelb --flannel-backend=none --disable-network-policy --write-kubeconfig-mode 0644"
 fi
 
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
