@@ -20,6 +20,9 @@
 # Env (no site addresses are built in):
 #   SHIM_ENDPOINT   (required) the aws-shim's LAN URL, e.g. https://s3.<your domain>
 #   SITE_DOMAIN     (required) the static site's hostname (a CloudFront alias; must resolve to the ingress)
+#   INSTANCE_ENDPOINT (optional) the endpoint the INSTANCE's AWS CLI uses (the template's AwsEndpointUrl):
+#                   default the in-cluster aws-shim (plain HTTP, like a VPC endpoint); SHIM_ENDPOINT is
+#                   this LAN host's
 #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  a deployer identity (admin), or MINT=1 with KUBECONFIG
 #   AWS_CA_BUNDLE   (optional) the cluster root CA, so TLS is verified
 #   APP_IMAGE       (optional) the image the instance pulls (default: the aws-cli image, copied into ECR)
@@ -87,6 +90,7 @@ fi
 [ -n "${AWS_ACCESS_KEY_ID:-}" ] || inconclusive "set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (or MINT=1)"
 export AWS_REGION="$REGION"
 A=(aws --endpoint-url "$SHIM_ENDPOINT" --region "$REGION" --no-cli-pager)
+INSTANCE_ENDPOINT="${INSTANCE_ENDPOINT:-http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566}"
 
 cleanup() {
   if [ "${KEEP:-0}" != 1 ] && [ -n "$STATE" ]; then
@@ -107,7 +111,7 @@ trap cleanup EXIT
 # --- 0. the fidelity summary (what a pass here does NOT prove) ---------------------------------------
 if [ -n "${CFN_BIN:-}" ] && [ -x "$CFN_BIN" ]; then
   log "cfn plan: verdict + fidelity summary"
-  "$CFN_BIN" plan -stack-name "$STACK" -param SiteDomain="$SITE_DOMAIN" -param AwsEndpointUrl="$SHIM_ENDPOINT" \
+  "$CFN_BIN" plan -stack-name "$STACK" -param SiteDomain="$SITE_DOMAIN" -param AwsEndpointUrl="$INSTANCE_ENDPOINT" \
     -param AppRepositoryName="$REPO" "$TEMPLATE" > "$TMP/plan.txt" 2>&1
   grep -E "^Verdict" "$TMP/plan.txt"
   sed -n '/^Fidelity summary/,/^$/p' "$TMP/plan.txt" | cut -c1-200
@@ -137,7 +141,7 @@ log "  ✓ $URI:app"
 log "aws cloudformation deploy --stack-name $STACK (parameter overrides only)"
 STATE=deploying
 "${A[@]}" cloudformation deploy --template-file "$TEMPLATE" --stack-name "$STACK" --capabilities CAPABILITY_IAM \
-  --parameter-overrides "AwsEndpointUrl=$SHIM_ENDPOINT" "SiteDomain=$SITE_DOMAIN" "AppRepositoryName=$REPO" \
+  --parameter-overrides "AwsEndpointUrl=$INSTANCE_ENDPOINT" "SiteDomain=$SITE_DOMAIN" "AppRepositoryName=$REPO" \
   > "$TMP/deploy.txt" 2>&1 || fail "aws cloudformation deploy failed: $(tail -3 "$TMP/deploy.txt" | tr '\n' ' ')"
 ST="$("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text)"
 [ "$ST" = CREATE_COMPLETE ] || fail "stack status $ST, want CREATE_COMPLETE"

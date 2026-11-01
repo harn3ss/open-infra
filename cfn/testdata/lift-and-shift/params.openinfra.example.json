@@ -1,5 +1,5 @@
 [
-  { "ParameterKey": "AwsEndpointUrl",    "ParameterValue": "https://s3.<your open-infra domain>" },
+  { "ParameterKey": "AwsEndpointUrl",    "ParameterValue": "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" },
   { "ParameterKey": "SiteDomain",        "ParameterValue": "site.<your open-infra domain>" },
   { "ParameterKey": "AppRepositoryName", "ParameterValue": "<an existing ECR repository>" },
   { "ParameterKey": "LatestUbuntuAmi",   "ParameterValue": "/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id" }
