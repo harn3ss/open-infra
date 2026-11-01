@@ -1,0 +1,46 @@
+# Ingress isolation for the lakehouse. Neither the Iceberg REST catalog nor Trino authenticates its
+# callers: the catalog creates, alters and drops tables for anyone who reaches :8181, and Trino runs
+# any SQL as whatever user the request names. So only their platform callers may reach them; every
+# other pod is refused.
+#
+#   iceberg-rest :8181  Trino (its metastore), the aws-shim (Glue), the console (Catalog page)
+#   trino        :8080  the aws-shim (Athena), kind: Query runners (engine trino, in the minio namespace)
+#
+# Authorization of what each caller may do stays with that caller (the shim's Glue and Athena checks,
+# the console's). Kubelet probes come from the pod's own node, which kube-ovn always admits.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: iceberg-rest-isolation
+  namespace: lakehouse
+  labels: { app: iceberg-rest, openinfra.dev/isolation: platform }
+spec:
+  podSelector: { matchLabels: { app: iceberg-rest } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: trino } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-aws-shim } }
+          podSelector: { matchLabels: { app: aws-shim } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-console } }
+          podSelector: { matchLabels: { app: console } }
+      ports:
+        - { protocol: TCP, port: 8181 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: trino-isolation
+  namespace: lakehouse
+  labels: { app: trino, openinfra.dev/isolation: platform }
+spec:
+  podSelector: { matchLabels: { app: trino } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-aws-shim } }
+          podSelector: { matchLabels: { app: aws-shim } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: minio } }
+          podSelector: { matchLabels: { openinfra.dev/query: "true" } }
+      ports:
+        - { protocol: TCP, port: 8080 }

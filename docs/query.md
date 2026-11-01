@@ -27,6 +27,10 @@ console reads those back — the browser never runs SQL itself.
 - **Trino** (catalog): query **Iceberg** tables (`iceberg.<schema>.<table>`) managed
   by the shared **Iceberg REST catalog** — open-infra's Glue Data Catalog. Table data
   is Apache Iceberg on MinIO. Trino also federates across other connected sources.
+  Neither the catalog nor Trino authenticates its callers, so network policies admit
+  only their platform callers (`platform/query/manifests/lakehouse-isolation.yaml`):
+  the catalog answers Trino, the aws-shim (Glue) and the console; Trino answers the
+  aws-shim (Athena) and the query runners. A tenant's pods reach neither directly.
 - Results land in the `query-results` bucket under `<namespace>/<name>.csv`.
 
 ## Usage
