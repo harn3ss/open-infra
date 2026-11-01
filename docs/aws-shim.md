@@ -1113,6 +1113,39 @@ exports, and every template the doorway evaluates resolves `Fn::ImportValue` aga
 rules hold — a create or update that would export a name another stack already exports is refused, and a
 stack (or an update) that would remove an export another stack imports is refused.
 
+**An interrupted operation never strands a stack.** A long operation runs in the background of the
+front-door process that accepted it, so restarting the front door (a rolling update, say) can interrupt it.
+AWS never leaves a stack `*_IN_PROGRESS` because of that: the interrupted operation fails and rolls back.
+This front door does the same. Each operation is owned. While it runs, the stack record holds the owning
+process, a lease that the operation renews every 15 s, and the caller identity the operation runs under.
+Each operation also records what it is about to create before it creates it. On startup, and every 30 s
+after that, the front door looks for `*_IN_PROGRESS` stacks whose owner has stopped renewing its lease
+(the lease is more than 60 s old). It resolves each one as the operation's **recorded caller**, never with
+the shim's own authority:
+
+| Interrupted | Resolution | Ends |
+|---|---|---|
+| `CREATE_IN_PROGRESS` | everything the create made is deleted, except a `DeletionPolicy: Retain` resource such as the shared default `EncryptionKey` | `ROLLBACK_COMPLETE` |
+| `UPDATE_IN_PROGRESS` | what the update added is deleted, then every resource of the prior stack is re-applied from its recorded spec | `UPDATE_ROLLBACK_COMPLETE` |
+| `DELETE_IN_PROGRESS` | the delete is resumed (deletes are idempotent) | deleted |
+
+`StackStatusReason` names the interruption. The rollback deletes only objects that carry the stack's
+label, so a name the create planned but never applied, if it belongs to someone else, is left alone. If
+the rollback itself fails, the stack ends `ROLLBACK_FAILED`, `UPDATE_ROLLBACK_FAILED` or `DELETE_FAILED`
+and lists what remains. As on AWS, you can only delete a stack that ended `ROLLBACK_COMPLETE` or
+`ROLLBACK_FAILED`; you can't update it. Some stack records were written before the front door recorded
+callers. Such a record is resolved once it hasn't been updated for longer than any operation can run (16
+minutes). It isn't rolled back under any other authority: it settles `*_FAILED` with its resources still
+listed, and a `DeleteStack` removes them under the deleting caller's authority. Claiming a stack for
+recovery is a conditional write, so if several replicas run, exactly one of them resolves a given stack.
+
+While a stack has an operation in progress, `UpdateStack` and `DeleteStack` are refused the AWS way.
+Deleting a stack that is already being deleted is a no-op. Unlike AWS, `DeleteStack` doesn't cancel a
+create that is in progress: it is refused until the create settles. A front door that is shutting down
+accepts no new stack operations: it answers `503 ServiceUnavailable`, which the SDKs and the CLI retry. It
+gives the operations already in flight up to 40 s to finish, and any it can't wait for is resolved by the
+next front door, as described above.
+
 **Authority — the way AWS does it, and the reason a CloudFormation doorway is safe.** CloudFormation is an
 *orchestrator*: it provisions a whole stack of heterogeneous resources on the caller's behalf. AWS never
 uses CloudFormation's own service permissions to create your resources — by default it provisions with the

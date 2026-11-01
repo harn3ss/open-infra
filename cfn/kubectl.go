@@ -134,6 +134,28 @@ func (k kubectlApplier) GetStatus(ctx context.Context, apiVersion, kind, name st
 	return obj.Status, true, nil
 }
 
+// GetLabels reads a live resource's metadata.labels (LabelReader) — a rollback of an interrupted
+// operation's write-ahead entries deletes only objects carrying the stack's label. `--ignore-not-found`:
+// an absent object is found=false.
+func (k kubectlApplier) GetLabels(ctx context.Context, apiVersion, kind, name string) (map[string]string, bool, error) {
+	out, err := k.runOut(ctx, "get", resourceArg(apiVersion, kind), name, "--ignore-not-found", "-o", "json")
+	if err != nil {
+		return nil, false, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, false, nil
+	}
+	var obj struct {
+		Metadata struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal([]byte(out), &obj); err != nil {
+		return nil, false, fmt.Errorf("could not read %s/%s labels: %w", kind, name, err)
+	}
+	return obj.Metadata.Labels, true, nil
+}
+
 // GetStack reads the persisted stack record ConfigMap. Uses `--ignore-not-found`, so a
 // missing record is an empty result, not an error to string-match.
 func (k kubectlApplier) GetStack(ctx context.Context, stackName string) (*StackRecord, bool, error) {

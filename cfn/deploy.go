@@ -9,8 +9,10 @@
 //     is no partial stack: nothing is applied until everything translates.
 //  3. Apply in dependency order, recording each applied resource in a persisted stack record.
 //  4. Rollback on failure — if any apply (or readiness wait) fails, the resources already
-//     created THIS deploy are deleted in reverse order, and the stack is marked CREATE_FAILED.
-//     A failed create leaves no orphans.
+//     created THIS deploy are deleted in reverse order (a DeletionPolicy: Retain resource is
+//     kept, as AWS keeps it), and the stack is marked CREATE_FAILED. A failed create leaves no
+//     orphans. A create whose PROCESS dies mid-flight is rolled back from the record by
+//     RecoverInterrupted (recover.go).
 //
 // Stack state is persisted as a ConfigMap (cfn-stack-<name>) so later phases (update, delete,
 // drift) have a record of what was created; every applied resource is labeled with its stack.
@@ -79,6 +81,14 @@ type StackRecord struct {
 	// Imports are the export names this stack reads through Fn::ImportValue — a stack whose export is
 	// imported elsewhere is not deleted (AWS's rule).
 	Imports []string `json:"imports,omitempty"`
+	// Pending is the write-ahead half of an in-flight operation: resources it is about to create that are
+	// not (yet) in Resources — an update's Adds (Resources stays the prior stack until it succeeds), or
+	// the resource an interleaved create is applying next. Recorded BEFORE they are created, so an
+	// operation interrupted mid-flight (its process died) can be rolled back from the record alone
+	// without orphans (RecoverInterrupted). Empty at every terminal status the engine writes; a record a
+	// front door had to settle *_FAILED without the operation's authority keeps it, so a later Destroy
+	// removes those too (only where the object carries this stack's label — it may never have been applied).
+	Pending []StackResource `json:"pending,omitempty"`
 }
 
 type DeployOptions struct {
@@ -233,7 +243,9 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		return nil, err
 	}
 
-	// 3. Persist the stack record (IN_PROGRESS), then apply in order.
+	// 3. Persist the stack record (IN_PROGRESS), then apply in order. The record lists EVERY planned
+	// resource before the first apply (write-ahead), so a create interrupted mid-flight can be rolled back
+	// from the record alone (RecoverInterrupted).
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := &StackRecord{
 		Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS",
@@ -248,8 +260,14 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 
 	var applied []StackResource
 	rollback := func(cause error) (*StackRecord, error) {
-		for i := len(applied) - 1; i >= 0; i-- { // reverse order
+		// Reverse order, honoring Retain: a Retain resource (e.g. the shared default EncryptionKey, which
+		// may pre-date this stack and key a sibling's disks) survives a failed create — AWS retains it on
+		// rollback too.
+		for i := len(applied) - 1; i >= 0; i-- {
 			a := applied[i]
+			if isRetain(a) {
+				continue
+			}
 			_ = ap.Delete(ctx, a.APIVersion, a.Kind, a.Name)
 		}
 		rec.Status = "CREATE_FAILED"
@@ -333,8 +351,11 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	var applied []StackResource
 	var provisionedAPIs []string // REST v1 API ids to tear down on rollback
 	rollback := func(cause error) (*StackRecord, error) {
-		for i := len(applied) - 1; i >= 0; i-- { // reverse order
+		for i := len(applied) - 1; i >= 0; i-- { // reverse order, honoring Retain (as Deploy does)
 			a := applied[i]
+			if isRetain(a) {
+				continue
+			}
 			_ = ap.Delete(ctx, a.APIVersion, a.Kind, a.Name)
 		}
 		for i := len(provisionedAPIs) - 1; i >= 0; i-- { // tear down provisioned REST v1 APIs too
@@ -344,9 +365,21 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		}
 		rec.Status = "CREATE_FAILED"
 		rec.Message = cause.Error()
+		rec.Pending = nil
 		rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		_ = writeStackRecord(ctx, ap, rec, opts)
 		return rec, fmt.Errorf("deploy failed and was rolled back (no orphans): %w", cause)
+	}
+	// Write-ahead (#347): this path builds the record as it goes, so before creating each resource it
+	// records that resource as Pending. A process that dies mid-create then leaves a record naming
+	// everything it may have created, which RecoverInterrupted rolls back without orphans.
+	intend := func(rs ...StackResource) error {
+		rec.Pending = rs
+		rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := writeStackRecord(ctx, ap, rec, opts); err != nil {
+			return fmt.Errorf("could not record stack progress (nothing more is created without it): %w", err)
+		}
+		return nil
 	}
 
 	for _, id := range plan.Order {
@@ -366,15 +399,19 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		}
 		// A custom resource is invoked (not applied); its Data feeds later dependents' Fn::GetAtt.
 		if m.APIVersion == customResourceAPIVersion && m.Kind == customResourceKind {
+			if werr := intend(StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec}); werr != nil {
+				return rollback(werr)
+			}
 			sr, cerr := invokeCustomResource(ctx, opts, r, id, m)
 			if cerr != nil {
 				return rollback(cerr)
 			}
 			rec.Resources = append(rec.Resources, sr)
+			rec.Pending = nil
 			continue
 		}
 		// A REST v1 API sentinel is provisioned via the apigateway hook (not applied); its created id is
-		// recorded for teardown/rollback.
+		// recorded for teardown/rollback — persisted at once, since the id is only known after provisioning.
 		if m.APIVersion == apigwRestV1APIVersion && m.Kind == apigwRestV1Kind {
 			sr, apiID, perr := provisionRestAPI(ctx, opts, id, m)
 			if perr != nil {
@@ -384,11 +421,21 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 				provisionedAPIs = append(provisionedAPIs, apiID)
 			}
 			rec.Resources = append(rec.Resources, sr)
+			if werr := intend(); werr != nil {
+				return rollback(werr)
+			}
 			continue
 		}
 		built, berr := expandManifest(id, res, m, opts)
 		if berr != nil {
 			return rollback(berr)
+		}
+		pending := make([]StackResource, 0, len(built))
+		for _, b := range built {
+			pending = append(pending, b.res)
+		}
+		if werr := intend(pending...); werr != nil {
+			return rollback(werr)
 		}
 		for _, b := range built {
 			if aerr := ap.Apply(ctx, b.yml); aerr != nil {
@@ -402,9 +449,11 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 				}
 			}
 		}
+		rec.Pending = nil // now in Resources (written with the next write-ahead, or at COMPLETE)
 	}
 	// Outputs may read a custom resource's returned Data (Fn::GetAtt), so evaluate them with it.
 	setOutputs(ctx, data, opts, rec, ap, r.customData)
+	rec.Pending = nil
 	rec.Status = "CREATE_COMPLETE"
 	rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {

@@ -279,7 +279,15 @@ Stack "tickets" is CREATE_COMPLETE (2 resources).
    each waited for until it is ready.
 4. **Rollback** — if any create or readiness wait fails, everything created in that deploy
    is deleted in reverse order and the stack is marked `CREATE_FAILED`. A failed create
-   leaves no orphans.
+   leaves no orphans. A `DeletionPolicy: Retain` resource is kept, as AWS keeps it on
+   rollback. One example is the shared default `EncryptionKey`, which may already key a
+   sibling stack's disks.
+
+The stack record lists every resource a create plans before it applies the first one. An
+update records the resources it adds before it adds them. So if the process running an
+operation dies partway through, the operation can still be rolled back from the record
+alone. The aws-shim CloudFormation front door does this automatically
+([aws-shim.md](aws-shim.md#cloudformation-the-cfn-engine-as-a-doorway-caller-authority-via-impersonation-probe-proven)).
 
 A target `-namespace` and a `-stack-name` are required; `deploy` never guesses a
 namespace. Use `-no-wait` to skip the readiness gate, `-timeout SECS` to bound it.

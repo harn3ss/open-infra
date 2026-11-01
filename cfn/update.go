@@ -16,7 +16,6 @@ package cfn
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -79,33 +78,28 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		action[c.LogicalID] = c.Action
 	}
 
-	// Mark IN_PROGRESS (keep the current resource list until we succeed).
+	// Mark IN_PROGRESS (keep the current resource list until we succeed). The resources this update
+	// will ADD are recorded as Pending before any is applied (write-ahead), so an update whose process
+	// dies mid-flight can be rolled back to exactly this prior stack from the record (RecoverInterrupted).
 	inProg := *current
 	inProg.Status = "UPDATE_IN_PROGRESS"
 	inProg.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	inProg.Pending = nil
+	for _, b := range desired {
+		if action[b.res.LogicalID] == Add {
+			inProg.Pending = append(inProg.Pending, b.res)
+		}
+	}
 	if err := writeStackRecord(ctx, ap, &inProg, opts); err != nil {
 		return nil, fmt.Errorf("could not persist stack record: %w", err)
 	}
 
 	var added []StackResource // to delete on rollback
 	rollback := func(cause error) (*StackRecord, error) {
-		// Delete everything this update added, newest first — but honor Retain: a Retain resource
-		// (e.g. the shared default EncryptionKey) must survive rollback, since a sibling may already
-		// use it and it may have pre-existed this update (#347 review item 3).
-		for i := len(added) - 1; i >= 0; i-- {
-			if strings.EqualFold(added[i].DeletionPolicy, "Retain") {
-				continue
-			}
-			_ = ap.Delete(ctx, added[i].APIVersion, added[i].Kind, added[i].Name)
-		}
-		// Re-apply the entire prior stack: restores modified specs and re-creates removed
-		// resources; unchanged re-applies are idempotent no-ops.
-		for _, r := range current.Resources {
-			if y, err := renderStackResource(r, opts); err == nil {
-				_ = ap.Apply(ctx, y)
-			}
-		}
+		// Delete everything this update added (honoring Retain), then re-apply the entire prior stack.
+		_ = restorePrior(ctx, opts, ap, current.Resources, added, false)
 		rec := *current
+		rec.Pending = nil
 		rec.Status = "UPDATE_ROLLBACK_COMPLETE"
 		rec.Message = cause.Error()
 		rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -137,7 +131,7 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		if c.Action != Remove {
 			continue
 		}
-		if strings.EqualFold(currentByID[c.LogicalID].DeletionPolicy, "Retain") {
+		if isRetain(currentByID[c.LogicalID]) {
 			continue
 		}
 		if err := ap.Delete(ctx, currentByID[c.LogicalID].APIVersion, c.Kind, c.Name); err != nil {
@@ -158,6 +152,60 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		return newRec, fmt.Errorf("stack updated but recording COMPLETE failed: %w", err)
 	}
 	return newRec, nil
+}
+
+// restorePrior rolls an update back to the prior stack. It deletes what the update added, newest first —
+// honoring Retain (a Retain resource such as the shared default EncryptionKey survives rollback: a sibling
+// may already use it and it may pre-date this update, #347 review item 3), and never an object the prior
+// stack itself names (re-applying it below restores it; deleting it first would lose its data). Then it
+// re-applies every prior resource from its recorded spec: restoring modified specs and re-creating removed
+// resources; unchanged re-applies are idempotent no-ops. ownedOnly (recovery) deletes an added object only
+// if it carries this stack's label (an Add recorded ahead of applying may never have been applied). Every
+// step is attempted; the first error is returned.
+func restorePrior(ctx context.Context, opts DeployOptions, ap Applier, prior, added []StackResource, ownedOnly bool) error {
+	inPrior := map[string]bool{}
+	for _, r := range prior {
+		inPrior[r.APIVersion+"/"+r.Kind+"/"+r.Name] = true
+	}
+	var first error
+	note := func(err error) {
+		if err != nil && first == nil {
+			first = err
+		}
+	}
+	lr, canReadLabels := ap.(LabelReader)
+	for i := len(added) - 1; i >= 0; i-- {
+		r := added[i]
+		if isRetain(r) || isOutOfBand(r) || inPrior[r.APIVersion+"/"+r.Kind+"/"+r.Name] {
+			continue
+		}
+		if ownedOnly && canReadLabels {
+			labels, found, err := lr.GetLabels(ctx, r.APIVersion, r.Kind, r.Name)
+			if err != nil {
+				note(fmt.Errorf("reading %s/%s: %w", r.Kind, r.Name, err))
+				continue
+			}
+			if !found || labels[labelStack] != opts.StackName {
+				continue // never applied, or not this stack's object
+			}
+		}
+		if err := ap.Delete(ctx, r.APIVersion, r.Kind, r.Name); err != nil {
+			note(fmt.Errorf("deleting added %s/%s: %w", r.Kind, r.Name, err))
+		}
+	}
+	for _, r := range prior {
+		if isOutOfBand(r) {
+			continue // not a k8s object (an update never runs on a stack holding one)
+		}
+		y, err := renderStackResource(r, opts)
+		if err == nil {
+			err = ap.Apply(ctx, y)
+		}
+		if err != nil {
+			note(fmt.Errorf("restoring %s/%s: %w", r.Kind, r.Name, err))
+		}
+	}
+	return first
 }
 
 // renderStackResource rebuilds the applyable YAML for a resource from its recorded spec — used

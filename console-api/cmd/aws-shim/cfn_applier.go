@@ -42,6 +42,16 @@ type impersonatingApplier struct {
 	shim   dynamic.Interface
 	mapper meta.RESTMapper
 	ns     string
+	// user/groups are the identity `caller` impersonates — recorded on a stack record while an operation
+	// runs, so an operation interrupted by a front-door restart is rolled back under the SAME authority
+	// (cloudformation_ops.go). Empty for an applier built without an impersonated identity.
+	user   string
+	groups []string
+}
+
+// identity is the caller this applier acts as, in the form recorded on a stack record.
+func (a *impersonatingApplier) identity() *recordedCaller {
+	return &recordedCaller{User: a.user, Groups: append([]string(nil), a.groups...)}
 }
 
 // isStackRecord reports whether a (kind,name) is the doorway's own bookkeeping ConfigMap, which is
@@ -222,6 +232,23 @@ func (a *impersonatingApplier) GetStatus(ctx context.Context, apiVersion, kind, 
 	return st, true, nil
 }
 
+// GetLabels reads a live resource's metadata.labels via the CALLER (cfn.LabelReader) — how recovery checks
+// an object carries this stack's label before rolling it back, under the operation's own authority.
+func (a *impersonatingApplier) GetLabels(ctx context.Context, apiVersion, kind, name string) (map[string]string, bool, error) {
+	gvr, err := a.gvrFor(apiVersion, kind)
+	if err != nil {
+		return nil, false, err
+	}
+	u, gerr := a.clientFor(kind, name).Resource(gvr).Namespace(a.ns).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(gerr) {
+		return nil, false, nil
+	}
+	if gerr != nil {
+		return nil, false, gerr
+	}
+	return u.GetLabels(), true, nil
+}
+
 // GetReady reports whether a resource's Ready condition is True (or status.ready), read via the CALLER —
 // so a doorway can report a workload's readiness without the shim SA needing read access to the workload.
 func (a *impersonatingApplier) GetReady(ctx context.Context, apiVersion, kind, name string) (ready, found bool, err error) {
@@ -265,8 +292,9 @@ func (a *impersonatingApplier) GetStack(ctx context.Context, stackName string) (
 
 var configMapGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
 
-// putRecord writes/updates a stack-record ConfigMap with the shim client (bookkeeping). The doorway uses
-// it to seed CREATE_IN_PROGRESS before the async engine run, and to backstop a terminal status.
+// putRecord writes/updates a stack-record ConfigMap with the shim client (bookkeeping) — e.g. to backstop
+// a terminal status. Server-side apply of labels + data only: the operation-lease annotations
+// (cloudformation_ops.go) belong to another field manager and are left as they are.
 func (a *impersonatingApplier) putRecord(ctx context.Context, rec *cfn.StackRecord) error {
 	data, err := json.Marshal(rec)
 	if err != nil {

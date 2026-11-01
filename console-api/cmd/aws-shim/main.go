@@ -548,6 +548,7 @@ func run(logger *slog.Logger) error {
 	// CALLER's own authority via k8s impersonation (the impersonatingApplier), never the shim's — the
 	// stack's blast radius is exactly the caller's RBAC + Cedar. Requires the dynamic
 	// client (shim SA client for stack-record bookkeeping) + the in-cluster rest.Config (to impersonate).
+	var cfnDoor *cfnDoorway // its recovery pass + shutdown drain are wired below, once the signal context exists
 	if dyn != nil {
 		cfnNS := getenv("CFN_NAMESPACE", "default")
 		if cfnH, cerr := newCFNDoorway(kc.Config, dyn, account, region, cfnNS, svcSuffix, logger); cerr != nil {
@@ -556,6 +557,7 @@ func run(logger *slog.Logger) error {
 			cfnH.restV1 = apigwV1H    // AWS::ApiGateway::* stacks provision via the REST v1 store (#295)
 			cfnH.authz = authzChecker // an assumed role's stack operations are default-deny under its policy
 			services["cloudformation"] = cfnH
+			cfnDoor = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
 		}
 	}
@@ -736,6 +738,11 @@ func run(logger *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if cfnDoor != nil {
+		// Resolve stack operations a previous front door was running when it stopped (interrupted creates
+		// and updates roll back, deletes resume), on startup and periodically. Exits when ctx is cancelled.
+		go cfnDoor.runRecovery(ctx)
+	}
 	if asyncInv != nil {
 		go asyncInv.run(ctx) // durable async-invoke delivery worker; exits when ctx is cancelled
 		defer asyncInv.Close()
@@ -853,12 +860,21 @@ func run(logger *slog.Logger) error {
 	case <-ctx.Done():
 		logger.Info("shutdown signal received, draining connections")
 	}
+	if cfnDoor != nil {
+		cfnDoor.ops.shutdown() // from here on, new stack operations are refused (503, retried by SDKs)
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if tlsSrv != nil {
 		_ = tlsSrv.Shutdown(shutdownCtx)
 	}
-	return srv.Shutdown(shutdownCtx)
+	shutdownErr := srv.Shutdown(shutdownCtx)
+	if cfnDoor != nil {
+		// Give in-flight stack operations a bounded chance to finish; any still running is recovered by the
+		// next front door once its lease lapses.
+		cfnDoor.drainOps()
+	}
+	return shutdownErr
 }
 
 func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, lambdaAuth *lambdaAuthorizer, services map[string]awsService, vmCreds *vmCredsHandler, caBundle *caBundleHandler) http.Handler {

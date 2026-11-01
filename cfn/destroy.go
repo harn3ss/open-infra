@@ -36,7 +36,7 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 
 	// Fail-closed on DeletionPolicy: Snapshot — we cannot honor the snapshot it asked for.
 	var snapshot []string
-	for _, r := range rec.Resources {
+	for _, r := range append(append([]StackResource{}, rec.Resources...), rec.Pending...) {
 		if strings.EqualFold(r.DeletionPolicy, "Snapshot") {
 			snapshot = append(snapshot, r.LogicalID+" ("+r.Kind+")")
 		}
@@ -54,35 +54,84 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 		return nil, fmt.Errorf("could not persist stack record: %w", err)
 	}
 
-	gone := map[string]bool{}
+	fail := func(resources, pending []StackResource, cause error) (*StackRecord, error) {
+		out := *rec
+		out.Status = "DELETE_FAILED"
+		out.Message = cause.Error()
+		out.Resources, out.Pending = resources, pending
+		out.UpdatedAt = now()
+		_ = writeStackRecord(ctx, ap, &out, opts)
+		return &out, fmt.Errorf("destroy failed (deletes are not reversible; %d resource(s) remain): %w", len(resources)+len(pending), cause)
+	}
+	// Pending — an interrupted operation's write-ahead, kept only on a record that recovery had to settle
+	// without the operation's authority — may never have been applied: those are deleted only where the
+	// object carries this stack's label (newest first: they come after Resources in create order).
+	pendingLeft, perr := teardown(ctx, opts, ap, rec.Pending, true)
+	if perr != nil {
+		return fail(rec.Resources, pendingLeft, perr)
+	}
+	remaining, terr := teardown(ctx, opts, ap, rec.Resources, false)
+	if terr != nil {
+		return fail(remaining, pendingLeft, terr)
+	}
+
+	// All deletable resources are gone — remove the stack record. Any retained resources are
+	// reported and now unmanaged.
+	_ = ap.Delete(ctx, "v1", "ConfigMap", "cfn-stack-"+opts.StackName)
+	out := *rec
+	out.Status = "DELETE_COMPLETE"
+	out.Resources = append(remaining, pendingLeft...) // the retained ones, if any
+	out.Pending = nil
+	out.UpdatedAt = now()
+	return &out, nil
+}
+
+// LabelReader is an optional Applier capability: a live object's metadata.labels (found=false when the
+// object is absent). Recovery (recover.go) uses it to delete only objects that carry THIS stack's label: a
+// resource an interrupted operation recorded ahead of applying it may never have been applied, and a
+// same-named object that is not this stack's must survive.
+type LabelReader interface {
+	GetLabels(ctx context.Context, apiVersion, kind, name string) (labels map[string]string, found bool, err error)
+}
+
+// isRetain reports whether a resource's DeletionPolicy keeps it through destroy, update removal and
+// rollback (AWS honors Retain on rollback too — RetainExceptOnCreate is its opt-out).
+func isRetain(r StackResource) bool { return strings.EqualFold(r.DeletionPolicy, "Retain") }
+
+// isOutOfBand reports whether a recorded resource is not a Kubernetes object: a custom resource (#269,
+// invoked) or a provisioned REST v1 API (#295). Neither is applied or deleted as an object.
+func isOutOfBand(r StackResource) bool {
+	return (r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind) ||
+		(r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind)
+}
+
+// teardown deletes resources newest-first (the record is in create order), honoring DeletionPolicy:
+// Retain. A custom resource gets its Function's Delete event and a REST v1 API is deprovisioned by its
+// recorded id — both best-effort, so a failed out-of-band delete never wedges the rest of the teardown.
+// With opts.Wait each deleted object is waited for until it is actually gone. ownedOnly (recovery) first
+// reads each object's labels and deletes it only if it carries this stack's label; an absent object, or
+// one that is not this stack's, is simply not part of the stack. It returns the resources still present
+// (retained, the one that failed, and any not reached) and the first error.
+func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []StackResource, ownedOnly bool) ([]StackResource, error) {
+	gone := make([]bool, len(resources))
 	remaining := func() []StackResource {
 		var out []StackResource
-		for _, r := range rec.Resources {
-			if !gone[r.LogicalID] {
+		for i, r := range resources {
+			if !gone[i] {
 				out = append(out, r)
 			}
 		}
 		return out
 	}
-	fail := func(cause error) (*StackRecord, error) {
-		out := *rec
-		out.Status = "DELETE_FAILED"
-		out.Message = cause.Error()
-		out.Resources = remaining()
-		out.UpdatedAt = now()
-		_ = writeStackRecord(ctx, ap, &out, opts)
-		return &out, fmt.Errorf("destroy failed (deletes are not reversible; %d resource(s) remain): %w", len(out.Resources), cause)
-	}
-
-	// Reverse dependency order.
-	for i := len(rec.Resources) - 1; i >= 0; i-- {
-		r := rec.Resources[i]
-		if strings.EqualFold(r.DeletionPolicy, "Retain") {
+	lr, canReadLabels := ap.(LabelReader)
+	for i := len(resources) - 1; i >= 0; i-- {
+		r := resources[i]
+		if isRetain(r) {
 			continue // left in place, intentionally unmanaged
 		}
 		// A custom resource (#269) has no k8s object to delete — instead send its Function a Delete event
 		// (AWS's RequestType=Delete), best-effort: a failed custom-resource Delete must not wedge teardown
-		// (it would otherwise leave the whole stack undeletable), so it is logged via the record, not fatal.
+		// (it would otherwise leave the whole stack undeletable), so it is not fatal.
 		if r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind {
 			if opts.Invoke != nil {
 				fnName, _ := r.Spec["function"].(string)
@@ -95,7 +144,7 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 				})
 				_, _ = opts.Invoke(ctx, opts.Namespace, fnName, event)
 			}
-			gone[r.LogicalID] = true
+			gone[i] = true
 			continue
 		}
 		// A REST v1 API (#295) has no k8s object — tear it down via the apigateway hook, by the id
@@ -105,26 +154,28 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 			if opts.DeprovisionRestAPI != nil && r.ProvisionedID != "" {
 				_ = opts.DeprovisionRestAPI(ctx, r.ProvisionedID)
 			}
-			gone[r.LogicalID] = true
+			gone[i] = true
 			continue
 		}
+		if ownedOnly && canReadLabels {
+			labels, found, err := lr.GetLabels(ctx, r.APIVersion, r.Kind, r.Name)
+			if err != nil {
+				return remaining(), fmt.Errorf("reading %s/%s: %w", r.Kind, r.Name, err)
+			}
+			if !found || labels[labelStack] != opts.StackName {
+				gone[i] = true // never applied, or not this stack's object: not ours to delete
+				continue
+			}
+		}
 		if err := ap.Delete(ctx, r.APIVersion, r.Kind, r.Name); err != nil {
-			return fail(fmt.Errorf("deleting %s/%s: %w", r.Kind, r.Name, err))
+			return remaining(), fmt.Errorf("deleting %s/%s: %w", r.Kind, r.Name, err)
 		}
 		if opts.Wait {
 			if err := ap.WaitGone(ctx, r.APIVersion, r.Kind, r.Name, opts.Timeout); err != nil {
-				return fail(err)
+				return remaining(), err
 			}
 		}
-		gone[r.LogicalID] = true
+		gone[i] = true
 	}
-
-	// All deletable resources are gone — remove the stack record. Any retained resources are
-	// reported and now unmanaged.
-	_ = ap.Delete(ctx, "v1", "ConfigMap", "cfn-stack-"+opts.StackName)
-	out := *rec
-	out.Status = "DELETE_COMPLETE"
-	out.Resources = remaining() // the retained ones, if any
-	out.UpdatedAt = now()
-	return &out, nil
+	return remaining(), nil
 }

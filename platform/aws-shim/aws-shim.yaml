@@ -561,6 +561,12 @@ spec:
       labels: { app: aws-shim }
     spec:
       serviceAccountName: aws-shim
+      # On SIGTERM the shim stops accepting new CloudFormation stack operations (503, which SDKs retry),
+      # drains HTTP (<=15s), then gives in-flight stack operations up to 40s to finish. One still running
+      # at exit is NOT lost: its lease on the stack record lapses and the next front door fails it and
+      # rolls it back (deletes resume) — so this window only saves rollbacks, it is not what prevents a
+      # stranded stack.
+      terminationGracePeriodSeconds: 60
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532

@@ -15,6 +15,9 @@
 // Long-running operations (CreateStack/UpdateStack/DeleteStack/ExecuteChangeSet) are ASYNCHRONOUS like
 // AWS: they validate synchronously, then run the engine in the background and return a StackId; the
 // caller polls DescribeStacks. Read/preview ops (Validate/ChangeSet/Drift/Describe) run synchronously.
+// A background operation is owned and leased on its stack record, so one interrupted by a front-door
+// restart is failed and rolled back by the next front door instead of staying *_IN_PROGRESS forever
+// (cloudformation_ops.go).
 package main
 
 import (
@@ -36,6 +39,7 @@ import (
 	"github.com/harn3ss/open-infra/cfn"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -73,6 +77,12 @@ type cfnDoorway struct {
 	// fail-closed: an S3 BucketEncryption request refuses rather than deploy an unencrypted bucket the
 	// template asked to encrypt (#347 Phase 1.8).
 	objectEncryption bool
+	// ops makes the long stack operations durable across a front-door restart: ownership leases on the
+	// stack records, the recovery pass for interrupted operations, and refusal of new operations while
+	// shutting down (cloudformation_ops.go).
+	ops cfnOps
+	// callerDyn, when set, builds the caller-impersonating client instead of impersonating via cfg (tests).
+	callerDyn func(user string, groups []string) (dynamic.Interface, error)
 }
 
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
@@ -138,13 +148,25 @@ func (h *cfnDoorway) applierFor(claims iam.Claims) (*impersonatingApplier, error
 	if !ok {
 		return nil, fmt.Errorf("no caller identity")
 	}
-	icfg := rest.CopyConfig(h.cfg)
-	icfg.Impersonate = rest.ImpersonationConfig{UserName: user, Groups: groups}
-	cdyn, err := dynamic.NewForConfig(icfg)
+	return h.applierForIdentity(user, groups)
+}
+
+// applierForIdentity builds the Applier impersonating an already-resolved identity — a request's caller,
+// or (recovery) the caller recorded on an interrupted operation's stack record.
+func (h *cfnDoorway) applierForIdentity(user string, groups []string) (*impersonatingApplier, error) {
+	var cdyn dynamic.Interface
+	var err error
+	if h.callerDyn != nil {
+		cdyn, err = h.callerDyn(user, groups)
+	} else {
+		icfg := rest.CopyConfig(h.cfg)
+		icfg.Impersonate = rest.ImpersonationConfig{UserName: user, Groups: groups}
+		cdyn, err = dynamic.NewForConfig(icfg)
+	}
 	if err != nil {
 		return nil, err
 	}
-	return &impersonatingApplier{caller: cdyn, shim: h.shimDyn, mapper: h.mapper, ns: h.ns}, nil
+	return &impersonatingApplier{caller: cdyn, shim: h.shimDyn, mapper: h.mapper, ns: h.ns, user: user, groups: groups}, nil
 }
 
 func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
@@ -299,27 +321,37 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		return
 	}
 
-	if _, found, _ := ap.GetStack(ctx, name); found {
+	alreadyExists := func() {
 		writeQueryError(w, http.StatusBadRequest, "AlreadyExistsException", requestID,
 			"Stack ["+name+"] already exists.", cfnXMLNamespace)
+	}
+	if _, found, _ := ap.GetStack(ctx, name); found {
+		alreadyExists()
 		return
 	}
+	if err := h.ops.begin(name); err != nil {
+		h.refuseOp(w, requestID, err, "AlreadyExistsException", "Stack ["+name+"] already exists.")
+		return
+	}
+	// The record is created already owned by this operation (lease + caller), in one atomic Create.
 	now := time.Now().UTC().Format(time.RFC3339)
-	if err := ap.putRecord(ctx, &cfn.StackRecord{Name: name, Namespace: h.ns, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now}); err != nil {
+	seed := &cfn.StackRecord{Name: name, Namespace: h.ns, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now}
+	if err := h.seedRecord(ctx, seed, "CreateStack", ap.identity()); err != nil {
+		h.ops.end(name)
+		if apierrors.IsAlreadyExists(err) {
+			alreadyExists()
+			return
+		}
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not seed stack record: "+err.Error(), cfnXMLNamespace)
 		return
 	}
-	go func() {
-		bctx, cancel := context.WithTimeout(context.Background(), cfnAsyncTimeout)
-		defer cancel()
+	h.runStackOp(name, "CreateStack", "CREATE_FAILED", ap, func(bctx context.Context) error {
 		rec, derr := cfn.Deploy(bctx, []byte(body), h.optsFor(name, params, ex), ap)
-		if derr != nil {
-			h.logger.Warn("cfn CreateStack failed", "stack", name, "error", derr.Error())
-			ap.backstopTerminal(bctx, name, "CREATE_FAILED", derr.Error())
-			return
+		if derr == nil {
+			h.logOutputs("CreateStack", name, rec)
 		}
-		h.logOutputs("CreateStack", name, rec)
-	}()
+		return derr
+	})
 	h.writeResult(w, requestID, "CreateStack", "<StackId>"+xesc(h.stackID(name))+"</StackId>")
 }
 
@@ -337,6 +369,10 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist.", cfnXMLNamespace)
 		return
 	}
+	if msg := h.notUpdatable(name, current.Status); msg != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
+		return
+	}
 	ex := h.exportsFor(ctx, name)
 	plan, perr := cfn.BuildPlanWithCaps([]byte(body), params, ex.values, name, h.caps())
 	if perr != nil {
@@ -352,17 +388,26 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
-	go func() {
-		bctx, cancel := context.WithTimeout(context.Background(), cfnAsyncTimeout)
-		defer cancel()
-		rec, derr := cfn.Update(bctx, []byte(body), h.optsFor(name, params, ex), ap)
-		if derr != nil {
-			h.logger.Warn("cfn UpdateStack failed", "stack", name, "error", derr.Error())
-			ap.backstopTerminal(bctx, name, "UPDATE_FAILED", derr.Error())
+	if err := h.ops.begin(name); err != nil {
+		h.refuseOp(w, requestID, err, "ValidationError", "Stack ["+name+"] is being changed by another operation; retry once it settles.")
+		return
+	}
+	if cur, err := h.claimRecord(ctx, name, "UpdateStack", ap.identity()); err != nil || cur == nil {
+		h.ops.end(name)
+		if err == nil {
+			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist.", cfnXMLNamespace)
 			return
 		}
-		h.logOutputs("UpdateStack", name, rec)
-	}()
+		h.claimRefusal(w, requestID, name, "update", err)
+		return
+	}
+	h.runStackOp(name, "UpdateStack", "UPDATE_FAILED", ap, func(bctx context.Context) error {
+		rec, derr := cfn.Update(bctx, []byte(body), h.optsFor(name, params, ex), ap)
+		if derr == nil {
+			h.logOutputs("UpdateStack", name, rec)
+		}
+		return derr
+	})
 	h.writeResult(w, requestID, "UpdateStack", "<StackId>"+xesc(h.stackID(name))+"</StackId>")
 }
 
@@ -370,9 +415,15 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 	name := r.PostFormValue("StackName")
 	ctx := r.Context()
 	rec, found, _ := ap.GetStack(ctx, name)
-	if !found {
-		// AWS treats deleting an absent stack as a successful no-op.
+	if !found || rec.Status == "DELETE_IN_PROGRESS" {
+		// AWS treats deleting an absent stack — or one already being deleted — as a successful no-op. (An
+		// orphaned DELETE_IN_PROGRESS is resumed by the recovery pass.)
 		h.writeResult(w, requestID, "DeleteStack", "")
+		return
+	}
+	if inProgress(rec.Status) {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+			"Stack ["+name+"] cannot be deleted while in status "+rec.Status+".", cfnXMLNamespace)
 		return
 	}
 	// AWS's export rule: a stack whose export another stack imports can't be deleted from under it.
@@ -380,14 +431,23 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
-	go func() {
-		bctx, cancel := context.WithTimeout(context.Background(), cfnAsyncTimeout)
-		defer cancel()
-		if _, derr := cfn.Destroy(bctx, h.opts(name, nil), ap); derr != nil {
-			h.logger.Warn("cfn DeleteStack failed", "stack", name, "error", derr.Error())
-			ap.backstopTerminal(bctx, name, "DELETE_FAILED", derr.Error())
+	if err := h.ops.begin(name); err != nil {
+		h.refuseOp(w, requestID, err, "ValidationError", "Stack ["+name+"] cannot be deleted while another operation on it is in progress.")
+		return
+	}
+	if cur, err := h.claimRecord(ctx, name, "DeleteStack", ap.identity()); err != nil || cur == nil {
+		h.ops.end(name)
+		if err == nil { // gone since it was read: already deleted
+			h.writeResult(w, requestID, "DeleteStack", "")
+			return
 		}
-	}()
+		h.claimRefusal(w, requestID, name, "delete", err)
+		return
+	}
+	h.runStackOp(name, "DeleteStack", "DELETE_FAILED", ap, func(bctx context.Context) error {
+		_, derr := cfn.Destroy(bctx, h.opts(name, nil), ap)
+		return derr
+	})
 	h.writeResult(w, requestID, "DeleteStack", "")
 }
 
@@ -626,15 +686,51 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 	ex := h.exportsFor(ctx, stack)
 	var current *cfn.StackRecord
 	if !create {
-		current, _, _ = ap.GetStack(ctx, stack)
+		var found bool
+		current, found, _ = ap.GetStack(ctx, stack)
+		if !found {
+			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+stack+"] does not exist.", cfnXMLNamespace)
+			return
+		}
+		if msg := h.notUpdatable(stack, current.Status); msg != "" {
+			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
+			return
+		}
 	}
 	if msg := h.exportGuards(ctx, current, body, params, ex, stack); msg != "" {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
-	go func() {
-		bctx, cancel := context.WithTimeout(context.Background(), cfnAsyncTimeout)
-		defer cancel()
+	if err := h.ops.begin(stack); err != nil {
+		h.refuseOp(w, requestID, err, "ValidationError", "Stack ["+stack+"] is being changed by another operation; retry once it settles.")
+		return
+	}
+	status := "UPDATE_FAILED"
+	if create {
+		status = "CREATE_FAILED"
+		// A CREATE change set seeds the record like CreateStack: already owned, atomically (a stack that
+		// was created since the change set was is refused, never overwritten).
+		now := time.Now().UTC().Format(time.RFC3339)
+		seed := &cfn.StackRecord{Name: stack, Namespace: h.ns, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now}
+		if err := h.seedRecord(ctx, seed, "ExecuteChangeSet", ap.identity()); err != nil {
+			h.ops.end(stack)
+			if apierrors.IsAlreadyExists(err) {
+				writeQueryError(w, http.StatusBadRequest, "AlreadyExistsException", requestID, "Stack ["+stack+"] already exists.", cfnXMLNamespace)
+				return
+			}
+			writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not seed stack record: "+err.Error(), cfnXMLNamespace)
+			return
+		}
+	} else if cur, err := h.claimRecord(ctx, stack, "ExecuteChangeSet", ap.identity()); err != nil || cur == nil {
+		h.ops.end(stack)
+		if err == nil {
+			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+stack+"] does not exist.", cfnXMLNamespace)
+			return
+		}
+		h.claimRefusal(w, requestID, stack, "update", err)
+		return
+	}
+	h.runStackOp(stack, "ExecuteChangeSet", status, ap, func(bctx context.Context) error {
 		var rec *cfn.StackRecord
 		var derr error
 		if create {
@@ -642,17 +738,11 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		} else {
 			rec, derr = cfn.Update(bctx, []byte(body), h.optsFor(stack, params, ex), ap)
 		}
-		if derr != nil {
-			h.logger.Warn("cfn ExecuteChangeSet failed", "stack", stack, "error", derr.Error())
-			status := "UPDATE_FAILED"
-			if create {
-				status = "CREATE_FAILED"
-			}
-			ap.backstopTerminal(bctx, stack, status, derr.Error())
-			return
+		if derr == nil {
+			h.logOutputs("ExecuteChangeSet", stack, rec)
 		}
-		h.logOutputs("ExecuteChangeSet", stack, rec)
-	}()
+		return derr
+	})
 	h.writeResult(w, requestID, "ExecuteChangeSet", "")
 }
 

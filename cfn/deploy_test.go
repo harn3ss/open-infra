@@ -34,6 +34,35 @@ type fakeApplier struct {
 	liveStatus  map[string]map[string]any
 	statusFn    func(key string) (map[string]any, bool)
 	statusReads int
+	// liveLabels is "Kind/name" -> metadata.labels of every live (applied, not deleted) non-record object
+	// — the LabelReader view recovery uses. Tests may pre-seed a foreign object here.
+	liveLabels map[string]map[string]string
+	// dieAfter > 0 simulates the PROCESS dying mid-operation: after that many successful mutations
+	// (Apply or Delete, record writes included) every further call fails — so the engine's own rollback
+	// and record writes cannot run, leaving exactly what a killed process leaves. Set to 0 to "restart".
+	dieAfter  int
+	mutations int
+}
+
+// dead reports (and counts toward) the simulated process death; true = this mutation must fail.
+func (f *fakeApplier) dead() bool {
+	if f.dieAfter <= 0 {
+		return false
+	}
+	if f.mutations >= f.dieAfter {
+		return true
+	}
+	f.mutations++
+	return false
+}
+
+// GetLabels makes fakeApplier a LabelReader over the live objects it holds.
+func (f *fakeApplier) GetLabels(_ context.Context, _, kind, name string) (map[string]string, bool, error) {
+	if f.dieAfter > 0 && f.mutations >= f.dieAfter {
+		return nil, false, errFake("process gone")
+	}
+	l, ok := f.liveLabels[kind+"/"+name]
+	return l, ok, nil
 }
 
 // GetStatus makes fakeApplier a StatusReader: the live status of an APPLIED object (absent objects are
@@ -69,6 +98,9 @@ func (f *fakeApplier) Apply(_ context.Context, y []byte) error {
 	if id == f.failOn {
 		return errFake("apply refused for " + id)
 	}
+	if f.dead() {
+		return errFake("process gone: apply " + id)
+	}
 	// Persist the stack record like a real cluster would, so GetStack reflects it.
 	if strings.HasPrefix(id, "ConfigMap/cfn-stack-") {
 		var m map[string]any
@@ -89,6 +121,18 @@ func (f *fakeApplier) Apply(_ context.Context, y []byte) error {
 			}
 			f.liveSpecs[id] = spec
 		}
+		labels := map[string]string{}
+		if meta, ok := m["metadata"].(map[string]any); ok {
+			if ls, ok := meta["labels"].(map[string]any); ok {
+				for k, v := range ls {
+					labels[k], _ = v.(string)
+				}
+			}
+		}
+		if f.liveLabels == nil {
+			f.liveLabels = map[string]map[string]string{}
+		}
+		f.liveLabels[id] = labels
 	}
 	f.applied = append(f.applied, id)
 	return nil
@@ -98,12 +142,16 @@ func (f *fakeApplier) Delete(_ context.Context, apiVersion, kind, name string) e
 	if kind+"/"+name == f.failDelete {
 		return errFake("delete refused for " + kind + "/" + name)
 	}
+	if f.dead() {
+		return errFake("process gone: delete " + kind + "/" + name)
+	}
 	f.deleted = append(f.deleted, kind+"/"+name)
 	// Deleting the stack record ConfigMap clears the stored record.
 	if kind == "ConfigMap" && strings.HasPrefix(name, "cfn-stack-") {
 		f.stored = nil
 	}
 	delete(f.liveSpecs, kind+"/"+name)
+	delete(f.liveLabels, kind+"/"+name)
 	return nil
 }
 
