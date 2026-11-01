@@ -122,6 +122,49 @@ Resources:
 	}
 }
 
+// Turning DeletionProtection off, or setting a DeletionPolicy, is an update even though the object does
+// not change: it is how AWS lets a protected database be deleted, and how a resource is retained before
+// it is removed from a template. Both reach the stack record.
+func TestDeletionBehaviorOnlyUpdatesAreApplied(t *testing.T) {
+	db := func(protect, policy string) []byte {
+		return []byte(`
+Resources:
+  DB:
+    Type: AWS::RDS::DBInstance` + policy + `
+    Properties: { Engine: postgres, DBInstanceClass: db.t3.micro, AllocatedStorage: 20, DeletionProtection: ` + protect + ` }
+`)
+	}
+	f := deployTemplate(t, db("true", ""))
+	cs, _, _, err := BuildChangeSet(context.Background(), db("false", ""), deployOpts(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.Changes) != 1 || cs.Changes[0].Action != Modify {
+		t.Fatalf("turning protection off must be a Modify, got %+v", cs.Changes)
+	}
+	if _, err := Update(context.Background(), db("false", ""), deployOpts(), f); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if f.stored.Resources[0].Protected {
+		t.Fatal("the record still has deletion protection on")
+	}
+	if _, err := Update(context.Background(), db("false", "\n    DeletionPolicy: Retain"), deployOpts(), f); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if got := f.stored.Resources[0].DeletionPolicy; got != "Retain" {
+		t.Fatalf("the record's DeletionPolicy is %q, want Retain", got)
+	}
+	// Retained, then removed from the template: the database is kept.
+	if _, err := Update(context.Background(), []byte("Resources:\n  K:\n    Type: AWS::KMS::Key\n"), deployOpts(), f); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	for _, d := range f.deleted {
+		if strings.HasPrefix(d, "Application/") {
+			t.Fatalf("the retained database was deleted: %v", f.deleted)
+		}
+	}
+}
+
 // Disk and key settings that would silently lose a guarantee refuse.
 func TestDisksAndKeys_RefuseLosses(t *testing.T) {
 	for name, c := range map[string]struct{ tmpl, id, want string }{

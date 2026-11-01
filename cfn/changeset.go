@@ -12,6 +12,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 )
 
 type ChangeAction string
@@ -73,6 +75,13 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 			ch.Action = Add
 		case !specEqual(b.res.Spec, cur.Spec):
 			ch.Action = Modify
+		case !strings.EqualFold(policyOrDelete(b.res.DeletionPolicy), policyOrDelete(cur.DeletionPolicy)) || b.res.Protected != cur.Protected:
+			// The object is unchanged, but what a delete does to it is not: a DeletionPolicy or
+			// DeletionProtection change is an update on AWS (it is how a resource is retained before it is
+			// removed, and how protection is turned off), so the stack record must take it.
+			ch.Action = Modify
+			ch.Caveats = append(ch.Caveats, fmt.Sprintf("only the deletion behavior changes: DeletionPolicy %s -> %s, deletion protection %v -> %v (the object itself is not modified)",
+				policyOrDelete(cur.DeletionPolicy), policyOrDelete(b.res.DeletionPolicy), cur.Protected, b.res.Protected))
 		default:
 			ch.Action = Unchanged
 		}
@@ -101,6 +110,14 @@ func (cs *ChangeSet) hasChanges() bool {
 		}
 	}
 	return false
+}
+
+// policyOrDelete is a recorded DeletionPolicy with the default spelled out.
+func policyOrDelete(p string) string {
+	if p == "" {
+		return "Delete"
+	}
+	return p
 }
 
 // specEqual compares two specs through canonical JSON, so the number-typing difference between
