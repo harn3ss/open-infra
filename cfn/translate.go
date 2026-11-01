@@ -281,6 +281,7 @@ func translateKMSKey(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	known := map[string]bool{"Description": true, "EnableKeyRotation": true, "KeySpec": true, "KeyPolicy": true, "Enabled": true, "Tags": true}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
+	f = append(f, shapeFindings(id, props, nil, nil, []string{"KeySpec"})...)
 
 	spec := map[string]any{}
 	if d, ok := concrete(props["Description"]); ok && d != "" {
@@ -397,6 +398,7 @@ func translateStateMachine(id string, props map[string]any, ctx *stackCtx) (*Man
 	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
+	f = append(f, shapeFindings(id, props, nil, nil, []string{"StateMachineType"})...)
 
 	if _, ok := props["DefinitionS3Location"]; ok {
 		f = append(f, Finding{"Resource " + id, "DefinitionS3Location is not translatable — the ASL must be inline (DefinitionString/Definition), not fetched from S3"})
@@ -867,6 +869,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	var cav []string
 	vmNeedDefaultKey := false // #347 Phase 1.7: an encrypted data disk with no KmsKeyId used the default key
 	f = append(f, blockUnknownProps(id, props, known)...)
+	f = append(f, shapeFindings(id, props, []string{"BlockDeviceMappings"}, []string{"MetadataOptions"}, []string{"InstanceType"})...)
 
 	spec := map[string]any{}
 
@@ -958,6 +961,10 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 				continue
 			}
 			f = append(f, blockUnknownProps(fmt.Sprintf("%s.BlockDeviceMappings[%d]", id, i), bdm, bdmKnown)...)
+			if bdm["Ebs"] != nil && (bdm["NoDevice"] != nil || bdm["VirtualName"] != nil) {
+				f = append(f, Finding{"Resource " + id, fmt.Sprintf("BlockDeviceMappings[%d] names an EBS volume and also NoDevice or VirtualName (an instance store) — one mapping is one of them; refusing rather than guessing which", i)})
+				continue
+			}
 			ebs, _ := bdm["Ebs"].(map[string]any)
 			if ebs == nil {
 				cav = append(cav, "a BlockDeviceMapping without an Ebs block was dropped (ephemeral/NoDevice has no open-infra equivalent)")
@@ -1796,7 +1803,27 @@ func translateEC2SecurityGroupRule(id string, props map[string]any, ctx *stackCt
 //     "attachment" is a kind: Vpc default route to it (public reachability = NatGateway + ElasticIp).
 //   - SubnetNetworkAclAssociation: ACL rules live on the target kind: Subnet spec.acls.
 //   - SubnetRouteTableAssociation: kube-ovn routes are VPC-scoped (kind: Vpc spec.routes).
-func translateEC2ImplicitGateway(_ string, _ map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+//
+// Each is still closed-world: a property that would change something (a VPN gateway attachment) refuses.
+// A network ACL association refuses: ACL rules live on the kind: Subnet (spec.acls), and an
+// AWS::EC2::NetworkAcl has no translator, so the ACL it names is one the stack cannot carry — dropping
+// the association would leave the subnet without the rules it names.
+func translateEC2ImplicitGateway(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
+	typ := ""
+	if ctx != nil {
+		typ = ctx.template.Resources[id].Type
+	}
+	switch typ {
+	case "AWS::EC2::InternetGateway":
+		return nil, blockUnknownProps(id, props, map[string]bool{"Tags": true})
+	case "AWS::EC2::VPCGatewayAttachment":
+		return nil, blockUnknownProps(id, props, map[string]bool{"VpcId": true, "InternetGatewayId": true})
+	case "AWS::EC2::SubnetRouteTableAssociation":
+		return nil, blockUnknownProps(id, props, map[string]bool{"SubnetId": true, "RouteTableId": true})
+	case "AWS::EC2::SubnetNetworkAclAssociation":
+		f := blockUnknownProps(id, props, map[string]bool{"SubnetId": true, "NetworkAclId": true})
+		return nil, append(f, Finding{"Resource " + id, "a network ACL association has no open-infra form — the ACL's rules are not in the template (AWS::EC2::NetworkAcl does not translate), and dropping the association would leave the subnet without them; author the rules on the kind: Subnet (spec.acls)"})
+	}
 	return nil, nil
 }
 
@@ -1890,6 +1917,7 @@ func translateDynamoDBTable(id string, props map[string]any, ctx *stackCtx) (*Ma
 	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
+	f = append(f, shapeFindings(id, props, []string{"KeySchema", "AttributeDefinitions", "GlobalSecondaryIndexes"}, []string{"TimeToLiveSpecification"}, nil)...)
 
 	// AttributeDefinitions gives each key attribute its scalar type.
 	attrType := map[string]string{}
@@ -2669,6 +2697,9 @@ func iamPolicyPrincipals(id string, props map[string]any, ctx *stackCtx, f *[]Fi
 	add := func(prop, kind, cfnType string) {
 		list, ok := props[prop].([]any)
 		if !ok {
+			if v, set := props[prop]; set && v != nil {
+				*f = append(*f, Finding{"Resource " + id, fmt.Sprintf("%s must be a list (got %v)", prop, v)})
+			}
 			return
 		}
 		rawList, _ := raw[prop].([]any)
@@ -2913,6 +2944,8 @@ func translateCognitoUserPool(id string, props map[string]any, ctx *stackCtx) (*
 	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
+	// An MfaConfiguration that does not resolve to a value would read as OFF: refuse it.
+	f = append(f, shapeFindings(id, props, nil, nil, []string{"MfaConfiguration", "UserPoolName"})...)
 
 	if mfa, ok := concrete(props["MfaConfiguration"]); ok && mfa != "" && mfa != "OFF" {
 		f = append(f, Finding{"Resource " + id, "MfaConfiguration " + mfa + " is not translatable — per-pool MFA enforcement has no faithful mapping; the realm's MFA is configured separately (refusing rather than silently not enforcing MFA)"})
@@ -2981,9 +3014,11 @@ func translateCognitoUserPoolClient(id string, _ map[string]any, ctx *stackCtx) 
 // one Application. A Cluster (a grouping) and a bare TaskDefinition are no-ops — they compose
 // into a Service, or group nothing open-infra models.
 
-// translateECSCluster: inert grouping (the k3s cluster is the cluster). Provisions nothing.
-func translateECSCluster(_ string, _ map[string]any, _ *stackCtx) (*Manifest, []Finding) {
-	return nil, nil
+// translateECSCluster: inert grouping (the k3s cluster is the cluster). Provisions nothing. Its name
+// names nothing; a capacity provider or cluster setting would change where or how tasks run, which
+// one Kubernetes cluster cannot honor, so those refuse rather than vanish.
+func translateECSCluster(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+	return nil, blockUnknownProps(id, props, map[string]bool{"ClusterName": true, "Tags": true})
 }
 
 // translateECSTaskDefinition: a container spec, not a workload — it runs nothing until a Service
@@ -3007,6 +3042,7 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
+	f = append(f, shapeFindings(id, props, nil, nil, []string{"SchedulingStrategy"})...)
 
 	// Follow the TaskDefinition reference to an in-stack AWS::ECS::TaskDefinition.
 	rawSvc, _ := ctx.rawProps(id)
@@ -3194,7 +3230,7 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[strin
 	// sidecars (same pod).
 	primaryIdx := ecsPickPrimary(containers, primaryName)
 	pc, _ := containers[primaryIdx].(map[string]any)
-	for k, v := range ecsContainerSpec(tdID, pc, &f, &caveats) {
+	for k, v := range ecsContainerSpec(tdID, fmt.Sprintf("%s.ContainerDefinitions[%d]", tdID, primaryIdx), pc, &f, &caveats) {
 		spec[k] = v
 	}
 	var sidecars []any
@@ -3203,7 +3239,7 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[strin
 			continue
 		}
 		cm, _ := cc.(map[string]any)
-		cs := ecsContainerSpec(tdID, cm, &f, &caveats)
+		cs := ecsContainerSpec(tdID, fmt.Sprintf("%s.ContainerDefinitions[%d]", tdID, i), cm, &f, &caveats)
 		name, _ := concrete(cm["Name"])
 		if name == "" {
 			name = fmt.Sprintf("sidecar-%d", i)
@@ -3248,14 +3284,14 @@ func ecsPickPrimary(containers []any, primaryName string) int {
 // ecsContainerSpec maps one ECS container to the {image, port, env} an Application container takes.
 // Command/EntryPoint overrides refuse (Application runs the image's entrypoint); the strict cknown
 // allowlist blocks anything else.
-func ecsContainerSpec(tdID string, c map[string]any, f *[]Finding, cav *[]string) map[string]any {
+func ecsContainerSpec(tdID, where string, c map[string]any, f *[]Finding, cav *[]string) map[string]any {
 	cknown := map[string]bool{
 		"Name": true, "Image": true, "PortMappings": true, "Environment": true, "Essential": true,
 		"Cpu": true, "Memory": true, "MemoryReservation": true, "Command": true, "EntryPoint": true,
 		"LogConfiguration": true, "Secrets": true, "HealthCheck": true, "DependsOn": true,
 		"MountPoints": true,
 	}
-	*f = append(*f, blockUnknownProps(tdID, c, cknown)...)
+	*f = append(*f, blockUnknownProps(where, c, cknown)...)
 	spec := map[string]any{}
 	if img, ok := concrete(c["Image"]); ok && img != "" {
 		spec["image"] = img
@@ -3680,6 +3716,7 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 		}
 	}
 	if lc, ok := props["LifecycleConfiguration"].(map[string]any); ok {
+		f = append(f, blockUnknownProps(id+".LifecycleConfiguration", lc, map[string]bool{"Rules": true})...)
 		if rules := s3LifecycleRules(id, lc, &f); len(rules) > 0 {
 			spec["lifecycleRules"] = rules
 		}
@@ -3930,7 +3967,7 @@ func s3LifecycleRules(id string, lc map[string]any, f *[]Finding) []any {
 			continue
 		}
 		rknown := map[string]bool{"Id": true, "Status": true, "Prefix": true, "Filter": true, "ExpirationInDays": true, "NoncurrentVersionExpiration": true}
-		*f = append(*f, blockUnknownProps(id+" lifecycle rule", rm, rknown)...)
+		*f = append(*f, blockUnknownProps(fmt.Sprintf("%s.LifecycleConfiguration.Rules[%d]", id, i), rm, rknown)...)
 
 		rule := map[string]any{}
 		if rid, ok := concrete(rm["Id"]); ok && rid != "" {
@@ -4634,8 +4671,48 @@ func blockUnknownProps(id string, props map[string]any, known map[string]bool) [
 }
 
 // knownPropsSeen, when set (the fidelity guard test), receives every accepted-property set a translator
-// checks, so the test can prove each accepted property is either used or reported.
+// checks, so the test can prove each accepted property is either used or reported. id is the resource's
+// logical id, or for a nested block its path below it ("Web.MetadataOptions",
+// "Web.BlockDeviceMappings[0].Ebs"), so the test can set each nested property in turn.
 var knownPropsSeen func(id string, known map[string]bool)
+
+// shapeFindings refuses each named property that is set to a value of the wrong shape: a list property
+// that is not a list, an object property that is not an object, a scalar property that is not a concrete
+// scalar (an intrinsic that resolved to something else, or did not resolve). A translator that reads such
+// a value with a type assertion would otherwise skip it — the property silently ignored.
+func shapeFindings(id string, props map[string]any, lists, objects, scalars []string) []Finding {
+	var f []Finding
+	for _, k := range lists {
+		if v, ok := props[k]; ok && v != nil {
+			if _, isList := v.([]any); !isList {
+				f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s must be a list (got %v)", k, v)})
+			}
+		}
+	}
+	for _, k := range objects {
+		if v, ok := props[k]; ok && v != nil {
+			if _, isMap := v.(map[string]any); !isMap {
+				f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s must be an object (got %v)", k, v)})
+			}
+		}
+	}
+	for _, k := range scalars {
+		if v, ok := props[k]; ok && v != nil {
+			if _, isScalar := concrete(v); !isScalar {
+				f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s must be a value (got %v, which does not resolve to one)", k, v)})
+			}
+		}
+	}
+	return f
+}
+
+// reportKnown reports an accepted-property set a translator checks by hand rather than through
+// blockUnknownProps (it refuses unknown keys with its own message).
+func reportKnown(id string, known map[string]bool) {
+	if knownPropsSeen != nil {
+		knownPropsSeen(id, known)
+	}
+}
 
 var placeholderRe = regexp.MustCompile(`<(ref:|param:|unsupported:|base64:)|<[A-Za-z0-9_]+\.[A-Za-z0-9_]+>|<AWS::`)
 

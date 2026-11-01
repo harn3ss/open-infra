@@ -18,6 +18,7 @@ package cfn
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 const (
@@ -337,6 +338,9 @@ func translateAPIGatewayRestAPI(logicalID string, props map[string]any, ctx *sta
 		if at != "COGNITO_USER_POOLS" {
 			a.refuse(aid, fmt.Sprintf("authorizer Type %q is not served — the REST v1 front door validates Cognito user pool (COGNITO_USER_POOLS) tokens only; a Lambda (TOKEN/REQUEST) authorizer has nothing to run it", at))
 		}
+		if present(sp, "AuthType") {
+			a.caveat(aid, "AuthType is not kept — it labels the authorizer for generated SDKs and changes nothing validated")
+		}
 		if present(sp, "AuthorizerResultTtlInSeconds") {
 			a.caveat(aid, "AuthorizerResultTtlInSeconds is not applied — every request's token is validated (nothing is cached)")
 		}
@@ -490,11 +494,20 @@ func (a *apigwCollation) method(methodID, apiID string) RestMethodPlan {
 	if present(sp, "OperationName") {
 		a.caveat(methodID, "OperationName is not kept — it names the method in generated SDKs and changes nothing served")
 	}
-	if at, ok := getAttTarget(raw["AuthorizerId"]); ok {
-		m.Authorizer = at
-	}
-	if v, ok := getAttTarget(raw["RequestValidatorId"]); ok {
-		m.RequestValidator = v
+	// An authorizer or validator outside the stack (or a literal id) has no plan to provision: the method
+	// would be served without it, so it refuses.
+	for _, ref := range []struct{ prop, typ string; dst *string }{
+		{"AuthorizerId", "AWS::ApiGateway::Authorizer", &m.Authorizer},
+		{"RequestValidatorId", "AWS::ApiGateway::RequestValidator", &m.RequestValidator},
+	} {
+		if !present(sp, ref.prop) {
+			continue
+		}
+		if t, ok := getAttTarget(raw[ref.prop]); ok && c.isType(t, ref.typ) {
+			*ref.dst = t
+		} else {
+			a.refuse(methodID, fmt.Sprintf("%s must reference an in-stack %s — a method whose %s is not provisioned would be served without it", ref.prop, ref.typ, strings.TrimSuffix(ref.prop, "Id")))
+		}
 	}
 	if integ := a.block(methodID, "Integration", sp["Integration"], apigwIntegrationKnown); integ != nil {
 		m.Integration = a.integration(methodID, integ)
@@ -547,6 +560,7 @@ func (a *apigwCollation) integration(methodID string, integ map[string]any) *Res
 			a.refuse(methodID, where+".StatusCode is required")
 			continue
 		}
+		a.f = append(a.f, shapeFindings(methodID+"."+where, m, nil, []string{"ResponseTemplates", "ResponseParameters"}, []string{"SelectionPattern"})...)
 		if sp, _ := concrete(m["SelectionPattern"]); sp != "" {
 			a.refuse(methodID, where+".SelectionPattern is not served — the front door does not select an integration response by the backend's error or status; every response takes the default mapping, so a pattern-mapped error would answer with the default status")
 		}

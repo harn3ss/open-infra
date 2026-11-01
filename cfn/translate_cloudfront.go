@@ -146,6 +146,7 @@ func translateCloudFrontDistribution(id string, props map[string]any, ctx *stack
 		refuse("AWS::CloudFront::Distribution requires a DistributionConfig")
 		return nil, f
 	}
+	reportKnown(id+".DistributionConfig", cfDistributionConfigKeys)
 	for _, k := range sortedKeys(dc) {
 		if !cfDistributionConfigKeys[k] {
 			refuse("DistributionConfig.%s is not translatable to kind: StaticSite — refusing rather than silently dropping it", k)
@@ -252,6 +253,7 @@ func translateCloudFrontDistribution(id string, props map[string]any, ctx *stack
 	} else if o, ok := origins[0].(map[string]any); !ok {
 		refuse("DistributionConfig.Origins[0] is not an object")
 	} else {
+		reportKnown(id+".DistributionConfig.Origins[0]", cfOriginKeys)
 		originID, bucket, cav = cfOrigin(o, ctx, refuse, cav)
 	}
 
@@ -262,6 +264,7 @@ func translateCloudFrontDistribution(id string, props map[string]any, ctx *stack
 	if !ok {
 		refuse("DistributionConfig.DefaultCacheBehavior is required")
 	} else {
+		reportKnown(id+".DistributionConfig.DefaultCacheBehavior", cfCacheBehaviorKeys)
 		headers, headerNotes, cav = cfDefaultBehavior(dcb, originID, ctx, refuse, cav)
 	}
 
@@ -680,7 +683,7 @@ func translateCloudFrontChild(id string, props map[string]any, ctx *stackCtx) (*
 	case cfOAIType:
 		f := blockUnknownProps(id, props, map[string]bool{"CloudFrontOriginAccessIdentityConfig": true})
 		if c, ok := props["CloudFrontOriginAccessIdentityConfig"].(map[string]any); ok {
-			f = append(f, blockUnknownProps(id+" CloudFrontOriginAccessIdentityConfig", c, map[string]bool{"Comment": true})...)
+			f = append(f, blockUnknownProps(id+".CloudFrontOriginAccessIdentityConfig", c, map[string]bool{"Comment": true})...)
 		}
 		return nil, f
 	case cfRHPType:
@@ -702,7 +705,7 @@ func cfOriginAccessControl(id string, props map[string]any) (notes []string, f [
 	if !ok {
 		return nil, append(f, Finding{"Resource " + id, "AWS::CloudFront::OriginAccessControl requires an OriginAccessControlConfig"})
 	}
-	f = append(f, blockUnknownProps(id+" OriginAccessControlConfig", c, map[string]bool{
+	f = append(f, blockUnknownProps(id+".OriginAccessControlConfig", c, map[string]bool{
 		"Name": true, "Description": true, "OriginAccessControlOriginType": true, "SigningBehavior": true, "SigningProtocol": true,
 	})...)
 	if t, _ := concrete(c["OriginAccessControlOriginType"]); t != "s3" {
