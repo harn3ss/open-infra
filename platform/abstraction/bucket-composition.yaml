@@ -257,7 +257,12 @@ spec:
             apiVersion: openinfra.dev/v1
             kind: XBucket
             status:
-              ready: true
+              {{- /* status.ready is what CloudFormation's deploy waits on: true only once the setup has
+                     delivered the claim's credentials Secret, i.e. after the bucket exists. */}}
+              {{- $gate := index (.observed.resources | default dict) "bucket-ready-gate" }}
+              {{- $gateReady := false }}
+              {{- if $gate }}{{- with $gate.resource.status }}{{- with .atProvider }}{{- with .manifest }}{{- with .metadata }}{{- if .uid }}{{- $gateReady = true }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
+              ready: {{ $gateReady }}
               bucket: {{ $bucket | quote }}
     - step: ready
       functionRef:

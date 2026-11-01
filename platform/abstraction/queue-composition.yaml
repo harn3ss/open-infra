@@ -107,7 +107,12 @@ spec:
             apiVersion: openinfra.dev/v1
             kind: XQueue
             status:
-              ready: true
+              {{- /* status.ready is what CloudFormation's deploy waits on: true only once the stream-init
+                     Job has succeeded, so a SendMessage right after CREATE_COMPLETE finds the stream. */}}
+              {{- $setup := index (.observed.resources | default dict) "queue-setup" }}
+              {{- $setupOK := false }}
+              {{- if $setup }}{{- with $setup.resource.status }}{{- range (.conditions | default list) }}{{- if and (eq .type "Ready") (eq .status "True") }}{{- $setupOK = true }}{{- end }}{{- end }}{{- end }}{{- end }}
+              ready: {{ $setupOK }}
               stream: {{ $q | quote }}
     - step: ready
       functionRef:
