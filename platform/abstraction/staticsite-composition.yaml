@@ -42,7 +42,7 @@ spec:
                    kind, namespace and name, so a same-named site elsewhere shares neither. */}}
             {{- $owner := printf "StaticSite/%s/%s" $ns $name }}
             {{- $appUser := printf "app-%s-%s" (printf "%s-%s" $ns $name | replace "." "-" | trunc 40 | trimSuffix "-") ($owner | sha256sum | trunc 10) }}
-            {{- $ownHash := printf "%s|own-v1" $owner | sha256sum | trunc 5 }}
+            {{- $ownHash := printf "%s|own-v2" $owner | sha256sum | trunc 5 }}
             {{- $index := $spec.indexDocument | default "index.html" }}
             {{- $error := $spec.errorDocument | default "" }}
             {{- $interval := $spec.syncIntervalSeconds | default 30 }}

@@ -42,7 +42,8 @@ spec:
             {{- $fifo := $spec.fifo | default false }}
             {{- $subjects := $q }}{{- if $fifo }}{{ $subjects = printf "%s,%s.>" $q $q }}{{- end }}
             {{- $dupwin := "2m" }}{{- if $fifo }}{{ $dupwin = printf "%dm" (int ($spec.deduplicationWindowMinutes | default 5)) }}{{- end }}
-            {{- $hash := (printf "%s|%d|%s|%v|%s" $retpolicy (int $ret) $maxbytes $fifo $dupwin) | sha256sum | trunc 10 }}
+            {{- /* q-v2: the Job no longer writes the connection Secret, so its pod template changed; a new name avoids an immutable-Job update */}}
+            {{- $hash := (printf "%s|%d|%s|%v|%s|q-v2" $retpolicy (int $ret) $maxbytes $fifo $dupwin) | sha256sum | trunc 10 }}
             ---
             # The stream-init Job talks to NATS over the network only — it needs no Kubernetes secret
             # access. Readiness keys off the Job's own success (object.status.succeeded), so there is no

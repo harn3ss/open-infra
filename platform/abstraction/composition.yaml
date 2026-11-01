@@ -1800,7 +1800,7 @@ spec:
                 manifest:
                   apiVersion: batch/v1
                   kind: Job
-                  metadata: { name: {{ $name }}-db-backup-setup, namespace: minio }
+                  metadata: { name: {{ $name }}-db-backup-setup-v2, namespace: minio }
                   spec:
                     backoffLimit: 20
                     # No ttlSecondsAfterFinished: provider-kubernetes recreates a TTL-GC'd managed Job
@@ -1939,7 +1939,7 @@ spec:
                    kind, namespace and name, so a same-named app elsewhere shares neither. */}}
             {{- $bktOwner := printf "Application/%s/%s" $ns $name }}
             {{- $bktUser := printf "app-%s-%s" (printf "%s-%s" $ns $name | replace "." "-" | trunc 40 | trimSuffix "-") ($bktOwner | sha256sum | trunc 10) }}
-            {{- $bktHash := printf "%s|own-v1" $bktOwner | sha256sum | trunc 5 }}
+            {{- $bktHash := printf "%s|own-v2" $bktOwner | sha256sum | trunc 5 }}
             ---
             # --- Object storage ("S3"): one Job (mc + kubectl in alpine/k8s) creates the
             #     bucket(s), mints a PER-APP, NON-ROOT MinIO user scoped to ONLY those

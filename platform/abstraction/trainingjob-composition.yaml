@@ -75,7 +75,7 @@ spec:
                          namespace and name. */}}
                   {{- $bktOwner := printf "TrainingJob/%s/%s" $ns $name }}
                   {{- $bktUser := printf "app-%s-%s" (printf "%s-%s" $ns $name | replace "." "-" | trunc 40 | trimSuffix "-") ($bktOwner | sha256sum | trunc 10) }}
-                  {{- $bktHash := printf "%s|own-v1" $bktOwner | sha256sum | trunc 5 }}
+                  {{- $bktHash := printf "%s|own-v2" $bktOwner | sha256sum | trunc 5 }}
                   metadata: { name: {{ $name }}-tj-bucket-{{ $bktHash }}, namespace: minio }
                   spec:
                     backoffLimit: 20
