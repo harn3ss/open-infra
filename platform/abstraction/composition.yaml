@@ -1811,6 +1811,7 @@ spec:
                         restartPolicy: OnFailure
                         volumes:
                           - { name: mc, emptyDir: {} }
+                          - { name: ownership, configMap: { name: openinfra-bucket-ownership } }
                         initContainers:
                           - name: fetch-mc
                             image: ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
@@ -1824,7 +1825,7 @@ spec:
                         containers:
                           - name: setup
                             image: alpine/k8s:1.30.0
-                            volumeMounts: [{ name: mc, mountPath: /mc }]
+                            volumeMounts: [{ name: mc, mountPath: /mc }, { name: ownership, mountPath: /opt/openinfra, readOnly: true }]
                             env:
                               - name: ROOT_USER
                                 valueFrom: { secretKeyRef: { name: minio, key: rootUser } }
@@ -1836,6 +1837,9 @@ spec:
                                 set -e
                                 MC=/mc/mc
                                 E=http://minio.minio.svc.cluster.local:9000
+                                # Source the shared helpers (mint_scoped_user + OWN_NS); this Job does not call
+                                # claim_bucket (db-snapshots is a platform bucket) but reuses mint_scoped_user.
+                                . /opt/openinfra/bucket-ownership.sh
                                 "$MC" alias set m "$E" "$ROOT_USER" "$ROOT_PASS" >/dev/null
                                 # Platform backup bucket (shared with snapshots); per-DB path keeps tenants apart.
                                 "$MC" mb --ignore-existing m/db-snapshots

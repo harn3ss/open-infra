@@ -5,6 +5,60 @@ import (
 	"testing"
 )
 
+// The Application db-backup (PITR) WAL-archive user also moves onto the scoped model: the Job mints via
+// the shared helper, and the claim's <name>-db-backup-creds Secret (keys ak/sk) is a composed copy with
+// sk patched from the platform Secret's MINIO_SECRET_KEY.
+func TestApplicationDBBackup_ScopedCredentialDelivery(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	mk := func(observed map[string]any) map[string]any {
+		return map[string]any{"observed": map[string]any{
+			"composite": map[string]any{"resource": map[string]any{
+				"spec": map[string]any{"image": "ghcr.io/x/app:latest", "database": map[string]any{
+					"engine": "postgres", "pointInTimeRecovery": true,
+				}},
+				"metadata": map[string]any{"uid": "00000000-0000-0000-0000-00000000d0d0",
+					"labels": map[string]any{"crossplane.io/claim-name": "app", "crossplane.io/claim-namespace": "team"}},
+			}},
+			"resources": observed,
+		}}
+	}
+	// The setup Job mints via the shared helper (no inline user add / claim-Secret write) and Observes
+	// the platform Secret.
+	base := render(t, tmpl, mk(map[string]any{}))
+	for _, want := range []string{
+		`mint_scoped_user "$BKPUSER"`,
+		"composition-resource-name: db-backup-pcreds",
+		". /opt/openinfra/bucket-ownership.sh", // the Job sources the shared helpers (mint_scoped_user)
+	} {
+		if !strings.Contains(base, want) {
+			t.Errorf("db-backup setup missing %q:\n%s", want, grepCtx(base, "db-backup"))
+		}
+	}
+	if strings.Contains(base, "composition-resource-name: db-backup-creds") {
+		t.Errorf("the db-backup claim-creds copy must not render before the platform Secret is observed")
+	}
+	// Once the platform Secret is observed, the claim Secret copy renders: ak is the scoped user, sk is
+	// patched from the platform Secret's MINIO_SECRET_KEY.
+	seeded := render(t, tmpl, mk(map[string]any{
+		"db-backup-pcreds": map[string]any{"resource": map[string]any{
+			"status": map[string]any{"atProvider": map[string]any{"manifest": map[string]any{
+				"metadata": map[string]any{"uid": "33333333-3333-3333-3333-333333333333"},
+			}}},
+		}},
+	}))
+	for _, want := range []string{
+		"composition-resource-name: db-backup-creds",
+		"name: app-db-backup-creds, namespace: team",
+		"fieldPath: data.MINIO_SECRET_KEY",
+		"toFieldPath: data.sk",
+		"ak: bkp-team-app",
+	} {
+		if !strings.Contains(seeded, want) {
+			t.Errorf("db-backup scoped copy missing %q:\n%s", want, grepCtx(seeded, "db-backup-creds"))
+		}
+	}
+}
+
 // Scoped-credential delivery (the #347 SA-scoping redesign). The setup Job writes the scoped key to a
 // platform Secret (openinfra-bucket-creds/<user>); a provider Object copies it into the claim's
 // <name>-minio Secret ONLY once that platform Secret is observed. A legacy claim (platform Secret not
