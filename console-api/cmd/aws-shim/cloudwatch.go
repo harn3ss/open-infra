@@ -417,6 +417,7 @@ func (h *cwHandler) describeAlarms(ctx context.Context, w http.ResponseWriter, r
 func (h *cwHandler) alarmJSON(a cwAlarm) map[string]any {
 	m := map[string]any{
 		"AlarmName":          a.Name,
+		"AlarmArn":           "arn:aws:cloudwatch:" + h.region + ":" + h.account + ":alarm:" + a.Name,
 		"Namespace":          a.Namespace,
 		"MetricName":         a.MetricName,
 		"Period":             a.Period,
