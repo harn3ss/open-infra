@@ -251,6 +251,13 @@ The agent checks the guard every 5 seconds and puts it back if something removed
 ruleset`, a firewall reload, `iptables -F`). While no guard is in place the metadata service answers
 `503` to every request and serves nothing; it never serves unguarded.
 
+The agent, its configuration and the platform root CA are refreshed from the VM's current spec at every
+boot (a cloud-init `bootcmd` reads the NoCloud disk KubeVirt builds from the VM's cloud-init Secret at each
+start, and rewrites only the agent's own files, only when they differ). A change to the agent, to
+`metadataOptions` or to the platform root reaches a running VM at its next restart, not only VMs created
+after it. A guest whose cloud-init caches its configuration (`manual_cache_clean: true`) or that lacks
+PyYAML (cloud-init's own dependency) keeps its files; reinstall the agent there by recreating the VM.
+
 `cfn` maps an `AWS::EC2::Instance`'s `MetadataOptions` onto this block one-to-one. Not served: the IPv6
 endpoint `fd00:ec2::254` (`HttpProtocolIpv6`), instance tags in metadata (`InstanceMetadataTags`),
 `meta-data/instance-type` (a VM is sized by `cpu`/`memory`; the identity document's `instanceType` is

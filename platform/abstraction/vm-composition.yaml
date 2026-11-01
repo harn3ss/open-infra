@@ -2079,6 +2079,96 @@ spec:
                       bootcmd:
                         - [ bash, -c, "umask 077; mkdir -p /mnt/openinfra-identity /run/openinfra-identity; chmod 0700 /run/openinfra-identity; mountpoint -q /mnt/openinfra-identity || mount -o ro /dev/disk/by-id/virtio-SATOKEN /mnt/openinfra-identity 2>/dev/null || mount -o ro -L cfgdata /mnt/openinfra-identity 2>/dev/null || true; tr -d '[:space:]' < /mnt/openinfra-identity/token > /run/openinfra-identity/token.tmp && chown root:root /run/openinfra-identity/token.tmp && chmod 0600 /run/openinfra-identity/token.tmp && mv -f /run/openinfra-identity/token.tmp /run/openinfra-identity/token; umount /mnt/openinfra-identity 2>/dev/null; true" ]
                       {{- end }}
+                      {{- if not $guestIdentity }}
+                      bootcmd:
+                      {{- end }}
+                        {{- /* Refresh the metadata agent's own files from this VM's CURRENT spec at every boot
+                               (bootcmd runs every boot, before the agent starts). write_files runs once per
+                               instance, so without this a guest would keep the agent, its config and the
+                               platform root CA it was created with: an older agent that sends its token over
+                               plain HTTP, the old IMDS guard and hop limit, a rotated-away root. KubeVirt builds
+                               the NoCloud disk (label cidata) from the <vm>-cloudinit Secret at every VM start,
+                               so it holds the spec as it is now; only the agent's files are rewritten, only
+                               when they differ, and an unreadable disk or a guest without PyYAML (cloud-init's
+                               own dependency) leaves them as they are. OPENINFRA_REFRESH_SRC / _ROOT are for
+                               test/render only. */}}
+                        - - sh
+                          - -c
+                          - 'for py in python3 /usr/libexec/platform-python; do command -v "$py" >/dev/null 2>&1 && exec "$py" -c "$1"; done; echo "openinfra-agent-refresh: no python3" >&2'
+                          - openinfra-agent-refresh
+                          - |
+                            import os, subprocess, sys, tempfile
+                            MANAGED = ("/usr/local/lib/openinfra/metadata-agent.py", "/etc/openinfra/metadata-agent.json",
+                                       "/etc/openinfra/platform-root-ca.pem", "/etc/systemd/system/openinfra-metadata.service",
+                                       "/etc/openinfra-aws.env", "/etc/systemd/system.conf.d/10-openinfra-aws.conf")
+                            UNITS = ("/etc/systemd/system/openinfra-metadata.service", "/etc/systemd/system.conf.d/10-openinfra-aws.conf")
+
+
+                            def log(msg):
+                                sys.stderr.write("openinfra-agent-refresh: %s\n" % msg)
+
+
+                            def current_user_data(src):
+                                if src:
+                                    with open(os.path.join(src, "user-data"), "rb") as fh:
+                                        return fh.read()
+                                devs = [d for d in ("/dev/disk/by-label/cidata", "/dev/disk/by-label/CIDATA") if os.path.exists(d)]
+                                if not devs:
+                                    raise RuntimeError("no cidata disk")
+                                mnt = tempfile.mkdtemp(prefix="openinfra-cidata-", dir="/run")
+                                try:
+                                    subprocess.check_call(["mount", "-o", "ro", devs[0], mnt], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    try:
+                                        with open(os.path.join(mnt, "user-data"), "rb") as fh:
+                                            return fh.read()
+                                    finally:
+                                        subprocess.call(["umount", mnt], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                finally:
+                                    os.rmdir(mnt)
+
+
+                            def main(src, root):
+                                try:
+                                    import yaml
+                                except ImportError:
+                                    log("no PyYAML: the agent's files stay as they are")
+                                    return 0
+                                try:
+                                    cfg = yaml.safe_load(current_user_data(src)) or {}
+                                except Exception as e:
+                                    log("cannot read this VM's current spec (%s): the agent's files stay as they are" % e)
+                                    return 0
+                                changed = []
+                                for f in cfg.get("write_files") or []:
+                                    path = f.get("path") if isinstance(f, dict) else None
+                                    if path not in MANAGED or f.get("append") or f.get("encoding"):
+                                        continue
+                                    content = f.get("content") or ""
+                                    data = content.encode("utf-8") if not isinstance(content, bytes) else content
+                                    mode = int(str(f.get("permissions") or "0644"), 8)
+                                    dest = root + path
+                                    try:
+                                        with open(dest, "rb") as fh:
+                                            if fh.read() == data and os.stat(dest).st_mode & 0o7777 == mode:
+                                                continue
+                                    except (IOError, OSError):
+                                        pass
+                                    if not os.path.isdir(os.path.dirname(dest)):
+                                        os.makedirs(os.path.dirname(dest), 0o755)
+                                    tmp = dest + ".openinfra-tmp"
+                                    with open(tmp, "wb") as fh:
+                                        fh.write(data)
+                                    os.chmod(tmp, mode)
+                                    os.rename(tmp, dest)
+                                    changed.append(path)
+                                if changed:
+                                    log("refreshed from this VM's current spec: " + ", ".join(changed))
+                                    if not root and any(p in UNITS for p in changed) and os.path.isdir("/run/systemd/system"):
+                                        subprocess.call(["systemctl", "daemon-reload"])
+                                return 0
+
+
+                            sys.exit(main(os.environ.get("OPENINFRA_REFRESH_SRC", ""), os.environ.get("OPENINFRA_REFRESH_ROOT", "")))
                       runcmd:
                         {{- if $metadataAgent }}
                         # Start the instance metadata agent (and pick up the credentials env drop-in) BEFORE
