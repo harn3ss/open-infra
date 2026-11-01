@@ -8,9 +8,8 @@
 #   - a CHANGE SET previews an update (Add Logs) WITHOUT applying it, then ExecuteChangeSet applies it
 #   - DRIFT is detected after an out-of-band change (a resource deleted outside CFN) → DRIFTED
 #   - DeleteStack removes what was created
-#   - AUTHORITY both directions (the #175 rule-2 proof): an admin's stack provisions; a READER's identical
-#     stack is DENIED because CFN runs AS the reader (who cannot create the resource), not as the shim —
-#     the confused-deputy blast radius is structurally impossible
+#   - AUTHORITY: an admin's stack provisions; a READER may describe stacks but its create-stack is refused
+#     up front (AccessDenied — it holds no write RBAC), with nothing recorded or created
 #
 # On-demand (needs a deployed shim with the CloudFormation front door + impersonation RBAC, the cfn engine,
 # and openinfra:admins + openinfra:readers callers). Exit 0 = pass, 1 = a real failure, 42 = inconclusive.
@@ -188,20 +187,25 @@ DR="$(cfn "$AAK" "$ASK" describe-stack-resource-drifts --stack-name "$STACK" --q
 grep -qi 'DELETED' <<<"$DR" || fail "the deleted resource should report DELETED drift (got '$DR')"
 log "    ✓ DRIFTED (Logs reported DELETED)"
 
-# --- 5. AUTHORITY both directions — a reader's identical stack is DENIED ----------------------------
-log "authority: a READER caller's stack is denied because CFN runs AS the reader (who cannot create)"
+# --- 5. AUTHORITY — a READER may read stacks but not create one -------------------------------------
+log "authority: a READER caller may describe stacks, and its create-stack is refused up front (it holds no write RBAC)"
 cat > "$TMP/reader.json" <<JSON
 {"AWSTemplateFormatVersion":"2010-09-09","Resources":{
   $(table_json Denied "cfnprobe-denied-$SFX" id)
 }}
 JSON
-# The template is valid, so create-stack is accepted (async, like AWS) — the DENIAL happens when the engine
-# tries to provision UNDER THE READER'S impersonated authority and the API server forbids it.
-cfn "$RAK" "$RSK" create-stack --stack-name "$RSTACK" --template-body "file://$TMP/reader.json" >/dev/null 2>"$TMP/r.err" \
-  || fail "reader create-stack was rejected before provisioning (expected async accept then CREATE_FAILED): $(cat "$TMP/r.err")"
-ST="$(poll_stack "$RAK" "$RSK" "$RSTACK" CREATE_FAILED 120)" || fail "reader stack should end CREATE_FAILED (got status=$ST)"
-tbl_exists "$RSTACK" Denied && fail "the reader provisioned a resource it lacks authority for (confused deputy — CFN ran as the shim, not the reader!)"
-log "    ✓ reader denied — CREATE_FAILED, nothing created (stack provisions under the CALLER's authority)"
+cfn "$RAK" "$RSK" describe-stacks --stack-name "$STACK" >/dev/null 2>"$TMP/rd.err" \
+  || fail "a reader could not describe a stack (it holds get RBAC): $(cat "$TMP/rd.err")"
+# As on AWS, a caller without the action's permission is refused synchronously (AccessDenied) — nothing
+# is recorded or provisioned. (A caller allowed the action still provisions under its OWN authority:
+# the impersonation path is covered by the doorway's unit tests.)
+if cfn "$RAK" "$RSK" create-stack --stack-name "$RSTACK" --template-body "file://$TMP/reader.json" >/dev/null 2>"$TMP/r.err"; then
+  fail "a reader's create-stack was ACCEPTED (it holds no write RBAC; must be AccessDenied)"
+fi
+grep -q 'AccessDenied' "$TMP/r.err" || fail "a reader's create-stack failed for the wrong reason: $(cat "$TMP/r.err")"
+cfn "$RAK" "$RSK" describe-stacks --stack-name "$RSTACK" >/dev/null 2>&1 && fail "a refused create-stack left a stack record"
+tbl_exists "$RSTACK" Denied && fail "a refused create-stack provisioned a resource"
+log "    ✓ reader may describe; its create-stack is AccessDenied with nothing recorded or created"
 
 # --- 6. destroy removes what was created -----------------------------------------------------------
 log "delete-stack ${STACK} → resources removed"
@@ -216,4 +220,4 @@ tbl_exists "$STACK" Orders && fail "Orders still present after delete-stack"
 tbl_exists "$STACK" Items  && fail "Items still present after delete-stack"
 log "    ✓ stack destroyed (resources gone)"
 
-printf '\n✓ PASS — aws-shim CloudFormation is faithful: a multi-resource stack deploys in dependency order; an unsupported type is refused whole at validation with nothing created; a change set previews without applying and then executes; drift is detected after an out-of-band change; delete-stack removes what was created; and a stack provisions under the CALLER'"'"'s own authority (a reader is denied — never the shim'"'"'s, closing the confused-deputy blast radius).\n'
+printf '\n✓ PASS — aws-shim CloudFormation is faithful: a multi-resource stack deploys in dependency order; an unsupported type is refused whole at validation with nothing created; a change set previews without applying and then executes; drift is detected after an out-of-band change; delete-stack removes what was created; and a caller without write RBAC (a reader) is refused before anything is recorded or provisioned.\n'

@@ -114,14 +114,7 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	}
 	body := readJSONBody(r)
 
-	// The resource this op scopes to, as a queue NAME (for authz + policy). CreateQueue/GetQueueUrl
-	// carry a QueueName; the rest carry a QueueUrl whose last path segment is the name; ListQueues has none.
-	queueName := ""
-	if n, _ := body["QueueName"].(string); n != "" {
-		queueName = n
-	} else if u, _ := body["QueueUrl"].(string); u != "" {
-		queueName = queueNameFromURL(u)
-	}
+	queueName := sqsAuthzQueue(op, body)
 
 	// One policy world: the coarse impersonated SubjectAccessReview (table-agnostic, as S3/DynamoDB in v1).
 	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, queueName); !allowed {
@@ -690,6 +683,23 @@ func messageAttributesSize(attrs map[string]any) int {
 }
 
 // --- small JSON-wire coercions ---
+
+// sqsAuthzQueue is the queue an op is authorized against: the same field the op acts on. CreateQueue and
+// GetQueueUrl name a queue by QueueName; every other op acts on QueueUrl, so a QueueName sent alongside
+// it is ignored here exactly as the op ignores it. ListQueues names none.
+func sqsAuthzQueue(op string, body map[string]any) string {
+	switch op {
+	case "CreateQueue", "GetQueueUrl":
+		n, _ := body["QueueName"].(string)
+		return n
+	case "ListQueues":
+		return ""
+	}
+	if u, _ := body["QueueUrl"].(string); u != "" {
+		return queueNameFromURL(u)
+	}
+	return ""
+}
 
 func queueNameFromURL(u string) string {
 	u = strings.TrimRight(u, "/")

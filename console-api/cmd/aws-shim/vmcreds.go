@@ -56,6 +56,10 @@ type containerCreds struct {
 }
 
 func (h *vmCredsHandler) serve(w http.ResponseWriter, r *http.Request, requestID string) {
+	// In-cluster only: never answer through the LAN Ingress (internalonly.go).
+	if refuseIfProxied(w, r) {
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

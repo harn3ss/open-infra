@@ -32,6 +32,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +48,7 @@ import (
 	discoveryclient "k8s.io/client-go/discovery"
 	memory "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 )
@@ -84,6 +86,13 @@ type cfnDoorway struct {
 	ops cfnOps
 	// callerDyn, when set, builds the caller-impersonating client instead of impersonating via cfg (tests).
 	callerDyn func(user string, groups []string) (dynamic.Interface, error)
+	// cs + authzNS are the coarse RBAC gate for a User (iam.CanDo, as every front door): the stack and
+	// change-set records are read and written with the shim's own client, so this gate is what keeps a
+	// key without CloudFormation rights out of them. nil cs denies every User.
+	cs      kubernetes.Interface
+	authzNS string
+	// noecho keeps NoEcho parameter values out of the plain records (cfn_noecho.go); nil keeps none.
+	noecho *noEchoSecrets
 }
 
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
@@ -167,7 +176,36 @@ func (h *cfnDoorway) applierForIdentity(user string, groups []string) (*imperson
 	if err != nil {
 		return nil, err
 	}
-	return &impersonatingApplier{caller: cdyn, shim: h.shimDyn, mapper: h.mapper, ns: h.ns, user: user, groups: groups}, nil
+	return &impersonatingApplier{caller: cdyn, shim: h.shimDyn, mapper: h.mapper, ns: h.ns, user: user, groups: groups,
+		noecho: h.noecho}, nil
+}
+
+// cfnVerb is the coarse RBAC verb a User needs for a CloudFormation action: get for the reads (as AWS's
+// ReadOnlyAccess, which includes Detect*), a write verb for anything that creates, changes or deletes a
+// stack or change set. "" for an action this front door does not implement.
+func cfnVerb(action string) string {
+	switch action {
+	case "DescribeStacks", "DescribeStackResources", "ListStacks", "ListExports", "GetTemplateSummary",
+		"GetTemplate", "ValidateTemplate", "DescribeChangeSet", "DetectStackDrift",
+		"DescribeStackDriftDetectionStatus", "DescribeStackResourceDrifts":
+		return "get"
+	case "CreateStack", "CreateChangeSet", "ExecuteChangeSet":
+		return "create"
+	case "UpdateStack":
+		return "update"
+	case "DeleteStack", "DeleteChangeSet":
+		return "delete"
+	}
+	return ""
+}
+
+// canDo is the coarse gate (iam.CanDo passes an assumed role, whose authority is the data-plane check).
+// Without an RBAC client a User is denied: the records are never opened to an unchecked caller.
+func (h *cfnDoorway) canDo(ctx context.Context, claims iam.Claims, verb, stack string) (bool, string) {
+	if h.cs == nil && claims.AssumedRole == "" {
+		return false, "CloudFormation authorization is not configured on this shim"
+	}
+	return iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, stack)
 }
 
 func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
@@ -178,16 +216,24 @@ func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeQueryError(w, http.StatusBadRequest, "MissingAction", requestID, "no Action in the request.", cfnXMLNamespace)
 		return
 	}
-	// A stack op provisions under the caller's own authority (impersonation); for a User that is its RBAC.
-	// An assumed role's authority is its data-plane policy, so its stack operations are default-deny under
-	// it: cloudformation:<Action> on the stack it names (normalizeStackArgs has reduced a stack ARN to its
-	// name), ListStacks/ListExports/ValidateTemplate on Stack::*.
-	if claims.AssumedRole != "" {
-		if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "cloudformation:"+action, "Stack",
-			r.PostFormValue("StackName"), r); denied {
+	// Authorization, before anything reads or writes a record. The records are the shim's own bookkeeping
+	// (read and written with its client), so the caller must be allowed the action itself — as on AWS,
+	// where cloudformation:DescribeStacks etc. are permissions of their own:
+	//   - a User needs the coarse RBAC verb for the action (cfnVerb), as at every front door; resources the
+	//     stack provisions are then checked again as the caller (impersonation);
+	//   - every caller gets the data-plane check, cloudformation:<Action> on the stack it names
+	//     (normalizeStackArgs has reduced a stack ARN to its name): additive for a User, and the whole,
+	//     default-deny authority of an assumed role (ListStacks/ListExports/ValidateTemplate on Stack::*).
+	if verb := cfnVerb(action); verb != "" {
+		if allowed, reason := h.canDo(r.Context(), claims, verb, r.PostFormValue("StackName")); !allowed {
 			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
 			return
 		}
+	}
+	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "cloudformation:"+action, "Stack",
+		r.PostFormValue("StackName"), r); denied {
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
+		return
 	}
 	ap, err := h.applierFor(claims)
 	if err != nil {
@@ -275,17 +321,75 @@ func parseCFNParamsPrev(r *http.Request) (map[string]string, []string) {
 }
 
 // withPreviousValues fills each UsePreviousValue parameter from the value the stack was last deployed
-// with. A key the stack never had keeps the template default, as a new parameter does.
-func withPreviousValues(params map[string]string, prev []string, current *cfn.StackRecord) map[string]string {
+// with: the record's plain parameters, or — for a NoEcho one — noEcho(), the stored NoEcho values (read
+// only when one is asked for). A key the stack never had keeps the template default, as a new parameter does.
+func withPreviousValues(params map[string]string, prev []string, current *cfn.StackRecord,
+	noEcho func() map[string]string) map[string]string {
 	if current == nil {
 		return params
 	}
+	var secret map[string]string
 	for _, k := range prev {
 		if v, ok := current.Parameters[k]; ok {
+			params[k] = v
+			continue
+		}
+		if !contains(current.NoEchoParameters, k) || noEcho == nil {
+			continue
+		}
+		if secret == nil {
+			secret = noEcho()
+		}
+		if v, ok := secret[k]; ok {
 			params[k] = v
 		}
 	}
 	return params
+}
+
+// previousNoEcho reads a stack's stored NoEcho values for UsePreviousValue (empty on error, logged).
+func (h *cfnDoorway) previousNoEcho(ctx context.Context, stack string) func() map[string]string {
+	return func() map[string]string {
+		v, err := h.noecho.get(ctx, stackRecordName(stack))
+		if err != nil {
+			h.logger.Warn("cfn: could not read the stack's NoEcho parameters", "stack", stack, "error", err.Error())
+			return map[string]string{}
+		}
+		return v
+	}
+}
+
+// describedParams is what DescribeStacks shows for a stack's parameters: a NoEcho one as "****", as AWS
+// does. NoEcho is taken from the record and from its template, so a record written before NoEcho
+// values were kept apart is masked too.
+func describedParams(rec *cfn.StackRecord) map[string]string {
+	noEcho := cfn.NoEchoNames([]byte(rec.Template))
+	for _, k := range rec.NoEchoParameters {
+		noEcho[k] = true
+	}
+	out := map[string]string{}
+	for k, v := range rec.Parameters {
+		if noEcho[k] {
+			v = "****"
+		}
+		out[k] = v
+	}
+	for k := range noEcho {
+		if _, ok := out[k]; ok || !contains(rec.NoEchoParameters, k) {
+			continue
+		}
+		out[k] = "****"
+	}
+	return out
+}
+
+func contains(list []string, s string) bool {
+	for _, e := range list {
+		if e == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *cfnDoorway) stackID(name string) string {
@@ -367,7 +471,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 	}
 	// The record is created already owned by this operation (lease + caller), in one atomic Create.
 	now := time.Now().UTC().Format(time.RFC3339)
-	seed := &cfn.StackRecord{Name: name, Namespace: h.ns, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now}
+	seed := &cfn.StackRecord{Name: name, Namespace: h.ns, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now, Owner: ap.user}
 	if err := h.seedRecord(ctx, seed, "CreateStack", ap.identity()); err != nil {
 		h.ops.end(name)
 		if apierrors.IsAlreadyExists(err) {
@@ -378,7 +482,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		return
 	}
 	h.runStackOp(name, "CreateStack", "CREATE_FAILED", ap, func(bctx context.Context) error {
-		rec, derr := cfn.Deploy(bctx, []byte(body), h.optsFor(name, params, ex), ap)
+		rec, derr := cfn.Deploy(bctx, []byte(body), h.asCaller(h.optsFor(name, params, ex), ap), ap)
 		if derr == nil {
 			h.logOutputs("CreateStack", name, rec)
 		}
@@ -397,7 +501,7 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 	params, prevKeys := parseCFNParamsPrev(r)
 	ctx := r.Context()
 	current, found, _ := ap.GetStack(ctx, name)
-	params = withPreviousValues(params, prevKeys, current)
+	params = withPreviousValues(params, prevKeys, current, h.previousNoEcho(ctx, name))
 	if !found {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist.", cfnXMLNamespace)
 		return
@@ -406,6 +510,7 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
+	h.auditNonOwner("UpdateStack", current, ap)
 	ex := h.exportsFor(ctx, name)
 	plan, perr := cfn.BuildPlanWithCaps([]byte(body), params, ex.values, name, h.caps())
 	if perr != nil {
@@ -435,7 +540,7 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		return
 	}
 	h.runStackOp(name, "UpdateStack", "UPDATE_FAILED", ap, func(bctx context.Context) error {
-		rec, derr := cfn.Update(bctx, []byte(body), h.optsFor(name, params, ex), ap)
+		rec, derr := cfn.Update(bctx, []byte(body), h.asCaller(h.optsFor(name, params, ex), ap), ap)
 		if derr == nil {
 			h.logOutputs("UpdateStack", name, rec)
 		}
@@ -459,6 +564,13 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 			"Stack ["+name+"] cannot be deleted while in status "+rec.Status+".", cfnXMLNamespace)
 		return
 	}
+	// Before any teardown step (some run with the shim's authority — cfn_authz.go): the caller must be
+	// allowed to delete everything the stack would remove, or nothing is touched.
+	if ok, reason := h.authorizeTeardown(ctx, ap, rec); !ok {
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
+		return
+	}
+	h.auditNonOwner("DeleteStack", rec, ap)
 	// AWS's export rule: a stack whose export another stack imports can't be deleted from under it.
 	if msg := exportsInUse(h.allRecords(ctx), name, exportNames(rec)); msg != "" {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
@@ -478,10 +590,13 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 		return
 	}
 	h.runStackOp(name, "DeleteStack", "DELETE_FAILED", ap, func(bctx context.Context) error {
-		_, derr := cfn.Destroy(bctx, h.opts(name, nil), ap)
+		_, derr := cfn.Destroy(bctx, h.asCaller(h.opts(name, nil), ap), ap)
 		if derr == nil {
-			// As on AWS, deleting a stack deletes its change sets.
+			// As on AWS, deleting a stack deletes its change sets — and its stored NoEcho values.
 			h.deleteChangeSetsOf(bctx, name)
+			if err := h.noecho.deleteStack(bctx, name); err != nil {
+				h.logger.Warn("cfn: could not delete the stack's NoEcho parameters", "stack", name, "error", err.Error())
+			}
 		}
 		return derr
 	})
@@ -530,15 +645,15 @@ func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {
 		b.WriteString("<LastUpdatedTime>" + xesc(rec.UpdatedAt) + "</LastUpdatedTime>")
 	}
 	b.WriteString(outputsXML(rec)) // evaluated against the deployed stack at *_COMPLETE (#347)
-	if len(rec.Parameters) > 0 {
-		keys := make([]string, 0, len(rec.Parameters))
-		for k := range rec.Parameters {
+	if params := describedParams(rec); len(params) > 0 {
+		keys := make([]string, 0, len(params))
+		for k := range params {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		b.WriteString("<Parameters>")
 		for _, k := range keys {
-			b.WriteString("<member><ParameterKey>" + xesc(k) + "</ParameterKey><ParameterValue>" + xesc(rec.Parameters[k]) + "</ParameterValue></member>")
+			b.WriteString("<member><ParameterKey>" + xesc(k) + "</ParameterKey><ParameterValue>" + xesc(params[k]) + "</ParameterValue></member>")
 		}
 		b.WriteString("</Parameters>")
 	}
@@ -631,18 +746,35 @@ type changeSet struct {
 	StackName    string            `json:"stackName"`
 	Name         string            `json:"name"`
 	TemplateBody string            `json:"templateBody"`
-	Params       map[string]string `json:"params,omitempty"`
+	Params       map[string]string `json:"params,omitempty"` // never a NoEcho value
+	NoEchoParams []string          `json:"noEchoParams,omitempty"`
 	Type         string            `json:"type"` // CREATE | UPDATE
 	Changes      []cfn.Change      `json:"changes"`
 }
 
-func changeSetCMName(stack, name string) string { return "cfn-changeset-" + stack + "-" + name }
+// changeSetCMName is a change set's record name. A change-set name may not contain "." (AWS's pattern,
+// enforced at CreateChangeSet), so "." splits the two unambiguously: no two (stack, change set) pairs
+// share a record.
+func changeSetCMName(stack, name string) string { return "cfn-changeset-" + stack + "." + name }
+
+// legacyChangeSetCMName is the name records were once written under. It is ambiguous (stack "a" with
+// change set "b-c" and stack "a-b" with "c" both give cfn-changeset-a-b-c), so a record found under it is
+// used only when the record itself names the requested stack and change set.
+func legacyChangeSetCMName(stack, name string) string { return "cfn-changeset-" + stack + "-" + name }
+
+// cfnNameRe is AWS's pattern for stack and change-set names.
+var cfnNameRe = regexp.MustCompile(`^[a-zA-Z][-a-zA-Z0-9]{0,127}$`)
 
 func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
 	stack := r.PostFormValue("StackName")
 	csName := r.PostFormValue("ChangeSetName")
 	if stack == "" || csName == "" {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "StackName and ChangeSetName are required.", cfnXMLNamespace)
+		return
+	}
+	if !cfnNameRe.MatchString(stack) || !cfnNameRe.MatchString(csName) {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+			"StackName and ChangeSetName must start with a letter and contain only letters, digits and hyphens.", cfnXMLNamespace)
 		return
 	}
 	body, err := h.templateBody(r)
@@ -655,7 +787,7 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 	ex := h.exportsFor(ctx, stack)
 	if len(prevKeys) > 0 {
 		if cur, ok, _ := ap.GetStack(ctx, stack); ok {
-			params = withPreviousValues(params, prevKeys, cur)
+			params = withPreviousValues(params, prevKeys, cur, h.previousNoEcho(ctx, stack))
 		}
 	}
 
@@ -676,7 +808,14 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 	if !cs.Exists {
 		csType = "CREATE"
 	}
-	rec := &changeSet{StackName: stack, Name: csName, TemplateBody: body, Params: params, Type: csType, Changes: cs.Changes}
+	// NoEcho values stay out of the change-set record (a ConfigMap): they go to its NoEcho Secret.
+	plain, noEchoNames, noEchoValues := cfn.SplitNoEcho([]byte(body), params)
+	rec := &changeSet{StackName: stack, Name: csName, TemplateBody: body, Params: plain, NoEchoParams: noEchoNames,
+		Type: csType, Changes: cs.Changes}
+	if err := h.noecho.put(ctx, changeSetCMName(stack, csName), stack, noEchoValues); err != nil {
+		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not store the NoEcho parameters: "+err.Error(), cfnXMLNamespace)
+		return
+	}
 	if err := h.putChangeSet(ctx, rec); err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, err.Error(), cfnXMLNamespace)
 		return
@@ -732,7 +871,11 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		return
 	}
 	body := cs.TemplateBody
-	params := cs.Params
+	params, err := h.changeSetParams(r.Context(), cs)
+	if err != nil {
+		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not read the change set's NoEcho parameters: "+err.Error(), cfnXMLNamespace)
+		return
+	}
 	create := cs.Type == "CREATE"
 	// Re-check the export rules at execute time: another stack may have taken an export name, or started
 	// importing one this change set would drop, since the change set was created.
@@ -750,6 +893,7 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 			return
 		}
+		h.auditNonOwner("ExecuteChangeSet", current, ap)
 	}
 	if msg := h.exportGuards(ctx, current, body, params, ex, stack); msg != "" {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
@@ -765,7 +909,7 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		// A CREATE change set seeds the record like CreateStack: already owned, atomically (a stack that
 		// was created since the change set was is refused, never overwritten).
 		now := time.Now().UTC().Format(time.RFC3339)
-		seed := &cfn.StackRecord{Name: stack, Namespace: h.ns, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now}
+		seed := &cfn.StackRecord{Name: stack, Namespace: h.ns, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now, Owner: ap.user}
 		if err := h.seedRecord(ctx, seed, "ExecuteChangeSet", ap.identity()); err != nil {
 			h.ops.end(stack)
 			if apierrors.IsAlreadyExists(err) {
@@ -788,9 +932,9 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		var rec *cfn.StackRecord
 		var derr error
 		if create {
-			rec, derr = cfn.Deploy(bctx, []byte(body), h.optsFor(stack, params, ex), ap)
+			rec, derr = cfn.Deploy(bctx, []byte(body), h.asCaller(h.optsFor(stack, params, ex), ap), ap)
 		} else {
-			rec, derr = cfn.Update(bctx, []byte(body), h.optsFor(stack, params, ex), ap)
+			rec, derr = cfn.Update(bctx, []byte(body), h.asCaller(h.optsFor(stack, params, ex), ap), ap)
 		}
 		if derr == nil {
 			h.logOutputs("ExecuteChangeSet", stack, rec)
@@ -803,8 +947,35 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 func (h *cfnDoorway) deleteChangeSet(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
 	stack := r.PostFormValue("StackName")
 	csName := r.PostFormValue("ChangeSetName")
-	_ = h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Delete(r.Context(), changeSetCMName(stack, csName), metav1.DeleteOptions{})
+	// Only the record that is this stack's change set (findChangeSet) — never one that merely shares a
+	// legacy record name.
+	if _, cmName, err := h.findChangeSet(r.Context(), stack, csName); err == nil {
+		_ = h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Delete(r.Context(), cmName, metav1.DeleteOptions{})
+	}
+	if err := h.noecho.put(r.Context(), changeSetCMName(stack, csName), stack, nil); err != nil {
+		h.logger.Warn("cfn: could not delete a change set's NoEcho parameters", "stack", stack, "changeSet", csName, "error", err.Error())
+	}
 	h.writeResult(w, requestID, "DeleteChangeSet", "")
+}
+
+// changeSetParams is a change set's full parameter set: its record's plain values plus its stored
+// NoEcho values.
+func (h *cfnDoorway) changeSetParams(ctx context.Context, cs *changeSet) (map[string]string, error) {
+	out := map[string]string{}
+	for k, v := range cs.Params {
+		out[k] = v
+	}
+	if len(cs.NoEchoParams) == 0 {
+		return out, nil
+	}
+	secret, err := h.noecho.get(ctx, changeSetCMName(cs.StackName, cs.Name))
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range secret {
+		out[k] = v
+	}
+	return out, nil
 }
 
 func (h *cfnDoorway) putChangeSet(ctx context.Context, cs *changeSet) error {
@@ -823,16 +994,34 @@ func (h *cfnDoorway) putChangeSet(ctx context.Context, cs *changeSet) error {
 }
 
 func (h *cfnDoorway) getChangeSet(ctx context.Context, stack, csName string) (*changeSet, error) {
-	u, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Get(ctx, changeSetCMName(stack, csName), metav1.GetOptions{})
-	if err != nil {
-		return nil, err
+	cs, _, err := h.findChangeSet(ctx, stack, csName)
+	return cs, err
+}
+
+// findChangeSet reads a change set's record and the name it is stored under. Only a record that names
+// the requested stack and change set is returned: never another stack's change set that happens to share
+// a (legacy) record name.
+func (h *cfnDoorway) findChangeSet(ctx context.Context, stack, csName string) (*changeSet, string, error) {
+	var lastErr error
+	for _, cmName := range []string{changeSetCMName(stack, csName), legacyChangeSetCMName(stack, csName)} {
+		u, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Get(ctx, cmName, metav1.GetOptions{})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		data, _, _ := unstructured.NestedString(u.Object, "data", "changeset.json")
+		var cs changeSet
+		if err := json.Unmarshal([]byte(data), &cs); err != nil {
+			lastErr = err
+			continue
+		}
+		if cs.StackName != stack || cs.Name != csName {
+			lastErr = fmt.Errorf("change set %s not found for stack %s", csName, stack)
+			continue
+		}
+		return &cs, cmName, nil
 	}
-	data, _, _ := unstructured.NestedString(u.Object, "data", "changeset.json")
-	var cs changeSet
-	if err := json.Unmarshal([]byte(data), &cs); err != nil {
-		return nil, err
-	}
-	return &cs, nil
+	return nil, "", lastErr
 }
 
 // --- drift ---
@@ -1068,7 +1257,7 @@ func templateParametersXML(data []byte, summary bool) string {
 		if summary {
 			b.WriteString("<ParameterType>" + xesc(p.Type) + "</ParameterType>")
 		}
-		b.WriteString("<NoEcho>false</NoEcho></member>")
+		b.WriteString("<NoEcho>" + strconv.FormatBool(p.NoEcho) + "</NoEcho></member>")
 	}
 	b.WriteString("</Parameters>")
 	return b.String()

@@ -86,15 +86,7 @@ func (h *snsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 
-	// Resource name for authz: the topic name from TopicArn (most ops) or Name (CreateTopic).
-	res := ""
-	if n := r.PostFormValue("Name"); n != "" {
-		res = n
-	} else if ta := r.PostFormValue("TopicArn"); ta != "" {
-		res = nameFromArn(ta)
-	} else if sa := r.PostFormValue("SubscriptionArn"); sa != "" {
-		res = nameFromArn(topicArnOfSub(sa))
-	}
+	res := snsAuthzTopic(op, r)
 
 	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, res); !allowed {
 		writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID, reason, snsXMLNamespace)
@@ -533,6 +525,36 @@ func nameFromArn(arn string) string {
 }
 
 // topicArnOfSub strips the trailing ":<subid>" from a subscription ARN to get its topic ARN.
+// snsAuthzTopic is the topic an op is authorized against: the one named by the field the op acts on.
+// CreateTopic names it by Name; Publish by TopicArn, else TargetArn; the subscription ops by the topic of
+// their SubscriptionArn; the other topic ops by TopicArn. Fields an op ignores are ignored here too, so a
+// Name or TopicArn sent alongside cannot redirect the check. ListTopics/ListSubscriptions name none.
+func snsAuthzTopic(op string, r *http.Request) string {
+	switch op {
+	case "CreateTopic":
+		return r.PostFormValue("Name")
+	case "Publish", "PublishBatch":
+		if ta := r.PostFormValue("TopicArn"); ta != "" {
+			return nameFromArn(ta)
+		}
+		if ta := r.PostFormValue("TargetArn"); ta != "" {
+			return nameFromArn(ta)
+		}
+		return ""
+	case "Unsubscribe", "GetSubscriptionAttributes", "SetSubscriptionAttributes":
+		if sa := r.PostFormValue("SubscriptionArn"); sa != "" {
+			return nameFromArn(topicArnOfSub(sa))
+		}
+		return ""
+	case "ListTopics", "ListSubscriptions":
+		return ""
+	}
+	if ta := r.PostFormValue("TopicArn"); ta != "" {
+		return nameFromArn(ta)
+	}
+	return ""
+}
+
 func topicArnOfSub(subArn string) string {
 	if i := strings.LastIndex(subArn, ":"); i >= 0 {
 		return subArn[:i]

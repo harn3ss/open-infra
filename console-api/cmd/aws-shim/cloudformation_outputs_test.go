@@ -73,7 +73,7 @@ func cfnTestDoorway(t *testing.T, lanIP string) (*cfnDoorway, *impersonatingAppl
 		mapper.Add(schema.GroupVersionKind{Group: "openinfra.dev", Version: "v1", Kind: k}, meta.RESTScopeNamespace)
 	}
 	h := &cfnDoorway{shimDyn: dyn, mapper: mapper, ns: "default", account: "000000000000", region: "us-east-1",
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), cs: csWithSAR(true), authzNS: "default"}
 	return h, &impersonatingApplier{caller: dyn, shim: dyn, mapper: mapper, ns: "default"}
 }
 

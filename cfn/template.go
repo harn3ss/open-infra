@@ -28,6 +28,9 @@ type Parameter struct {
 	Type    string
 	Default any
 	hasDef  bool
+	// NoEcho masks the value wherever CloudFormation would show it (DescribeStacks shows "****"), and
+	// keeps it out of the plain stack record.
+	NoEcho bool
 }
 
 type Resource struct {
@@ -36,6 +39,17 @@ type Resource struct {
 	DependsOn      []string
 	Condition      string
 	DeletionPolicy string // Delete (default) | Retain | Snapshot
+}
+
+// cfnBool reads a CloudFormation boolean, which a template may write as true or "true".
+func cfnBool(v any) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return strings.EqualFold(strings.TrimSpace(b), "true")
+	}
+	return false
 }
 
 // Parse reads a CloudFormation template from JSON or YAML bytes.
@@ -75,6 +89,7 @@ func Parse(data []byte) (*Template, error) {
 			if d, ok := pm["Default"]; ok {
 				param.Default, param.hasDef = d, true
 			}
+			param.NoEcho = cfnBool(pm["NoEcho"])
 			t.Parameters[name] = param
 		}
 	}

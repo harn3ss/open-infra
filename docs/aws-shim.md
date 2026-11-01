@@ -1161,6 +1161,33 @@ impossible. Only the doorway's own bookkeeping — the stack-record, change-set 
 stack metadata, not a customer resource). A stack `roleArn` (AWS's role mode) is the natural follow-on,
 reusing the STS→groups mechanism from Step Functions.
 
+**Calling a stack action needs permission for that action.** As on AWS, where
+`cloudformation:DescribeStacks`, `GetTemplate`, `CreateStack` and so on are permissions of their own, the
+front door authorizes the action before it reads or writes any stack record. A User needs the action's
+RBAC verb, as at every other front door: `get` for the reads (`Describe*`, `List*`, `Get*`,
+`ValidateTemplate`, the drift calls), `create` for `CreateStack`, `CreateChangeSet` and
+`ExecuteChangeSet`, `update` for `UpdateStack`, and `delete` for `DeleteStack` and `DeleteChangeSet`.
+Every caller also gets the data-plane check `cloudformation:<Action>` on `Stack::<name>`. For a User that
+check can only tighten what RBAC allows. For an assumed role it is the role's whole authority, and it
+denies by default. So a key without CloudFormation permissions cannot list stacks or read templates. A
+reader (`get` only) can describe stacks but is refused `CreateStack` up front, with nothing recorded.
+
+**Steps that run with the shim's authority run only for a caller allowed to do them.** Invoking a custom
+resource's Function and creating or deleting a REST v1 API are not Kubernetes objects, so impersonation
+cannot bound them. Each of these steps first checks that the caller could do it directly: invoke that
+Function, or delete that API. The check covers create, update, change-set execution, delete and recovery.
+`DeleteStack` checks everything up front: the caller must be allowed to delete every resource the stack
+would remove, or the stack is left exactly as it was, record included. Each stack records the caller that
+created it as its owner. An update or delete by someone else is allowed if their own authority covers it,
+and it is logged with both names.
+
+**NoEcho parameters.** A parameter declared `NoEcho` is shown as `****` in `DescribeStacks` and reported
+`NoEcho: true` by `GetTemplateSummary` and `ValidateTemplate`. Its value is never written to the plain
+stack or change-set records. It is kept in a Secret in the shim's namespace and read back only when an
+update or change set uses `UsePreviousValue` for it, or when a change set is executed. The Secret is
+deleted with the stack. As on AWS, `NoEcho` does not hide a value that the template copies into a
+resource's properties.
+
 **Refused, not faked.** An unsupported resource type refuses the WHOLE stack at validation, before anything
 is created — partial creation is the failure mode that matters most for an orchestrator. `mapping.go` is the
 honest contract: `Custom::*` and any unmapped type are refused, and types that map at plan but have no
@@ -1172,9 +1199,8 @@ resources are out of scope.
 deploys in **dependency order** (CREATE_COMPLETE); an unsupported type is **refused whole at validation with
 nothing created**; a **change set previews** an update (Add) without applying it, then ExecuteChangeSet
 applies it; **drift** is detected after an out-of-band change; DeleteStack removes what was created; and
-**authority both directions** — an admin's stack provisions, while a *reader's* identical stack ends
-CREATE_FAILED with nothing created, because the engine runs as the reader (who cannot create the resource),
-not as the shim.
+**authority** — an admin's stack provisions, while a *reader* can describe stacks but its `CreateStack` is
+refused with `AccessDenied` and nothing is recorded or created.
 
 ### ECS (service and task definition collate into one kind: Application; caller-authority via impersonation; probe-proven)
 

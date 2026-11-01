@@ -659,7 +659,7 @@ func (h *cfnDoorway) recoverStack(stack string, caller *recordedCaller, reason s
 	if caller.usable() {
 		var ap *impersonatingApplier
 		if ap, err = h.applierForIdentity(caller.User, caller.Groups); err == nil {
-			out, err = cfn.RecoverInterrupted(ctx, h.opts(stack, nil), ap, reason)
+			out, err = cfn.RecoverInterrupted(ctx, h.asCaller(h.opts(stack, nil), ap), ap, reason)
 		}
 	} else {
 		out, err = h.settleWithoutAuthority(ctx, stack, reason)

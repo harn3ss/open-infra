@@ -100,11 +100,19 @@ func (h *ddbStreamsHandler) serve(w http.ResponseWriter, r *http.Request, claims
 	}
 	body := readJSONBody(r)
 
-	// The table this op scopes to: from TableName (ListStreams) or parsed from the StreamArn.
+	// The table this op scopes to: from TableName (ListStreams) or parsed from the StreamArn. GetRecords
+	// acts on the table inside its ShardIterator (which a caller can write by hand), so it is checked
+	// on that table, whatever else the request names.
 	table, _ := body["TableName"].(string)
 	if table == "" {
 		if arn, _ := body["StreamArn"].(string); arn != "" {
 			table = tableFromStreamARN(arn)
+		}
+	}
+	if op == "GetRecords" {
+		table = ""
+		if it, err := decodeIterator(strFromBody(body, "ShardIterator")); err == nil {
+			table = it.Stream
 		}
 	}
 

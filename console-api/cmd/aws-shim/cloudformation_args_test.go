@@ -66,7 +66,7 @@ func TestParams_UsePreviousValue(t *testing.T) {
 		t.Fatalf("a UsePreviousValue parameter must not be sent as an empty value: %v", params)
 	}
 	cur := &cfn.StackRecord{Parameters: map[string]string{"InstanceType": "t3.large", "SiteDomain": "old.example.test"}}
-	params = withPreviousValues(params, prev, cur)
+	params = withPreviousValues(params, prev, cur, nil)
 	if params["InstanceType"] != "t3.large" {
 		t.Errorf("InstanceType should keep its previous value t3.large, got %q", params["InstanceType"])
 	}

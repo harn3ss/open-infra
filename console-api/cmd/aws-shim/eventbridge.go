@@ -113,11 +113,11 @@ func (h *ebHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		resType, resID = "EventBus", strFromBody(body, "Name")
 	case "PutEvents", "ListEventBuses", "TestEventPattern":
 		resType, resID = "EventBus", "default"
+	case "PutTargets", "RemoveTargets", "ListTargetsByRule":
+		// The target ops act on Rule; a Name sent alongside must not redirect the check.
+		resID = strFromBody(body, "Rule")
 	default:
-		resID = strFromBody(body, "Name") // PutRule/DescribeRule/etc carry Name; PutTargets/RemoveTargets carry Rule
-		if resID == "" {
-			resID = strFromBody(body, "Rule")
-		}
+		resID = strFromBody(body, "Name") // PutRule/DescribeRule/etc act on Name
 	}
 
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())

@@ -209,7 +209,7 @@ func opsDoorway(t *testing.T, fa *fakeAPI, owner string) *cfnDoorway {
 		mapper.Add(schema.GroupVersionKind{Group: "openinfra.dev", Version: "v1", Kind: k}, meta.RESTScopeNamespace)
 	}
 	h := &cfnDoorway{shimDyn: dyn, mapper: mapper, ns: opsNS, account: "000000000000", region: "us-east-1",
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), cs: csWithSAR(true), authzNS: "default"}
 	h.ops.owner = owner
 	h.callerDyn = func(user string, groups []string) (dynamic.Interface, error) {
 		fa.mu.Lock()

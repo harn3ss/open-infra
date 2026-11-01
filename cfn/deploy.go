@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -46,6 +47,13 @@ type Applier interface {
 	GetStack(ctx context.Context, stackName string) (rec *StackRecord, found bool, err error)
 	// GetSpec reads a live resource's .spec (found=false when the object is absent).
 	GetSpec(ctx context.Context, apiVersion, kind, name string) (spec map[string]any, found bool, err error)
+}
+
+// NoEchoStore is an Applier that keeps a stack's NoEcho parameter values somewhere safer than the plain
+// stack record. PutNoEcho replaces the stack's stored values (an empty map removes them). An Applier
+// without one does not keep NoEcho values at all.
+type NoEchoStore interface {
+	PutNoEcho(ctx context.Context, stackName string, values map[string]string) error
 }
 
 type StackResource struct {
@@ -81,8 +89,17 @@ type StackRecord struct {
 	// Template and Parameters are the template body and parameter values the stack was last deployed
 	// with, as AWS keeps them: GetTemplate / GetTemplateSummary read them, and an update's
 	// UsePreviousValue parameters take their values from here.
-	Template   string            `json:"template,omitempty"`
-	Parameters map[string]string `json:"parameters,omitempty"`
+	// Parameters never holds a NoEcho parameter's value: NoEchoParameters names those, and their values go
+	// to the Applier's NoEchoStore (if it has one) instead of the record.
+	// Owner is the caller that created the stack (kept across updates); "" on a record from before it
+	// was kept.
+	Owner            string            `json:"owner,omitempty"`
+	Template         string            `json:"template,omitempty"`
+	Parameters       map[string]string `json:"parameters,omitempty"`
+	NoEchoParameters []string          `json:"noEchoParameters,omitempty"`
+	// noEcho is the NoEcho values to store with this write; nil on a record read back (the store is left
+	// as it is), non-nil when a create/update sets the stack's parameters.
+	noEcho map[string]string
 	// Imports are the export names this stack reads through Fn::ImportValue — a stack whose export is
 	// imported elsewhere is not deleted (AWS's rule).
 	Imports []string `json:"imports,omitempty"`
@@ -99,10 +116,12 @@ type StackRecord struct {
 type DeployOptions struct {
 	StackName string
 	Namespace string
-	Params    map[string]string
-	Exports   map[string]string // cross-stack Exports (export name -> value) for Fn::ImportValue
-	Wait      bool
-	Timeout   time.Duration
+	// Owner is the caller a create records as the stack's owner (StackRecord.Owner); "" records none.
+	Owner   string
+	Params  map[string]string
+	Exports map[string]string // cross-stack Exports (export name -> value) for Fn::ImportValue
+	Wait    bool
+	Timeout time.Duration
 	// Invoke synchronously calls an in-stack kind: Function for a Lambda-backed custom resource (#269),
 	// returning the parsed response ({Status, Data, Reason}). Nil = custom resources are unsupported on
 	// this deploy path (the CLI, which isn't in-cluster): a stack with one refuses rather than guessing.
@@ -254,8 +273,9 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := &StackRecord{
 		Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS",
-		CreatedAt: now, UpdatedAt: now, Template: string(data), Parameters: copyParams(opts.Params),
+		CreatedAt: now, UpdatedAt: now, Template: string(data), Owner: opts.Owner,
 	}
+	rec.setParams(data, opts.Params)
 	for _, b := range order {
 		rec.Resources = append(rec.Resources, b.res)
 	}
@@ -349,7 +369,8 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now,
-		Template: string(data), Parameters: copyParams(opts.Params)}
+		Template: string(data), Owner: opts.Owner}
+	rec.setParams(data, opts.Params)
 	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {
 		return nil, fmt.Errorf("could not persist stack record: %w", err)
 	}
@@ -560,7 +581,17 @@ func writeStackRecord(ctx context.Context, ap Applier, rec *StackRecord, opts De
 	if err != nil {
 		return err
 	}
-	return ap.Apply(ctx, y)
+	if err := ap.Apply(ctx, y); err != nil {
+		return err
+	}
+	if rec.noEcho != nil {
+		if st, ok := ap.(NoEchoStore); ok {
+			if err := st.PutNoEcho(ctx, opts.StackName, rec.noEcho); err != nil {
+				return fmt.Errorf("could not store the NoEcho parameters: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // resolveParams computes the parameter value map (supplied > default) for translation. A
@@ -600,14 +631,46 @@ func joinFindings(fs []Finding) string {
 	return out
 }
 
-// copyParams returns an independent copy of a parameter map (nil for none).
-func copyParams(m map[string]string) map[string]string {
-	if len(m) == 0 {
-		return nil
+// setParams records the parameter values a stack is deployed with: the NoEcho ones by name only (their
+// values go to the NoEchoStore on write), the rest in Parameters. A template that does not parse treats
+// every parameter as NoEcho, so nothing is exposed by mistake.
+func (rec *StackRecord) setParams(data []byte, params map[string]string) {
+	plain, names, secret := SplitNoEcho(data, params)
+	rec.Parameters, rec.NoEchoParameters, rec.noEcho = plain, names, secret
+}
+
+// SplitNoEcho separates a template's NoEcho parameter values from the rest. names is sorted; secret is
+// never nil, so a caller can tell "no NoEcho values" from "not set". A template that does not parse
+// treats every parameter as NoEcho.
+func SplitNoEcho(data []byte, params map[string]string) (plain map[string]string, names []string, secret map[string]string) {
+	secret = map[string]string{}
+	t, err := Parse(data)
+	for k, v := range params {
+		if err != nil || t.Parameters[k].NoEcho {
+			secret[k] = v
+			names = append(names, k)
+			continue
+		}
+		if plain == nil {
+			plain = map[string]string{}
+		}
+		plain[k] = v
 	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
+	sort.Strings(names)
+	return plain, names, secret
+}
+
+// NoEchoNames is the set of a template's parameters declared NoEcho (empty if it does not parse).
+func NoEchoNames(data []byte) map[string]bool {
+	out := map[string]bool{}
+	t, err := Parse(data)
+	if err != nil {
+		return out
+	}
+	for k, p := range t.Parameters {
+		if p.NoEcho {
+			out[k] = true
+		}
 	}
 	return out
 }

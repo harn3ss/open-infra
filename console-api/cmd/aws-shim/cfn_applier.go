@@ -47,6 +47,13 @@ type impersonatingApplier struct {
 	// (cloudformation_ops.go). Empty for an applier built without an impersonated identity.
 	user   string
 	groups []string
+	// noecho holds the stack's NoEcho parameter values (cfn_noecho.go); nil keeps none.
+	noecho *noEchoSecrets
+}
+
+// PutNoEcho makes the applier a cfn.NoEchoStore: a stack's NoEcho values go to a Secret, not its record.
+func (a *impersonatingApplier) PutNoEcho(ctx context.Context, stackName string, values map[string]string) error {
+	return a.noecho.put(ctx, stackRecordName(stackName), stackName, values)
 }
 
 // identity is the caller this applier acts as, in the form recorded on a stack record.

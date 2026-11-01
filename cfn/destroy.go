@@ -98,6 +98,20 @@ type LabelReader interface {
 // rollback (AWS honors Retain on rollback too — RetainExceptOnCreate is its opt-out).
 func isRetain(r StackResource) bool { return strings.EqualFold(r.DeletionPolicy, "Retain") }
 
+// IsRetained reports whether a recorded resource survives a stack delete (DeletionPolicy: Retain).
+func IsRetained(r StackResource) bool { return isRetain(r) }
+
+// IsCustomResource reports whether a recorded resource is a custom resource (its teardown is a Delete
+// event to its Function, not an object delete).
+func IsCustomResource(r StackResource) bool {
+	return r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind
+}
+
+// IsRestV1API reports whether a recorded resource is a REST v1 API provisioned out of band.
+func IsRestV1API(r StackResource) bool {
+	return r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind
+}
+
 // isOutOfBand reports whether a recorded resource is not a Kubernetes object: a custom resource (#269,
 // invoked) or a provisioned REST v1 API (#295). Neither is applied or deleted as an object.
 func isOutOfBand(r StackResource) bool {
