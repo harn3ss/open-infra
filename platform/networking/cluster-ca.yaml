@@ -3,9 +3,10 @@
 # openinfra-issuer (cluster-issuer.yaml) self-signs every certificate separately, so there is nothing a
 # client can trust once for all of them. This file adds a root CA, created once by cert-manager and kept
 # in its namespace, and a CA-type ClusterIssuer `openinfra-ca` that signs with it. Trust the root once and
-# every certificate `openinfra-ca` issues is trusted:
+# every certificate `openinfra-ca` issues is trusted. Its certificate is public; the platform publishes it
+# (platform/aws-shim/platform-ca-publisher.yaml), so it is read without touching the key's Secret:
 #
-#   kubectl -n cert-manager get secret openinfra-root-ca -o jsonpath='{.data.ca\.crt}' | base64 -d > openinfra-root-ca.crt
+#   kubectl get environmentconfig openinfra-platform-ca -o jsonpath='{.data.platformRootCA}' > openinfra-root-ca.crt
 #
 # then add openinfra-root-ca.crt to the OS or browser trust store (or pass it to a client, e.g.
 # `curl --cacert`, `AWS_CA_BUNDLE`, `SSL_CERT_FILE`). Use the issuer with the annotation
@@ -32,18 +33,27 @@ spec:
   commonName: open-infra root CA
   subject:
     organizations: [open-infra]
-  secretName: openinfra-root-ca
+  # The number is the key's generation. A renewal (near expiry, or one an operator triggers) re-signs
+  # the root with the SAME key (rotationPolicy: Never), so clients that trust it keep working. To give the
+  # root a NEW key, bump the number here and in the ClusterIssuer below: cert-manager issues into the new
+  # Secret with a fresh key; once the ClusterIssuer signs with it, the platform-ca-publisher publishes the
+  # new root to VM guests and renews every platform certificate signed by the old one. Then delete the
+  # previous generation's Secret (it still holds the old key), and re-import the root on clients.
+  # Generation 2: the first key was kept through the name-constraints re-sign (#347).
+  secretName: openinfra-root-ca-2
   duration: 87600h      # 10 years
   renewBefore: 720h
   privateKey:
     algorithm: ECDSA
     size: 256
-    rotationPolicy: Never   # rotating the key would invalidate every client that trusts the root
+    rotationPolicy: Never   # a renewal keeps the key; a new key is a new generation (secretName above)
   # The root can vouch only for in-cluster names, sslip.io LAN names and private addresses. A client
   # that trusts it is not exposed for any other domain, even if the root's key leaked. A site whose LAN
-  # names use its own domain adds that domain here. Changing this re-signs the root with the same key,
-  # so issued certificates and clients that already trust the root keep working; re-import the root on
-  # clients to get the constraint.
+  # names use its own domain adds that domain here. cert-manager does NOT re-issue the root when only
+  # this changes: renew it (`cmctl renew -n cert-manager openinfra-root-ca`), which re-signs it with the
+  # same key, so issued certificates and clients that already trust the root keep working; the publisher
+  # then publishes the re-signed root. Re-import the root on clients to get the constraint.
+  # probe/platform-root-ca.sh fails while the issued root and this spec differ.
   nameConstraints:
     critical: true
     permitted:
@@ -63,7 +73,7 @@ metadata:
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
   ca:
-    secretName: openinfra-root-ca
+    secretName: openinfra-root-ca-2   # the root's current key generation (see above)
 ---
 # openinfra-ca issues only in platform namespaces (see the header). To let another platform namespace
 # use it, add the namespace to the list below. Kubernetes CSRs that name the issuer as signer are
