@@ -92,8 +92,8 @@ spec:
                   type: object
                   description: >-
                     Fine-grained DATA-PLANE authorization for the aws-shim front doors — the services
-                    the shim enforces (today 16: s3, dynamodb, lambda, sqs, sns, kinesis, kms, ssm,
-                    secretsmanager, ecr, ecs, logs, rds, ses, apigateway, cloudwatch; the authoritative
+                    the shim enforces (today 17: s3, dynamodb, lambda, sqs, sns, kinesis, kms, ssm,
+                    secretsmanager, ecr, ecs, logs, rds, ses, apigateway, cloudwatch, cloudfront; the authoritative
                     set is policyengine.SupportedServices), evaluated by the Cedar-backed policy engine.
                     Unlike the control-plane
                     statements above, it supports explicit Deny (which overrides Allow) and request

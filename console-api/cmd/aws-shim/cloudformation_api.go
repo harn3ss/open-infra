@@ -390,10 +390,10 @@ func (s *signalStore) add(ctx context.Context, stack, id string, sig cfn.Signal)
 	return fmt.Errorf("could not record the signal (the record kept changing)")
 }
 
-// deleteStackSide removes a deleted stack's events and signals.
+// deleteStackSide removes a deleted stack's events, signals and its distributions' invalidations.
 func (h *cfnDoorway) deleteStackSide(ctx context.Context, stack string) {
 	st := h.recs()
-	for _, n := range []string{eventsRecordName(stack), signalsRecordName(stack)} {
+	for _, n := range []string{eventsRecordName(stack), signalsRecordName(stack), invalidationsRecordName(stack)} {
 		_ = st.client().Delete(ctx, n, metav1.DeleteOptions{})
 	}
 }

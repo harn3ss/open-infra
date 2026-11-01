@@ -331,6 +331,22 @@ spec:
                         error_page 404 /{{ $error }};
                         {{- end }}
                       }
+                    # The status port, in-cluster only (no Ingress routes to it): GET /synced is the start time
+                    # (Unix seconds) of the last successful sync of the site's copy of its bucket — what the
+                    # aws-shim's CloudFront CreateInvalidation/GetInvalidation decide "Completed" by.
+                    status.conf: |
+                      server {
+                        listen 8081;
+                        server_name _;
+                        access_log off;
+                        location = /synced {
+                          default_type text/plain;
+                          alias /status/synced;
+                        }
+                        location / {
+                          return 404;
+                        }
+                      }
             ---
             # The server: nginx serving a shared volume, kept in sync with the bucket
             # by a sidecar (aws s3 sync loop) + an initContainer for the first fill.
@@ -360,7 +376,8 @@ spec:
                           - name: sync-init
                             image: alpine/k8s:1.30.0
                             command: ["/bin/sh", "-c"]
-                            args: ['aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "s3://{{ $bucket }}/" /web --delete || true']
+                            # A successful sync records the time it STARTED (/status/synced), served on the status port.
+                            args: ['start=$(date +%s); aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "s3://{{ $bucket }}/" /web --delete && echo "$start" > /status/synced || true']
                             env:
                               - name: MINIO_ENDPOINT
                                 valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ENDPOINT } }
@@ -371,11 +388,13 @@ spec:
                               - { name: AWS_DEFAULT_REGION, value: us-east-1 }
                             volumeMounts:
                               - { name: web, mountPath: /web }
+                              - { name: sync-status, mountPath: /status }
                         containers:
                           - name: nginx
                             image: nginx:1.27-alpine
                             ports:
                               - { name: http, containerPort: 80 }
+                              - { name: status, containerPort: 8081 }
                             # TCP, not httpGet /: nginx is ready to serve as soon as it is
                             # listening — an as-yet-empty bucket (content not uploaded) returns 404
                             # on /, which would keep the pod permanently NotReady and endpoint-less.
@@ -386,11 +405,12 @@ spec:
                             volumeMounts:
                               - { name: web, mountPath: /usr/share/nginx/html }
                               - { name: nginx-config, mountPath: /etc/nginx/conf.d }
+                              - { name: sync-status, mountPath: /status, readOnly: true }
                           - name: sync
                             image: alpine/k8s:1.30.0
                             command: ["/bin/sh", "-c"]
                             args:
-                              - 'while true; do aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "s3://{{ $bucket }}/" /web --delete 2>/dev/null || true; sleep {{ $interval }}; done'
+                              - 'while true; do start=$(date +%s); if aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "s3://{{ $bucket }}/" /web --delete 2>/dev/null; then echo "$start" > /status/synced.tmp && mv /status/synced.tmp /status/synced; fi; sleep {{ $interval }}; done'
                             env:
                               - name: MINIO_ENDPOINT
                                 valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ENDPOINT } }
@@ -401,8 +421,11 @@ spec:
                               - { name: AWS_DEFAULT_REGION, value: us-east-1 }
                             volumeMounts:
                               - { name: web, mountPath: /web }
+                              - { name: sync-status, mountPath: /status }
                         volumes:
                           - name: web
+                            emptyDir: {}
+                          - name: sync-status
                             emptyDir: {}
                           - name: nginx-config
                             configMap: { name: {{ $name }}-site-nginx }
@@ -430,6 +453,7 @@ spec:
                     selector: { app: {{ $name }}-site }
                     ports:
                       - { name: http, port: 80, targetPort: 80 }
+                      - { name: status, port: 8081, targetPort: 8081 }
             {{- if $tls }}
             ---
             # The Ingress's TLS Secret, created here — empty — so it is a composed resource and goes with the
@@ -538,6 +562,12 @@ spec:
                           # Prometheus, scraping metrics
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
                             podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+                      # the aws-shim, reading the last-sync time on the status port only (CloudFront invalidations)
+                      - from:
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-aws-shim } }
+                            podSelector: { matchLabels: { app: aws-shim } }
+                        ports:
+                          - { protocol: TCP, port: 8081 }
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

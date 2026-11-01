@@ -18,7 +18,7 @@ var SupportedServices = map[string]bool{
 	"s3": true, "dynamodb": true, "lambda": true,
 	"sqs": true, "sns": true, "kinesis": true, "kms": true, "ssm": true,
 	"secretsmanager": true, "ecr": true, "ecs": true, "logs": true, "rds": true,
-	"ses": true, "apigateway": true, "cloudwatch": true,
+	"ses": true, "apigateway": true, "cloudwatch": true, "cloudfront": true,
 }
 
 // condType classifies a populated request-context attribute by value type, which fixes the AWS
@@ -447,6 +447,8 @@ func arnToResource(arn string) (string, bool) {
 		return cut("db:", "DBInstance")
 	case "ses":
 		return cut("identity/", "Identity")
+	case "cloudfront": // arn:aws:cloudfront::<acct>:distribution/<id> (the invalidation calls)
+		return cut("distribution/", "Distribution")
 	case "apigateway": // arn:aws:apigateway:r::/restapis/<id>[/...]
 		if n, ok := strings.CutPrefix(tail, "/restapis/"); ok && n != "" {
 			n, _, _ = strings.Cut(n, "/")

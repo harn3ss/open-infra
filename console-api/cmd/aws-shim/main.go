@@ -609,6 +609,8 @@ func run(logger *slog.Logger) error {
 			}
 			cfnH.fns = fns // a stack's function may not take a name a Lambda-API function has
 			services["cloudformation"] = cfnH
+			// CloudFront (cloudfront.*): the invalidations of a stack's distributions (cloudfront.go).
+			services["cloudfront"] = newCloudFrontHandler(cfnH, logger)
 			cfnDoor = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
 		}

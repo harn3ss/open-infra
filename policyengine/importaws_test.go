@@ -58,7 +58,8 @@ func TestImportAWS_ExtendedServices(t *testing.T) {
 	  {"Effect":"Allow","Action":"ecs:UpdateService","Resource":"arn:aws:ecs:us-east-1:123:service/prod/api"},
 	  {"Effect":"Allow","Action":"logs:PutLogEvents","Resource":"arn:aws:logs:us-east-1:123:log-group:/app/web:*"},
 	  {"Effect":"Allow","Action":"rds:DescribeDBInstances","Resource":"arn:aws:rds:us-east-1:123:db:pg1"},
-	  {"Effect":"Allow","Action":"ses:SendEmail","Resource":"arn:aws:ses:us-east-1:123:identity/noreply@x.test"}
+	  {"Effect":"Allow","Action":"ses:SendEmail","Resource":"arn:aws:ses:us-east-1:123:identity/noreply@x.test"},
+	  {"Effect":"Allow","Action":"cloudfront:CreateInvalidation","Resource":"arn:aws:cloudfront::123:distribution/E1A2B3C4D5E6F7"}
 	]}`
 	stmts, unsupported, err := ImportAWS(doc)
 	if err != nil {
@@ -76,7 +77,7 @@ func TestImportAWS_ExtendedServices(t *testing.T) {
 	for _, want := range []string{
 		"Queue::orders", "Topic::events", "Stream::clicks", "Key::abcd-1234",
 		"Parameter::app/db", "Secret::db-creds", "Repository::web", "Service::api",
-		"LogGroup::/app/web", "DBInstance::pg1", "Identity::noreply@x.test",
+		"LogGroup::/app/web", "DBInstance::pg1", "Identity::noreply@x.test", "Distribution::E1A2B3C4D5E6F7",
 	} {
 		if !got[want] {
 			t.Errorf("missing mapped resource %q; got %v", want, got)
@@ -93,6 +94,13 @@ func TestImportAWS_ExtendedServices(t *testing.T) {
 	}
 	if d := eng.Authorize(Request{p, "sqs:SendMessage", Resource{"Queue", "other"}, nil}); d.Allowed {
 		t.Errorf("send to a different queue must be denied")
+	}
+	// The invalidation grant lands on the distribution the shim checks (cloudfront.go), and only on it.
+	if d := eng.Authorize(Request{p, "cloudfront:CreateInvalidation", Resource{"Distribution", "E1A2B3C4D5E6F7"}, nil}); !d.Allowed {
+		t.Errorf("an invalidation of the granted distribution should be allowed")
+	}
+	if d := eng.Authorize(Request{p, "cloudfront:CreateInvalidation", Resource{"Distribution", "E0THER0000000"}, nil}); d.Allowed {
+		t.Errorf("an invalidation of another distribution must be denied")
 	}
 }
 
