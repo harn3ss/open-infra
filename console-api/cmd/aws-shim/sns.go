@@ -104,6 +104,7 @@ func (h *snsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	}
 
 	ctx := r.Context()
+	h.resolveLegacyARNs(ctx, r) // a topic made before the account changed answers to either ARN (identity_compat.go)
 	switch op {
 	case "CreateTopic":
 		h.createTopic(ctx, w, r, requestID)

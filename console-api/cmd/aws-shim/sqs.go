@@ -135,6 +135,7 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	}
 
 	ctx := r.Context()
+	h.resolveLegacyQueueURL(ctx, body) // a queue made before the account changed answers to either URL (identity_compat.go)
 	switch op {
 	case "CreateQueue":
 		h.createQueue(ctx, w, r, requestID, body)

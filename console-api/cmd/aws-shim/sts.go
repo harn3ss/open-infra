@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
@@ -35,12 +36,19 @@ type tokenReviewer interface {
 }
 
 type stsHandler struct {
-	account   string         // the open-infra "account" id surfaced in the ARN/Account fields
+	account   string         // the install's 12-digit account id (awsidentity), surfaced in the ARN/Account fields
 	minter    *awssts.Minter // mints sts:AssumeRole session tokens; nil disables AssumeRole
 	roles     roleResolver   // resolves a role's trust policy + session groups; nil disables AssumeRole
 	webID     tokenReviewer  // verifies workload SA tokens (IRSA path); nil disables that path
 	oidcWebID oidcVerifier   // verifies EXTERNAL OIDC tokens vs registered kind: IdentityProvider; nil disables
 	logger    *slog.Logger
+}
+
+// ident is the identity the handler's ARNs are built in: its account, the install's region.
+func (h *stsHandler) ident() awsidentity.Identity {
+	id := awsidentity.Current()
+	id.AccountID = h.account
+	return id
 }
 
 func (h *stsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
@@ -181,7 +189,8 @@ func saShortName(username string) string {
 	return username
 }
 
-// roleNameFromArn accepts an arn:openinfra:iam::<acct>:role/<name> or a bare role name.
+// roleNameFromArn accepts a role ARN (arn:aws:iam::<acct>:role/<name>, or the legacy
+// arn:openinfra:iam::open-infra:role/<name>) or a bare role name.
 func roleNameFromArn(arn string) string {
 	arn = strings.TrimSpace(arn)
 	if i := strings.Index(arn, ":role/"); i >= 0 {
@@ -267,7 +276,7 @@ func (h *stsHandler) writeAssumeRole(w http.ResponseWriter, role, session, akid,
 	resp.Result.Credentials.SecretAccessKey = sk
 	resp.Result.Credentials.SessionToken = token
 	resp.Result.Credentials.Expiration = exp.UTC().Format(time.RFC3339)
-	resp.Result.AssumedRoleUser.Arn = "arn:openinfra:iam::" + h.account + ":assumed-role/" + role + "/" + session
+	resp.Result.AssumedRoleUser.Arn = h.ident().STSARN("assumed-role/" + role + "/" + session)
 	resp.Result.AssumedRoleUser.AssumedRoleId = role + ":" + session
 	resp.ResponseMetadata.RequestId = requestID
 	out, err := xml.Marshal(resp)
@@ -310,7 +319,7 @@ func (h *stsHandler) writeWebIdentity(w http.ResponseWriter, role, session, subj
 	resp.Result.Credentials.SecretAccessKey = sk
 	resp.Result.Credentials.SessionToken = token
 	resp.Result.Credentials.Expiration = exp.UTC().Format(time.RFC3339)
-	resp.Result.AssumedRoleUser.Arn = "arn:openinfra:iam::" + h.account + ":assumed-role/" + role + "/" + session
+	resp.Result.AssumedRoleUser.Arn = h.ident().STSARN("assumed-role/" + role + "/" + session)
 	resp.Result.AssumedRoleUser.AssumedRoleId = role + ":" + session
 	resp.Result.SubjectFromWebIdentityToken = subject
 	resp.Result.Provider = "openinfra:serviceaccount"
@@ -329,12 +338,13 @@ func (h *stsHandler) writeWebIdentity(w http.ResponseWriter, role, session, subj
 
 func (h *stsHandler) writeCallerIdentity(w http.ResponseWriter, claims iam.Claims, requestID string) {
 	var resp getCallerIdentityResponse
-	// An open-infra-shaped ARN: honest about the provider, parseable by tools that split on ':'.
-	// An assumed-role session reports the assumed-role ARN (claims.Sub is "assumed-role/<role>/<sess>").
+	// AWS's ARN forms, in the install's account: an assumed-role session is arn:aws:sts::<acct>:
+	// assumed-role/<role>/<session> (claims.Sub is "assumed-role/<role>/<sess>"), a user is
+	// arn:aws:iam::<acct>:user/<name>.
 	if claims.AssumedRole != "" {
-		resp.Result.Arn = "arn:openinfra:iam::" + h.account + ":" + claims.Sub
+		resp.Result.Arn = h.ident().STSARN(claims.Sub)
 	} else {
-		resp.Result.Arn = "arn:openinfra:iam::" + h.account + ":user/" + claims.Sub
+		resp.Result.Arn = h.ident().IAMARN("user/" + claims.Sub)
 	}
 	resp.Result.UserId = claims.Sub
 	resp.Result.Account = h.account

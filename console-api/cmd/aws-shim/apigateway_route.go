@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 )
 
 // agwOpFromRequest maps an apigatewayv2 REST management path + method to an op and the api id it targets.
@@ -244,7 +246,7 @@ func buildProxyEvent(pfv string, r *http.Request, apiID, stage, routeKey, path s
 			"pathParameters":                  nilIfEmpty(pathParams),
 			"isBase64Encoded":                 isB64,
 			"requestContext": map[string]any{
-				"accountId":    "open-infra",
+				"accountId":    awsidentity.Current().AccountID,
 				"apiId":        apiID,
 				"httpMethod":   r.Method,
 				"path":         "/" + stage + path,
@@ -273,7 +275,7 @@ func buildProxyEvent(pfv string, r *http.Request, apiID, stage, routeKey, path s
 		"pathParameters":        nilIfEmpty(pathParams),
 		"isBase64Encoded":       isB64,
 		"requestContext": map[string]any{
-			"accountId":  "open-infra",
+			"accountId":  awsidentity.Current().AccountID,
 			"apiId":      apiID,
 			"domainName": apiID + ".execute-api.amazonaws.com",
 			"http": map[string]any{

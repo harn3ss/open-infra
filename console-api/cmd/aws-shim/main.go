@@ -30,6 +30,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
@@ -101,7 +102,14 @@ func run(logger *slog.Logger) error {
 	authzNS := getenv("AUTHZ_NAMESPACE", "default")  // namespace the coarse S3 RBAC gate checks
 	fnNS := getenv("FUNCTIONS_NAMESPACE", "default") // namespace kind: Function lives in
 	svcSuffix := getenv("SVC_SUFFIX", "svc.cluster.local")
-	account := getenv("ACCOUNT_ID", "open-infra") // surfaced in STS ARNs
+	// The one AWS identity this install presents (ACCOUNT_ID, AWS_REGION): every ARN, queue URL and
+	// StackId the shim reports, and the CloudFormation pseudo-parameters, are built from it.
+	ident, identWarns := awsidentity.FromEnv(os.Getenv)
+	for _, w := range identWarns {
+		logger.Warn(w)
+	}
+	awsidentity.Set(ident)
+	account := ident.AccountID
 	// open-appsync engine endpoint (opt-in component `openAppsync`). Our own engine — no admin
 	// secret; the shim conveys the verified principal and open-appsync enforces authz internally.
 	graphqlEndpoint := getenv("GRAPHQL_ENDPOINT", "http://open-appsync.open-infra-open-appsync.svc.cluster.local:80")
@@ -414,7 +422,7 @@ func run(logger *slog.Logger) error {
 	dynamoH.authz = authzChecker
 	dynamoH.stream = ddbStreamSt // DynamoDB Streams change-record log (nil unless the shim Postgres is set)
 	dynamoH.account = account    // for DescribeTable LatestStreamArn
-	dynamoH.region = getenv("AWS_REGION", "us-east-1")
+	dynamoH.region = ident.Region
 	// Where RestoreTableToPointInTime launches its recovery Job + temp FerretDB (the DynamoDB backend's
 	// own namespace — where the dynamo-docdb CNPG cluster + dynamo-mongo-app Secret live).
 	dynamoH.restoreNS = getenv("DYNAMO_BACKEND_NAMESPACE", keysNS)
@@ -426,7 +434,7 @@ func run(logger *slog.Logger) error {
 	dynamoH.startTableSync(context.Background(), getenv("TABLE_CONFIG_NAMESPACE", "open-infra-aws-shim"), 30*time.Second)
 	lambdaH := newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger)
 	lambdaH.authz = authzChecker
-	region := getenv("AWS_REGION", "us-east-1")
+	region := ident.Region
 	// DynamoDB Streams front door (reads the change-record logs the dynamodb write path emits).
 	ddbStreamsH := newDDBStreamsHandler(cs, authzNS, account, region, ddbStreamSt, dynamoH, logger)
 	ddbStreamsH.authz = authzChecker
@@ -555,7 +563,7 @@ func run(logger *slog.Logger) error {
 	// client (shim SA client for stack-record bookkeeping) + the in-cluster rest.Config (to impersonate).
 	var cfnDoor *cfnDoorway // its recovery pass + shutdown drain are wired below, once the signal context exists
 	if dyn != nil {
-		cfnNS := getenv("CFN_NAMESPACE", "default")
+		cfnNS := ident.StackNamespace // CFN_NAMESPACE: the StackId and AWS::StackId are both derived from it
 		if cfnH, cerr := newCFNDoorway(kc.Config, dyn, account, region, cfnNS, svcSuffix, logger); cerr != nil {
 			logger.Warn("CloudFormation front door disabled", slog.String("error", cerr.Error()))
 		} else {

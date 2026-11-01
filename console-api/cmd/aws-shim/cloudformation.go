@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -415,10 +416,9 @@ func contains(list []string, s string) bool {
 	return false
 }
 
+// stackID is the stack's StackId — the same value its templates resolve AWS::StackId to (awsidentity).
 func (h *cfnDoorway) stackID(name string) string {
-	sum := sha256.Sum256([]byte(h.ns + "/" + name))
-	uid := hex.EncodeToString(sum[:])[:32]
-	return fmt.Sprintf("arn:aws:cloudformation:%s:%s:stack/%s/%s", h.region, h.account, name, uid)
+	return awsidentity.Identity{AccountID: h.account, Region: h.region, StackNamespace: h.ns}.StackID(name)
 }
 
 func (h *cfnDoorway) opts(name string, params map[string]string) cfn.DeployOptions {

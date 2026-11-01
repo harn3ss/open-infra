@@ -43,7 +43,7 @@ func assumeRequest(roleArn, sessionName string) *http.Request {
 
 func newSTS(t *testing.T, roles fakeRoles) (*stsHandler, *awssts.Minter) {
 	m := testMinter(t)
-	return &stsHandler{account: "open-infra", minter: m, roles: roles, logger: discardLogger()}, m
+	return &stsHandler{account: "000000000000", minter: m, roles: roles, logger: discardLogger()}, m
 }
 
 // A trusted caller assumes a role and receives temporary credentials.
@@ -62,7 +62,7 @@ func TestAssumeRole_TrustedCallerGetsCredentials(t *testing.T) {
 	if !strings.HasPrefix(c.AccessKeyId, "ASIA") || c.SecretAccessKey == "" || c.SessionToken == "" {
 		t.Fatalf("credentials incomplete: %+v", c)
 	}
-	if resp.Result.AssumedRoleUser.Arn != "arn:openinfra:iam::open-infra:assumed-role/deploy-role/s1" {
+	if resp.Result.AssumedRoleUser.Arn != "arn:aws:sts::000000000000:assumed-role/deploy-role/s1" {
 		t.Fatalf("assumed-role ARN wrong: %q", resp.Result.AssumedRoleUser.Arn)
 	}
 }
