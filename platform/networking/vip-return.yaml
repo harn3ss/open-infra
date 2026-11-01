@@ -1,0 +1,157 @@
+# Routed-VIP return path: replies to LAN clients go back through the router.
+#
+# A routed (BGP) LoadBalancer VIP is reached through the router: client -> router -> node. If the client
+# shares the node's subnet, the node would answer it DIRECTLY over L2, so the router's stateful
+# firewall only ever sees one direction of the connection and drops the rest (the handshake completes,
+# then the connection hangs). This DaemonSet makes every node send replies for connections that
+# arrived addressed to a routed VIP back through its default gateway, so the router sees both
+# directions. Connections to anything else are untouched.
+#
+# How: mangle PREROUTING CONNMARKs a NEW connection whose destination is in a BGP-advertised MetalLB
+# pool; reply packets of that connection (forwarded ones in PREROUTING, locally generated ones such as
+# a hostNetwork ingress in OUTPUT) get the fwmark back, and an ip rule routes that fwmark through the
+# node's default gateway. The routed pools are read from MetalLB (IPAddressPools referenced by a
+# BGPAdvertisement), so no addresses are configured here; with no BGP pools it does nothing.
+# Stopping the pod removes everything it added, so deleting the DaemonSet is a full rollback.
+#
+# It runs in the kube-ovn image: that image is on every node already and its iptables (nf_tables
+# backend) matches the host's.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: vip-return, namespace: kube-system }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: vip-return-read-pools, namespace: metallb-system }
+rules:
+  - apiGroups: ["metallb.io"]
+    resources: ["ipaddresspools", "bgpadvertisements"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: vip-return-read-pools, namespace: metallb-system }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: vip-return-read-pools }
+subjects: [ { kind: ServiceAccount, name: vip-return, namespace: kube-system } ]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: vip-return-script, namespace: kube-system }
+data:
+  vip-return.sh: |
+    #!/bin/bash
+    # Keeps the routed-VIP return-path rules in place; removes them on exit.
+    set -u
+    MARK="${MARK:-0x1000000}"          # one bit no other component uses (kube-proxy, kube-ovn use lower bits)
+    TABLE="${TABLE:-2540}"
+    PRIO="${PRIO:-5200}"
+    INTERVAL="${INTERVAL:-30}"
+    IPT="iptables -w 5"
+    CH_PRE=OI-VIP-RETURN-PRE
+    CH_OUT=OI-VIP-RETURN-OUT
+    log() { echo "$(date -u +%FT%TZ) vip-return: $*"; }
+
+    routed_cidrs() {
+      # VIP_CIDRS (space-separated) overrides discovery.
+      if [ -n "${VIP_CIDRS:-}" ]; then echo "$VIP_CIDRS"; return; fi
+      local pools
+      pools=$(kubectl -n metallb-system get bgpadvertisements -o jsonpath='{range .items[*]}{range .spec.ipAddressPools[*]}{@}{"\n"}{end}{end}' 2>/dev/null | sort -u)
+      for p in $pools; do
+        kubectl -n metallb-system get ipaddresspool "$p" -o jsonpath='{range .spec.addresses[*]}{@}{"\n"}{end}' 2>/dev/null
+      done | grep -E '^[0-9.]+/[0-9]+$' | sort -u   # CIDR entries only; ranges (a-b) are skipped
+    }
+
+    ensure_chain() { # <chain> <hook>
+      $IPT -t mangle -N "$1" 2>/dev/null || true
+      $IPT -t mangle -C "$2" -j "$1" 2>/dev/null || $IPT -t mangle -I "$2" 1 -j "$1"
+    }
+
+    apply() {
+      local cidrs="$1" gw="$2"
+      ensure_chain $CH_PRE PREROUTING
+      ensure_chain $CH_OUT OUTPUT
+      local want_pre want_out
+      want_pre=$(mktemp); want_out=$(mktemp)
+      for c in $cidrs; do
+        echo "-A $CH_PRE -d $c -m conntrack --ctstate NEW -j CONNMARK --set-xmark $MARK/$MARK" >> "$want_pre"
+      done
+      echo "-A $CH_PRE -m conntrack --ctdir REPLY -m connmark --mark $MARK/$MARK -j MARK --set-xmark $MARK/$MARK" >> "$want_pre"
+      echo "-A $CH_OUT -m conntrack --ctdir REPLY -m connmark --mark $MARK/$MARK -j MARK --set-xmark $MARK/$MARK" >> "$want_out"
+      for pair in "$CH_PRE:$want_pre" "$CH_OUT:$want_out"; do
+        local ch=${pair%%:*} f=${pair#*:}
+        if ! diff -q <(iptables-save -t mangle 2>/dev/null | grep -E "^-A $ch " ) "$f" >/dev/null 2>&1; then
+          $IPT -t mangle -F "$ch"
+          while read -r line; do $IPT -t mangle $line; done < "$f"
+          log "programmed $ch: $(grep -c . "$f") rule(s)"
+        fi
+      done
+      rm -f "$want_pre" "$want_out"
+      ip rule show | grep -q "fwmark $MARK/$MARK lookup $TABLE" || ip rule add priority "$PRIO" fwmark "$MARK/$MARK" lookup "$TABLE"
+      [ "$(ip route show table "$TABLE" 2>/dev/null | awk '/^default/{print $3}')" = "$gw" ] || ip route replace default via "$gw" table "$TABLE"
+    }
+
+    cleanup() {
+      log "removing rules"
+      for pair in "$CH_PRE:PREROUTING" "$CH_OUT:OUTPUT"; do
+        local ch=${pair%%:*} hook=${pair#*:}
+        while $IPT -t mangle -D "$hook" -j "$ch" 2>/dev/null; do :; done
+        $IPT -t mangle -F "$ch" 2>/dev/null; $IPT -t mangle -X "$ch" 2>/dev/null
+      done
+      while ip rule del fwmark "$MARK/$MARK" lookup "$TABLE" 2>/dev/null; do :; done
+      ip route flush table "$TABLE" 2>/dev/null
+      exit 0
+    }
+    trap cleanup TERM INT
+
+    last=""
+    while true; do
+      cidrs=$(routed_cidrs | tr '\n' ' ' | sed 's/ *$//')
+      gw=$(ip -4 route show default | awk 'NR==1{print $3}')
+      if [ -z "$cidrs" ] || [ -z "$gw" ]; then
+        [ "$last" = "idle" ] || log "no routed VIP pools or no default gateway; nothing to do"
+        last=idle
+      else
+        apply "$cidrs" "$gw"
+        [ "$last" = "$cidrs via $gw" ] || log "routed VIPs [$cidrs] reply via $gw"
+        last="$cidrs via $gw"
+      fi
+      sleep "$INTERVAL" & wait $!
+    done
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vip-return
+  namespace: kube-system
+  labels: { app.kubernetes.io/name: vip-return }
+spec:
+  selector: { matchLabels: { app.kubernetes.io/name: vip-return } }
+  updateStrategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1 } }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: vip-return }
+    spec:
+      serviceAccountName: vip-return
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      tolerations: [ { operator: Exists } ]
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: vip-return
+          image: docker.io/kubeovn/kube-ovn:v1.14.41
+          command: ["/bin/bash", "/script/vip-return.sh"]
+          securityContext:
+            privileged: false
+            capabilities: { add: ["NET_ADMIN", "NET_RAW"], drop: ["ALL"] }
+            runAsUser: 0
+          resources:
+            requests: { cpu: 5m, memory: 16Mi }
+            limits: { memory: 64Mi }
+          volumeMounts:
+            - { name: script, mountPath: /script }
+            - { name: xtables-lock, mountPath: /run/xtables.lock }
+      volumes:
+        - name: script
+          configMap: { name: vip-return-script, defaultMode: 0755 }
+        - name: xtables-lock
+          hostPath: { path: /run/xtables.lock, type: FileOrCreate }

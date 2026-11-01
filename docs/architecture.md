@@ -111,6 +111,26 @@ Details: [`docs/serverless.md`](serverless.md).
 - **NAS-backed RWX** (SMB/NFS subdir provisioner) for shared/bulk volumes only.
 - **Never put a database on CIFS/NFS** — it invites data corruption and unacceptable latency.
 
+## LAN load balancing
+
+MetalLB gives a `LoadBalancer` Service an address LAN clients can reach, in one of two ways:
+
+- **Layer 2:** an address from the node subnet (`networking.metallbPool`). One node answers ARP for
+  it. With `externalTrafficPolicy: Local`, only a node running a backend pod announces it, so every
+  node must be allowed to announce (the default L2Advertisement has no node selector).
+- **Routed (BGP):** an address from a separate subnet that MetalLB advertises to the LAN router, so
+  clients reach it through the router, like an NLB behind the VPC edge.
+
+A routed address needs one more piece when clients share the nodes' subnet. The node would answer
+such a client directly over layer 2, so the router (and its stateful firewall) would see only one
+direction of the connection and drop it. `platform/networking/vip-return.yaml`, a small DaemonSet,
+makes every node send replies for connections addressed to a routed VIP back through its default
+gateway. It reads the routed pools from MetalLB (pools referenced by a BGPAdvertisement), leaves all
+other traffic alone, and removes its rules when stopped.
+
+Check from a real LAN client, not a node: `probe/lan-ingress-reachability.sh` (Linux/macOS) or
+`probe/lan-ingress-reachability.ps1` (Windows).
+
 ## Public edge & connectivity
 
 Where the cluster runs behind NAT with no stable public IP — as the reference cluster
