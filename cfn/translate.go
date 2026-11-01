@@ -778,7 +778,9 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	}
 
 	// --- BlockDeviceMappings: root device size -> diskSize; extra EBS devices -> spec.dataDisks ---
-	// The root device (a root-like DeviceName, else the first EBS device) sets diskSize. Every other
+	// As on AWS, a mapping overrides the ROOT volume only when its DeviceName is the image's root device
+	// (/dev/sda1, /dev/xvda, …); any other DeviceName (/dev/sdf, /dev/xvdb, …) attaches an additional
+	// volume, whatever its position in the list. The root mapping sets diskSize. Every other
 	// EBS device becomes a boot-time data disk (spec.dataDisks), named from its DeviceName so it is
 	// recognizable. An Encrypted data device maps to a LUKS (longhorn-encrypted) disk keyed by a
 	// customer kind: EncryptionKey — KmsKeyId must reference an in-stack AWS::KMS::Key (same contract as
@@ -794,21 +796,14 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		rootDevNames := map[string]bool{
 			"/dev/sda1": true, "/dev/sda": true, "/dev/xvda": true, "/dev/xvda1": true, "/dev/nvme0n1": true,
 		}
-		// Pick the root index: an explicit root-like DeviceName wins; else the first EBS device.
+		// The root index is the mapping that names the root device; with none, every mapping is a data disk
+		// and the root keeps the image's default size.
 		rootIdx := -1
 		for i, raw := range bdms {
 			bdm, _ := raw.(map[string]any)
 			if dn, _ := concrete(bdm["DeviceName"]); rootDevNames[dn] {
 				rootIdx = i
 				break
-			}
-		}
-		if rootIdx < 0 {
-			for i, raw := range bdms {
-				if bdm, _ := raw.(map[string]any); bdm["Ebs"] != nil {
-					rootIdx = i
-					break
-				}
 			}
 		}
 		var dataDisks []map[string]any

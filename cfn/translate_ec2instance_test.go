@@ -67,6 +67,41 @@ func TestTranslate_EC2Instance_ExtraBDMsToDataDisks(t *testing.T) {
 	}
 }
 
+// As on AWS, a mapping overrides the root volume only when it names the image's root device: a lone
+// /dev/sdf mapping is an ADDITIONAL volume (the root keeps the image's default size), whatever its position.
+func TestTranslate_EC2Instance_NonRootDeviceIsNeverTheRoot(t *testing.T) {
+	m, fs := translateEC2Instance("App", map[string]any{
+		"ImageId": "ubuntu-24.04",
+		"BlockDeviceMappings": []any{
+			map[string]any{"DeviceName": "/dev/sdf", "Ebs": map[string]any{"VolumeSize": float64(1)}},
+		},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("unexpected findings: %s", findingsText(fs))
+	}
+	if _, set := m.Spec["diskSize"]; set {
+		t.Fatalf("a /dev/sdf mapping must not resize the root disk, got diskSize=%#v", m.Spec["diskSize"])
+	}
+	dds, _ := m.Spec["dataDisks"].([]map[string]any)
+	if len(dds) != 1 || dds[0]["name"] != "sdf" || dds[0]["size"] != "1Gi" {
+		t.Fatalf("/dev/sdf must be a 1Gi data disk, got %#v", m.Spec["dataDisks"])
+	}
+	// Root named second: still the root.
+	m2, _ := translateEC2Instance("App", map[string]any{
+		"ImageId": "ubuntu-24.04",
+		"BlockDeviceMappings": []any{
+			map[string]any{"DeviceName": "/dev/xvdb", "Ebs": map[string]any{"VolumeSize": float64(5)}},
+			map[string]any{"DeviceName": "/dev/xvda", "Ebs": map[string]any{"VolumeSize": float64(30)}},
+		},
+	}, nil)
+	if m2.Spec["diskSize"] != "30Gi" {
+		t.Fatalf("the /dev/xvda mapping is the root wherever it appears; diskSize=%#v", m2.Spec["diskSize"])
+	}
+	if dds2, _ := m2.Spec["dataDisks"].([]map[string]any); len(dds2) != 1 || dds2[0]["size"] != "5Gi" {
+		t.Fatalf("/dev/xvdb must be the one data disk, got %#v", m2.Spec["dataDisks"])
+	}
+}
+
 // #347 Phase 1.7 (#344 4.2): an Encrypted data disk with NO KmsKeyId maps to the per-namespace default
 // kind: EncryptionKey (the AWS aws/ebs analog), emitted as a companion — not a refusal.
 func TestTranslate_EC2Instance_EncryptedDataDiskNoKeyUsesDefault(t *testing.T) {
