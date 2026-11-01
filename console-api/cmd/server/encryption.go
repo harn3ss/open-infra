@@ -14,14 +14,17 @@ import (
 
 // The Encryption view — customer-owned keys (kind: EncryptionKey, Vault Transit).
 //
-// The composition mirrors each EncryptionKey's spec to a ConfigMap (openinfra-enckey-<name>), and
-// the reconciler writes the live Vault state to a second ConfigMap (openinfra-enckey-state-<name>);
-// both carry the label openinfra.dev/enckey=<name>. This endpoint merges them so the console can
-// show each key, its type/rotation policy, and whether its Transit key is actually provisioned —
-// without the console needing Vault access (it never sees key material). Admin-gated.
+// The composition mirrors each EncryptionKey's spec to a ConfigMap (openinfra-enckey-<namespace>.<name>),
+// and the reconciler writes the live Vault state to a second ConfigMap
+// (openinfra-enckey-state-<namespace>.<name>); both carry the label openinfra.dev/enckey=<name> and
+// record the key's namespace + name in their data. (A key created before namespacing keeps its
+// bare-name ConfigMaps.) This endpoint merges them per namespace + name so the console can show each
+// key, its type/rotation policy, and whether its Transit key is actually provisioned — without the
+// console needing Vault access (it never sees key material). Admin-gated.
 
 type encKeyView struct {
 	Name         string `json:"name"`
+	Namespace    string `json:"namespace,omitempty"` // the EncryptionKey's namespace ("" = a record without one)
 	Description  string `json:"description"`
 	KeyType      string `json:"keyType"`
 	RotationDays int    `json:"rotationDays"`
@@ -56,20 +59,21 @@ func handleEncryptionKeys(cs kubernetes.Interface, auth *authStore, logger *slog
 		}
 
 		keys := map[string]*encKeyView{}
-		get := func(name string) *encKeyView {
-			if keys[name] == nil {
-				keys[name] = &encKeyView{Name: name}
-			}
-			return keys[name]
-		}
 		for i := range cms.Items {
 			cm := &cms.Items[i]
 			name := cm.Labels["openinfra.dev/enckey"]
 			if name == "" {
 				continue
 			}
-			k := get(name)
 			d := cm.Data
+			if n := d["name"]; n != "" {
+				name = n
+			}
+			id := recordKey(d["namespace"], name)
+			if keys[id] == nil {
+				keys[id] = &encKeyView{Name: name, Namespace: d["namespace"]}
+			}
+			k := keys[id]
 			// The spec mirror carries description/rotationDays; the state carries exists/latestVersion.
 			if v, ok := d["description"]; ok {
 				k.Description = v
@@ -103,7 +107,9 @@ func handleEncryptionKeys(cs kubernetes.Interface, auth *authStore, logger *slog
 		for _, k := range keys {
 			out = append(out, *k)
 		}
-		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		sort.Slice(out, func(i, j int) bool {
+			return recordKey(out[i].Namespace, out[i].Name) < recordKey(out[j].Namespace, out[j].Name)
+		})
 		writeJSON(w, http.StatusOK, out)
 	}
 }
@@ -112,6 +118,7 @@ func handleEncryptionKeys(cs kubernetes.Interface, auth *authStore, logger *slog
 // ConfigMaps the destroyer maintains.
 type destructionView struct {
 	Name          string `json:"name"`
+	Namespace     string `json:"namespace,omitempty"` // the Destruction's namespace ("" = a record without one)
 	EncryptionKey string `json:"encryptionKey"`
 	Reason        string `json:"reason"`
 	Phase         string `json:"phase"` // Pending | InProgress | Refused | Destroyed | Error
@@ -136,20 +143,18 @@ func handleDestructions(cs kubernetes.Interface, auth *authStore, logger *slog.L
 			return
 		}
 		views := map[string]*destructionView{}
-		get := func(name string) *destructionView {
-			if views[name] == nil {
-				views[name] = &destructionView{Name: name, Phase: "Pending"}
-			}
-			return views[name]
-		}
 		for i := range cms.Items {
 			cm := &cms.Items[i]
 			name := cm.Labels["openinfra.dev/destruction"]
 			if name == "" {
 				continue
 			}
-			v := get(name)
 			d := cm.Data
+			id := recordKey(d["namespace"], name)
+			if views[id] == nil {
+				views[id] = &destructionView{Name: name, Namespace: d["namespace"], Phase: "Pending"}
+			}
+			v := views[id]
 			if s, ok := d["encryptionKey"]; ok && s != "" {
 				v.EncryptionKey = s
 			}
@@ -176,7 +181,18 @@ func handleDestructions(cs kubernetes.Interface, auth *authStore, logger *slog.L
 		for _, v := range views {
 			out = append(out, *v)
 		}
-		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		sort.Slice(out, func(i, j int) bool {
+			return recordKey(out[i].Namespace, out[i].Name) < recordKey(out[j].Namespace, out[j].Name)
+		})
 		writeJSON(w, http.StatusOK, out)
 	}
+}
+
+// recordKey is the identity a mirrored record merges under: <namespace>/<name>, or the bare name for a
+// record written before records carried their namespace.
+func recordKey(namespace, name string) string {
+	if namespace == "" {
+		return name
+	}
+	return namespace + "/" + name
 }

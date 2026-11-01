@@ -2,7 +2,13 @@
 # its live state into a ConfigMap the console reads. Part of the OPT-IN `encryption` component.
 #
 # Least privilege on BOTH sides:
-#   * Kubernetes: read EncryptionKeys, write only the state ConfigMaps in the console namespace.
+#   * Kubernetes: read EncryptionKeys (and their composites, which record each key's namespace and
+#     Transit path), write only the state ConfigMaps in the console namespace.
+#
+# Each key's Transit path is namespace-qualified — transit/keys/ek_<namespace>_<name> — and recorded
+# on its composite by the composition; this reconciler provisions exactly that path. Two namespaces'
+# same-named EncryptionKeys are two Transit keys. (A key created before namespacing keeps
+# transit/keys/<name>.)
 #   * Vault: an AppRole scoped to create/read/rotate transit/keys/* — NOT destroy. Key DESTRUCTION
 #     (crypto-erase) is deliberately withheld here and gated behind kind: Destruction.
 #
@@ -26,8 +32,11 @@ kind: ClusterRole
 metadata:
   name: openinfra-encryptionkey-reconciler
 rules:
+  # The composite (cluster-scoped, written only by Crossplane) carries each key's claim namespace +
+  # name (spec.claimRef) and its Transit path (status.vaultKeyPath) — the record this reconciler
+  # provisions. The claim's own status is tenant-writable, so it is never trusted for the path.
   - apiGroups: [openinfra.dev]
-    resources: [encryptionkeys]
+    resources: [encryptionkeys, xencryptionkeys]
     verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -133,27 +142,43 @@ spec:
                   TAB="$(printf '\t')"
                   failed=0
 
-                  # sync_key <name> <keyType> <rotationDays>: ensure the Transit key, rotate it when
-                  # due, and reflect its state for the console.
+                  # sync_key <namespace> <name> <vaultKeyPath> <keyType> <rotationDays>: ensure the
+                  # Transit key, rotate it when due, and reflect its state for the console. The path is
+                  # the one the key's composite records (transit/keys/ek_<namespace>_<name>; a key
+                  # created before namespacing keeps transit/keys/<name>) — never derived from the
+                  # bare name, so two namespaces' same-named keys are two Transit keys.
                   sync_key() {
-                    name="$1"; ktype="$2"; rotdays="$3"
+                    kns="$1"; name="$2"; path="$3"; ktype="$4"; rotdays="$5"
+                    kname="${path#transit/keys/}"
+                    case "$path" in transit/keys/*) ;; *) kname="" ;; esac
+                    case "$kname" in
+                      "" | *[!A-Za-z0-9_.-]*)
+                        # Never address an unexpected path. Fail the run (so it is seen) without
+                        # blocking every other key.
+                        echo "skipping $kns/$name: recorded Transit path '$path' is not a transit/keys/<name> path" >&2
+                        echo "$path" >> "$W/synced"   # reported once per run, not every poll
+                        failed=1; return 0 ;;
+                    esac
+                    # The state ConfigMap's identity: <namespace>.<name> for a namespaced key; a key
+                    # created before namespacing keeps its bare-name ConfigMap.
+                    case "$kname" in ek_*) kid="$kns.$name" ;; *) kid="$name" ;; esac
                     now=$(date -u +%s)
                     # Ensure the Transit key exists (idempotent; create-if-missing, never destroy).
-                    if ! vault read "transit/keys/$name" >/dev/null 2>&1; then
-                      echo "creating transit key $name ($ktype)"
-                      vault write -f "transit/keys/$name" type="$ktype" >/dev/null || return 1
+                    if ! vault read "transit/keys/$kname" >/dev/null 2>&1; then
+                      echo "creating transit key $kname ($ktype) for $kns/$name"
+                      vault write -f "transit/keys/$kname" type="$ktype" >/dev/null || return 1
                     fi
 
                     # Rotation: rotate if rotationDays>0 and it has been that long since the last
                     # rotation we recorded (first sight seeds the clock; it does not rotate).
-                    cm="openinfra-enckey-state-$name"
+                    cm="openinfra-enckey-state-$kid"
                     last=$(kubectl get configmap "$cm" -n "$CONSOLE_NS" -o jsonpath='{.data.lastRotatedEpoch}' 2>/dev/null || echo "")
                     [ -n "$last" ] || last="$now"
                     if [ "$rotdays" -gt 0 ] 2>/dev/null; then
                       age=$(( now - last ))
                       if [ "$age" -ge $(( rotdays * 86400 )) ]; then
-                        echo "rotating transit key $name (age ${age}s ≥ ${rotdays}d)"
-                        if vault write -f "transit/keys/$name/rotate" >/dev/null; then
+                        echo "rotating transit key $kname (age ${age}s ≥ ${rotdays}d)"
+                        if vault write -f "transit/keys/$kname/rotate" >/dev/null; then
                           last="$now"
                           # Persist the new rotation time IMMEDIATELY, so if the full state write
                           # below fails we don't re-rotate every run (unbounded version growth).
@@ -163,35 +188,43 @@ spec:
                       fi
                     fi
 
-                    kj="$(vault read -format=json "transit/keys/$name")" || return 1
+                    kj="$(vault read -format=json "transit/keys/$kname")" || return 1
                     latest=$(printf '%s' "$kj" | jq -r '.data.latest_version // 0')
                     kubectl create configmap "$cm" -n "$CONSOLE_NS" \
                       --from-literal=exists=true \
+                      --from-literal=namespace="$kns" \
+                      --from-literal=name="$name" \
                       --from-literal=keyType="$ktype" \
                       --from-literal=latestVersion="$latest" \
-                      --from-literal=vaultKeyPath="transit/keys/$name" \
+                      --from-literal=vaultKeyPath="$path" \
                       --from-literal=lastRotatedEpoch="$last" \
                       --from-literal=lastChecked="$(date -u +%FT%TZ)" \
                       --dry-run=client -o yaml \
                       | kubectl label --local -f - "openinfra.dev/enckey=$name" -o yaml \
                       | kubectl apply -f - >/dev/null || return 1
-                    echo "synced $name (version $latest)"
-                    echo "$name" >> "$W/synced"
+                    echo "synced $kns/$name -> $path (version $latest)"
+                    echo "$path" >> "$W/synced"
                   }
 
-                  # list_keys: the current EncryptionKeys as <name> <keyType> <rotationDays> rows.
+                  # list_keys: every claimed EncryptionKey whose composite has recorded its Transit path,
+                  # as <namespace> <name> <vaultKeyPath> <keyType> <rotationDays> rows. A composite
+                  # without a claim, or not yet rendered (no path), is not provisioned yet.
                   list_keys() {
-                    ek="$(kubectl get encryptionkeys.openinfra.dev -A -o json)" || { echo "cannot list EncryptionKeys" >&2; return 1; }
+                    ek="$(kubectl get xencryptionkeys.openinfra.dev -o json)" || { echo "cannot list EncryptionKeys" >&2; return 1; }
                     printf '%s' "$ek" \
-                      | jq -r '.items[] | [.metadata.name, (.spec.keyType // "aes256-gcm96"), (.spec.rotationDays // 0)] | @tsv' \
+                      | jq -r '.items[]
+                          | select((.spec.claimRef.namespace // "") != "" and (.spec.claimRef.name // "") != "")
+                          | select((.status.vaultKeyPath // "") != "")
+                          | [.spec.claimRef.namespace, .spec.claimRef.name, .status.vaultKeyPath,
+                             (.spec.keyType // "aes256-gcm96"), (.spec.rotationDays // 0)] | @tsv' \
                       > "$W/keys.tsv"
                   }
 
                   # Full pass: every EncryptionKey. Any failure fails the run (and it retries).
                   list_keys || exit 1
-                  while IFS="$TAB" read -r k t r; do
+                  while IFS="$TAB" read -r n k p t r; do
                     [ -n "$k" ] || continue
-                    sync_key "$k" "$t" "$r" || exit 1
+                    sync_key "$n" "$k" "$p" "$t" "$r" || exit 1
                   done < "$W/keys.tsv"
 
                   # Watch: provision EncryptionKeys created since the full pass within seconds. A
@@ -199,10 +232,10 @@ spec:
                   while [ $(( $(date +%s) - start )) -lt "$WATCH_SECONDS" ]; do
                     sleep "$POLL_SECONDS"
                     list_keys || { failed=1; continue; }
-                    while IFS="$TAB" read -r k t r; do
+                    while IFS="$TAB" read -r n k p t r; do
                       [ -n "$k" ] || continue
-                      grep -qxF "$k" "$W/synced" && continue
-                      sync_key "$k" "$t" "$r" || failed=1
+                      grep -qxF "$p" "$W/synced" && continue
+                      sync_key "$n" "$k" "$p" "$t" "$r" || failed=1
                     done < "$W/keys.tsv"
                   done
                   [ "$failed" -eq 0 ] || exit 1

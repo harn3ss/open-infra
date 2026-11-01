@@ -24,6 +24,13 @@ A dedicated **destroyer** (separate from the key reconciler, which deliberately 
 see [`encryption.md`](encryption.md)) picks up the request and:
 
 1. **Verifies the typo-guard** — `confirm` must equal `encryptionKey`, else it is `Refused`, untouched.
+   `encryptionKey` names an EncryptionKey **in the Destruction's own namespace** — the destroyer
+   destroys exactly the Transit key that key records (`ek_<namespace>_<name>`), so a Destruction can
+   never erase another namespace's key by naming it. With no such key it records `Error` and destroys
+   nothing. (A key whose EncryptionKey was already deleted is still found, through the key
+   reconciler's record of that namespace + name.) A Transit key that more than one EncryptionKey
+   records — possible only for same-named keys created before namespacing, which shared one — is
+   refused (`Error`): destroying it would erase another namespace's data too.
 2. **Crypto-erases** — records what it observes (the key's version count) as `InProgress` *before*
    deleting, then sets `deletion_allowed` and deletes the Vault Transit key. Every DEK/volume/object
    wrapped by it is now undecryptable. If the key is **absent and no destruction was in progress**
@@ -31,8 +38,9 @@ see [`encryption.md`](encryption.md)) picks up the request and:
    **no certificate**, because a certificate attesting to an erasure that never happened is worse than
    none. A crash between delete and certify resumes from the `InProgress` record (true count, no
    duplicate).
-3. **Writes a destruction certificate** — a JSON record (key, versions destroyed, reason, time,
-   SP 800-88 method) to the **WORM audit store** under `certificates/`, with COMPLIANCE retention. The
+3. **Writes a destruction certificate** — a JSON record (key, its namespace and exact Transit path,
+   versions destroyed, reason, time, SP 800-88 method) to the **WORM audit store** under
+   `certificates/<namespace>/`, with COMPLIANCE retention. The
    certificate's original version cannot be deleted or overwritten until retention expires. Its
    **sha256 is anchored in the Kubernetes state** (a different trust domain than the bucket): S3
    versioning still lets a bucket-writer lay a *newer* version over it at "latest", but the locked

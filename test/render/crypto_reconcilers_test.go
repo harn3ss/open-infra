@@ -91,7 +91,7 @@ func needJQ(t *testing.T) {
 
 // Both scripts must at least parse under every shell.
 func TestCryptoReconcilers_ScriptsParse(t *testing.T) {
-	for _, p := range []string{volumeCryptoPath, encKeyReconPath} {
+	for _, p := range []string{volumeCryptoPath, encKeyReconPath, destroyerPath} {
 		script := extractArgsScript(t, p)
 		for _, sh := range posixShells(t) {
 			cmd := exec.Command(sh[0], append(sh[1:], "-n", "-c", script)...)
@@ -146,7 +146,9 @@ case "$*" in
     printf '%s\n' "$obj" >> "$STUB/created.jsonl"
     jq --argjson o "$obj" '.items += [$o]' "$STUB/secrets.json" > "$STUB/secrets.json.new" && mv "$STUB/secrets.json.new" "$STUB/secrets.json" ;;
   "delete secret "*" -n "*" --ignore-not-found") echo "$5/$3" >> "$STUB/deleted.txt" ;;
-  "get encryptionkeys.openinfra.dev -A -o json") serve enckeys ;;
+  "get xencryptionkeys.openinfra.dev -o json")
+    [ -f "$STUB/fail-xek-list" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
+    serve xenckeys ;;
   "get configmap "*" -o jsonpath={.data.lastRotatedEpoch}") exit 1 ;;
   "create configmap "*) printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n' "$3" ;;
   "label --local -f - "*) cat ;;
@@ -168,6 +170,8 @@ case "$*" in
   "read transit/keys/"*) [ -e "$STUB/keys/${2#transit/keys/}" ] ;;
   "write -f transit/keys/"*"/rotate") : ;;
   "write -f transit/keys/"*) k=${3#transit/keys/}; touch "$STUB/keys/$k"; echo "$k" >> "$STUB/vault-created.txt" ;;
+  "write transit/keys/"*"/config deletion_allowed=true") k=${2#transit/keys/}; echo "${k%/config}" >> "$STUB/vault-deletable.txt" ;;
+  "delete transit/keys/"*) k=${2#transit/keys/}; rm -f "$STUB/keys/$k"; echo "$k" >> "$STUB/vault-deleted.txt" ;;
   *) echo "stub vault: unhandled: $*" >&2; exit 99 ;;
 esac
 `
@@ -247,6 +251,20 @@ func (e stubEnv) created(t *testing.T) []map[string]any {
 	return objs
 }
 
+// xek is an EncryptionKey composite claimed as <ns>/<name> that has recorded Transit path <path> ("" =
+// not rendered yet; ns "" = a composite with no claim).
+func xek(ns, name, path string) map[string]any {
+	o := map[string]any{"metadata": map[string]any{"name": name + "-x7k2p"},
+		"spec": map[string]any{"keyType": "aes256-gcm96", "rotationDays": 0}}
+	if ns != "" {
+		o["spec"].(map[string]any)["claimRef"] = map[string]any{"namespace": ns, "name": name}
+	}
+	if path != "" {
+		o["status"] = map[string]any{"vaultKeyPath": path}
+	}
+	return o
+}
+
 func pvc(ns, name, uid, sc, key string, deleting bool) map[string]any {
 	md := map[string]any{"namespace": ns, "name": name, "uid": uid}
 	if key != "" {
@@ -300,10 +318,11 @@ func TestVolumeCrypto_CDIPrimeGetsTargetsPassphrase(t *testing.T) {
 	for _, sh := range posixShells(t) {
 		t.Run(shellName(sh), func(t *testing.T) {
 			e := newStubEnv(t, map[string]any{
-				"pvcs.json":    items(pvc("team", "disk", "uid-disk", "longhorn-encrypted", "k1", false), prime, stray),
-				"secrets.json": items(),
-				"pvs.json":     items(),
-			}, "k1")
+				"pvcs.json":     items(pvc("team", "disk", "uid-disk", "longhorn-encrypted", "k1", false), prime, stray),
+				"secrets.json":  items(),
+				"pvs.json":      items(),
+				"xenckeys.json": items(xek("team", "k1", "transit/keys/ek_team_k1")),
+			}, "ek_team_k1")
 			out, err := e.run(t, sh, script, "WATCH_SECONDS=0", "POLL_SECONDS=1")
 			if err != nil {
 				t.Fatalf("reconcile run failed: %v\n%s", err, out)
@@ -362,7 +381,8 @@ func TestVolumeCrypto_KeysOwnedSkipsDeletingSweepsOrphans(t *testing.T) {
 				),
 				"pvs.json": items(map[string]any{"spec": map[string]any{
 					"claimRef": map[string]any{"namespace": "team", "name": "legacy-pv"}}}),
-			}, "k1")
+				"xenckeys.json": items(xek("team", "k1", "transit/keys/ek_team_k1")),
+			}, "ek_team_k1")
 			out, err := e.run(t, sh, script, "WATCH_SECONDS=0", "POLL_SECONDS=1")
 			if err != nil {
 				t.Fatalf("reconcile run failed: %v\n%s", err, out)
@@ -396,8 +416,9 @@ func TestVolumeCrypto_KeysOwnedSkipsDeletingSweepsOrphans(t *testing.T) {
 			}
 			d := s["data"].(map[string]any)
 			for k, want := range map[string]string{
-				"CRYPTO_KEY_VALUE": "PLAIN-k1", "WRAPPED_KEY": "vault:v1:WRAP-k1", "OPENINFRA_ENCRYPTION_KEY": "k1",
-				"CRYPTO_KEY_PROVIDER": "secret", "CRYPTO_KEY_CIPHER": "aes-xts-plain64", "CRYPTO_KEY_HASH": "sha256",
+				"CRYPTO_KEY_VALUE": "PLAIN-ek_team_k1", "WRAPPED_KEY": "vault:v1:WRAP-ek_team_k1", "OPENINFRA_ENCRYPTION_KEY": "k1",
+				"OPENINFRA_VAULT_KEY_PATH": "transit/keys/ek_team_k1",
+				"CRYPTO_KEY_PROVIDER":      "secret", "CRYPTO_KEY_CIPHER": "aes-xts-plain64", "CRYPTO_KEY_HASH": "sha256",
 			} {
 				if d[k] != b64(want) {
 					t.Errorf("crypto Secret %s = %v, want base64(%q)", k, d[k], want)
@@ -420,10 +441,11 @@ func TestVolumeCrypto_ListFailureFailsRun(t *testing.T) {
 	script := extractArgsScript(t, volumeCryptoPath)
 	sh := posixShells(t)[0]
 	e := newStubEnv(t, map[string]any{
-		"pvcs.json":    items(pvc("team", "data", "uid-data", "longhorn-encrypted", "k1", false)),
-		"secrets.json": items(),
-		"pvs.json":     items(),
-	}, "k1")
+		"pvcs.json":     items(pvc("team", "data", "uid-data", "longhorn-encrypted", "k1", false)),
+		"secrets.json":  items(),
+		"pvs.json":      items(),
+		"xenckeys.json": items(xek("team", "k1", "transit/keys/ek_team_k1")),
+	}, "ek_team_k1")
 	if err := os.WriteFile(filepath.Join(e.dir, "fail-pvc-list"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +469,8 @@ func TestVolumeCrypto_WatchKeysNewClaimWithinRun(t *testing.T) {
 		"pvcs.next.json": items(pvc("team", "late", "uid-late", "longhorn-encrypted", "k1", false)),
 		"secrets.json":   items(),
 		"pvs.json":       items(),
-	}, "k1")
+		"xenckeys.json":  items(xek("team", "k1", "transit/keys/ek_team_k1")),
+	}, "ek_team_k1")
 	out, err := e.run(t, sh, script, "WATCH_SECONDS=3", "POLL_SECONDS=1")
 	if err != nil {
 		t.Fatalf("reconcile run failed: %v\n%s", err, out)
@@ -465,26 +488,20 @@ func TestEncryptionKeyReconciler_WatchProvisionsNewKey(t *testing.T) {
 	t.Parallel()
 	script := extractArgsScript(t, encKeyReconPath)
 	sh := posixShells(t)[0]
-	ek := func(names ...string) map[string]any {
-		var objs []map[string]any
-		for _, n := range names {
-			objs = append(objs, map[string]any{"metadata": map[string]any{"name": n, "namespace": "team"}, "spec": map[string]any{}})
-		}
-		return items(objs...)
-	}
+	old := xek("team", "old", "transit/keys/old") // created before namespacing: keeps its bare path
 	e := newStubEnv(t, map[string]any{
-		"enckeys.json":      ek("old"),
-		"enckeys.next.json": ek("old", "new"),
+		"xenckeys.json":      items(old),
+		"xenckeys.next.json": items(old, xek("team", "new", "transit/keys/ek_team_new")),
 	}, "old")
 	out, err := e.run(t, sh, script, "WATCH_SECONDS=3", "POLL_SECONDS=1")
 	if err != nil {
 		t.Fatalf("reconcile run failed: %v\n%s", err, out)
 	}
-	if got := strings.TrimSpace(e.read("vault-created.txt")); got != "new" {
-		t.Errorf("the watch must create exactly the new Transit key; created:\n%s\nlog:\n%s", got, out)
+	if got := strings.TrimSpace(e.read("vault-created.txt")); got != "ek_team_new" {
+		t.Errorf("the watch must create exactly the new Transit key (ek_team_new); created:\n%s\nlog:\n%s", got, out)
 	}
 	applied := e.read("applied.yaml")
-	if strings.Count(applied, "name: openinfra-enckey-state-old") != 1 || strings.Count(applied, "name: openinfra-enckey-state-new") != 1 {
+	if strings.Count(applied, "name: openinfra-enckey-state-old\n") != 1 || strings.Count(applied, "name: openinfra-enckey-state-team.new\n") != 1 {
 		t.Errorf("each key's state must be written exactly once per run (old by the full pass, new by the watch); applied:\n%s", applied)
 	}
 }
@@ -514,5 +531,342 @@ func TestVolumeCrypto_SecretWritesConfinedByAdmission(t *testing.T) {
 		if strings.Contains(m, bad) {
 			t.Errorf("volume-crypto.yaml grants a Secret write verb the admission policy does not gate (%q)", bad)
 		}
+	}
+}
+
+// Two namespaces' EncryptionKeys of the same name are two Transit keys with two state records; a
+// composite with no claim or no recorded path yet is not provisioned; a recorded path that is not a
+// plain transit/keys/<name> is never addressed (the run fails visibly, the other keys still sync).
+func TestEncryptionKeyReconciler_SameNameInTwoNamespacesIsTwoKeys(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, encKeyReconPath)
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := newStubEnv(t, map[string]any{"xenckeys.json": items(
+				xek("team-a", "app", "transit/keys/ek_team-a_app"),
+				xek("team-b", "app", "transit/keys/ek_team-b_app"),
+				xek("", "unclaimed", "transit/keys/ek_unclaimed"),
+				xek("team-c", "rendering", ""),
+				xek("team-d", "odd", "transit/keys/../sys/x"),
+			)})
+			out, err := e.run(t, sh, script, "WATCH_SECONDS=0", "POLL_SECONDS=1")
+			if err == nil {
+				t.Errorf("a key with an unusable recorded path must fail the run (visibly); log:\n%s", out)
+			}
+			created := strings.Fields(e.read("vault-created.txt"))
+			if strings.Join(created, ",") != "ek_team-a_app,ek_team-b_app" {
+				t.Errorf("want Transit keys ek_team-a_app and ek_team-b_app only, created %v\nlog:\n%s", created, out)
+			}
+			applied := e.read("applied.yaml")
+			for _, want := range []string{"name: openinfra-enckey-state-team-a.app\n", "name: openinfra-enckey-state-team-b.app\n"} {
+				if strings.Count(applied, want) != 1 {
+					t.Errorf("want exactly one %q; applied:\n%s", strings.TrimSpace(want), applied)
+				}
+			}
+			if strings.Contains(e.read("calls.log"), "transit/keys/app") || strings.Contains(e.read("calls.log"), "sys/x") {
+				t.Errorf("the reconciler addressed a bare-name or unrecorded path; calls:\n%s", e.read("calls.log"))
+			}
+		})
+	}
+}
+
+// A claim is keyed only under the EncryptionKey of its name IN ITS OWN NAMESPACE: naming another
+// namespace's key gets nothing (it waits), and the Secret records the exact Transit path used.
+func TestVolumeCrypto_KeyResolvesOnlyInClaimsNamespace(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, volumeCryptoPath)
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := newStubEnv(t, map[string]any{
+				"pvcs.json": items(
+					pvc("team-a", "data", "uid-a", "longhorn-encrypted", "k1", false),       // own key → keyed
+					pvc("team-b", "steal", "uid-b", "longhorn-encrypted", "k1", false),      // team-b has no k1 → waits
+					pvc("team-a", "odd", "uid-o", "longhorn-encrypted", "team-b/k2", false), // not a key name → waits
+				),
+				"secrets.json":  items(),
+				"pvs.json":      items(),
+				"xenckeys.json": items(xek("team-a", "k1", "transit/keys/ek_team-a_k1"), xek("team-b", "k2", "transit/keys/ek_team-b_k2")),
+			}, "ek_team-a_k1", "ek_team-b_k2", "k1")
+			out, err := e.run(t, sh, script, "WATCH_SECONDS=0", "POLL_SECONDS=1")
+			if err != nil {
+				t.Fatalf("reconcile run failed: %v\n%s", err, out)
+			}
+			created := e.created(t)
+			if len(created) != 1 {
+				t.Fatalf("want exactly team-a/data-crypto, got:\n%s\nlog:\n%s", e.read("created.jsonl"), out)
+			}
+			md := created[0]["metadata"].(map[string]any)
+			d := created[0]["data"].(map[string]any)
+			if md["namespace"] != "team-a" || md["name"] != "data-crypto" ||
+				d["CRYPTO_KEY_VALUE"] != b64("PLAIN-ek_team-a_k1") || d["OPENINFRA_VAULT_KEY_PATH"] != b64("transit/keys/ek_team-a_k1") {
+				t.Errorf("team-a/data must be keyed under team-a's k1 (ek_team-a_k1); got %v %v", md, d)
+			}
+			for _, want := range []string{"waiting on team-b/steal: no EncryptionKey 'k1' in namespace team-b", "waiting on team-a/odd"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("log missing %q:\n%s", want, out)
+				}
+			}
+			calls := e.read("calls.log")
+			if strings.Contains(calls, "transit/datakey/plaintext/k1") || strings.Contains(calls, "ek_team-b") {
+				t.Errorf("a data key was requested under a bare name or another namespace's key; calls:\n%s", calls)
+			}
+		})
+	}
+}
+
+// A failed EncryptionKey list fails the pass: nothing is keyed under a guessed path.
+func TestVolumeCrypto_KeyListFailureKeysNothing(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, volumeCryptoPath)
+	sh := posixShells(t)[0]
+	e := newStubEnv(t, map[string]any{
+		"pvcs.json":     items(pvc("team", "data", "uid-data", "longhorn-encrypted", "k1", false)),
+		"secrets.json":  items(),
+		"pvs.json":      items(),
+		"xenckeys.json": items(xek("team", "k1", "transit/keys/ek_team_k1")),
+	}, "ek_team_k1", "k1")
+	if err := os.WriteFile(filepath.Join(e.dir, "fail-xek-list"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := e.run(t, sh, script, "WATCH_SECONDS=0", "POLL_SECONDS=1")
+	if err == nil {
+		t.Fatalf("a run whose EncryptionKey list failed must exit non-zero; log:\n%s", out)
+	}
+	if e.read("created.jsonl") != "" || strings.Contains(e.read("calls.log"), "transit/datakey") {
+		t.Errorf("a failed key list must key nothing; created=%q calls:\n%s", e.read("created.jsonl"), e.read("calls.log"))
+	}
+}
+
+const destroyerPath = "../../platform/security/destruction-reconciler.yaml"
+
+// stubKubectlDestroyer models the API calls the destroyer makes, with ConfigMaps stored as
+// $STUB/cms/<name>.json (so state written in one step is read back in the next).
+const stubKubectlDestroyer = `#!/bin/sh
+echo "kubectl $*" >> "$STUB/calls.log"
+cm="$STUB/cms/$3.json"
+case "$*" in
+  "get secret audit-offsite-minio-creds -n monitoring -o jsonpath="*) printf 'YWs=' ;;
+  "get xencryptionkeys.openinfra.dev -o json") cat "$STUB/xenckeys.json" ;;
+  "get destructions.openinfra.dev -A -o json") cat "$STUB/destructions.json" ;;
+  "get configmap "*" -n "*" --ignore-not-found -o name") [ ! -f "$cm" ] || echo "configmap/$3" ;;
+  "get configmap "*" -n "*" -o json") [ -f "$cm" ] && cat "$cm" ;;
+  "get configmap "*" -n "*" -o jsonpath="*)
+    [ -f "$cm" ] || { echo "NotFound" >&2; exit 1; }
+    f=${7#jsonpath=\{.data.}; f=${f%\}}
+    jq -r --arg k "$f" '.data[$k] // ""' "$cm" ;;
+  "create configmap "*)
+    name=$3; shift 3; ns=""; data='{}'
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -n) ns=$2; shift 2 ;;
+        --from-literal=*) kv=${1#--from-literal=}; data=$(printf '%s' "$data" | jq --arg k "${kv%%=*}" --arg v "${kv#*=}" '.[$k] = $v'); shift ;;
+        *) shift ;;
+      esac
+    done
+    jq -n --arg n "$name" --arg ns "$ns" --argjson d "$data" '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: $n, namespace: $ns}, data: $d}' ;;
+  "label --local -f - "*) kv=$5; jq --arg k "${kv%%=*}" --arg v "${kv#*=}" '.metadata.labels = ((.metadata.labels // {}) + {($k): $v})' ;;
+  "apply -f -") o=$(cat); n=$(printf '%s' "$o" | jq -r .metadata.name)
+    if [ -f "$STUB/cms/$n.json" ]; then o=$(jq --argjson o "$o" '.data = $o.data | .metadata.labels = $o.metadata.labels' "$STUB/cms/$n.json"); fi
+    printf '%s' "$o" > "$STUB/cms/$n.json" ;;
+  "create -f -") o=$(cat); n=$(printf '%s' "$o" | jq -r .metadata.name)
+    [ ! -f "$STUB/cms/$n.json" ] || { echo "AlreadyExists" >&2; exit 1; }
+    printf '%s' "$o" | jq '.metadata.creationTimestamp = "2026-11-01T00:00:00Z"' > "$STUB/cms/$n.json"; echo "$n" >> "$STUB/cm-created.txt" ;;
+  "patch configmap "*" -n "*" --type merge -p "*)
+    [ -f "$cm" ] || exit 1
+    jq --argjson p "$9" 'def mp($p): if ($p | type) == "object" then (if type == "object" then . else {} end) as $t
+        | reduce ($p | keys[]) as $k ($t; if $p[$k] == null then del(.[$k]) else .[$k] = (.[$k] | mp($p[$k])) end) else $p end;
+      mp($p)' "$cm" > "$cm.new" && mv "$cm.new" "$cm" ;;
+  *) echo "stub kubectl: unhandled: $*" >&2; exit 99 ;;
+esac
+`
+
+// stubMC: the WORM store. A certificate is "present" iff it was copied in this run.
+const stubMC = `#!/bin/sh
+echo "mc $*" >> "$STUB/calls.log"
+case "$1" in
+  alias) : ;;
+  stat) grep -qxF "$2" "$STUB/mc-certs.txt" 2>/dev/null ;;
+  cp) echo "$3" >> "$STUB/mc-certs.txt"; cp "$2" "$STUB/cert-$(echo "$3" | tr '/' '_')" ;;
+  retention) : ;;
+  *) echo "stub mc: unhandled: $*" >&2; exit 99 ;;
+esac
+`
+
+func destroyerEnv(t *testing.T, fixtures map[string]any, cms map[string]map[string]any, keys ...string) stubEnv {
+	t.Helper()
+	e := newStubEnv(t, fixtures, keys...)
+	bin := strings.SplitN(e.path, string(os.PathListSeparator), 2)[0]
+	for name, body := range map[string]string{"kubectl": stubKubectlDestroyer, "mc": stubMC} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(e.dir, "cms"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, obj := range cms {
+		b, _ := json.Marshal(obj)
+		if err := os.WriteFile(filepath.Join(e.dir, "cms", name+".json"), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return e
+}
+
+func destruction(ns, name, key, created string) map[string]any {
+	return map[string]any{"metadata": map[string]any{"namespace": ns, "name": name, "creationTimestamp": created},
+		"spec": map[string]any{"encryptionKey": key, "confirm": key, "reason": "test"}}
+}
+
+func (e stubEnv) cm(t *testing.T, name string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(e.dir, "cms", name+".json"))
+	if err != nil {
+		return nil
+	}
+	var o map[string]any
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatalf("configmap %s: %v", name, err)
+	}
+	return o
+}
+
+func cmData(o map[string]any) map[string]any {
+	if o == nil {
+		return nil
+	}
+	d, _ := o["data"].(map[string]any)
+	return d
+}
+
+var destroyerEnvVars = []string{"MINIO_URL=http://minio.invalid", "AUDIT_BUCKET=audit", "RETENTION_DAYS=1"}
+
+// A Destruction destroys only a key of its OWN namespace — the path that key's composite records —
+// never another namespace's same-named key, and never a bare-name key. Naming a key its namespace
+// does not have destroys nothing and issues no certificate.
+func TestDestroyer_DestroysOnlyItsOwnNamespacesKey(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, destroyerPath)
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := destroyerEnv(t, map[string]any{
+				"xenckeys.json": items(xek("team-a", "app", "transit/keys/ek_team-a_app"), xek("team-b", "app", "transit/keys/ek_team-b_app")),
+				"destructions.json": items(
+					destruction("team-b", "erase-app", "app", "2026-11-01T00:00:00Z"),
+					destruction("team-c", "steal", "app", "2026-11-01T00:00:00Z"),
+				),
+			}, nil, "ek_team-a_app", "ek_team-b_app", "app")
+			out, err := e.run(t, sh, script, destroyerEnvVars...)
+			if err != nil {
+				t.Fatalf("destroyer run failed: %v\n%s", err, out)
+			}
+			if got := strings.TrimSpace(e.read("vault-deleted.txt")); got != "ek_team-b_app" {
+				t.Fatalf("must destroy exactly team-b's key ek_team-b_app; deleted %q\nlog:\n%s", got, out)
+			}
+			b := cmData(e.cm(t, "openinfra-destruction-state-team-b.erase-app"))
+			if b["phase"] != "Destroyed" || b["vaultKeyPath"] != "transit/keys/ek_team-b_app" || b["namespace"] != "team-b" {
+				t.Errorf("team-b's state = %v", b)
+			}
+			cert, _ := b["certificate"].(string)
+			if !strings.HasPrefix(cert, "certificates/team-b/app-") {
+				t.Errorf("certificate path %q, want certificates/team-b/app-<epoch>.json", cert)
+			}
+			var c map[string]any
+			if err := json.Unmarshal([]byte(e.read("cert-"+strings.ReplaceAll("audit/audit/"+cert, "/", "_"))), &c); err != nil {
+				t.Fatalf("certificate not written as JSON: %v\nlog:\n%s", err, out)
+			}
+			if c["vaultKeyPath"] != "transit/keys/ek_team-b_app" || c["namespace"] != "team-b" || c["encryptionKey"] != "app" {
+				t.Errorf("certificate must name the exact key destroyed; got %v", c)
+			}
+			s := cmData(e.cm(t, "openinfra-destruction-state-team-c.steal"))
+			if s["phase"] != "Error" || !strings.Contains(s["message"].(string), "no EncryptionKey app in namespace team-c") || s["certificate"] != "" {
+				t.Errorf("team-c names a key it does not have: must Error, destroy nothing, certify nothing; got %v", s)
+			}
+		})
+	}
+}
+
+// A key created before namespacing (bare path) is destroyed at that path; a key whose EncryptionKey
+// was deleted is still found through the key reconciler's record of exactly that namespace + name (and
+// only that); a finished pre-namespacing destruction record is adopted by the Destruction it was
+// written for — never re-run — and NOT by a same-named Destruction created later in another namespace.
+func TestDestroyer_LegacyKeysAndRecords(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, destroyerPath)
+	legacyDone := map[string]any{"metadata": map[string]any{"name": "openinfra-destruction-state-enc-verify",
+		"namespace": "open-infra-console", "creationTimestamp": "2026-08-25T04:20:03Z",
+		"labels": map[string]any{"openinfra.dev/destruction": "enc-verify"}},
+		"data": map[string]any{"destruction": "enc-verify", "encryptionKey": "enc-verify", "phase": "Destroyed",
+			"certificate": "certificates/enc-verify-1.json"}}
+	stateRec := func(name, ns, n, path string) map[string]any {
+		return map[string]any{"metadata": map[string]any{"name": name, "namespace": "open-infra-console"},
+			"data": map[string]any{"exists": "true", "namespace": ns, "name": n, "vaultKeyPath": path}}
+	}
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := destroyerEnv(t, map[string]any{
+				"xenckeys.json": items(xek("open-infra-cfn", "ebs-default", "transit/keys/ebs-default")),
+				"destructions.json": items(
+					destruction("other", "enc-verify", "enc-verify", "2026-11-01T00:00:00Z"), // newer than the record
+					destruction("default", "enc-verify", "enc-verify", "2026-08-25T04:19:00Z"),
+					destruction("open-infra-cfn", "erase-ebs", "ebs-default", "2026-11-01T00:00:00Z"),
+					destruction("team-d", "erase-gone", "gone", "2026-11-01T00:00:00Z"),
+					destruction("team-y", "erase-gone2", "gone2", "2026-11-01T00:00:00Z"),
+				),
+			}, map[string]map[string]any{
+				"openinfra-destruction-state-enc-verify": legacyDone,
+				"openinfra-enckey-state-team-d.gone":     stateRec("openinfra-enckey-state-team-d.gone", "team-d", "gone", "transit/keys/ek_team-d_gone"),
+				"openinfra-enckey-state-gone2":           stateRec("openinfra-enckey-state-gone2", "team-x", "gone2", "transit/keys/gone2"),
+			}, "ebs-default", "ek_team-d_gone", "gone2", "enc-verify")
+			out, err := e.run(t, sh, script, destroyerEnvVars...)
+			if err != nil {
+				t.Fatalf("destroyer run failed: %v\n%s", err, out)
+			}
+			if got := strings.Fields(e.read("vault-deleted.txt")); strings.Join(got, ",") != "ebs-default,ek_team-d_gone" {
+				t.Fatalf("want ebs-default (legacy path) and ek_team-d_gone (deleted key, own namespace) destroyed; got %v\nlog:\n%s", got, out)
+			}
+			adopted := cmData(e.cm(t, "openinfra-destruction-state-default.enc-verify"))
+			if adopted["phase"] != "Destroyed" || adopted["namespace"] != "default" || adopted["certificate"] != "certificates/enc-verify-1.json" {
+				t.Errorf("default/enc-verify must adopt its finished record (not re-run); got %v\nlog:\n%s", adopted, out)
+			}
+			old := e.cm(t, "openinfra-destruction-state-enc-verify")
+			if d := cmData(old); d["namespace"] != "default" || d["phase"] != "Destroyed" {
+				t.Errorf("the original record must be kept, stamped with its namespace; got %v", d)
+			}
+			if l, _ := old["metadata"].(map[string]any)["labels"].(map[string]any); l["openinfra.dev/destruction"] != nil {
+				t.Errorf("the original record must lose its label (counted once, as the adopted copy); labels %v", l)
+			}
+			o := cmData(e.cm(t, "openinfra-destruction-state-other.enc-verify"))
+			if o["phase"] != "Error" {
+				t.Errorf("other/enc-verify (newer than the old record) must not inherit it, and has no key: Error; got %v", o)
+			}
+			if g := cmData(e.cm(t, "openinfra-destruction-state-team-y.erase-gone2")); g["phase"] != "Error" {
+				t.Errorf("team-y must not reach team-x's deleted key through its record; got %v", g)
+			}
+		})
+	}
+}
+
+// A Transit key that more than one live EncryptionKey records (two same-named keys created before
+// namespacing shared one) is never destroyed by one namespace's Destruction: that would erase the
+// other namespace's data too.
+func TestDestroyer_RefusesASharedPreNamespacingKey(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, destroyerPath)
+	sh := posixShells(t)[0]
+	e := destroyerEnv(t, map[string]any{
+		"xenckeys.json":     items(xek("team-a", "app", "transit/keys/app"), xek("team-b", "app", "transit/keys/app")),
+		"destructions.json": items(destruction("team-a", "erase-app", "app", "2026-11-01T00:00:00Z")),
+	}, nil, "app")
+	out, err := e.run(t, sh, script, destroyerEnvVars...)
+	if err != nil {
+		t.Fatalf("destroyer run failed: %v\n%s", err, out)
+	}
+	if got := e.read("vault-deleted.txt"); got != "" {
+		t.Fatalf("a shared key must not be destroyed; deleted %q\nlog:\n%s", got, out)
+	}
+	if d := cmData(e.cm(t, "openinfra-destruction-state-team-a.erase-app")); d["phase"] != "Error" ||
+		!strings.Contains(d["message"].(string), "shared by 2 EncryptionKeys") || d["certificate"] != "" {
+		t.Errorf("want Error naming the sharing, no certificate; got %v", d)
 	}
 }

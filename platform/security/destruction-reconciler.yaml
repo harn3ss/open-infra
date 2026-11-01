@@ -7,6 +7,10 @@
 # This is the one identity allowed to destroy keys, and its power is fenced tightly:
 #   * Vault: Kubernetes-auth role `encryptionkey-destroyer` — read/delete a key + set its config; no
 #     export/datakey/encrypt/decrypt. No stored Vault secret (SA-token login).
+#   * Scope: a Destruction destroys only a key of ITS OWN namespace — the EncryptionKey it names in
+#     that namespace, at the Transit path that key's composite records (transit/keys/ek_<namespace>_
+#     <name>; a key created before namespacing keeps transit/keys/<name>). Naming another namespace's
+#     key finds nothing and destroys nothing.
 #   * Kubernetes: read Destructions + EncryptionKeys; write only the destruction state ConfigMaps; and
 #     GET exactly ONE secret (the audit off-siter's scoped put+retain MinIO identity) to write the
 #     certificate — resourceName-fenced.
@@ -25,8 +29,10 @@ kind: ClusterRole
 metadata:
   name: openinfra-encryptionkey-destroyer
 rules:
+  # xencryptionkeys: each key's composite records its claim namespace + name and the Transit path
+  # it owns — the only way a Destruction's key name is resolved (within its own namespace).
   - apiGroups: [openinfra.dev]
-    resources: [destructions, encryptionkeys]
+    resources: [destructions, encryptionkeys, xencryptionkeys]
     verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -165,22 +171,77 @@ spec:
 
                   now=$(date -u +%s)
                   stamp=$(date -u +%FT%TZ)
+                  W="$(mktemp -d)"
+
+                  # Each EncryptionKey's Transit path by the namespace + name of its claim, from the
+                  # composites (cluster-scoped, written only by Crossplane — never the tenant-writable claim
+                  # status). A failed list fails the run: no key is ever destroyed by a guessed path.
+                  xek="$(kubectl get xencryptionkeys.openinfra.dev -o json)" || { echo "cannot list EncryptionKeys" >&2; exit 1; }
+                  printf '%s' "$xek" | jq -r '.items[]
+                      | select((.spec.claimRef.namespace // "") != "" and (.status.vaultKeyPath // "") != "")
+                      | [.spec.claimRef.namespace, .spec.claimRef.name, .status.vaultKeyPath] | @tsv' \
+                    > "$W/keymap.tsv"
+                  xek=""
+
+                  # resolve_key <namespace> <name>: the Transit path of the EncryptionKey <name> in
+                  # <namespace> — its composite's record; or, if that EncryptionKey has since been deleted,
+                  # the key reconciler's state record for exactly that namespace + name. Never another
+                  # namespace's key, never a path derived from the bare name. Empty = no such key.
+                  resolve_key() {
+                    case "$2" in "" | *[!a-z0-9.-]*) return 0 ;; esac
+                    p="$(LNS="$1" LKEY="$2" awk -F '\t' '$1 == ENVIRON["LNS"] && $2 == ENVIRON["LKEY"] { print $3; exit }' "$W/keymap.tsv")"
+                    if [ -z "$p" ]; then
+                      for c in "openinfra-enckey-state-$1.$2" "openinfra-enckey-state-$2"; do
+                        cj="$(kubectl get configmap "$c" -n "$CONSOLE_NS" -o json 2>/dev/null)" || continue
+                        p="$(printf '%s' "$cj" | jq -r --arg ns "$1" --arg n "$2" \
+                          'if .data.namespace == $ns and .data.name == $n then (.data.vaultKeyPath // "") else "" end')"
+                        [ -z "$p" ] || break
+                      done
+                    fi
+                    printf '%s' "$p"
+                  }
 
                   kubectl get destructions.openinfra.dev -A -o json \
-                    | jq -r '.items[] | [.metadata.namespace, .metadata.name, .spec.encryptionKey, (.spec.confirm // ""), (.spec.reason // "")] | @tsv' \
-                    | while IFS="$(printf '\t')" read -r ns name key confirm reason; do
-                        st="openinfra-destruction-state-$name"
+                    | jq -r '.items[] | [.metadata.namespace, .metadata.name, .spec.encryptionKey, (.spec.confirm // ""), (.spec.reason // ""), (.metadata.creationTimestamp // "")] | @tsv' \
+                    | while IFS="$(printf '\t')" read -r ns name key confirm reason created; do
+                        # The state record is per namespace + name. A record written before namespacing
+                        # (openinfra-destruction-state-<name>, no namespace) is adopted ONCE, by a
+                        # Destruction of that name that already existed when it was written (a state record
+                        # is only ever written after its Destruction) — so a finished erasure is never
+                        # re-run, and a same-named Destruction created later, or in another namespace, never
+                        # inherits it.
+                        st="openinfra-destruction-state-$ns.$name"
+                        have="$(kubectl get configmap "$st" -n "$CONSOLE_NS" --ignore-not-found -o name 2>/dev/null)" \
+                          || { echo "cannot read the state of $ns/$name — skipped this run" >&2; continue; }
+                        if [ -z "$have" ]; then
+                          lj="$(kubectl get configmap "openinfra-destruction-state-$name" -n "$CONSOLE_NS" -o json 2>/dev/null || true)"
+                          if [ -n "$lj" ] && printf '%s' "$lj" | jq -e --arg created "$created" \
+                              '(.data.namespace // "") == "" and $created != "" and (.metadata.creationTimestamp // "") >= $created' >/dev/null; then
+                            printf '%s' "$lj" | jq --arg n "$st" --arg ns "$ns" '{apiVersion: "v1", kind: "ConfigMap",
+                                metadata: {name: $n, namespace: .metadata.namespace, labels: .metadata.labels},
+                                data: ((.data // {}) + {namespace: $ns})}' \
+                              | kubectl create -f - >/dev/null
+                            # Kept as the original record, but unlabeled (so the console and the attestation
+                            # count the adopted copy once) and stamped with its namespace (never re-adopted).
+                            kubectl patch configmap "openinfra-destruction-state-$name" -n "$CONSOLE_NS" --type merge \
+                              -p "{\"metadata\":{\"labels\":{\"openinfra.dev/destruction\":null}},\"data\":{\"namespace\":\"$ns\",\"adoptedBy\":\"$st\"}}" >/dev/null
+                            echo "adopted the pre-namespacing state record of destruction $name for $ns/$name"
+                          fi
+                          lj=""
+                        fi
                         prev=$(kubectl get configmap "$st" -n "$CONSOLE_NS" -o jsonpath='{.data.phase}' 2>/dev/null || echo "")
                         # Terminal states are never retried. (Error is retryable — it self-heals if the
                         # named key later exists; otherwise it just re-errors harmlessly.)
                         case "$prev" in Destroyed | Refused) continue ;; esac
 
-                        writestate() { # phase message certificate destroyedAt observedVersions certSha256
+                        writestate() { # phase message certificate destroyedAt observedVersions certSha256 vaultKeyPath
                           kubectl create configmap "$st" -n "$CONSOLE_NS" \
-                            --from-literal=destruction="$name" --from-literal=encryptionKey="$key" \
+                            --from-literal=destruction="$name" --from-literal=namespace="$ns" \
+                            --from-literal=encryptionKey="$key" \
                             --from-literal=phase="$1" --from-literal=message="$2" \
                             --from-literal=certificate="$3" --from-literal=destroyedAt="$4" \
                             --from-literal=observedVersions="$5" --from-literal=certSha256="$6" \
+                            --from-literal=vaultKeyPath="$7" \
                             --dry-run=client -o yaml \
                             | kubectl label --local -f - "openinfra.dev/destruction=$name" -o yaml \
                             | kubectl apply -f - >/dev/null
@@ -189,36 +250,62 @@ spec:
                         # Typo-guard: confirm must equal the key name.
                         if [ "$confirm" != "$key" ]; then
                           echo "REFUSED $ns/$name: confirm ('$confirm') != encryptionKey ('$key')"
-                          writestate "Refused" "confirm must equal encryptionKey" "" "" "" ""
+                          writestate "Refused" "confirm must equal encryptionKey" "" "" "" "" ""
+                          continue
+                        fi
+
+                        # WHICH Transit key: the one an interrupted attempt recorded (a resume finishes that
+                        # same key), else the EncryptionKey <key> in THIS Destruction's namespace. A
+                        # Destruction can name only its own namespace's keys.
+                        path=""
+                        if [ "$prev" = "InProgress" ]; then
+                          path=$(kubectl get configmap "$st" -n "$CONSOLE_NS" -o jsonpath='{.data.vaultKeyPath}' 2>/dev/null || echo "")
+                        fi
+                        [ -n "$path" ] || path="$(resolve_key "$ns" "$key")"
+                        kname="${path#transit/keys/}"
+                        case "$path" in transit/keys/*) ;; *) kname="" ;; esac
+                        case "$kname" in "" | *[!A-Za-z0-9_.-]*) kname="" ;; esac
+                        if [ -z "$kname" ]; then
+                          echo "NOT FOUND $ns/$name: no EncryptionKey '$key' in namespace $ns — nothing destroyed"
+                          writestate "Error" "no EncryptionKey $key in namespace $ns — nothing was destroyed; no certificate issued" "" "" "" "" ""
+                          continue
+                        fi
+                        # Keys created before namespacing could share one Transit key across namespaces (two
+                        # EncryptionKeys of the same name). Destroying a key another live EncryptionKey also
+                        # records would erase that namespace's data too — refuse; an operator resolves it.
+                        shared=$(LP="$path" awk -F '\t' '$3 == ENVIRON["LP"]' "$W/keymap.tsv" | wc -l | tr -d ' ')
+                        if [ "${shared:-0}" -gt 1 ]; then
+                          echo "REFUSED-SHARED $ns/$name: $path is the Transit key of $shared EncryptionKeys — nothing destroyed"
+                          writestate "Error" "$path is shared by $shared EncryptionKeys (created before namespacing) — destroying it would erase another namespace's data; nothing was destroyed" "" "" "" "" "$path"
                           continue
                         fi
 
                         # Reuse a stable cert path + the observed version count across retries (recorded
                         # on the InProgress state) so a crash can't produce a duplicate or under-counted cert.
                         cert=$(kubectl get configmap "$st" -n "$CONSOLE_NS" -o jsonpath='{.data.certificate}' 2>/dev/null || echo "")
-                        [ -n "$cert" ] || cert="certificates/${key}-${now}.json"
+                        [ -n "$cert" ] || cert="certificates/${ns}/${key}-${now}.json"
                         obs=$(kubectl get configmap "$st" -n "$CONSOLE_NS" -o jsonpath='{.data.observedVersions}' 2>/dev/null || echo "")
 
-                        if vault read "transit/keys/$key" >/dev/null 2>&1; then
+                        if vault read "transit/keys/$kname" >/dev/null 2>&1; then
                           # Key present: record what we observe BEFORE destroying, so a crash mid-way can
                           # recover the true version count and prove WE initiated this destruction
                           # (distinguishing it from a key that never existed — no phantom certificate).
-                          obs=$(vault read -format=json "transit/keys/$key" | jq -r '.data.latest_version // 0')
-                          writestate "InProgress" "destroying key" "$cert" "" "$obs" ""
-                          vault write "transit/keys/$key/config" deletion_allowed=true >/dev/null
-                          vault delete "transit/keys/$key" >/dev/null
-                          echo "CRYPTO-ERASED $key ($obs versions) for $ns/$name"
+                          obs=$(vault read -format=json "transit/keys/$kname" | jq -r '.data.latest_version // 0')
+                          writestate "InProgress" "destroying key" "$cert" "" "$obs" "" "$path"
+                          vault write "transit/keys/$kname/config" deletion_allowed=true >/dev/null
+                          vault delete "transit/keys/$kname" >/dev/null
+                          echo "CRYPTO-ERASED $path ($obs versions) for $ns/$name"
                         elif [ "$prev" = "InProgress" ]; then
                           # Key absent AND we had already started: a crash after delete. Finish certifying
                           # with the count recorded before deleting.
                           [ -n "$obs" ] || obs=0
-                          echo "$key absent but InProgress — resuming certification for $ns/$name"
+                          echo "$path absent but InProgress — resuming certification for $ns/$name"
                         else
-                          # Key absent and we never started (e.g. a typo'd or nonexistent key): do NOT
-                          # certify a phantom erasure. A certificate attesting to an erase that never
+                          # Key absent and we never started (e.g. its Transit key was never provisioned):
+                          # do NOT certify a phantom erasure. A certificate attesting to an erase that never
                           # happened is worse than none.
-                          echo "NOT FOUND $ns/$name: transit/keys/$key does not exist — nothing destroyed"
-                          writestate "Error" "key transit/keys/$key not found — nothing was destroyed; no certificate issued" "" "" "" ""
+                          echo "NOT FOUND $ns/$name: $path does not exist — nothing destroyed"
+                          writestate "Error" "key $path not found — nothing was destroyed; no certificate issued" "" "" "" "" "$path"
                           continue
                         fi
 
@@ -228,12 +315,13 @@ spec:
                           sha=$(kubectl get configmap "$st" -n "$CONSOLE_NS" -o jsonpath='{.data.certSha256}' 2>/dev/null || echo "")
                           echo "certificate $cert already present — not rewriting"
                         else
-                          jq -n --arg key "$key" --argjson versions "${obs:-0}" \
+                          jq -n --arg key "$key" --arg path "$path" --argjson versions "${obs:-0}" \
                             --arg ns "$ns" --arg name "$name" --arg reason "$reason" --arg stamp "$stamp" '{
                               kind: "DestructionCertificate",
                               standard: "NIST SP 800-88 (cryptographic erase)",
                               encryptionKey: $key,
-                              vaultKeyPath: ("transit/keys/" + $key),
+                              namespace: $ns,
+                              vaultKeyPath: $path,
                               keyVersionsDestroyed: $versions,
                               destruction: ($ns + "/" + $name),
                               reason: $reason,
@@ -248,7 +336,7 @@ spec:
                         # Anchor the certificate by sha256 in the state ConfigMap — a different trust
                         # domain than the bucket — so the locked original can be verified even if a newer
                         # object version shadows it at "latest".
-                        writestate "Destroyed" "crypto-erased; certificate written" "$cert" "$stamp" "$obs" "$sha"
+                        writestate "Destroyed" "crypto-erased; certificate written" "$cert" "$stamp" "$obs" "$sha" "$path"
                         echo "destruction: $ns/$name complete — certificate $cert (sha256 ${sha:-unknown})"
                       done
               resources:

@@ -38,8 +38,13 @@ spec:
   rotationDays: 90          # optional: reconciler adds a new key version on this cadence
 ```
 
-The reconciler creates `transit/keys/tenant-a` in Vault and reflects its state (provisioned,
-version, last rotation) into the console's **Security & Identity → Encryption Keys** page. It
+The reconciler creates `transit/keys/ek_platform_tenant-a` in Vault and reflects its state
+(provisioned, version, last rotation) into the console's **Security & Identity → Encryption Keys**
+page. The Transit key's name is **namespace-qualified** — `ek_<namespace>_<name>` — so
+`EncryptionKey tenant-a` in another namespace is a different Transit key, never the same one. The
+path is recorded once on the key (`status.vaultKeyPath`) and never changes; every consumer — the
+reconciler, encrypted volumes, `kind: Destruction` — resolves a key name **only within its own
+namespace**, through that record. (A key created before namespacing keeps `transit/keys/<name>`.) It
 authenticates to Vault with **its own Kubernetes ServiceAccount token** (Vault Kubernetes auth) — no
 Vault credential is ever stored in a k8s Secret, so nothing with cluster-wide secret read can steal
 Vault access. Its policy is scoped to **create / read / rotate** Transit keys only: it cannot
@@ -131,8 +136,9 @@ An encrypted `kind: Volume` (`spec.encrypted: true` + `spec.encryptionKey`), an 
 
 - **Keying.** The **volume-crypto reconciler** finds each claim on `longhorn-encrypted` that carries the
   annotation `openinfra.dev/encryption-key: <EncryptionKey name>`, generates a Vault Transit **data
-  key** under that EncryptionKey, and writes the claim's LUKS passphrase Secret `<pvc-name>-crypto` in
-  its namespace: the data key's plaintext is the passphrase, its wrapped form is stored alongside.
+  key** under the EncryptionKey of that name **in the claim's own namespace** (a claim cannot be keyed
+  under another namespace's key — with no key of that name beside it, it waits), and writes the claim's
+  LUKS passphrase Secret `<pvc-name>-crypto` in its namespace: the data key's plaintext is the passphrase, its wrapped form is stored alongside.
   Destroying the EncryptionKey makes the passphrase unrecoverable → the volume is crypto-erased. An
   existing passphrase Secret is never replaced.
 - **Ready means usable.** A claim on this class binds only once its passphrase Secret exists, and a

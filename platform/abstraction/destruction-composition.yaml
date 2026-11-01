@@ -30,6 +30,8 @@ spec:
             {{- $spec := .observed.composite.resource.spec }}
             {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $claimNs := (index $labels "crossplane.io/claim-namespace") | default "" }}
+            {{- with $spec }}{{- with .claimRef }}{{- if .namespace }}{{- $claimNs = .namespace }}{{- end }}{{- end }}{{- end }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
@@ -48,6 +50,8 @@ spec:
                       openinfra.dev/destruction: {{ $name }}
                   data:
                     name: {{ $name | quote }}
+                    # The Destruction's namespace: its encryptionKey names a key of THIS namespace only.
+                    namespace: {{ $claimNs | quote }}
                     encryptionKey: {{ $spec.encryptionKey | quote }}
                     confirm: {{ $spec.confirm | quote }}
                     reason: {{ $spec.reason | default "" | quote }}

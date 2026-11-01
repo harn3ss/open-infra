@@ -3,6 +3,12 @@
 # Vault Transit path in status. The actual Transit key is provisioned by encryptionkey-reconciler,
 # which owns a SEPARATE state ConfigMap — single-writer each, no fight over one object.
 #
+# The composite's status.vaultKeyPath is THE record of which Transit key an EncryptionKey owns: every
+# consumer (the key reconciler, volume-crypto, the destroyer) resolves a key name by finding the
+# composite whose claimRef is in the CONSUMER's own namespace and reading this path — never by
+# addressing transit/keys/<bare name>. (The claim's status is not used: tenants can write their
+# claim's status subresource; the cluster-scoped composite is written only by Crossplane.)
+#
 # Synced after the XRD (sync-wave 3).
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
@@ -26,12 +32,47 @@ spec:
         source: Inline
         inline:
           template: |
-            {{- $spec := .observed.composite.resource.spec }}
-            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
-            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
-            {{- $keyPath := printf "transit/keys/%s" $name }}
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
+            {{- /* The claim's namespace: claimRef is set by Crossplane on the composite (tenants cannot
+                   write a cluster-scoped composite), the label is the fallback. */}}
+            {{- $claimNs := (index $labels "crossplane.io/claim-namespace") | default "" }}
+            {{- with $spec }}{{- with .claimRef }}{{- if .namespace }}{{- $claimNs = .namespace }}{{- end }}{{- end }}{{- end }}
+            {{- /* The Transit key a tenant's EncryptionKey owns is namespace-qualified, so two namespaces'
+                   keys of the same name are two keys — never one shared key (whose Destruction would
+                   crypto-erase both tenants' data):
+                     transit/keys/ek_<namespace>_<name>
+                   `_` is legal in a Transit key name and in neither a Kubernetes namespace nor an object
+                   name, so the split is unambiguous and the form can never equal a key named by a bare
+                   object name (the pre-namespacing form) — nor a KMS front-door key (kms-<id>).
+                   A key keeps the path it was created with: once recorded (status, or the mirror's data
+                   if status was lost, e.g. a restore), it is never recomputed — renaming a key's Transit
+                   path would orphan every data key it wraps. Keys created before namespacing therefore
+                   keep transit/keys/<name>. */}}
+            {{- $keyPath := "" }}
+            {{- with $xr.status }}{{- $keyPath = (.vaultKeyPath | default "") }}{{- end }}
+            {{- if not $keyPath }}
+            {{-   $mirror := index (.observed.resources | default dict) "enckey-spec" }}
+            {{-   if $mirror }}{{- with $mirror.resource.spec }}{{- with .forProvider }}{{- with .manifest }}{{- with .data }}{{- $keyPath = (.vaultKeyPath | default "") }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
+            {{- end }}
+            {{- if not $keyPath }}
+            {{-   if $claimNs }}
+            {{-     $keyPath = printf "transit/keys/ek_%s_%s" $claimNs $name }}
+            {{-   else }}
+            {{-     $keyPath = printf "transit/keys/ek_%s" $xr.metadata.name }}
+            {{-   end }}
+            {{- end }}
+            {{- /* The console-side identity of the key's ConfigMaps: <namespace>.<name> for a namespaced
+                   key; a pre-namespacing key keeps its bare-name ConfigMaps. */}}
+            {{- $kid := $name }}
+            {{- if and $claimNs (hasPrefix "transit/keys/ek_" $keyPath) }}
+            {{-   $kid = printf "%s.%s" $claimNs $name }}
+            {{- end }}
             ---
-            # Desired-key mirror the reconciler reads (label-selected).
+            # Desired-key mirror the console reads (label-selected; merged with the reconciler's state
+            # ConfigMap by namespace + name).
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -43,12 +84,13 @@ spec:
                   apiVersion: v1
                   kind: ConfigMap
                   metadata:
-                    name: openinfra-enckey-{{ $name }}
+                    name: openinfra-enckey-{{ $kid }}
                     namespace: open-infra-console
                     labels:
                       openinfra.dev/enckey: {{ $name }}
                   data:
                     name: {{ $name | quote }}
+                    namespace: {{ $claimNs | quote }}
                     description: {{ $spec.description | default "" | quote }}
                     keyType: "{{ $spec.keyType | default "aes256-gcm96" }}"
                     rotationDays: "{{ $spec.rotationDays | default 0 }}"

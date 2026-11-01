@@ -110,17 +110,24 @@ func TestEvalEncryptionAtRestTransit(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "data-plain", Namespace: "default"},
 			Spec:       corev1.PersistentVolumeClaimSpec{StorageClassName: sp("plain")},
 		},
-		// A provisioned key (state mirror exists=true) in the console namespace.
+		// A provisioned key (state mirror exists=true) of namespace default, in the console namespace.
 		&corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: "openinfra-enckey-state-live", Namespace: "console",
+			ObjectMeta: metav1.ObjectMeta{Name: "openinfra-enckey-state-default.live", Namespace: "console",
 				Labels: map[string]string{"openinfra.dev/enckey": "live"}},
-			Data: map[string]string{"exists": "true"},
+			Data: map[string]string{"exists": "true", "namespace": "default", "name": "live"},
 		},
 		// A defined-but-not-yet-provisioned key (spec mirror only, no exists=true).
 		&corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: "openinfra-enckey-pending", Namespace: "console",
+			ObjectMeta: metav1.ObjectMeta{Name: "openinfra-enckey-default.pending", Namespace: "console",
 				Labels: map[string]string{"openinfra.dev/enckey": "pending"}},
-			Data: map[string]string{"keyType": "aes256-gcm96"},
+			Data: map[string]string{"keyType": "aes256-gcm96", "namespace": "default", "name": "pending"},
+		},
+		// Another namespace's provisioned key of the same name as one default has NOT defined: it is
+		// never evidence for a default workload.
+		&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "openinfra-enckey-state-other.theirs", Namespace: "console",
+				Labels: map[string]string{"openinfra.dev/enckey": "theirs"}},
+			Data: map[string]string{"exists": "true", "namespace": "other", "name": "theirs"},
 		},
 	)
 	ctx := context.Background()
@@ -135,6 +142,9 @@ func TestEvalEncryptionAtRestTransit(t *testing.T) {
 		{"unprovisioned key, plaintext volume", workload{namespace: "default", encKeyRef: "pending", pvcClaims: []string{"data-plain"}}, "fail"},
 		{"provisioned key also on encrypted SC", workload{namespace: "default", encKeyRef: "live", stsSCs: []string{"enc"}}, "pass"},
 		{"unknown key name", workload{namespace: "default", encKeyRef: "ghost"}, "unknown"},
+		{"another namespace's key is not this workload's", workload{namespace: "default", encKeyRef: "theirs"}, "unknown"},
+		{"the owning namespace's workload sees it", workload{namespace: "other", encKeyRef: "theirs"}, "pass"},
+		{"a non-name key reference is unknown", workload{namespace: "default", encKeyRef: "live,x"}, "unknown"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

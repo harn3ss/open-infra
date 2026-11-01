@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -353,7 +354,7 @@ func evalEncryptionAtRest(ctx context.Context, cs kubernetes.Interface, consoleN
 	// App layer: Vault Transit binding. "" = no key bound.
 	transit := ""
 	if wl.encKeyRef != "" {
-		prov, found := transitKeyProvisioned(ctx, cs, consoleNS, wl.encKeyRef)
+		prov, found := transitKeyProvisioned(ctx, cs, consoleNS, wl.namespace, wl.encKeyRef)
 		switch {
 		case !found:
 			transit = "notfound"
@@ -434,16 +435,24 @@ func volumeVerdict(ctx context.Context, cs kubernetes.Interface, wl workload) (v
 	return "encrypted", "all data volumes on encrypted StorageClass(es)"
 }
 
-// transitKeyProvisioned resolves a kind: EncryptionKey by name via its mirror ConfigMaps (label
-// openinfra.dev/enckey=<name> in the console namespace) and reports whether its Vault Transit key is
-// actually provisioned (the reconciler's state mirror carries exists=true). found=false means no such
-// key is defined. It reads only the mirror the reconciler maintains — never Vault, never key material.
-func transitKeyProvisioned(ctx context.Context, cs kubernetes.Interface, consoleNS, name string) (provisioned, found bool) {
+// transitKeyProvisioned resolves a kind: EncryptionKey by name IN THE WORKLOAD'S NAMESPACE via its mirror
+// ConfigMaps (label openinfra.dev/enckey=<name> in the console namespace, each recording the key's
+// namespace) and reports whether its Vault Transit key is actually provisioned (the reconciler's state
+// mirror carries exists=true). found=false means no such key is defined in that namespace — another
+// namespace's same-named key is never evidence for this workload. It reads only the mirror the
+// reconciler maintains — never Vault, never key material.
+func transitKeyProvisioned(ctx context.Context, cs kubernetes.Interface, consoleNS, namespace, name string) (provisioned, found bool) {
+	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+		return false, false // not an object name (and not a usable label selector value)
+	}
 	cms, err := cs.CoreV1().ConfigMaps(consoleNS).List(ctx, metav1.ListOptions{LabelSelector: encKeyMirrorLabel + "=" + name})
 	if err != nil {
 		return false, false
 	}
 	for i := range cms.Items {
+		if cms.Items[i].Data["namespace"] != namespace {
+			continue
+		}
 		found = true
 		if cms.Items[i].Data["exists"] == "true" {
 			provisioned = true

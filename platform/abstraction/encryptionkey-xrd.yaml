@@ -68,7 +68,10 @@ spec:
                   type: boolean
                 vaultKeyPath:
                   type: string
-                  description: The Vault Transit path for this key (transit/keys/<name>).
+                  description: >-
+                    The Vault Transit path of this key: transit/keys/ek_<namespace>_<name>, unique to
+                    this namespace's key (a key created before namespacing keeps transit/keys/<name>).
+                    Set once and never changed — the path is what wraps the key's data.
       additionalPrinterColumns:
         - name: Type
           type: string

@@ -492,28 +492,94 @@ func TestDataClassification_RendersConfigMapMirror(t *testing.T) {
 	}
 }
 
-// kind: EncryptionKey renders a spec-mirror ConfigMap the reconciler reads, and echoes the Vault
-// Transit path in status.
-func TestEncryptionKey_RendersMirrorAndKeyPath(t *testing.T) {
-	tmpl := extractInlineTemplate(t, "../../platform/abstraction/encryptionkey-composition.yaml")
-	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+// encKeyCtx is an EncryptionKey composite claimed as <ns>/<name>, optionally with the Transit path a
+// previous render recorded in its status, and an observed spec-mirror Object recording mirrorPath.
+func encKeyCtx(ns, name, statusPath, mirrorPath string) map[string]any {
+	xr := map[string]any{
 		"spec": map[string]any{
 			"description":  "tenant A KEK",
 			"keyType":      "aes256-gcm96",
 			"rotationDays": 90,
+			"claimRef":     map[string]any{"apiVersion": "openinfra.dev/v1", "kind": "EncryptionKey", "name": name, "namespace": ns},
 		},
-		"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "tenant-a"}},
-	}}}}
-	out := render(t, tmpl, ctx)
+		"metadata": map[string]any{"name": name + "-x7k2p", "labels": map[string]any{
+			"crossplane.io/claim-name": name, "crossplane.io/claim-namespace": ns}},
+	}
+	if statusPath != "" {
+		xr["status"] = map[string]any{"ready": true, "vaultKeyPath": statusPath}
+	}
+	observed := map[string]any{"composite": map[string]any{"resource": xr}}
+	if mirrorPath != "" {
+		observed["resources"] = map[string]any{"enckey-spec": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{"forProvider": map[string]any{"manifest": map[string]any{
+				"data": map[string]any{"vaultKeyPath": mirrorPath}}}}}}}
+	}
+	return map[string]any{"observed": observed}
+}
+
+// kind: EncryptionKey renders a spec-mirror ConfigMap the console reads, and records the key's Vault
+// Transit path in status — namespace-qualified, so a key is its namespace's alone.
+func TestEncryptionKey_RendersMirrorAndKeyPath(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/encryptionkey-composition.yaml")
+	out := render(t, tmpl, encKeyCtx("platform", "tenant-a", "", ""))
 	for _, want := range []string{
-		"kind: ConfigMap", "name: openinfra-enckey-tenant-a", "namespace: open-infra-console",
-		"openinfra.dev/enckey: tenant-a",
-		`vaultKeyPath: "transit/keys/tenant-a"`, `rotationDays: "90"`, `keyType: "aes256-gcm96"`,
+		"kind: ConfigMap", "name: openinfra-enckey-platform.tenant-a", "namespace: open-infra-console",
+		"openinfra.dev/enckey: tenant-a", `namespace: "platform"`, `name: "tenant-a"`,
+		`vaultKeyPath: "transit/keys/ek_platform_tenant-a"`, `rotationDays: "90"`, `keyType: "aes256-gcm96"`,
 		"ready: true",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("EncryptionKey render missing %q; got:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, `"transit/keys/tenant-a"`) {
+		t.Errorf("a new key must never get the bare-name Transit path; got:\n%s", out)
+	}
+}
+
+// Two namespaces' EncryptionKeys of the same name own two different Transit keys (and ConfigMaps) —
+// never one shared key, whose Destruction would crypto-erase both tenants' data.
+func TestEncryptionKey_SameNameInTwoNamespacesIsTwoKeys(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/encryptionkey-composition.yaml")
+	a := render(t, tmpl, encKeyCtx("team-a", "app", "", ""))
+	b := render(t, tmpl, encKeyCtx("team-b", "app", "", ""))
+	for out, want := range map[string][]string{
+		a: {`vaultKeyPath: "transit/keys/ek_team-a_app"`, "name: openinfra-enckey-team-a.app"},
+		b: {`vaultKeyPath: "transit/keys/ek_team-b_app"`, "name: openinfra-enckey-team-b.app"},
+	} {
+		for _, w := range want {
+			if !strings.Contains(out, w) {
+				t.Errorf("render missing %q; got:\n%s", w, out)
+			}
+		}
+	}
+}
+
+// A key keeps the Transit path it was created with: one created before namespacing keeps
+// transit/keys/<name> (and its bare-name ConfigMap) — renaming the path would orphan every data key it
+// wraps. The record is read from status, else (status lost, e.g. a restore) the observed mirror.
+func TestEncryptionKey_ExistingKeyKeepsItsRecordedPath(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/encryptionkey-composition.yaml")
+	for label, ctx := range map[string]map[string]any{
+		"from status":          encKeyCtx("open-infra-cfn", "ebs-default", "transit/keys/ebs-default", ""),
+		"from observed mirror": encKeyCtx("open-infra-cfn", "ebs-default", "", "transit/keys/ebs-default"),
+	} {
+		out := render(t, tmpl, ctx)
+		for _, want := range []string{
+			`vaultKeyPath: "transit/keys/ebs-default"`, "name: openinfra-enckey-ebs-default\n", `namespace: "open-infra-cfn"`,
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: render missing %q; got:\n%s", label, want, out)
+			}
+		}
+		if strings.Contains(out, "ek_open-infra-cfn") {
+			t.Errorf("%s: an existing key's path must not be recomputed; got:\n%s", label, out)
+		}
+	}
+	// A namespaced key's recorded path is likewise kept as is.
+	out := render(t, tmpl, encKeyCtx("team-a", "app", "transit/keys/ek_team-a_app", ""))
+	if !strings.Contains(out, `vaultKeyPath: "transit/keys/ek_team-a_app"`) || !strings.Contains(out, "name: openinfra-enckey-team-a.app") {
+		t.Errorf("a namespaced key must keep its path and ConfigMap; got:\n%s", out)
 	}
 }
 
@@ -526,12 +592,13 @@ func TestDestruction_RendersMirrorAndPending(t *testing.T) {
 			"confirm":       "tenant-a",
 			"reason":        "contract ended",
 		},
-		"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "erase-tenant-a"}},
+		"metadata": map[string]any{"labels": map[string]any{"crossplane.io/claim-name": "erase-tenant-a",
+			"crossplane.io/claim-namespace": "platform"}},
 	}}}}
 	out := render(t, tmpl, ctx)
 	for _, want := range []string{
 		"kind: ConfigMap", "name: openinfra-destruction-erase-tenant-a", "namespace: open-infra-console",
-		"openinfra.dev/destruction: erase-tenant-a",
+		"openinfra.dev/destruction: erase-tenant-a", `namespace: "platform"`,
 		`encryptionKey: "tenant-a"`, `confirm: "tenant-a"`,
 		"phase: Pending",
 	} {

@@ -9,8 +9,9 @@
 # HUMAN-GATED PREREQUISITES (this script cannot do them — custody of unseal keys is an operator duty):
 #   - components.encryption: true, and audit off-siting enabled (the destroyer requires it).
 #   - Vault initialized + unsealed:  kubectl -n vault exec vault-0 -- vault operator init ; unseal x3.
-#   - A short-lived token with transit encrypt+decrypt on enc-verify + read transit/keys, exported as
-#     VAULT_TOKEN (issue a throwaway policy for the probe, then revoke it).
+#   - A short-lived token with transit encrypt+decrypt on ek_default_enc-verify (the namespace-qualified
+#     Transit key of EncryptionKey default/enc-verify) + read transit/keys, exported as VAULT_TOKEN
+#     (issue a throwaway policy for the probe, then revoke it).
 # Run:  VAULT_TOKEN=<token> probe/encryption-vault.sh
 set -uo pipefail
 
@@ -38,6 +39,7 @@ CONSOLE_NS="${CONSOLE_NS:-open-infra-console}"
 echo "▸ resetting prior enc-verify state (this probe is re-runnable)"
 kubectl delete encryptionkey "$KEY" destruction "$KEY" -n default --ignore-not-found >/dev/null 2>&1 || true
 kubectl -n "$CONSOLE_NS" delete configmap \
+  "openinfra-destruction-state-default.$KEY" "openinfra-enckey-state-default.$KEY" "openinfra-enckey-default.$KEY" \
   "openinfra-destruction-state-$KEY" "openinfra-enckey-state-$KEY" \
   "openinfra-destruction-$KEY" "openinfra-enckey-$KEY" --ignore-not-found >/dev/null 2>&1 || true
 
@@ -48,19 +50,28 @@ kind: EncryptionKey
 metadata: { name: $KEY, namespace: default }
 spec: { description: "govstack live-verify", keyType: aes256-gcm96, rotationDays: 90 }
 YAML
-for _ in $(seq 1 60); do vault_ read "transit/keys/$KEY" >/dev/null 2>&1 && break; sleep 5; done
-vault_ read "transit/keys/$KEY" >/dev/null 2>&1 || fail "Transit key transit/keys/$KEY was not created within the budget (reconciler not running / not authorized)."
-echo "  key present."
+# The Transit key is the one the key's composite records — namespace-qualified
+# (transit/keys/ek_default_enc-verify), never the bare name.
+KPATH=""
+for _ in $(seq 1 60); do
+  KPATH="$(kubectl get encryptionkey "$KEY" -n default -o jsonpath='{.status.vaultKeyPath}' 2>/dev/null || true)"
+  [ -n "$KPATH" ] && break; sleep 5
+done
+[ "$KPATH" = "transit/keys/ek_default_$KEY" ] || fail "EncryptionKey default/$KEY recorded Transit path '$KPATH', want transit/keys/ek_default_$KEY (namespace-qualified)."
+KNAME="${KPATH#transit/keys/}"
+for _ in $(seq 1 60); do vault_ read "$KPATH" >/dev/null 2>&1 && break; sleep 5; done
+vault_ read "$KPATH" >/dev/null 2>&1 || fail "Transit key $KPATH was not created within the budget (reconciler not running / not authorized)."
+echo "  key present ($KPATH)."
 
 echo "▸ round-trip: encrypt then decrypt must return byte-identical plaintext"
 b64="$(printf '%s' "$PLAIN" | base64 | tr -d '\n')"
-ct="$(vault_ write -field=ciphertext "transit/encrypt/$KEY" plaintext="$b64")"
+ct="$(vault_ write -field=ciphertext "transit/encrypt/$KNAME" plaintext="$b64")"
 [ -n "$ct" ] || fail "encrypt returned no ciphertext"
-got="$(vault_ write -field=plaintext "transit/decrypt/$KEY" ciphertext="$ct" | base64 -d 2>/dev/null)"
+got="$(vault_ write -field=plaintext "transit/decrypt/$KNAME" ciphertext="$ct" | base64 -d 2>/dev/null)"
 [ "$got" = "$PLAIN" ] || fail "decrypt did NOT return the original plaintext (got '$got') — the KEK does not round-trip."
 echo "  PASS — customer KEK wraps + unwraps byte-identical."
 
-echo "▸ crypto-erase: kind: Destruction must make transit/keys/$KEY unrecoverable"
+echo "▸ crypto-erase: kind: Destruction must make $KPATH unrecoverable"
 kubectl apply -f - >/dev/null <<YAML || fail "could not apply Destruction"
 apiVersion: openinfra.dev/v1
 kind: Destruction
@@ -72,10 +83,10 @@ YAML
 # the cron still fires within the wait budget below.
 kubectl -n crossplane-system delete job enc-verify-probe-destroy --ignore-not-found >/dev/null 2>&1 || true
 kubectl -n crossplane-system create job enc-verify-probe-destroy --from=cronjob/encryptionkey-destroyer >/dev/null 2>&1 || true
-for _ in $(seq 1 60); do vault_ read "transit/keys/$KEY" >/dev/null 2>&1 || break; sleep 5; done
-if vault_ read "transit/keys/$KEY" >/dev/null 2>&1; then fail "key still present after Destruction — crypto-erase did not complete."; fi
+for _ in $(seq 1 60); do vault_ read "$KPATH" >/dev/null 2>&1 || break; sleep 5; done
+if vault_ read "$KPATH" >/dev/null 2>&1; then fail "key still present after Destruction — crypto-erase did not complete."; fi
 # the wrapped data is now unrecoverable — decrypt must fail
-if vault_ write "transit/decrypt/$KEY" ciphertext="$ct" >/dev/null 2>&1; then fail "decrypt STILL works after crypto-erase — data is not actually unrecoverable."; fi
+if vault_ write "transit/decrypt/$KNAME" ciphertext="$ct" >/dev/null 2>&1; then fail "decrypt STILL works after crypto-erase — data is not actually unrecoverable."; fi
 echo "  PASS — key destroyed; the previously-encrypted value is now unrecoverable."
 
 echo "▸ cleanup"

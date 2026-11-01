@@ -6,7 +6,12 @@
 # It watches PVCs on the `longhorn-encrypted` StorageClass carrying the annotation
 # `openinfra.dev/encryption-key: <EncryptionKey name>` (set by the Volume composition), and for any
 # that lack their `<pvc-name>-crypto` Secret, generates a Transit data key under that EncryptionKey
-# and writes the Secret in the PVC's namespace. Idempotent: an existing crypto Secret is never
+# and writes the Secret in the PVC's namespace.
+#
+# The name resolves ONLY within the PVC's own namespace: the EncryptionKey <name> in that namespace,
+# whose composite records the Transit path it owns (transit/keys/ek_<namespace>_<name>; a key created
+# before namespacing keeps transit/keys/<name>). A claim cannot be keyed under another namespace's
+# key by naming it — with no EncryptionKey of that name in its own namespace it simply waits. Idempotent: an existing crypto Secret is never
 # regenerated (a changed passphrase would make the volume unreadable) — the Secret is written with
 # `kubectl create`, which can never overwrite one.
 #
@@ -23,7 +28,7 @@
 # PersistentVolume bound to it are gone. Deleting the passphrase needs nothing from Longhorn: its
 # CSI DeleteVolume takes no secret, and the provisioner proceeds without one when it is gone.
 #
-# Least privilege: Vault role scoped to transit/datakey/plaintext/* only (generate a wrapped data
+# Least privilege: Vault role scoped to transit/datakey/plaintext/<key> only (generate a wrapped data
 # key — NOT read/rotate/destroy the KEK). Its Kubernetes Secret writes are confined by the admission
 # policy at the end of this file to its own labeled `<pvc>-crypto` Secrets. Part of the OPT-IN
 # `encryption` component. If Vault is unreachable or the volume-crypto role is absent (operator has
@@ -50,6 +55,11 @@ rules:
   - apiGroups: [""]
     resources: [persistentvolumes]
     verbs: [list]
+  # Resolve a claim's EncryptionKey name to the Transit path its composite records (cluster-scoped,
+  # written only by Crossplane — never the tenant-writable claim status).
+  - apiGroups: [openinfra.dev]
+    resources: [xencryptionkeys]
+    verbs: [get, list]
   # Materialize the per-volume crypto Secret in the PVC's namespace, and sweep ownerless ones whose
   # volume is gone. Cluster-wide because a Volume can live in any namespace (the same reach the
   # bucket-setup SA has for per-app creds). RBAC cannot scope by name or label: list only adds
@@ -157,6 +167,19 @@ spec:
                     awk -F '\t' 'FILENAME == ARGV[1] { keyed[$0]=1; next } !(($1 "/" $2 "-crypto") in keyed)' \
                       "$W/keyed.txt" "$W/pvcs.tsv" > "$W/pending.tsv"
 
+                    # Each EncryptionKey's Transit path, by the namespace + name of its claim, from the
+                    # composites (only when a claim is waiting). A failed list fails this pass — a claim
+                    # is never keyed under a guessed path.
+                    : > "$W/keymap.tsv"
+                    if [ -s "$W/pending.tsv" ]; then
+                      xek="$(kubectl get xencryptionkeys.openinfra.dev -o json)" || { echo "cannot list EncryptionKeys" >&2; return 1; }
+                      printf '%s' "$xek" | jq -r '.items[]
+                          | select((.spec.claimRef.namespace // "") != "" and (.status.vaultKeyPath // "") != "")
+                          | [.spec.claimRef.namespace, .spec.claimRef.name, .status.vaultKeyPath] | @tsv' \
+                        > "$W/keymap.tsv"
+                      xek=""
+                    fi
+
                     while IFS="$TAB" read -r ns name uid key; do
                       [ -n "$name" ] || continue
                       # The authoritative check, by name: an existing crypto Secret (labeled or not) is
@@ -164,16 +187,33 @@ spec:
                       if kubectl get secret "${name}-crypto" -n "$ns" >/dev/null 2>&1; then
                         continue
                       fi
+                      # The EncryptionKey <key> in THIS claim's namespace, and the Transit key its
+                      # composite records. (ENVIRON, not awk -v: no escape processing of the name.)
+                      kpath=""
+                      case "$key" in
+                        "" | *[!a-z0-9.-]*) ;;
+                        *) kpath="$(LNS="$ns" LKEY="$key" awk -F '\t' '$1 == ENVIRON["LNS"] && $2 == ENVIRON["LKEY"] { print $3; exit }' "$W/keymap.tsv")" ;;
+                      esac
+                      kname="${kpath#transit/keys/}"
+                      case "$kpath" in transit/keys/*) ;; *) kname="" ;; esac
+                      case "$kname" in "" | *[!A-Za-z0-9_.-]*) kname="" ;; esac
+                      if [ -z "$kname" ]; then
+                        if ! grep -qxF "$ns/$name" "$W/waiting"; then
+                          echo "waiting on ${ns}/${name}: no EncryptionKey '$key' in namespace ${ns} (or its composite has not recorded a Transit path yet)" >&2
+                          echo "$ns/$name" >> "$W/waiting"
+                        fi
+                        continue
+                      fi
                       # A data key wrapped by the EncryptionKey's Transit KEK: plaintext is the LUKS
                       # passphrase; ciphertext is the wrapped record (crypto-erase: destroy the KEK
                       # and the passphrase can never be re-derived).
-                      dk="$(vault write -f -format=json "transit/datakey/plaintext/$key" 2>/dev/null || true)"
+                      dk="$(vault write -f -format=json "transit/datakey/plaintext/$kname" 2>/dev/null || true)"
                       P="$(printf '%s' "$dk" | jq -r '.data.plaintext // empty')"
                       C="$(printf '%s' "$dk" | jq -r '.data.ciphertext // empty')"
                       dk=""
                       if [ -z "$P" ]; then
                         if ! grep -qxF "$ns/$name" "$W/waiting"; then
-                          echo "waiting on ${ns}/${name}: no data key from EncryptionKey '$key' yet (does it exist / is its Transit key provisioned?)" >&2
+                          echo "waiting on ${ns}/${name}: no data key from EncryptionKey '$key' (${kpath}) yet (is its Transit key provisioned?)" >&2
                           echo "$ns/$name" >> "$W/waiting"
                         fi
                         continue
@@ -188,12 +228,13 @@ spec:
                           --from-literal=CRYPTO_KEY_HASH=sha256 \
                           --from-literal=WRAPPED_KEY="$C" \
                           --from-literal=OPENINFRA_ENCRYPTION_KEY="$key" \
+                          --from-literal=OPENINFRA_VAULT_KEY_PATH="$kpath" \
                           --dry-run=client -o json \
                         | jq --arg pvc "$name" --arg uid "$uid" '
                             .metadata.labels["openinfra.dev/volume-crypto"] = (if ($pvc | length) <= 63 then $pvc else "true" end)
                             | .metadata.ownerReferences = [{apiVersion: "v1", kind: "PersistentVolumeClaim", name: $pvc, uid: $uid}]' \
                         | kubectl create -f - >/dev/null; then
-                        echo "materialized ${name}-crypto in ${ns} from EncryptionKey ${key}"
+                        echo "materialized ${name}-crypto in ${ns} from EncryptionKey ${key} (${kpath})"
                       elif kubectl get secret "${name}-crypto" -n "$ns" >/dev/null 2>&1; then
                         :   # an overlapping run created it first — keep that one, never replace it
                       else

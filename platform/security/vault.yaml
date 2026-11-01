@@ -153,9 +153,13 @@ spec:
               # min_decryption_version / deletion_allowed (crypto-erase of old versions) live. A
               # recursive `*` would hand over exactly the destruction powers this identity must lack.
               # No datakey/encrypt/decrypt/export/list either: it only shepherds key lifecycle.
+              # A tenant key's name is namespace-qualified (ek_<namespace>_<name>, one segment, so `+`
+              # reaches it; a key created before namespacing keeps its bare name). The KMS front door's
+              # kms-* keys are fenced OUT with an explicit deny (deny wins in Vault).
               vault policy write encryptionkey-reconciler - <<'POLICY'
               path "transit/keys/+"        { capabilities = ["create", "read", "update"] }
               path "transit/keys/+/rotate" { capabilities = ["update"] }
+              path "transit/keys/kms-*"    { capabilities = ["deny"] }
               POLICY
 
               echo "configuring Kubernetes auth (reconciler logs in with its SA token)…"
@@ -174,9 +178,12 @@ spec:
               # key's config and delete it. Deliberately separate from the reconciler and bound to its
               # own ServiceAccount, so ordinary key management can never destroy. Still no export/
               # datakey/encrypt/decrypt — it can only destroy, not read or exfiltrate key material.
+              # It destroys only the path a Destruction's own-namespace EncryptionKey records
+              # (destruction-reconciler.yaml); the KMS front door's kms-* keys are fenced OUT here too.
               vault policy write encryptionkey-destroyer - <<'POLICY'
               path "transit/keys/+"        { capabilities = ["read", "delete"] }
               path "transit/keys/+/config" { capabilities = ["update"] }
+              path "transit/keys/kms-*"    { capabilities = ["deny"] }
               POLICY
               vault write auth/kubernetes/role/encryptionkey-destroyer \
                 bound_service_account_names=encryptionkey-destroyer \
@@ -188,9 +195,12 @@ spec:
               # encrypted Volume's <pvc>-crypto Secret from a Transit DATA KEY under the volume's
               # EncryptionKey. Scoped to datakey generation ONLY — it cannot read, rotate, or destroy
               # the KEK, and cannot decrypt (the crypto-erase authority stays with the destroyer role).
-              # `+` reaches transit/datakey/plaintext/<key> (one segment), not deeper paths.
+              # `+` reaches transit/datakey/plaintext/<key> (one segment), not deeper paths; the
+              # reconciler names only the key its claim's own-namespace EncryptionKey records. The KMS
+              # front door's kms-* keys are fenced OUT.
               vault policy write volume-crypto - <<'POLICY'
-              path "transit/datakey/plaintext/+" { capabilities = ["update"] }
+              path "transit/datakey/plaintext/+"     { capabilities = ["update"] }
+              path "transit/datakey/plaintext/kms-*" { capabilities = ["deny"] }
               POLICY
               vault write auth/kubernetes/role/volume-crypto \
                 bound_service_account_names=volume-crypto \
