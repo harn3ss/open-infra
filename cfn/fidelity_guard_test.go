@@ -59,15 +59,14 @@ var guardDeferred = map[string]string{}
 func init() {
 	lenient := "a value of the wrong shape (or outside the AWS enum) is ignored rather than refused"
 	for _, k := range []string{
-		"AWS::AppSync::GraphQLApi.ApiType", "AWS::AppSync::GraphQLApi.Visibility",
 		"AWS::S3::Bucket.ObjectLockConfiguration", "AWS::S3::Bucket.LifecycleConfiguration.Rules[0].Filter",
 		"AWS::S3::Bucket.LifecycleConfiguration.Rules[0].NoncurrentVersionExpiration",
 		"AWS::SNS::Topic.Subscription", "AWS::SSM::Parameter.Policies",
 	} {
 		guardDeferred[k] = lenient
 	}
-	for _, p := range []string{"DynamoDBConfig", "ElasticsearchConfig", "EventBridgeConfig", "HttpConfig", "LambdaConfig", "MetricsConfig", "OpenSearchServiceConfig", "RelationalDatabaseConfig", "ServiceRoleArn"} {
-		guardDeferred["AWS::AppSync::DataSource."+p] = "a data source config not matching its Type is ignored rather than refused"
+	for _, p := range []string{"MetricsConfig", "ServiceRoleArn"} {
+		guardDeferred["AWS::AppSync::DataSource."+p] = "accepted and neither mapped nor reported (the engine reaches a source with its own credentials and emits no per-source metrics)"
 	}
 	for _, p := range []string{"CachingConfig", "Code", "Kind", "MaxBatchSize", "MetricsConfig", "PipelineConfig", "Runtime", "SyncConfig"} {
 		guardDeferred["AWS::AppSync::Resolver."+p] = lenient

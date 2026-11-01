@@ -4599,6 +4599,16 @@ func translateAppSyncGraphQLApi(id string, props map[string]any, ctx *stackCtx) 
 			f = append(f, Finding{"Resource " + id, "root fields " + strings.Join(missing, ", ") + " carry no auth directive — on AWS they would use the default AuthenticationType " + at + ", but open-appsync would serve them unauthenticated; add " + dir + " to each field or to its type"})
 		}
 	}
+	if v, set := props["Visibility"]; set && v != nil {
+		if s, _ := concrete(v); s != "GLOBAL" && s != "PRIVATE" {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("Visibility must be GLOBAL or PRIVATE (got %v)", v)})
+		}
+	}
+	if v, set := props["ApiType"]; set && v != nil {
+		if _, ok := concrete(v); !ok {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("ApiType must be GRAPHQL or MERGED (got %v)", v)})
+		}
+	}
 	if v, _ := concrete(props["Visibility"]); v == "PRIVATE" {
 		f = append(f, Finding{"Resource " + id, "Visibility PRIVATE (reachable only through VPC endpoints) has no open-appsync form — refusing rather than serving the API more widely"})
 	}
@@ -4672,7 +4682,28 @@ func appsyncDataSource(cid string, sp map[string]any, f *[]Finding) (map[string]
 	name, _ := concrete(sp["Name"])
 	ds := map[string]any{"name": name}
 	dynamo := false
-	switch t, _ := concrete(sp["Type"]); t {
+	// A data source's config is the one its Type takes; another set beside it would be ignored, so it refuses.
+	typ, _ := concrete(sp["Type"])
+	configFor := map[string][]string{
+		"AMAZON_DYNAMODB": {"DynamoDBConfig"}, "HTTP": {"HttpConfig"}, "AMAZON_EVENTBRIDGE": {"EventBridgeConfig"},
+		"AMAZON_OPENSEARCH_SERVICE": {"OpenSearchServiceConfig", "ElasticsearchConfig"}, "AMAZON_ELASTICSEARCH": {"OpenSearchServiceConfig", "ElasticsearchConfig"},
+		"AWS_LAMBDA": {"LambdaConfig"}, "RELATIONAL_DATABASE": {"RelationalDatabaseConfig"}, "NONE": nil,
+	}
+	if allowed, known := configFor[typ]; known {
+		for _, k := range []string{"DynamoDBConfig", "LambdaConfig", "HttpConfig", "RelationalDatabaseConfig", "OpenSearchServiceConfig", "ElasticsearchConfig", "EventBridgeConfig"} {
+			if _, set := sp[k]; !set {
+				continue
+			}
+			ok := false
+			for _, a := range allowed {
+				ok = ok || a == k
+			}
+			if !ok {
+				*f = append(*f, Finding{"Resource " + cid, k + " does not go with a " + typ + " data source — CloudFormation takes the config of the source's Type only"})
+			}
+		}
+	}
+	switch t := typ; t {
 	case "AMAZON_DYNAMODB":
 		ds["type"] = "dynamodb"
 		dynamo = true
