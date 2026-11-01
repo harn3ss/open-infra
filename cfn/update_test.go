@@ -173,8 +173,87 @@ Resources:
 	if !contains(f.deleted, "Volume/s-data") {
 		t.Errorf("the removed Volume must be deleted, deleted: %v", f.deleted)
 	}
-	if contains(f.deleted, "EncryptionKey/"+defaultEBSKeyName) {
-		t.Errorf("the shared Retain default EncryptionKey must NOT be deleted on removal, deleted: %v", f.deleted)
+	// The stack's own default key keyed only the removed disk, so it goes with it.
+	if !contains(f.deleted, "EncryptionKey/s-ebs-default") {
+		t.Errorf("the stack's default EncryptionKey must go with its last disk, deleted: %v", f.deleted)
+	}
+}
+
+// A stack's default EncryptionKey is the stack's own (<stack>-ebs-default): another stack's crypto-erase
+// of its key never reaches this stack's disks. Removing one of two default-encrypted disks keeps the key
+// the other still uses.
+func TestUpdate_StackDefaultKey_PerStackAndKeptWhileUsed(t *testing.T) {
+	two := []byte(`
+Resources:
+  Data:
+    Type: AWS::EC2::Volume
+    Properties: { Size: 10, Encrypted: true }
+  Logs:
+    Type: AWS::EC2::Volume
+    Properties: { Size: 10, Encrypted: "true" }
+`)
+	f := &fakeApplier{}
+	if _, err := Deploy(context.Background(), two, deployOpts(), f); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	for _, v := range []string{"Volume/s-data", "Volume/s-logs"} {
+		if got := f.liveSpecs[v]["encryptionKey"]; got != "s-ebs-default" {
+			t.Fatalf("%s is keyed by %v, want the stack's own s-ebs-default", v, got)
+		}
+	}
+	o := deployOpts()
+	o.StackName = "other"
+	fo := &fakeApplier{} // the fake keeps one stack record; the other stack gets its own
+	if _, err := Deploy(context.Background(), two, o, fo); err != nil {
+		t.Fatalf("deploy other: %v", err)
+	}
+	if got := fo.liveSpecs["Volume/other-data"]["encryptionKey"]; got != "other-ebs-default" {
+		t.Fatalf("another stack's disk is keyed by %v, want its own other-ebs-default", got)
+	}
+	f.deleted = nil
+	one := []byte("Resources:\n  Logs:\n    Type: AWS::EC2::Volume\n    Properties: { Size: 10, Encrypted: \"true\" }\n")
+	if _, err := Update(context.Background(), one, deployOpts(), f); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !contains(f.deleted, "Volume/s-data") || contains(f.deleted, "EncryptionKey/s-ebs-default") {
+		t.Fatalf("removing one disk must delete it and keep the key the other uses, deleted: %v", f.deleted)
+	}
+}
+
+// A stack created when disks were keyed by the shared namespace key keeps that key: its disks are keyed
+// by it, and switching an existing disk's key is not possible. A disk it adds uses the same key.
+func TestUpdate_LegacyStackKeepsSharedDefaultKey(t *testing.T) {
+	f := &fakeApplier{stored: &StackRecord{Name: "s", Namespace: "cfn-test", Status: "CREATE_COMPLETE", Resources: []StackResource{
+		{LogicalID: "Data", APIVersion: "openinfra.dev/v1", Kind: "Volume", Name: "s-data", Spec: map[string]any{"size": "10Gi", "encrypted": true, "encryptionKey": defaultEBSKeyName}},
+		{LogicalID: "Data/" + defaultEBSKeyName, APIVersion: "openinfra.dev/v1", Kind: "EncryptionKey", Name: defaultEBSKeyName, DeletionPolicy: "Retain",
+			Spec: defaultEBSEncryptionKey().Spec},
+	}}, liveLabels: map[string]map[string]string{"Volume/s-data": {labelStack: "s"}, "EncryptionKey/" + defaultEBSKeyName: {labelStack: "s"}}}
+	two := []byte(`
+Resources:
+  Data:
+    Type: AWS::EC2::Volume
+    Properties: { Size: 10, Encrypted: true }
+  More:
+    Type: AWS::EC2::Volume
+    Properties: { Size: 5, Encrypted: true }
+`)
+	cs, _, _, err := BuildChangeSet(context.Background(), two, deployOpts(), f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cs.Changes {
+		if c.LogicalID == "Data" && c.Action != Unchanged {
+			t.Fatalf("the existing disk must keep its key (Unchanged), got %s", c.Action)
+		}
+	}
+	rec, err := Update(context.Background(), two, deployOpts(), f)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	for _, r := range rec.Resources {
+		if r.Kind == "Volume" && r.Spec["encryptionKey"] != defaultEBSKeyName {
+			t.Errorf("%s is keyed by %v, want the shared %s the stack already uses", r.LogicalID, r.Spec["encryptionKey"], defaultEBSKeyName)
+		}
 	}
 }
 

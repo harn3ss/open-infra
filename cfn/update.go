@@ -136,11 +136,17 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	// Delete Removes in reverse dependency order (cs lists them reversed already). Honor Retain: a
 	// Retain resource is left in place (now unmanaged), matching destroy's behavior — e.g. removing
 	// one disk must not delete a shared default EncryptionKey another disk still uses (#347 review item 3).
+	// An object the new stack still names (a companion another resource also carries, such as the stack's
+	// default EncryptionKey of a disk that stays) is not deleted either: only that record entry goes.
+	stillNamed := map[string]bool{}
+	for _, b := range desired {
+		stillNamed[b.res.APIVersion+"/"+b.res.Kind+"/"+b.res.Name] = true
+	}
 	for _, c := range cs.Changes {
 		if c.Action != Remove {
 			continue
 		}
-		if isRetain(currentByID[c.LogicalID]) {
+		if r := currentByID[c.LogicalID]; isRetain(r) || stillNamed[r.APIVersion+"/"+r.Kind+"/"+r.Name] {
 			continue
 		}
 		if err := ap.Delete(ctx, currentByID[c.LogicalID].APIVersion, c.Kind, c.Name); err != nil {

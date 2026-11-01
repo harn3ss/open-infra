@@ -32,6 +32,9 @@ type physNamer struct {
 	// two resources; lowercased they would share one object. Computed once per template.
 	folded     map[string]bool
 	foldedFrom *Template
+	// legacyDefaultKey is set when the existing stack keys disks with the shared namespace default
+	// EncryptionKey (defaultEBSKeyName), from before each stack had its own: the stack keeps using it.
+	legacyDefaultKey bool
 }
 
 // newPhysNamer builds the namer for a stack. prior is the stack's recorded resources (nil for a new
@@ -41,6 +44,9 @@ func newPhysNamer(stack string, prior []StackResource) *physNamer {
 	for _, r := range prior {
 		if r.Name != "" && !strings.Contains(r.LogicalID, "/") {
 			n.prior[r.LogicalID] = r.Name
+		}
+		if r.Kind == "EncryptionKey" && r.Name == defaultEBSKeyName && strings.Contains(r.LogicalID, "/") {
+			n.legacyDefaultKey = true
 		}
 	}
 	return n

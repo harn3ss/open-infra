@@ -513,9 +513,9 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 			f = append(f, Finding{"Resource " + id, "KmsKeyId must reference an in-stack AWS::KMS::Key — open-infra keys volumes with a customer kind: EncryptionKey (via that KMS key); an ARN/alias to an out-of-stack or AWS-managed key has no mappable equivalent. Omit KmsKeyId to use the per-namespace default key."})
 		default:
 			// #347 Phase 1.7 (#344 4.2): Encrypted with NO KmsKeyId — AWS keys it with the account-default
-			// aws/ebs key; open-infra keys it with the per-namespace default kind: EncryptionKey, created
-			// on first use (emitted as a companion below).
-			spec["encryptionKey"] = defaultEBSKeyName
+			// aws/ebs key; open-infra keys it with the stack's default kind: EncryptionKey, created on
+			// first use (emitted as a companion below).
+			spec["encryptionKey"] = ctx.defaultEBSKey().Name
 			needDefaultKey = true
 		}
 	}
@@ -525,8 +525,9 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Volume", Name: ctx.name(id), Spec: spec}
 	if needDefaultKey {
-		m.Extra = append(m.Extra, defaultEBSEncryptionKey())
-		m.Caveats = append(m.Caveats, "Encrypted with no KmsKeyId — keyed by the per-namespace default kind: EncryptionKey \""+defaultEBSKeyName+"\" (the open-infra analog of AWS's account-default aws/ebs key), created on first use")
+		k := ctx.defaultEBSKey()
+		m.Extra = append(m.Extra, k)
+		m.Caveats = append(m.Caveats, "Encrypted with no KmsKeyId — keyed by the stack's default kind: EncryptionKey \""+k.Name+"\" (the open-infra analog of AWS's account-default aws/ebs key), created on first use")
 	}
 	// #114 (Part 2, disproven): VolumeType/Iops/Throughput INTENT does not map to a Longhorn setting.
 	// Longhorn is replica-based distributed storage; it provisions durability (replica count), not
@@ -541,13 +542,18 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	return m, f
 }
 
-// defaultEBSKeyName is the per-namespace default kind: EncryptionKey an Encrypted EBS disk with NO
-// KmsKeyId is keyed by — the open-infra analog of AWS's account-default aws/ebs key (#347 Phase 1.7 /
-// #344 4.2). Created on first use (emitted as a companion), idempotent by name.
+// defaultEBSKeyName is the default kind: EncryptionKey's name stem. An Encrypted EBS disk with NO
+// KmsKeyId is keyed by its stack's default key — the open-infra analog of AWS's account-default aws/ebs
+// key (#347 Phase 1.7 / #344 4.2), created on first use (emitted as a companion).
+//
+// The key is the stack's own (<stack>-ebs-default), not one key for every stack in the namespace: every
+// caller's stacks share the CloudFormation namespace, so a shared key would let one caller's crypto-erase
+// (kind: Destruction of the key) erase every other caller's default-encrypted disks. A stack created
+// while the key was shared keeps using the shared "ebs-default" (its disks are keyed by it).
 const defaultEBSKeyName = "ebs-default"
 
-// defaultEBSEncryptionKey is the companion kind: EncryptionKey that backs an Encrypted-without-KmsKeyId
-// disk. Annual rotation, mirroring AWS default-key behavior.
+// defaultEBSEncryptionKey is the shared companion kind: EncryptionKey that stacks created before per-stack
+// default keys use. Annual rotation, mirroring AWS default-key behavior.
 func defaultEBSEncryptionKey() *Manifest {
 	return &Manifest{
 		APIVersion: "openinfra.dev/v1", Kind: "EncryptionKey", Name: defaultEBSKeyName,
@@ -562,6 +568,30 @@ func defaultEBSEncryptionKey() *Manifest {
 		// strand every disk that references it until re-created. #347 review item 3.
 		DeletionPolicy: "Retain",
 		Shared:         true,
+	}
+}
+
+// defaultEBSKey is the default kind: EncryptionKey an Encrypted-without-KmsKeyId disk of this stack is
+// keyed by: the stack's own key, or the shared one for a stack that already uses it. The stack's own key
+// is deleted with the stack unless a disk resource of the stack is retained (it keys that disk).
+func (c *stackCtx) defaultEBSKey() *Manifest {
+	if c == nil || c.namer == nil || c.namer.legacyDefaultKey {
+		return defaultEBSEncryptionKey()
+	}
+	policy := "Delete"
+	for _, r := range c.template.Resources {
+		if (r.Type == "AWS::EC2::Volume" || r.Type == "AWS::EC2::Instance") && c.included(r) &&
+			(isRetain(StackResource{DeletionPolicy: r.DeletionPolicy}) || strings.EqualFold(r.DeletionPolicy, "Snapshot")) {
+			policy = "Retain"
+		}
+	}
+	return &Manifest{
+		APIVersion: "openinfra.dev/v1", Kind: "EncryptionKey", Name: stackQualifiedName(c.namer.stack, defaultEBSKeyName),
+		Spec: map[string]any{
+			"description":  "the stack's default data-disk encryption key — open-infra analog of AWS aws/ebs; created on first use for an Encrypted volume/disk with no KmsKeyId",
+			"rotationDays": 365,
+		},
+		DeletionPolicy: policy,
 	}
 }
 
@@ -991,9 +1021,9 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 					encKey = k
 				} else {
 					// #347 Phase 1.7 (#344 4.2): Encrypted with NO KmsKeyId — the AWS account-default
-					// aws/ebs key; open-infra keys it with the per-namespace default kind: EncryptionKey,
+					// aws/ebs key; open-infra keys it with the stack's default kind: EncryptionKey,
 					// created on first use (companion emitted after the manifest is built).
-					encKey = defaultEBSKeyName
+					encKey = ctx.defaultEBSKey().Name
 					vmNeedDefaultKey = true
 				}
 			}
@@ -1164,8 +1194,9 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: ctx.name(id), Spec: spec, Requires: requires}
 	if vmNeedDefaultKey {
-		m.Extra = append(m.Extra, defaultEBSEncryptionKey())
-		cav = append(cav, "an encrypted data disk has no KmsKeyId — keyed by the per-namespace default kind: EncryptionKey \""+defaultEBSKeyName+"\" (open-infra analog of AWS's account-default aws/ebs key), created on first use")
+		k := ctx.defaultEBSKey()
+		m.Extra = append(m.Extra, k)
+		cav = append(cav, "an encrypted data disk has no KmsKeyId — keyed by the stack's default kind: EncryptionKey \""+k.Name+"\" (open-infra analog of AWS's account-default aws/ebs key), created on first use")
 	}
 
 	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "PrivateIpAddress", "SourceDestCheck", "DisableApiTermination", "Tags"} {
