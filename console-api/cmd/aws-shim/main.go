@@ -583,7 +583,7 @@ func run(logger *slog.Logger) error {
 			cfnH.cs, cfnH.authzNS = cs, authzNS              // a User's coarse RBAC gate, as every front door
 			cfnH.noecho = &noEchoSecrets{cs: cs, ns: keysNS} // NoEcho values: Secrets in the shim's namespace
 			cfnH.recNS = keysNS                              // stack/change-set/drift records: Secrets there too (cfn_records.go)
-			cfnH.buckets = mc                              // a stack delete refuses a non-empty bucket and removes an empty one
+			cfnH.buckets = mc                                // a stack delete refuses a non-empty bucket and removes an empty one
 			// A stack's queues/topics/parameters/keys go into the stores those front doors serve (cfn_services.go).
 			if cfnSvcOwners != nil {
 				cfnH.services = &cfnServices{sqs: sqsH, sns: snsH, ssm: ssmH, kms: kmsH, owners: cfnSvcOwners}
