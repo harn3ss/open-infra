@@ -325,16 +325,79 @@ func TestGenerate_ResourceNamesAreScoped(t *testing.T) {
 		}
 	}
 
-	// A "*" in a name is a wildcard within the name only (the signer-name convention cert-manager's
-	// approver relies on), never the whole type.
-	odd := engine("User::odd")
-	if d := odd.Authorize(req("User", "odd", "get", "configmaps", "ns/abc")); !d.Allowed {
-		t.Errorf("a* should match abc: %s", d.Reason)
+	// RBAC matches a "*" name literally; Cedar would read it as a prefix wildcard. Outside signers the
+	// name is dropped (never broader than RBAC), with a caveat.
+	odd := byP["User::odd"]
+	if len(odd.Statements) != 0 {
+		t.Errorf("a* on configmaps must grant nothing; got %+v", odd.Statements)
 	}
-	if d := odd.Authorize(req("User", "odd", "get", "configmaps", "ns/bcd")); d.Allowed {
-		t.Errorf("a* must not match bcd")
+	if !strings.Contains(strings.Join(odd.Caveats, " "), "dropped") {
+		t.Errorf("expected a caveat for the dropped name; got %v", odd.Caveats)
 	}
-	if !strings.Contains(strings.Join(byP["User::odd"].Caveats, " "), "wildcard within the name") {
-		t.Errorf("expected a caveat for the wildcard name; got %v", byP["User::odd"].Caveats)
+}
+
+// Signers are the one type whose names use the "<domain>/*" form: the API server checks it literally
+// when approving or signing, so it stays a wildcard within the name (cert-manager's approver relies on
+// it), and only on signers.
+func TestGenerate_SignerNameWildcard(t *testing.T) {
+	in := Inputs{
+		ClusterRoles: map[string]rbacv1.ClusterRole{"approver": {
+			ObjectMeta: metav1.ObjectMeta{Name: "approver"},
+			Rules: []rbacv1.PolicyRule{{Verbs: []string{"approve"}, APIGroups: []string{"certificates.k8s.io"},
+				Resources: []string{"signers"}, ResourceNames: []string{"issuers.cert-manager.io/*"}}},
+		}},
+		ClusterRoleBindings: []rbacv1.ClusterRoleBinding{{RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "approver"},
+			Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Namespace: "cert-manager", Name: "cm"}}}},
+	}
+	gs := Generate(in)
+	if len(gs) != 1 {
+		t.Fatalf("grants = %+v", gs)
+	}
+	e, err := policyengine.NewEngine(gs[0].Statements)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa := "system:serviceaccount:cert-manager:cm"
+	for id, want := range map[string]bool{
+		"issuers.cert-manager.io/*":           true, // the form the API server checks
+		"issuers.cert-manager.io/ns.issuer":   true,
+		"clusterissuers.cert-manager.io/one":  false,
+		"kubernetes.io/kube-apiserver-client": false,
+	} {
+		if d := e.Authorize(req("User", sa, "approve", "signers.certificates.k8s.io", id)); d.Allowed != want {
+			t.Errorf("approve signer %q: allowed=%v want %v", id, d.Allowed, want)
+		}
+	}
+	if d := e.Authorize(req("User", sa, "approve", "configmaps", "issuers.cert-manager.io/x")); d.Allowed {
+		t.Errorf("the signer wildcard must not reach another type")
+	}
+}
+
+// cert-manager's approver is checked on its OWN signers resource (cert-manager.io), the shape the live
+// cert-manager ClusterRole has: dropping it would stop every certificate approval.
+func TestGenerate_CertManagerSignerWildcard(t *testing.T) {
+	in := Inputs{
+		ClusterRoles: map[string]rbacv1.ClusterRole{"cm-approve": {
+			ObjectMeta: metav1.ObjectMeta{Name: "cm-approve"},
+			Rules: []rbacv1.PolicyRule{{Verbs: []string{"approve"}, APIGroups: []string{"cert-manager.io"},
+				Resources: []string{"signers"}, ResourceNames: []string{"issuers.cert-manager.io/*", "clusterissuers.cert-manager.io/*"}}},
+		}},
+		ClusterRoleBindings: []rbacv1.ClusterRoleBinding{{RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "cm-approve"},
+			Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Namespace: "cert-manager", Name: "cert-manager"}}}},
+	}
+	e, err := policyengine.NewEngine(Generate(in)[0].Statements)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa := "system:serviceaccount:cert-manager:cert-manager"
+	for id, want := range map[string]bool{
+		"issuers.cert-manager.io/*":                   true,
+		"clusterissuers.cert-manager.io/*":            true,
+		"clusterissuers.cert-manager.io/openinfra-ca": true,
+		"other.example.com/*":                         false,
+	} {
+		if d := e.Authorize(req("User", sa, "approve", "signers.cert-manager.io", id)); d.Allowed != want {
+			t.Errorf("approve %q: allowed=%v want %v", id, d.Allowed, want)
+		}
 	}
 }

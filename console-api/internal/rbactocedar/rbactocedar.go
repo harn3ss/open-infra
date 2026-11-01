@@ -157,9 +157,15 @@ func ruleToStatements(r rbacv1.PolicyRule, scopeNS string) ([]policyengine.State
 // keys a request's id as "<namespace>/<name>", or "<name>" for a cluster-scoped object, so a cluster-wide
 // pattern becomes "<type>::<name>" plus "<type>::*/<name>" (that name in any namespace), and a namespaced
 // one "<type>::<ns>/<name>". A request with no name (create, an unfiltered list) then matches nothing,
-// which is what RBAC does with a resourceNames rule. A "*" in a name stays a wildcard within the name:
-// Kubernetes uses that form for signer names (cert-manager approves "issuers.cert-manager.io/*", meaning
-// every signer under that prefix), and it never reaches past the rule's resource type.
+// which is what RBAC does with a resourceNames rule.
+//
+// RBAC compares names exactly, but a Cedar pattern treats "*" as a wildcard, so a name containing "*" is
+// translated only where the wildcard reading is what the checker means: signers. Kubernetes (CSRs,
+// certificates.k8s.io) and cert-manager (CertificateRequests, cert-manager.io) both check the
+// "<domain>/*" form literally as well as the exact signer name ("issuers.cert-manager.io/*" approves every
+// signer under that domain), so the wildcard grants nothing those checks would not. On any other type
+// a "*" name would widen an exact grant to a prefix, so it is dropped (Cedar is then narrower than RBAC,
+// which matches only an object literally named so — never broader) and recorded as a caveat.
 func scopeToNames(patterns, names []string) ([]string, []string) {
 	var out, caveats []string
 	for _, p := range patterns {
@@ -175,6 +181,10 @@ func scopeToNames(patterns, names []string) ([]string, []string) {
 				continue
 			}
 			if strings.Contains(n, "*") {
+				if !signerTypes[typ] {
+					caveats = append(caveats, fmt.Sprintf("resourceName %q on %s contains \"*\", which Cedar would read as a wildcard; dropped (narrower than RBAC, which matches only that literal name)", n, typ))
+					continue
+				}
 				caveats = append(caveats, fmt.Sprintf("resourceName %q is matched as a wildcard within the name (the signer-name convention)", n))
 			}
 			switch {
@@ -186,6 +196,13 @@ func scopeToNames(patterns, names []string) ([]string, []string) {
 		}
 	}
 	return dedupeStrings(out), dedupeStrings(caveats)
+}
+
+// signerTypes are the Cedar resource types of signers, whose names use the "<domain>/*" wildcard form
+// (see scopeToNames): Kubernetes' CSR signers and cert-manager's CertificateRequest signers.
+var signerTypes = map[string]bool{
+	"signers.certificates.k8s.io": true,
+	"signers.cert-manager.io":     true,
 }
 
 // resourceString maps (apiGroup, resource) + scope to Cedar resource strings "<resource>.<group>::<scope>".
