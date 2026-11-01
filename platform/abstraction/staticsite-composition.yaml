@@ -461,9 +461,10 @@ spec:
                           # host-sourced traffic (hostNetwork Traefik; NodePort, LoadBalancer and external-IP Services
                           # through kube-proxy) arrives as a node's kube-ovn join IP
                           - ipBlock: { cidr: 100.64.0.0/16 }
-                          # the ingress controller, should it run on the pod network
+                          # the ingress controller. Traefik runs on the host network and dials a pod by its IP, so the
+                          # connection comes from the node's own address, not the join subnet. kube-system's host-network
+                          # pods carry the node addresses, so admitting the namespace admits them (as the Application policy does).
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
-                            podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
                           # Prometheus, scraping metrics
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
                             podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }

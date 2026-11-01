@@ -586,3 +586,24 @@ func TestIsolation_EveryPodRunningCompositionIsCovered(t *testing.T) {
 		t.Errorf("compositions that run pods with no isolation fixture (add one to isoFixtures, or an isoExempt reason): %v", missing)
 	}
 }
+
+// Traefik runs on the host network and dials a backend pod by its IP, so the connection comes from the
+// node's own address, not the join subnet. A peer that names the Traefik pod by label does not match
+// that address on kube-ovn, and the policy then silently drops every request the Ingress forwards.
+// Admit kube-system as a namespace instead (its host-network pods carry the node addresses).
+func TestIsolation_IngressControllerIsAdmittedByNamespace(t *testing.T) {
+	files, err := filepath.Glob("../../platform/abstraction/*-composition.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files = append(files, "../../platform/abstraction/composition.yaml")
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }") {
+			t.Errorf("%s admits the ingress controller by pod label; admit the kube-system namespace instead", filepath.Base(f))
+		}
+	}
+}
