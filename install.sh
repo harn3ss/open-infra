@@ -267,7 +267,8 @@ else
   # policy has to admit, so any namespace could reach any Application by Service name.
   # kube-proxy stays (a supported kube-ovn overlay setup) for host-sourced traffic,
   # NodePort/LoadBalancer ingress, and zero-endpoint Services (kube-ovn drops a
-  # no-backend VIP, so those calls take the same host path as with enable-lb=false).
+  # no-backend VIP, so those calls take the same host path as with enable-lb=false, where
+  # platform/networking/node-net-guard.yaml rejects them).
   # Zero-endpoint traffic stays on-node only if the CNI knows the real service CIDR: the
   # SVC_CIDR rewrite above sets it for the controller AND the CNI. A wrong CNI
   # service-cluster-ip-range lets that traffic fall through to the default gateway in

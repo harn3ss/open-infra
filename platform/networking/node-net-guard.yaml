@@ -1,28 +1,36 @@
-# Routed-VIP return path: replies to LAN clients go back through the router.
+# node-net-guard: two node-level packet rules the overlay alone doesn't provide.
 #
-# A routed (BGP) LoadBalancer VIP is reached through the router: client -> router -> node. If the client
-# shares the node's subnet, the node would answer it DIRECTLY over L2, so the router's stateful
-# firewall only ever sees one direction of the connection and drops the rest (the handshake completes,
-# then the connection hangs). This DaemonSet makes every node send replies for connections that
-# arrived addressed to a routed VIP back through its default gateway, so the router sees both
-# directions. Connections to anything else are untouched.
+# 1. Routed-VIP return path: replies to LAN clients go back through the router.
+#    A routed (BGP) LoadBalancer VIP is reached through the router: client -> router -> node. If the
+#    client shares the node's subnet, the node would answer it DIRECTLY over L2, so the router's
+#    stateful firewall only ever sees one direction of the connection and drops the rest (the
+#    handshake completes, then the connection hangs). mangle PREROUTING CONNMARKs a NEW connection
+#    whose destination is in a BGP-advertised MetalLB pool; reply packets of that connection
+#    (forwarded ones in PREROUTING, locally generated ones such as a hostNetwork ingress in OUTPUT)
+#    get the fwmark back, and an ip rule routes that fwmark through the node's default gateway. The
+#    routed pools are read from MetalLB (IPAddressPools referenced by a BGPAdvertisement), so no
+#    addresses are configured here; with no BGP pools this part does nothing.
 #
-# How: mangle PREROUTING CONNMARKs a NEW connection whose destination is in a BGP-advertised MetalLB
-# pool; reply packets of that connection (forwarded ones in PREROUTING, locally generated ones such as
-# a hostNetwork ingress in OUTPUT) get the fwmark back, and an ip rule routes that fwmark through the
-# node's default gateway. The routed pools are read from MetalLB (IPAddressPools referenced by a
-# BGPAdvertisement), so no addresses are configured here; with no BGP pools it does nothing.
+# 2. Service traffic with no backend is refused on the node, never routed out.
+#    kube-ovn load-balances ClusterIPs in OVN and drops the VIP of a Service with no ready endpoints,
+#    so a pod's call to such a Service reaches the node still addressed to the service CIDR. kube-ovn's
+#    FORWARD rules accept service-CIDR traffic ahead of kube-proxy's "has no endpoints" REJECT, so the
+#    packet was routed out the default route (masqueraded to the node IP) instead: the caller waited
+#    for a timeout and the gateway received cluster-internal traffic. A NEW packet still addressed to
+#    the service CIDR in FORWARD (after DNAT) has no backend by definition, so it is rejected first:
+#    TCP reset for TCP, ICMP port-unreachable otherwise. The service CIDR comes from kube-ovn's own
+#    ovn40services ipset; without kube-ovn this part does nothing.
+#
 # Stopping the pod removes everything it added, so deleting the DaemonSet is a full rollback.
-#
 # It runs in the kube-ovn image: that image is on every node already and its iptables (nf_tables
 # backend) matches the host's.
 apiVersion: v1
 kind: ServiceAccount
-metadata: { name: vip-return, namespace: kube-system }
+metadata: { name: node-net-guard, namespace: kube-system }
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
-metadata: { name: vip-return-read-pools, namespace: metallb-system }
+metadata: { name: node-net-guard-read-pools, namespace: metallb-system }
 rules:
   - apiGroups: ["metallb.io"]
     resources: ["ipaddresspools", "bgpadvertisements"]
@@ -30,17 +38,17 @@ rules:
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: { name: vip-return-read-pools, namespace: metallb-system }
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: vip-return-read-pools }
-subjects: [ { kind: ServiceAccount, name: vip-return, namespace: kube-system } ]
+metadata: { name: node-net-guard-read-pools, namespace: metallb-system }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: node-net-guard-read-pools }
+subjects: [ { kind: ServiceAccount, name: node-net-guard, namespace: kube-system } ]
 ---
 apiVersion: v1
 kind: ConfigMap
-metadata: { name: vip-return-script, namespace: kube-system }
+metadata: { name: node-net-guard-script, namespace: kube-system }
 data:
-  vip-return.sh: |
+  node-net-guard.sh: |
     #!/bin/bash
-    # Keeps the routed-VIP return-path rules in place; removes them on exit.
+    # Keeps the routed-VIP return-path and no-backend service REJECT rules in place; removes them on exit.
     set -u
     MARK="${MARK:-0x1000000}"          # one bit no other component uses (kube-proxy, kube-ovn use lower bits)
     TABLE="${TABLE:-2540}"
@@ -49,7 +57,7 @@ data:
     IPT="iptables -w 5"
     CH_PRE=OI-VIP-RETURN-PRE
     CH_OUT=OI-VIP-RETURN-OUT
-    log() { echo "$(date -u +%FT%TZ) vip-return: $*"; }
+    log() { echo "$(date -u +%FT%TZ) node-net-guard: $*"; }
 
     routed_cidrs() {
       # VIP_CIDRS (space-separated) overrides discovery.
@@ -90,6 +98,33 @@ data:
       [ "$(ip route show table "$TABLE" 2>/dev/null | awk '/^default/{print $3}')" = "$gw" ] || ip route replace default via "$gw" table "$TABLE"
     }
 
+    CH_SVC=OI-SVC-NO-BACKEND
+    svc_reject() {
+      # Only on kube-ovn nodes: the ovn40services ipset holds the service CIDR(s).
+      if ! ipset list -n 2>/dev/null | grep -qx ovn40services; then
+        [ "${svc_state:-}" = absent ] || log "no ovn40services ipset; service REJECT not applied"
+        svc_state=absent; return
+      fi
+      $IPT -N $CH_SVC 2>/dev/null || true
+      local want
+      want=$(printf '%s\n' \
+        "-A $CH_SVC -p tcp -m set --match-set ovn40services dst -m conntrack --ctstate NEW -j REJECT --reject-with tcp-reset" \
+        "-A $CH_SVC -m set --match-set ovn40services dst -m conntrack --ctstate NEW -j REJECT --reject-with icmp-port-unreachable")
+      if [ "$(iptables-save -t filter 2>/dev/null | grep -E "^-A $CH_SVC ")" != "$want" ]; then
+        $IPT -F $CH_SVC
+        while read -r line; do $IPT $line; done <<< "$want"
+        log "programmed $CH_SVC"
+      fi
+      # Our jump must be FIRST in FORWARD, ahead of the ACCEPT rules that would let the packet through.
+      if [ "$($IPT -S FORWARD 2>/dev/null | sed -n 2p)" != "-A FORWARD -j $CH_SVC" ]; then
+        while $IPT -D FORWARD -j $CH_SVC 2>/dev/null; do :; done
+        $IPT -I FORWARD 1 -j $CH_SVC
+        [ "${svc_state:-}" = on ] && log "re-inserted the $CH_SVC jump at the top of FORWARD"
+      fi
+      [ "${svc_state:-}" = on ] || log "service traffic with no backend is rejected on this node"
+      svc_state=on
+    }
+
     cleanup() {
       log "removing rules"
       for pair in "$CH_PRE:PREROUTING" "$CH_OUT:OUTPUT"; do
@@ -97,6 +132,8 @@ data:
         while $IPT -t mangle -D "$hook" -j "$ch" 2>/dev/null; do :; done
         $IPT -t mangle -F "$ch" 2>/dev/null; $IPT -t mangle -X "$ch" 2>/dev/null
       done
+      while $IPT -D FORWARD -j $CH_SVC 2>/dev/null; do :; done
+      $IPT -F $CH_SVC 2>/dev/null; $IPT -X $CH_SVC 2>/dev/null
       while ip rule del fwmark "$MARK/$MARK" lookup "$TABLE" 2>/dev/null; do :; done
       ip route flush table "$TABLE" 2>/dev/null
       exit 0
@@ -105,6 +142,7 @@ data:
 
     last=""
     while true; do
+      svc_reject
       cidrs=$(routed_cidrs | tr '\n' ' ' | sed 's/ *$//')
       gw=$(ip -4 route show default | awk 'NR==1{print $3}')
       if [ -z "$cidrs" ] || [ -z "$gw" ]; then
@@ -121,25 +159,25 @@ data:
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: vip-return
+  name: node-net-guard
   namespace: kube-system
-  labels: { app.kubernetes.io/name: vip-return }
+  labels: { app.kubernetes.io/name: node-net-guard }
 spec:
-  selector: { matchLabels: { app.kubernetes.io/name: vip-return } }
+  selector: { matchLabels: { app.kubernetes.io/name: node-net-guard } }
   updateStrategy: { type: RollingUpdate, rollingUpdate: { maxUnavailable: 1 } }
   template:
     metadata:
-      labels: { app.kubernetes.io/name: vip-return }
+      labels: { app.kubernetes.io/name: node-net-guard }
     spec:
-      serviceAccountName: vip-return
+      serviceAccountName: node-net-guard
       hostNetwork: true
       priorityClassName: system-node-critical
       tolerations: [ { operator: Exists } ]
       terminationGracePeriodSeconds: 20
       containers:
-        - name: vip-return
+        - name: node-net-guard
           image: docker.io/kubeovn/kube-ovn:v1.14.41
-          command: ["/bin/bash", "/script/vip-return.sh"]
+          command: ["/bin/bash", "/script/node-net-guard.sh"]
           securityContext:
             privileged: false
             capabilities: { add: ["NET_ADMIN", "NET_RAW"], drop: ["ALL"] }
@@ -152,6 +190,6 @@ spec:
             - { name: xtables-lock, mountPath: /run/xtables.lock }
       volumes:
         - name: script
-          configMap: { name: vip-return-script, defaultMode: 0755 }
+          configMap: { name: node-net-guard-script, defaultMode: 0755 }
         - name: xtables-lock
           hostPath: { path: /run/xtables.lock, type: FileOrCreate }

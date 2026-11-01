@@ -123,10 +123,16 @@ MetalLB gives a `LoadBalancer` Service an address LAN clients can reach, in one 
 
 A routed address needs one more piece when clients share the nodes' subnet. The node would answer
 such a client directly over layer 2, so the router (and its stateful firewall) would see only one
-direction of the connection and drop it. `platform/networking/vip-return.yaml`, a small DaemonSet,
+direction of the connection and drop it. `platform/networking/node-net-guard.yaml`, a small DaemonSet,
 makes every node send replies for connections addressed to a routed VIP back through its default
-gateway. It reads the routed pools from MetalLB (pools referenced by a BGPAdvertisement), leaves all
-other traffic alone, and removes its rules when stopped.
+gateway. It reads the routed pools from MetalLB (pools referenced by a BGPAdvertisement) and leaves
+all other traffic alone.
+
+The same DaemonSet refuses Service traffic that has no backend. kube-ovn load-balances ClusterIPs in
+OVN and drops the VIP of a Service with no ready endpoints, so a call to such a Service (a function
+scaled to zero, say) reaches the node still addressed to the service CIDR. The node rejects it at once
+(a TCP reset) instead of routing it toward the default gateway, so the caller fails fast and
+cluster-internal traffic never reaches the LAN router. Stopping the DaemonSet removes its rules.
 
 Check from a real LAN client, not a node: `probe/lan-ingress-reachability.sh` (Linux/macOS) or
 `probe/lan-ingress-reachability.ps1` (Windows).

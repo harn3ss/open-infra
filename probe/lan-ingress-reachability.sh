@@ -72,7 +72,7 @@ err="$(cat "/tmp/lan-ingress.$$.err" 2>/dev/null)"; rm -f "/tmp/lan-ingress.$$.e
 if [ "$rc" -ne 0 ]; then
   case "$rc" in
     7)  fail "connection REFUSED (rc=7) — nothing is listening at the VIP from the LAN. Likely an unannounced MetalLB address or a VIP on a down/unendpointed node. ${err}" ;;
-    28) fail "connection TIMED OUT (rc=28) — the classic asymmetric-routing symptom: the SYN reaches the node but the reply bypasses the router, which then drops the flow. Replies must return through the router: platform/networking/vip-return.yaml does this for routed (BGP) VIPs. ${err}" ;;
+    28) fail "connection TIMED OUT (rc=28) — the classic asymmetric-routing symptom: the SYN reaches the node but the reply bypasses the router, which then drops the flow. Replies must return through the router: platform/networking/node-net-guard.yaml does this for routed (BGP) VIPs. ${err}" ;;
     35|52|56) fail "connection was RESET / closed mid-TLS (rc=${rc}) — same asymmetric-routing / unannounced-VIP class seen from a LAN client. ${err}" ;;
     *)  fail "curl could not reach ${INGRESS_URL} (rc=${rc}): ${err}" ;;
   esac

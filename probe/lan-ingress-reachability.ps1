@@ -38,7 +38,7 @@ if (-not $Force -and (Get-Command Get-Service -ErrorAction SilentlyContinue)) {
   }
 }
 
-$timeoutMsg = "connection TIMED OUT: the classic asymmetric-routing symptom (the SYN reaches the node but the reply bypasses the router, which then drops the flow). Replies must return through the router; platform/networking/vip-return.yaml does this for routed (BGP) VIPs."
+$timeoutMsg = "connection TIMED OUT: the classic asymmetric-routing symptom (the SYN reaches the node but the reply bypasses the router, which then drops the flow). Replies must return through the router; platform/networking/node-net-guard.yaml does this for routed (BGP) VIPs."
 $refusedMsg = "connection REFUSED or unreachable: nothing answers at the VIP from the LAN. Likely an unannounced MetalLB address or a VIP whose backend is down."
 $resetMsg   = "connection RESET / closed mid-request or mid-TLS: same asymmetric-routing / unannounced-VIP class."
 
