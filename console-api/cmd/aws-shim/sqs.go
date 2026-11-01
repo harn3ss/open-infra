@@ -136,6 +136,13 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 
 	ctx := r.Context()
 	h.resolveLegacyQueueURL(ctx, body) // a queue made before the account changed answers to either URL (identity_compat.go)
+	// A queue is its name: a QueueUrl naming another host or account (the URL a stack reported, one
+	// minted for another endpoint of this shim) means the queue of that name.
+	if u, _ := body["QueueUrl"].(string); u != "" {
+		if stored, found, err := h.canonicalURL(ctx, u); err == nil && found {
+			body["QueueUrl"] = stored
+		}
+	}
 	switch op {
 	case "CreateQueue":
 		h.createQueue(ctx, w, r, requestID, body)
@@ -570,6 +577,15 @@ func (h *sqsHandler) queueURL(r *http.Request, name string) string {
 		scheme = "https"
 	}
 	return scheme + "://" + r.Host + "/" + h.account + "/" + name
+}
+
+// canonicalURL is the stored URL of the queue a QueueUrl addresses: the URL itself when a queue has it,
+// else the queue named by its last path segment (queue names are unique in this store).
+func (h *sqsHandler) canonicalURL(ctx context.Context, u string) (string, bool, error) {
+	if _, _, ok, err := h.store.queueAttrs(ctx, u); err != nil || ok {
+		return u, ok, err
+	}
+	return h.store.queueURLByName(ctx, queueNameFromURL(u))
 }
 
 func (h *sqsHandler) queueARN(name string) string {

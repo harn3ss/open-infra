@@ -485,6 +485,12 @@ honored; a `RedrivePolicy` genuinely moves a message to its DLQ after `maxReceiv
 `dataPlane` at **queue** granularity, with `sqs:ReceiveMessage` separable from `sqs:DeleteMessage` (a
 receive-but-not-delete consumer is a real configuration).
 
+A queue is addressed by its **name**: a `QueueUrl` that names another host or account (the URL a
+CloudFormation stack reports, or one minted through another endpoint of the shim) means the queue of that
+name — queue names are unique here, so any client that reaches the shim can use any URL for it. A stack's
+queue URLs name `SQS_QUEUE_URL_BASE` (default the shim's in-cluster address; set it to a LAN endpoint so a
+client that sends to the URL's own host reaches the shim from there).
+
 **Deliberate divergences (refused honestly, never faked):**
 - **FIFO** (`.fifo`) queues are refused at `CreateQueue` — the group-ordering + dedup contract is not
   implemented, and a FIFO queue that isn't FIFO is worse than an absent one.
@@ -514,10 +520,21 @@ bare payload when a subscription sets `RawMessageDelivery=true`. Authorized thro
 `sns:Subscribe` is **separable from `sns:Publish`** — Subscribe points the platform's outbound delivery
 at a destination and is independently grantable.
 
+**`lambda` subscriptions** are delivered too: each `Publish` invokes the subscribed `kind: Function` with
+the SNS event (`{"Records":[{"EventSource":"aws:sns","Sns":{…}}]}`), asynchronously as SNS does, retried
+up to three times on a failed invoke. A `Subscribe` with `Protocol=lambda` needs the caller to be able to
+invoke that Function themselves (the RBAC and `lambda:InvokeFunction` checks the Lambda front door
+makes) — a subscription cannot invoke what its creator cannot. A delivery still retrying when the shim
+restarts is lost (it is not on a durable queue, unlike the `sqs` fan-out).
+
+A topic is addressed by its name: a `TopicArn` naming another account or region (for example the ARN a
+CloudFormation stack reports) means the topic of that name here.
+
 **Deliberate divergences, refused honestly (never accepted-and-dropped):**
-- v1 supports the **`sqs`** subscription protocol only. `lambda`, `http`/`https` (an egress surface that
-  needs a confirmation handshake + destination allowlist), `email`, `sms`, `application`, `firehose` are
-  refused at `Subscribe` — a subscription that exists but never delivers is worse than a rejected one.
+- The **`sqs`** and **`lambda`** subscription protocols are delivered. `http`/`https` (an egress surface
+  that needs a confirmation handshake + destination allowlist), `email`, `sms`, `application`,
+  `firehose` are refused at `Subscribe` — a subscription that exists but never delivers is worse than a
+  rejected one.
 - **Message `FilterPolicy`** is refused (accepting-and-ignoring would deliver messages a subscriber
   explicitly filtered out — a correctness + privacy defect).
 - **`.fifo` topics** are refused.

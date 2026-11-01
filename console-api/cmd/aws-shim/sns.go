@@ -6,9 +6,9 @@
 // the SQS store before it acknowledges, so a returned MessageId always means the message was persisted
 // for every current subscription — never the fire-and-forget false-green SNS makes easy.
 //
-// v1 supports the `sqs` subscription protocol only. Everything the shim does not genuinely implement is
-// REFUSED honestly, never accepted-and-silently-dropped: lambda/http/https/email/sms/application/
-// firehose protocols, message FilterPolicy, `.fifo` topics, and a topic resource Policy on
+// The `sqs` and `lambda` subscription protocols are delivered (lambda: sns_lambda.go). Everything the
+// shim does not genuinely implement is REFUSED honestly, never accepted-and-silently-dropped:
+// http/https/email/sms/application/firehose protocols, message FilterPolicy, `.fifo` topics, and a topic resource Policy on
 // SetTopicAttributes (this is a one-policy-world; authorization is Cedar, not a second engine). The
 // delivered envelope omits the AWS message Signature/SigningCertURL rather than emitting a meaningless
 // one — subscribers cannot verify, and we say so rather than teach a false "verified". See
@@ -43,6 +43,12 @@ type snsHandler struct {
 	sqs     *sqsStore // SNS -> SQS delivery (durable); nil disables sqs fan-out
 	authz   *dataplaneauthz.Checker
 	logger  *slog.Logger
+	// lambda delivery (sns_lambda.go): a lambda subscription's Function is invoked at its cluster-local
+	// address in its namespace. lambdaNS is the Lambda API's namespace (a Subscribe through this front
+	// door); a stack's subscription records its own. nil invoker = lambda subscriptions refused.
+	lambdaNS  string
+	svcSuffix string
+	invoker   *http.Client
 }
 
 func newSNSHandler(cs kubernetes.Interface, authzNS, account, region string, store *snsStore, sqs *sqsStore, logger *slog.Logger) *snsHandler {
@@ -105,6 +111,16 @@ func (h *snsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 
 	ctx := r.Context()
 	h.resolveLegacyARNs(ctx, r) // a topic made before the account changed answers to either ARN (identity_compat.go)
+	// A topic is its name: a TopicArn naming another region or account (the ARN a stack reported) means
+	// the topic of that name.
+	if a := r.FormValue("TopicArn"); a != "" {
+		if stored, found, err := h.canonicalTopicArn(ctx, a); err == nil && found && stored != a {
+			r.Form.Set("TopicArn", stored)
+			if r.PostForm != nil {
+				r.PostForm.Set("TopicArn", stored)
+			}
+		}
+	}
 	switch op {
 	case "CreateTopic":
 		h.createTopic(ctx, w, r, requestID)
@@ -117,7 +133,7 @@ func (h *snsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "SetTopicAttributes":
 		h.setTopicAttributes(ctx, w, r, requestID)
 	case "Subscribe":
-		h.subscribe(ctx, w, r, requestID)
+		h.subscribe(ctx, w, r, requestID, claims)
 	case "Unsubscribe":
 		h.unsubscribe(ctx, w, r, requestID)
 	case "ListSubscriptions":
@@ -222,7 +238,7 @@ func (h *snsHandler) setTopicAttributes(ctx context.Context, w http.ResponseWrit
 
 // --- subscriptions ---
 
-func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims) {
 	topicArn := r.PostFormValue("TopicArn")
 	protocol := r.PostFormValue("Protocol")
 	endpoint := r.PostFormValue("Endpoint")
@@ -233,13 +249,17 @@ func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *ht
 		writeQueryError(w, http.StatusNotFound, "NotFound", requestID, "Topic does not exist.", snsXMLNamespace)
 		return
 	}
-	// v1 supports sqs only. Every other protocol is refused HONESTLY at subscribe time — a subscription
-	// that exists but never delivers is worse than a rejected subscribe (the operator has evidence that
-	// contradicts reality). http/https are additionally an egress surface (deferred until a confirmation
-	// handshake + destination allowlist land).
+	// sqs and lambda are delivered. Every other protocol is refused HONESTLY at subscribe time — a
+	// subscription that exists but never delivers is worse than a rejected subscribe (the operator has
+	// evidence that contradicts reality). http/https are additionally an egress surface (deferred until a
+	// confirmation handshake + destination allowlist land).
+	if protocol == "lambda" {
+		h.subscribeLambda(ctx, w, r, requestID, claims, topicArn, endpoint)
+		return
+	}
 	if protocol != "sqs" {
 		writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID,
-			"subscription protocol '"+protocol+"' is not supported by this shim (v1: sqs only). It is refused rather than accepted and never delivered.", snsXMLNamespace)
+			"subscription protocol '"+protocol+"' is not supported by this shim (sqs and lambda are delivered). It is refused rather than accepted and never delivered.", snsXMLNamespace)
 		return
 	}
 	attrs := parseQueryMap(r, "Attributes")
@@ -389,8 +409,12 @@ func (h *snsHandler) publishMessage(ctx context.Context, topicArn, subject, mess
 	}
 	msgID := uuidLike()
 	for _, sub := range subs {
+		if sub.Protocol == "lambda" {
+			h.deliverLambda(sub, msgID, topicArn, subject, message)
+			continue
+		}
 		if sub.Protocol != "sqs" {
-			continue // v1: only sqs is a deliverable protocol; others were refused at Subscribe
+			continue // only sqs and lambda are deliverable; others were refused at Subscribe
 		}
 		url, ok, err := h.sqs.queueURLByName(ctx, nameFromArn(sub.Endpoint))
 		if err != nil {

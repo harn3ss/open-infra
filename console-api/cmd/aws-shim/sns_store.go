@@ -46,6 +46,48 @@ type snsSubscription struct {
 	Protocol string
 	Endpoint string
 	Raw      bool
+	// FnNamespace is the namespace of a lambda subscription's kind: Function (the Lambda API's, or a
+	// stack's); "" for sqs. Kept in the subscription's attributes under snsFnNamespaceAttr.
+	FnNamespace string
+}
+
+// snsFnNamespaceAttr is the internal subscription attribute holding a lambda endpoint's namespace.
+const snsFnNamespaceAttr = "openinfra:fnNamespace"
+
+// topicARNByName is the stored ARN of the topic named name (topic names are unique here).
+func (s *snsStore) topicARNByName(ctx context.Context, name string) (string, bool, error) {
+	var arn string
+	err := s.db.QueryRowContext(ctx, `SELECT arn FROM sns_topics WHERE name = $1`, name).Scan(&arn)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	return arn, err == nil, err
+}
+
+// replaceTopicAttrs sets a topic's attributes to exactly attrs (a stack update).
+func (s *snsStore) replaceTopicAttrs(ctx context.Context, arn string, attrs map[string]string) (bool, error) {
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	aj, _ := json.Marshal(attrs)
+	res, err := s.db.ExecContext(ctx, `UPDATE sns_topics SET attributes = $2::jsonb WHERE arn = $1`, arn, string(aj))
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// subscribeWith is subscribe with internal attributes (a lambda endpoint's function namespace).
+func (s *snsStore) subscribeWith(ctx context.Context, arn, topicArn, protocol, endpoint string, raw bool, attrs map[string]string) error {
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	aj, _ := json.Marshal(attrs)
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO sns_subscriptions (arn, topic_arn, protocol, endpoint, raw_delivery, confirmed, attributes)
+		VALUES ($1, $2, $3, $4, $5, true, $6::jsonb)`, arn, topicArn, protocol, endpoint, raw, string(aj))
+	return err
 }
 
 // createTopic is idempotent: creating a topic that already exists (by name) returns its existing ARN,
@@ -144,15 +186,15 @@ func (s *snsStore) unsubscribe(ctx context.Context, arn string) (bool, error) {
 }
 
 func (s *snsStore) subscriptionsForTopic(ctx context.Context, topicArn string) ([]snsSubscription, error) {
-	return s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery FROM sns_subscriptions WHERE topic_arn = $1 AND confirmed ORDER BY created_at`, topicArn)
+	return s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery, COALESCE(attributes->>'openinfra:fnNamespace', '') FROM sns_subscriptions WHERE topic_arn = $1 AND confirmed ORDER BY created_at`, topicArn)
 }
 
 func (s *snsStore) listSubscriptions(ctx context.Context) ([]snsSubscription, error) {
-	return s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery FROM sns_subscriptions ORDER BY created_at`)
+	return s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery, COALESCE(attributes->>'openinfra:fnNamespace', '') FROM sns_subscriptions ORDER BY created_at`)
 }
 
 func (s *snsStore) subByArn(ctx context.Context, arn string) (snsSubscription, bool, error) {
-	subs, err := s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery FROM sns_subscriptions WHERE arn = $1`, arn)
+	subs, err := s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery, COALESCE(attributes->>'openinfra:fnNamespace', '') FROM sns_subscriptions WHERE arn = $1`, arn)
 	if err != nil || len(subs) == 0 {
 		return snsSubscription{}, false, err
 	}
@@ -177,7 +219,7 @@ func (s *snsStore) querySubs(ctx context.Context, q string, args ...any) ([]snsS
 	var out []snsSubscription
 	for rows.Next() {
 		var sub snsSubscription
-		if err := rows.Scan(&sub.Arn, &sub.TopicArn, &sub.Protocol, &sub.Endpoint, &sub.Raw); err != nil {
+		if err := rows.Scan(&sub.Arn, &sub.TopicArn, &sub.Protocol, &sub.Endpoint, &sub.Raw, &sub.FnNamespace); err != nil {
 			return nil, err
 		}
 		out = append(out, sub)
