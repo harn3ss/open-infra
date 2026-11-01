@@ -286,8 +286,14 @@ done
 [ "$CERT_READY" = "True" ] || inconclusive "Certificate staticsite-$SITE-tls not Ready (an ACME openinfra-issuer can't issue for .invalid names)"
 
 kubectl create ns "$CLIENT_NS" >/dev/null 2>&1 || inconclusive "could not create the client ns $CLIENT_NS"
-kubectl -n "$CLIENT_NS" run "$CLIENT" --restart=Never --image="$CURL_IMAGE" --command -- sleep 900 >/dev/null 2>&1 \
-  || inconclusive "could not start the curl client pod"
+# A new namespace gets its default ServiceAccount a moment later, and a pod created before it exists is refused.
+for _ in $(seq 1 30); do kubectl -n "$CLIENT_NS" get sa default >/dev/null 2>&1 && break; sleep 1; done
+started=""
+for _ in 1 2 3; do
+  if kubectl -n "$CLIENT_NS" run "$CLIENT" --restart=Never --image="$CURL_IMAGE" --command -- sleep 900 >/dev/null 2>&1; then started=1; break; fi
+  sleep 3
+done
+[ -n "$started" ] || inconclusive "could not start the curl client pod"
 kubectl -n "$CLIENT_NS" wait --for=condition=Ready "pod/$CLIENT" --timeout=120s >/dev/null 2>&1 || inconclusive "curl client pod not Ready"
 # fetch <path>: headers, a blank line, then the body — over HTTPS to the Alias through Traefik.
 fetch() { kubectl -n "$CLIENT_NS" exec "$CLIENT" -- curl -sS -m 10 -k -D - --resolve "$HOST:443:$TRAEFIK_IP" "https://$HOST$1" 2>/dev/null | tr -d '\r' || true; }
