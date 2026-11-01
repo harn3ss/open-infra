@@ -120,16 +120,15 @@ spec:
         'iam:PassRole denied: ' + request.userInfo.username + ' may not bind Role ' + request.namespace + '/' +
         object.metadata.annotations['openinfra.dev/instance-role'] + ' to a ServiceAccount'
 ---
-# Rolled out in two steps (canary): Warn + Audit first — the API server returns a warning and records an
-# audit annotation, but nothing is refused — then Deny once the corpus carries the verb and the warnings
-# show only what should be refused.
+# Deny, with an audit annotation. (Rolled out after a Warn + Audit canary: a refusal now is a request
+# that has no passrole on the Role it names.)
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:
   name: openinfra-pass-role
 spec:
   policyName: openinfra-pass-role
-  validationActions: [Warn, Audit]
+  validationActions: [Deny, Audit]
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -137,4 +136,4 @@ metadata:
   name: openinfra-instance-role-binding
 spec:
   policyName: openinfra-instance-role-binding
-  validationActions: [Warn, Audit]
+  validationActions: [Deny, Audit]

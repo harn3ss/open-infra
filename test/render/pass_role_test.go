@@ -56,7 +56,7 @@ func TestPassRole_AdmissionChecksTheRequesterOnTheNamedRole(t *testing.T) {
 
 	for _, p := range []string{"openinfra-pass-role", "openinfra-instance-role-binding"} {
 		b := yamlDoc(t, passRoleYAML, "ValidatingAdmissionPolicyBinding", p)
-		mustContain(t, p+" binding", b, "policyName: "+p, "validationActions:")
+		mustContain(t, p+" binding", b, "policyName: "+p, "validationActions: [Deny, Audit]")
 	}
 }
 
