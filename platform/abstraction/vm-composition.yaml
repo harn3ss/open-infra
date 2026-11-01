@@ -1751,6 +1751,23 @@ spec:
                       - { name: "{{ ($p.protocol | default "TCP") | lower }}{{ $p.port }}", port: {{ $p.port }}, targetPort: {{ $p.port }}, protocol: {{ $p.protocol | default "TCP" }} }
                       {{- end }}
             {{- end }}
+            {{- /* The VM's LAN IP, read back once MetalLB assigns it to the <name>-lan
+                   Service above (populated on the reconcile after the Service exists — the
+                   same read-back kind: Directory uses for its VIP). Surfaced as
+                   status.lanIp so the claim — and a CloudFormation stack Output for an
+                   Elastic IP / an instance's PublicIp — can read the address. Empty while
+                   unassigned, and when the VM is not exposed (so a stale IP never lingers). */}}
+            {{- $lanIp := "" }}
+            {{- if or $spec.expose $ports }}
+            {{- $lanObs := index ($.observed.resources | default dict) "vm-lan" }}
+            {{- if $lanObs }}{{- with $lanObs.resource.status }}{{- with .atProvider }}{{- with .manifest.status }}{{- with .loadBalancer }}{{- with .ingress }}{{- if gt (len .) 0 }}{{- $lanIp = ((index . 0).ip | default "") }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
+            {{- end }}
+            ---
+            # --- Composite status: the VM's LAN IP (see above). ---
+            apiVersion: openinfra.dev/v1
+            kind: XVirtualMachine
+            status:
+              lanIp: {{ $lanIp | quote }}
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

@@ -304,7 +304,10 @@ VM won't live-migrate while it's attached.
   the VM page). Connect with `mstsc /v:<host>:3389`.
 - **`expose: true`** publishes a `LoadBalancer` (MetalLB) so workstations on the
   LAN can reach SSH (22) / RDP (3389) directly. Otherwise use
-  `kubectl port-forward svc/<name> <port>:<port>`.
+  `kubectl port-forward svc/<name> <port>:<port>`. Once MetalLB assigns the address,
+  the VM reports it as **`status.lanIp`**
+  (`kubectl get virtualmachines.openinfra.dev <name> -o jsonpath='{.status.lanIp}'`);
+  it is empty while unassigned and when the VM is not exposed.
 
 Power: the console's **Start/Stop** flips `spec.running`, which the Composition
 maps to KubeVirt `runStrategy` (`Always`/`Halted`). The disk is retained while

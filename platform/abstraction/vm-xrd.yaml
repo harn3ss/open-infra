@@ -189,3 +189,11 @@ spec:
                 os:      { type: string }
                 ip:      { type: string }
                 ready:   { type: boolean }
+                lanIp:
+                  type: string
+                  description: >-
+                    The VM's LAN IP — the MetalLB LoadBalancer address carrying its access port
+                    (SSH 22 / RDP 3389) and any spec.ports, read back from the <name>-lan Service
+                    once assigned. Empty while unassigned and when the VM is not exposed (neither
+                    spec.expose nor spec.ports). Stable for the life of the VM; a deleted and
+                    recreated VM may draw a different address.

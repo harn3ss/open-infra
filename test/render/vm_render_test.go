@@ -446,3 +446,53 @@ func TestVM_DataDisks_FollowHAStoragePolicy(t *testing.T) {
 		t.Errorf("HA root + data disk must both be Block mode (>=2); got %d:\n%s", n, grepCtx(out, "volumeMode"))
 	}
 }
+
+// status.lanIp surfaces the VM's LAN IP (#347): read back from the observed <name>-lan LoadBalancer
+// Service once MetalLB assigns it, emitted on the composite's status — what the claim (and a
+// CloudFormation Output for an Elastic IP / an instance's PublicIp) reads. Empty while unassigned and
+// when the VM is not exposed, even if a stale observed Service lingers.
+func TestVM_StatusLanIP(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	observedLB := func(ctx map[string]any, ingress []any) map[string]any {
+		ctx["observed"].(map[string]any)["resources"] = map[string]any{
+			"vm-lan": map[string]any{"resource": map[string]any{"status": map[string]any{"atProvider": map[string]any{
+				"manifest": map[string]any{"status": map[string]any{"loadBalancer": map[string]any{"ingress": ingress}}},
+			}}}},
+		}
+		return ctx
+	}
+	statusDoc := func(out string) string {
+		i := strings.Index(out, "kind: XVirtualMachine")
+		if i < 0 {
+			t.Fatalf("the composite status document (kind: XVirtualMachine) must always render:\n%s", grepCtx(out, "vm-lan"))
+		}
+		return out[i:]
+	}
+
+	// Exposed + assigned: the LoadBalancer's first ingress IP.
+	got := statusDoc(render(t, tmpl, observedLB(vmCtxFW("ubuntu-24.04", map[string]any{"expose": true}),
+		[]any{map[string]any{"ip": "192.0.2.40"}})))
+	if !strings.Contains(got, `lanIp: "192.0.2.40"`) {
+		t.Errorf("an exposed VM with an assigned LoadBalancer IP must surface it as status.lanIp; got:\n%s", got)
+	}
+	// spec.ports alone also exposes the VM.
+	got = statusDoc(render(t, tmpl, observedLB(vmCtxFW("ubuntu-24.04", map[string]any{"ports": []any{map[string]any{"port": 443}}}),
+		[]any{map[string]any{"ip": "192.0.2.41"}})))
+	if !strings.Contains(got, `lanIp: "192.0.2.41"`) {
+		t.Errorf("spec.ports implies expose, so its LAN IP must surface; got:\n%s", got)
+	}
+	// Exposed but not yet assigned (no Service observed, or an empty ingress list): empty.
+	for name, ctx := range map[string]map[string]any{
+		"no observed Service": vmCtxFW("ubuntu-24.04", map[string]any{"expose": true}),
+		"empty ingress":       observedLB(vmCtxFW("ubuntu-24.04", map[string]any{"expose": true}), []any{}),
+	} {
+		if got := statusDoc(render(t, tmpl, ctx)); !strings.Contains(got, `lanIp: ""`) {
+			t.Errorf("%s: an unassigned LAN IP must render empty; got:\n%s", name, got)
+		}
+	}
+	// Not exposed: empty — even if a previously observed Service is still in the observed set.
+	got = statusDoc(render(t, tmpl, observedLB(vmCtx("ubuntu-24.04", ""), []any{map[string]any{"ip": "192.0.2.42"}})))
+	if !strings.Contains(got, `lanIp: ""`) || strings.Contains(got, "192.0.2.42") {
+		t.Errorf("a VM that is not exposed must report no LAN IP; got:\n%s", got)
+	}
+}
