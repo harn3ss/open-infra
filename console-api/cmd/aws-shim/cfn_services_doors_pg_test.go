@@ -99,8 +99,10 @@ func TestServicesPG_RuleTargetsAndAlarmActionsInTheStack(t *testing.T) {
 
 	// A breaching datapoint puts the alarm in ALARM; it publishes to the stack's topic, which delivers to
 	// the queue subscribed to it.
+	// Timestamped a second back: the evaluation window ends (exclusively) at its own "now", and a datapoint
+	// stamped in that same millisecond (a fast runner) would fall outside the one evaluation this test runs.
 	if _, err := c.call(ctx, "monitoring", "PutMetricData", map[string]any{"Namespace": "App", "MetricData": []any{
-		map[string]any{"MetricName": "Errors", "Value": 5}}}); err != nil {
+		map[string]any{"MetricName": "Errors", "Value": 5, "Timestamp": time.Now().Add(-time.Second).UTC().Format(time.RFC3339)}}}); err != nil {
 		t.Fatalf("PutMetricData: %v", err)
 	}
 	cwH.evaluateAll(ctx)
