@@ -157,8 +157,9 @@ func ruleToStatements(r rbacv1.PolicyRule, scopeNS string) ([]policyengine.State
 // keys a request's id as "<namespace>/<name>", or "<name>" for a cluster-scoped object, so a cluster-wide
 // pattern becomes "<type>::<name>" plus "<type>::*/<name>" (that name in any namespace), and a namespaced
 // one "<type>::<ns>/<name>". A request with no name (create, an unfiltered list) then matches nothing,
-// which is what RBAC does with a resourceNames rule. A name containing "*" cannot be written exactly in a
-// pattern (it would be a wildcard), so it is dropped: narrower than RBAC, never broader.
+// which is what RBAC does with a resourceNames rule. A "*" in a name stays a wildcard within the name:
+// Kubernetes uses that form for signer names (cert-manager approves "issuers.cert-manager.io/*", meaning
+// every signer under that prefix), and it never reaches past the rule's resource type.
 func scopeToNames(patterns, names []string) ([]string, []string) {
 	var out, caveats []string
 	for _, p := range patterns {
@@ -170,9 +171,11 @@ func scopeToNames(patterns, names []string) ([]string, []string) {
 			}
 		}
 		for _, n := range names {
-			if n == "" || strings.Contains(n, "*") {
-				caveats = append(caveats, fmt.Sprintf("resourceName %q cannot be expressed exactly and is not granted (narrower than the RBAC rule)", n))
+			if n == "" {
 				continue
+			}
+			if strings.Contains(n, "*") {
+				caveats = append(caveats, fmt.Sprintf("resourceName %q is matched as a wildcard within the name (the signer-name convention)", n))
 			}
 			switch {
 			case scope == "*":

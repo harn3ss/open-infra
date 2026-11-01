@@ -325,15 +325,16 @@ func TestGenerate_ResourceNamesAreScoped(t *testing.T) {
 		}
 	}
 
-	// A name that can't be written exactly is not granted at all (never widened to a wildcard).
-	if g, ok := byP["User::odd"]; ok {
-		if e, err := policyengine.NewEngine(g.Statements); err == nil {
-			if d := e.Authorize(req("User", "odd", "get", "configmaps", "ns/abc")); d.Allowed {
-				t.Errorf("a resourceName with * must not become a wildcard")
-			}
-		}
-		if !strings.Contains(strings.Join(g.Caveats, " "), "cannot be expressed exactly") {
-			t.Errorf("expected a caveat for the unexpressible name; got %v", g.Caveats)
-		}
+	// A "*" in a name is a wildcard within the name only (the signer-name convention cert-manager's
+	// approver relies on), never the whole type.
+	odd := engine("User::odd")
+	if d := odd.Authorize(req("User", "odd", "get", "configmaps", "ns/abc")); !d.Allowed {
+		t.Errorf("a* should match abc: %s", d.Reason)
+	}
+	if d := odd.Authorize(req("User", "odd", "get", "configmaps", "ns/bcd")); d.Allowed {
+		t.Errorf("a* must not match bcd")
+	}
+	if !strings.Contains(strings.Join(byP["User::odd"].Caveats, " "), "wildcard within the name") {
+		t.Errorf("expected a caveat for the wildcard name; got %v", byP["User::odd"].Caveats)
 	}
 }
