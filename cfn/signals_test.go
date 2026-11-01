@@ -290,3 +290,60 @@ Resources:
 		t.Fatalf("update events: %+v", rec2.Events)
 	}
 }
+
+// eventsApplier records what the engine flushes for DescribeStackEvents/ListStackResources to read.
+type eventsApplier struct {
+	*fakeApplier
+	mu      sync.Mutex
+	flushed []StackEvent
+}
+
+func (e *eventsApplier) PutEvents(_ context.Context, _ string, events []StackEvent) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.flushed = append([]StackEvent(nil), events...)
+	return nil
+}
+
+func (e *eventsApplier) latest(id string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	st := ""
+	for _, ev := range e.flushed {
+		if ev.LogicalID == id {
+			st = ev.Status
+		}
+	}
+	return st
+}
+
+// While a WaitCondition waits, its CREATE_IN_PROGRESS has already been flushed, so DescribeStackEvents and
+// ListStackResources show it in progress (as AWS does), not only once it completes.
+func TestSignals_WaitingResourceShowsInProgress(t *testing.T) {
+	fastSignals(t)
+	tmpl := `
+Resources:
+  P: { Type: AWS::SSM::Parameter, Properties: { Name: /p, Type: String, Value: x } }
+  W:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: P
+    CreationPolicy: { ResourceSignal: { Count: 1, Timeout: PT1M } }
+`
+	ap := &eventsApplier{fakeApplier: &fakeApplier{}}
+	sigs := &memSignals{}
+	var whileWaiting string
+	sigs.onRead = func(id string, reads int) {
+		if id == "W" && reads == 1 {
+			whileWaiting = ap.latest("W")
+			sigs.send("W", Signal{UniqueID: "u", Status: "SUCCESS"})
+		}
+	}
+	opts := deployOpts()
+	opts.Signals = sigs
+	if _, err := Deploy(context.Background(), []byte(tmpl), opts, ap); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if whileWaiting != "CREATE_IN_PROGRESS" {
+		t.Fatalf("while waiting for its signal, W's flushed status = %q, want CREATE_IN_PROGRESS", whileWaiting)
+	}
+}

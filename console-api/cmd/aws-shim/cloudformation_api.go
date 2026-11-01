@@ -145,6 +145,24 @@ func (h *cfnDoorway) stackResourceRows(ctx context.Context, rec *cfn.StackRecord
 		}
 		rows = append(rows, row)
 	}
+	// A resource whose create is under way but not yet in the record (a create interleaved with custom
+	// resources records each one as it completes) is listed from its latest event, as AWS lists it.
+	listed := map[string]bool{rec.Name: true}
+	for _, r := range rows {
+		listed[r.logicalID] = true
+	}
+	var pending []string
+	for id := range latest {
+		if !listed[id] && !strings.Contains(id, "/") {
+			pending = append(pending, id)
+		}
+	}
+	sort.Strings(pending)
+	for _, id := range pending {
+		e := latest[id]
+		rows = append(rows, resourceRow{logicalID: id, physicalID: e.PhysicalID, typ: e.Type, status: e.Status,
+			reason: e.Reason, timestamp: e.Timestamp})
+	}
 	return rows
 }
 

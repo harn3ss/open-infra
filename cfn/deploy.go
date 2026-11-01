@@ -589,6 +589,7 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		failed = b.res.LogicalID
 		rec.resourceEvent(b.res, "CREATE_IN_PROGRESS", "")
 		if IsSignalWait(b.res) { // a WaitCondition: nothing to apply, only signals to wait for
+			progress() // it shows CREATE_IN_PROGRESS while it waits, as on AWS
 			sigs, err := waitForSignals(ctx, opts, *b.signals, b.res.LogicalID)
 			if err != nil {
 				return rollback(err)
@@ -823,6 +824,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		// A wait condition is waited for, not applied.
 		if m.APIVersion == waitAPIVersion && m.Kind == waitKind {
 			sr := StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec, Type: res.Type}
+			flushEvents(ctx, ap, rec) // it shows CREATE_IN_PROGRESS while it waits, as on AWS
 			sigs, werr := waitForSignals(ctx, opts, *spec, id)
 			if werr != nil {
 				return rollback(werr)
@@ -862,6 +864,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			}
 		}
 		if spec != nil {
+			flushEvents(ctx, ap, rec) // the resource shows CREATE_IN_PROGRESS while it waits for its signals
 			if _, werr := waitForSignals(ctx, opts, *spec, id); werr != nil {
 				return rollback(werr)
 			}
