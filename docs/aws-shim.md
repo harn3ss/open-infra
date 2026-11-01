@@ -150,7 +150,10 @@ SigV4-signed, and these match only their exact paths.
   endpoint off), `CA_BUNDLE_NAMESPACE` and `CA_BUNDLE_KEY` override the source. VM guests do not fetch
   it: they get the root in their own spec, from the `openinfra-platform-ca` EnvironmentConfig that the
   `platform-ca-publisher` CronJob keeps (`platform/aws-shim/platform-ca-publisher.yaml`); only that
-  publisher (and `system:masters`) may write it.
+  publisher (and `system:masters`) may write it. The publisher takes the root from the root
+  Certificate's own current CertificateRequest, and renews any platform certificate (this carrier
+  included) that was signed by another root, so a re-signed or re-keyed root reaches guests, this
+  endpoint and every platform TLS address within a run. `probe/platform-root-ca.sh` checks all of it.
 
 ```sh
 curl -fsS http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/ca-bundle -o openinfra-root-ca.crt

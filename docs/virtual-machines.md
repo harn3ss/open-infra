@@ -263,8 +263,9 @@ that root out of the box, the way an enterprise CA is baked into an AMI: an unmo
 with no `--insecure`, no `--cacert`, and no per-registry `certs.d` file.
 
 The root certificate travels in the VM's own spec, never over the network: the aws-shim's
-`platform-ca-publisher` copies it into the cluster's `openinfra-platform-ca` EnvironmentConfig, and the VM
-composition writes it into the guest's cloud-init (`/etc/openinfra/platform-root-ca.pem`). At every boot,
+`platform-ca-publisher` copies it from the root Certificate into the cluster's `openinfra-platform-ca`
+EnvironmentConfig, and the VM composition writes it into the guest's cloud-init
+(`/etc/openinfra/platform-root-ca.pem`). At every boot,
 before cloud-init runs `userData`, the metadata agent checks that the file holds PEM CA certificates and
 nothing else, and adds it to the system trust store with the distribution's own tool:
 

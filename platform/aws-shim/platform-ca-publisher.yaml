@@ -1,4 +1,5 @@
-# The platform root CA certificate, published for VM guests through their own spec.
+# The platform root CA certificate, published for VM guests through their own spec, and every platform
+# certificate kept signed by the current root.
 #
 # A Linux VM guest trusts the platform root CA: the registry's and S3's TLS addresses use it, and so does
 # the shim's in-cluster TLS port, where the guest's metadata agent fetches its role credentials. The guest
@@ -7,13 +8,25 @@
 # into the cluster-scoped EnvironmentConfig openinfra-platform-ca (data.platformRootCA). The VM composition
 # reads it (function-environment-configs) and writes it into each guest's cloud-init Secret.
 #
-# Source: the CertificateRequests cert-manager made for this namespace's openinfra-ca-bundle Certificate
-# (aws-shim.yaml). Their status.ca is the issuing CA's certificate, the root; the latest revision wins.
+# Source: the root itself. The root Certificate (cert-manager/openinfra-root-ca) is issued through a
+# CertificateRequest; the one for its current revision, owned by it, approved and ready, holds the root
+# certificate it now has. That is the certificate published, from the moment cert-manager issues it, so a
+# re-signed or re-keyed root reaches new guests at once rather than when some leaf next renews. While the
+# ClusterIssuer openinfra-ca still signs with a different Secret than the root Certificate writes (a key
+# rotation part-way through a sync), nothing changes: guests keep the root that signs.
+#
+# Then every certificate openinfra-ca issued in a platform namespace (the namespaces the admission policy
+# in cluster-ca.yaml allows) whose latest CertificateRequest was signed by another root is renewed, as
+# `cmctl renew` does it: an Issuing condition on its status. After a key rotation that re-signs the shim,
+# the registry, S3 and the carrier Certificate the shim serves /v1/ca-bundle from, with no hand steps.
+#
 # Public data: the publisher reads no Secret.
 #
-# Least privilege: list CertificateRequests in this namespace; create EnvironmentConfigs, and get/update
-# only openinfra-platform-ca. RBAC cannot scope create by name, so the admission policy below confines
-# this identity to openinfra-platform-ca, and lets nobody else but system:masters write that config.
+# Least privilege: in cert-manager, get the root Certificate and list CertificateRequests; get the
+# openinfra-ca ClusterIssuer; in each platform namespace, list Certificates and CertificateRequests and
+# set a Certificate's status (to renew it); create EnvironmentConfigs, and get/update only
+# openinfra-platform-ca. RBAC cannot scope create by name, so the admission policy below confines this
+# identity to openinfra-platform-ca, and lets nobody else but system:masters write that config.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -28,6 +41,59 @@ metadata:
   namespace: open-infra-aws-shim
 rules:
   - apiGroups: [cert-manager.io]
+    resources: [certificaterequests, certificates]
+    verbs: [list]
+  - apiGroups: [cert-manager.io]
+    resources: [certificates/status]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-ca-publisher
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: platform-ca-publisher }
+subjects:
+  - kind: ServiceAccount
+    name: platform-ca-publisher
+    namespace: open-infra-aws-shim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-ca-publisher
+  namespace: open-infra-ecr
+rules:
+  - apiGroups: [cert-manager.io]
+    resources: [certificaterequests, certificates]
+    verbs: [list]
+  - apiGroups: [cert-manager.io]
+    resources: [certificates/status]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-ca-publisher
+  namespace: open-infra-ecr
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: platform-ca-publisher }
+subjects:
+  - kind: ServiceAccount
+    name: platform-ca-publisher
+    namespace: open-infra-aws-shim
+---
+# The root's own Certificate and CertificateRequests (public: CSRs and certificates). Not its Secret.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-ca-publisher
+  namespace: cert-manager
+rules:
+  - apiGroups: [cert-manager.io]
+    resources: [certificates]
+    resourceNames: [openinfra-root-ca]
+    verbs: [get]
+  - apiGroups: [cert-manager.io]
     resources: [certificaterequests]
     verbs: [list]
 ---
@@ -35,7 +101,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: platform-ca-publisher
-  namespace: open-infra-aws-shim
+  namespace: cert-manager
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: platform-ca-publisher }
 subjects:
   - kind: ServiceAccount
@@ -54,6 +120,10 @@ rules:
     resources: [environmentconfigs]
     resourceNames: [openinfra-platform-ca]
     verbs: [get, update, patch]
+  - apiGroups: [cert-manager.io]
+    resources: [clusterissuers]
+    resourceNames: [openinfra-ca]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -134,24 +204,93 @@ spec:
                 - { name: home, mountPath: /tmp }
               env:
                 - { name: HOME, value: /tmp }
-                - { name: NS, value: open-infra-aws-shim }
-                - { name: CARRIER, value: openinfra-ca-bundle }
+                - { name: ROOT_NS, value: cert-manager }
+                - { name: ROOT_CERT, value: openinfra-root-ca }
+                - { name: ISSUER, value: openinfra-ca }
+                # The namespaces openinfra-ca may issue in (cluster-ca.yaml, openinfra-ca-issuance).
+                - { name: PLATFORM_NAMESPACES, value: "open-infra-aws-shim open-infra-ecr" }
+                - { name: RENEW_BACKOFF_SECONDS, value: "1800" }
               args:
                 - |
-                  pem="$(kubectl -n "$NS" get certificaterequests -o json \
-                    | jq -r --arg c "$CARRIER" '[.items[]
-                        | select(.metadata.annotations["cert-manager.io/certificate-name"] == $c)
-                        | select((.status.ca // "") != "")]
-                      | sort_by(.metadata.annotations["cert-manager.io/certificate-revision"] // "0" | tonumber)
-                      | last | .status.ca // empty' \
-                    | base64 -d)"
-                  [ -n "$pem" ] || { echo "no issued $CARRIER CertificateRequest with a CA yet; nothing to publish"; exit 0; }
+                  # The root Certificate, and the Secret the ClusterIssuer signs with.
+                  crt="$(kubectl -n "$ROOT_NS" get certificate "$ROOT_CERT" -o json)"
+                  if ! printf '%s' "$crt" | jq -e 'any(.status.conditions[]?; .type == "Ready" and .status == "True")' >/dev/null; then
+                    echo "$ROOT_NS/$ROOT_CERT is not issued yet; nothing to publish"; exit 0
+                  fi
+                  uid="$(printf '%s' "$crt" | jq -r .metadata.uid)"
+                  rev="$(printf '%s' "$crt" | jq -r '.status.revision // 0')"
+                  secret="$(printf '%s' "$crt" | jq -r .spec.secretName)"
+                  signs="$(kubectl get clusterissuer "$ISSUER" -o jsonpath='{.spec.ca.secretName}')"
+                  if [ "$signs" != "$secret" ]; then
+                    echo "$ISSUER signs with Secret $signs while $ROOT_CERT writes $secret (a key rotation in progress); nothing changed this run"
+                    exit 0
+                  fi
+                  # Its certificate: from the CertificateRequest of its current revision, owned by it,
+                  # approved and ready (cert-manager sets status, which only it can write).
+                  b64="$(kubectl -n "$ROOT_NS" get certificaterequests -o json \
+                    | jq -r --arg uid "$uid" --arg rev "$rev" --argjson ref "$(printf '%s' "$crt" | jq -c .spec.issuerRef)" '[.items[]
+                        | select(any(.metadata.ownerReferences[]?; .uid == $uid and .kind == "Certificate"))
+                        | select((.metadata.annotations["cert-manager.io/certificate-revision"] // "") == $rev)
+                        | select(.spec.issuerRef.name == $ref.name and .spec.issuerRef.kind == $ref.kind)
+                        | select(any(.status.conditions[]?; .type == "Approved" and .status == "True"))
+                        | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+                        | .status.certificate // empty] | if length == 1 then .[0] else empty end')"
+                  [ -n "$b64" ] || { echo "no single issued CertificateRequest for $ROOT_CERT revision $rev" >&2; exit 1; }
+                  pem="$(printf '%s' "$b64" | base64 -d)"
                   # Certificates only: anything else (a key, stray text) is refused, never published.
                   if printf '%s\n' "$pem" | grep -q -v -x -e '-----BEGIN CERTIFICATE-----' -e '-----END CERTIFICATE-----' -e '[A-Za-z0-9+/=]*'; then
-                    echo "refusing to publish: the CA is not PEM certificates only" >&2; exit 1
+                    echo "refusing to publish: the root is not PEM certificates only" >&2; exit 1
                   fi
                   jq -n --arg pem "$pem" '{apiVersion: "apiextensions.crossplane.io/v1alpha1", kind: "EnvironmentConfig",
                       metadata: {name: "openinfra-platform-ca", labels: {"app.kubernetes.io/managed-by": "platform-ca-publisher"}},
                       data: {platformRootCA: ($pem + "\n")}}' \
                     | kubectl apply --server-side --field-manager=platform-ca-publisher -f -
-                  echo "openinfra-platform-ca holds the platform root CA ($(printf '%s\n' "$pem" | grep -c 'BEGIN CERTIFICATE') certificate)"
+                  echo "openinfra-platform-ca holds the platform root CA ($ROOT_CERT revision $rev)"
+
+                  # Platform certificates signed by another root are renewed. The comparison is on the
+                  # certificate bytes (whitespace aside): a leaf's latest CertificateRequest records, in
+                  # status.ca, the root that signed it.
+                  root="$(printf '%s' "$pem" | tr -d ' \r\n')"
+                  for ns in $PLATFORM_NAMESPACES; do
+                    certs="$(kubectl -n "$ns" get certificates -o json)" || { echo "cannot list Certificates in $ns" >&2; continue; }
+                    reqs="$(kubectl -n "$ns" get certificaterequests -o json)" || { echo "cannot list CertificateRequests in $ns" >&2; continue; }
+                    printf '%s' "$certs" | jq -r --arg iss "$ISSUER" '.items[]
+                        | select(.spec.issuerRef.name == $iss and (.spec.issuerRef.kind // "Issuer") == "ClusterIssuer")
+                        | select(all(.status.conditions[]?; .type != "Issuing" or .status != "True"))
+                        | .metadata.name' \
+                      | while read -r c; do
+                          [ -n "$c" ] || continue
+                          last="$(printf '%s' "$reqs" | jq -c --arg c "$c" '[.items[]
+                              | select(.metadata.annotations["cert-manager.io/certificate-name"] == $c)
+                              | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))]
+                            | sort_by(.metadata.annotations["cert-manager.io/certificate-revision"] // "0" | tonumber)
+                            | last // empty')"
+                          [ -n "$last" ] || continue      # never issued yet: cert-manager issues it from the current root
+                          ca="$(printf '%s' "$last" | jq -r '.status.ca // empty' | base64 -d 2>/dev/null | tr -d ' \r\n')"
+                          [ -n "$ca" ] && [ "$ca" != "$root" ] || continue
+                          # At most one renewal per RENEW_BACKOFF_SECONDS: a leaf renewed that recently and
+                          # still signed by another root means the ClusterIssuer's Secret does not hold this
+                          # root (say, a rotation rolled back without renewing the root) — renewing again
+                          # would not help.
+                          age=$(( $(date -u +%s) - $(printf '%s' "$last" | jq -r '.metadata.creationTimestamp // "1970-01-01T00:00:00Z" | fromdateiso8601') ))
+                          if [ "$age" -lt "$RENEW_BACKOFF_SECONDS" ]; then
+                            echo "WARNING: $ns/$c was re-issued ${age}s ago and is still signed by another root; is $ISSUER signing with $ROOT_CERT's key? (renew $ROOT_CERT if a rotation was rolled back)" >&2
+                            continue
+                          fi
+                          # cmctl renew: an Issuing condition. The resourceVersion test makes a concurrent
+                          # status write by cert-manager win; the next run retries.
+                          cur="$(printf '%s' "$certs" | jq -c --arg c "$c" '.items[] | select(.metadata.name == $c)')"
+                          now="$(date -u +%FT%TZ)"
+                          patch="$(printf '%s' "$cur" | jq -c --arg now "$now" '[
+                              {op: "test", path: "/metadata/resourceVersion", value: .metadata.resourceVersion},
+                              {op: "add", path: "/status/conditions", value: ([(.status.conditions // [])[] | select(.type != "Issuing")] + [{
+                                type: "Issuing", status: "True", reason: "ManuallyTriggered",
+                                message: "Re-issued: signed by a root other than the current platform root CA",
+                                lastTransitionTime: $now, observedGeneration: .metadata.generation}])}]')"
+                          if kubectl -n "$ns" patch certificate "$c" --subresource=status --type=json -p "$patch" >/dev/null; then
+                            echo "renewing $ns/$c: signed by another root"
+                          else
+                            echo "could not renew $ns/$c this run" >&2
+                          fi
+                        done
+                  done

@@ -27,9 +27,9 @@ metadata:
   namespace: open-infra-aws-shim
 ---
 # The platform root CA's PUBLIC certificate, published where the shim can read it: the shim serves it
-# at /v1/ca-bundle, and the platform-ca-publisher (platform-ca-publisher.yaml) copies it, from this
-# Certificate's CertificateRequests, into the EnvironmentConfig VM guests get it from (their own spec;
-# they trust the registry's and S3's TLS addresses, which openinfra-ca issues). cert-manager writes the issuing CA's certificate into
+# at /v1/ca-bundle. (VM guests get the root in their own spec instead, from the EnvironmentConfig the
+# platform-ca-publisher keeps, platform-ca-publisher.yaml; that publisher also renews this Certificate
+# when the root changes, so the endpoint follows it.) cert-manager writes the issuing CA's certificate into
 # an issued Secret's ca.crt, so this Certificate from openinfra-ca carries the root certificate into the
 # shim's namespace, where the shim already reads Secrets (Role aws-shim-keys) — the shim never reads
 # cert-manager/openinfra-root-ca, which holds the root's PRIVATE key. The carrier certificate itself is
