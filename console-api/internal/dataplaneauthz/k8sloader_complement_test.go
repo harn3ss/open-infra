@@ -24,7 +24,7 @@ func TestK8sLoader_Complement(t *testing.T) {
 		return &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "iam.openinfra.dev/v1",
 			"kind":       "Policy",
-			"metadata":   map[string]any{"name": name, "namespace": "iam"},
+			"metadata":   map[string]any{"name": name, "namespace": DefaultHomeNamespace},
 			"spec": map[string]any{
 				"dataPlane": map[string]any{
 					"appliesTo":  []any{principal},

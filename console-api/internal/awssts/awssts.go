@@ -38,7 +38,11 @@ import (
 
 // Session is the identity an assumed-role credential acts as. It is sealed inside the SessionToken.
 type Session struct {
-	RoleName    string    `json:"role"`   // the assumed kind: Role name (the data-plane principal id)
+	RoleName string `json:"role"` // the assumed kind: Role name
+	// Namespace is the Role's namespace when it is not the IAM home namespace (a VM instance role lives
+	// in its VM's namespace). Empty for a Role in the home namespace, and in every token minted before
+	// sessions carried it; the data-plane principal is then the bare role name, as it always was.
+	Namespace   string    `json:"ns,omitempty"`
 	Groups      []string  `json:"groups"` // impersonation groups the session acts as
 	SessionName string    `json:"sess"`   // RoleSessionName (audit/ARN)
 	Caller      string    `json:"caller"` // the principal that assumed the role (audit)
@@ -130,9 +134,15 @@ func (m *Minter) Rotate(newKey []byte) (rotated bool, err error) {
 
 var b32 = base32.StdEncoding.WithPadding(base32.NoPadding)
 
-// Mint issues a temporary credential for an assumed role: a fresh ASIA-prefixed access key id, a
-// random secret, and a sealed SessionToken carrying both plus the identity and expiry.
+// Mint issues a temporary credential for an assumed role in the IAM home namespace: a fresh
+// ASIA-prefixed access key id, a random secret, and a sealed SessionToken carrying both plus the
+// identity and expiry.
 func (m *Minter) Mint(role string, groups []string, sessionName, caller string, ttl time.Duration) (accessKeyID, secretKey, sessionToken string, expiry time.Time, err error) {
+	return m.MintIn("", role, groups, sessionName, caller, ttl)
+}
+
+// MintIn is Mint for a Role in namespace ns ("" = the IAM home namespace).
+func (m *Minter) MintIn(ns, role string, groups []string, sessionName, caller string, ttl time.Duration) (accessKeyID, secretKey, sessionToken string, expiry time.Time, err error) {
 	if ttl <= 0 {
 		ttl = DefaultDuration
 	}
@@ -156,7 +166,7 @@ func (m *Minter) Mint(role string, groups []string, sessionName, caller string, 
 	issuedAt := time.Now().UTC()
 	expiry = issuedAt.Add(ttl)
 	sess := Session{
-		RoleName: role, Groups: groups, SessionName: sessionName, Caller: caller,
+		RoleName: role, Namespace: ns, Groups: groups, SessionName: sessionName, Caller: caller,
 		AccessKeyID: accessKeyID, SecretKey: secretKey, IssuedAt: issuedAt, Expiry: expiry,
 	}
 	sessionToken, err = m.seal(sess)

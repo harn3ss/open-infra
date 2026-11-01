@@ -1,0 +1,140 @@
+# iam:PassRole. Naming a kind: Role on something that will later act with that Role's credentials needs
+# permission to pass the Role, as on AWS (launching an instance with an instance profile needs
+# iam:PassRole on its role). Without it, anyone who could create a VirtualMachine in a namespace could
+# take the credentials of any VM-trusted Role there.
+#
+# The permission is the custom RBAC verb `passrole` on roles.iam.openinfra.dev:
+#   - the built-in admins (openinfra:admins) hold it on every Role (ClusterRole openinfra-pass-role);
+#   - power users do not, matching AWS's PowerUserAccess, which excludes iam:PassRole;
+#   - to let someone else pass one Role, an admin grants the verb on that Role, e.g. in its namespace:
+#       kubectl -n <ns> create role pass-<role> --verb=passrole --resource=roles.iam.openinfra.dev --resource-name=<role>
+#       kubectl -n <ns> create rolebinding pass-<role> --role=pass-<role> --group=openinfra:<group>
+#     then regenerate the control-plane Cedar corpus (docs/authz-webhook.md).
+#
+# Where it is checked:
+#   - VirtualMachine (spec.instanceRole): by the admission policy below, as the requester (the console
+#     and the CloudFormation front door both write as the user).
+#   - ServiceAccount annotation openinfra.dev/instance-role: the VM credentials endpoint trusts this
+#     annotation, so setting it is checked the same way. The VM composition sets it through
+#     provider-kubernetes, which holds the verb (the claim it renders was already checked).
+#   - StateMachine (roleArn): by the aws-shim, as the caller, on CreateStateMachine/UpdateStateMachine
+#     (the shim writes the object itself). StartExecution also requires the role's trust to name the caller.
+#   - Application (spec.assumeRole) needs no PassRole: as with IRSA, the Role's trust policy names the
+#     workload's ServiceAccount, and only that identity can assume it.
+#
+# Each check applies when the Role is set or changed, never to updates that leave it alone (Crossplane's
+# own claim updates, status writes).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-pass-role
+rules:
+  - apiGroups: [iam.openinfra.dev]
+    resources: [roles]
+    verbs: [passrole]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-pass-role-admins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openinfra-pass-role
+subjects:
+  - kind: Group
+    name: openinfra:admins
+    apiGroup: rbac.authorization.k8s.io
+---
+# provider-kubernetes creates the per-VM ServiceAccount (with its instance-role annotation) from a
+# VirtualMachine claim that already passed the check. Its ServiceAccount name changes with the package
+# revision, so it is bound through its namespace's group, as openinfra-provider-kubernetes is
+# (provider-setup.yaml). No other identity in crossplane-system can create VirtualMachines or
+# ServiceAccounts, so the verb unlocks nothing else there.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-pass-role-provider
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openinfra-pass-role
+subjects:
+  - kind: Group
+    name: system:serviceaccounts:crossplane-system
+    apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-pass-role
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [openinfra.dev]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [virtualmachines]
+  matchConditions:
+    - name: sets-or-changes-the-instance-role
+      expression: >-
+        has(object.spec) && has(object.spec.instanceRole) && object.spec.instanceRole != '' &&
+        (request.operation == 'CREATE' || !has(oldObject.spec) || !has(oldObject.spec.instanceRole) ||
+         oldObject.spec.instanceRole != object.spec.instanceRole)
+  validations:
+    - expression: >-
+        authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
+        .name(object.spec.instanceRole).check('passrole').allowed()
+      reason: Forbidden
+      messageExpression: >-
+        'iam:PassRole denied: ' + request.userInfo.username + ' may not pass Role ' + request.namespace +
+        '/' + object.spec.instanceRole + ' to a VirtualMachine (an admin can grant passrole on that Role)'
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-instance-role-binding
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [serviceaccounts]
+  matchConditions:
+    - name: sets-or-changes-the-instance-role
+      expression: >-
+        has(object.metadata.annotations) && 'openinfra.dev/instance-role' in object.metadata.annotations &&
+        object.metadata.annotations['openinfra.dev/instance-role'] != '' &&
+        (request.operation == 'CREATE' || !has(oldObject.metadata.annotations) ||
+         !('openinfra.dev/instance-role' in oldObject.metadata.annotations) ||
+         oldObject.metadata.annotations['openinfra.dev/instance-role'] != object.metadata.annotations['openinfra.dev/instance-role'])
+  validations:
+    - expression: >-
+        authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
+        .name(object.metadata.annotations['openinfra.dev/instance-role']).check('passrole').allowed()
+      reason: Forbidden
+      messageExpression: >-
+        'iam:PassRole denied: ' + request.userInfo.username + ' may not bind Role ' + request.namespace + '/' +
+        object.metadata.annotations['openinfra.dev/instance-role'] + ' to a ServiceAccount'
+---
+# Rolled out in two steps (canary): Warn + Audit first — the API server returns a warning and records an
+# audit annotation, but nothing is refused — then Deny once the corpus carries the verb and the warnings
+# show only what should be refused.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-pass-role
+spec:
+  policyName: openinfra-pass-role
+  validationActions: [Warn, Audit]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-instance-role-binding
+spec:
+  policyName: openinfra-instance-role-binding
+  validationActions: [Warn, Audit]

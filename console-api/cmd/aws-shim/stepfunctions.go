@@ -48,12 +48,14 @@ var (
 )
 
 type sfnHandler struct {
-	cs      kubernetes.Interface
-	dyn     dynamic.Interface
-	minter  *awssts.Minter // mints the execution-role STS session; nil ⇒ role authority unavailable
-	roles   roleResolver   // resolves a role's trust + session groups; nil ⇒ role authority unavailable
-	authz   *dataplaneauthz.Checker
-	ns      string // where StateMachines, Executions, per-execution creds Secrets and Functions live
+	cs     kubernetes.Interface
+	dyn    dynamic.Interface
+	minter *awssts.Minter // mints the execution-role STS session; nil ⇒ role authority unavailable
+	roles  roleResolver   // resolves a role's trust + session groups; nil ⇒ role authority unavailable
+	authz  *dataplaneauthz.Checker
+	ns     string // where StateMachines, Executions, per-execution creds Secrets and Functions live
+	// rolesNS is where execution roles live (the role resolver's namespace); "" = the IAM home namespace.
+	rolesNS string
 	account string
 	region  string
 	logger  *slog.Logger
@@ -140,6 +142,17 @@ func (h *sfnHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "states:"+op, "StateMachine", sfnStateMachine(op, body), r); denied {
 			writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 			return
+		}
+	}
+	// iam:PassRole: giving a state machine an execution role needs permission to pass that Role, as on
+	// AWS (passrole.go). The shim writes the StateMachine with its own identity, so the check is here,
+	// as the caller. (StartExecution separately requires the role's trust policy to name the caller.)
+	if op == "CreateStateMachine" || op == "UpdateStateMachine" {
+		if role := roleNameFromArn(str(body["roleArn"])); role != "" {
+			if ok, reason := callerMayPassRole(ctx, h.cs, h.authz, claims, h.passRoleNamespace(), role, r); !ok {
+				writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+				return
+			}
 		}
 	}
 

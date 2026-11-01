@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
@@ -86,7 +87,10 @@ func (c *roleCutoffCache) RevokedBefore(ctx context.Context, roleName string) (t
 // "no cutoff" rather than silently revoking everything; the XRD enforces format: date-time so a
 // malformed value cannot be written through the API in the first place.
 func (c *roleCutoffCache) read(ctx context.Context, roleName string) (cutoff time.Time, set, ok bool) {
-	u, err := c.dyn.Resource(roleGVR).Namespace(c.ns).Get(ctx, roleName, metav1.GetOptions{})
+	// roleName is the session's canonical principal: bare for a Role in c.ns (the IAM home namespace),
+	// "<namespace>/<name>" for one elsewhere, read from its own namespace.
+	ns, name := dataplaneauthz.SplitQualified(c.ns, roleName)
+	u, err := c.dyn.Resource(roleGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return time.Time{}, false, false
 	}

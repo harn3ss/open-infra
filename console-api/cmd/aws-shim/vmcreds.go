@@ -86,7 +86,9 @@ func (h *vmCredsHandler) serve(w http.ResponseWriter, r *http.Request, requestID
 		http.Error(w, "role not assumable by this instance", http.StatusForbidden)
 		return
 	}
-	akid, sk, tok, exp, err := h.minter.Mint(id.role, groups, id.vmName, id.caller, h.ttl)
+	// The session names the Role's namespace: a VM's role lives in the VM's namespace, so it is a
+	// different principal from a same-named Role anywhere else.
+	akid, sk, tok, exp, err := h.minter.MintIn(id.namespace, id.role, groups, id.vmName, id.caller, h.ttl)
 	if err != nil {
 		http.Error(w, "could not mint credentials", http.StatusInternalServerError)
 		return

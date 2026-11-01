@@ -234,6 +234,14 @@ func appliesTo(list []string, ptype, pid string, groups []string) bool {
 		if e == "*" || e == self {
 			return true
 		}
+		// A namespaced Policy's "*" (canonAppliesTo): every principal of that namespace, whose canonical
+		// ids are "<ns>/<name>" — never a home principal (bare id) or a group.
+		if ns, ok := strings.CutPrefix(e, starInNamespacePrefix); ok {
+			if strings.HasPrefix(pid, ns+"/") {
+				return true
+			}
+			continue
+		}
 		t, name, ok := strings.Cut(e, "::")
 		if !ok || t != "Group" {
 			continue

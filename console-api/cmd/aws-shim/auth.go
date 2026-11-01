@@ -9,6 +9,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
 	"github.com/harn3ss/open-infra/console-api/internal/awssig"
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
 
@@ -35,6 +36,33 @@ type authenticator struct {
 	resolve ownerResolver
 	sts     *awssts.Minter // verifies sts:AssumeRole session tokens; nil disables assumed-role auth
 	revoke  sessionRevoker // per-role revokeSessionsBefore cutoff; nil disables it
+	// home is the IAM home namespace (ROLES_NAMESPACE): a session for a Role there acts as the bare
+	// role name; one for a Role elsewhere as "<namespace>/<name>". "" means the default home.
+	home string
+}
+
+// sessionClaims is the identity a verified assumed-role session acts as. Its data-plane principal is
+// the role's canonical id (dataplaneauthz.QualifiedName), so a Role in another namespace never acts
+// with — or is revoked by — a same-named home Role. ok=false when the role's "Revoke sessions" cutoff
+// (spec.revokeSessionsBefore, the AWSRevokeOlderSessions analog) postdates the session: it is denied
+// even though its token is valid and unexpired. A nil revoker skips that check (crypto + expiry still
+// gate the request; see roleCutoffCache's failure posture).
+func (a *authenticator) sessionClaims(ctx context.Context, sess awssts.Session) (iam.Claims, bool) {
+	home := a.home
+	if home == "" {
+		home = dataplaneauthz.DefaultHomeNamespace
+	}
+	principal := dataplaneauthz.QualifiedName(home, sess.Namespace, sess.RoleName)
+	if a.revoke != nil {
+		if cutoff, on := a.revoke.RevokedBefore(ctx, principal); on && sess.IssuedAt.Before(cutoff) {
+			return iam.Claims{}, false
+		}
+	}
+	return iam.Claims{
+		Sub:         "assumed-role/" + sess.RoleName + "/" + sess.SessionName,
+		Groups:      sess.Groups,
+		AssumedRole: principal,
+	}, true
 }
 
 // authenticate proves the caller holds a valid open-infra access key and returns the iam.Claims
@@ -68,22 +96,13 @@ func (a *authenticator) authenticate(ctx context.Context, r *http.Request) (iam.
 		if err := awssig.Verify(r, cred, sess.SecretKey); err != nil {
 			return iam.Claims{}, errAuth
 		}
-		// Per-role "Revoke sessions": a session minted before the role's
-		// revokeSessionsBefore cutoff is revoked — denied here even though its token is valid and
-		// unexpired, the AWS AWSRevokeOlderSessions analog. Checked AFTER the SigV4 verify so a
-		// forged-signature request never triggers the k8s cutoff read. New assumes (issued at/after
-		// the cutoff) survive; nil revoker leaves behaviour unchanged (fail-open only for that check,
-		// crypto + expiry still enforced — see roleCutoffCache's failure posture).
-		if a.revoke != nil {
-			if cutoff, on := a.revoke.RevokedBefore(ctx, sess.RoleName); on && sess.IssuedAt.Before(cutoff) {
-				return iam.Claims{}, errAuth
-			}
+		// Per-role "Revoke sessions" is checked AFTER the SigV4 verify so a forged-signature request
+		// never triggers the k8s cutoff read (sessionClaims).
+		claims, ok := a.sessionClaims(ctx, sess)
+		if !ok {
+			return iam.Claims{}, errAuth
 		}
-		return iam.Claims{
-			Sub:         "assumed-role/" + sess.RoleName + "/" + sess.SessionName,
-			Groups:      sess.Groups,
-			AssumedRole: sess.RoleName,
-		}, nil
+		return claims, nil
 	}
 	key, ok := a.keys.Lookup(ctx, cred.AccessKeyID)
 	if !ok {
@@ -122,16 +141,11 @@ func (a *authenticator) authenticatePresigned(ctx context.Context, r *http.Reque
 		if err := awssig.VerifyPresigned(r, p, sess.SecretKey, now); err != nil {
 			return iam.Claims{}, errAuth
 		}
-		if a.revoke != nil {
-			if cutoff, on := a.revoke.RevokedBefore(ctx, sess.RoleName); on && sess.IssuedAt.Before(cutoff) {
-				return iam.Claims{}, errAuth
-			}
+		claims, ok := a.sessionClaims(ctx, sess)
+		if !ok {
+			return iam.Claims{}, errAuth
 		}
-		return iam.Claims{
-			Sub:         "assumed-role/" + sess.RoleName + "/" + sess.SessionName,
-			Groups:      sess.Groups,
-			AssumedRole: sess.RoleName,
-		}, nil
+		return claims, nil
 	}
 	key, ok := a.keys.Lookup(ctx, p.AccessKeyID)
 	if !ok {

@@ -26,20 +26,31 @@ var (
 // It fails CLOSED on any list error (the Checker then denies governed traffic), exactly as before —
 // so the shim's ServiceAccount must be granted list on policies AND roles/users/groups in
 // iam.openinfra.dev. Policies with no dataPlane block are ignored.
-func K8sLoader(dc dynamic.Interface) Loader {
+func K8sLoader(dc dynamic.Interface) Loader { return K8sLoaderIn(dc, DefaultHomeNamespace) }
+
+// K8sLoaderIn is K8sLoader with an explicit IAM home namespace. Every principal key and Policy name it
+// produces is canonical (principal.go): bare in home, "<namespace>/<name>" elsewhere, so objects of the
+// same name in two namespaces never share policies.
+func K8sLoaderIn(dc dynamic.Interface, home string) Loader {
 	return func(ctx context.Context) (Snapshot, error) {
 		list, err := dc.Resource(policyGVR).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return Snapshot{}, err
 		}
 		var docs []PolicyDoc
+		defined := map[string]bool{} // every Policy's canonical name, dataPlane or not
+		for i := range list.Items {
+			defined[QualifiedName(home, list.Items[i].GetNamespace(), list.Items[i].GetName())] = true
+		}
 		for i := range list.Items {
 			spec, _ := list.Items[i].Object["spec"].(map[string]any)
 			dp, _ := spec["dataPlane"].(map[string]any)
 			if dp == nil {
 				continue
 			}
-			doc := PolicyDoc{Name: list.Items[i].GetName(), AppliesTo: toStrings(dp["appliesTo"])}
+			ns := list.Items[i].GetNamespace()
+			doc := PolicyDoc{Name: QualifiedName(home, ns, list.Items[i].GetName()),
+				AppliesTo: canonAppliesTo(home, ns, toStrings(dp["appliesTo"]))}
 			for _, s := range toSlice(dp["statements"]) {
 				sm, _ := s.(map[string]any)
 				if sm == nil {
@@ -68,7 +79,7 @@ func K8sLoader(dc dynamic.Interface) Loader {
 			gvr  schema.GroupVersionResource
 			kind string
 		}{{roleGVR, "Role"}, {userGVR, "User"}, {groupGVR, "Group"}} {
-			if err := loadAttachments(ctx, dc, k.gvr, k.kind, attach, boundary); err != nil {
+			if err := loadAttachments(ctx, dc, home, k.gvr, k.kind, func(n string) bool { return defined[n] }, attach, boundary); err != nil {
 				return Snapshot{}, err // fail closed, unchanged
 			}
 		}
@@ -76,23 +87,43 @@ func K8sLoader(dc dynamic.Interface) Loader {
 	}
 }
 
+// unresolvableBoundary stands in for a permission boundary that names a Policy the principal may not
+// use. It is never a Policy name, so it compiles to the deny-all ceiling, exactly as a typo'd name does.
+const unresolvableBoundary = "\x00unresolvable"
+
 // loadAttachments lists one principal kind and records each object's spec.policies under
-// "<kind>::<name>" in the attach index, and its spec.permissionBoundary (Role/User) in the boundary
-// index. A list error propagates (fail closed). Groups carry no permissionBoundary field, so it is
-// simply absent for them.
-func loadAttachments(ctx context.Context, dc dynamic.Interface, gvr schema.GroupVersionResource, kind string, attach map[string][]string, boundary map[string]string) error {
+// "<kind>::<canonical name>" in the attach index, and its spec.permissionBoundary (Role/User) in the
+// boundary index, each Policy reference resolved to a canonical Policy name (resolvePolicyRef). A list
+// error propagates (fail closed). Groups carry no permissionBoundary field, so it is simply absent for
+// them.
+func loadAttachments(ctx context.Context, dc dynamic.Interface, home string, gvr schema.GroupVersionResource, kind string,
+	defined func(string) bool, attach map[string][]string, boundary map[string]string) error {
 	list, err := dc.Resource(gvr).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 	for i := range list.Items {
 		spec, _ := list.Items[i].Object["spec"].(map[string]any)
-		key := kind + "::" + list.Items[i].GetName()
-		if names := toStrings(spec["policies"]); len(names) > 0 {
+		ns := list.Items[i].GetNamespace()
+		if ns == "" {
+			ns = home
+		}
+		key := kind + "::" + QualifiedName(home, ns, list.Items[i].GetName())
+		var names []string
+		for _, ref := range toStrings(spec["policies"]) {
+			if n := resolvePolicyRef(home, ns, ref, defined); n != "" {
+				names = append(names, n)
+			}
+		}
+		if len(names) > 0 {
 			attach[key] = names
 		}
 		if pb := str(spec["permissionBoundary"]); pb != "" {
-			boundary[key] = pb
+			if n := resolvePolicyRef(home, ns, pb, defined); n != "" {
+				boundary[key] = n
+			} else {
+				boundary[key] = unresolvableBoundary
+			}
 		}
 	}
 	return nil

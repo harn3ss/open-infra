@@ -191,6 +191,50 @@ appear in `SelfSubjectRulesReview`, so a denied action's button looks enabled an
 Surface the policy's message verbatim. The alternative — duplicating deny logic in the UI — is the
 drift anti-pattern.
 
+### Passing a role (`iam:PassRole`)
+Naming a `kind: Role` on something that later acts with that Role's credentials needs permission to
+pass the Role, as on AWS:
+
+| Where a Role is named | Checked by | As |
+|---|---|---|
+| `VirtualMachine` `spec.instanceRole` | admission policy `openinfra-pass-role` | the requester (the console and the CloudFormation front door write as the user) |
+| ServiceAccount annotation `openinfra.dev/instance-role` (what the VM credentials endpoint trusts) | admission policy `openinfra-instance-role-binding` | the requester; the VM composition sets it through provider-kubernetes |
+| `StateMachine` `roleArn` (CreateStateMachine / UpdateStateMachine) | the aws-shim | the caller; StartExecution also requires the Role's trust to name the caller |
+
+Each applies when the Role is set or changed. `Application` `spec.assumeRole` needs no PassRole: as with
+IRSA, the Role's trust names the workload's ServiceAccount, and only that identity can assume it.
+
+The permission is the RBAC verb `passrole` on `roles.iam.openinfra.dev` (an assumed role needs
+`iam:PassRole` on `Role::<name>` in its policies instead):
+
+- **Admins** (`openinfra:admins`) hold it on every Role.
+- **Power users do not.** This matches AWS's PowerUserAccess, which excludes `iam:PassRole`. A power
+  user can launch a VM or a state machine that names a Role only after an admin grants `passrole` on
+  that Role:
+
+  ```sh
+  kubectl -n <ns> create role pass-<role> --verb=passrole --resource=roles.iam.openinfra.dev --resource-name=<role>
+  kubectl -n <ns> create rolebinding pass-<role> --role=pass-<role> --group=openinfra:<group>
+  ```
+
+  then regenerate the control-plane Cedar corpus ([authz-webhook.md](authz-webhook.md)), which decides
+  the check in enforce mode. `kind: Policy` cannot grant it: `iam.openinfra.dev` is outside every
+  Policy's boundary.
+
+### Roles and policies outside the home namespace
+Users, Groups, the managed Policy library and the Roles STS can assume live in the IAM home
+namespace (`open-infra-console`). A Role elsewhere (a VM's instance role in the VM's namespace, a
+stack's Role in the CloudFormation namespace) is a separate principal, `<namespace>/<name>`, so a
+same-named Role in another namespace never shares its policies or its "Revoke sessions" cutoff:
+
+- A Role's `spec.policies` entry resolves to its own namespace's Policy first, then the home
+  namespace's (the managed library). `<namespace>/<name>` names one explicitly; a Role outside home
+  may name only its own namespace or home.
+- A Policy outside home governs only principals of its own namespace through `appliesTo`: `Role::<name>`
+  means that namespace's Role and `*` everyone in that namespace. A home Policy may name
+  `Role::<namespace>/<name>`.
+- Write `<namespace>/<name>` wherever a trust policy or `appliesTo` must name a Role outside home.
+
 ## Deliberately NOT building
 
 - **Permission boundaries / SCPs.** Intersection semantics have no Kubernetes analogue; pure cost

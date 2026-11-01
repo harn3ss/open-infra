@@ -83,7 +83,10 @@ func run(logger *slog.Logger) error {
 	if derr != nil {
 		logger.Warn("data-plane policy engine + assume-role disabled: cannot build dynamic client", "err", derr)
 	} else {
-		authzChecker = dataplaneauthz.New(dataplaneauthz.K8sLoader(dyn), 30*time.Second)
+		// IAM objects outside the home namespace (where Users, Groups, managed Policies and STS roles
+		// live) are separate principals: "<namespace>/<name>" (dataplaneauthz.QualifiedName).
+		iamHome := getenv("ROLES_NAMESPACE", getenv("USERS_NAMESPACE", dataplaneauthz.DefaultHomeNamespace))
+		authzChecker = dataplaneauthz.New(dataplaneauthz.K8sLoaderIn(dyn, iamHome), 30*time.Second)
 		logger.Info("data-plane policy engine enabled (kind: Policy dataPlane, refresh 30s)")
 	}
 
@@ -301,6 +304,7 @@ func run(logger *slog.Logger) error {
 			stsMinter = m
 			roleRes = &dynRoleResolver{dyn: dyn, ns: rolesNS}
 			auth.sts = stsMinter
+			auth.home = rolesNS
 			// Per-role session revoke: the verify path consults each role's
 			// revokeSessionsBefore cutoff, read off the Role claim and cached on a short TTL so a
 			// revoke bites already-issued sessions within ~one TTL without a GET per request.
@@ -539,6 +543,7 @@ func run(logger *slog.Logger) error {
 	if dyn != nil {
 		sfnNS := getenv("STEPFUNCTIONS_NAMESPACE", keysNS)
 		sfnH := newSFNHandler(cs, dyn, stsMinter, roleRes, authzChecker, sfnNS, account, region, logger)
+		sfnH.rolesNS = rolesNS // iam:PassRole on an execution role is checked in the role's namespace
 		services["states"] = sfnH
 		logger.Info("Step Functions front door enabled", slog.String("namespace", sfnNS),
 			slog.Bool("executionRoleAuthority", stsMinter != nil))
