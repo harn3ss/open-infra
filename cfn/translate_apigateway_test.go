@@ -172,7 +172,7 @@ func TestDeploy_RestV1_RollbackDeprovisions(t *testing.T) {
     DependsOn: ApiGatewayRestApi
     Properties: { Description: boom }
 `
-	f := &fakeApplier{failOn: "EncryptionKey/" + k8sName("FailKey")}
+	f := &fakeApplier{failOn: "EncryptionKey/" + stackQualifiedName("s", "FailKey")}
 	var deprovisioned []string
 	opts := deployOpts()
 	opts.ProvisionRestAPI = func(_ context.Context, _ map[string]any) (string, error) { return "api-xyz", nil }

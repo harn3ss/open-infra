@@ -301,10 +301,10 @@ Resources:
             Version: "2012-10-17"
             Statement:
               - { Effect: Allow, Action: s3:GetObject, Resource: !Sub "${Assets.Arn}/*" }
-              - { Effect: Allow, Action: s3:PutObject, Resource: !Sub "arn:aws:s3:::${Config}/uploads/*" }
+              - { Effect: Allow, Action: s3:PutObject, Resource: !Sub "arn:aws:s3:::${Config}/*" }
               - Effect: Allow
                 Action: s3:DeleteObject
-                Resource: !Sub ["${B}/tmp/*", { B: !GetAtt Config.Arn }]
+                Resource: !Sub ["${B}/*", { B: !GetAtt Config.Arn }]
               - { Effect: Allow, Action: dynamodb:GetItem, Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Orders}" }
               - { Effect: Allow, Action: sns:Publish, Resource: !Sub "${Alerts}" }
 `
@@ -323,6 +323,35 @@ Resources:
 		if got := strs(st[i]["resources"]); !sameStrs(got, w) {
 			t.Errorf("statement %d resources = %v, want %v", i, got, w)
 		}
+	}
+}
+
+// A grant on part of a bucket (a key prefix) is refused: open-infra authorizes S3 per bucket, so it would
+// otherwise widen to the whole bucket.
+func TestTranslate_IAMRole_S3PrefixIsRefused(t *testing.T) {
+	tmpl := `
+Resources:
+  Config:
+    Type: AWS::S3::Bucket
+    Properties: { BucketName: app-config }
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }
+      Policies:
+        - PolicyName: app
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: s3:PutObject, Resource: !Sub "arn:aws:s3:::${Config}/uploads/*" }
+`
+	ctx := ecsCtx(t, tmpl)
+	props, _ := ctx.resolveProps("AppRole")
+	if _, fs := translateIAMRole("AppRole", props, ctx); !strings.Contains(findingsText(fs), "scopes to part of a bucket") {
+		t.Fatalf("want a refusal, got %q", findingsText(fs))
 	}
 }
 
@@ -465,7 +494,7 @@ Resources:
 	if policy == "" {
 		t.Fatalf("no companion Policy was built: %+v", built)
 	}
-	for _, want := range []string{"Role::instancerole", "Bucket::appbucket", "s3:GetObject", "s3:ListBucket",
+	for _, want := range []string{"Role::s-instancerole", "Bucket::s-appbucket", "s3:GetObject", "s3:ListBucket",
 		"ecr:GetAuthorizationToken", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "Repository::app"} {
 		if !strings.Contains(policy, want) {
 			t.Errorf("companion Policy lacks %q:\n%s", want, policy)

@@ -356,11 +356,23 @@ func importResources(arns []string) (kept, unsupported []string) {
 		}
 		if res, ok := arnToResource(r); ok {
 			add(res)
+		} else if s3ObjectPrefix(r) {
+			unsupported = append(unsupported, "resource "+r+" scopes to part of a bucket — open-infra authorizes S3 per bucket, so honoring it would widen the grant to the whole bucket (only bucket and bucket/* ARNs map)")
 		} else {
 			unsupported = append(unsupported, "resource "+r+" is not a recognizable ARN for a shim-fronted service")
 		}
 	}
 	return kept, unsupported
+}
+
+// s3ObjectPrefix reports whether arn is an S3 object ARN narrower than its whole bucket.
+func s3ObjectPrefix(arn string) bool {
+	tail, ok := strings.CutPrefix(arn, "arn:aws:s3:::")
+	if !ok {
+		return false
+	}
+	bucket, key, hasKey := strings.Cut(tail, "/")
+	return bucket != "" && hasKey && key != "*"
 }
 
 // arnToResource maps an AWS ARN to the open-infra "Type::id" the aws-shim data-plane check uses for
@@ -381,8 +393,11 @@ func arnToResource(arn string) (string, bool) {
 	}
 	switch svc {
 	case "s3":
-		bucket, _, _ := strings.Cut(tail, "/") // arn:aws:s3:::bucket[/key] -> Bucket::bucket
-		if bucket != "" {
+		// arn:aws:s3:::bucket and arn:aws:s3:::bucket/* -> Bucket::bucket. The shim authorizes S3 per
+		// bucket, so a narrower object ARN (bucket/uploads/*, bucket/key) has no faithful form: mapping it
+		// to the bucket would widen the grant, so it is not mapped (s3ObjectPrefix reports why).
+		bucket, key, hasKey := strings.Cut(tail, "/")
+		if bucket != "" && (!hasKey || key == "*") {
 			return "Bucket::" + bucket, true
 		}
 	case "dynamodb":

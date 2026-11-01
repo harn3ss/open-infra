@@ -8,6 +8,7 @@ package cfn
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -38,7 +39,21 @@ type Resource struct {
 	Properties     map[string]any
 	DependsOn      []string
 	Condition      string
-	DeletionPolicy string // Delete (default) | Retain | Snapshot
+	DeletionPolicy string // Delete (default) | Retain | RetainExceptOnCreate | Snapshot
+	// The other resource attributes. open-infra does not act on them; the plan lists each one a
+	// template sets in its fidelity summary (attributeCaveats), so none is dropped silently.
+	UpdateReplacePolicy string
+	CreationPolicy      any
+	UpdatePolicy        any
+	Metadata            map[string]any
+	// unknownKeys are resource keys CloudFormation does not define (it rejects the template; so does plan).
+	unknownKeys []string
+}
+
+// resourceKeys are the keys CloudFormation allows on a resource.
+var resourceKeys = map[string]bool{
+	"Type": true, "Properties": true, "DependsOn": true, "Condition": true, "DeletionPolicy": true,
+	"UpdateReplacePolicy": true, "CreationPolicy": true, "UpdatePolicy": true, "Metadata": true,
 }
 
 // cfnBool reads a CloudFormation boolean, which a template may write as true or "true".
@@ -116,6 +131,19 @@ func Parse(data []byte) (*Template, error) {
 		if dp, ok := rm["DeletionPolicy"].(string); ok {
 			r.DeletionPolicy = dp
 		}
+		if urp, ok := rm["UpdateReplacePolicy"].(string); ok {
+			r.UpdateReplacePolicy = urp
+		}
+		r.CreationPolicy, r.UpdatePolicy = rm["CreationPolicy"], rm["UpdatePolicy"]
+		if md, ok := rm["Metadata"].(map[string]any); ok {
+			r.Metadata = md
+		}
+		for k := range rm {
+			if !resourceKeys[k] {
+				r.unknownKeys = append(r.unknownKeys, k)
+			}
+		}
+		sort.Strings(r.unknownKeys)
 		switch d := rm["DependsOn"].(type) {
 		case string:
 			r.DependsOn = []string{d}

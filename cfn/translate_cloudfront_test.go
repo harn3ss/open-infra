@@ -194,7 +194,7 @@ func TestCloudFront_SiteSubset_Provisionable(t *testing.T) {
 	if !ok {
 		t.Fatalf("no StaticSite built for the distribution; built: %v", built)
 	}
-	if site.res.Kind != "StaticSite" || site.res.APIVersion != "openinfra.dev/v1" || site.res.Name != "sitedistribution" {
+	if site.res.Kind != "StaticSite" || site.res.APIVersion != "openinfra.dev/v1" || site.res.Name != "site-sitedistribution" {
 		t.Fatalf("bad manifest head: %+v", site.res)
 	}
 	want := map[string]any{
@@ -249,7 +249,7 @@ func TestCloudFront_SiteSubset_Provisionable(t *testing.T) {
 	if _, has := bucket.res.Spec["policy"]; has {
 		t.Fatalf("a CloudFront-only bucket policy must not be stored as a MinIO policy, got %v", bucket.res.Spec["policy"])
 	}
-	if !cfHasCaveat(bucket.cav, "granting CloudFront read (OAC) are realized by the kind: StaticSite serving this bucket (sitedistribution)") {
+	if !cfHasCaveat(bucket.cav, "granting CloudFront read (OAC) are realized by the kind: StaticSite serving this bucket (site-sitedistribution)") {
 		t.Errorf("bucket caveats should explain the realized grant; got:\n  %s", strings.Join(bucket.cav, "\n  "))
 	}
 	// OAC / certificate / headers policy / bucket policy provision nothing on their own.
@@ -278,9 +278,9 @@ func TestCloudFront_DeployOrder(t *testing.T) {
 	bi, si := -1, -1
 	for i, a := range ap.applied {
 		switch a {
-		case "Bucket/sitebucket":
+		case "Bucket/site-sitebucket":
 			bi = i
-		case "StaticSite/sitedistribution":
+		case "StaticSite/site-sitedistribution":
 			si = i
 		}
 	}
@@ -563,7 +563,7 @@ func TestCloudFront_SubOriginAndGeneratedBucketName(t *testing.T) {
 	cfOrigin0(tmpl)["DomainName"] = map[string]any{"Fn::Sub": "${SiteBucket}.s3.${AWS::Region}.amazonaws.com"}
 	// The policy's Resource is an unresolvable !Sub, but it rides the CloudFront grant, which isn't stored.
 	site := cfBuilt(t, cfJSON(t, tmpl))["SiteDistribution"]
-	if site.res.Spec["bucket"] != "sitebucket" {
+	if site.res.Spec["bucket"] != "site-sitebucket" {
 		t.Fatalf("bucket = %v, want sitebucket (the k8s-safe logical id)", site.res.Spec["bucket"])
 	}
 }

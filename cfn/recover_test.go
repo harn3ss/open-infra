@@ -39,7 +39,7 @@ Resources:
 func TestRecover_CreateInterrupted_RolledBackHonoringRetain(t *testing.T) {
 	f := &fakeApplier{dieAfter: 3} // record write, KeyA, KeyB — then the process is gone
 	// keyc is NOT this stack's: an object of that name already exists, labeled for another stack.
-	f.liveLabels = map[string]map[string]string{"EncryptionKey/keyc": {labelStack: "other"}}
+	f.liveLabels = map[string]map[string]string{"EncryptionKey/s-keyc": {labelStack: "other"}}
 	if _, err := Deploy(context.Background(), threeKeys, deployOpts(), f); err == nil {
 		t.Fatal("the dying deploy must not succeed")
 	}
@@ -58,13 +58,13 @@ func TestRecover_CreateInterrupted_RolledBackHonoringRetain(t *testing.T) {
 	if rec.Status != "ROLLBACK_COMPLETE" || rec.Message != interruptedReason {
 		t.Fatalf("want ROLLBACK_COMPLETE naming the interruption, got %s %q", rec.Status, rec.Message)
 	}
-	if strings.Join(f.deleted, ",") != "EncryptionKey/keyb" {
+	if strings.Join(f.deleted, ",") != "EncryptionKey/s-keyb" {
 		t.Fatalf("only keyb (created by this stack, not Retain) is deleted; deleted=%v", f.deleted)
 	}
-	if _, ok := f.liveLabels["EncryptionKey/keya"]; !ok {
+	if _, ok := f.liveLabels["EncryptionKey/s-keya"]; !ok {
 		t.Fatal("the Retain resource must survive the rollback")
 	}
-	if _, ok := f.liveLabels["EncryptionKey/keyc"]; !ok {
+	if _, ok := f.liveLabels["EncryptionKey/s-keyc"]; !ok {
 		t.Fatal("a same-named object that is not this stack's must survive the rollback")
 	}
 	if len(rec.Resources) != 1 || rec.Resources[0].LogicalID != "KeyA" || len(rec.Pending) != 0 {
@@ -95,7 +95,7 @@ func TestRecover_RollbackInProgressIsContinued(t *testing.T) {
 	}
 	f.dieAfter = 0
 	rec, err := RecoverInterrupted(context.Background(), deployOpts(), f, interruptedReason)
-	if err != nil || rec.Status != "ROLLBACK_COMPLETE" || !contains(f.deleted, "EncryptionKey/keyb") {
+	if err != nil || rec.Status != "ROLLBACK_COMPLETE" || !contains(f.deleted, "EncryptionKey/s-keyb") {
 		t.Fatalf("the next recovery finishes the rollback: %v %v deleted=%v", rec, err, f.deleted)
 	}
 }
@@ -105,7 +105,7 @@ func TestRecover_CreateRollbackFailure_RollbackFailed(t *testing.T) {
 	f := &fakeApplier{dieAfter: 4} // record, KeyA, KeyB, KeyC
 	_, _ = Deploy(context.Background(), threeKeys, deployOpts(), f)
 	f.dieAfter = 0
-	f.failDelete = "EncryptionKey/keyb"
+	f.failDelete = "EncryptionKey/s-keyb"
 	rec, err := RecoverInterrupted(context.Background(), deployOpts(), f, interruptedReason)
 	if err == nil || rec.Status != "ROLLBACK_FAILED" {
 		t.Fatalf("want ROLLBACK_FAILED, got %v %v", rec, err)
@@ -128,7 +128,7 @@ func TestRecover_CreateRollbackFailure_RollbackFailed(t *testing.T) {
 func TestRecover_UpdateInterrupted_PriorStackRestored(t *testing.T) {
 	f := deployInitial(t) // KeyA (description a), KeyB
 	prior := *f.stored
-	priorA := f.liveSpecs["EncryptionKey/keya"]["description"]
+	priorA := f.liveSpecs["EncryptionKey/s-keya"]["description"]
 	f.applied, f.deleted = nil, nil
 	f.dieAfter, f.mutations = 3, 0 // UPDATE_IN_PROGRESS record, KeyA (modify), KeyC (add) — then gone
 	if _, err := Update(context.Background(), updatedStack, deployOpts(), f); err == nil {
@@ -140,7 +140,7 @@ func TestRecover_UpdateInterrupted_PriorStackRestored(t *testing.T) {
 	if len(f.stored.Pending) != 1 || f.stored.Pending[0].LogicalID != "KeyC" {
 		t.Fatalf("the in-progress update must record its Add (KeyC) as Pending, got %+v", f.stored.Pending)
 	}
-	if got := f.liveSpecs["EncryptionKey/keya"]["description"]; got == priorA {
+	if got := f.liveSpecs["EncryptionKey/s-keya"]["description"]; got == priorA {
 		t.Fatalf("precondition: the interrupted update had modified KeyA")
 	}
 
@@ -152,13 +152,13 @@ func TestRecover_UpdateInterrupted_PriorStackRestored(t *testing.T) {
 	if rec.Status != "UPDATE_ROLLBACK_COMPLETE" || rec.Message != interruptedReason || len(rec.Pending) != 0 {
 		t.Fatalf("want UPDATE_ROLLBACK_COMPLETE naming the interruption, got %+v", rec)
 	}
-	if !contains(f.deleted, "EncryptionKey/keyc") {
+	if !contains(f.deleted, "EncryptionKey/s-keyc") {
 		t.Fatalf("the update's add (keyc) must be deleted, deleted=%v", f.deleted)
 	}
-	if got := f.liveSpecs["EncryptionKey/keya"]["description"]; got != priorA {
+	if got := f.liveSpecs["EncryptionKey/s-keya"]["description"]; got != priorA {
 		t.Fatalf("KeyA's prior spec must be restored: description=%v want %v", got, priorA)
 	}
-	if _, ok := f.liveSpecs["EncryptionKey/keyb"]; !ok {
+	if _, ok := f.liveSpecs["EncryptionKey/s-keyb"]; !ok {
 		t.Fatal("KeyB (never removed, but re-applied either way) must be present")
 	}
 	pj, _ := json.Marshal(prior.Resources)
@@ -199,12 +199,12 @@ Resources:
 	if f.stored != nil {
 		t.Fatal("the stack record must be removed")
 	}
-	for _, k := range []string{"EncryptionKey/keya", "EncryptionKey/keyb"} {
+	for _, k := range []string{"EncryptionKey/s-keya", "EncryptionKey/s-keyb"} {
 		if _, live := f.liveLabels[k]; live {
 			t.Fatalf("%s must be deleted", k)
 		}
 	}
-	if _, ok := f.liveLabels["EncryptionKey/shared"]; !ok {
+	if _, ok := f.liveLabels["EncryptionKey/s-shared"]; !ok {
 		t.Fatal("the Retain resource survives the resumed delete")
 	}
 }
@@ -259,11 +259,11 @@ Resources:
 
 // The engine's own create rollback honors Retain too (AWS retains a Retain resource on rollback).
 func TestDeploy_Rollback_HonorsRetain(t *testing.T) {
-	f := &fakeApplier{failOn: "EncryptionKey/keyc"}
+	f := &fakeApplier{failOn: "EncryptionKey/s-keyc"}
 	if _, err := Deploy(context.Background(), threeKeys, deployOpts(), f); err == nil {
 		t.Fatal("deploy must fail")
 	}
-	if strings.Join(f.deleted, ",") != "EncryptionKey/keyb" {
+	if strings.Join(f.deleted, ",") != "EncryptionKey/s-keyb" {
 		t.Fatalf("rollback deletes keyb, keeps the Retain keya: deleted=%v", f.deleted)
 	}
 }

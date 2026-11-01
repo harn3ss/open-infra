@@ -230,6 +230,28 @@ func TestImportAWS_DeduplicatesResources(t *testing.T) {
 	}
 }
 
+// An S3 ARN narrower than its bucket (a key prefix or one object) is refused: the shim authorizes S3
+// per bucket, so mapping it to Bucket::<name> would widen the grant to the whole bucket.
+func TestImportAWS_S3ObjectPrefixIsRefusedNotWidened(t *testing.T) {
+	for _, arn := range []string{"arn:aws:s3:::b/uploads/*", "arn:aws:s3:::b/report.csv", "arn:aws:s3:::b/a*"} {
+		doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"` + arn + `"}]}`
+		stmts, unsupported, err := ImportAWS(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(unsupported) == 0 || !strings.Contains(strings.Join(unsupported, " "), "scopes to part of a bucket") {
+			t.Errorf("%s: want a refusal, got statements %#v unsupported %v", arn, stmts, unsupported)
+		}
+		for _, s := range stmts {
+			for _, r := range s.Resources {
+				if r == "Bucket::b" {
+					t.Errorf("%s widened to Bucket::b", arn)
+				}
+			}
+		}
+	}
+}
+
 // §266: StringEquals on aws:username imports to an equality condition and enforces it.
 func TestImportAWS_UsernameStringEquals(t *testing.T) {
 	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"StringEquals":{"aws:username":"alice"}}}]}`

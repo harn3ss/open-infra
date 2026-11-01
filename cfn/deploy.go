@@ -64,13 +64,52 @@ type StackResource struct {
 	DeletionPolicy string         `json:"deletionPolicy,omitempty"` // Delete (default) | Retain | Snapshot
 	Spec           map[string]any `json:"spec,omitempty"`           // the applied spec — enables diff (update) and faithful rollback
 	ProvisionedID  string         `json:"provisionedId,omitempty"`  // out-of-band id of a non-k8s resource (e.g. a REST v1 API id), for teardown
+	Protected      bool           `json:"protected,omitempty"`      // deletion protection: a delete/removal of the stack's resource is refused
 }
 
 // builtResource is one translated, ready-to-apply resource plus its identity/spec record.
 type builtResource struct {
-	res StackResource
-	yml []byte
-	cav []string
+	res      StackResource
+	yml      []byte
+	cav      []string
+	shared   bool          // applied by several stacks on purpose (Manifest.Shared): no ownership check
+	requires []Requirement // objects outside the stack that must exist first (Manifest.Requires)
+}
+
+// applyOwned applies a built resource, first refusing to overwrite an object of the same kind and name
+// that is not this stack's: another stack's, or one no stack created. On AWS a create whose name is
+// taken fails; taking the object over would silently corrupt the stack that owns it. A shared companion
+// (the per-namespace default EncryptionKey) is meant to be applied by several stacks and is not checked.
+// An Applier that cannot read labels (LabelReader) is not checked either.
+//
+// It also refuses a resource while an object outside the stack that it requires does not exist (a
+// security group a parameter names): applying it would silently lose what that object provides.
+func applyOwned(ctx context.Context, ap Applier, b builtResource, stack string) error {
+	for _, rq := range b.requires {
+		_, found, err := ap.GetSpec(ctx, rq.APIVersion, rq.Kind, rq.Name)
+		if err != nil {
+			return fmt.Errorf("checking that %s %s exists: %w", rq.Kind, rq.Name, err)
+		}
+		if !found {
+			return fmt.Errorf("%s %s does not exist — it is %s, named from outside this stack; refusing to apply %s %s without it", rq.Kind, rq.Name, rq.Why, b.res.Kind, b.res.Name)
+		}
+	}
+	if lr, ok := ap.(LabelReader); ok && !b.shared {
+		labels, found, err := lr.GetLabels(ctx, b.res.APIVersion, b.res.Kind, b.res.Name)
+		if err != nil {
+			return fmt.Errorf("checking whether %s %s already exists: %w", b.res.Kind, b.res.Name, err)
+		}
+		if found {
+			switch owner := labels[labelStack]; owner {
+			case stack:
+			case "":
+				return fmt.Errorf("%s %s already exists and no stack created it — refusing to overwrite it (rename the resource, or remove the existing object)", b.res.Kind, b.res.Name)
+			default:
+				return fmt.Errorf("%s %s already exists and belongs to stack %s — refusing to overwrite it (two stacks cannot share a resource name)", b.res.Kind, b.res.Name, owner)
+			}
+		}
+	}
+	return ap.Apply(ctx, b.yml)
 }
 
 type StackRecord struct {
@@ -134,6 +173,9 @@ type DeployOptions struct {
 	// than guessing. The in-cluster aws-shim doorway sets them to drivers of its own apigateway store.
 	ProvisionRestAPI   ProvisionRestAPIFunc
 	DeprovisionRestAPI DeprovisionRestAPIFunc
+	// prior is the existing stack's recorded resources (an update or change set): each keeps the name it
+	// was created with (naming.go). Nil for a create.
+	prior []StackResource
 	// Caps are deploy-environment facts translators depend on (e.g. whether MinIO has SSE-KMS on).
 	// Plan and deploy both evaluate with these, so a PROVISIONABLE* plan still means deploy won't
 	// refuse. Zero = fail-closed (the CLI); the in-cluster aws-shim doorway sets them.
@@ -178,8 +220,8 @@ func expandManifest(id string, res Resource, m *Manifest, opts DeployOptions) ([
 		}
 		out = append(out, builtResource{
 			res: StackResource{LogicalID: lid, APIVersion: mm.APIVersion, Kind: mm.Kind, Name: mm.Name,
-				DeletionPolicy: dp, Spec: mm.Spec},
-			yml: yml, cav: mm.Caveats,
+				DeletionPolicy: dp, Spec: mm.Spec, Protected: mm.Protected},
+			yml: yml, cav: mm.Caveats, shared: mm.Shared, requires: mm.Requires,
 		})
 	}
 	return out, nil
@@ -203,7 +245,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	}
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
-	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps}
+	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, opts.prior)}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, ctx) }
 
 	byID := map[string][]builtResource{}
@@ -228,6 +270,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 		if m == nil {
 			continue // a no-op resource (e.g. an ECS Cluster, or a TaskDefinition a Service composes)
 		}
+		m.Caveats = append(m.Caveats, attributeCaveats(res)...) // so a change set lists them too
 		built, err := expandManifest(id, res, m, opts)
 		if err != nil {
 			return nil, err
@@ -290,7 +333,7 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		// rollback too.
 		for i := len(applied) - 1; i >= 0; i-- {
 			a := applied[i]
-			if isRetain(a) {
+			if keptOnRollback(a) {
 				continue
 			}
 			_ = ap.Delete(ctx, a.APIVersion, a.Kind, a.Name)
@@ -303,7 +346,7 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	}
 
 	for _, b := range order {
-		if err := ap.Apply(ctx, b.yml); err != nil {
+		if err := applyOwned(ctx, ap, b, opts.StackName); err != nil {
 			return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, err))
 		}
 		applied = append(applied, b.res)
@@ -364,7 +407,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
 	r.customData = map[string]map[string]any{}
-	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps}
+	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, nil)}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -380,7 +423,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	rollback := func(cause error) (*StackRecord, error) {
 		for i := len(applied) - 1; i >= 0; i-- { // reverse order, honoring Retain (as Deploy does)
 			a := applied[i]
-			if isRetain(a) {
+			if keptOnRollback(a) {
 				continue
 			}
 			_ = ap.Delete(ctx, a.APIVersion, a.Kind, a.Name)
@@ -465,7 +508,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			return rollback(werr)
 		}
 		for _, b := range built {
-			if aerr := ap.Apply(ctx, b.yml); aerr != nil {
+			if aerr := applyOwned(ctx, ap, b, opts.StackName); aerr != nil {
 				return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, aerr))
 			}
 			applied = append(applied, b.res)

@@ -27,7 +27,7 @@ func TestDestroy_ReverseOrder(t *testing.T) {
 		t.Fatalf("status = %s, want DELETE_COMPLETE", rec.Status)
 	}
 	// KeyB (last created) deleted before KeyA; the record ConfigMap removed too.
-	want := []string{"EncryptionKey/keyb", "EncryptionKey/keya", "ConfigMap/cfn-stack-s"}
+	want := []string{"EncryptionKey/s-keyb", "EncryptionKey/s-keya", "ConfigMap/cfn-stack-s"}
 	if strings.Join(f.deleted, ",") != strings.Join(want, ",") {
 		t.Fatalf("delete order = %v, want %v", f.deleted, want)
 	}
@@ -57,10 +57,10 @@ Resources:
 		t.Fatalf("destroy: %v", err)
 	}
 	// KeyA deleted; KeyB retained (never deleted).
-	if contains(f.deleted, "EncryptionKey/keyb") {
+	if contains(f.deleted, "EncryptionKey/s-keyb") {
 		t.Errorf("retained KeyB must not be deleted, deleted: %v", f.deleted)
 	}
-	if !contains(f.deleted, "EncryptionKey/keya") {
+	if !contains(f.deleted, "EncryptionKey/s-keya") {
 		t.Errorf("KeyA should be deleted, deleted: %v", f.deleted)
 	}
 	// the retained resource is reported (now unmanaged).
@@ -98,8 +98,8 @@ func TestDestroy_NoStack_Refused(t *testing.T) {
 // Deletes are not reversible: a failed delete leaves DELETE_FAILED with what remains, and the
 // record is kept (not removed).
 func TestDestroy_DeleteFails(t *testing.T) {
-	f := deployTemplate(t, initialStack) // KeyA, KeyB
-	f.failDelete = "EncryptionKey/keyb"  // the first to be deleted (reverse order)
+	f := deployTemplate(t, initialStack)  // KeyA, KeyB
+	f.failDelete = "EncryptionKey/s-keyb" // the first to be deleted (reverse order)
 	rec, err := Destroy(context.Background(), deployOpts(), f)
 	if err == nil {
 		t.Fatal("expected destroy to fail")

@@ -42,11 +42,15 @@ type ChangeSet struct {
 // stack record. It returns the change set, the desired resources in dependency order (for
 // update to apply), and the current record (nil if the stack does not yet exist).
 func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*ChangeSet, []builtResource, *StackRecord, error) {
-	desired, err := buildManifests(data, opts)
+	// The current stack first: its resources keep the names they were created with (naming.go).
+	current, found, err := ap.GetStack(ctx, opts.StackName)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	current, found, err := ap.GetStack(ctx, opts.StackName)
+	if found {
+		opts.prior = current.Resources
+	}
+	desired, err := buildManifests(data, opts)
 	if err != nil {
 		return nil, nil, nil, err
 	}

@@ -242,8 +242,9 @@ Resources:
 	}
 }
 
-// An instance with no SecurityGroup: exposed (access port only), with a caveat — no ports invented.
-func TestTranslate_EIP_NoSecurityGroupCaveat(t *testing.T) {
+// An instance with no SecurityGroup is refused when an Elastic IP would publish it: on AWS it gets the
+// VPC default group (no inbound from outside it); here it would have no firewall at all.
+func TestTranslate_EIP_NoSecurityGroupRefused(t *testing.T) {
 	tmpl := `
 Resources:
   Bare:
@@ -253,12 +254,8 @@ Resources:
     Type: AWS::EC2::EIP
     Properties: { InstanceId: !Ref Bare }
 `
-	m := vmFor(t, tmpl, "Bare", nil)
-	if m.Spec["expose"] != true || m.Spec["ports"] != nil {
-		t.Fatalf("no SG -> expose with no extra ports: %#v", m.Spec)
-	}
-	if !strings.Contains(strings.Join(m.Caveats, "\n"), "attaches no SecurityGroup") {
-		t.Fatalf("missing the no-SG caveat: %v", m.Caveats)
+	if _, fs := translateIn(t, tmpl, "Bare", nil); !strings.Contains(findingsText(fs), "attaches no SecurityGroup") {
+		t.Fatalf("want a refusal for an exposed instance with no SecurityGroup, got: %s", findingsText(fs))
 	}
 }
 
@@ -458,7 +455,10 @@ Conditions:
 Resources:
   Web:
     Type: AWS::EC2::Instance
-    Properties: { ImageId: ubuntu-24.04 }
+    Properties: { ImageId: ubuntu-24.04, SecurityGroupIds: [ !Ref TestSG ] }
+  TestSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties: { GroupDescription: test }
   Eip:
     Type: AWS::EC2::EIP
     Properties:
@@ -542,10 +542,10 @@ func TestDeploy_EIP_FoldsIntoVM(t *testing.T) {
 	if _, err := Deploy(context.Background(), []byte(eipWebTmpl), deployOpts(), f); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	if got := strings.Join(f.appliedNonCM(), ","); got != "SecurityGroup/websg,VirtualMachine/web" {
+	if got := strings.Join(f.appliedNonCM(), ","); got != "SecurityGroup/s-websg,VirtualMachine/s-web" {
 		t.Fatalf("only the SG and the VM are applied (the EIP folds into the VM), got %s", got)
 	}
-	spec := f.liveSpecs["VirtualMachine/web"]
+	spec := f.liveSpecs["VirtualMachine/s-web"]
 	if spec["expose"] != true {
 		t.Fatalf("the applied VM must carry expose: %#v", spec)
 	}

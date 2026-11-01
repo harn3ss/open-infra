@@ -91,10 +91,10 @@ func TestUpdate_Success(t *testing.T) {
 	}
 	// KeyC added and KeyA re-applied (modify); KeyB deleted.
 	gotApplied := f.appliedNonCM()
-	if !contains(gotApplied, "EncryptionKey/keyc") || !contains(gotApplied, "EncryptionKey/keya") {
+	if !contains(gotApplied, "EncryptionKey/s-keyc") || !contains(gotApplied, "EncryptionKey/s-keya") {
 		t.Errorf("update should apply keya(modify)+keyc(add), applied: %v", gotApplied)
 	}
-	if !contains(f.deleted, "EncryptionKey/keyb") {
+	if !contains(f.deleted, "EncryptionKey/s-keyb") {
 		t.Errorf("update should delete keyb, deleted: %v", f.deleted)
 	}
 	// final resource set is exactly the desired one.
@@ -113,7 +113,7 @@ func TestUpdate_Rollback_RestoresPriorStack(t *testing.T) {
 	f := deployInitial(t)
 	f.applied = nil
 	f.deleted = nil
-	f.notReady = "keyc" // the newly-added key never comes ready
+	f.notReady = "s-keyc" // the newly-added key never comes ready
 	rec, err := Update(context.Background(), updatedStack, deployOpts(), f)
 	if err == nil {
 		t.Fatal("expected the update to fail")
@@ -122,7 +122,7 @@ func TestUpdate_Rollback_RestoresPriorStack(t *testing.T) {
 		t.Fatalf("status = %s, want UPDATE_ROLLBACK_COMPLETE", rec.Status)
 	}
 	// the add was rolled back (deleted).
-	if !contains(f.deleted, "EncryptionKey/keyc") {
+	if !contains(f.deleted, "EncryptionKey/s-keyc") {
 		t.Errorf("rollback should delete the added keyc, deleted: %v", f.deleted)
 	}
 	// the prior stack is restored exactly: KeyA and KeyB, not KeyC.
@@ -134,7 +134,7 @@ func TestUpdate_Rollback_RestoresPriorStack(t *testing.T) {
 		t.Errorf("rollback should restore {KeyA,KeyB}, got %v", ids)
 	}
 	// KeyB was never actually removed (removal happens after adds; the add failed first).
-	if contains(f.deleted, "EncryptionKey/keyb") {
+	if contains(f.deleted, "EncryptionKey/s-keyb") {
 		t.Errorf("keyb should not have been deleted before the failing add: %v", f.deleted)
 	}
 }
@@ -170,7 +170,7 @@ Resources:
 	if rec.Status != "UPDATE_COMPLETE" {
 		t.Fatalf("status = %s, want UPDATE_COMPLETE", rec.Status)
 	}
-	if !contains(f.deleted, "Volume/data") {
+	if !contains(f.deleted, "Volume/s-data") {
 		t.Errorf("the removed Volume must be deleted, deleted: %v", f.deleted)
 	}
 	if contains(f.deleted, "EncryptionKey/"+defaultEBSKeyName) {

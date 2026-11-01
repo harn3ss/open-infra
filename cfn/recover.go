@@ -100,7 +100,7 @@ func recoverCreate(ctx context.Context, opts DeployOptions, ap Applier, rec *Sta
 	if err := writeStackRecord(ctx, ap, &prog, opts); err != nil {
 		return rec, fmt.Errorf("could not record ROLLBACK_IN_PROGRESS: %w", err)
 	}
-	remaining, terr := teardown(ctx, opts, ap, unionResources(rec.Resources, rec.Pending), true)
+	remaining, terr := teardown(ctx, opts, ap, unionResources(rec.Resources, rec.Pending), true, true)
 	out := *rec
 	out.Pending = nil
 	out.Outputs, out.OutputsOmitted = nil, nil

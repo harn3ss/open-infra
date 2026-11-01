@@ -261,7 +261,8 @@ func printPlan(p *Plan) {
 	// does not emulate. A pass here never claims more than it tested.
 	if p.Verdict != Rejected {
 		if len(p.Fidelity) == 0 {
-			fmt.Println("\nFidelity summary: every accepted property is emulated (no declared losses).")
+			// Only reachable when the translate gate ran (a skipped gate adds a line saying so).
+			fmt.Println("\nFidelity summary: no declared losses — every property the translators accepted is emulated.")
 		} else {
 			fmt.Printf("\nFidelity summary — accepted, but NOT emulated as on AWS (%d):\n", len(p.Fidelity))
 			for _, f := range p.Fidelity {

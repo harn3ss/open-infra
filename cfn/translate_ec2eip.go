@@ -329,7 +329,7 @@ func eipPortsFromSGs(instID string, accessPort int, ctx *stackCtx) (ports []any,
 	raw, _ := ctx.rawProps(instID)
 	var sgIDs, external []string
 	addList := func(v any) {
-		list, _ := v.([]any)
+		list, _ := listEntries(v, ctx) // a list that does not resolve is refused by the instance translator
 		for _, e := range list {
 			if t, ok := getAttTarget(e); ok {
 				if _, isRes := ctx.template.Resources[t]; isRes {
@@ -348,7 +348,7 @@ func eipPortsFromSGs(instID string, accessPort int, ctx *stackCtx) (ports []any,
 	}
 	addList(raw["SecurityGroupIds"])
 	addList(raw["SecurityGroups"])
-	if nis, ok := raw["NetworkInterfaces"].([]any); ok && len(nis) > 0 {
+	if nis, _ := listEntries(raw["NetworkInterfaces"], ctx); len(nis) > 0 {
 		if ni0 := primaryNIC(nis); ni0 != nil {
 			addList(ni0["GroupSet"])
 		}
@@ -417,7 +417,7 @@ func eipPortsFromSGs(instID string, accessPort int, ctx *stackCtx) (ports []any,
 	}
 	for _, sg := range sgIDs {
 		sgRaw, _ := ctx.rawProps(sg)
-		rules, _ := sgRaw["SecurityGroupIngress"].([]any)
+		rules, _ := listEntries(sgRaw["SecurityGroupIngress"], ctx) // unresolvable: refused by the SG translator
 		for i, r := range rules {
 			examine(fmt.Sprintf("SecurityGroup %s ingress rule %d", sg, i), r)
 		}

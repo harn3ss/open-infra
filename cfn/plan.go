@@ -66,9 +66,16 @@ type Plan struct {
 	Findings  []Finding         // intrinsic/reference problems
 	Blockers  []string          // human-readable REJECTED reasons
 	// Fidelity lists every accepted-but-not-emulated property across the included resources, in
-	// template order (each resource's Caveats). Empty only when every translator reported none.
+	// template order (each resource's Caveats), and the resource attributes open-infra does not act on.
+	// Empty only when the translate gate ran and every translator reported none.
 	Fidelity []FidelityItem `json:",omitempty"`
+	// GateSkipped says why the translate gate did not run ("" when it did). Without it, property-level
+	// fidelity was not checked at plan time, so an empty per-property summary claims nothing.
+	GateSkipped string `json:",omitempty"`
 }
+
+// FidelityStack is the FidelityItem.Resource of a line about the whole stack rather than one resource.
+const FidelityStack = "(stack)"
 
 // BuildPlan parses a template and produces a dry-run plan. params supplies parameter values
 // (overriding defaults); stackName seeds AWS::StackName. It never contacts the cluster.
@@ -157,6 +164,7 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 			Condition:  res.Condition,
 		}
 		if included {
+			plan.Blockers = append(plan.Blockers, attributeBlockers(id, res)...)
 			d := r.resolveResource(id, res)
 			d = append(d, res.DependsOn...)
 			deps[id] = d
@@ -197,7 +205,7 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 		}
 		tr := newResolver(t, pvals, strMapToAny(exports), pseudoParams(stackName))
 		tr.evalConditions()
-		tctx := &stackCtx{template: t, resolver: tr, caps: caps}
+		tctx := &stackCtx{template: t, resolver: tr, caps: caps, namer: newPhysNamer(stackName, nil)}
 		tr.staticRef = func(id string) (string, bool) { return inStackRef(id, tctx) }
 		for _, id := range t.rawOrder {
 			res := t.Resources[id]
@@ -212,7 +220,7 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 			resolved, _ := tr.resolve(res.Properties).(map[string]any)
 			m, fs := tf(id, resolved, tctx)
 			if pr := byID[id]; pr != nil {
-				pr.Caveats = manifestCaveats(m)
+				pr.Caveats = append(manifestCaveats(m), attributeCaveats(res)...)
 				for _, c := range pr.Caveats {
 					plan.Fidelity = append(plan.Fidelity, FidelityItem{Resource: id, Detail: c})
 				}
@@ -225,6 +233,29 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 					seen[msg] = true
 					plan.Blockers = append(plan.Blockers, msg)
 				}
+			}
+		}
+	} else {
+		// The gate did not run, so the summary cannot list property-level losses: say so, and still
+		// list the resource attributes (they do not need the translators).
+		switch {
+		case len(missing) > 0:
+			plan.GateSkipped = "a required parameter has no value"
+		case t.Transform != nil:
+			plan.GateSkipped = "the template uses a Transform"
+		default:
+			plan.GateSkipped = "the stack has a custom resource or an API Gateway REST API, whose attributes resolve only during deploy"
+		}
+		plan.Fidelity = append(plan.Fidelity, FidelityItem{Resource: FidelityStack,
+			Detail: "property-level fidelity was not checked at plan time (" + plan.GateSkipped + "); deploy still refuses any property it cannot translate, but losses it accepts are not listed here"})
+		for i := range plan.Resources {
+			pr := &plan.Resources[i]
+			if !pr.Included {
+				continue
+			}
+			for _, c := range attributeCaveats(t.Resources[pr.LogicalID]) {
+				pr.Caveats = append(pr.Caveats, c)
+				plan.Fidelity = append(plan.Fidelity, FidelityItem{Resource: pr.LogicalID, Detail: c})
 			}
 		}
 	}
@@ -250,7 +281,9 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 	switch {
 	case len(plan.Blockers) > 0:
 		plan.Verdict = Rejected
-	case plan.hasPartial() || plan.hasUndeployable():
+	case plan.hasPartial() || plan.hasUndeployable() || len(plan.Fidelity) > 0:
+		// Any fidelity line is a caveat: a stack open-infra does not fully emulate is never reported as
+		// cleanly PROVISIONABLE.
 		plan.Verdict = ProvisionableWithCaveats
 	default:
 		plan.Verdict = Provisionable

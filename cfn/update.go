@@ -16,6 +16,7 @@ package cfn
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -74,8 +75,16 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		currentByID[r.LogicalID] = r
 	}
 	action := map[string]ChangeAction{}
+	var removed []StackResource
 	for _, c := range cs.Changes {
 		action[c.LogicalID] = c.Action
+		if c.Action == Remove {
+			removed = append(removed, currentByID[c.LogicalID])
+		}
+	}
+	// Removing a resource with deletion protection is refused before anything changes, as on AWS.
+	if p := protectedOf(removed); len(p) > 0 {
+		return nil, fmt.Errorf("refusing to update: it would remove %s, which has deletion protection on — turn DeletionProtection off in an update first", strings.Join(p, ", "))
 	}
 
 	// Mark IN_PROGRESS (keep the current resource list until we succeed). The resources this update
@@ -111,7 +120,7 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	for _, b := range desired {
 		switch action[b.res.LogicalID] {
 		case Add, Modify:
-			if err := ap.Apply(ctx, b.yml); err != nil {
+			if err := applyOwned(ctx, ap, b, opts.StackName); err != nil {
 				return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, err))
 			}
 			if action[b.res.LogicalID] == Add {
@@ -178,7 +187,7 @@ func restorePrior(ctx context.Context, opts DeployOptions, ap Applier, prior, ad
 	lr, canReadLabels := ap.(LabelReader)
 	for i := len(added) - 1; i >= 0; i-- {
 		r := added[i]
-		if isRetain(r) || isOutOfBand(r) || inPrior[r.APIVersion+"/"+r.Kind+"/"+r.Name] {
+		if keptOnRollback(r) || isOutOfBand(r) || inPrior[r.APIVersion+"/"+r.Kind+"/"+r.Name] {
 			continue
 		}
 		if ownedOnly && canReadLabels {

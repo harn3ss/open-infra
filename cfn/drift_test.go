@@ -34,7 +34,7 @@ func TestDrift_InSync(t *testing.T) {
 func TestDrift_ModifiedField(t *testing.T) {
 	f := deployTemplate(t, initialStack)
 	// Someone edits the live object out of band.
-	f.liveSpecs["EncryptionKey/keya"]["description"] = "hand-edited"
+	f.liveSpecs["EncryptionKey/s-keya"]["description"] = "hand-edited"
 	r, err := DetectDrift(context.Background(), deployOpts(), f)
 	if err != nil {
 		t.Fatalf("drift: %v", err)
@@ -53,7 +53,7 @@ func TestDrift_ModifiedField(t *testing.T) {
 
 func TestDrift_DeletedOutOfBand(t *testing.T) {
 	f := deployTemplate(t, initialStack)
-	delete(f.liveSpecs, "EncryptionKey/keyb") // someone deleted it
+	delete(f.liveSpecs, "EncryptionKey/s-keyb") // someone deleted it
 	r, err := DetectDrift(context.Background(), deployOpts(), f)
 	if err != nil {
 		t.Fatalf("drift: %v", err)
@@ -70,7 +70,7 @@ func TestDrift_DeletedOutOfBand(t *testing.T) {
 // only compares the fields the stack owns.
 func TestDrift_IgnoresLiveDefaults(t *testing.T) {
 	f := deployTemplate(t, initialStack)
-	f.liveSpecs["EncryptionKey/keya"]["vaultKeyPath"] = "transit/keys/keya" // a composition-filled default
+	f.liveSpecs["EncryptionKey/s-keya"]["vaultKeyPath"] = "transit/keys/keya" // a composition-filled default
 	r, err := DetectDrift(context.Background(), deployOpts(), f)
 	if err != nil {
 		t.Fatalf("drift: %v", err)

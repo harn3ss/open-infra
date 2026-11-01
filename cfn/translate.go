@@ -40,6 +40,21 @@ type Manifest struct {
 	// created it — e.g. the per-namespace default EncryptionKey, which other stacks' disks also key
 	// on, so it is Retain and a stack destroy/update/rollback must not delete it. Empty = inherit.
 	DeletionPolicy string
+	// Shared marks a companion several stacks apply on purpose under one fixed name (the per-namespace
+	// default EncryptionKey). It is not refused for belonging to another stack (applyOwned).
+	Shared bool
+	// Requires names objects outside the stack this resource depends on for its meaning (e.g. a
+	// SecurityGroup a parameter names). Deploy refuses to apply it while one does not exist.
+	Requires []Requirement
+	// Protected (RDS DeletionProtection) makes a stack delete, or an update that removes the resource,
+	// refuse while it is set.
+	Protected bool
+}
+
+// Requirement is an object outside the stack that must exist before a resource is applied.
+type Requirement struct {
+	APIVersion, Kind, Name string
+	Why                    string // what the resource uses it for, for the refusal message
 }
 
 // translator produces a Manifest from a resource's already-resolved Properties, or a set of
@@ -61,6 +76,7 @@ type stackCtx struct {
 	template *Template
 	resolver *resolver
 	caps     Capabilities // deploy-environment facts (zero = fail-closed); same value at plan and deploy
+	namer    *physNamer   // each in-stack resource's Kubernetes name (naming.go); nil = bare logical ids
 }
 
 // refTarget returns the logical id a raw property references, if it is a bare `{Ref: X}`.
@@ -247,9 +263,9 @@ func translateCustomResource(logicalID string, props map[string]any, ctx *stackC
 	return &Manifest{
 		APIVersion: customResourceAPIVersion,
 		Kind:       customResourceKind,
-		Name:       k8sName(logicalID),
+		Name:       ctx.name(logicalID),
 		Spec: map[string]any{
-			"function":     k8sName(fnID),
+			"function":     ctx.functionName(fnID),
 			"resourceType": ctx.template.Resources[logicalID].Type,
 			"properties":   rp,
 		},
@@ -261,7 +277,7 @@ func translateCustomResource(logicalID string, props map[string]any, ctx *stackC
 // Faithful: Description, EnableKeyRotation (-> rotationDays), KeySpec (-> keyType).
 // Declared caveat: KeyPolicy (Vault-managed key; access is governed by open-infra IAM, not a
 // per-key policy). Anything else blocks.
-func translateKMSKey(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+func translateKMSKey(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{"Description": true, "EnableKeyRotation": true, "KeySpec": true, "KeyPolicy": true, "Enabled": true, "Tags": true}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
@@ -270,10 +286,13 @@ func translateKMSKey(id string, props map[string]any, _ *stackCtx) (*Manifest, [
 	if d, ok := concrete(props["Description"]); ok && d != "" {
 		spec["description"] = d
 	}
-	if v, ok := props["EnableKeyRotation"]; ok {
-		if b, ok := v.(bool); ok && b {
-			spec["rotationDays"] = 365 // AWS annual rotation
-		}
+	if cfnBool(props["EnableKeyRotation"]) {
+		spec["rotationDays"] = 365 // AWS annual rotation
+	}
+	// A disabled key cannot be used on AWS; a kind: EncryptionKey is always usable, so creating one would
+	// grant what the template withheld.
+	if v, ok := props["Enabled"]; ok && !cfnBool(v) {
+		f = append(f, Finding{"Resource " + id, "Enabled: false (a disabled key) has no open-infra form — a kind: EncryptionKey is always usable; refusing rather than creating a usable key"})
 	}
 	if ks, ok := concrete(props["KeySpec"]); ok && ks != "" {
 		switch ks {
@@ -285,7 +304,7 @@ func translateKMSKey(id string, props map[string]any, _ *stackCtx) (*Manifest, [
 			f = append(f, Finding{"Resource " + id, "KMS KeySpec " + ks + " has no open-infra Vault Transit equivalent"})
 		}
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "EncryptionKey", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "EncryptionKey", Name: ctx.name(id), Spec: spec}
 	if _, ok := props["KeyPolicy"]; ok {
 		m.Caveats = append(m.Caveats, "KMS KeyPolicy dropped — the key is Vault-managed; access is governed by open-infra IAM, not a per-key policy")
 	}
@@ -341,9 +360,17 @@ func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*M
 			spec["queues"] = qs
 		}
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Function", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Function", Name: lambdaKindName(id, props, ctx), Spec: spec}
+	if fn, ok := concrete(props["FunctionName"]); ok && fn != "" && fn != m.Name {
+		m.Caveats = append(m.Caveats, fmt.Sprintf("FunctionName %q is not a valid open-infra Function name (lowercase letters, digits and hyphens, at most 63) — the Function is named %q, and Ref / Arn resolve to that name", fn, m.Name))
+	}
 	if _, ok := props["Role"]; ok {
 		m.Caveats = append(m.Caveats, "Lambda Role dropped — open-infra Functions connect via injected secrets/env, they do not assume an IAM role")
+	}
+	if a, ok := props["Architectures"]; ok {
+		if l, _ := a.([]any); len(l) != 1 || fmt.Sprint(l[0]) != "x86_64" {
+			m.Caveats = append(m.Caveats, fmt.Sprintf("Architectures %v is not honored — the Function runs on the cluster's node architecture, so its image must support it", a))
+		}
 	}
 	return m, f
 }
@@ -358,7 +385,7 @@ func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*M
 // create a state machine that looks fine and fails at execution, the worst shape.
 // Faithful: DefinitionString / Definition (-> definition), STANDARD type.
 // Declared caveats: RoleArn, StateMachineName, Tags, Logging/Tracing (open-infra has its own).
-func translateStateMachine(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+func translateStateMachine(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"DefinitionString": true, "Definition": true, "RoleArn": true, "StateMachineName": true,
 		"StateMachineType": true, "LoggingConfiguration": true, "TracingConfiguration": true,
@@ -377,6 +404,12 @@ func translateStateMachine(id string, props map[string]any, _ *stackCtx) (*Manif
 		f = append(f, Finding{"Resource " + id, "StateMachineType " + t + " is not supported — open-infra runs STANDARD-semantics workflows (EXPRESS has different execution/history semantics)"})
 	}
 
+	// Exactly one definition, as on AWS: with both, one would be silently ignored.
+	if _, s := props["DefinitionString"]; s {
+		if _, d := props["Definition"]; d {
+			f = append(f, Finding{"Resource " + id, "both DefinitionString and Definition are set — set exactly one"})
+		}
+	}
 	// Resolve the ASL definition from DefinitionString (a string) or Definition (an object).
 	var def string
 	if ds, ok := props["DefinitionString"]; ok {
@@ -405,7 +438,10 @@ func translateStateMachine(id string, props map[string]any, _ *stackCtx) (*Manif
 	if def != "" {
 		spec["definition"] = def
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "StateMachine", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "StateMachine", Name: ctx.name(id), Spec: spec}
+	if n, ok := concrete(props["StateMachineName"]); ok && n != "" && n != m.Name {
+		m.Caveats = append(m.Caveats, fmt.Sprintf("StateMachineName %q is not used — the state machine is kind: StateMachine %q", n, m.Name))
+	}
 	if _, ok := props["RoleArn"]; ok {
 		m.Caveats = append(m.Caveats, "RoleArn dropped — the open-infra StateMachine controller invokes Functions directly, it does not assume an IAM role")
 	}
@@ -440,7 +476,7 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	} else {
 		f = append(f, Finding{"Resource " + id, "Size is required to create a Volume"})
 	}
-	if v, ok := props["MultiAttachEnabled"].(bool); ok && v {
+	if cfnBool(props["MultiAttachEnabled"]) {
 		spec["shared"] = true
 	}
 	// Encryption: open-infra encrypts with a CUSTOMER key (kind: EncryptionKey / Vault Transit). A
@@ -448,7 +484,7 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	// ARN/alias to an out-of-stack or AWS-managed key) still refuses — we can't fabricate a specific
 	// external key. But Encrypted with NO KmsKeyId uses the per-namespace default key (below), the way
 	// AWS uses the account-default aws/ebs key.
-	encrypted, _ := props["Encrypted"].(bool)
+	encrypted := cfnBool(props["Encrypted"]) // CloudFormation accepts true or "true"
 	_, hasKms := props["KmsKeyId"]
 	needDefaultKey := false
 	if encrypted || hasKms {
@@ -465,7 +501,7 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 		}
 		switch {
 		case kid != "":
-			spec["encryptionKey"] = k8sName(kid)
+			spec["encryptionKey"] = ctx.name(kid)
 		case hasKms:
 			f = append(f, Finding{"Resource " + id, "KmsKeyId must reference an in-stack AWS::KMS::Key — open-infra keys volumes with a customer kind: EncryptionKey (via that KMS key); an ARN/alias to an out-of-stack or AWS-managed key has no mappable equivalent. Omit KmsKeyId to use the per-namespace default key."})
 		default:
@@ -480,7 +516,7 @@ func translateVolume(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 		f = append(f, Finding{"Resource " + id, "SnapshotId is not translatable — an AWS EBS snapshot id has no open-infra VolumeSnapshot equivalent to restore from"})
 	}
 
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Volume", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Volume", Name: ctx.name(id), Spec: spec}
 	if needDefaultKey {
 		m.Extra = append(m.Extra, defaultEBSEncryptionKey())
 		m.Caveats = append(m.Caveats, "Encrypted with no KmsKeyId — keyed by the per-namespace default kind: EncryptionKey \""+defaultEBSKeyName+"\" (the open-infra analog of AWS's account-default aws/ebs key), created on first use")
@@ -518,6 +554,7 @@ func defaultEBSEncryptionKey() *Manifest {
 		// the Vault transit key anyway (that is the separate kind: Destruction path) — it would just
 		// strand every disk that references it until re-created. #347 review item 3.
 		DeletionPolicy: "Retain",
+		Shared:         true,
 	}
 }
 
@@ -532,7 +569,7 @@ func ebsEncryptionKey(rawEbs any, ctx *stackCtx) (string, bool) {
 	}
 	if t, ok := getAttTarget(ebs["KmsKeyId"]); ok {
 		if k, in := ctx.template.Resources[t]; in && k.Type == "AWS::KMS::Key" {
-			return k8sName(t), true
+			return ctx.name(t), true
 		}
 	}
 	return "", false
@@ -633,7 +670,7 @@ func resolveSubnetRef(id, prop string, props map[string]any, ctx *stackCtx) (str
 		if raw, ok := ctx.rawProps(id); ok {
 			if t, ok := refTarget(raw[prop]); ok {
 				if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::Subnet" {
-					return k8sName(t), ""
+					return ctx.name(t), ""
 				}
 			}
 		}
@@ -647,16 +684,84 @@ func resolveSubnetRef(id, prop string, props map[string]any, ctx *stackCtx) (str
 	return "", "unresolved"
 }
 
+// listEntries returns the entries of a list-valued property. A literal list is returned as written (raw,
+// so an in-stack !Ref in it can still be followed); a list-level Fn::If is followed to the branch its
+// condition picks, still raw; anything else (a !Ref to a List or CommaDelimitedList parameter,
+// Fn::Split, Fn::ImportValue) is resolved to its values. Unset or AWS::NoValue is an empty list.
+// ok=false means the property is set but is not a list: callers refuse it rather than read it as empty.
+func listEntries(raw any, ctx *stackCtx) (entries []any, ok bool) {
+	switch v := raw.(type) {
+	case nil:
+		return nil, true
+	case []any:
+		return v, true
+	case map[string]any:
+		if len(v) == 1 {
+			if args, isIf := v["Fn::If"].([]any); isIf && len(args) == 3 && ctx != nil && ctx.resolver != nil {
+				if ctx.resolver.conds[fmt.Sprint(args[0])] {
+					return listEntries(args[1], ctx)
+				}
+				return listEntries(args[2], ctx)
+			}
+			if ref, isRef := v["Ref"].(string); isRef && ref == "AWS::NoValue" {
+				return nil, true
+			}
+		}
+	}
+	if ctx == nil {
+		return nil, false
+	}
+	switch l := ctx.resolveVal(raw).(type) {
+	case nil:
+		return nil, true
+	case []any:
+		return l, true
+	case []string: // Fn::Split
+		out := make([]any, 0, len(l))
+		for _, s := range l {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out, true
+	case string:
+		// A List<…> / CommaDelimitedList parameter's Ref resolves to its comma-separated value.
+		if p, isRef := refTarget(raw); isRef && isListParam(ctx.template, p) {
+			var out []any
+			for _, s := range strings.Split(l, ",") {
+				if s = strings.TrimSpace(s); s != "" {
+					out = append(out, s)
+				}
+			}
+			return out, true
+		}
+	}
+	return nil, false
+}
+
+// isListParam reports whether template parameter name is list-typed (its Ref is a list on AWS).
+func isListParam(t *Template, name string) bool {
+	if t == nil {
+		return false
+	}
+	p, ok := t.Parameters[name]
+	if !ok {
+		return false
+	}
+	return p.Type == "CommaDelimitedList" || strings.HasPrefix(p.Type, "List<") ||
+		strings.Contains(p.Type, "<List<")
+}
+
 // sgRefName resolves ONE security-group reference (a RAW, pre-resolution value) to a kind:
 // SecurityGroup name: a {Ref: X} / {Fn::GetAtt: [X, GroupId]} to an in-stack AWS::EC2::SecurityGroup
-// → k8sName(X) (AWS::EC2::SecurityGroup translates to a matching kind: SecurityGroup); a plain string
+// → its kind name (AWS::EC2::SecurityGroup translates to a matching kind: SecurityGroup); a plain string
 // name → itself (substitution); a raw sg- id → ("", raw=true) so the caller can refuse it like an
 // AMI/subnet id. A {Ref} to something that is not an in-stack SG → ("", false): skipped, not fatal.
 func sgRefName(rawVal any, ctx *stackCtx) (name string, raw bool) {
 	if t, ok := getAttTarget(rawVal); ok { // handles {Ref: X} and {Fn::GetAtt: [X, GroupId]}
 		if ctx != nil {
 			if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::SecurityGroup" {
-				return k8sName(t), false
+				return ctx.name(t), false
 			}
 		}
 		return "", false
@@ -679,9 +784,10 @@ func sgRefName(rawVal any, ctx *stackCtx) (name string, raw bool) {
 // SecurityGroup REFUSES: silently launching the VM without a firewall attachment the template declared
 // is fail-open.
 func resolveSGList(id, label string, rawList any, ctx *stackCtx) (names []string, findings []Finding) {
-	list, ok := rawList.([]any)
+	list, ok := listEntries(rawList, ctx)
 	if !ok {
-		return nil, nil
+		return nil, []Finding{{"Resource " + id,
+			label + " does not resolve to a list of security groups — refusing rather than launching the VM without the firewall attachment it declares"}}
 	}
 	for _, entry := range list {
 		n, isRaw := sgRefName(entry, ctx)
@@ -691,7 +797,7 @@ func resolveSGList(id, label string, rawList any, ctx *stackCtx) (names []string
 				continue // AWS::NoValue (e.g. via Fn::If) removes the entry
 			}
 			if t, ok := placeholderTarget(rv); ok && ctx.isType(t, "AWS::EC2::SecurityGroup") {
-				n = k8sName(t)
+				n = ctx.name(t)
 			} else {
 				n, isRaw = sgRefName(rv, ctx)
 			}
@@ -815,15 +921,34 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 				cav = append(cav, "a BlockDeviceMapping without an Ebs block was dropped (ephemeral/NoDevice has no open-infra equivalent)")
 				continue
 			}
+			if _, has := ebs["SnapshotId"]; has {
+				// A volume restored from an EBS snapshot: open-infra has no snapshot to restore from, and a
+				// blank disk in its place would silently lose the data.
+				f = append(f, Finding{"Resource " + id, "a BlockDeviceMapping's Ebs.SnapshotId does not map — open-infra cannot restore an EBS snapshot, and a blank disk in its place would lose its data"})
+				continue
+			}
 			if i == rootIdx {
+				// The VM kind has no encrypted root disk: refuse rather than boot from an unencrypted one.
+				if cfnBool(ebs["Encrypted"]) || ebs["KmsKeyId"] != nil {
+					f = append(f, Finding{"Resource " + id, "the root BlockDeviceMapping is Encrypted (or names a KmsKeyId) — an open-infra VM's root disk is not encrypted (only data disks are: LUKS on longhorn-encrypted); refusing rather than booting from an unencrypted root. Keep sensitive data on an encrypted data disk"})
+					continue
+				}
 				if vs, has := ebs["VolumeSize"]; has {
 					spec["diskSize"] = fmt.Sprintf("%dGi", toInt(vs))
+				}
+				for _, p := range []string{"VolumeType", "Iops", "Throughput"} {
+					if _, ok := ebs[p]; ok {
+						cav = append(cav, "root disk: "+p+" dropped — a VM root disk is a StorageClass PVC, not provisioned-IOPS EBS")
+					}
+				}
+				if dot, ok := ebs["DeleteOnTermination"]; ok && !cfnBool(dot) {
+					cav = append(cav, "root disk: DeleteOnTermination=false does NOT map — the root disk is deleted with the VM")
 				}
 				continue
 			}
 			// A non-root EBS device -> a data disk. An Encrypted device -> a LUKS data disk keyed by a
 			// customer kind: EncryptionKey (KmsKeyId must !Ref an in-stack AWS::KMS::Key).
-			enc, _ := ebs["Encrypted"].(bool)
+			enc := cfnBool(ebs["Encrypted"])
 			_, hasKms := ebs["KmsKeyId"]
 			var encKey string
 			if enc || hasKms {
@@ -871,7 +996,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 					cav = append(cav, "data disk "+fmt.Sprint(disk["name"])+": "+p+" dropped — a VM data disk is a StorageClass PVC (Longhorn/local-path), not provisioned-IOPS EBS")
 				}
 			}
-			if dot, ok := ebs["DeleteOnTermination"].(bool); ok && !dot {
+			if dot, ok := ebs["DeleteOnTermination"]; ok && !cfnBool(dot) {
 				cav = append(cav, "data disk "+fmt.Sprint(disk["name"])+": DeleteOnTermination=false does NOT map — a VM data disk shares the VM's lifecycle (it is deleted with the VM); detach-and-keep is not modeled")
 			}
 		}
@@ -921,14 +1046,18 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		sgNames, f = append(sgNames, n...), append(f, ff...)
 		n, ff = resolveSGList(id, "SecurityGroups", listFor("SecurityGroups"), ctx)
 		sgNames, f = append(sgNames, n...), append(f, ff...)
-		if nis, ok := listFor("NetworkInterfaces").([]any); ok && len(nis) > 0 {
+		nis, ok := listEntries(listFor("NetworkInterfaces"), ctx)
+		if !ok {
+			f = append(f, Finding{"Resource " + id, "NetworkInterfaces does not resolve to a list — refusing rather than launching the VM without the interface (and its security groups) it declares"})
+		}
+		if len(nis) > 0 {
 			{
 				ni0 := primaryNIC(nis)
 				if ni0 != nil {
 					if sref, present := ni0["SubnetId"]; present {
 						if t, ok := getAttTarget(sref); ok && ctx != nil {
 							if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::Subnet" {
-								spec["subnet"] = k8sName(t)
+								spec["subnet"] = ctx.name(t)
 							}
 						} else if s, ok := concrete(sref); ok && s != "" {
 							if strings.HasPrefix(strings.ToLower(s), "subnet-") {
@@ -950,12 +1079,25 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 			}
 		}
 	}
+	var requires []Requirement
 	if len(sgNames) > 0 {
 		spec["securityGroups"] = dedupStrings(sgNames)
+		// A group named from outside the stack (a parameter or a literal name) must exist: a VM that
+		// names a missing group gets no firewall from it.
+		for _, n := range dedupStrings(sgNames) {
+			if !ctx.isInStackName(n, "AWS::EC2::SecurityGroup") {
+				requires = append(requires, Requirement{APIVersion: "openinfra.dev/v1", Kind: "SecurityGroup", Name: n, Why: "a security group this instance attaches"})
+			}
+		}
 	}
 	// #347 1.6: an in-stack AWS::EC2::EIP associated with this instance folds onto the VM's LAN IP
 	// (spec.expose + spec.ports derived from its SecurityGroups) — translate_ec2eip.go.
 	cav = append(cav, eipExposeVM(id, spec, ctx)...)
+	if exp, _ := spec["expose"].(bool); exp && len(sgNames) == 0 {
+		// On AWS an instance with no security group gets the VPC default group, which admits no inbound
+		// from outside it. A VM with none here has no firewall, so publishing it would open it to the LAN.
+		f = append(f, Finding{"Resource " + id, "the instance is published on the LAN (an Elastic IP or a public IP) but attaches no SecurityGroup — on AWS it would get the VPC default group, which admits no inbound from outside it, while here every port would be open to the LAN; attach a SecurityGroup that admits what it should accept"})
+	}
 
 	// IamInstanceProfile -> spec.instanceRole: follow the profile to its in-stack AWS::IAM::Role and
 	// bind the VM to that kind: Role (the guest gets its credentials from instance metadata, no static
@@ -980,7 +1122,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		}
 	}
 
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: ctx.name(id), Spec: spec, Requires: requires}
 	if vmNeedDefaultKey {
 		m.Extra = append(m.Extra, defaultEBSEncryptionKey())
 		cav = append(cav, "an encrypted data disk has no KmsKeyId — keyed by the per-namespace default kind: EncryptionKey \""+defaultEBSKeyName+"\" (open-infra analog of AWS's account-default aws/ebs key), created on first use")
@@ -1108,20 +1250,20 @@ func dedupStrings(xs []string) []string {
 //
 // A kube-ovn Vpc (an isolated network domain / router). The AWS VPC-level CidrBlock has no kind: Vpc
 // field — in kube-ovn the subnets carry the CIDRs, not the VPC — so it is an informational caveat.
-func translateEC2VPC(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+func translateEC2VPC(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"CidrBlock": true, "EnableDnsSupport": true, "EnableDnsHostnames": true,
 		"InstanceTenancy": true, "Tags": true, "CidrBlockAssociations": true,
 	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Vpc", Name: k8sName(id), Spec: map[string]any{}}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Vpc", Name: ctx.name(id), Spec: map[string]any{}}
 	if _, ok := props["CidrBlock"]; ok {
 		m.Caveats = append(m.Caveats, "CidrBlock is informational — in kube-ovn the subnets carry the CIDRs, not the VPC; the VPC-level range does not map to a field")
 	}
-	for _, p := range []string{"EnableDnsSupport", "EnableDnsHostnames", "InstanceTenancy", "Tags"} {
+	for _, p := range []string{"EnableDnsSupport", "EnableDnsHostnames", "InstanceTenancy", "Tags", "CidrBlockAssociations"} {
 		if _, ok := props[p]; ok {
-			m.Caveats = append(m.Caveats, p+" dropped — no kind: Vpc equivalent (DNS is cluster-wide; tenancy/tags don't map)")
+			m.Caveats = append(m.Caveats, p+" dropped — no kind: Vpc equivalent (DNS is cluster-wide; tenancy/tags/extra ranges don't map)")
 		}
 	}
 	return m, f
@@ -1151,7 +1293,7 @@ func translateEC2Subnet(id string, props map[string]any, ctx *stackCtx) (*Manife
 		if raw, ok := ctx.rawProps(id); ok {
 			if t, ok := refTarget(raw["VpcId"]); ok {
 				if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::VPC" {
-					spec["vpc"] = k8sName(t)
+					spec["vpc"] = ctx.name(t)
 				}
 			}
 		}
@@ -1160,8 +1302,8 @@ func translateEC2Subnet(id string, props map[string]any, ctx *stackCtx) (*Manife
 	if v, ok := props["MapPublicIpOnLaunch"].(bool); ok {
 		spec["private"] = !v
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Subnet", Name: k8sName(id), Spec: spec}
-	for _, p := range []string{"AvailabilityZone", "Tags", "AssignIpv6AddressOnCreation", "Ipv6CidrBlock"} {
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Subnet", Name: ctx.name(id), Spec: spec}
+	for _, p := range []string{"AvailabilityZone", "Tags", "AssignIpv6AddressOnCreation", "Ipv6CidrBlock", "OutpostArn"} {
 		if _, ok := props[p]; ok {
 			m.Caveats = append(m.Caveats, p+" dropped — no kind: Subnet equivalent (one flat cluster, no AZ; IPv6/tags don't map)")
 		}
@@ -1201,12 +1343,12 @@ func translateEC2VPCEndpoint(id string, props map[string]any, ctx *stackCtx) (*M
 		if raw, ok := ctx.rawProps(id); ok {
 			if t, ok := refTarget(raw["VpcId"]); ok {
 				if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::VPC" {
-					spec["vpc"] = k8sName(t)
+					spec["vpc"] = ctx.name(t)
 				}
 			}
 		}
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VpcEndpoint", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "VpcEndpoint", Name: ctx.name(id), Spec: spec}
 	if _, ok := props["PolicyDocument"]; ok {
 		m.Caveats = append(m.Caveats, "PolicyDocument dropped — the VpcEndpoint is a private DNS alias to the aws-shim; access through it is governed by IAM/Cedar at the shim, not a per-endpoint policy")
 	}
@@ -1289,7 +1431,7 @@ func translateEC2SecurityGroup(id string, props map[string]any, ctx *stackCtx) (
 		spec["egress"] = egress
 	}
 
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "SecurityGroup", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "SecurityGroup", Name: ctx.name(id), Spec: spec}
 	if _, ok := props["VpcId"]; ok {
 		m.Caveats = append(m.Caveats, "VpcId dropped — a kind: SecurityGroup is enforced cluster-wide by membership label, not scoped to a VPC")
 	}
@@ -1306,11 +1448,14 @@ func translateEC2SecurityGroup(id string, props map[string]any, ctx *stackCtx) (
 // produces a Finding (which blocks the whole resource) rather than a looser emitted rule.
 func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Finding) {
 	var f []Finding
-	items, _ := rawList.([]any)
 	dir := "ingress"
 	peerKey, sgField := "from", "SourceSecurityGroupId"
 	if egress {
 		dir, peerKey, sgField = "egress", "to", "DestinationSecurityGroupId"
+	}
+	items, ok := listEntries(rawList, ctx)
+	if !ok {
+		return nil, []Finding{{"Resource " + id, "the " + dir + " rules do not resolve to a list of rules — refusing rather than dropping them"}}
 	}
 	var out []any
 	for i, it := range items {
@@ -1397,6 +1542,11 @@ const maxExpandedPortRange = 16
 func sgPorts(fromRaw, toRaw any) ([]any, string) {
 	from, okF := cfnPort(fromRaw)
 	to, okT := cfnPort(toRaw)
+	// A port that is set but is not a number (e.g. !GetAtt DB.Endpoint.Port, which does not resolve
+	// before deploy) must not read as absent: absent means ALL ports.
+	if (fromRaw != nil && !okF) || (toRaw != nil && !okT) {
+		return nil, fmt.Sprintf("FromPort/ToPort (%v/%v) is not a concrete port number — refusing rather than opening every port", portShown(fromRaw), portShown(toRaw))
+	}
 	if !okF && !okT {
 		return nil, "" // no ports -> all ports
 	}
@@ -1420,6 +1570,14 @@ func sgPorts(fromRaw, toRaw any) ([]any, string) {
 		return ports, ""
 	}
 	return nil, fmt.Sprintf("port range %d-%d (%d ports) does not map — kind: SecurityGroup takes a list of ports, not a range; ranges of up to %d ports expand, wider ones refuse (split into single-port rules or author natively)", from, to, to-from+1, maxExpandedPortRange)
+}
+
+// portShown renders a FromPort/ToPort value for a message ("unset" when absent).
+func portShown(v any) string {
+	if v == nil {
+		return "unset"
+	}
+	return fmt.Sprint(v)
 }
 
 // cfnPort reads a CFN port value (a JSON number, int, or numeric string).
@@ -1589,7 +1747,7 @@ func translateEC2Route(id string, props map[string]any, ctx *stackCtx) (*Manifes
 // so they BLOCK — a table that silently lacked its stream is the worst shape (looks created, wrong
 // at query time). BillingMode is advisory metadata (there is no capacity behind the store), so it
 // and ProvisionedThroughput are declared caveats rather than blockers.
-func translateDynamoDBTable(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+func translateDynamoDBTable(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	// Only the properties we can honor are `known`; the long tail (LocalSecondaryIndexes,
 	// StreamSpecification, SSESpecification, KinesisStreamSpecification,
 	// PointInTimeRecoverySpecification, ImportSourceSpecification, …) is deliberately absent, so
@@ -1656,7 +1814,7 @@ func translateDynamoDBTable(id string, props map[string]any, _ *stackCtx) (*Mani
 
 	// TTL maps to the shim's reaper (#104). Enabled without an attribute is a malformed request.
 	if ttl, ok := props["TimeToLiveSpecification"].(map[string]any); ok {
-		enabled, _ := ttl["Enabled"].(bool)
+		enabled := cfnBool(ttl["Enabled"])
 		attr, _ := concrete(ttl["AttributeName"])
 		if enabled {
 			if attr == "" {
@@ -1719,7 +1877,7 @@ func translateDynamoDBTable(id string, props map[string]any, _ *stackCtx) (*Mani
 		spec["globalSecondaryIndexes"] = gsis
 	}
 
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Table", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Table", Name: ctx.name(id), Spec: spec}
 	if gsiProjection {
 		m.Caveats = append(m.Caveats, "a GSI Projection (KEYS_ONLY/INCLUDE) is not enforced — the store keeps full items, so every index projects ALL")
 	}
@@ -1765,7 +1923,7 @@ func dynamoKeyAttr(id, name string, attrType map[string]string, f *[]Finding) ma
 // documents (service:Action over ARNs) with no faithful open-infra RBAC form, and dropping them
 // would silently strip the user's permissions. They BLOCK (attach permissions via open-infra
 // Groups instead).
-func translateIAMUser(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+func translateIAMUser(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"UserName": true, "Groups": true, "ManagedPolicyArns": true, "Policies": true,
 		"PermissionsBoundary": true, "LoginProfile": true, "Path": true, "Tags": true,
@@ -1795,10 +1953,13 @@ func translateIAMUser(id string, props map[string]any, _ *stackCtx) (*Manifest, 
 		}
 		spec["groups"] = gs
 	}
-	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "User", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "User", Name: ctx.name(id), Spec: spec}
 	m.Caveats = append(m.Caveats, "the user is created without a password (source: local) — set a password separately; group names must name existing open-infra Groups (the authority relocation: permissions come from a Group's ClusterRole)")
 	if _, ok := props["LoginProfile"]; ok {
 		m.Caveats = append(m.Caveats, "LoginProfile dropped — set the user's password via an open-infra password Secret, not an inline console password")
+	}
+	if p, ok := concrete(props["Path"]); ok && p != "" && p != "/" {
+		m.Caveats = append(m.Caveats, "Path "+p+" dropped — open-infra users have no IAM path")
 	}
 	return m, f
 }
@@ -1836,7 +1997,7 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 	if d, ok := concrete(props["Description"]); ok && d != "" {
 		spec["description"] = d
 	}
-	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "Role", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "Role", Name: ctx.name(id), Spec: spec}
 	// Inline Policies -> companion kind: Policy objects (spec.dataPlane, appliesTo Role::<name>), which
 	// govern this role's assumed sessions at the aws-shim. This is the narrow data-plane subset the
 	// finding asked for: s3/sqs/... actions on recognizable in-stack ARNs, imported by the same engine
@@ -1849,13 +2010,22 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 			return nil, f
 		}
 		m.Extra = extras
-		m.Caveats = append(m.Caveats, fmt.Sprintf("inline Policies translated to %d companion kind: Policy object(s) (spec.dataPlane, appliesTo Role::%s) that govern this role's assumed sessions — enforced where the aws-shim data-plane front doors are enabled (opt-in, off by default)", len(extras), k8sName(id)))
+		m.Caveats = append(m.Caveats, fmt.Sprintf("inline Policies translated to %d companion kind: Policy object(s) (spec.dataPlane, appliesTo Role::%s) that govern this role's assumed sessions — enforced where the aws-shim data-plane front doors are enabled (opt-in, off by default)", len(extras), ctx.name(id)))
 	}
 	if _, ok := props["ManagedPolicyArns"]; ok {
 		m.Caveats = append(m.Caveats, "ManagedPolicyArns are NOT attached — AWS-managed policies (e.g. AmazonSSMManagedInstanceCore, AmazonEC2ContainerRegistryReadOnly) have no open-infra counterpart to attach. App-level data-plane access comes from the inline Policies above or a kind: Policy in spec.policies — e.g. an ECR image pull is ecr:GetAuthorizationToken on \"*\" plus ecr:BatchGetImage and ecr:GetDownloadUrlForLayer on the repository's ARN")
 	}
 	if _, ok := props["PermissionsBoundary"]; ok {
 		m.Caveats = append(m.Caveats, "PermissionsBoundary not mapped — set spec.permissionBoundary to a kind: Policy natively if a boundary is required")
+	}
+	if n, ok := concrete(props["RoleName"]); ok && n != "" && n != m.Name {
+		m.Caveats = append(m.Caveats, fmt.Sprintf("RoleName %q is not used — the role is kind: Role %q", n, m.Name))
+	}
+	if p, ok := concrete(props["Path"]); ok && p != "" && p != "/" {
+		m.Caveats = append(m.Caveats, "Path "+p+" dropped — open-infra roles have no IAM path")
+	}
+	if _, ok := props["MaxSessionDuration"]; ok {
+		m.Caveats = append(m.Caveats, "MaxSessionDuration is not enforced — a session of this role may be requested for up to 12 hours (the platform's limit for every role), whatever this maximum")
 	}
 	return m, f
 }
@@ -1889,7 +2059,7 @@ func roleInlinePolicies(roleID string, resolved any, ctx *stackCtx) ([]*Manifest
 	if list == nil {
 		return nil, []Finding{{"Resource " + roleID, "Policies must be a list of { PolicyName, PolicyDocument }"}}
 	}
-	roleName := k8sName(roleID)
+	roleName := ctx.name(roleID)
 	var out []*Manifest
 	var f []Finding
 	for i, entry := range list {
@@ -2081,7 +2251,7 @@ func inStackRef(id string, ctx *stackCtx) (string, bool) {
 	case "AWS::DynamoDB::Table":
 		return inStackName(id, "TableName", ctx), true
 	case "AWS::Lambda::Function":
-		return inStackName(id, "FunctionName", ctx), true
+		return ctx.functionName(id), true
 	case "AWS::SNS::Topic":
 		return inStackARN(id, ctx)
 	}
@@ -2095,7 +2265,7 @@ func inStackName(id, prop string, ctx *stackCtx) string {
 	if n, ok := concrete(p[prop]); ok && n != "" {
 		return n
 	}
-	return k8sName(id)
+	return ctx.name(id)
 }
 
 // inStackARN synthesizes the ARN of an in-stack resource of a shim-fronted type, using its AWS name
@@ -2123,7 +2293,7 @@ func inStackARN(id string, ctx *stackCtx) (string, bool) {
 	case "AWS::DynamoDB::Table":
 		return fmt.Sprintf("arn:aws:dynamodb:%s:%s:table/%s", region, acct, name("TableName")), true
 	case "AWS::Lambda::Function":
-		return fmt.Sprintf("arn:aws:lambda:%s:%s:function:%s", region, acct, name("FunctionName")), true
+		return fmt.Sprintf("arn:aws:lambda:%s:%s:function:%s", region, acct, ctx.functionName(id)), true
 	}
 	return "", false
 }
@@ -2234,7 +2404,7 @@ func resolveInstanceRole(id string, ctx *stackCtx) (string, bool) {
 	if r, in := ctx.template.Resources[roleID]; !in || r.Type != "AWS::IAM::Role" {
 		return "", false
 	}
-	return k8sName(roleID), true
+	return ctx.name(roleID), true
 }
 
 // ---- AWS::IAM::Policy -> kind: Policy (spec.dataPlane) ----
@@ -2331,7 +2501,7 @@ func importAWSPolicyResource(id string, props map[string]any, ctx *stackCtx, cfn
 			"statements": statementsToSpec(stmts),
 		},
 	}
-	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "Policy", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "Policy", Name: ctx.name(id), Spec: spec}
 	m.Caveats = append(m.Caveats,
 		"enforced only at the aws-shim data-plane front doors (S3/DynamoDB/Lambda), which are opt-in (off by default); it does not grant or restrict the Kubernetes control plane (that stays RBAC + the permission boundary)",
 		"appliesTo names must match existing open-infra Users/Groups; the policy tightens within a coarse RBAC grant (it can Deny, never widen)")
@@ -2459,7 +2629,7 @@ func toAnySlice(ss []string) []any {
 // `Policies` (expiration / no-change notification) are behavior-bearing — a Vault-backed parameter
 // does not auto-expire, so silently dropping one would keep a value that should have expired: they
 // BLOCK.
-func translateSSMParameter(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+func translateSSMParameter(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"Name": true, "Value": true, "Type": true, "Tier": true,
 		"Description": true, "AllowedPattern": true, "DataType": true, "Tags": true, "Policies": true,
@@ -2511,7 +2681,7 @@ func translateSSMParameter(id string, props map[string]any, _ *stackCtx) (*Manif
 	if len(f) > 0 {
 		return nil, f
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Parameter", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Parameter", Name: ctx.name(id), Spec: spec}
 	if hasNotify {
 		m.Caveats = append(m.Caveats, "an SSM notification policy (ExpirationNotification/NoChangeNotification) was dropped — open-infra has no parameter-notification surface; the Expiration policy itself is honored via expiresAt")
 	}
@@ -2595,7 +2765,7 @@ func translateCognitoUserPool(id string, props map[string]any, ctx *stackCtx) (*
 	if n, ok := concrete(props["UserPoolName"]); ok && n != "" {
 		spec["realm"] = k8sName(n)
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "UserPool", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "UserPool", Name: ctx.name(id), Spec: spec}
 
 	// Collate an in-stack UserPoolClient: kind: UserPool creates exactly ONE app client
 	// (spec.clientId), so a single client's name maps; more than one has no home and refuses.
@@ -2715,7 +2885,7 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 	if len(f) > 0 {
 		return nil, f
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: k8sName(id), Spec: spec, Caveats: caveats}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: ctx.name(id), Spec: spec, Caveats: caveats}
 	// §2 (#117): the LB's HTTP target port maps to the app's Service port (the primary container's
 	// PortMapping, already carried). The routing rules themselves live in separate ELB resources
 	// (Listener/ListenerRule/TargetGroup) that aren't in scope, and the ELB DNS name is not a user
@@ -2727,6 +2897,16 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 	for _, p := range []string{"LaunchType", "ServiceName", "ServiceRegistries", "Role"} {
 		if _, ok := props[p]; ok {
 			m.Caveats = append(m.Caveats, p+" dropped — open-infra exposes the app via Application.domain (Ingress+TLS); ECS launch-type/registry config has no direct form")
+		}
+	}
+	// DAEMON runs one task on every node; an Application runs a replica count. Refuse rather than run it
+	// on one node.
+	if s, _ := concrete(props["SchedulingStrategy"]); s == "DAEMON" {
+		f = append(f, Finding{"Resource " + id, "SchedulingStrategy DAEMON (one task per node) has no Application form — an Application runs a replica count; refusing rather than running it on one node"})
+	}
+	for _, p := range []string{"DeploymentConfiguration", "HealthCheckGracePeriodSeconds", "PlatformVersion"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — an Application rolls out with the platform's rolling-update defaults")
 		}
 	}
 	// NetworkConfiguration: the awsvpc subnet -> place the Application in a kind: Subnet (real OVN
@@ -2763,7 +2943,7 @@ func ecsFirstSubnet(id string, avc map[string]any, ctx *stackCtx) (string, strin
 					if subs, ok := ravc["Subnets"].([]any); ok && len(subs) > 0 {
 						if t, ok := refTarget(subs[0]); ok {
 							if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::Subnet" {
-								return k8sName(t), ""
+								return ctx.name(t), ""
 							}
 						}
 					}
@@ -2854,7 +3034,7 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[strin
 	// sidecars (same pod).
 	primaryIdx := ecsPickPrimary(containers, primaryName)
 	pc, _ := containers[primaryIdx].(map[string]any)
-	for k, v := range ecsContainerSpec(tdID, pc, &f) {
+	for k, v := range ecsContainerSpec(tdID, pc, &f, &caveats) {
 		spec[k] = v
 	}
 	var sidecars []any
@@ -2863,7 +3043,7 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[strin
 			continue
 		}
 		cm, _ := cc.(map[string]any)
-		cs := ecsContainerSpec(tdID, cm, &f)
+		cs := ecsContainerSpec(tdID, cm, &f, &caveats)
 		name, _ := concrete(cm["Name"])
 		if name == "" {
 			name = fmt.Sprintf("sidecar-%d", i)
@@ -2908,7 +3088,7 @@ func ecsPickPrimary(containers []any, primaryName string) int {
 // ecsContainerSpec maps one ECS container to the {image, port, env} an Application container takes.
 // Command/EntryPoint overrides refuse (Application runs the image's entrypoint); the strict cknown
 // allowlist blocks anything else.
-func ecsContainerSpec(tdID string, c map[string]any, f *[]Finding) map[string]any {
+func ecsContainerSpec(tdID string, c map[string]any, f *[]Finding, cav *[]string) map[string]any {
 	cknown := map[string]bool{
 		"Name": true, "Image": true, "PortMappings": true, "Environment": true, "Essential": true,
 		"Cpu": true, "Memory": true, "MemoryReservation": true, "Command": true, "EntryPoint": true,
@@ -2933,6 +3113,18 @@ func ecsContainerSpec(tdID string, c map[string]any, f *[]Finding) map[string]an
 				spec["port"] = toInt(cp)
 			}
 		}
+		if len(ports) > 1 {
+			*cav = append(*cav, fmt.Sprintf("container %v: only the first PortMapping is served — %d more were dropped", c["Name"], len(ports)-1))
+		}
+	}
+	if _, ok := c["Secrets"]; ok {
+		*cav = append(*cav, fmt.Sprintf("container %v: Secrets (environment variables from Secrets Manager / SSM) are not injected — the container starts without them; set them from a kind: Parameter or Secret natively", c["Name"]))
+	}
+	if _, ok := c["HealthCheck"]; ok {
+		*cav = append(*cav, fmt.Sprintf("container %v: HealthCheck is not mapped — the platform does not run the container's health command", c["Name"]))
+	}
+	if _, ok := c["LogConfiguration"]; ok {
+		*cav = append(*cav, fmt.Sprintf("container %v: LogConfiguration dropped — logs go to the platform's log pipeline", c["Name"]))
 	}
 	// Per-container resources (#117 §1): Cpu (CPU units, 1024 = 1 vCPU) -> cpu; Memory (or the soft
 	// MemoryReservation) in MiB -> memory. A faithful correspondence, requested == limited.
@@ -3129,7 +3321,7 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 	// Storage encryption: LUKS on longhorn-encrypted keyed by a customer kind: EncryptionKey (via an
 	// in-stack KMS::Key). v1 supports the postgres engine only (CloudNativePG propagates the key
 	// annotation to its PVCs); other engines' DB encryption is a follow-up, so they block.
-	enc, _ := props["StorageEncrypted"].(bool)
+	enc := cfnBool(props["StorageEncrypted"]) // CloudFormation accepts true or "true"
 	_, hasKms := props["KmsKeyId"]
 	if enc || hasKms {
 		if db["engine"] != "postgres" {
@@ -3147,7 +3339,7 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 				}
 			}
 			if kid != "" {
-				db["encryptionKey"] = k8sName(kid)
+				db["encryptionKey"] = ctx.name(kid)
 			} else {
 				f = append(f, Finding{"Resource " + id, "an encrypted database needs KmsKeyId referencing an in-stack AWS::KMS::Key — open-infra keys DB storage with a customer kind: EncryptionKey, not an AWS-managed default key"})
 			}
@@ -3169,7 +3361,7 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 		}
 	}
 
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: k8sName(id), Spec: map[string]any{"database": db}}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Application", Name: ctx.name(id), Spec: map[string]any{"database": db}}
 	// The mysql engine is backed by MariaDB — MySQL wire-compatible, but not MySQL itself. Server
 	// version-specific features and collations do NOT transfer, which is exactly the trap in a MySQL 8
 	// lift-and-shift: a schema/dump pinned to utf8mb4_0900_ai_ci (the 8.0 default collation, based on
@@ -3195,10 +3387,24 @@ func translateRDSDBInstance(id string, props map[string]any, ctx *stackCtx) (*Ma
 			m.Caveats = append(m.Caveats, p+" dropped — open-infra provisions the credentials and injects them as DATABASE_URL; they are not set from the template")
 		}
 	}
-	for _, p := range []string{"PubliclyAccessible", "Port", "BackupRetentionPeriod", "PreferredMaintenanceWindow", "PreferredBackupWindow", "DBParameterGroupName", "DeletionProtection"} {
+	for _, p := range []string{"PubliclyAccessible", "Port", "BackupRetentionPeriod", "PreferredMaintenanceWindow", "PreferredBackupWindow", "DBParameterGroupName"} {
 		if _, ok := props[p]; ok {
 			m.Caveats = append(m.Caveats, p+" dropped — no open-infra equivalent (backups/params are platform-managed)")
 		}
+	}
+	// DeletionProtection is honored by the stack: a delete (or an update removing this database) is
+	// refused while it is set, as AWS refuses to delete a protected instance.
+	if cfnBool(props["DeletionProtection"]) {
+		m.Protected = true
+	}
+	if n, ok := concrete(props["DBInstanceIdentifier"]); ok && n != "" && n != m.Name {
+		m.Caveats = append(m.Caveats, fmt.Sprintf("DBInstanceIdentifier %q is not used — the database is kind: Application %q", n, m.Name))
+	}
+	if v, ok := concrete(props["EngineVersion"]); ok && v != "" {
+		m.Caveats = append(m.Caveats, "EngineVersion "+v+" is not pinned — the database runs the platform's PostgreSQL version")
+	}
+	if _, ok := props["MultiAZStandbyEnabled"]; ok {
+		m.Caveats = append(m.Caveats, "MultiAZStandbyEnabled dropped — high availability follows MultiAZ only")
 	}
 	// Subnet-group / VPC-security-group references imply network isolation; dropping them quietly
 	// would misrepresent a database as isolated when it is reachable on the flat cluster network.
@@ -3377,7 +3583,7 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 		}
 	}
 
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Bucket", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Bucket", Name: ctx.name(id), Spec: spec}
 	if _, ok := props["Tags"]; ok {
 		m.Caveats = append(m.Caveats, "Tags dropped — no open-infra equivalent for a MinIO bucket")
 	}
@@ -3605,7 +3811,7 @@ func s3LifecycleRules(id string, lc map[string]any, f *[]Finding) []any {
 // -> retentionHours. FIFO and per-queue encryption BLOCK (JetStream ordering/dedup differs; no
 // per-queue KMS). Visibility/delay/DLQ-redrive are consumer-side on the app's JetStream consumer,
 // so they are declared caveats.
-func translateSQSQueue(id string, props map[string]any, _ *stackCtx) (*Manifest, []Finding) {
+func translateSQSQueue(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	known := map[string]bool{
 		"QueueName": true, "MessageRetentionPeriod": true, "Tags": true, "FifoQueue": true,
 		"VisibilityTimeout": true, "DelaySeconds": true, "RedrivePolicy": true, "KmsMasterKeyId": true,
@@ -3643,7 +3849,7 @@ func translateSQSQueue(id string, props map[string]any, _ *stackCtx) (*Manifest,
 		}
 		spec["retentionHours"] = hrs
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Queue", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Queue", Name: ctx.name(id), Spec: spec}
 	// FIFO-specific residue: dedup is honored via the Nats-Msg-Id header (the stream carries the
 	// window), but there is no front door to auto-hash the body for ContentBasedDeduplication, and
 	// dedup scope / throughput-limit have no equivalent — named, not silently dropped.
@@ -3658,6 +3864,13 @@ func translateSQSQueue(id string, props map[string]any, _ *stackCtx) (*Manifest,
 		}
 	} else if _, ok := props["ContentBasedDeduplication"]; ok {
 		m.Caveats = append(m.Caveats, "ContentBasedDeduplication ignored — it applies only to a FIFO queue")
+	}
+	if !fifo {
+		for _, p := range []string{"DeduplicationScope", "FifoThroughputLimit"} {
+			if _, ok := props[p]; ok {
+				m.Caveats = append(m.Caveats, p+" ignored — it applies only to a FIFO queue")
+			}
+		}
 	}
 	for _, p := range []string{"VisibilityTimeout", "DelaySeconds", "RedrivePolicy", "ReceiveMessageWaitTimeSeconds", "MaximumMessageSize", "Tags"} {
 		if _, ok := props[p]; ok {
@@ -3712,7 +3925,7 @@ func translateSNSTopic(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	if tn, ok := concrete(props["TopicName"]); ok && tn != "" {
 		spec["queueName"] = tn
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Queue", Name: k8sName(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Queue", Name: ctx.name(id), Spec: spec}
 	for _, p := range []string{"DisplayName", "Tags", "ContentBasedDeduplication"} {
 		if _, ok := props[p]; ok {
 			m.Caveats = append(m.Caveats, p+" dropped — no open-infra equivalent")
@@ -3734,6 +3947,16 @@ func translateSNSTopic(id string, props map[string]any, ctx *stackCtx) (*Manifes
 func translateSNSSubscription(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
 	if ctx == nil {
 		return nil, []Finding{{"Resource " + id, "an AWS::SNS::Subscription must reference an in-stack AWS::SNS::Topic"}}
+	}
+	// A subscription collates into the subscribing Function and has no manifest of its own to carry a
+	// caveat, so every delivery setting beyond the topic, protocol and endpoint refuses: FilterPolicy in
+	// particular, since the Function would otherwise receive every message on the topic.
+	known := map[string]bool{"TopicArn": true, "Protocol": true, "Endpoint": true, "Region": true}
+	if f := blockUnknownProps(id, props, known); len(f) > 0 {
+		for i := range f {
+			f[i].Reason += " (a subscription's filter and delivery settings are not applied — the subscriber would receive every message on the topic)"
+		}
+		return nil, f
 	}
 	raw, _ := ctx.rawProps(id)
 	// The TopicArn must resolve to an in-stack AWS::SNS::Topic — we only subscribe to a topic we manage.
@@ -3777,13 +4000,13 @@ func (c *stackCtx) isType(rid, cfnType string) bool {
 }
 
 // snsTopicQueueName returns the JetStream stream/queue name an AWS::SNS::Topic maps to — resolved the
-// SAME way translateSNSTopic does (TopicName when concrete, else k8sName(logical id)) — so a subscriber
+// SAME way translateSNSTopic does (TopicName when concrete, else the topic's kind name) — so a subscriber
 // that adds this to spec.queues reads exactly the stream the topic creates.
-func snsTopicQueueName(topicID string, topicProps map[string]any) string {
+func snsTopicQueueName(topicID string, topicProps map[string]any, ctx *stackCtx) string {
 	if tn, ok := concrete(topicProps["TopicName"]); ok && tn != "" {
 		return tn
 	}
-	return k8sName(topicID)
+	return ctx.name(topicID)
 }
 
 // snsQueuesForFunction returns, in stable (deduped, sorted) order, the stream name of every in-stack
@@ -3795,7 +4018,7 @@ func (c *stackCtx) snsQueuesForFunction(fnID string) []string {
 	var names []string
 	add := func(topicID string) {
 		tp, _ := c.resolveProps(topicID)
-		if qn := snsTopicQueueName(topicID, tp); qn != "" && !seen[qn] {
+		if qn := snsTopicQueueName(topicID, tp, c); qn != "" && !seen[qn] {
 			seen[qn] = true
 			names = append(names, qn)
 		}
@@ -3911,9 +4134,55 @@ func translateAppSyncGraphQLApi(id string, props map[string]any, ctx *stackCtx) 
 		spec["resolvers"] = resolvers
 	}
 
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "GraphQLApi", Name: k8sName(id), Spec: spec}
-	if at, ok := concrete(props["AuthenticationType"]); ok && at != "" {
-		m.Caveats = append(m.Caveats, "AuthenticationType "+at+" is not translated to enforcement — open-appsync enforces auth via @aws_* directives in the schema (+ an apiKeysSecret for @aws_api_key); configure it separately")
+	// Auth: open-appsync enforces the schema's @aws_* directives and serves a field with none as public,
+	// where AWS applies the API's default AuthenticationType. Refuse unless every way into the graph (each
+	// root operation field) is protected by a directive.
+	at, _ := concrete(props["AuthenticationType"])
+	if sdl, _ := spec["schema"].(string); sdl != "" {
+		missing, scanned := rootFieldsWithoutAuth(sdl)
+		switch {
+		case !scanned:
+			f = append(f, Finding{"Resource " + id, "the schema could not be checked for auth directives — refusing rather than risking fields served without authentication"})
+		case len(missing) > 0:
+			dir := defaultAuthDirective[at]
+			if dir == "" {
+				dir = "an @aws_* directive"
+			}
+			f = append(f, Finding{"Resource " + id, "root fields " + strings.Join(missing, ", ") + " carry no auth directive — on AWS they would use the default AuthenticationType " + at + ", but open-appsync would serve them unauthenticated; add " + dir + " to each field or to its type"})
+		}
+	}
+	if v, _ := concrete(props["Visibility"]); v == "PRIVATE" {
+		f = append(f, Finding{"Resource " + id, "Visibility PRIVATE (reachable only through VPC endpoints) has no open-appsync form — refusing rather than serving the API more widely"})
+	}
+	if t, _ := concrete(props["ApiType"]); t != "" && t != "GRAPHQL" {
+		f = append(f, Finding{"Resource " + id, "ApiType " + t + " is not supported — open-appsync serves a single (non-merged) GraphQL API"})
+	}
+	if ic, _ := concrete(props["IntrospectionConfig"]); ic == "DISABLED" {
+		spec["limits"] = map[string]any{"introspection": "disabled"}
+	}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "GraphQLApi", Name: ctx.name(id), Spec: spec}
+	if at != "" {
+		m.Caveats = append(m.Caveats, "AuthenticationType "+at+" is enforced only through the schema's @aws_* directives (each root field carries one) — open-appsync has no API-wide default mode; @aws_api_key needs an apiKeysSecret configured separately")
+	}
+	for _, p := range []string{"AdditionalAuthenticationProviders", "UserPoolConfig", "OpenIDConnectConfig", "LambdaAuthorizerConfig"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" is not translated — the platform validates each @aws_* mode with its own identity providers, and the caller's permissions decide; the pools/issuers/authorizer this names are not consulted")
+		}
+	}
+	for _, p := range []string{"LogConfig", "XrayEnabled", "EnvironmentVariables", "ResolverCountLimit", "HealthMetricsConfig", "OwnerContact", "MergedApiExecutionRoleArn"} {
+		if _, ok := props[p]; ok {
+			m.Caveats = append(m.Caveats, p+" dropped — no open-appsync equivalent")
+		}
+	}
+	if q, ok := props["QueryDepthLimit"]; ok {
+		if n := toInt(q); n > 0 {
+			lim, _ := spec["limits"].(map[string]any)
+			if lim == nil {
+				lim = map[string]any{}
+				spec["limits"] = lim
+			}
+			lim["maxDepth"] = n
+		}
 	}
 	if hasDynamo {
 		m.Caveats = append(m.Caveats, "a dynamodb data source needs spec.mongoURI (the FerretDB endpoint) set at deploy time — it is not derivable from the template, and the source fails closed at load until set")
@@ -4187,6 +4456,9 @@ func sortStrs(s []string) {
 // explicitly handle. This is the fail-closed heart of create translation: an unhandled
 // property means we cannot honor the resource as written.
 func blockUnknownProps(id string, props map[string]any, known map[string]bool) []Finding {
+	if knownPropsSeen != nil {
+		knownPropsSeen(id, known)
+	}
 	var f []Finding
 	for _, k := range sortedKeys(props) {
 		if !known[k] {
@@ -4195,6 +4467,10 @@ func blockUnknownProps(id string, props map[string]any, known map[string]bool) [
 	}
 	return f
 }
+
+// knownPropsSeen, when set (the fidelity guard test), receives every accepted-property set a translator
+// checks, so the test can prove each accepted property is either used or reported.
+var knownPropsSeen func(id string, known map[string]bool)
 
 var placeholderRe = regexp.MustCompile(`<(ref:|param:|unsupported:|base64:)|<[A-Za-z0-9_]+\.[A-Za-z0-9_]+>|<AWS::`)
 

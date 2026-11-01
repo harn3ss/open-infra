@@ -126,8 +126,8 @@ Outputs:
 // attribute open-infra does not surface (PrivateIp, an SG id) is OMITTED with its reason — never faked.
 func TestOutputs_DeployedAttributes(t *testing.T) {
 	f := &fakeApplier{liveStatus: map[string]map[string]any{
-		"VirtualMachine/web": {"lanIp": "192.0.2.40"},
-		"Bucket/site":        {"bucket": "site-assets", "ready": true},
+		"VirtualMachine/s-web": {"lanIp": "192.0.2.40"},
+		"Bucket/s-site":        {"bucket": "site-assets", "ready": true},
 	}}
 	rec, err := Deploy(context.Background(), []byte(outputsEIPTmpl), deployOpts(), f)
 	if err != nil {
@@ -172,7 +172,10 @@ func TestOutputs_LanIPPendingWaitsThenResolvesOrOmits(t *testing.T) {
 Resources:
   Web:
     Type: AWS::EC2::Instance
-    Properties: { ImageId: ubuntu-24.04 }
+    Properties: { ImageId: ubuntu-24.04, SecurityGroupIds: [ !Ref TestSG ] }
+  TestSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties: { GroupDescription: test }
   WebEip:
     Type: AWS::EC2::EIP
     Properties: { InstanceId: !Ref Web }
@@ -183,7 +186,7 @@ Outputs:
 	reads := 0
 	f := &fakeApplier{}
 	f.statusFn = func(key string) (map[string]any, bool) {
-		if key != "VirtualMachine/web" {
+		if key != "VirtualMachine/s-web" {
 			return nil, false
 		}
 		reads++
@@ -226,7 +229,10 @@ func TestOutputs_MixedPendingAndUnsupportedNotWaited(t *testing.T) {
 Resources:
   Web:
     Type: AWS::EC2::Instance
-    Properties: { ImageId: ubuntu-24.04 }
+    Properties: { ImageId: ubuntu-24.04, SecurityGroupIds: [ !Ref TestSG ] }
+  TestSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties: { GroupDescription: test }
   WebEip:
     Type: AWS::EC2::EIP
     Properties: { InstanceId: !Ref Web }
@@ -280,7 +286,10 @@ func TestOutputs_NoStatusReader(t *testing.T) {
 Resources:
   Web:
     Type: AWS::EC2::Instance
-    Properties: { ImageId: ubuntu-24.04 }
+    Properties: { ImageId: ubuntu-24.04, SecurityGroupIds: [ !Ref TestSG ] }
+  TestSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties: { GroupDescription: test }
   WebEip:
     Type: AWS::EC2::EIP
     Properties: { InstanceId: !Ref Web }

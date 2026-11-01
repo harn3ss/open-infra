@@ -134,14 +134,14 @@ Resources:
 	if rec.Status != "CREATE_COMPLETE" {
 		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
 	}
-	if invokedFn != k8sName("Fn") {
-		t.Errorf("invoked function = %q, want %q", invokedFn, k8sName("Fn"))
+	if invokedFn != stackQualifiedName("s", "Fn") {
+		t.Errorf("invoked function = %q, want %q", invokedFn, stackQualifiedName("s", "Fn"))
 	}
 	if invokedEvent["RequestType"] != "Create" || invokedEvent["LogicalResourceId"] != "Setup" {
 		t.Errorf("custom-resource event wrong: %#v", invokedEvent)
 	}
 	// The returned Data resolved the Consumer's Fn::GetAtt.
-	consumer := f.liveSpecs["Function/"+k8sName("Consumer")]
+	consumer := f.liveSpecs["Function/"+stackQualifiedName("s", "Consumer")]
 	if consumer == nil {
 		t.Fatalf("Consumer not applied; liveSpecs keys=%v", keysOf(f.liveSpecs))
 	}

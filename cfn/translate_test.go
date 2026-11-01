@@ -739,7 +739,7 @@ Resources:
     Type: AWS::AppSync::GraphQLSchema
     Properties:
       ApiId: !GetAtt Api.ApiId
-      Definition: "type Query { getTodo(id: ID!): Todo } type Todo { id: ID! title: String }"
+      Definition: "type Query @aws_api_key { getTodo(id: ID!): Todo } type Todo { id: ID! title: String }"
   TodoDS:
     Type: AWS::AppSync::DataSource
     Properties:

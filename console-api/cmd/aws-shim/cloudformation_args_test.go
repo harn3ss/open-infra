@@ -8,6 +8,21 @@ import (
 	"testing"
 )
 
+// The fidelity summary reaches DescribeChangeSet's StatusReason; removed and unchanged resources add none.
+func TestChangeSetFidelity(t *testing.T) {
+	got := changeSetFidelity([]cfn.Change{
+		{LogicalID: "Web", Action: cfn.Add, Caveats: []string{"a", "b"}},
+		{LogicalID: "Old", Action: cfn.Remove, Caveats: []string{"x"}},
+		{LogicalID: "Same", Action: cfn.Unchanged, Caveats: []string{"y"}},
+	})
+	if !strings.Contains(got, "(2): Web: a | Web: b") || strings.Contains(got, "Old") || strings.Contains(got, "Same") {
+		t.Errorf("changeSetFidelity = %q", got)
+	}
+	if changeSetFidelity(nil) != "" {
+		t.Error("no caveats -> no reason")
+	}
+}
+
 // `aws cloudformation deploy` describes and executes the change set by the Id CreateChangeSet returned
 // (an ARN), and clients may pass a StackId; both must reach the handlers as bare names.
 func TestNormalizeStackArgs_ARNsBecomeNames(t *testing.T) {

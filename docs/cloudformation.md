@@ -61,6 +61,27 @@ the boundary of what a test on open-infra proves: anything listed behaves differ
 not exercised, so a pass here never claims more than it tested. `-json` returns the same list as
 `Fidelity` (and each resource's `Caveats`).
 
+The summary also lists the resource attributes open-infra does not act on: `CreationPolicy` (a
+`ResourceSignal` is not waited for), `UpdatePolicy`, `UpdateReplacePolicy` (resources are updated in
+place, never replaced) and `Metadata` (`AWS::CloudFormation::Init` is not run, since guests have no
+`cfn-init`). Any line in the summary makes the verdict `PROVISIONABLE_WITH_CAVEATS`.
+
+Plan runs every resource's translator, so the summary covers each property. It cannot when a
+required parameter has no value, when the template uses a `Transform`, or when the stack has a
+custom resource or an API Gateway REST API (their attributes resolve only during deploy). The summary
+then says so in a line of its own, and `GateSkipped` in `-json` gives the reason.
+
+The aws-shim front door shows the same summary: in `DescribeChangeSet`'s `StatusReason` (what
+`aws cloudformation describe-change-set` and `deploy` show) and in `ValidateTemplate`'s `Description`.
+
+Anything that would quietly grant more than the template asked for is refused rather than listed:
+a security-group port that does not resolve (it would mean every port), a security-group list that
+does not resolve to groups, an instance published on the LAN with no security group, a security group
+named from outside the stack that does not exist, an encrypted root volume (VM root disks are not
+encrypted), an S3 grant on part of a bucket (access is per bucket), a disabled KMS key, an AppSync root
+field with no `@aws_*` auth directive (open-appsync would serve it unauthenticated), a `PRIVATE` AppSync
+API, and an SNS subscription's `FilterPolicy` or other delivery settings.
+
 A `Ref` to an in-stack resource whose value is fixed before deploy — a bucket's, table's or
 function's name (its explicit name, or the name its open-infra kind is created with) and a topic's
 ARN — resolves at plan time, so UserData, environment variables and policies that use it are applied
@@ -260,8 +281,8 @@ $ cfn deploy -namespace my-app -stack-name tickets kms-stack.yaml
 Deploying stack "tickets" into namespace "my-app"…
 
 Stack tickets [CREATE_COMPLETE]
-  PrimaryKey   openinfra.dev/v1/EncryptionKey -> primarykey
-  BackupKey    openinfra.dev/v1/EncryptionKey -> backupkey
+  PrimaryKey   openinfra.dev/v1/EncryptionKey -> tickets-primarykey
+  BackupKey    openinfra.dev/v1/EncryptionKey -> tickets-backupkey
 
 Stack "tickets" is CREATE_COMPLETE (2 resources).
 ```
@@ -291,6 +312,25 @@ alone. The aws-shim CloudFormation front door does this automatically
 
 A target `-namespace` and a `-stack-name` are required; `deploy` never guesses a
 namespace. Use `-no-wait` to skip the readiness gate, `-timeout SECS` to bound it.
+
+### Resource names
+
+Each resource is named after its stack, `<stack>-<logical id>` in lowercase, as CloudFormation names a
+resource the template leaves unnamed. Past 40 characters the name keeps its first 31 and ends in a
+hash of the stack and logical id, so it stays unique and within Kubernetes and S3 limits. A bucket
+with no `BucketName` takes this name. One template can therefore be deployed as several stacks
+(`dev`, `prod`) in one namespace. Explicit names are used as given: a Lambda's `FunctionName` names its
+Function (and `Ref` returns it), and a `BucketName`, `TableName`, `QueueName` or `TopicName` is the name
+clients use.
+
+Before applying a resource, deploy and update check that no object of that kind and name exists that
+is not this stack's. Another stack's object, or one no stack created, is never overwritten: the
+operation fails and rolls back. The per-namespace default `EncryptionKey` is shared on purpose and is
+the one exception.
+
+A stack created before stack-qualified names keeps the names it recorded: an update never renames a
+resource, which would create a second object and orphan the first. Resources an update adds to such
+a stack are stack-qualified.
 
 ### Stack outputs
 
@@ -432,9 +472,14 @@ honors CloudFormation's `DeletionPolicy`:
 - **`Delete`** (the default) — the resource is deleted.
 - **`Retain`** — the resource is left in the cluster and reported as now unmanaged; the
   stack record is still removed.
+- **`RetainExceptOnCreate`** — kept like `Retain` by a stack delete and by an update that removes
+  it, but deleted when the operation that created it rolls back.
 - **`Snapshot`** — refused. open-infra has no generic pre-delete snapshot for an arbitrary
   kind, and deleting a resource that asked to be snapshotted first would be silent data
   loss, so `destroy` fails loud and deletes nothing rather than honor it dishonestly.
+
+An RDS instance with `DeletionProtection: true` is protected as on AWS: `destroy`, and an update that
+would remove it, are refused until an update turns the protection off.
 
 Deletes are not reversible, so `destroy` does not roll back: if a delete fails, the stack
 is left `DELETE_FAILED` with the resources that remain, and it stops.

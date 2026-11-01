@@ -114,7 +114,10 @@ Resources:
     Properties: { Domain: vpc }
   App:
     Type: AWS::EC2::Instance
-    Properties: { ImageId: ubuntu-24.04 }
+    Properties: { ImageId: ubuntu-24.04, SecurityGroupIds: [ !Ref TestSG ] }
+  TestSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties: { GroupDescription: test }
   Assoc:
     Type: AWS::EC2::EIPAssociation
     Properties: { AllocationId: { Fn::GetAtt: [ Eip, AllocationId ] }, InstanceId: { Ref: App } }

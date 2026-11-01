@@ -254,7 +254,7 @@ Resources:
 		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
 	}
 	got := f.appliedNonCM()
-	want := []string{"EncryptionKey/keya", "EncryptionKey/keyb"}
+	want := []string{"EncryptionKey/s-keya", "EncryptionKey/s-keyb"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("apply order = %v, want %v (DependsOn must be honored)", got, want)
 	}
@@ -298,7 +298,7 @@ Resources:
 		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
 	}
 	got := f.appliedNonCM()
-	want := []string{"Role/approle", "Policy/approle-s3-read"}
+	want := []string{"Role/s-approle", "Policy/s-approle-s3-read"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("apply order = %v, want %v (Role then its companion Policy)", got, want)
 	}
@@ -307,7 +307,7 @@ Resources:
 	for _, r := range rec.Resources {
 		kinds = append(kinds, r.Kind+"/"+r.Name)
 	}
-	if !contains(kinds, "Policy/approle-s3-read") {
+	if !contains(kinds, "Policy/s-approle-s3-read") {
 		t.Fatalf("companion Policy must be in the stack record, got %v", kinds)
 	}
 }
@@ -335,10 +335,10 @@ Resources:
 	if rec.Status != "CREATE_COMPLETE" {
 		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
 	}
-	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "Table/sessions" {
+	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "Table/s-sessions" {
 		t.Fatalf("applied = %v, want [Table/sessions]", got)
 	}
-	spec := f.liveSpecs["Table/sessions"]
+	spec := f.liveSpecs["Table/s-sessions"]
 	if spec["tableName"] != "sessions" || spec["ttlAttribute"] != "exp" {
 		t.Fatalf("table spec not faithful: %#v", spec)
 	}
@@ -359,7 +359,7 @@ Resources:
     DependsOn: KeyA
     Properties: { Description: b }
 `)
-	f := &fakeApplier{failOn: "EncryptionKey/keyb"}
+	f := &fakeApplier{failOn: "EncryptionKey/s-keyb"}
 	rec, err := Deploy(context.Background(), tmpl, deployOpts(), f)
 	if err == nil {
 		t.Fatal("expected the deploy to fail")
@@ -368,7 +368,7 @@ Resources:
 		t.Fatalf("status = %v, want CREATE_FAILED", rec)
 	}
 	// keya was applied then rolled back; keyb never applied.
-	if len(f.deleted) != 1 || f.deleted[0] != "EncryptionKey/keya" {
+	if len(f.deleted) != 1 || f.deleted[0] != "EncryptionKey/s-keya" {
 		t.Fatalf("rollback should have deleted exactly keya, deleted: %v", f.deleted)
 	}
 	if !strings.Contains(err.Error(), "rolled back") {
@@ -384,12 +384,12 @@ Resources:
     Type: AWS::KMS::Key
     Properties: { Description: a }
 `)
-	f := &fakeApplier{notReady: "keya"}
+	f := &fakeApplier{notReady: "s-keya"}
 	rec, err := Deploy(context.Background(), tmpl, deployOpts(), f)
 	if err == nil || rec.Status != "CREATE_FAILED" {
 		t.Fatalf("a never-ready resource should CREATE_FAILED, got status=%v err=%v", rec, err)
 	}
-	if len(f.deleted) != 1 || f.deleted[0] != "EncryptionKey/keya" {
+	if len(f.deleted) != 1 || f.deleted[0] != "EncryptionKey/s-keya" {
 		t.Fatalf("not-ready resource should be rolled back, deleted: %v", f.deleted)
 	}
 }
@@ -413,10 +413,10 @@ func TestDeploy_AppSyncCollation(t *testing.T) {
 	if rec.Status != "CREATE_COMPLETE" {
 		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
 	}
-	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "GraphQLApi/api" {
+	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "GraphQLApi/s-api" {
 		t.Fatalf("applied = %v, want [GraphQLApi/api] (children must collate, not provision)", got)
 	}
-	spec := f.liveSpecs["GraphQLApi/api"]
+	spec := f.liveSpecs["GraphQLApi/s-api"]
 	ds, _ := spec["dataSources"].([]any)
 	rs, _ := spec["resolvers"].([]any)
 	if len(ds) != 1 || len(rs) != 1 {
@@ -443,10 +443,10 @@ Resources:
 	if rec.Status != "CREATE_COMPLETE" {
 		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
 	}
-	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "Bucket/assets" {
+	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "Bucket/s-assets" {
 		t.Fatalf("applied = %v, want [Bucket/assets]", got)
 	}
-	spec := f.liveSpecs["Bucket/assets"]
+	spec := f.liveSpecs["Bucket/s-assets"]
 	if spec["bucketName"] != "my-assets" || spec["versioning"] != true {
 		t.Fatalf("bucket not faithful: %#v", spec)
 	}
@@ -467,9 +467,9 @@ Resources:
 	if rec.Status != "CREATE_COMPLETE" {
 		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
 	}
-	db, _ := f.liveSpecs["Application/db"]["database"].(map[string]any)
+	db, _ := f.liveSpecs["Application/s-db"]["database"].(map[string]any)
 	if db["engine"] != "postgres" || db["name"] != "appdb" || db["highAvailability"] != true {
-		t.Fatalf("database not faithful: %#v", f.liveSpecs["Application/db"]["database"])
+		t.Fatalf("database not faithful: %#v", f.liveSpecs["Application/s-db"]["database"])
 	}
 }
 
@@ -493,13 +493,13 @@ Resources:
 		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
 	}
 	got := strings.Join(f.appliedNonCM(), ",")
-	if !strings.Contains(got, "Queue/jobs") || !strings.Contains(got, "Queue/events") {
+	if !strings.Contains(got, "Queue/s-jobs") || !strings.Contains(got, "Queue/s-events") {
 		t.Fatalf("applied = %v, want both Queue/jobs and Queue/events", got)
 	}
-	if q := f.liveSpecs["Queue/jobs"]; q["queueName"] != "jobs" || q["retentionHours"] != 2 || q["fanout"] == true {
+	if q := f.liveSpecs["Queue/s-jobs"]; q["queueName"] != "jobs" || q["retentionHours"] != 2 || q["fanout"] == true {
 		t.Fatalf("SQS queue not faithful: %#v", q)
 	}
-	if e := f.liveSpecs["Queue/events"]; e["queueName"] != "events" || e["fanout"] != true {
+	if e := f.liveSpecs["Queue/s-events"]; e["queueName"] != "events" || e["fanout"] != true {
 		t.Fatalf("SNS topic (fanout) not faithful: %#v", e)
 	}
 }
@@ -514,10 +514,10 @@ func TestDeploy_CognitoCollation(t *testing.T) {
 	if rec.Status != "CREATE_COMPLETE" {
 		t.Fatalf("status = %s, want CREATE_COMPLETE", rec.Status)
 	}
-	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "UserPool/pool" {
+	if got := f.appliedNonCM(); len(got) != 1 || got[0] != "UserPool/s-pool" {
 		t.Fatalf("applied = %v, want [UserPool/pool] (the client must collate)", got)
 	}
-	if f.liveSpecs["UserPool/pool"]["clientId"] != "web-app" {
-		t.Fatalf("client name not collated to clientId: %#v", f.liveSpecs["UserPool/pool"])
+	if f.liveSpecs["UserPool/s-pool"]["clientId"] != "web-app" {
+		t.Fatalf("client name not collated to clientId: %#v", f.liveSpecs["UserPool/s-pool"])
 	}
 }

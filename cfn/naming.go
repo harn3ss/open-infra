@@ -1,0 +1,149 @@
+package cfn
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"regexp"
+	"strings"
+)
+
+// Physical names. Every stack deploys into one shared namespace, so a resource's Kubernetes name must
+// be unique across stacks: two stacks made from one template must never share (and overwrite) an
+// object. A new stack names each resource <stack>-<logical id>, as CloudFormation names a resource
+// the template leaves unnamed after its stack. A long name is shortened and ends in a hash of the
+// stack and logical id, so it stays unique and within Kubernetes and S3 name limits.
+//
+// A resource an existing stack already recorded keeps the name it was created with: renaming it on an
+// update would create a second object and orphan the first. Stacks created before stack-qualified
+// names therefore keep their bare (logical id) names; anything such a stack adds later is
+// stack-qualified.
+
+// maxPhysNameLen bounds a generated name. Kinds append to it (a Function's revision and its -private
+// Service, a VM's -root disk, a database's -rw Service), and an S3 bucket name is at most 63
+// characters, so 40 leaves room for all of them.
+const maxPhysNameLen = 40
+
+// physNamer decides the Kubernetes name of each in-stack resource for one stack operation.
+type physNamer struct {
+	stack string
+	prior map[string]string // logical id -> the name the existing stack recorded for it
+}
+
+// newPhysNamer builds the namer for a stack. prior is the stack's recorded resources (nil for a new
+// stack); a companion's record (logical id "<id>/<name>") is not a template resource and is skipped.
+func newPhysNamer(stack string, prior []StackResource) *physNamer {
+	n := &physNamer{stack: stack, prior: map[string]string{}}
+	for _, r := range prior {
+		if r.Name != "" && !strings.Contains(r.LogicalID, "/") {
+			n.prior[r.LogicalID] = r.Name
+		}
+	}
+	return n
+}
+
+func (n *physNamer) name(id string) string {
+	if v, ok := n.prior[id]; ok {
+		return v
+	}
+	return stackQualifiedName(n.stack, id)
+}
+
+// recorded reports the name an existing stack recorded for id, if any.
+func (n *physNamer) recorded(id string) (string, bool) {
+	v, ok := n.prior[id]
+	return v, ok
+}
+
+// name is the Kubernetes name of in-stack resource id. With no stack context (a translator called on
+// its own, as unit tests do) it is the bare logical id.
+func (c *stackCtx) name(id string) string {
+	if c == nil || c.namer == nil {
+		return k8sName(id)
+	}
+	return c.namer.name(id)
+}
+
+// stackQualifiedName is <stack>-<logical id> in RFC 1123 form, shortened with a hash past
+// maxPhysNameLen. It is also a valid S3 bucket name: lowercase letters, digits and single hyphens,
+// starting and ending with a letter or digit.
+func stackQualifiedName(stack, id string) string {
+	s, l := collapseHyphens(k8sName(stack)), k8sName(id)
+	n := l
+	switch {
+	case s == "":
+	case l == s:
+		// A resource named for its own stack (the ECS front door deploys service X as stack X with
+		// logical id X) is named after the stack. A template's logical ids have no hyphen, so for a
+		// template this only happens with a hyphen-free stack name, which no stack-qualified name can
+		// equal. Any other clash is refused by the ownership check at apply (another stack's object).
+	default:
+		n = s + "-" + l
+	}
+	if len(n) <= maxPhysNameLen && n != "" && !strings.HasPrefix(n, "xn--") {
+		return n
+	}
+	sum := sha256.Sum256([]byte(stack + "\x00" + id))
+	h := hex.EncodeToString(sum[:])[:8]
+	head := n
+	if len(head) > maxPhysNameLen-9 {
+		head = head[:maxPhysNameLen-9]
+	}
+	head = strings.Trim(strings.TrimPrefix(head, "xn--"), "-")
+	if head == "" {
+		return "r-" + h
+	}
+	return head + "-" + h
+}
+
+// collapseHyphens turns runs of '-' into one, so a generated name never has "--" (S3 refuses some
+// names with it, e.g. a leading "xn--").
+func collapseHyphens(s string) string {
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	return s
+}
+
+// fnNameRE is a valid kind: Function name: an RFC 1123 label, which the Function's Knative Service and
+// the Lambda front door's invoke path both require.
+var fnNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// lambdaKindName is the kind: Function name of AWS::Lambda::Function id. A name the stack already
+// recorded is kept; otherwise it is the FunctionName (on AWS the function is called by that name), or
+// the stack-generated name when FunctionName is unset or not a valid Function name.
+func lambdaKindName(id string, props map[string]any, ctx *stackCtx) string {
+	if ctx != nil && ctx.namer != nil {
+		if v, ok := ctx.namer.recorded(id); ok {
+			return v
+		}
+	}
+	if fn, ok := concrete(props["FunctionName"]); ok && fnNameRE.MatchString(fn) {
+		return fn
+	}
+	return ctx.name(id)
+}
+
+// functionName is the kind: Function name of in-stack Lambda id — what its Ref and Arn resolve to, and
+// what a custom resource's ServiceToken invokes.
+func (c *stackCtx) functionName(id string) string {
+	if c == nil || c.template == nil {
+		return k8sName(id)
+	}
+	where := c.resolver.where
+	p, _ := c.resolveProps(id)
+	c.resolver.where = where
+	return lambdaKindName(id, p, c)
+}
+
+// isInStackName reports whether name is the Kubernetes name of an in-stack resource of cfnType.
+func (c *stackCtx) isInStackName(name, cfnType string) bool {
+	if c == nil || c.template == nil {
+		return false
+	}
+	for id, r := range c.template.Resources {
+		if r.Type == cfnType && c.name(id) == name {
+			return true
+		}
+	}
+	return false
+}

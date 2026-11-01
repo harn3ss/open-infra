@@ -253,7 +253,7 @@ func translateAPIGatewayRestAPI(logicalID string, props map[string]any, ctx *sta
 	return &Manifest{
 		APIVersion: apigwRestV1APIVersion,
 		Kind:       apigwRestV1Kind,
-		Name:       k8sName(logicalID),
+		Name:       ctx.name(logicalID),
 		Spec:       planToSpec(plan),
 	}, nil
 }

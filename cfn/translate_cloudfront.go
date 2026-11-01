@@ -318,7 +318,7 @@ func translateCloudFrontDistribution(id string, props map[string]any, ctx *stack
 		}
 		spec["responseHeaders"] = hs
 	}
-	return &Manifest{APIVersion: "openinfra.dev/v1", Kind: "StaticSite", Name: k8sName(id), Spec: spec, Caveats: cav}, nil
+	return &Manifest{APIVersion: "openinfra.dev/v1", Kind: "StaticSite", Name: ctx.name(id), Spec: spec, Caveats: cav}, nil
 }
 
 // cfOrigin validates the distribution's single origin and returns its Id and the MinIO bucket the site
@@ -967,7 +967,7 @@ func (c *stackCtx) cloudFrontBucketGrants(bucketID, policyID string, doc any) (a
 	if honored > 0 {
 		names := make([]string, len(serving))
 		for i, d := range serving {
-			names[i] = k8sName(d)
+			names[i] = c.name(d)
 		}
 		ks := make([]string, 0, len(kinds))
 		for k := range kinds {
@@ -1174,7 +1174,7 @@ func s3BucketMinIOName(bucketID string, c *stackCtx) string {
 	if n, ok := concrete(p["BucketName"]); ok && n != "" {
 		return n
 	}
-	return k8sName(bucketID)
+	return c.name(bucketID)
 }
 
 // ---- Fn::GetAtt <Distribution>.DomainName ----

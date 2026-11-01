@@ -45,6 +45,10 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 		return rec, fmt.Errorf("refusing to destroy: DeletionPolicy: Snapshot is not supported, and deleting without the snapshot it asked for would lose data — %s. Remove the policy or delete these manually.",
 			strings.Join(snapshot, ", "))
 	}
+	// Deletion protection (RDS DeletionProtection), as AWS refuses to delete a protected instance.
+	if p := protectedOf(append(append([]StackResource{}, rec.Resources...), rec.Pending...)); len(p) > 0 {
+		return rec, fmt.Errorf("refusing to destroy: %s has deletion protection on — update the stack to turn DeletionProtection off first", strings.Join(p, ", "))
+	}
 
 	now := func() string { return time.Now().UTC().Format(time.RFC3339) }
 	prog := *rec
@@ -66,11 +70,11 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 	// Pending — an interrupted operation's write-ahead, kept only on a record that recovery had to settle
 	// without the operation's authority — may never have been applied: those are deleted only where the
 	// object carries this stack's label (newest first: they come after Resources in create order).
-	pendingLeft, perr := teardown(ctx, opts, ap, rec.Pending, true)
+	pendingLeft, perr := teardown(ctx, opts, ap, rec.Pending, true, false)
 	if perr != nil {
 		return fail(rec.Resources, pendingLeft, perr)
 	}
-	remaining, terr := teardown(ctx, opts, ap, rec.Resources, false)
+	remaining, terr := teardown(ctx, opts, ap, rec.Resources, false, false)
 	if terr != nil {
 		return fail(remaining, pendingLeft, terr)
 	}
@@ -94,9 +98,28 @@ type LabelReader interface {
 	GetLabels(ctx context.Context, apiVersion, kind, name string) (labels map[string]string, found bool, err error)
 }
 
-// isRetain reports whether a resource's DeletionPolicy keeps it through destroy, update removal and
-// rollback (AWS honors Retain on rollback too — RetainExceptOnCreate is its opt-out).
-func isRetain(r StackResource) bool { return strings.EqualFold(r.DeletionPolicy, "Retain") }
+// isRetain reports whether a resource's DeletionPolicy keeps it through a stack delete and through
+// removal by an update: Retain and RetainExceptOnCreate. A rollback of the operation that created it uses
+// keptOnRollback instead.
+func isRetain(r StackResource) bool {
+	return strings.EqualFold(r.DeletionPolicy, "Retain") || strings.EqualFold(r.DeletionPolicy, "RetainExceptOnCreate")
+}
+
+// protectedOf names the resources a delete would remove that have deletion protection on (a retained
+// resource is not deleted, so it does not count).
+func protectedOf(rs []StackResource) []string {
+	var out []string
+	for _, r := range rs {
+		if r.Protected && !isRetain(r) {
+			out = append(out, r.LogicalID+" ("+r.Kind+")")
+		}
+	}
+	return out
+}
+
+// keptOnRollback reports whether a resource survives the rollback of the operation that created it:
+// Retain only. RetainExceptOnCreate exists to delete a resource whose own creation is being rolled back.
+func keptOnRollback(r StackResource) bool { return strings.EqualFold(r.DeletionPolicy, "Retain") }
 
 // IsRetained reports whether a recorded resource survives a stack delete (DeletionPolicy: Retain).
 func IsRetained(r StackResource) bool { return isRetain(r) }
@@ -124,9 +147,10 @@ func isOutOfBand(r StackResource) bool {
 // recorded id — both best-effort, so a failed out-of-band delete never wedges the rest of the teardown.
 // With opts.Wait each deleted object is waited for until it is actually gone. ownedOnly (recovery) first
 // reads each object's labels and deletes it only if it carries this stack's label; an absent object, or
-// one that is not this stack's, is simply not part of the stack. It returns the resources still present
-// (retained, the one that failed, and any not reached) and the first error.
-func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []StackResource, ownedOnly bool) ([]StackResource, error) {
+// one that is not this stack's, is simply not part of the stack. rollback (undoing an interrupted
+// create) keeps only Retain resources, not RetainExceptOnCreate ones. It returns the resources still
+// present (retained, the one that failed, and any not reached) and the first error.
+func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []StackResource, ownedOnly, rollback bool) ([]StackResource, error) {
 	gone := make([]bool, len(resources))
 	remaining := func() []StackResource {
 		var out []StackResource
@@ -140,7 +164,7 @@ func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []S
 	lr, canReadLabels := ap.(LabelReader)
 	for i := len(resources) - 1; i >= 0; i-- {
 		r := resources[i]
-		if isRetain(r) {
+		if (rollback && keptOnRollback(r)) || (!rollback && isRetain(r)) {
 			continue // left in place, intentionally unmanaged
 		}
 		// A custom resource (#269) has no k8s object to delete — instead send its Function a Delete event

@@ -736,7 +736,11 @@ func (h *cfnDoorway) validateTemplate(w http.ResponseWriter, r *http.Request, re
 			"template refused:\n  - "+strings.Join(plan.Blockers, "\n  - "), cfnXMLNamespace)
 		return
 	}
-	h.writeResult(w, requestID, "ValidateTemplate", "<Description>open-infra: "+xesc(string(plan.Verdict))+"</Description><Capabilities/>"+templateParametersXML([]byte(body), false))
+	desc := "open-infra: " + string(plan.Verdict)
+	if fl := fidelityLine(plan); fl != "" {
+		desc += " — " + fl
+	}
+	h.writeResult(w, requestID, "ValidateTemplate", "<Description>"+xesc(desc)+"</Description><Capabilities/>"+templateParametersXML([]byte(body), false))
 }
 
 // --- change sets ---
@@ -825,6 +829,36 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 		"<Id>"+xesc(csID)+"</Id><StackId>"+xesc(h.stackID(stack))+"</StackId>")
 }
 
+// changeSetFidelity renders a change set's fidelity summary (every caveat of a resource it adds or
+// changes) as one StatusReason line; "" when there is none.
+func changeSetFidelity(changes []cfn.Change) string {
+	var items []string
+	for _, c := range changes {
+		if c.Action == cfn.Unchanged || c.Action == cfn.Remove {
+			continue
+		}
+		for _, cv := range c.Caveats {
+			items = append(items, c.LogicalID+": "+cv)
+		}
+	}
+	if len(items) == 0 {
+		return ""
+	}
+	return "open-infra accepts but does not emulate as AWS does (" + strconv.Itoa(len(items)) + "): " + strings.Join(items, " | ")
+}
+
+// fidelityLine renders a plan's fidelity summary for a response field; "" when there is none.
+func fidelityLine(p *cfn.Plan) string {
+	if len(p.Fidelity) == 0 {
+		return ""
+	}
+	items := make([]string, 0, len(p.Fidelity))
+	for _, f := range p.Fidelity {
+		items = append(items, f.Resource+": "+f.Detail)
+	}
+	return "accepted but not emulated as on AWS (" + strconv.Itoa(len(items)) + "): " + strings.Join(items, " | ")
+}
+
 func (h *cfnDoorway) describeChangeSet(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
 	stack := r.PostFormValue("StackName")
 	csName := r.PostFormValue("ChangeSetName")
@@ -850,6 +884,10 @@ func (h *cfnDoorway) describeChangeSet(w http.ResponseWriter, r *http.Request, a
 		// `aws cloudformation deploy` recognizes it and reports "No changes to deploy".
 		status, exec = "FAILED", "UNAVAILABLE"
 		reason = "The submitted information didn't contain changes. Submit different information to create a change set."
+	} else if fid := changeSetFidelity(cs.Changes); fid != "" {
+		// The fidelity summary, where `aws cloudformation describe-change-set` (and the console) show it:
+		// what this change accepts that open-infra does not emulate as AWS does.
+		reason = fid
 	}
 	csID := fmt.Sprintf("arn:aws:cloudformation:%s:%s:changeSet/%s/%s", h.region, h.account, cs.Name, shortHash(cs.StackName+"/"+cs.Name))
 	inner := "<ChangeSetName>" + xesc(cs.Name) + "</ChangeSetName>" +

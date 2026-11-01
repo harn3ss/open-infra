@@ -99,7 +99,7 @@ func evaluateOutputs(ctx context.Context, t *Template, opts DeployOptions, rec *
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
 	r.customData = customData
-	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps}
+	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, rec.Resources)}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
 	d := &deployedAttrs{ctx: ctx, sr: sr, sctx: sctx, byID: map[string]StackResource{}, status: map[string]map[string]any{}}
 	for _, res := range rec.Resources {

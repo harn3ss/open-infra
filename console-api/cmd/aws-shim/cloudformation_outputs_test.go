@@ -58,13 +58,17 @@ func cfnTestDoorway(t *testing.T, lanIP string) (*cfnDoorway, *impersonatingAppl
 		return true, obj, tr.Update(pa.GetResource(), obj, pa.GetNamespace())
 	})
 	if lanIP != "" {
+		// An applied VM reads back with the LAN IP its controller would set. One that was never applied is
+		// absent (the engine checks before applying that no other stack owns the name).
 		dyn.PrependReactor("get", "virtualmachines", func(a k8stesting.Action) (bool, runtime.Object, error) {
-			name := a.(k8stesting.GetAction).GetName()
-			return true, &unstructured.Unstructured{Object: map[string]any{
-				"apiVersion": "openinfra.dev/v1", "kind": "VirtualMachine",
-				"metadata": map[string]any{"name": name, "namespace": "default"},
-				"status":   map[string]any{"lanIp": lanIP},
-			}}, nil
+			ga := a.(k8stesting.GetAction)
+			o, err := dyn.Tracker().Get(ga.GetResource(), ga.GetNamespace(), ga.GetName())
+			if err != nil {
+				return true, nil, err
+			}
+			u := o.(*unstructured.Unstructured).DeepCopy()
+			_ = unstructured.SetNestedField(u.Object, lanIP, "status", "lanIp")
+			return true, u, nil
 		})
 	}
 	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{{Version: "v1"}, {Group: "openinfra.dev", Version: "v1"}})
@@ -106,7 +110,10 @@ const outputsWebTmpl = `
 Resources:
   Web:
     Type: AWS::EC2::Instance
-    Properties: { ImageId: ubuntu-24.04 }
+    Properties: { ImageId: ubuntu-24.04, SecurityGroupIds: [ !Ref TestSG ] }
+  TestSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties: { GroupDescription: test }
   WebEip:
     Type: AWS::EC2::EIP
     Properties: { Domain: vpc }
@@ -264,6 +271,9 @@ func TestCFNDoorway_ExportsFromAndOutputsXML(t *testing.T) {
 func TestImpersonatingApplier_GetStatus(t *testing.T) {
 	_, ap := cfnTestDoorway(t, "192.0.2.70")
 	var _ cfn.StatusReader = ap
+	if err := ap.Apply(context.Background(), []byte("apiVersion: openinfra.dev/v1\nkind: VirtualMachine\nmetadata: {name: web, namespace: default}\nspec: {os: ubuntu-24.04}\n")); err != nil {
+		t.Fatal(err)
+	}
 	st, found, err := ap.GetStatus(context.Background(), "openinfra.dev/v1", "VirtualMachine", "web")
 	if err != nil || !found || st["lanIp"] != "192.0.2.70" {
 		t.Fatalf("GetStatus = %v, %v, %v", st, found, err)

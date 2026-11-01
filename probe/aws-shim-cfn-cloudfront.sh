@@ -50,8 +50,19 @@ HOST="cfprobe-$SFX.probe.invalid" # .invalid: reserved, never a real site name
 MARKER="CF_PROBE_OK_$SFX"
 # Logical ids carry the suffix so the claims (k8sName(logical id)) are unique in the shared CFN namespace.
 L_BUCKET="Site$SFX"; L_OAC="Oac$SFX"; L_POLICY="Pol$SFX"; L_CERT="Cert$SFX"; L_HDR="Hdr$SFX"; L_CDN="Cdn$SFX"
-SITE="cdn$SFX"     # the StaticSite claim (k8sName of L_CDN)
-BCLAIM="site$SFX"  # the Bucket claim (k8sName of L_BUCKET)
+# The engine names a resource <stack>-<logical id>, lowercased (cfn/naming.go); past 40 characters it
+# keeps the first 31 and appends an 8-hex hash of "<stack>\0<logical id>".
+phys_name() { # <stack> <logicalId>
+  local s l n
+  s="$(printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-' '-' | tr -s '-')"; s="${s#-}"; s="${s%-}"
+  l="$(printf '%s' "$2" | tr 'A-Z' 'a-z')"
+  n="$s-$l"; [ "$l" = "$s" ] && n="$s"
+  if [ "${#n}" -le 40 ]; then printf '%s' "$n"; return; fi
+  n="${n:0:31}"; n="${n%-}"
+  printf '%s-%s' "$n" "$(printf '%s\0%s' "$1" "$2" | sha256sum | cut -c1-8)"
+}
+SITE="$(phys_name "$STACK" "$L_CDN")"      # the StaticSite claim
+BCLAIM="$(phys_name "$STACK" "$L_BUCKET")" # the Bucket claim
 CLIENT_NS="cfprobe-client-$SFX"
 CLIENT="client-$SFX"
 CREATED_USERS=(); CREATED_KEYS=()

@@ -42,12 +42,21 @@ AAK=""; ASK=""; RAK=""; RSK=""
 
 cfn()  { local ak="$1" sk="$2"; shift 2; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager cloudformation "$@"; }
 tget() { kubectl -n "$CFN_NS" get tables.openinfra.dev "$@" ; }
-# The engine names a resource k8sName(logicalId) (lowercase); a Crossplane claim keeps the
-# cfn.openinfra.dev/stack label but not the logical-id one. So resolve by physical name + verify the stack.
+# The engine names a resource <stack>-<logical id>, lowercased (cfn/naming.go); past 40 characters it
+# keeps the first 31 and appends an 8-hex hash of "<stack>\0<logical id>". A Crossplane claim keeps the
+# cfn.openinfra.dev/stack label but not a logical-id one, so resolve by physical name + verify the stack.
 lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
-tbl_name() { lc "$1"; } # <logicalId> -> physical Table name
+phys_name() { # <stack> <logicalId>
+  local s l n
+  s="$(lc "$1" | tr -c 'a-z0-9-' '-' | tr -s '-')"; s="${s#-}"; s="${s%-}"; l="$(lc "$2")"
+  n="$s-$l"; [ "$l" = "$s" ] && n="$s"
+  if [ "${#n}" -le 40 ]; then printf '%s' "$n"; return; fi
+  n="${n:0:31}"; n="${n%%-}"; n="${n%-}"
+  printf '%s-%s' "$n" "$(printf '%s\0%s' "$1" "$2" | sha256sum | cut -c1-8)"
+}
+tbl_name() { phys_name "$STACK" "$1"; } # <logicalId> -> physical Table name in $STACK
 tbl_exists() { # <stack> <logicalId>
-  local s; s="$(kubectl -n "$CFN_NS" get table.openinfra.dev "$(tbl_name "$2")" -o jsonpath='{.metadata.labels.cfn\.openinfra\.dev/stack}' 2>/dev/null || true)"
+  local s; s="$(kubectl -n "$CFN_NS" get table.openinfra.dev "$(phys_name "$1" "$2")" -o jsonpath='{.metadata.labels.cfn\.openinfra\.dev/stack}' 2>/dev/null || true)"
   [ "$s" = "$1" ]
 }
 
