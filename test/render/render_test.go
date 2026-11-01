@@ -49,7 +49,8 @@ func TestApplication_NetpolAdmitsJoinSubnet(t *testing.T) {
 }
 
 // Application #345.4 gaps: command/args, a port-less worker (no Service/probe), additionalPorts,
-// a fixed-size app (no HPA), env-value escaping, and sidecars that get the app's secrets.
+// a fixed-size app (no HPA), env-value escaping, and sidecars (which get no app secrets by default —
+// the opt-in is covered by TestApplication_SidecarSecretsOptIn).
 func TestApplication_WorkloadShapes(t *testing.T) {
 	tmpl := extractInlineTemplate(t, compositionPath)
 	mk := func(spec map[string]any) map[string]any {
@@ -89,7 +90,7 @@ func TestApplication_WorkloadShapes(t *testing.T) {
 	}
 
 	// additionalPorts (Mailpit SMTP) land on the Service + the container; env with a quote is escaped;
-	// a sidecar gets the app's secret bundle (envFrom).
+	// a sidecar that lists no secrets gets none of the app's.
 	full := render(t, tmpl, mk(map[string]any{
 		"image":           "ghcr.io/x/app:latest",
 		"port":            8025,
@@ -104,9 +105,9 @@ func TestApplication_WorkloadShapes(t *testing.T) {
 	if !strings.Contains(full, `value: "he said \"hi\""`) {
 		t.Errorf("an env value with a quote must be JSON-escaped; got:\n%s", grepCtx(full, "GREETING"))
 	}
-	// Both primary and the sidecar carry envFrom for the app's secret (so the sidecar gets credentials).
-	if strings.Count(full, "secretRef: { name: app-config, optional: true }") < 2 {
-		t.Errorf("the sidecar must get the app's secret bundle (envFrom), like the primary; got:\n%s", grepCtx(full, "app-config"))
+	// Only the primary carries envFrom for the app's secret; the sidecar did not opt in.
+	if n := strings.Count(full, "secretRef: { name: app-config, optional: true }"); n != 1 {
+		t.Errorf("the app's secret must reach the primary only (1 envFrom), not a sidecar that didn't list it; got %d:\n%s", n, grepCtx(full, "app-config"))
 	}
 }
 

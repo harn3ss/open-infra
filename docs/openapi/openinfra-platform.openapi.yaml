@@ -4053,6 +4053,10 @@ components:
           $ref: '#/components/schemas/ObjectMeta'
         spec:
           type: object
+          x-kubernetes-validations:
+          - rule: '!has(self.domain) || size(self.domain) == 0 || (has(self.port) && self.port > 0)'
+            message: 'spec.domain requires spec.port: the domain''s Ingress routes HTTPS to the app''s HTTP port (Service
+              port 80 -> spec.port). Set spec.port to the port the container serves HTTP on, or remove spec.domain.'
           properties:
             image:
               type: string
@@ -4084,13 +4088,17 @@ components:
                 is used (an ECS container's Memory maps here).
             startupGraceSeconds:
               type: integer
+              minimum: 0
               description: "How long a slow first boot may take before the liveness probe can kill the container (a startup\
-                \ probe's budget; default 150). Raise it for images whose first start is slow \u2014 a database's initial\
-                \ data-dir init, an antivirus signature download \u2014 so they are not killed mid-initialization."
+                \ probe's budget; default 150). The budget is counted in 10-second probe periods, rounded up (15 -> 20s),\
+                \ with a minimum of one period (so 0 gives no extra grace: the port must answer the first startup probe).\
+                \ Raise it for images whose first start is slow \u2014 a database's initial data-dir init, an antivirus signature\
+                \ download \u2014 so they are not killed mid-initialization. Applies only when spec.port is set."
             additionalPorts:
               type: array
               description: "Extra Service ports beyond the HTTP port (80 -> spec.port) \u2014 e.g. an SMTP 1025 or a second\
-                \ protocol the app serves. Each also becomes a declared containerPort."
+                \ protocol the app serves. Each also becomes a declared containerPort; a container port shared by several\
+                \ Service ports (including spec.port) is declared once per protocol."
               items:
                 type: object
                 required:
@@ -4164,7 +4172,7 @@ components:
             domain:
               type: string
               description: "Hostname to serve the app on \u2014 open-infra provisions Ingress, a TLS certificate, and DNS\
-                \ for it (e.g. my-api.example.com)."
+                \ for it (e.g. my-api.example.com). Requires spec.port: the Ingress routes to the app's HTTP port."
             subnet:
               type: string
               description: "Name of a kind: Subnet to place this app in (kube-ovn). The pod draws its IP from that subnet\
@@ -4425,7 +4433,8 @@ components:
             sidecars:
               type: array
               description: Auxiliary containers that run alongside the app (a logging agent, a proxy, an ECS multi-container
-                task's helper containers). The `image` above is the primary container; these run in the same pod.
+                task's helper containers). The `image` above is the primary container; these run in the same pod. A sidecar
+                receives only the secrets it lists in its own `secrets`.
               items:
                 type: object
                 required:
@@ -4486,11 +4495,21 @@ components:
                         mountPath:
                           type: string
                           description: Path to mount it at inside the sidecar.
+                  secrets:
+                    type: array
+                    items:
+                      type: string
+                    description: "Secrets (by name, in the app's namespace) whose keys this sidecar receives as environment\
+                      \ variables. A sidecar receives NO secrets unless listed here \u2014 not the app's spec.secrets and\
+                      \ not its bucket credentials \u2014 so a logging agent or proxy never holds the app's credentials. Name\
+                      \ exactly what this sidecar needs: an entry of spec.secrets, any other Secret in the namespace, or <app-name>-minio\
+                      \ for the app's storage.buckets credentials (an ECS container definition's per-container Secrets)."
             secrets:
               type: array
               items:
                 type: string
-              description: Sealed Secret names to mount into the app.
+              description: Secret names (in the app's namespace) whose keys are injected into the primary container as environment
+                variables. Sidecars do not receive them; a sidecar lists the secrets it needs in its own sidecars[].secrets.
             securityGroups:
               type: array
               items:

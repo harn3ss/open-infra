@@ -7,7 +7,8 @@
 #   database (mongo)    -> FerretDB + DocumentDB-Postgres + injected MONGODB_URI
 #   storage.buckets -> MinIO bucket(s) + per-app creds (MINIO_*) via a setup Job
 #   queues          -> injected NATS_URL + OPENINFRA_QUEUES (streams app-declared)
-#   secrets         -> envFrom each named secret
+#   secrets         -> envFrom each named secret (primary container only)
+#   sidecars[].secrets -> envFrom each named secret into that sidecar (default: none)
 #
 # Synced after the XRD (sync-wave 3).
 apiVersion: apiextensions.crossplane.io/v1
@@ -118,6 +119,13 @@ spec:
               {{- $dbPITR = true }}
               {{- $dbBacktrackWindow = ($spec.database.backtrackWindow | default "7d") }}
             {{- end }}
+            {{- /* A domain is served by an Ingress that routes to the Service's HTTP port (80 ->
+                   spec.port). Without spec.port that port does not exist (additionalPorts alone do not
+                   create it), so the Ingress would point at nothing. Refuse rather than render it.
+                   The XRD rejects the same combination at admission; this is the backstop. */}}
+            {{- if and $spec.domain (not $spec.port) }}
+            {{-   fail "kind: Application spec.domain requires spec.port: the domain's Ingress routes HTTPS to the app's HTTP port (Service port 80 -> spec.port), and without spec.port there is no such port. Set spec.port to the port the container serves HTTP on, or remove spec.domain." }}
+            {{- end }}
             {{- /* The workload (Deployment/Service/Ingress/HPA) renders only when an
                    image is given. An Application may be database-only — just declare
                    a `database:` block and the platform provisions the DB, no app. */}}
@@ -184,12 +192,24 @@ spec:
                             args: {{ $spec.args | toJson }}
                             {{- end }}
                             {{- if or $spec.port $spec.additionalPorts }}
+                            {{- /* Each container port is declared ONCE per protocol. Several Service ports
+                                   may map to the same container port (an additionalPorts entry whose
+                                   targetPort is spec.port, or two entries sharing a targetPort), but a
+                                   container listing the same containerPort/protocol twice is invalid.
+                                   The Service below keeps every port. */}}
+                            {{- $seenPorts := dict }}
                             ports:
                               {{- if $spec.port }}
+                              {{- $_ := set $seenPorts (printf "%d/TCP" (int $spec.port)) true }}
                               - { containerPort: {{ $spec.port }} }
                               {{- end }}
                               {{- range $p := ($spec.additionalPorts | default list) }}
-                              - { containerPort: {{ $p.targetPort | default $p.port }}{{ if $p.protocol }}, protocol: {{ $p.protocol }}{{ end }} }
+                              {{- $cport := int ($p.targetPort | default $p.port) }}
+                              {{- $portKey := printf "%d/%s" $cport ($p.protocol | default "TCP") }}
+                              {{- if not (hasKey $seenPorts $portKey) }}
+                              {{- $_ := set $seenPorts $portKey true }}
+                              - { containerPort: {{ $cport }}{{ if $p.protocol }}, protocol: {{ $p.protocol }}{{ end }} }
+                              {{- end }}
                               {{- end }}
                             {{- end }}
                             # Requests drive the HPA; limits bound the app (tenant). spec.cpu/memory
@@ -207,12 +227,20 @@ spec:
                             {{- end }}
                             {{- end }}
                             {{- if $spec.port }}
+                            {{- /* startupGraceSeconds -> whole 10s probe periods, rounded UP (15s -> 2), and
+                                   never fewer than 1: the API server rejects failureThreshold < 1. An
+                                   explicit value (including 0) is honored; only an unset field takes the
+                                   150s default. */}}
+                            {{- $startupGrace := 150 }}
+                            {{- if hasKey $spec "startupGraceSeconds" }}{{ $startupGrace = int $spec.startupGraceSeconds }}{{- end }}
+                            {{- $startupFailures := div (add $startupGrace 9) 10 }}
+                            {{- if lt (int $startupFailures) 1 }}{{ $startupFailures = 1 }}{{- end }}
                             # Health checks auto-injected — k8s self-heals. The startup probe gives a slow
                             # first boot (DB init, AV signature download) time to begin listening before
-                            # liveness can kill it: failureThreshold*10s = startupGraceSeconds (default 150).
+                            # liveness can kill it: failureThreshold*10s ≈ startupGraceSeconds (default 150).
                             # A port-less workload (a queue worker) renders NO probe — nothing listens, and
                             # k8s still restarts it if the process exits.
-                            startupProbe:   { tcpSocket: { port: {{ $spec.port }} }, periodSeconds: 10, failureThreshold: {{ div (add (int ($spec.startupGraceSeconds | default 150)) 9) 10 }} }
+                            startupProbe:   { tcpSocket: { port: {{ $spec.port }} }, periodSeconds: 10, failureThreshold: {{ $startupFailures }} }
                             readinessProbe: { tcpSocket: { port: {{ $spec.port }} } }
                             livenessProbe:  { tcpSocket: { port: {{ $spec.port }} } }
                             {{- end }}
@@ -309,12 +337,14 @@ spec:
                               - { name: {{ .name }}, mountPath: {{ .mountPath }} }
                             {{- end }}
                             {{- end }}
-                            {{- /* Sidecars get the SAME secret bundle as the primary (spec.secrets +
-                                   bucket creds) — a worker sidecar that needs the app's DB/API
-                                   credentials now receives them, instead of only the primary. */}}
-                            {{- if $envFrom }}
+                            {{- /* Least privilege: a sidecar receives NO secrets by default — not the
+                                   app's spec.secrets, not its bucket credentials — so a log shipper or
+                                   proxy never holds the app's credentials. It gets exactly the Secrets
+                                   its own `secrets` list names (any Secret in the namespace, e.g. an
+                                   entry of spec.secrets or <app>-minio for the bucket credentials). */}}
+                            {{- if $s.secrets }}
                             envFrom:
-                            {{- range $envFrom }}
+                            {{- range $s.secrets }}
                               - secretRef: { name: {{ . }}, optional: true }
                             {{- end }}
                             {{- end }}
