@@ -67,6 +67,11 @@ cleanup() {
   # belt-and-suspenders: remove any resources/bookkeeping this probe left in the CFN namespace
   kubectl -n "$CFN_NS" delete tables.openinfra.dev -l "cfn.openinfra.dev/stack=$STACK"  --ignore-not-found >/dev/null 2>&1 || true
   kubectl -n "$CFN_NS" delete tables.openinfra.dev -l "cfn.openinfra.dev/stack=$RSTACK" --ignore-not-found >/dev/null 2>&1 || true
+  # the doorway's records are Secrets in the shim's namespace (an earlier doorway kept ConfigMaps here)
+  kubectl -n "$SHIM_NS" delete secret "cfn-stack-$STACK" "cfn-stack-$RSTACK" "cfn-drift-$STACK" \
+    "noecho-cfn-stack-$STACK" "noecho-cfn-stack-$RSTACK" --ignore-not-found >/dev/null 2>&1 || true
+  kubectl -n "$SHIM_NS" delete secret -l "cfn.openinfra.dev/changeset=$STACK" --ignore-not-found >/dev/null 2>&1 || true
+  kubectl -n "$SHIM_NS" delete secret -l "cfn.openinfra.dev/noecho-stack=$STACK" --ignore-not-found >/dev/null 2>&1 || true
   kubectl -n "$CFN_NS" delete configmap "cfn-stack-$STACK" "cfn-stack-$RSTACK" "cfn-drift-$STACK" --ignore-not-found >/dev/null 2>&1 || true
   kubectl -n "$CFN_NS" delete configmap -l "cfn.openinfra.dev/changeset=$STACK" --ignore-not-found >/dev/null 2>&1 || true
   for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done

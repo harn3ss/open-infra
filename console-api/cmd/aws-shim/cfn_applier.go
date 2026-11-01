@@ -8,10 +8,11 @@
 // A caller who cannot create a resource is denied by the API server itself — the confused-deputy blast
 // radius #175 warns about is structurally impossible here.
 //
-// The ONE exception is the stack-record ConfigMap (cfn-stack-<name>): that is the doorway's internal
-// bookkeeping (the analog of AWS's service-side stack metadata, which is not a customer resource created
-// under customer credentials). It is written with the shim's own ServiceAccount, because it is not part
-// of the user's stack and powerusers deliberately cannot create ConfigMaps. Resource ops = caller;
+// The ONE exception is the stack record (cfn-stack-<name>): that is the doorway's internal bookkeeping
+// (the analog of AWS's service-side stack metadata, which is not a customer resource created under
+// customer credentials). It is written with the shim's own ServiceAccount, because it is not part of the
+// user's stack. The engine writes it as a ConfigMap; the applier keeps it in its record store — for the
+// CloudFormation front door a Secret in the shim's namespace (cfn_records.go). Resource ops = caller;
 // record ops = shim.
 package main
 
@@ -49,6 +50,16 @@ type impersonatingApplier struct {
 	groups []string
 	// noecho holds the stack's NoEcho parameter values (cfn_noecho.go); nil keeps none.
 	noecho *noEchoSecrets
+	// records is where stack records are kept (cfn_records.go); nil = ConfigMaps in ns, via shim.
+	records *recordStore
+}
+
+// recordStore is where this applier keeps stack records.
+func (a *impersonatingApplier) recordStore() recordStore {
+	if a.records != nil {
+		return *a.records
+	}
+	return recordStore{dyn: a.shim, ns: a.ns}
 }
 
 // PutNoEcho makes the applier a cfn.NoEchoStore: a stack's NoEcho values go to a Secret, not its record.
@@ -61,18 +72,10 @@ func (a *impersonatingApplier) identity() *recordedCaller {
 	return &recordedCaller{User: a.user, Groups: append([]string(nil), a.groups...)}
 }
 
-// isStackRecord reports whether a (kind,name) is the doorway's own bookkeeping ConfigMap, which is
-// shim-owned rather than caller-owned.
+// isStackRecord reports whether a (kind,name) the engine writes is the doorway's own bookkeeping — the
+// stack record, which the engine writes as a ConfigMap — shim-owned rather than caller-owned.
 func isStackRecord(gvkKind, name string) bool {
 	return gvkKind == "ConfigMap" && strings.HasPrefix(name, "cfn-stack-")
-}
-
-// clientFor returns the record client (shim) for the stack-record ConfigMap, else the caller client.
-func (a *impersonatingApplier) clientFor(kind, name string) dynamic.Interface {
-	if isStackRecord(kind, name) {
-		return a.shim
-	}
-	return a.caller
 }
 
 // gvrFor maps an apiVersion+kind to a namespaced GVR via the RESTMapper.
@@ -95,6 +98,17 @@ func (a *impersonatingApplier) Apply(ctx context.Context, manifestYAML []byte) e
 	}
 	gvk := obj.GroupVersionKind()
 	name := obj.GetName()
+	if isStackRecord(gvk.Kind, name) {
+		data, _, _ := unstructured.NestedStringMap(obj.Object, "data")
+		labels := map[string]any{}
+		for k, v := range obj.GetLabels() {
+			labels[k] = v
+		}
+		if err := a.recordStore().apply(ctx, name, labels, data); err != nil {
+			return fmt.Errorf("write stack record %q: %w", name, err)
+		}
+		return nil
+	}
 	ns := obj.GetNamespace()
 	if ns == "" {
 		ns = a.ns
@@ -103,7 +117,7 @@ func (a *impersonatingApplier) Apply(ctx context.Context, manifestYAML []byte) e
 	if err != nil {
 		return err
 	}
-	cli := a.clientFor(gvk.Kind, name)
+	cli := a.caller
 	// Server-side apply — the client-go analog of `kubectl apply`, correct for both create and update
 	// (fields this manager stops setting are pruned). Force resolves ownership conflicts on re-apply.
 	_, err = cli.Resource(gvr).Namespace(ns).Apply(ctx, name, obj, metav1.ApplyOptions{FieldManager: cfnFieldManager, Force: true})
@@ -114,12 +128,17 @@ func (a *impersonatingApplier) Apply(ctx context.Context, manifestYAML []byte) e
 }
 
 func (a *impersonatingApplier) Delete(ctx context.Context, apiVersion, kind, name string) error {
+	if isStackRecord(kind, name) {
+		if err := a.recordStore().client().Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete stack record %q: %w", name, err)
+		}
+		return nil
+	}
 	gvr, err := a.gvrFor(apiVersion, kind)
 	if err != nil {
 		return err
 	}
-	cli := a.clientFor(kind, name)
-	err = cli.Resource(gvr).Namespace(a.ns).Delete(ctx, name, metav1.DeleteOptions{})
+	err = a.caller.Resource(gvr).Namespace(a.ns).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) { // --ignore-not-found semantics
 		return fmt.Errorf("delete %s/%s %q: %w", apiVersion, kind, name, err)
 	}
@@ -179,14 +198,19 @@ func readyCondition(obj map[string]any) string {
 }
 
 func (a *impersonatingApplier) WaitGone(ctx context.Context, apiVersion, kind, name string, timeout time.Duration) error {
-	gvr, err := a.gvrFor(apiVersion, kind)
-	if err != nil {
-		return err
+	var cli dynamic.ResourceInterface
+	if isStackRecord(kind, name) {
+		cli = a.recordStore().client()
+	} else {
+		gvr, err := a.gvrFor(apiVersion, kind)
+		if err != nil {
+			return err
+		}
+		cli = a.caller.Resource(gvr).Namespace(a.ns)
 	}
-	cli := a.clientFor(kind, name)
 	deadline := time.Now().Add(timeout)
 	for {
-		_, gerr := cli.Resource(gvr).Namespace(a.ns).Get(ctx, name, metav1.GetOptions{})
+		_, gerr := cli.Get(ctx, name, metav1.GetOptions{})
 		if apierrors.IsNotFound(gerr) {
 			return nil // gone
 		}
@@ -242,11 +266,17 @@ func (a *impersonatingApplier) GetStatus(ctx context.Context, apiVersion, kind, 
 // GetLabels reads a live resource's metadata.labels via the CALLER (cfn.LabelReader) — how recovery checks
 // an object carries this stack's label before rolling it back, under the operation's own authority.
 func (a *impersonatingApplier) GetLabels(ctx context.Context, apiVersion, kind, name string) (map[string]string, bool, error) {
-	gvr, err := a.gvrFor(apiVersion, kind)
-	if err != nil {
-		return nil, false, err
+	var u *unstructured.Unstructured
+	var gerr error
+	if isStackRecord(kind, name) {
+		u, gerr = a.recordStore().client().Get(ctx, name, metav1.GetOptions{})
+	} else {
+		gvr, err := a.gvrFor(apiVersion, kind)
+		if err != nil {
+			return nil, false, err
+		}
+		u, gerr = a.caller.Resource(gvr).Namespace(a.ns).Get(ctx, name, metav1.GetOptions{})
 	}
-	u, gerr := a.clientFor(kind, name).Resource(gvr).Namespace(a.ns).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(gerr) {
 		return nil, false, nil
 	}
@@ -276,17 +306,17 @@ func (a *impersonatingApplier) GetReady(ctx context.Context, apiVersion, kind, n
 	return readyCondition(u.Object) == "True", true, nil
 }
 
-// GetStack reads the doorway's own stack-record ConfigMap (shim-owned bookkeeping) via the shim client.
+// GetStack reads the doorway's own stack record (shim-owned bookkeeping) from its record store.
 func (a *impersonatingApplier) GetStack(ctx context.Context, stackName string) (*cfn.StackRecord, bool, error) {
-	gvr := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
-	u, gerr := a.shim.Resource(gvr).Namespace(a.ns).Get(ctx, "cfn-stack-"+stackName, metav1.GetOptions{})
+	st := a.recordStore()
+	u, gerr := st.client().Get(ctx, "cfn-stack-"+stackName, metav1.GetOptions{})
 	if apierrors.IsNotFound(gerr) {
 		return nil, false, nil
 	}
 	if gerr != nil {
 		return nil, false, gerr
 	}
-	data, _, _ := unstructured.NestedString(u.Object, "data", "stack.json")
+	data := st.value(u, "stack.json")
 	if strings.TrimSpace(data) == "" {
 		return nil, false, nil
 	}
@@ -299,26 +329,17 @@ func (a *impersonatingApplier) GetStack(ctx context.Context, stackName string) (
 
 var configMapGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
 
-// putRecord writes/updates a stack-record ConfigMap with the shim client (bookkeeping) — e.g. to backstop
-// a terminal status. Server-side apply of labels + data only: the operation-lease annotations
+// putRecord writes/updates a stack record in the record store with the shim client (bookkeeping) — e.g.
+// to backstop a terminal status. Server-side apply of labels + data only: the operation-lease annotations
 // (cloudformation_ops.go) belong to another field manager and are left as they are.
 func (a *impersonatingApplier) putRecord(ctx context.Context, rec *cfn.StackRecord) error {
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
-	cm := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "v1",
-		"kind":       "ConfigMap",
-		"metadata": map[string]any{
-			"name":      "cfn-stack-" + rec.Name,
-			"namespace": a.ns,
-			"labels":    map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/stack": rec.Name},
-		},
-		"data": map[string]any{"stack.json": string(data)},
-	}}
-	_, err = a.shim.Resource(configMapGVR).Namespace(a.ns).Apply(ctx, "cfn-stack-"+rec.Name, cm, metav1.ApplyOptions{FieldManager: cfnFieldManager, Force: true})
-	return err
+	return a.recordStore().apply(ctx, "cfn-stack-"+rec.Name,
+		map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/stack": rec.Name},
+		map[string]string{"stack.json": string(data)})
 }
 
 // backstopTerminal sets the record to a terminal status IFF it is still *_IN_PROGRESS — a safety net for

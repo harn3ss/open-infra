@@ -296,8 +296,11 @@ Stack "tickets" is CREATE_COMPLETE (2 resources).
    the whole deploy. Nothing is applied until everything translates — there is no partial
    stack.
 3. **Ordered apply** — resources are created in dependency order, each recorded in a
-   persisted stack record (a `cfn-stack-<name>` ConfigMap) and labeled with its stack, and
-   each waited for until it is ready.
+   persisted stack record and labeled with its stack, and each waited for until it is ready.
+   The `cfn` CLI keeps the record as a `cfn-stack-<name>` ConfigMap in the target namespace.
+   The aws-shim front door keeps it as a Secret in the shim's own namespace, readable only by
+   the shim and cluster admins, because the record holds every resource's resolved properties,
+   including what a `NoEcho` parameter was fed into.
 4. **Rollback** — if any create or readiness wait fails, everything created in that deploy
    is deleted in reverse order and the stack is marked `CREATE_FAILED`. A failed create
    leaves no orphans. A `DeletionPolicy: Retain` resource is kept, as AWS keeps it on

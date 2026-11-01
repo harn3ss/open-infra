@@ -33,6 +33,7 @@ func cfnTestDoorway(t *testing.T, lanIP string) (*cfnDoorway, *impersonatingAppl
 	t.Helper()
 	gvrs := map[schema.GroupVersionResource]string{
 		{Version: "v1", Resource: "configmaps"}:                              "ConfigMapList",
+		{Version: "v1", Resource: "secrets"}:                                 "SecretList",
 		{Group: "openinfra.dev", Version: "v1", Resource: "virtualmachines"}: "VirtualMachineList",
 		{Group: "openinfra.dev", Version: "v1", Resource: "securitygroups"}:  "SecurityGroupList",
 		{Group: "openinfra.dev", Version: "v1", Resource: "encryptionkeys"}:  "EncryptionKeyList",
@@ -77,8 +78,9 @@ func cfnTestDoorway(t *testing.T, lanIP string) (*cfnDoorway, *impersonatingAppl
 		mapper.Add(schema.GroupVersionKind{Group: "openinfra.dev", Version: "v1", Kind: k}, meta.RESTScopeNamespace)
 	}
 	h := &cfnDoorway{shimDyn: dyn, mapper: mapper, ns: "default", account: "000000000000", region: "us-east-1",
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), cs: csWithSAR(true), authzNS: "default"}
-	return h, &impersonatingApplier{caller: dyn, shim: dyn, mapper: mapper, ns: "default"}
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), cs: csWithSAR(true), authzNS: "default", recNS: shimNS}
+	rs := h.recs()
+	return h, &impersonatingApplier{caller: dyn, shim: dyn, mapper: mapper, ns: "default", records: &rs}
 }
 
 // cfnPost runs one doorway action with form values and returns the recorder.

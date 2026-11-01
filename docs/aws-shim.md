@@ -1164,10 +1164,14 @@ caller** (`Impersonate-User: openinfra:<sub>` + their groups), so the API server
 admission webhook bound the entire stack to exactly what the caller may do — the same bounded impersonation
 the console uses on `/api/k8s`, pinned to the four `openinfra:` groups (never `system:masters`). A stack
 therefore *cannot* provision beyond the caller's authority; the confused-deputy blast radius is structurally
-impossible. Only the doorway's own bookkeeping — the stack-record, change-set and drift ConfigMaps in the
-`open-infra-cfn` namespace — is written with the shim's ServiceAccount (the analog of AWS's service-side
-stack metadata, not a customer resource). A stack `roleArn` (AWS's role mode) is the natural follow-on,
-reusing the STS→groups mechanism from Step Functions.
+impossible. Only the doorway's own bookkeeping — its stack, change-set and drift records — is written with
+the shim's ServiceAccount (the analog of AWS's service-side stack metadata, not a customer resource). The
+records are Secrets in the shim's own namespace, readable only by the shim and cluster admins: a stack
+record holds the template, parameters, outputs and every resource's resolved properties, and readers and
+power users may read ConfigMaps in every namespace, so a record kept as a ConfigMap could be read without
+the front door's checks. A record an earlier front door kept as a ConfigMap in `open-infra-cfn` is moved
+on startup, and before each request. A stack `roleArn` (AWS's role mode) is the natural follow-on, reusing
+the STS→groups mechanism from Step Functions.
 
 **Calling a stack action needs permission for that action.** As on AWS, where
 `cloudformation:DescribeStacks`, `GetTemplate`, `CreateStack` and so on are permissions of their own, the

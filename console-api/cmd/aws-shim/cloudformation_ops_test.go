@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -30,14 +31,14 @@ import (
 
 // fakeAPI is a small API server for these tests: objects carry resourceVersions, a merge patch that names
 // a resourceVersion is a precondition (409 on mismatch), and server-side apply leaves annotations it does
-// not set alone (they belong to another field manager — the lease's). Every non-ConfigMap object reports
-// status.ready (its controller "reconciled" it). Errors can be injected for merge patches.
+// not set alone (they belong to another field manager — the lease's). Every object but a ConfigMap or a
+// Secret reports status.ready (its controller "reconciled" it). Errors can be injected for merge patches.
 type fakeAPI struct {
 	mu          sync.Mutex
 	rv          int
 	objs        map[string]map[string]any // resource/namespace/name -> object
 	failPatches bool                      // merge patches fail (cluster unreachable for the lease)
-	created     map[string]map[string]any // configmap name -> annotations it was CREATED with
+	created     map[string]map[string]any // record (ConfigMap or Secret) name -> annotations it was CREATED with
 	callers     []string                  // identities a caller client was built for
 }
 
@@ -62,7 +63,7 @@ func (f *fakeAPI) store(res, ns, name string, obj map[string]any) {
 		obj["metadata"] = md
 	}
 	md["name"], md["namespace"], md["resourceVersion"] = name, ns, strconv.Itoa(f.rv)
-	if res != "configmaps" {
+	if res != "configmaps" && res != "secrets" {
 		obj["status"] = map[string]any{"ready": true}
 	}
 	f.objs[fkey(res, ns, name)] = obj
@@ -96,7 +97,7 @@ func (f *fakeAPI) react(a k8stesting.Action) (bool, runtime.Object, error) {
 			return true, nil, apierrors.NewAlreadyExists(gr, u.GetName())
 		}
 		obj := jsonCopy(u.Object)
-		if res == "configmaps" {
+		if res == "configmaps" || res == "secrets" {
 			f.created[u.GetName()] = jsonCopy(u.GetAnnotations())
 		}
 		f.store(res, ns, u.GetName(), obj)
@@ -190,6 +191,12 @@ func (f *fakeAPI) callerLog() []string {
 
 const opsNS = "open-infra-cfn"
 
+// shimNS is the shim's own namespace, where the front door keeps its records (Secrets).
+const shimNS = "open-infra-aws-shim"
+
+// shimRecords is the record store the test doorways use: Secrets in shimNS, as in a cluster.
+var shimRecords = recordStore{ns: shimNS, secret: true}
+
 // The doorway's applier reads labels, so recovery's rollback deletes only this stack's objects.
 var _ cfn.LabelReader = (*impersonatingApplier)(nil)
 
@@ -198,6 +205,7 @@ func opsDoorway(t *testing.T, fa *fakeAPI, owner string) *cfnDoorway {
 	t.Helper()
 	gvrs := map[schema.GroupVersionResource]string{
 		{Version: "v1", Resource: "configmaps"}:                             "ConfigMapList",
+		{Version: "v1", Resource: "secrets"}:                                "SecretList",
 		{Group: "openinfra.dev", Version: "v1", Resource: "volumes"}:        "VolumeList",
 		{Group: "openinfra.dev", Version: "v1", Resource: "encryptionkeys"}: "EncryptionKeyList",
 	}
@@ -209,7 +217,7 @@ func opsDoorway(t *testing.T, fa *fakeAPI, owner string) *cfnDoorway {
 		mapper.Add(schema.GroupVersionKind{Group: "openinfra.dev", Version: "v1", Kind: k}, meta.RESTScopeNamespace)
 	}
 	h := &cfnDoorway{shimDyn: dyn, mapper: mapper, ns: opsNS, account: "000000000000", region: "us-east-1",
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), cs: csWithSAR(true), authzNS: "default"}
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), cs: csWithSAR(true), authzNS: "default", recNS: shimNS}
 	h.ops.owner = owner
 	h.callerDyn = func(user string, groups []string) (dynamic.Interface, error) {
 		fa.mu.Lock()
@@ -241,8 +249,8 @@ func seedStack(fa *fakeAPI, rec cfn.StackRecord, ann map[string]any) {
 	if ann != nil {
 		md["annotations"] = ann
 	}
-	fa.put("configmaps", opsNS, "cfn-stack-"+rec.Name, map[string]any{"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": md, "data": map[string]any{"stack.json": string(data)}})
+	fa.put("secrets", shimNS, "cfn-stack-"+rec.Name, map[string]any{"apiVersion": "v1", "kind": "Secret", "type": "Opaque",
+		"metadata": md, "data": map[string]any{"stack.json": base64.StdEncoding.EncodeToString(data)}})
 }
 
 // staleLease is the annotations a front door that stopped 5 minutes ago left behind.
@@ -264,12 +272,12 @@ func liveObject(fa *fakeAPI, res, kind, name, stack string, spec map[string]any)
 
 func recordIn(t *testing.T, fa *fakeAPI, stack string) (*cfn.StackRecord, map[string]any) {
 	t.Helper()
-	o := fa.get("configmaps", opsNS, "cfn-stack-"+stack)
+	o := fa.get("secrets", shimNS, "cfn-stack-"+stack)
 	if o == nil {
 		return nil, nil
 	}
 	u := &unstructured.Unstructured{Object: o}
-	rec, ok := recordOf(u)
+	rec, ok := shimRecords.stackRecord(u)
 	if !ok {
 		t.Fatalf("record %s unreadable: %v", stack, o)
 	}
@@ -561,7 +569,8 @@ func TestCFNLease_RenewedWhileRunningAndReleased(t *testing.T) {
 	opCtx, stop := h.holdLease("app")
 	time.Sleep(120 * time.Millisecond)
 	// The engine writes the record (SSA, its own field manager) mid-operation: the lease survives it.
-	sa := &impersonatingApplier{shim: h.shimDyn, mapper: h.mapper, ns: opsNS}
+	rs := h.recs()
+	sa := &impersonatingApplier{shim: h.shimDyn, mapper: h.mapper, ns: opsNS, records: &rs}
 	if err := sa.putRecord(ctx, &cfn.StackRecord{Name: "app", Namespace: opsNS, Status: "CREATE_IN_PROGRESS",
 		Resources: []cfn.StackResource{dataVolRes}}); err != nil {
 		t.Fatal(err)

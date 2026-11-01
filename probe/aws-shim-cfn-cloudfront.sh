@@ -146,7 +146,8 @@ cleanup() {
     kubectl -n "$CFN_NS" delete "$k" -l "cfn.openinfra.dev/stack=$BAD_STACK" --ignore-not-found --wait=false >/dev/null 2>&1
   done
   kubectl -n "$CFN_NS" delete secret "$SITE-minio" "$BCLAIM-minio" "staticsite-$SITE-tls" --ignore-not-found >/dev/null 2>&1
-  kubectl -n "$CFN_NS" delete configmap "cfn-stack-$STACK" "cfn-stack-$BAD_STACK" --ignore-not-found >/dev/null 2>&1
+  kubectl -n "$SHIM_NS" delete secret "cfn-stack-$STACK" "cfn-stack-$BAD_STACK" --ignore-not-found >/dev/null 2>&1  # the doorway's records
+  kubectl -n "$CFN_NS" delete configmap "cfn-stack-$STACK" "cfn-stack-$BAD_STACK" --ignore-not-found >/dev/null 2>&1  # (an earlier doorway's)
   kubectl -n "$MINIO_NS" delete job "$SITE-site-setup" --ignore-not-found >/dev/null 2>&1
   for j in $(kubectl -n "$MINIO_NS" get jobs -o name 2>/dev/null | grep "/$BCLAIM-bucket-"); do
     kubectl -n "$MINIO_NS" delete "$j" --ignore-not-found >/dev/null 2>&1

@@ -563,6 +563,7 @@ func run(logger *slog.Logger) error {
 			cfnH.authz = authzChecker                        // an assumed role's stack operations are default-deny under its policy
 			cfnH.cs, cfnH.authzNS = cs, authzNS              // a User's coarse RBAC gate, as every front door
 			cfnH.noecho = &noEchoSecrets{cs: cs, ns: keysNS} // NoEcho values: Secrets in the shim's namespace
+			cfnH.recNS = keysNS                              // stack/change-set/drift records: Secrets there too (cfn_records.go)
 			services["cloudformation"] = cfnH
 			cfnDoor = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))

@@ -13,7 +13,6 @@ import (
 	"github.com/harn3ss/open-infra/cfn"
 	authzv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes/fake"
@@ -317,10 +316,10 @@ func TestCFN_ChangeSetNamesUnambiguous(t *testing.T) {
 	ctx := context.Background()
 	// A legacy record of stack "a-b", change set "c" — its old name is also what "a" + "b-c" gave.
 	data, _ := json.Marshal(changeSet{StackName: "a-b", Name: "c", Type: "UPDATE"})
-	cm := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]any{"name": legacyChangeSetCMName("a-b", "c"), "namespace": "default"},
-		"data":     map[string]any{"changeset.json": string(data)}}}
-	if _, err := h.shimDyn.Resource(configMapGVR).Namespace("default").Create(ctx, cm, metav1.CreateOptions{}); err != nil {
+	st := h.recs()
+	legacy := st.object(legacyChangeSetCMName("a-b", "c"), map[string]any{"app.kubernetes.io/managed-by": "cfn"}, nil,
+		map[string]string{"changeset.json": string(data)})
+	if _, err := st.client().Create(ctx, legacy, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.getChangeSet(ctx, "a", "b-c"); err == nil {

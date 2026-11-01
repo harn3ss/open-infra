@@ -268,17 +268,9 @@ func leaseOf(u *unstructured.Unstructured) (opLease, bool) {
 	return l, true
 }
 
-// recordOf parses a stack-record ConfigMap's stack.json.
-func recordOf(u *unstructured.Unstructured) (*cfn.StackRecord, bool) {
-	data, _, _ := unstructured.NestedString(u.Object, "data", "stack.json")
-	if strings.TrimSpace(data) == "" {
-		return nil, false
-	}
-	var rec cfn.StackRecord
-	if json.Unmarshal([]byte(data), &rec) != nil {
-		return nil, false
-	}
-	return &rec, true
+// recordOf parses a stack record's stack.json.
+func (h *cfnDoorway) recordOf(u *unstructured.Unstructured) (*cfn.StackRecord, bool) {
+	return h.recs().stackRecord(u)
 }
 
 func inProgress(status string) bool { return strings.HasSuffix(status, "_IN_PROGRESS") }
@@ -317,13 +309,13 @@ func (h *cfnDoorway) patchLease(ctx context.Context, stack, rv string, ann map[s
 	if err != nil {
 		return err
 	}
-	_, err = h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Patch(ctx, stackRecordName(stack), types.MergePatchType, body,
+	_, err = h.recs().client().Patch(ctx, stackRecordName(stack), types.MergePatchType, body,
 		metav1.PatchOptions{FieldManager: cfnLeaseManager})
 	return err
 }
 
 func (h *cfnDoorway) getRecordObject(ctx context.Context, stack string) (*unstructured.Unstructured, error) {
-	return h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Get(ctx, stackRecordName(stack), metav1.GetOptions{})
+	return h.recs().client().Get(ctx, stackRecordName(stack), metav1.GetOptions{})
 }
 
 // seedRecord creates a new stack's CREATE_IN_PROGRESS record already carrying this process's lease and
@@ -334,16 +326,11 @@ func (h *cfnDoorway) seedRecord(ctx context.Context, rec *cfn.StackRecord, actio
 	if err != nil {
 		return err
 	}
-	cm := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]any{
-			"name": stackRecordName(rec.Name), "namespace": h.ns,
-			"labels":      map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/stack": rec.Name},
-			"annotations": h.leaseAnnotations(action, caller),
-		},
-		"data": map[string]any{"stack.json": string(data)},
-	}}
-	_, err = h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Create(ctx, cm, metav1.CreateOptions{FieldManager: cfnLeaseManager})
+	st := h.recs()
+	obj := st.object(stackRecordName(rec.Name),
+		map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/stack": rec.Name},
+		h.leaseAnnotations(action, caller), map[string]string{"stack.json": string(data)})
+	_, err = st.client().Create(ctx, obj, metav1.CreateOptions{FieldManager: cfnLeaseManager})
 	return err
 }
 
@@ -364,7 +351,7 @@ func (h *cfnDoorway) claimRecord(ctx context.Context, stack, action string, call
 	if err != nil {
 		return nil, err
 	}
-	rec, ok := recordOf(u)
+	rec, ok := h.recordOf(u)
 	if !ok {
 		return nil, nil
 	}
@@ -390,7 +377,7 @@ func (h *cfnDoorway) releaseLease(ctx context.Context, stack string) {
 	if l, ok := leaseOf(u); !ok || l.owner != h.ops.ownerID() {
 		return
 	}
-	if rec, ok := recordOf(u); ok && inProgress(rec.Status) {
+	if rec, ok := h.recordOf(u); ok && inProgress(rec.Status) {
 		return
 	}
 	clear := map[string]any{}
@@ -561,8 +548,10 @@ func (h *cfnDoorway) claimRefusal(w http.ResponseWriter, requestID, stack, verb 
 
 // --- recovery ---
 
-// runRecovery resolves orphaned stack operations on startup and every recovery interval until ctx ends.
+// runRecovery resolves orphaned stack operations on startup and every recovery interval until ctx ends,
+// first moving any record an earlier front door kept as a ConfigMap into the record store.
 func (h *cfnDoorway) runRecovery(ctx context.Context) {
+	h.migrateLegacyRecords(ctx)
 	h.recoverOrphans(ctx)
 	t := time.NewTicker(h.ops.recoveryInterval())
 	defer t.Stop()
@@ -571,6 +560,7 @@ func (h *cfnDoorway) runRecovery(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			h.migrateLegacyRecords(ctx)
 			h.recoverOrphans(ctx)
 		}
 	}
@@ -582,7 +572,7 @@ func (h *cfnDoorway) recoverOrphans(ctx context.Context) {
 	if h.ops.isTerminating() {
 		return
 	}
-	list, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
+	list, err := h.recs().client().List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
 	if err != nil {
 		h.logger.Warn("cfn recovery: could not list stack records", "error", err.Error())
 		return
@@ -594,7 +584,7 @@ func (h *cfnDoorway) recoverOrphans(ctx context.Context) {
 			continue
 		}
 		stack := strings.TrimPrefix(u.GetName(), "cfn-stack-")
-		rec, ok := recordOf(u)
+		rec, ok := h.recordOf(u)
 		if !ok || !inProgress(rec.Status) || h.ops.isLive(stack) {
 			continue
 		}
@@ -688,7 +678,8 @@ func (h *cfnDoorway) recoverStack(stack string, caller *recordedCaller, reason s
 // settled ROLLBACK_FAILED / UPDATE_ROLLBACK_FAILED / DELETE_FAILED, keeping what it recorded, so DeleteStack
 // — run under the deleting caller's own authority — removes it.
 func (h *cfnDoorway) settleWithoutAuthority(ctx context.Context, stack, reason string) (*cfn.StackRecord, error) {
-	sa := &impersonatingApplier{shim: h.shimDyn, mapper: h.mapper, ns: h.ns}
+	rs := h.recs()
+	sa := &impersonatingApplier{shim: h.shimDyn, mapper: h.mapper, ns: h.ns, records: &rs}
 	rec, found, err := sa.GetStack(ctx, stack)
 	if err != nil || !found || !inProgress(rec.Status) {
 		return rec, err

@@ -178,8 +178,11 @@ metadata:
 rules:
   # get: authenticate access keys (the SigV4 path). create/update/list/delete: the IAM CreateAccessKey/
   # ListAccessKeys/DeleteAccessKey/UpdateAccessKey doorway writes the iam-ak-* Secrets
-  # here via the shared awskeys.Store — the same store the console BFF uses. Scoped to this namespace only;
-  # the shim still has NO secret access in the console namespace.
+  # here via the shared awskeys.Store — the same store the console BFF uses. The CloudFormation doorway
+  # keeps its stack, change-set and drift records and their NoEcho values here too (cfn-stack-*,
+  # cfn-changeset-*, cfn-drift-*, noecho-*): a record holds what a NoEcho parameter fed into the stack's
+  # resources, so it is a Secret that only the shim and cluster admins can read. Scoped to this namespace
+  # only; the shim still has NO secret access in the console namespace.
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, list, create, update, patch, delete]
@@ -284,10 +287,11 @@ subjects:
     namespace: open-infra-aws-shim
 ---
 # The CloudFormation stack namespace: kind resources a stack provisions land here (created UNDER the
-# caller's impersonated authority), and the doorway keeps its own bookkeeping here — the stack-record,
-# change-set and drift ConfigMaps (cfn-stack-*/cfn-changeset-*/cfn-drift-*). Those are the doorway's
-# internal state (the analog of AWS's service-side stack metadata), so they are written with the SHIM's
-# ServiceAccount, not impersonated — which is why the shim SA needs configmap access HERE and only here.
+# caller's impersonated authority). The doorway's own bookkeeping — stack, change-set and drift records —
+# is kept as Secrets in the shim's namespace (aws-shim-keys above), not here: readers and power users can
+# read ConfigMaps in every namespace. An earlier doorway kept them here as ConfigMaps
+# (cfn-stack-*/cfn-changeset-*/cfn-drift-*); the shim moves any it finds, which is all it may still do
+# with ConfigMaps here (get, list, delete).
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -303,7 +307,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [configmaps]
-    verbs: [get, list, create, update, patch, delete]
+    verbs: [get, list, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

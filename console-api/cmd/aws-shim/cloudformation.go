@@ -44,7 +44,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	discoveryclient "k8s.io/client-go/discovery"
 	memory "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
@@ -93,6 +92,9 @@ type cfnDoorway struct {
 	authzNS string
 	// noecho keeps NoEcho parameter values out of the plain records (cfn_noecho.go); nil keeps none.
 	noecho *noEchoSecrets
+	// recNS is the namespace whose Secrets hold this front door's stack, change-set and drift records —
+	// the shim's own (cfn_records.go). "" keeps them as ConfigMaps in ns (tests).
+	recNS string
 }
 
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
@@ -176,8 +178,9 @@ func (h *cfnDoorway) applierForIdentity(user string, groups []string) (*imperson
 	if err != nil {
 		return nil, err
 	}
+	rs := h.recs()
 	return &impersonatingApplier{caller: cdyn, shim: h.shimDyn, mapper: h.mapper, ns: h.ns, user: user, groups: groups,
-		noecho: h.noecho}, nil
+		noecho: h.noecho, records: &rs}, nil
 }
 
 // cfnVerb is the coarse RBAC verb a User needs for a CloudFormation action: get for the reads (as AWS's
@@ -239,6 +242,9 @@ func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	if err != nil {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, err.Error(), cfnXMLNamespace)
 		return
+	}
+	if action != "ValidateTemplate" {
+		h.migrateLegacyRecords(r.Context()) // records an earlier front door kept as ConfigMaps (cfn_records.go)
 	}
 	switch action {
 	case "CreateStack":
@@ -694,25 +700,20 @@ func (h *cfnDoorway) listStacks(w http.ResponseWriter, r *http.Request, ap *impe
 	h.writeResult(w, requestID, "ListStacks", "<StackSummaries>"+b.String()+"</StackSummaries>")
 }
 
-// allRecords lists every stack-record ConfigMap in the namespace (shim client).
+// allRecords lists every stack record in the record store (shim client).
 func (h *cfnDoorway) allRecords(ctx context.Context) []*cfn.StackRecord {
-	list, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
+	st := h.recs()
+	list, err := st.client().List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
 	if err != nil {
 		return nil
 	}
 	var out []*cfn.StackRecord
 	for i := range list.Items {
-		name := list.Items[i].GetName()
-		if !strings.HasPrefix(name, "cfn-stack-") {
+		if !strings.HasPrefix(list.Items[i].GetName(), "cfn-stack-") {
 			continue
 		}
-		data, _, _ := unstructured.NestedString(list.Items[i].Object, "data", "stack.json")
-		if data == "" {
-			continue
-		}
-		var rec cfn.StackRecord
-		if json.Unmarshal([]byte(data), &rec) == nil {
-			out = append(out, &rec)
+		if rec, ok := st.stackRecord(&list.Items[i]); ok {
+			out = append(out, rec)
 		}
 	}
 	return out
@@ -745,7 +746,7 @@ func (h *cfnDoorway) validateTemplate(w http.ResponseWriter, r *http.Request, re
 
 // --- change sets ---
 
-// changeSet is the doorway's persisted change-set bookkeeping (a ConfigMap cfn-changeset-<stack>-<name>).
+// changeSet is the doorway's persisted change-set bookkeeping (a record cfn-changeset-<stack>.<name>).
 type changeSet struct {
 	StackName    string            `json:"stackName"`
 	Name         string            `json:"name"`
@@ -988,7 +989,7 @@ func (h *cfnDoorway) deleteChangeSet(w http.ResponseWriter, r *http.Request, ap 
 	// Only the record that is this stack's change set (findChangeSet) — never one that merely shares a
 	// legacy record name.
 	if _, cmName, err := h.findChangeSet(r.Context(), stack, csName); err == nil {
-		_ = h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Delete(r.Context(), cmName, metav1.DeleteOptions{})
+		_ = h.recs().client().Delete(r.Context(), cmName, metav1.DeleteOptions{})
 	}
 	if err := h.noecho.put(r.Context(), changeSetCMName(stack, csName), stack, nil); err != nil {
 		h.logger.Warn("cfn: could not delete a change set's NoEcho parameters", "stack", stack, "changeSet", csName, "error", err.Error())
@@ -1021,14 +1022,9 @@ func (h *cfnDoorway) putChangeSet(ctx context.Context, cs *changeSet) error {
 	if err != nil {
 		return err
 	}
-	cm := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]any{"name": changeSetCMName(cs.StackName, cs.Name), "namespace": h.ns,
-			"labels": map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/changeset": cs.StackName}},
-		"data": map[string]any{"changeset.json": string(data)},
-	}}
-	_, err = h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Apply(ctx, changeSetCMName(cs.StackName, cs.Name), cm, metav1.ApplyOptions{FieldManager: cfnFieldManager, Force: true})
-	return err
+	return h.recs().apply(ctx, changeSetCMName(cs.StackName, cs.Name),
+		map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/changeset": cs.StackName},
+		map[string]string{"changeset.json": string(data)})
 }
 
 func (h *cfnDoorway) getChangeSet(ctx context.Context, stack, csName string) (*changeSet, error) {
@@ -1041,13 +1037,14 @@ func (h *cfnDoorway) getChangeSet(ctx context.Context, stack, csName string) (*c
 // a (legacy) record name.
 func (h *cfnDoorway) findChangeSet(ctx context.Context, stack, csName string) (*changeSet, string, error) {
 	var lastErr error
+	st := h.recs()
 	for _, cmName := range []string{changeSetCMName(stack, csName), legacyChangeSetCMName(stack, csName)} {
-		u, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Get(ctx, cmName, metav1.GetOptions{})
+		u, err := st.client().Get(ctx, cmName, metav1.GetOptions{})
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		data, _, _ := unstructured.NestedString(u.Object, "data", "changeset.json")
+		data := st.value(u, "changeset.json")
 		var cs changeSet
 		if err := json.Unmarshal([]byte(data), &cs); err != nil {
 			lastErr = err
@@ -1135,29 +1132,28 @@ func (h *cfnDoorway) describeResourceDrifts(w http.ResponseWriter, r *http.Reque
 
 func (h *cfnDoorway) putDrift(ctx context.Context, stack, detID string, report *cfn.DriftReport) error {
 	data, _ := json.Marshal(report)
-	cm := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]any{"name": "cfn-drift-" + stack, "namespace": h.ns,
-			"labels":      map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/drift": stack},
-			"annotations": map[string]any{"cfn.openinfra.dev/detection-id": detID}},
-		"data": map[string]any{"drift.json": string(data), "detectionId": detID, "stack": stack},
-	}}
-	_, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Apply(ctx, "cfn-drift-"+stack, cm, metav1.ApplyOptions{FieldManager: cfnFieldManager, Force: true})
+	st := h.recs()
+	obj := st.object("cfn-drift-"+stack,
+		map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/drift": stack},
+		map[string]any{"cfn.openinfra.dev/detection-id": detID},
+		map[string]string{"drift.json": string(data), "detectionId": detID, "stack": stack})
+	_, err := st.client().Apply(ctx, "cfn-drift-"+stack, obj, metav1.ApplyOptions{FieldManager: cfnFieldManager, Force: true})
 	return err
 }
 
 func (h *cfnDoorway) getDrift(ctx context.Context, detID string) (*cfn.DriftReport, string, error) {
-	list, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
+	st := h.recs()
+	list, err := st.client().List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
 	if err != nil {
 		return nil, "", err
 	}
 	for i := range list.Items {
-		id, _, _ := unstructured.NestedString(list.Items[i].Object, "data", "detectionId")
-		if id != detID {
+		u := &list.Items[i]
+		if !strings.HasPrefix(u.GetName(), "cfn-drift-") || st.value(u, "detectionId") != detID {
 			continue
 		}
-		data, _, _ := unstructured.NestedString(list.Items[i].Object, "data", "drift.json")
-		stack, _, _ := unstructured.NestedString(list.Items[i].Object, "data", "stack")
+		data := st.value(u, "drift.json")
+		stack := st.value(u, "stack")
 		var rep cfn.DriftReport
 		if err := json.Unmarshal([]byte(data), &rep); err != nil {
 			return nil, "", err
@@ -1168,11 +1164,12 @@ func (h *cfnDoorway) getDrift(ctx context.Context, detID string) (*cfn.DriftRepo
 }
 
 func (h *cfnDoorway) latestDrift(ctx context.Context, stack string) (*cfn.DriftReport, bool) {
-	u, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Get(ctx, "cfn-drift-"+stack, metav1.GetOptions{})
+	st := h.recs()
+	u, err := st.client().Get(ctx, "cfn-drift-"+stack, metav1.GetOptions{})
 	if err != nil {
 		return nil, false
 	}
-	data, _, _ := unstructured.NestedString(u.Object, "data", "drift.json")
+	data := st.value(u, "drift.json")
 	var rep cfn.DriftReport
 	if json.Unmarshal([]byte(data), &rep) != nil {
 		return nil, false
@@ -1258,7 +1255,7 @@ func nameFromCFNArn(v, marker string) (string, bool) {
 // deleteChangeSetsOf removes every change-set record of a stack (best effort; a leftover record
 // provisions nothing, it would only be listed).
 func (h *cfnDoorway) deleteChangeSetsOf(ctx context.Context, stack string) {
-	cms := h.shimDyn.Resource(configMapGVR).Namespace(h.ns)
+	cms := h.recs().client()
 	list, err := cms.List(ctx, metav1.ListOptions{LabelSelector: "cfn.openinfra.dev/changeset=" + stack})
 	if err != nil {
 		h.logger.Warn("cfn: could not list the stack's change sets", "stack", stack, "error", err.Error())
