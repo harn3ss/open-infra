@@ -145,6 +145,7 @@ func (h *cfnDoorway) applierFor(claims iam.Claims) (*impersonatingApplier, error
 
 func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	_ = r.ParseForm()
+	normalizeStackArgs(r)
 	action := r.PostFormValue("Action")
 	if action == "" {
 		writeQueryError(w, http.StatusBadRequest, "MissingAction", requestID, "no Action in the request.", cfnXMLNamespace)
@@ -575,9 +576,20 @@ func (h *cfnDoorway) describeChangeSet(w http.ResponseWriter, r *http.Request, a
 		b.WriteString("<ResourceType>" + xesc(c.Kind) + "</ResourceType>")
 		b.WriteString("</ResourceChange></member>")
 	}
+	status, exec, reason := "CREATE_COMPLETE", "AVAILABLE", ""
+	if cs.Type != "CREATE" && b.Len() == 0 {
+		// AWS reports an update with nothing to change as a FAILED change set with this exact reason;
+		// `aws cloudformation deploy` recognizes it and reports "No changes to deploy".
+		status, exec = "FAILED", "UNAVAILABLE"
+		reason = "The submitted information didn't contain changes. Submit different information to create a change set."
+	}
+	csID := fmt.Sprintf("arn:aws:cloudformation:%s:%s:changeSet/%s/%s", h.region, h.account, cs.Name, shortHash(cs.StackName+"/"+cs.Name))
 	inner := "<ChangeSetName>" + xesc(cs.Name) + "</ChangeSetName>" +
+		"<ChangeSetId>" + xesc(csID) + "</ChangeSetId>" +
 		"<StackName>" + xesc(cs.StackName) + "</StackName>" +
-		"<Status>CREATE_COMPLETE</Status><ExecutionStatus>AVAILABLE</ExecutionStatus>" +
+		"<StackId>" + xesc(h.stackID(cs.StackName)) + "</StackId>" +
+		"<Status>" + status + "</Status><ExecutionStatus>" + exec + "</ExecutionStatus>" +
+		"<StatusReason>" + xesc(reason) + "</StatusReason>" +
 		"<Changes>" + b.String() + "</Changes>"
 	h.writeResult(w, requestID, "DescribeChangeSet", inner)
 }
@@ -822,4 +834,37 @@ func recTime(rec *cfn.StackRecord) string {
 		return rec.CreatedAt
 	}
 	return time.Now().UTC().Format(time.RFC3339)
+}
+
+// normalizeStackArgs lets StackName and ChangeSetName be given as their ARNs, as AWS allows: `aws
+// cloudformation deploy` creates a change set and then describes/executes it by the Id CreateChangeSet
+// returned (arn:...:changeSet/<name>/<id>), and clients pass a stack's StackId (arn:...:stack/<name>/<id>).
+// Both are reduced to the bare name every handler keys on.
+func normalizeStackArgs(r *http.Request) {
+	for key, marker := range map[string]string{"StackName": ":stack/", "ChangeSetName": ":changeSet/"} {
+		vals, ok := r.PostForm[key]
+		if !ok || len(vals) == 0 {
+			continue
+		}
+		if name, ok := nameFromCFNArn(vals[0], marker); ok {
+			r.PostForm.Set(key, name)
+			r.Form.Set(key, name)
+		}
+	}
+}
+
+// nameFromCFNArn returns <name> from arn:aws:cloudformation:<region>:<account>:<marker><name>/<id>.
+func nameFromCFNArn(v, marker string) (string, bool) {
+	if !strings.HasPrefix(v, "arn:") || !strings.Contains(v, ":cloudformation:") {
+		return "", false
+	}
+	i := strings.Index(v, marker)
+	if i < 0 {
+		return "", false
+	}
+	rest := v[i+len(marker):]
+	if j := strings.Index(rest, "/"); j >= 0 {
+		rest = rest[:j]
+	}
+	return rest, rest != ""
 }
