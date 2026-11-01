@@ -24,7 +24,7 @@ set -euo pipefail
 
 EXIT_INCONCLUSIVE=42
 SHIM_NS="${SHIM_NS:-open-infra-aws-shim}"
-CFN_NS="${CFN_NS:-open-infra-aws-shim}"        # the namespace the CFN doorway deploys into
+CFN_NS="${CFN_NS:-open-infra-cfn}"             # the namespace the CFN doorway deploys into
 ENDPOINT="${SHIM_ENDPOINT:-http://aws-shim.${SHIM_NS}.svc.cluster.local:4566}"
 REGION="${AWS_REGION:-us-east-1}"
 PROBE_IMAGE="${PROBE_IMAGE:-}"
@@ -41,6 +41,8 @@ command -v kubectl >/dev/null || inconclusive "kubectl is required"
 curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not reachable at ${ENDPOINT}"
 
 CREATED_REPO=""
+USERS_NS="${USERS_NS:-open-infra-console}"
+CREATED_USERS=(); CREATED_KEYS=()
 cleanup() {
   AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-x}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-x}" \
     aws --endpoint-url "$ENDPOINT" --no-cli-pager cloudformation delete-stack --stack-name "$STACK" >/dev/null 2>&1 || true
@@ -48,8 +50,29 @@ cleanup() {
     AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-x}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-x}" \
       aws --endpoint-url "$ENDPOINT" --region "$REGION" --no-cli-pager ecr delete-repository --repository-name "$CREATED_REPO" --force >/dev/null 2>&1 || true
   fi
+  # the deployer this run minted (never left behind: a minted key is an admin credential)
+  for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
+  for k in "${CREATED_KEYS[@]:-}";  do [ -n "$k" ] && kubectl -n "$SHIM_NS" delete secret "$k" --ignore-not-found >/dev/null 2>&1 || true; done
 }
 trap cleanup EXIT
+
+# 0. A caller: the shim authenticates every request (SigV4 against a real key). Without one supplied in
+# the environment, mint a throwaway openinfra:admins deployer for this run (removed by cleanup).
+if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+  owner="cfncr-admin-$(head -c3 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  ak="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
+  sk="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
+  printf 'apiVersion: iam.openinfra.dev/v1\nkind: User\nmetadata: { name: "%s", namespace: "%s" }\nspec: { displayName: "%s", groups: ["admins"], source: local }\n' \
+    "$owner" "$USERS_NS" "$owner" | kubectl apply -f - >/dev/null || inconclusive "could not mint a deployer User"
+  CREATED_USERS+=("$owner")
+  kname="iam-ak-$(printf '%s' "$ak" | sha256sum | cut -c1-40)"
+  kubectl -n "$SHIM_NS" create secret generic "$kname" --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" \
+    --from-literal=owner="$owner" >/dev/null || inconclusive "could not mint a deployer key"
+  CREATED_KEYS+=("$kname")
+  export AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk"
+  log "minted a throwaway openinfra:admins deployer ($owner)"
+  sleep 20 # the key reaches the shim's key cache
+fi
 
 # 1. Publish the handler image where the cluster can pull it: the platform registry, through the shim's
 # ECR front door (create the repository, log in with its token, push). Referenced by digest, so nothing
@@ -113,7 +136,7 @@ rm -f "$PWD/.cr_err"
 
 log "waiting for CREATE_COMPLETE (the custom resource is invoked mid-deploy)"
 for i in $(seq 1 40); do
-  st="$(AWS_ACCESS_KEY_ID=x AWS_SECRET_ACCESS_KEY=x aws --endpoint-url "$ENDPOINT" --no-cli-pager \
+  st="$(aws --endpoint-url "$ENDPOINT" --no-cli-pager \
          cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
   case "$st" in
     CREATE_COMPLETE) log "  ✓ stack CREATE_COMPLETE"; break ;;

@@ -164,7 +164,7 @@ cleanup() {
   for k in "${CREATED_KEYS[@]:-}";  do [ -n "$k" ] && kubectl -n "$SHIM_NS" delete secret "$k" --ignore-not-found >/dev/null 2>&1; done
   # Assert the teardown left nothing behind for this stack.
   local left
-  left="$(kubectl -n "$CFN_NS" get secret "$SITE-minio" "$BCLAIM-minio" "staticsite-$SITE-tls" -o name 2>/dev/null; kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$su" "$bu" -o name 2>/dev/null)"
+  left="$(kubectl -n "$CFN_NS" get secret "$SITE-minio" "$BCLAIM-minio" "staticsite-$SITE-tls" -o name 2>/dev/null; kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$su" "$bu" -o name 2>/dev/null; true)"  # an absent Secret is the expected answer, not a set -e exit
   [ -z "$left" ] || printf '  (cleanup) WARNING: leftover Secrets remain after teardown: %s\n' "$(echo $left)" >&2
   rm -rf "$TMP"
 }
@@ -357,7 +357,7 @@ s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1 && fail "bucket $BUCKET sti
 su="$(app_user StaticSite "$CFN_NS" "$SITE")"; bu="$(app_user Bucket "$CFN_NS" "$BCLAIM")"
 left=""
 for i in $(seq 1 30); do
-  left="$(kubectl -n "$CFN_NS" get secret "$SITE-minio" "$BCLAIM-minio" "staticsite-$SITE-tls" -o name 2>/dev/null; kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$su" "$bu" -o name 2>/dev/null)"
+  left="$(kubectl -n "$CFN_NS" get secret "$SITE-minio" "$BCLAIM-minio" "staticsite-$SITE-tls" -o name 2>/dev/null; kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$su" "$bu" -o name 2>/dev/null; true)"  # an absent Secret is the expected answer, not a set -e exit
   [ -z "$left" ] && break
   sleep 5
 done

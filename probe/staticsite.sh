@@ -119,7 +119,7 @@ cleanup() {
   kubectl delete ns "$NS" --ignore-not-found --wait=false >/dev/null 2>&1
   # Assert nothing was left behind in the creds namespace for this site.
   local left
-  left="$(kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$user" -o name 2>/dev/null)"
+  left="$(kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$user" -o name 2>/dev/null; true)"  # an absent Secret is the expected answer, not a set -e exit
   [ -z "$left" ] || printf '  (cleanup) WARNING: leftover creds-namespace Secrets remain: %s\n' "$left" >&2
   rm -rf "$TMP"
 }
@@ -292,7 +292,7 @@ kubectl -n "$NS" delete staticsite "$SITE" --wait=true --timeout=180s >/dev/null
 USER_="$(app_user StaticSite "$NS" "$SITE")"
 left=""
 for i in $(seq 1 30); do
-  left="$(kubectl -n "$NS" get secret "$SITE-minio" "staticsite-$SITE-tls" -o name 2>/dev/null; kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$USER_" -o name 2>/dev/null)"
+  left="$(kubectl -n "$NS" get secret "$SITE-minio" "staticsite-$SITE-tls" -o name 2>/dev/null; kubectl -n "$CREDS_NS" get secret "bucket-owner-$BUCKET" "$USER_" -o name 2>/dev/null; true)"  # an absent Secret is the expected answer, not a set -e exit
   [ -z "$left" ] && break
   sleep 5
 done

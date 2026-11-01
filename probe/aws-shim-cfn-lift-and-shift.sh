@@ -123,7 +123,7 @@ cleanup() {
     for s in $(kubectl -n "$CFN_NS" get secret -o name 2>/dev/null | grep -E "$pat_cfn"); do kubectl -n "$CFN_NS" delete "$s" --ignore-not-found >/dev/null 2>&1; done
     for s in $(kubectl -n "$CREDS_NS" get secret -o name 2>/dev/null | grep -E "$pat_creds"); do kubectl -n "$CREDS_NS" delete "$s" --ignore-not-found >/dev/null 2>&1; done
     local left
-    left="$(kubectl -n "$CFN_NS" get secret -o name 2>/dev/null | grep -E "$pat_cfn"; kubectl -n "$CREDS_NS" get secret -o name 2>/dev/null | grep -E "$pat_creds")"
+    left="$(kubectl -n "$CFN_NS" get secret -o name 2>/dev/null | grep -E "$pat_cfn"; kubectl -n "$CREDS_NS" get secret -o name 2>/dev/null | grep -E "$pat_creds"; true)"  # an absent Secret is the expected answer, not a set -e exit
     [ -z "$left" ] || log "WARNING: leftover Secrets remain after teardown: $(echo $left)"
   fi
   rm -rf "$TMP"
