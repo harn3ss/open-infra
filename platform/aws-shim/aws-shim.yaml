@@ -162,6 +162,12 @@ rules:
   - apiGroups: [kubevirt.io]
     resources: [virtualmachineinstances]
     verbs: [get]
+  # S3 DeleteBucket and CloudFormation teardown: find the kind: Bucket a bucket is (its composite
+  # reports the bucket in status.bucket). Read-only; the claim itself is deleted with the CALLER's
+  # authority, never the shim's.
+  - apiGroups: [openinfra.dev]
+    resources: [xbuckets]
+    verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

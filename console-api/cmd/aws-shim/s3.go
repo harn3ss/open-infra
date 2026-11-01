@@ -11,6 +11,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/minio/minio-go/v7"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -40,14 +41,22 @@ type s3Handler struct {
 	// forcePathStyle) addresses "<bucket>.<suffix>", so without this a default client — and every
 	// presigned URL it generates — fails. Empty = path-style only (the v1 default).
 	vhostSuffixes []string
+	// dyn (the shim's own client) finds the kind: Bucket a bucket is; callerDyn impersonates a caller, so
+	// DeleteBucket deletes that claim with the caller's authority. Either nil: DeleteBucket is not served.
+	dyn       dynamic.Interface
+	callerDyn func(user string, groups []string) (dynamic.Interface, error)
 }
 
 // s3op describes a decoded S3 request: the operation kind and the target bucket/key.
 type s3op struct {
-	kind   string // "list-buckets" | "head-bucket" | "list-objects" | "get" | "head" | "put" | "delete"
-	bucket string
-	key    string
-	write  bool // put/delete mutate; drives the read-vs-write authorization verb
+	// kind: "list-buckets" | "head-bucket" | "list-objects" | "get" | "head" | "put" | "delete", or a bucket
+	// operation: "delete-bucket", "get-/put-bucket-versioning", "list-object-versions",
+	// "get-/put-/delete-bucket-tagging", "get-bucket-location" (s3bucket.go).
+	kind      string
+	bucket    string
+	key       string
+	versionID string // an object version the request names (?versionId=)
+	write     bool   // mutates; drives the read-vs-write authorization verb
 }
 
 // authFailure writes S3's dialect of an authentication rejection (design's indistinguishable 403).
@@ -75,7 +84,7 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		// allowed to fall through the way an ungoverned console user does (#111 Gap C — fail closed).
 		// ListBuckets names no bucket: it is checked on Bucket::* (AWS's Resource "*").
 		allowed, governed, reason := h.authz.Authorize(r.Context(), "Role", claims.PrincipalID(), claims.Groups,
-			s3Action(op.kind), "Bucket", scopeFor(claims, op.bucket), requestContext(claims, r))
+			op.action(), "Bucket", scopeFor(claims, op.bucket), requestContext(claims, r))
 		if !governed || !allowed {
 			if reason == "" {
 				reason = "assumed role has no data-plane policy allowing this action (default deny)"
@@ -94,7 +103,7 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 			return
 		}
 		// 2b. Fine-grained data-plane policy (kind: Policy dataPlane) — additive: can only tighten.
-		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, s3Action(op.kind), "Bucket", op.bucket, r); denied {
+		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, op.action(), "Bucket", op.bucket, r); denied {
 			h.logger.Warn("s3 denied by data-plane policy", "user", claims.Sub, "op", op.kind,
 				"bucket", op.bucket, "key", op.key, "reason", reason)
 			writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
@@ -118,6 +127,22 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		h.putObject(w, r, op, requestID)
 	case "delete":
 		h.deleteObject(w, r, op, requestID)
+	case "delete-bucket":
+		h.deleteBucket(w, r, claims, op, requestID)
+	case "get-bucket-versioning":
+		h.getBucketVersioning(w, r, op, requestID)
+	case "put-bucket-versioning":
+		h.putBucketVersioning(w, r, op, requestID)
+	case "list-object-versions":
+		h.listObjectVersions(w, r, op, requestID)
+	case "get-bucket-tagging":
+		h.getBucketTagging(w, r, op, requestID)
+	case "put-bucket-tagging":
+		h.putBucketTagging(w, r, op, requestID)
+	case "delete-bucket-tagging":
+		h.deleteBucketTagging(w, r, op, requestID)
+	case "get-bucket-location":
+		h.getBucketLocation(w, r, op, requestID)
 	default:
 		writeS3Error(w, "NotImplemented", requestID, r.URL.Path)
 	}
@@ -163,28 +188,7 @@ func vhostBucket(host string, suffixes []string) string {
 // decodeVHost maps a virtual-hosted request (bucket already known from the Host) onto an s3op, where
 // the whole URL path is the object key.
 func decodeVHost(r *http.Request, bucket string) (s3op, bool) {
-	key := strings.TrimPrefix(r.URL.Path, "/")
-	switch {
-	case key == "": // "<bucket-host>/"
-		switch r.Method {
-		case http.MethodGet:
-			return s3op{kind: "list-objects", bucket: bucket}, true
-		case http.MethodHead:
-			return s3op{kind: "head-bucket", bucket: bucket}, true
-		}
-	default: // "<bucket-host>/{key}"
-		switch r.Method {
-		case http.MethodGet:
-			return s3op{kind: "get", bucket: bucket, key: key}, true
-		case http.MethodHead:
-			return s3op{kind: "head", bucket: bucket, key: key}, true
-		case http.MethodPut:
-			return s3op{kind: "put", bucket: bucket, key: key, write: true}, true
-		case http.MethodDelete:
-			return s3op{kind: "delete", bucket: bucket, key: key, write: true}, true
-		}
-	}
-	return s3op{}, false
+	return decodeTarget(r.Method, bucket, strings.TrimPrefix(r.URL.Path, "/"), r.URL.Query())
 }
 
 // decodeS3 maps HTTP method + path-style URL onto an s3op (/{bucket}/{key}). Virtual-hosted
@@ -192,32 +196,13 @@ func decodeVHost(r *http.Request, bucket string) (s3op, bool) {
 func decodeS3(r *http.Request) (s3op, bool) {
 	p := strings.TrimPrefix(r.URL.Path, "/")
 	bucket, key, _ := strings.Cut(p, "/")
-
-	switch {
-	case bucket == "": // "/"
-		if r.Method == http.MethodGet {
+	if bucket == "" { // "/"
+		if r.Method == http.MethodGet && s3Subresource(r.URL.Query()) == "" {
 			return s3op{kind: "list-buckets"}, true
 		}
-	case key == "": // "/{bucket}"
-		switch r.Method {
-		case http.MethodGet:
-			return s3op{kind: "list-objects", bucket: bucket}, true
-		case http.MethodHead:
-			return s3op{kind: "head-bucket", bucket: bucket}, true
-		}
-	default: // "/{bucket}/{key}"
-		switch r.Method {
-		case http.MethodGet:
-			return s3op{kind: "get", bucket: bucket, key: key}, true
-		case http.MethodHead:
-			return s3op{kind: "head", bucket: bucket, key: key}, true
-		case http.MethodPut:
-			return s3op{kind: "put", bucket: bucket, key: key, write: true}, true
-		case http.MethodDelete:
-			return s3op{kind: "delete", bucket: bucket, key: key, write: true}, true
-		}
+		return s3op{}, false
 	}
-	return s3op{}, false
+	return decodeTarget(r.Method, bucket, key, r.URL.Query())
 }
 
 // authorizeS3 is the v1 authorization gate: a real, impersonated SubjectAccessReview in the one
@@ -230,9 +215,9 @@ func decodeS3(r *http.Request) (s3op, bool) {
 func (h *s3Handler) authorizeS3(ctx context.Context, claims iam.Claims, op s3op) (bool, string) {
 	verb := "get"
 	switch op.kind {
-	case "put":
+	case "put", "put-bucket-versioning", "put-bucket-tagging", "delete-bucket-tagging":
 		verb = "create"
-	case "delete":
+	case "delete", "delete-bucket":
 		verb = "delete"
 	}
 	return iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, "")
@@ -291,7 +276,7 @@ func (h *s3Handler) listObjects(w http.ResponseWriter, r *http.Request, op s3op,
 }
 
 func (h *s3Handler) getObject(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {
-	obj, err := h.mc.GetObject(r.Context(), op.bucket, op.key, minio.GetObjectOptions{})
+	obj, err := h.mc.GetObject(r.Context(), op.bucket, op.key, minio.GetObjectOptions{VersionID: op.versionID})
 	if err != nil {
 		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
 		return
@@ -309,7 +294,7 @@ func (h *s3Handler) getObject(w http.ResponseWriter, r *http.Request, op s3op, r
 }
 
 func (h *s3Handler) headObject(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {
-	stat, err := h.mc.StatObject(r.Context(), op.bucket, op.key, minio.StatObjectOptions{})
+	stat, err := h.mc.StatObject(r.Context(), op.bucket, op.key, minio.StatObjectOptions{VersionID: op.versionID})
 	if err != nil {
 		// HEAD has no body: signal with status alone (SDKs map 404 → NoSuchKey on HEAD).
 		w.Header().Set("x-amz-request-id", requestID)
@@ -339,12 +324,15 @@ func (h *s3Handler) putObject(w http.ResponseWriter, r *http.Request, op s3op, r
 	}
 	// S3 acks a successful PutObject with the object's ETag header and an empty 200 body.
 	w.Header().Set("ETag", quoteETag(info.ETag))
+	if info.VersionID != "" { // a versioned bucket: the version this put created, as S3 reports it
+		w.Header().Set("x-amz-version-id", info.VersionID)
+	}
 	w.Header().Set("x-amz-request-id", requestID)
 	w.WriteHeader(http.StatusOK)
 }
 
 func (h *s3Handler) deleteObject(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {
-	if err := h.mc.RemoveObject(r.Context(), op.bucket, op.key, minio.RemoveObjectOptions{}); err != nil {
+	if err := h.mc.RemoveObject(r.Context(), op.bucket, op.key, minio.RemoveObjectOptions{VersionID: op.versionID}); err != nil {
 		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
 		return
 	}
@@ -365,6 +353,9 @@ func setObjectHeaders(w http.ResponseWriter, stat minio.ObjectInfo) {
 	}
 	w.Header().Set("Last-Modified", stat.LastModified.UTC().Format(http.TimeFormat))
 	w.Header().Set("Accept-Ranges", "bytes")
+	if stat.VersionID != "" {
+		w.Header().Set("x-amz-version-id", stat.VersionID)
+	}
 }
 
 // quoteETag returns an S3-style quoted ETag. MinIO/minio-go hand back the hex without quotes; the

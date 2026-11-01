@@ -509,7 +509,7 @@ func run(logger *slog.Logger) error {
 	appsyncH := newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger)
 	appsyncH.authz = authzChecker
 	services := map[string]awsService{
-		"s3":              &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authzChecker, logger: logger, vhostSuffixes: splitCommaTrim(getenv("S3_VHOST_SUFFIXES", ""))},
+		"s3":              newS3Handler(cs, mc, dyn, kc.Config, authzNS, authzChecker, logger, splitCommaTrim(getenv("S3_VHOST_SUFFIXES", ""))),
 		"sts":             &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
 		"lambda":          lambdaH,
 		"appsync":         appsyncH,
