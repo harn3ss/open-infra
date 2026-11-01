@@ -358,8 +358,8 @@ role credentials from the instance metadata service through the default chain, w
 
 **What does not read `AWS_ENDPOINT_URL`.** Older SDKs and CLIs, among them the distro `awscli` v1 that
 Ubuntu 22.04 ships, call AWS's own endpoint names (`s3.amazonaws.com`, `sts.us-east-1.amazonaws.com`, …).
-Those reach open-infra only when AWS's names resolve to the shim inside guests, and the guest trusts a
-certificate for them: the opt-in guest AWS endpoints below.
+An unmodified call from one of those does not reach open-infra today; it is an open gap. Use aws-cli
+v2 (or a current SDK) in the guest.
 
 ## Extra data disks (`dataDisks`) — the EC2 BlockDeviceMapping analog
 

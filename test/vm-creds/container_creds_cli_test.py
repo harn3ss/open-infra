@@ -322,7 +322,7 @@ def main():
             say("[%s %s] no --endpoint-url, AWS_ENDPOINT_URL from the environment: %s" % (ver, aws_bin, detail))
             if not ok:
                 (failures if tag == "v2" else notes).append(
-                    "%s: does not honor AWS_ENDPOINT_URL (an unmodified call from it needs guestAwsEndpoints)" % ver)
+                    "%s: does not honor AWS_ENDPOINT_URL (an unmodified call from it is not covered; #347 item A)" % ver)
     finally:
         agent.stop()
     if failures:

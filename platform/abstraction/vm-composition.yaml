@@ -163,7 +163,7 @@ spec:
                    unmodified template's `aws s3 cp` reaches AWS by its default endpoints; here
                    AWS_ENDPOINT_URL (honored by aws-cli v2 >= 2.13 and the current SDKs) sends the same call
                    to the shim, with no --endpoint-url in the template. Older SDKs and the distro aws CLI v1
-                   ignore it; for those see guestAwsEndpoints (docs/virtual-machines.md). */}}
+                   ignore it, an open gap (docs/virtual-machines.md#aws-endpoints-inside-the-guest). */}}
             {{- $guestEndpoint := "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567" }}
             {{- $awsEnv := list }}
             {{- if $credsRelay }}{{- $awsEnv = append $awsEnv (printf "AWS_CONTAINER_CREDENTIALS_FULL_URI=%s" $credsURI) }}{{- end }}
