@@ -346,6 +346,19 @@ func asList(v any) []any {
 	return l
 }
 
+// tenantPayloads are the payload with each line break YAML recognises: LF, a lone CR, and U+2028. A
+// template that re-indents a value with nindent (which splits on LF only), or quotes it with a helper
+// that leaves CR or U+2028 raw, lets the other two end a block scalar.
+var tenantPayloads = []string{
+	tenantPayload,
+	strings.ReplaceAll(tenantPayload, "\n", "\r"),
+	strings.ReplaceAll(tenantPayload, "\n", " "),
+}
+
+// yamlLineBreaks normalises every character YAML 1.1 treats as a line break (CR LF, CR, NEL, LS, PS)
+// to LF, so the subset parser sees the manifest's lines as a real YAML parser would.
+var yamlLineBreaks = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\u0085", "\n", " ", "\n", " ", "\n")
+
 // A tenant's free-form string must never reach a shell/interpreter script body (RCE), and must never
 // break or inject the rendered manifest (an injected document can be a provider-kubernetes Object,
 // applied with the provider's ServiceAccount). For each composition and each XRD string field
@@ -371,34 +384,38 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 		var paths []string
 		freeStringPaths(sc.spec, "", &paths)
 		for _, p := range paths {
-			spec := baseObject(sc.spec)
-			setPath(spec, sc.spec, p, tenantPayload)
-			out, err := renderTenant(c.tmpl, tenantCtx(spec))
-			if err != nil {
-				refused++ // a fail guard refused it (or the field gates a branch this base can't render)
-				continue
-			}
-			checked++
-			docs, perr := parseYAMLDocs(out)
-			if perr != nil || injectedStructure(docs) {
-				if strings.Contains(out, tenantMarker) {
-					t.Errorf("%s spec.%s: the value breaks or injects the rendered manifest (quote it with | toJson, or add an XRD pattern): %v", c.file, p, perr)
+		payloads:
+			for pi, payload := range tenantPayloads {
+				spec := baseObject(sc.spec)
+				setPath(spec, sc.spec, p, payload)
+				out, err := renderTenant(c.tmpl, tenantCtx(spec))
+				if err != nil {
+					refused++ // a fail guard refused it (or the field gates a branch this base can't render)
+					continue
 				}
-				continue
-			}
-			var scripts []string
-			for _, d := range docs {
-				scriptTexts(d, c.file, &scripts)
-			}
-			for _, s := range scripts {
-				if i := strings.Index(s, tenantMarker); i >= 0 {
-					lo := strings.LastIndex(s[:i], "\n") + 1
-					hi := strings.Index(s[i:], "\n")
-					if hi < 0 {
-						hi = len(s) - i
+				checked++
+				docs, perr := parseYAMLDocs(yamlLineBreaks.Replace(out))
+				if perr != nil || injectedStructure(docs) {
+					if strings.Contains(out, tenantMarker) {
+						t.Errorf("%s spec.%s (payload %d): the value breaks or injects the rendered manifest (quote it with | toJson, or add an XRD pattern): %v", c.file, p, pi, perr)
+						break payloads
 					}
-					t.Errorf("%s spec.%s reaches script text (pass it as an env value or file instead):\n    %s", c.file, p, strings.TrimSpace(s[lo:i+hi]))
-					break
+					continue
+				}
+				var scripts []string
+				for _, d := range docs {
+					scriptTexts(d, c.file, &scripts)
+				}
+				for _, s := range scripts {
+					if i := strings.Index(s, tenantMarker); i >= 0 {
+						lo := strings.LastIndex(s[:i], "\n") + 1
+						hi := strings.Index(s[i:], "\n")
+						if hi < 0 {
+							hi = len(s) - i
+						}
+						t.Errorf("%s spec.%s reaches script text (pass it as an env value or file instead):\n    %s", c.file, p, strings.TrimSpace(s[lo:i+hi]))
+						break payloads
+					}
 				}
 			}
 		}
@@ -409,16 +426,17 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 	}
 }
 
-// injectedStructure reports whether the tenant marker appears as YAML STRUCTURE (a mapping key or a new
-// top-level document) rather than only inside a scalar value — i.e. the payload closed its quoting and
-// added structure. A marker inside a quoted value is fine; a marker that became a key is an injection.
+// injectedStructure reports whether the tenant payload became YAML STRUCTURE rather than staying inside a
+// scalar value — i.e. it closed its quoting and added structure: the marker became a mapping key, or the
+// payload's own `injected:` line parsed as a key (a value that ended its block scalar and added a field
+// cleanly, with no parse error). A marker inside a quoted value is fine.
 func injectedStructure(docs []map[string]any) bool {
 	var walk func(any) bool
 	walk = func(v any) bool {
 		switch t := v.(type) {
 		case map[string]any:
 			for k, c := range t {
-				if strings.Contains(k, tenantMarker) {
+				if strings.Contains(k, tenantMarker) || k == "injected" {
 					return true
 				}
 				if walk(c) {
