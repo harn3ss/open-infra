@@ -1178,27 +1178,43 @@ the STS→groups mechanism from Step Functions.
 front door authorizes the action before it reads or writes any stack record. A User needs the action's
 RBAC verb, as at every other front door: `get` for the reads (`Describe*`, `List*`, `Get*`,
 `ValidateTemplate`, the drift calls), `create` for `CreateStack`, `CreateChangeSet` and
-`ExecuteChangeSet`, `update` for `UpdateStack`, and `delete` for `DeleteStack` and `DeleteChangeSet`.
+`ExecuteChangeSet`, `update` for `UpdateStack` — and for executing an `UPDATE` change set, which changes
+the stack as `UpdateStack` does — and `delete` for `DeleteStack` and `DeleteChangeSet`.
 Every caller also gets the data-plane check `cloudformation:<Action>` on `Stack::<name>`. For a User that
 check can only tighten what RBAC allows. For an assumed role it is the role's whole authority, and it
-denies by default. So a key without CloudFormation permissions cannot list stacks or read templates. A
-reader (`get` only) can describe stacks but is refused `CreateStack` up front, with nothing recorded.
+denies by default. An action that names no stack — `ListStacks`, `ListExports`, `ValidateTemplate`, a
+`DescribeStacks` of every stack — is checked on `Stack::*`, for a User as for a role, as AWS evaluates such
+a call on `Resource: "*"`: a policy that grants CloudFormation on named stacks only does not allow it. A
+`DescribeStacks` of every stack also leaves out each stack the caller's policy denies `DescribeStacks` on,
+so a denied stack's outputs and parameters are not returned that way either. So a key without
+CloudFormation permissions cannot list stacks or read templates. A reader (`get` only) can describe stacks
+but is refused `CreateStack` up front, with nothing recorded.
 
 **Steps that run with the shim's authority run only for a caller allowed to do them.** Invoking a custom
 resource's Function and creating or deleting a REST v1 API are not Kubernetes objects, so impersonation
-cannot bound them. Each of these steps first checks that the caller could do it directly: invoke that
-Function, or delete that API. The check covers create, update, change-set execution, delete and recovery.
-`DeleteStack` checks everything up front: the caller must be allowed to delete every resource the stack
-would remove, or the stack is left exactly as it was, record included. Each stack records the caller that
-created it as its owner. An update or delete by someone else is allowed if their own authority covers it,
-and it is logged with both names.
+cannot bound them. Each of these steps first checks that the caller could do it directly, with the same
+checks the front door that serves that step makes — the RBAC verb and the caller's data-plane policy: for a
+custom resource, invoking that Function (`lambda:InvokeFunction`); for a REST v1 API a stack creates,
+`apigateway:CreateRestApi` and each call that building it makes (`PutMethod`, `PutIntegration`, …, on
+`Api::*`, since the API has no id yet), and for every integration that invokes a Lambda, that the caller may
+invoke that Function itself — the `PutIntegration` fence, since the API's invoke path runs the Function with
+no further check; for deleting an API, `apigateway:DeleteRestApi` on it. The check covers create, update,
+change-set execution, delete and recovery (which runs as the operation's recorded caller, an assumed role
+included). `DeleteStack` checks everything up front: the caller must be allowed to delete every resource the
+stack would remove, or the stack is left exactly as it was, record included. A step refused later, during a
+teardown, fails the delete (`DELETE_FAILED`, the resource still listed) rather than being skipped; a custom
+resource's Function or an API delete that merely fails is skipped, so it cannot wedge the stack. Each stack
+records the caller that created it as its owner, as an audit fact only: as on AWS, who may update or delete a
+stack is decided by their own permissions (RBAC, and a `kind: Policy` per stack), not by who created it. An
+update or delete by someone else is logged with both names.
 
 **NoEcho parameters.** A parameter declared `NoEcho` is shown as `****` in `DescribeStacks` and reported
-`NoEcho: true` by `GetTemplateSummary` and `ValidateTemplate`. Its value is never written to the plain
-stack or change-set records. It is kept in a Secret in the shim's namespace and read back only when an
-update or change set uses `UsePreviousValue` for it, or when a change set is executed. The Secret is
-deleted with the stack. As on AWS, `NoEcho` does not hide a value that the template copies into a
-resource's properties.
+`NoEcho: true` by `GetTemplateSummary` and `ValidateTemplate`. Its value is kept in a Secret of its own in
+the shim's namespace and read back only when an update or change set uses `UsePreviousValue` for it, or when
+a change set is executed. The Secret is deleted with the stack. As on AWS, `NoEcho` does not hide a value
+that the template copies into a resource's properties — the resource holds it. The stack record holds it
+too, in each resource's resolved properties, which is why records are Secrets readable only by the shim and
+cluster admins; no response returns a resource's resolved properties.
 
 **Refused, not faked.** An unsupported resource type refuses the WHOLE stack at validation, before anything
 is created — partial creation is the failure mode that matters most for an orchestrator. `mapping.go` is the

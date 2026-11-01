@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
+	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -48,10 +49,16 @@ type impersonatingApplier struct {
 	// (cloudformation_ops.go). Empty for an applier built without an impersonated identity.
 	user   string
 	groups []string
+	// assumedRole is the kind: Role an sts:AssumeRole caller acts as ("" for a User): recorded with the
+	// caller, so a recovery's data-plane checks run for the same principal (cfn_authz.go).
+	assumedRole string
 	// noecho holds the stack's NoEcho parameter values (cfn_noecho.go); nil keeps none.
 	noecho *noEchoSecrets
 	// records is where stack records are kept (cfn_records.go); nil = ConfigMaps in ns, via shim.
 	records *recordStore
+	// claims is the caller's identity as the front door authenticated it, for the data-plane checks on
+	// the steps that act with the shim's authority (cfn_authz.go); nil = derived from user/groups.
+	claims *iam.Claims
 }
 
 // recordStore is where this applier keeps stack records.
@@ -69,7 +76,7 @@ func (a *impersonatingApplier) PutNoEcho(ctx context.Context, stackName string, 
 
 // identity is the caller this applier acts as, in the form recorded on a stack record.
 func (a *impersonatingApplier) identity() *recordedCaller {
-	return &recordedCaller{User: a.user, Groups: append([]string(nil), a.groups...)}
+	return &recordedCaller{User: a.user, Groups: append([]string(nil), a.groups...), AssumedRole: a.callerClaims().AssumedRole}
 }
 
 // isStackRecord reports whether a (kind,name) the engine writes is the doorway's own bookkeeping — the

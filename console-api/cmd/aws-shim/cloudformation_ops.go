@@ -222,6 +222,8 @@ func (o *cfnOps) drain(timeout time.Duration) bool {
 type recordedCaller struct {
 	User   string   `json:"user"`
 	Groups []string `json:"groups,omitempty"`
+	// AssumedRole is the kind: Role an assumed-role caller acted as (its data-plane principal).
+	AssumedRole string `json:"assumedRole,omitempty"`
 }
 
 // usable reports whether a recorded caller is one this front door could itself have impersonated — the
@@ -649,6 +651,7 @@ func (h *cfnDoorway) recoverStack(stack string, caller *recordedCaller, reason s
 	if caller.usable() {
 		var ap *impersonatingApplier
 		if ap, err = h.applierForIdentity(caller.User, caller.Groups); err == nil {
+			ap.assumedRole = caller.AssumedRole
 			out, err = cfn.RecoverInterrupted(ctx, h.asCaller(h.opts(stack, nil), ap), ap, reason)
 		}
 	} else {

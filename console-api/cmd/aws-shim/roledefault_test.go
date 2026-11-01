@@ -317,7 +317,8 @@ func roleDoorCases() []roleDoorCase {
 				return serveWith(h, formOp(url.Values{"Action": {"VerifyEmailIdentity"}, "EmailAddress": {"ops@example.com"}}), c)
 			}},
 		// --- CloudFormation ---
-		{door: "cloudformation", op: "ListStacks", action: "cloudformation:ListStacks", resType: "Stack", denyCode: "AccessDenied",
+		// A stack action that names no stack is checked on Stack::* for a User too (AWS's Resource "*").
+		{door: "cloudformation", op: "ListStacks", action: "cloudformation:ListStacks", resType: "Stack", denyCode: "AccessDenied", userAlwaysChecked: true,
 			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
 				h, _ := cfnTestDoorway(t, "")
 				h.cfg = &rest.Config{Host: "http://127.0.0.1:1"}

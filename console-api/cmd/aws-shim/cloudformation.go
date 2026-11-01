@@ -160,7 +160,13 @@ func (h *cfnDoorway) applierFor(claims iam.Claims) (*impersonatingApplier, error
 	if !ok {
 		return nil, fmt.Errorf("no caller identity")
 	}
-	return h.applierForIdentity(user, groups)
+	ap, err := h.applierForIdentity(user, groups)
+	if err != nil {
+		return nil, err
+	}
+	c := claims
+	ap.claims = &c
+	return ap, nil
 }
 
 // applierForIdentity builds the Applier impersonating an already-resolved identity — a request's caller,
@@ -202,6 +208,14 @@ func cfnVerb(action string) string {
 	return ""
 }
 
+// stackScope is the data-plane resource id for a stack action: the stack it names, else "*" (any stack).
+func stackScope(stack string) string {
+	if stack == "" {
+		return anyResource
+	}
+	return stack
+}
+
 // canDo is the coarse gate (iam.CanDo passes an assumed role, whose authority is the data-plane check).
 // Without an RBAC client a User is denied: the records are never opened to an unchecked caller.
 func (h *cfnDoorway) canDo(ctx context.Context, claims iam.Claims, verb, stack string) (bool, string) {
@@ -226,15 +240,18 @@ func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	//     stack provisions are then checked again as the caller (impersonation);
 	//   - every caller gets the data-plane check, cloudformation:<Action> on the stack it names
 	//     (normalizeStackArgs has reduced a stack ARN to its name): additive for a User, and the whole,
-	//     default-deny authority of an assumed role (ListStacks/ListExports/ValidateTemplate on Stack::*).
+	//     default-deny authority of an assumed role. An action that names no stack — ListStacks,
+	//     ListExports, ValidateTemplate, a DescribeStacks of every stack — is checked on Stack::* for every
+	//     caller, as AWS evaluates such a call on Resource "*": a policy that does not allow it there (or
+	//     denies it) refuses the call.
 	if verb := cfnVerb(action); verb != "" {
 		if allowed, reason := h.canDo(r.Context(), claims, verb, r.PostFormValue("StackName")); !allowed {
 			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
 			return
 		}
 	}
-	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "cloudformation:"+action, "Stack",
-		r.PostFormValue("StackName"), r); denied {
+	if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "cloudformation:"+action, "Stack",
+		stackScope(r.PostFormValue("StackName")), r); denied {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
 		return
 	}
@@ -626,7 +643,15 @@ func (h *cfnDoorway) describeStacks(w http.ResponseWriter, r *http.Request, ap *
 		}
 		recs = []*cfn.StackRecord{rec}
 	} else {
-		recs = h.allRecords(r.Context())
+		// Every stack, less those the caller's policy denies DescribeStacks on by name: the call itself
+		// was allowed on Stack::* (serve), but a stack the caller may not describe shows nothing of itself
+		// (its outputs, parameters or status) here either.
+		claims := ap.callerClaims()
+		for _, rec := range h.allRecords(r.Context()) {
+			if denied, _ := deniedByDataPlane(r.Context(), h.authz, claims, "cloudformation:DescribeStacks", "Stack", rec.Name, r); !denied {
+				recs = append(recs, rec)
+			}
+		}
 	}
 	var members strings.Builder
 	for _, rec := range recs {
@@ -916,6 +941,14 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		return
 	}
 	create := cs.Type == "CREATE"
+	// An UPDATE change set changes the stack as UpdateStack does, so it needs UpdateStack's verb as well
+	// as ExecuteChangeSet's (checked up front, in serve).
+	if !create {
+		if allowed, reason := h.canDo(r.Context(), ap.callerClaims(), "update", stack); !allowed {
+			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
+			return
+		}
+	}
 	// Re-check the export rules at execute time: another stack may have taken an export name, or started
 	// importing one this change set would drop, since the change set was created.
 	ctx := r.Context()
