@@ -350,6 +350,24 @@ data:
         aws --endpoint-url "$E" s3api list-buckets --query "Buckets[?Name=='$1'].CreationDate | [0]" --output text
     }
 
+    # oi_bucket_empty <bucket>: true when the bucket holds no objects, prior versions or delete markers.
+    oi_bucket_empty() {
+      if ! out=$(AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-$ROOT_USER}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-$ROOT_PASS}" \
+          AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}" \
+          aws --endpoint-url "$E" s3api list-object-versions --bucket "$1" --max-items 1 --output json 2>&1); then
+        echo "cannot list bucket $1: $out" >&2; exit 1
+      fi
+      ! printf '%s' "$out" | grep -q '"Key"'
+    }
+
+    # oi_set_instance <record>: record which instance of the owning claim (its composite's creation time)
+    # the bucket belongs to.
+    oi_set_instance() {
+      [ -n "$XR_CREATED" ] || return 0
+      kubectl patch secret "$1" -n "$OWN_NS" --type merge -p "{\"stringData\":{\"instance\":\"$XR_CREATED\"}}" >/dev/null \
+        || { echo "cannot update the owner record $1" >&2; exit 1; }
+    }
+
     # Returns only when bucket $1 is (now) this namespace's; otherwise exits the Job.
     claim_bucket() {
       b="$1"
@@ -374,8 +392,28 @@ data:
         if [ -n "$rawowner" ]; then
           owner=$(printf '%s' "$rawowner" | base64 -d)
           if [ "$owner" = "$OWNER_REF" ]; then
-            echo "bucket $b belongs to $OWNER_REF"
-            return 0
+            # The record also names the claim INSTANCE (its composite's creation time). A claim deleted
+            # and created again under the same name is a new instance: on AWS a re-created stack gets a
+            # new, empty bucket, so the earlier instance's data never carries over. An empty bucket is
+            # simply taken over; one that still holds data is refused. A record from before instances
+            # were recorded is upgraded in place.
+            if ! rawinst=$(kubectl get secret "$rec" -n "$OWN_NS" --ignore-not-found -o jsonpath='{.data.instance}'); then
+              echo "cannot read the owner record of bucket $b" >&2; exit 1
+            fi
+            inst=$(printf '%s' "$rawinst" | base64 -d)
+            if [ -z "$inst" ] || [ -z "$XR_CREATED" ] || [ "$inst" = "$XR_CREATED" ]; then
+              [ -n "$inst" ] || oi_set_instance "$rec"
+              echo "bucket $b belongs to $OWNER_REF"
+              return 0
+            fi
+            if oi_bucket_empty "$b"; then
+              oi_set_instance "$rec"
+              echo "bucket $b belonged to an earlier $OWNER_REF and is empty; taken over by this one"
+              return 0
+            fi
+            oi_refuse "bucket $b still holds data from an earlier $OWNER_REF (created $inst), which was deleted;" \
+              "a new claim of the same name never inherits it. Empty the bucket (the setup then takes it over)," \
+              "or have an admin remove it."
           fi
           # A kind: Bucket claim is the bucket itself (AWS::S3::Bucket), so it may only be its own. A
           # claim that USES a bucket (a StaticSite serving it — a CloudFront origin —, an Application's
@@ -413,7 +451,7 @@ data:
               "(set namespace/owner to the TRUE owner if it is a different claim)."
           fi
         fi
-        if out=$(kubectl create secret generic "$rec" -n "$OWN_NS" --from-literal=namespace="$OWNER_NS" --from-literal=owner="$OWNER_REF" --dry-run=client -o yaml \
+        if out=$(kubectl create secret generic "$rec" -n "$OWN_NS" --from-literal=namespace="$OWNER_NS" --from-literal=owner="$OWNER_REF" --from-literal=instance="$XR_CREATED" --dry-run=client -o yaml \
             | kubectl label --local -f - openinfra.dev/bucket-owner=true -o yaml | kubectl create -f - 2>&1); then
           echo "bucket $b recorded as owned by $OWNER_REF"
           return 0
@@ -451,6 +489,17 @@ data:
         || "$MC" admin policy info m "$user" >/dev/null 2>&1 \
         || { echo "policy create failed for $user" >&2; exit 1; }
       "$MC" admin policy attach m "$user" --user "$user" >/dev/null 2>&1 || true
+      oi_mark_creds "$user"
+    }
+
+    # oi_mark_creds <user>: name the claim instance a platform-side credentials Secret belongs to, so the
+    # bucket reaper (platform/abstraction/bucket-reaper.yaml) removes the user and the Secret once that
+    # claim is deleted. A legacy user with no platform Secret yet has nothing to mark.
+    oi_mark_creds() {
+      kubectl get secret "$1" -n "$OWN_NS" >/dev/null 2>&1 || return 0
+      kubectl label secret "$1" -n "$OWN_NS" openinfra.dev/scoped-creds=true --overwrite >/dev/null \
+        && kubectl annotate secret "$1" -n "$OWN_NS" openinfra.dev/owner="$OWNER_REF" openinfra.dev/instance="$XR_CREATED" --overwrite >/dev/null \
+        || echo "warning: could not mark the platform credentials of $1 with their claim; the reaper will not remove them" >&2
     }
 ---
 # The setup SA's ONLY secret access: owner records + platform-side scoped-credential Secrets, in the

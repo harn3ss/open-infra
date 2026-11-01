@@ -1,0 +1,226 @@
+# Bucket reaper: what a deleted claim leaves in object storage. A bucket-backed claim (kind: Bucket,
+# StaticSite, Application storage, the ML kinds) owns things outside Kubernetes that Crossplane cannot
+# garbage-collect: its MinIO user, that user's platform-side credentials Secret, and — for the claim that
+# created it — the bucket and its owner record. Crossplane has no pre-delete hook for a composed Job, so
+# this reaper finds those leftovers by the claim INSTANCE they name (Kind/namespace/name plus the
+# composite's creation time, recorded by bucket-ownership.sh) and removes them once that instance is gone:
+#   - a deleted claim's MinIO user + policy + credentials Secret: always removed (a deleted claim's key
+#     must stop working);
+#   - a deleted claim's bucket: removed with its owner record when EMPTY (no objects, versions or delete
+#     markers), as AWS deletes an empty bucket; one that still holds data is KEPT and its record labelled
+#     openinfra.dev/orphaned=true — data is never deleted by a sweep. A new claim of the same name never
+#     inherits it (bucket-ownership.sh refuses a different instance while data remains).
+# Fail-safe: an unknown kind, a record with no claim identity (a legacy namespace-only record), a platform
+# bucket, or any API error other than NotFound is skipped, never reaped. A credentials Secret written
+# before claims were recorded on it carries no owner yet and is skipped until its setup Job runs again.
+# The watch loop keeps a deletion's leftovers to well under a minute while the CronJob still runs once
+# per 5 minutes (the reconciler pattern: Replace, a deadline inside the period).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openinfra-bucket-reaper
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+---
+# Secrets only in the creds namespace: the owner records and credentials Secrets it removes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openinfra-bucket-reaper
+  namespace: openinfra-bucket-creds
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openinfra-bucket-reaper
+  namespace: openinfra-bucket-creds
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: openinfra-bucket-reaper }
+subjects: [{ kind: ServiceAccount, name: openinfra-bucket-reaper, namespace: minio }]
+---
+# Read-only: whether a claim (and which instance of it) still exists.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-bucket-reaper
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [buckets, staticsites, applications, models, trainingjobs, processingjobs, batchtransforms, modelmonitors,
+      xbuckets, xstaticsites, xapplications, xmodels, xtrainingjobs, xprocessingjobs, xbatchtransforms, xmodelmonitors]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-bucket-reaper
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-bucket-reaper }
+subjects: [{ kind: ServiceAccount, name: openinfra-bucket-reaper, namespace: minio }]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openinfra-bucket-reaper
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  schedule: "*/5 * * * *"
+  # Replace, not Forbid: the sweep is idempotent, and Forbid + a stuck run blocks every later run.
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 295 # > start-up + WATCH_SECONDS + a last sleep and pass, < the 5-minute period
+      ttlSecondsAfterFinished: 300
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: openinfra-bucket-reaper
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+          volumes:
+            - { name: tmp, emptyDir: {} }
+            - { name: mc, emptyDir: {} }
+            - { name: ownership, configMap: { name: openinfra-bucket-ownership } }
+          initContainers:
+            - name: fetch-mc
+              image: ghcr.io/harn3ss/open-infra-mc@sha256:a689825d5299d02e6f35973e726a6e49a77469cde644dd52d60586b07bd85744
+              command: [sh, -c, "cp /usr/bin/mc /mc/mc && chmod +x /mc/mc"]
+              volumeMounts: [{ name: mc, mountPath: /mc }]
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }
+          containers:
+            - name: reaper
+              image: alpine/k8s:1.30.0
+              volumeMounts: [{ name: tmp, mountPath: /tmp }, { name: mc, mountPath: /mc }, { name: ownership, mountPath: /opt/openinfra, readOnly: true }]
+              env:
+                - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
+                - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
+                - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+                - { name: HOME, value: /tmp }
+                - { name: MC_CONFIG_DIR, value: /tmp/.mc }
+                - { name: WATCH_SECONDS, value: "240" }
+                - { name: POLL_SECONDS, value: "20" }
+              command: [/bin/sh, -c]
+              args:
+                - |
+                  set -u
+                  E="${E:-http://minio.minio.svc.cluster.local:9000}"
+                  MC="${MC:-/mc/mc}"
+                  OWN_NS=openinfra-bucket-creds
+                  TAB=$(printf '\t')
+                  W=$(mktemp -d)
+                  # PLATFORM_BUCKETS, oi_bucket_created, oi_bucket_empty
+                  . "${OWNERSHIP_SH:-/opt/openinfra/bucket-ownership.sh}"
+                  "$MC" alias set m "$E" "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null || { echo "cannot reach MinIO" >&2; exit 1; }
+
+                  plural() {
+                    case "$1" in
+                      Bucket) echo buckets ;; StaticSite) echo staticsites ;; Application) echo applications ;;
+                      Model) echo models ;; TrainingJob) echo trainingjobs ;; ProcessingJob) echo processingjobs ;;
+                      BatchTransform) echo batchtransforms ;; ModelMonitor) echo modelmonitors ;; *) echo "" ;;
+                    esac
+                  }
+                  # gone <Kind/ns/name> <instance>: true only when that claim instance is certainly gone —
+                  # the claim is NotFound, or its composite now has a different creation time (the claim was
+                  # deleted and created again). Any doubt (an unknown kind, another error) is "alive".
+                  gone() {
+                    kind=${1%%/*}; rest=${1#*/}; ns=${rest%%/*}; name=${rest#*/}
+                    pl=$(plural "$kind")
+                    [ -n "$pl" ] && [ -n "$ns" ] && [ -n "$name" ] && [ "$rest" != "$1" ] || return 1
+                    if ! xr=$(kubectl get "$pl.openinfra.dev" "$name" -n "$ns" -o jsonpath='{.spec.resourceRef.name}' 2>"$W/err"); then
+                      grep -q NotFound "$W/err" && return 0
+                      return 1
+                    fi
+                    [ -n "$2" ] && [ -n "$xr" ] || return 1
+                    if ! made=$(kubectl get "x$pl.openinfra.dev" "$xr" -o jsonpath='{.metadata.creationTimestamp}' 2>"$W/err"); then
+                      grep -q NotFound "$W/err" && return 0
+                      return 1
+                    fi
+                    [ -n "$made" ] && [ "$made" != "$2" ]
+                  }
+                  # live_instance <Kind/ns/name>: the creation time of the claim's current composite ("" if unknown).
+                  live_instance() {
+                    kind=${1%%/*}; rest=${1#*/}; ns=${rest%%/*}; name=${rest#*/}; pl=$(plural "$kind")
+                    [ -n "$pl" ] || return 0
+                    xr=$(kubectl get "$pl.openinfra.dev" "$name" -n "$ns" -o jsonpath='{.spec.resourceRef.name}' 2>/dev/null) || return 0
+                    [ -n "$xr" ] || return 0
+                    kubectl get "x$pl.openinfra.dev" "$xr" -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null || true
+                  }
+                  platform() { for p in $PLATFORM_BUCKETS; do [ "$1" = "$p" ] && return 0; done; return 1; }
+
+                  reap() {
+                    # 1. credentials of deleted claims: the MinIO user, its policy and its Secret
+                    kubectl get secrets -n "$OWN_NS" -l openinfra.dev/scoped-creds=true \
+                      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.openinfra\.dev/owner}{"\t"}{.metadata.annotations.openinfra\.dev/instance}{"\n"}{end}' \
+                      > "$W/creds.tsv" || return 1
+                    while IFS="$TAB" read -r user owner inst; do
+                      [ -n "$user" ] && [ -n "$owner" ] || continue
+                      gone "$owner" "$inst" || continue
+                      "$MC" admin user rm m "$user" >/dev/null 2>&1 || true
+                      "$MC" admin policy rm m "$user" >/dev/null 2>&1 || true
+                      kubectl delete secret "$user" -n "$OWN_NS" --ignore-not-found >/dev/null \
+                        && echo "removed the MinIO user and credentials of deleted $owner ($user)"
+                    done < "$W/creds.tsv"
+
+                    # 2. buckets created by deleted claims: an empty one goes with its record; data is kept
+                    kubectl get secrets -n "$OWN_NS" -l openinfra.dev/bucket-owner=true \
+                      -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.data.owner}{"\t"}{.data.instance}{"\t"}{.metadata.labels.openinfra\.dev/orphaned}{"\n"}{end}' \
+                      > "$W/recs.tsv" || return 1
+                    while IFS="$TAB" read -r rec rawowner rawinst orphan; do
+                      b=${rec#bucket-owner-}
+                      [ -n "$b" ] && [ -n "$rawowner" ] || continue
+                      platform "$b" && continue
+                      owner=$(printf '%s' "$rawowner" | base64 -d 2>/dev/null) || continue
+                      inst=$(printf '%s' "$rawinst" | base64 -d 2>/dev/null) || inst=""
+                      if ! gone "$owner" "$inst"; then
+                        if [ -z "$inst" ]; then # a record from before instances: name the live one
+                          li=$(live_instance "$owner")
+                          [ -n "$li" ] && kubectl patch secret "$rec" -n "$OWN_NS" --type merge \
+                            -p "{\"stringData\":{\"instance\":\"$li\"}}" >/dev/null && echo "recorded the instance of $owner on $rec"
+                        fi
+                        continue
+                      fi
+                      made=$(oi_bucket_created "$b") || continue
+                      if [ -z "$made" ] || [ "$made" = None ]; then
+                        kubectl delete secret "$rec" -n "$OWN_NS" --ignore-not-found >/dev/null && echo "removed the record of $b (bucket already gone)"
+                        continue
+                      fi
+                      # objects, prior versions or delete markers? (a listing error skips this bucket)
+                      vers=$(aws --endpoint-url "$E" s3api list-object-versions --bucket "$b" --max-items 1 --output json 2>/dev/null) || continue
+                      if ! printf '%s' "$vers" | grep -q '"Key"'; then
+                        if "$MC" rb "m/$b" >/dev/null 2>&1; then
+                          kubectl delete secret "$rec" -n "$OWN_NS" --ignore-not-found >/dev/null
+                          echo "removed empty bucket $b of deleted $owner"
+                        fi
+                      elif [ "$orphan" != true ]; then
+                        kubectl label secret "$rec" -n "$OWN_NS" openinfra.dev/orphaned=true --overwrite >/dev/null
+                        echo "kept bucket $b of deleted $owner: it still holds data (record labelled orphaned)"
+                      fi
+                    done < "$W/recs.tsv"
+                  }
+
+                  start=$(date +%s)
+                  rc=0
+                  reap || rc=1
+                  while [ $(( $(date +%s) - start )) -lt "${WATCH_SECONDS:-0}" ]; do
+                    sleep "${POLL_SECONDS:-20}"
+                    reap || rc=1
+                  done
+                  exit $rc
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { cpu: 200m, memory: 128Mi }
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: [ALL] } }

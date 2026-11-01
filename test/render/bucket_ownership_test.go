@@ -96,9 +96,15 @@ case "$*" in
     [ -f "$STUB/fail-get" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
     [ -f "$STUB/records/$3.owner" ] && printf '%s' "$(cat "$STUB/records/$3.owner")" | base64 | tr -d '\n'
     exit 0 ;;
+  "get secret bucket-owner-"*" -n openinfra-bucket-creds --ignore-not-found -o jsonpath={.data.instance}")
+    [ -f "$STUB/records/$3.instance" ] && printf '%s' "$(cat "$STUB/records/$3.instance")" | base64 | tr -d '\n'
+    exit 0 ;;
+  "patch secret bucket-owner-"*" -n openinfra-bucket-creds --type merge -p "*)
+    v=$(printf '%s' "$9" | sed -n 's/.*"instance":"\([^"]*\)".*/\1/p'); printf '%s' "$v" > "$STUB/records/$3.instance"
+    echo "patched $3 instance=$v" >> "$STUB/patched.txt" ;;
   "create secret generic bucket-owner-"*" --dry-run=client -o yaml")
-    ns=""; ow=""; for a in "$@"; do case "$a" in --from-literal=namespace=*) ns=${a#--from-literal=namespace=} ;; --from-literal=owner=*) ow=${a#--from-literal=owner=} ;; esac; done
-    printf 'name=%s\nowner-namespace=%s\nowner-ref=%s\n' "$4" "$ns" "$ow" ;;
+    ns=""; ow=""; in=""; for a in "$@"; do case "$a" in --from-literal=namespace=*) ns=${a#--from-literal=namespace=} ;; --from-literal=owner=*) ow=${a#--from-literal=owner=} ;; --from-literal=instance=*) in=${a#--from-literal=instance=} ;; esac; done
+    printf 'name=%s\nowner-namespace=%s\nowner-ref=%s\ninstance=%s\n' "$4" "$ns" "$ow" "$in" ;;
   "label --local -f - openinfra.dev/bucket-owner=true -o yaml") cat; echo "label=openinfra.dev/bucket-owner" ;;
   "create -f -")
     obj=$(cat); name=$(printf '%s\n' "$obj" | sed -n 's/^name=//p'); ns=$(printf '%s\n' "$obj" | sed -n 's/^owner-namespace=//p'); ow=$(printf '%s\n' "$obj" | sed -n 's/^owner-ref=//p')
@@ -106,6 +112,7 @@ case "$*" in
     if [ -f "$STUB/records/$name" ]; then echo "Error from server (AlreadyExists): secrets \"$name\" already exists" >&2; exit 1; fi
     printf '%s' "$ns" > "$STUB/records/$name"
     printf '%s' "$ow" > "$STUB/records/$name.owner"
+    printf '%s' "$(printf '%s\n' "$obj" | sed -n 's/^instance=//p')" > "$STUB/records/$name.instance"
     printf '%s\n' "$obj" >> "$STUB/created.txt" ;;
   # The platform-side scoped-credentials Secret (openinfra-bucket-creds/<user>): read its key (empty
   # unless a test seeded $STUB/pcreds/<user>), and record a write by emitting its literals for apply.
@@ -113,7 +120,12 @@ case "$*" in
     [ -f "$STUB/pcreds/$3" ] && printf '%s' "$(cat "$STUB/pcreds/$3")" | base64 | tr -d '\n'
     exit 0 ;;
   "create secret generic "*"-n openinfra-bucket-creds --from-literal=MINIO_ACCESS_KEY="*"--dry-run=client -o yaml")
+    : > "$STUB/pcreds-made-$4"
     printf 'pcreds-secret %s\n' "$4"; printf '%s\n' "$@" | tr ' ' '\n' | grep -- '--from-literal=MINIO_' ;;
+  # oi_mark_creds: the platform Secret exists once seeded or written by this run; marking it is logged.
+  "get secret "*" -n openinfra-bucket-creds") [ -f "$STUB/pcreds/$3" ] || [ -f "$STUB/pcreds-made-$3" ] ;;
+  "label secret "*" -n openinfra-bucket-creds openinfra.dev/scoped-creds=true --overwrite") echo "marked $3" >> "$STUB/marked.txt" ;;
+  "annotate secret "*" -n openinfra-bucket-creds openinfra.dev/owner="*) echo "annotated $3 $6 $7" >> "$STUB/marked.txt" ;;
   # Legacy path (compositions not yet on the scoped model): the Job writes the claim Secret directly.
   "get secret "*"-minio -n "*" -o jsonpath={.data.MINIO_SECRET_KEY}") exit 1 ;;
   "create secret generic "*"-minio -n "*" --dry-run=client -o yaml") printf 'secret %s\n' "$4"; printf '%s\n' "$@" | grep -- '--from-literal=MINIO_ACCESS_KEY=' ;;
@@ -131,6 +143,7 @@ case "$1 $2" in
     b=${4#*Name==\'}; b=${b%%\'*}
     if [ -f "$STUB/buckets/$b" ]; then cat "$STUB/buckets/$b"; else echo None; fi ;;
   "s3 mb") b=${3#s3://}; echo "$b" >> "$STUB/made.txt"; echo "make_bucket: $b" ;;
+  "s3api list-object-versions") [ -f "$STUB/objects/$4" ] && echo '{"Versions":[{"Key":"k"}]}' || echo '{}' ;;
   "s3api "*) echo "$*" >> "$STUB/configured.txt" ;;
   *) echo "stub aws: unhandled: $*" >&2; exit 99 ;;
 esac
@@ -158,7 +171,7 @@ func newBktEnv(t *testing.T, records, buckets map[string]string) bktEnv {
 	root := t.TempDir()
 	e := bktEnv{dir: filepath.Join(root, "stub"), tmp: filepath.Join(root, "tmp")}
 	bin := filepath.Join(root, "bin")
-	for _, d := range []string{e.dir, e.tmp, bin, filepath.Join(e.dir, "records"), filepath.Join(e.dir, "buckets"), filepath.Join(e.dir, "race")} {
+	for _, d := range []string{e.dir, e.tmp, bin, filepath.Join(e.dir, "records"), filepath.Join(e.dir, "buckets"), filepath.Join(e.dir, "race"), filepath.Join(e.dir, "objects")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -174,12 +187,17 @@ func newBktEnv(t *testing.T, records, buckets map[string]string) bktEnv {
 		}
 	}
 	// A record value is the owning namespace, or "namespace|owner-ref" to also seed the modern owner
-	// field (a value with no "|" is a legacy record with no owner, exercising the namespace fallback).
+	// field (a value with no "|" is a legacy record with no owner, exercising the namespace fallback),
+	// or "namespace|owner-ref|instance" to also record the owning claim instance.
 	for k, v := range records {
 		ns, owner, modern := strings.Cut(v, "|")
 		writeFile(t, filepath.Join(e.dir, "records", k), ns)
 		if modern {
+			owner, inst, hasInst := strings.Cut(owner, "|")
 			writeFile(t, filepath.Join(e.dir, "records", k+".owner"), owner)
+			if hasInst {
+				writeFile(t, filepath.Join(e.dir, "records", k+".instance"), inst)
+			}
 		}
 	}
 	for k, v := range buckets {
