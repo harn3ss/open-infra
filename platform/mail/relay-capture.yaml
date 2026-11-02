@@ -81,7 +81,9 @@ spec:
     - { name: submission, port: 587, targetPort: 1025 }
     - { name: smtp, port: 25, targetPort: 1025 }
 ---
-# Nothing the sink accepts may leave: its pod opens no connection at all.
+# Nothing the sink accepts may leave: its pod opens no connection at all. It accepts SMTP (and only
+# SMTP) from the cluster: the Ingress rule also matters on kube-ovn, which drops the replies to an
+# inbound connection under an Egress-only deny unless an Ingress rule admitted that connection.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -89,5 +91,7 @@ metadata:
   namespace: mail
 spec:
   podSelector: { matchLabels: { openinfra.dev/mail-capture: "true" } }
-  policyTypes: [Egress]
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{ protocol: TCP, port: 1025 }]
   egress: []

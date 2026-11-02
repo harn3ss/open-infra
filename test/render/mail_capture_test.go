@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -41,8 +42,13 @@ func TestMailCapture_NeverDelivers(t *testing.T) {
 	}
 	spec := np["spec"].(map[string]any)
 	types, _ := spec["policyTypes"].([]any)
-	if len(types) != 1 || types[0] != "Egress" {
-		t.Fatalf("the sink's NetworkPolicy must govern egress: %v", types)
+	if len(types) != 2 || types[0] != "Ingress" || types[1] != "Egress" {
+		t.Fatalf("the sink's NetworkPolicy must govern ingress (SMTP only) and egress (none): %v", types)
+	}
+	// SMTP alone is admitted: on kube-ovn an Egress-only deny also drops the replies to an inbound
+	// connection that no Ingress rule admitted, so the sink would accept nothing.
+	if in, ok := spec["ingress"].([]any); !ok || len(in) != 1 || !strings.Contains(fmt.Sprint(in), "port:1025") {
+		t.Fatalf("the sink must admit exactly its SMTP port (1025), got %v", spec["ingress"])
 	}
 	if eg, ok := spec["egress"].([]any); !ok || len(eg) != 0 {
 		t.Fatalf("the sink must have NO egress allowed (egress: []), got %v", spec["egress"])
