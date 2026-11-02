@@ -58,8 +58,11 @@ import (
 
 const cfnXMLNamespace = "http://cloudformation.amazonaws.com/doc/2010-05-15/"
 
-// how long an async stack operation may run in the background.
-const cfnAsyncTimeout = 15 * time.Minute
+// how long an async stack operation may run in the background. It covers the engine's longest wait: a
+// stack whose Outputs name an instance with an encrypted root waits for that VM to copy its OS image and
+// start (cfn's outputBootWaitCap, 45 minutes), after its resources are in place, with time left to record
+// the result or roll back.
+const cfnAsyncTimeout = 60 * time.Minute
 const cfnWaitTimeout = 10 * time.Minute
 
 type cfnDoorway struct {

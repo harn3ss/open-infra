@@ -79,9 +79,10 @@ const (
 	cfnLeaseRefresh     = 15 * time.Second
 	cfnLeaseDuration    = 4 * cfnLeaseRefresh
 	cfnRecoveryInterval = 30 * time.Second
-	// A record from before leases has no owner to ask; no operation outlives cfnAsyncTimeout, so one not
-	// updated for longer than this is certainly orphaned.
-	cfnLegacyGrace = cfnAsyncTimeout + time.Minute
+	// A record from before leases has no owner to ask. Only a front door from before leases writes one,
+	// and those bounded every operation at 15 minutes, so one not updated for longer than this is
+	// certainly orphaned (today's longer cfnAsyncTimeout applies only to leased operations).
+	cfnLegacyGrace = 16 * time.Minute
 	// How long shutdown waits for in-flight operations. Kept inside the Deployment's
 	// terminationGracePeriodSeconds (platform/aws-shim/aws-shim.yaml) after the HTTP drain.
 	cfnDrainTimeout = 40 * time.Second

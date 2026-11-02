@@ -523,8 +523,12 @@ translated type's `Ref` and documented `Fn::GetAtt` attributes resolve too (`cfn
   reports for an instance without a public DNS name.
 
 A LAN IP is assigned shortly after the VM is created, so a completing stack waits for it
-(up to ten minutes, within `-timeout`) before recording its Outputs. It stops waiting a minute
-before the operation as a whole would run out of time, so the stack's final record is still written.
+(up to ten minutes, within `-timeout`) before recording its Outputs. An instance with an encrypted
+root starts later: its OS image is copied onto the encrypted disk first. While such an instance is
+still copying, or has copied and is starting, the wait goes on, up to 45 minutes in all; once its copy
+is done, the instance has ten minutes to report its address. It stops waiting a minute before the
+operation as a whole would run out of time (an hour through the aws-shim front door), so the stack's
+final record is still written.
 
 An Output that names an attribute open-infra does not provide is **refused at plan time** — the stack is
 refused before anything is created, naming the attributes the type does have — as AWS refuses a template

@@ -59,6 +59,15 @@ var outputPollInterval = 3 * time.Second
 
 const outputWaitCap = 10 * time.Minute
 
+// outputBootWaitCap bounds the longer wait for an instance with an encrypted root. Its OS image is copied
+// onto the encrypted disk before the VM first starts, so its address arrives minutes after the instance
+// resource completed (several such instances created together share the copy's disk bandwidth). While
+// one is still copying, or has finished copying and is starting, the wait goes on past outputWaitCap up
+// to this bound; a VM that finished copying gets the ordinary wait (outputWaitCap, within -timeout) from
+// then to report its address, as an instance with an unencrypted root gets from the start. On AWS
+// PrivateIp is known at launch.
+var outputBootWaitCap = 45 * time.Minute
+
 // outputRecordReserve is the part of the operation's deadline the wait leaves for what follows it: the
 // stack's *_COMPLETE record. Waiting into that time would let the deadline expire before the record is
 // written, and the next front door would then roll back a stack that was fully built.
@@ -80,23 +89,45 @@ func setOutputs(ctx context.Context, data []byte, opts DeployOptions, rec *Stack
 		rec.Outputs, rec.OutputsOmitted = nil, nil
 		return
 	}
-	var deadline time.Time
+	var deadline, bootDeadline time.Time
+	var wait time.Duration
 	if opts.Wait {
-		wait := opts.Timeout
+		wait = opts.Timeout
 		if wait <= 0 || wait > outputWaitCap {
 			wait = outputWaitCap
 		}
-		deadline = time.Now().Add(wait)
+		start := time.Now()
+		deadline, bootDeadline = start.Add(wait), start.Add(outputBootWaitCap)
 		// Never into the time the completing record needs (outputRecordReserve).
 		if dl, ok := ctx.Deadline(); ok {
-			if last := dl.Add(-outputRecordReserve); last.Before(deadline) {
+			last := dl.Add(-outputRecordReserve)
+			if last.Before(deadline) {
 				deadline = last
+			}
+			if last.Before(bootDeadline) {
+				bootDeadline = last
 			}
 		}
 	}
+	started := map[string]time.Time{} // VM -> when its encrypted root was first seen copied (it is starting)
 	for {
-		outs, omitted, pending := evaluateOutputs(ctx, t, opts, rec, sr, customData)
-		if !pending || !time.Now().Before(deadline) || ctx.Err() != nil {
+		outs, omitted, pending, booting := evaluateOutputs(ctx, t, opts, rec, sr, customData)
+		now := time.Now()
+		for vm, st := range booting {
+			if _, seen := started[vm]; st == vmStarting && !seen {
+				started[vm] = now
+			}
+		}
+		more := pending && now.Before(deadline)
+		if pending && !more && now.Before(bootDeadline) {
+			for vm, st := range booting {
+				if st == vmCopyingRoot || now.Before(started[vm].Add(wait)) {
+					more = true
+					break
+				}
+			}
+		}
+		if !more || ctx.Err() != nil {
 			rec.Outputs, rec.OutputsOmitted = outs, omitted
 			return
 		}
@@ -110,9 +141,10 @@ func setOutputs(ctx context.Context, data []byte, opts DeployOptions, rec *Stack
 }
 
 // evaluateOutputs resolves every included Output once. pending reports that at least one Output is
-// waiting on a supported post-deploy attribute that is not populated yet (worth polling again).
+// waiting on a supported post-deploy attribute that is not populated yet (worth polling again); booting
+// names each VM with an encrypted root that such an attribute waits on, and where it is in coming up.
 func evaluateOutputs(ctx context.Context, t *Template, opts DeployOptions, rec *StackRecord, sr StatusReader,
-	customData map[string]map[string]any) (outs []StackOutput, omitted []OutputOmission, pending bool) {
+	customData map[string]map[string]any) (outs []StackOutput, omitted []OutputOmission, pending bool, booting map[string]vmBoot) {
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
 	r.customData = customData
@@ -120,11 +152,12 @@ func evaluateOutputs(ctx context.Context, t *Template, opts DeployOptions, rec *
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
 	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, sctx) }
 	d := &deployedAttrs{ctx: ctx, sr: sr, sctx: sctx, namespace: opts.Namespace,
-		byID: map[string]StackResource{}, status: map[string]map[string]any{}}
+		byID: map[string]StackResource{}, status: map[string]map[string]any{}, booting: map[string]vmBoot{}}
 	for _, res := range rec.Resources {
 		d.byID[res.LogicalID] = res
 	}
 	r.deployed = d.lookup
+	booting = d.booting
 
 	for _, k := range sortedKeys(t.Outputs) {
 		o, _ := t.Outputs[k].(map[string]any)
@@ -163,7 +196,7 @@ func evaluateOutputs(ctx context.Context, t *Template, opts DeployOptions, rec *
 		}
 		outs = append(outs, out)
 	}
-	return outs, omitted, pending
+	return outs, omitted, pending, booting
 }
 
 // outputPlaceholderRe finds the resolver placeholders a value can still carry ("<ref:X>", "<X.attr>",
@@ -263,6 +296,22 @@ type deployedAttrs struct {
 	notes     []string                  // why an attribute definitively does not resolve
 	waiting   []string                  // a supported attribute not populated yet (poll again)
 	missed    map[string]bool           // "id|attr" of each supported attribute that missed (explained above)
+	booting   map[string]vmBoot         // VMs with an encrypted root a waiting attribute is on (nil = not tracked)
+}
+
+// vmBoot is where a VM with an encrypted root is in coming up, while an attribute waits on it.
+type vmBoot int
+
+const (
+	vmCopyingRoot vmBoot = iota + 1 // the OS image is still being copied onto the encrypted root
+	vmStarting                      // copied; the VM has not reported the attribute yet
+)
+
+// encryptedRoot reports whether a deployed VM's spec asks for an encrypted root disk.
+func encryptedRoot(sr StackResource) bool {
+	rd, _ := sr.Spec["rootDisk"].(map[string]any)
+	enc, _ := rd["encrypted"].(bool)
+	return sr.Kind == "VirtualMachine" && enc
 }
 
 // lookup resolves one reference (attr "" = Ref); a supported attribute that misses records why.
@@ -386,7 +435,20 @@ func (d *deployedAttrs) statusString(id, field, what string) (any, bool) {
 	if v, _ := st[field].(string); v != "" {
 		return v, true
 	}
-	d.waiting = append(d.waiting, what+" was not assigned before the stack completed (it appears on the "+sr.Kind+"'s status."+field+" once assigned)")
+	why := " (it appears on the " + sr.Kind + "'s status." + field + " once assigned)"
+	if encryptedRoot(sr) {
+		// Its OS image is copied onto the encrypted root before the VM first starts (status.rootPopulated).
+		state := vmStarting
+		why = " (the OS image was copied onto its encrypted root, and the VM had not reported it on status." + field + " yet)"
+		if p, _ := st["rootPopulated"].(bool); !p && st["rootPopulated"] != "true" {
+			state = vmCopyingRoot
+			why = " (the VM was still copying its OS image onto its encrypted root, so it had not started yet)"
+		}
+		if d.booting != nil && d.booting[sr.Name] < state {
+			d.booting[sr.Name] = state
+		}
+	}
+	d.waiting = append(d.waiting, what+" was not assigned before the stack completed"+why)
 	return nil, false
 }
 
