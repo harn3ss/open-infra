@@ -11,7 +11,12 @@
 #   - a deleted claim's bucket: removed with its owner record when EMPTY (no objects, versions or delete
 #     markers), as AWS deletes an empty bucket; one that still holds data is KEPT and its record labelled
 #     openinfra.dev/orphaned=true — data is never deleted by a sweep. A new claim of the same name never
-#     inherits it (bucket-ownership.sh refuses a different instance while data remains).
+#     inherits it (bucket-ownership.sh refuses a different instance while data remains);
+#   - a deleted setup Job's pod: provider-kubernetes deletes a setup Job (its claim deleted, or its spec
+#     superseded) without a propagation policy, and batch/v1 then ORPHANS the pod — a finished one stays
+#     forever, an unfinished one keeps retrying (restartPolicy OnFailure) with no claim behind it (its
+#     setup re-checks the claim and creates nothing: oi_require_claim). The pod is deleted once it has no
+#     owner and its Job is certainly gone (NotFound, or a Job of that name with another uid).
 # Fail-safe: an unknown kind, a record with no claim identity (a legacy namespace-only record), a platform
 # bucket, or any API error other than NotFound is skipped, never reaped. A credentials Secret written
 # before claims were recorded on it carries no owner yet and is skipped until its setup Job runs again.
@@ -46,6 +51,33 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: openinfra-bucket-reaper }
+subjects: [{ kind: ServiceAccount, name: openinfra-bucket-reaper, namespace: minio }]
+---
+# In the minio namespace: the orphaned pods of deleted setup Jobs (the sweep selects only pods run as
+# openinfra-bucket-setup that have no owner), and whether their Job still exists.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openinfra-bucket-reaper-pods
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list, delete]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openinfra-bucket-reaper-pods
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: openinfra-bucket-reaper-pods }
 subjects: [{ kind: ServiceAccount, name: openinfra-bucket-reaper, namespace: minio }]
 ---
 # Read-only: whether a claim (and which instance of it) still exists.
@@ -213,6 +245,26 @@ spec:
                         echo "kept bucket $b of deleted $owner: it still holds data (record labelled orphaned)"
                       fi
                     done < "$W/recs.tsv"
+
+                    # 3. pods of deleted setup Jobs: no owner, and the Job NotFound (or one of that name with
+                    #    another uid). A listing error only warns: it never fails the sweeps above.
+                    if kubectl get pods -n minio --field-selector spec.serviceAccountName=openinfra-bucket-setup \
+                        -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.labels.batch\.kubernetes\.io/job-name}{"\t"}{.metadata.labels.batch\.kubernetes\.io/controller-uid}{"\t"}{.metadata.ownerReferences[*].uid}{"\n"}{end}' \
+                        > "$W/pods.tsv" 2>"$W/err"; then
+                      n=0
+                      while IFS="$TAB" read -r pod job juid owners; do
+                        [ -n "$pod" ] && [ -n "$job" ] && [ -z "$owners" ] || continue
+                        if cur=$(kubectl get job "$job" -n minio -o jsonpath='{.metadata.uid}' 2>"$W/err"); then
+                          [ -n "$cur" ] && [ -n "$juid" ] && [ "$cur" != "$juid" ] || continue
+                        else
+                          grep -q NotFound "$W/err" || continue
+                        fi
+                        kubectl delete pod "$pod" -n minio --ignore-not-found --wait=false >/dev/null 2>&1 && n=$((n + 1))
+                      done < "$W/pods.tsv"
+                      [ "$n" = 0 ] || echo "removed $n pods of deleted setup Jobs"
+                    else
+                      echo "warning: cannot list setup pods: $(cat "$W/err")" >&2
+                    fi
                   }
 
                   start=$(date +%s)

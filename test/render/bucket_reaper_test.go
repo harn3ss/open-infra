@@ -25,6 +25,16 @@ case "$*" in
     pl=${2%.openinfra.dev}
     [ -f "$STUB/claims/$pl/$5/$3" ] && { cat "$STUB/claims/$pl/$5/$3"; exit 0; }
     echo "Error from server (NotFound): $2 \"$3\" not found" >&2; exit 1 ;;
+  # The setup-pod sweep: $STUB/pods.tsv (pod, job, controller-uid, owner uids); $STUB/jobs/<job> holds a
+  # live Job's uid; $STUB/fail-pods fails the listing, $STUB/fail-job/<job> a Job read.
+  "get pods -n minio --field-selector spec.serviceAccountName=openinfra-bucket-setup -o jsonpath="*)
+    [ -f "$STUB/fail-pods" ] && { echo "stub: pods forbidden" >&2; exit 1; }
+    cat "$STUB/pods.tsv" 2>/dev/null; exit 0 ;;
+  "get job "*" -n minio -o jsonpath={.metadata.uid}")
+    [ -f "$STUB/fail-job/$3" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
+    [ -f "$STUB/jobs/$3" ] && { cat "$STUB/jobs/$3"; exit 0; }
+    echo "Error from server (NotFound): jobs.batch \"$3\" not found" >&2; exit 1 ;;
+  "delete pod "*" -n minio --ignore-not-found --wait=false") echo "delete-pod $3" >> "$STUB/actions.log" ;;
   "delete secret "*) echo "delete-secret $3" >> "$STUB/actions.log" ;;
   "patch secret "*) echo "patch $3 $9" >> "$STUB/actions.log" ;;
   "label secret "*) echo "label $3 $6" >> "$STUB/actions.log" ;;
@@ -194,6 +204,67 @@ func TestBucketReaper_Buckets(t *testing.T) {
 			if strings.Contains(acts, never) {
 				t.Errorf("%s: unexpected action matching %q:\n%s", shellName(sh), never, acts)
 			}
+		}
+	}
+}
+
+// provider-kubernetes deletes a setup Job without a propagation policy, so batch/v1 orphans its pod. The
+// reaper deletes a setup pod once it has no owner and its Job is certainly gone (NotFound, or a Job of
+// that name with another uid); a pod with an owner, a live Job, or any doubt is kept. A failed pod
+// listing only warns: the other sweeps still run and the reaper still succeeds.
+func TestBucketReaper_OrphanedSetupPods(t *testing.T) {
+	for _, sh := range posixShells(t) {
+		e := newReaperEnv(t)
+		writeFileMode(t, filepath.Join(e.dir, "jobs", "live-job"), "uid-live", 0o644)
+		writeFileMode(t, filepath.Join(e.dir, "jobs", "renamed-job"), "uid-new", 0o644)
+		writeFileMode(t, filepath.Join(e.dir, "fail-job", "doubt-job"), "", 0o644)
+		pods := strings.Join([]string{
+			"orphan-1\tgone-job\tuid-a\t",         // Job deleted → deleted
+			"orphan-2\trenamed-job\tuid-old\t",    // a later Job of that name → deleted
+			"owned\tlive-job\tuid-live\tuid-live", // owned by its live Job → kept
+			"unowned-live\tlive-job\tuid-live\t",  // no owner but its Job is live → kept
+			"doubt\tdoubt-job\tuid-d\t",           // the Job cannot be read → kept
+			"nolabel\t\t\t",                       // not a Job's pod → kept
+			"nouid\trenamed-job\t\t",              // no controller-uid, a Job of that name → kept
+		}, "\n") + "\n"
+		writeFileMode(t, filepath.Join(e.dir, "pods.tsv"), pods, 0o644)
+		e.creds = []string{"app-dead\tBucket/team-a/dead\t" + live}
+		out, acts := e.run(t, sh)
+		for _, want := range []string{"delete-pod orphan-1", "delete-pod orphan-2", "delete-secret app-dead"} {
+			if !strings.Contains(acts, want+"\n") {
+				t.Errorf("%s: missing %q in actions:\n%s", shellName(sh), want, acts)
+			}
+		}
+		for _, keep := range []string{"owned", "unowned-live", "doubt", "nolabel", "nouid"} {
+			if strings.Contains(acts, "delete-pod "+keep+"\n") {
+				t.Errorf("%s: pod %s must be kept; actions:\n%s", shellName(sh), keep, acts)
+			}
+		}
+		if !strings.Contains(out, "removed 2 pods of deleted setup Jobs") {
+			t.Errorf("%s: the sweep does not report what it removed:\n%s", shellName(sh), out)
+		}
+
+		e2 := newReaperEnv(t)
+		writeFileMode(t, filepath.Join(e2.dir, "fail-pods"), "", 0o644)
+		e2.creds = []string{"app-dead\tBucket/team-a/dead\t" + live}
+		out2, acts2 := e2.run(t, sh) // fails the test itself on a non-zero exit
+		if !strings.Contains(acts2, "delete-secret app-dead\n") || !strings.Contains(out2, "warning: cannot list setup pods") {
+			t.Errorf("%s: a failed pod listing must only warn:\n%s\nactions:\n%s", shellName(sh), out2, acts2)
+		}
+	}
+}
+
+// The setup pods' sweep is the reaper's: it may list and delete pods, and read Jobs, in the minio
+// namespace only.
+func TestBucketReaper_PodSweepGrant(t *testing.T) {
+	y := mustRead(t, bucketReaperPath)
+	for _, want := range []string{
+		"name: openinfra-bucket-reaper-pods\n  namespace: minio",
+		"resources: [pods]\n    verbs: [list, delete]",
+		"resources: [jobs]\n    verbs: [get]",
+	} {
+		if !strings.Contains(y, want) {
+			t.Errorf("bucket-reaper.yaml lacks %q", want)
 		}
 	}
 }

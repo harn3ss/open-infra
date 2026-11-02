@@ -130,6 +130,16 @@ case "$*" in
   "get secret "*"-minio -n "*" -o jsonpath={.data.MINIO_SECRET_KEY}") exit 1 ;;
   "create secret generic "*"-minio -n "*" --dry-run=client -o yaml") printf 'secret %s\n' "$4"; printf '%s\n' "$@" | grep -- '--from-literal=MINIO_ACCESS_KEY=' ;;
   "apply -f -") cat >> "$STUB/applied.txt" ;;
+  # oi_require_claim: the claim (xr-<name> as its composite) and its composite, created at XR_CREATED
+  # unless a test says otherwise: $STUB/claim-gone or $STUB/xr-gone (NotFound), $STUB/claim-forbidden (a
+  # missing grant), $STUB/xr-created (a later instance's creation time).
+  "get "*".openinfra.dev "*" -n "*" -o jsonpath={.spec.resourceRef.name}")
+    [ -f "$STUB/claim-forbidden" ] && { echo "Error from server (Forbidden): $2 \"$3\" is forbidden" >&2; exit 1; }
+    [ -f "$STUB/claim-gone" ] && { echo "Error from server (NotFound): $2 \"$3\" not found" >&2; exit 1; }
+    printf 'xr-%s' "$3" ;;
+  "get x"*".openinfra.dev "*" -o jsonpath={.metadata.creationTimestamp}")
+    [ -f "$STUB/xr-gone" ] && { echo "Error from server (NotFound): $2 \"$3\" not found" >&2; exit 1; }
+    if [ -f "$STUB/xr-created" ]; then cat "$STUB/xr-created"; else printf '%s' "$XR_CREATED"; fi ;;
   *) echo "stub kubectl: unhandled: $*" >&2; exit 99 ;;
 esac
 `
@@ -143,7 +153,9 @@ case "$1 $2" in
     b=${4#*Name==\'}; b=${b%%\'*}
     if [ -f "$STUB/buckets/$b" ]; then cat "$STUB/buckets/$b"; else echo None; fi ;;
   "s3 mb") b=${3#s3://}; echo "$b" >> "$STUB/made.txt"; echo "make_bucket: $b" ;;
-  "s3api list-object-versions") [ -f "$STUB/objects/$4" ] && echo '{"Versions":[{"Key":"k"}]}' || echo '{}' ;;
+  "s3api list-object-versions")
+    [ -f "$STUB/nosuchbucket/$4" ] && { echo "An error occurred (NoSuchBucket) when calling the ListObjectVersions operation: The specified bucket does not exist" >&2; exit 254; }
+    [ -f "$STUB/objects/$4" ] && echo '{"Versions":[{"Key":"k"}]}' || echo '{}' ;;
   "s3api "*) echo "$*" >> "$STUB/configured.txt" ;;
   *) echo "stub aws: unhandled: $*" >&2; exit 99 ;;
 esac

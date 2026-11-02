@@ -19,6 +19,7 @@ kubectl() {
   case "$*" in
     *"jsonpath={.data.MINIO_SECRET_KEY}"*) printf '%s' "$(printf oldkey | base64)" ;;
     *"jsonpath={.metadata.annotations.openinfra\.dev/instance}"*) printf '%s' "$WAS" ;;
+    *"jsonpath={.metadata.creationTimestamp}"*) printf '%s' "$MADE" ;;
     "create secret generic"*) printf 'kind: Secret\n' ;;
     *) cat >/dev/null 2>&1 || true ;;
   esac
@@ -30,12 +31,16 @@ OWN_NS=openinfra-bucket-creds
 OWNER_REF=Bucket/team-a/data
 `
 	for _, c := range []struct {
-		name, was    string
-		wantRotation bool
+		name, was, made string
+		wantRotation    bool
 	}{
-		{"same instance keeps its key", xrCreated, false},
-		{"an earlier instance's key is rotated", "2026-09-01T00:00:00Z", true},
-		{"unmarked credentials are left as they are", "", false},
+		{"same instance keeps its key", xrCreated, "", false},
+		{"an earlier instance's key is rotated", "2026-09-01T00:00:00Z", "", true},
+		// Unmarked (written before Secrets named their instance): only one older than this instance's
+		// composite is a predecessor's — this instance's own Secret is always newer.
+		{"unmarked credentials older than the claim are rotated", "", "2026-09-01T00:00:00Z", true},
+		{"unmarked credentials newer than the claim are kept", "", "2026-10-23T02:56:30Z", false},
+		{"unmarked credentials of unknown age are kept", "", "", false},
 	} {
 		for _, sh := range posixShells(t) {
 			dir := t.TempDir()
@@ -46,7 +51,7 @@ OWNER_REF=Bucket/team-a/data
 			script := lib + "\n" + stubs + "\nmint_scoped_user app-team-a-data " + pol + "\n"
 			args := append(append([]string{}, sh[1:]...), "-c", script)
 			cmd := exec.Command(sh[0], args...)
-			cmd.Env = append(os.Environ(), "STUB="+dir, "WAS="+c.was, "XR_CREATED="+xrCreated)
+			cmd.Env = append(os.Environ(), "STUB="+dir, "WAS="+c.was, "MADE="+c.made, "XR_CREATED="+xrCreated, "TMPDIR="+dir)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("%s/%s: %v\n%s", shellName(sh), c.name, err, out)
