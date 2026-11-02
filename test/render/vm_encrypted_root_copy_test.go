@@ -111,7 +111,7 @@ func encRootCopyScript(t *testing.T) string {
 func TestVM_EncryptedRoot_CopiesOnlyTheImage(t *testing.T) {
 	script := encRootCopyScript(t)
 	const mib = 1 << 20
-	built := 6*mib + 5*512 // the image as built: not a whole MiB
+	built := 6*mib + 5*512                    // the image as built: not a whole MiB
 	resized := func(b []byte, n int) []byte { // CDI's resize: zeros appended
 		return append(append([]byte{}, b...), make([]byte, n-len(b))...)
 	}
