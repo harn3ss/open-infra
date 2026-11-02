@@ -149,7 +149,16 @@ incl objectEncryptionKes "security/minio-kes.yaml"
 # Transactional email: kind: EmailSender (its XRD/composition) + the shared in-cluster SMTP relay.
 # OFF unless components.mail: true. Reliable internet delivery needs a smarthost/SPF/DKIM — an
 # operator concern; see docs/email.md.
-incl mail "abstraction/emailsender-xrd.yaml,abstraction/emailsender-composition.yaml,mail/relay.yaml"
+incl mail "abstraction/emailsender-xrd.yaml,abstraction/emailsender-composition.yaml,mail/relay.yaml,mail/relay-capture.yaml"
+# Exactly one relay: the delivering postfix relay (mail/relay.yaml), or, on a test cluster
+# (mail.capture: true), the capturing sink that delivers nothing (mail/relay-capture.yaml). Both are the
+# smtp-relay Service, so EmailSender apps and the aws-shim's SES front door use either unchanged.
+if [ "$(yget components.mail)" = "true" ] && [ "$(yget mail.capture)" = "true" ]; then
+  EXCLUDES="${EXCLUDES},mail/relay.yaml"
+  LOG "mail: capture mode (mail.capture) — the relay accepts and keeps mail, delivering none"
+else
+  EXCLUDES="${EXCLUDES},mail/relay-capture.yaml"
+fi
 # Daily immutable compliance-attestation snapshots to the WORM audit store. OFF by default; requires
 # audit off-siting. Signing is an out-of-band operator/CI step (docs/compliance-attestation.md).
 incl attestation "security/compliance-attest.yaml"

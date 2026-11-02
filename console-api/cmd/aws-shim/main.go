@@ -555,15 +555,16 @@ func run(logger *slog.Logger) error {
 		services["iam"] = iamH
 	}
 	// SES (ses.* / email.*) over the in-cluster SMTP relay — the kind: EmailSender substrate
-	// (platform/mail/relay.yaml). OFF until the operator enables the mail relay and sets SES_SMTP_RELAY
-	// (host:port). Internet deliverability is the operator's smarthost + the sending domain's DNS
-	// (SPF/DKIM/DMARC), exactly as AWS gates SES behind domain verification; we do not accept mail that
-	// cannot be delivered, so the doorway stays unsupported until the relay is wired.
+	// (platform/mail/relay.yaml). SES_SMTP_RELAY (host:port) names the relay; the shim's manifest sets the
+	// platform relay's address, and the doorway answers as not fronted while that name does not resolve
+	// (the mail component is off). Internet deliverability is the operator's smarthost + the sending
+	// domain's DNS (SPF/DKIM/DMARC), exactly as AWS gates SES behind domain verification; we do not accept
+	// mail that cannot be delivered.
 	if relay := getenv("SES_SMTP_RELAY", ""); relay != "" {
 		sesH := newSESHandler(cs, authzNS, relay, authzChecker, logger)
 		services["ses"] = sesH
 		services["email"] = sesH
-		logger.Info("SES front door enabled", slog.String("relay", relay))
+		logger.Info("SES front door configured (served while its relay resolves)", slog.String("relay", relay))
 	}
 	if cognitoH != nil {
 		services["cognito-idp"] = cognitoH

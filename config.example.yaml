@@ -200,6 +200,14 @@ components:
   objectEncryptionKes: false   # MinIO KES with a Vault KV keystore (customer-held keys + crypto-erase); experimental, opt-in, OFF; shipped but not wired to the platform MinIO (requires the encryption component — see docs/encryption.md)
   attestation: false           # daily immutable compliance-attestation snapshots to the WORM audit store; opt-in, OFF (sign out-of-band with the release key — see docs/compliance-attestation.md)
   airgap: false                # air-gap support: in-cluster registry mirror + image prefetch (front-load), and the optional public-egress cutoff; opt-in, OFF (internet allowed by default — see docs/airgapping.md)
+  mail: false                  # transactional email: kind: EmailSender + the shared in-cluster SMTP relay, which also serves the aws-shim's SES front door; opt-in, OFF (internet delivery needs a smarthost + SPF/DKIM — see docs/email.md)
+
+# Mail (issue #23). Only meaningful when components.mail: true.
+mail:
+  # true = a TEST cluster: the relay is a capturing sink (Mailpit) that accepts every message and
+  # delivers none, so SES and kind: EmailSender can be exercised without ever sending real mail; read
+  # what was "sent" through its API (docs/email.md). false (default) = the postfix relay, delivering.
+  capture: false
 
 # Air-gap posture (issue #72). Only meaningful when components.airgap: true. Two phases, deliberately
 # separate so you front-load first and cut the internet last — and both are reversible.

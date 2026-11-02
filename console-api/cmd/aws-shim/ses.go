@@ -1,21 +1,29 @@
 // AWS SES front door (the SES v1 Query protocol: SendEmail / SendRawEmail) over the in-cluster SMTP
-// relay — the kind: EmailSender substrate (platform/mail/relay.yaml). SES's control surface is faithful
-// here; actual internet DELIVERABILITY is an operator concern, exactly as AWS gates SES behind domain
-// verification + DKIM/SPF: the relay forwards through a smarthost the operator configures (RELAYHOST)
-// for the sending domain. This doorway is therefore OFF until the operator enables the mail relay and
-// points SES_SMTP_RELAY at it (host:port); unset, SES requests fall through to the unsupported-service
-// response rather than accepting mail that can never be delivered (which would be a false-green).
+// relay — the kind: EmailSender substrate (platform/mail/relay.yaml, or relay-capture.yaml on a test
+// cluster). SES's control surface is faithful here; actual internet DELIVERABILITY is an operator
+// concern, exactly as AWS gates SES behind domain verification + DKIM/SPF: the relay forwards through a
+// smarthost the operator configures (RELAYHOST) for the sending domain.
+//
+// The doorway is served only while the relay exists: SES_SMTP_RELAY names it (host:port; the shim's
+// manifest sets the platform relay's address), and while that name does not resolve — the mail component
+// is off — SES answers as a service this shim does not front, rather than accepting mail that can never
+// be delivered (which would be a false-green). Turning the mail component on serves it, with no restart.
 //
 // Identity verification (VerifyEmailIdentity/VerifyDomainIdentity) is refused honestly — a verified
-// identity is backed by the domain's DNS (SPF/DKIM/DMARC), which this shim cannot fake.
+// identity is backed by the domain's DNS (SPF/DKIM/DMARC), which this shim cannot fake. Who may send as an
+// identity is the caller's policy: ses:SendEmail / ses:SendRawEmail on Identity::<the From address>.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/smtp"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -30,10 +38,46 @@ type sesHandler struct {
 	relayAddr string // SMTP relay submission endpoint, host:port (e.g. smtp-relay.mail.svc.cluster.local:587)
 	authz     *dataplaneauthz.Checker
 	logger    *slog.Logger
+
+	// lookup resolves the relay's host (net.DefaultResolver; a stub in tests). The answer is cached for
+	// sesRelayCheckTTL, so a burst of sends costs one lookup.
+	lookup    func(ctx context.Context, host string) ([]string, error)
+	relayMu   sync.Mutex
+	relayAt   time.Time
+	relayLive bool
 }
 
+// sesRelayCheckTTL is how long the shim trusts its last answer to "does the relay exist".
+const sesRelayCheckTTL = 30 * time.Second
+
 func newSESHandler(cs kubernetes.Interface, authzNS, relayAddr string, authz *dataplaneauthz.Checker, logger *slog.Logger) *sesHandler {
-	return &sesHandler{cs: cs, authzNS: authzNS, relayAddr: relayAddr, authz: authz, logger: logger}
+	return &sesHandler{cs: cs, authzNS: authzNS, relayAddr: relayAddr, authz: authz, logger: logger,
+		lookup: net.DefaultResolver.LookupHost}
+}
+
+// relayExists reports whether the relay's host resolves (the mail component is on). An IP literal always
+// exists: the operator named it directly.
+func (h *sesHandler) relayExists(ctx context.Context) bool {
+	host := h.relayAddr
+	if hh, _, err := net.SplitHostPort(host); err == nil {
+		host = hh
+	}
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	h.relayMu.Lock()
+	defer h.relayMu.Unlock()
+	if !h.relayAt.IsZero() && time.Since(h.relayAt) < sesRelayCheckTTL {
+		return h.relayLive
+	}
+	lctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	addrs, err := h.lookup(lctx, host)
+	h.relayLive, h.relayAt = err == nil && len(addrs) > 0, time.Now()
+	return h.relayLive
 }
 
 func (h *sesHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
@@ -42,6 +86,11 @@ func (h *sesHandler) authFailure(w http.ResponseWriter, _ *http.Request, request
 }
 
 func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
+	if !h.relayExists(r.Context()) {
+		// The mail component is off: there is nowhere to deliver, so SES is not fronted here.
+		writeUnsupportedService(w, "ses", requestID)
+		return
+	}
 	_ = r.ParseForm()
 	op := r.PostFormValue("Action")
 	if op == "" {
@@ -64,6 +113,12 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	source := r.PostFormValue("Source")
 	if source == "" {
 		source = r.PostFormValue("FromEmailAddress")
+	}
+	if source == "" && op == "SendRawEmail" {
+		// As SES does, a raw message with no Source is sent (and authorized) as its From header.
+		if data, err := b64Decode(r.PostFormValue("RawMessage.Data")); err == nil {
+			source, _ = envelopeFromRaw(data)
+		}
 	}
 	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, emailAddr(source)); !allowed {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, sesXMLNamespace)

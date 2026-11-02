@@ -47,9 +47,29 @@ pretend otherwise:
 
 The relay image is pinned but should be confirmed against its releases before you rely on it.
 
+## A test cluster: capture instead of deliver
+
+With `mail.capture: true` (alongside `components.mail: true`), the relay is a capturing sink
+(`platform/mail/relay-capture.yaml`, Mailpit) in place of the delivering postfix relay. It is the same
+`smtp-relay` Service on the same ports, so apps and the aws-shim's SES front door send to it unchanged —
+but it keeps every message and delivers none: it relays nowhere, and its pod may open no connection at
+all. Read what was sent through its API, which listens on the pod's loopback only:
+
+```sh
+kubectl -n mail exec deploy/smtp-relay -- wget -qO- http://127.0.0.1:8025/api/v1/messages
+```
+
+Messages are kept in memory (the newest 1,000) and go with the pod. Use it to test a template that sends
+email, and its UserData, without mailing anyone.
+
+## AWS SDK code (SES)
+
+The aws-shim fronts SES v1 over this relay — `SendEmail`, `SendRawEmail` — so unmodified SDK code, and an
+EC2 instance role from a CloudFormation template, can send ([aws-shim.md](aws-shim.md#ses-sendemail--sendrawemail-over-the-platform-smtp-relay-query-protocol-probe-proven)).
+SES is served only while this component is on.
+
 ## Status and scope
 
-Built; not yet live-verified end-to-end (deliverability is environment-dependent). A per-identity
-SMTP AUTH credential, and an optional AWS-SDK **SES** shim verb (`SendEmail` / `SendRawEmail`
-relaying to this service, so unmodified AWS SDK code works) are documented follow-ons, not in this
-first slice.
+The SES path is probe-proven (`probe/aws-shim-ses.sh`), in capture mode. Internet deliverability through a
+smarthost is environment-dependent and yours to verify. A per-identity SMTP AUTH credential is a
+documented follow-on.

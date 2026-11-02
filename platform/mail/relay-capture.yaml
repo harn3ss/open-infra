@@ -1,0 +1,93 @@
+# The capturing SMTP relay for a TEST cluster (components.mail: true + mail.capture: true): it stands in
+# for mail/relay.yaml as the same smtp-relay Service, so kind: EmailSender apps and the aws-shim's SES
+# front door (SendEmail / SendRawEmail) submit to smtp-relay.mail.svc:587 unchanged — but every message
+# is kept here and NONE is delivered. install.sh includes exactly one of the two relays.
+#
+# The sink is Mailpit. It has no relay configured and its pod may not open any connection (the egress
+# NetworkPolicy below), so nothing it accepts can leave the cluster. Its HTTP API, which shows every
+# captured message, listens on the pod's loopback only: read it from inside the pod, e.g.
+#   kubectl -n mail exec deploy/smtp-relay -- wget -qO- http://127.0.0.1:8025/api/v1/messages
+# Messages live in memory (the newest MP_MAX_MESSAGES) and are gone when the pod restarts.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mail
+  labels:
+    openinfra.dev/component: mail
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smtp-relay
+  namespace: mail
+  labels: { app: smtp-relay, openinfra.dev/mail-capture: "true" }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: smtp-relay } }
+  template:
+    metadata: { labels: { app: smtp-relay, openinfra.dev/mail-capture: "true" } }
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: mailpit
+          image: docker.io/axllent/mailpit:v1.31.6@sha256:23fe39e81bde596a918000b3135c0f85dc8bb4c9ea6be274b051143f3e300387
+          env:
+            - { name: MP_SMTP_BIND_ADDR, value: "0.0.0.0:1025" }
+            # The API/UI shows every captured message: loopback only (read it with kubectl exec).
+            - { name: MP_UI_BIND_ADDR, value: "127.0.0.1:8025" }
+            # Submitters do not authenticate (the platform relay does not either), over plain SMTP.
+            - { name: MP_SMTP_AUTH_ACCEPT_ANY, value: "true" }
+            - { name: MP_SMTP_AUTH_ALLOW_INSECURE, value: "true" }
+            - { name: MP_MAX_MESSAGES, value: "1000" }
+          ports:
+            - { name: smtp, containerPort: 1025 }
+          readinessProbe:
+            tcpSocket: { port: 1025 }
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 1025 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 256Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: smtp-relay
+  namespace: mail
+  labels: { app: smtp-relay }
+spec:
+  type: ClusterIP
+  selector: { app: smtp-relay }
+  ports:
+    # The ports the delivering relay serves, both onto the sink's one SMTP listener.
+    - { name: submission, port: 587, targetPort: 1025 }
+    - { name: smtp, port: 25, targetPort: 1025 }
+---
+# Nothing the sink accepts may leave: its pod opens no connection at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: smtp-relay-capture-no-egress
+  namespace: mail
+spec:
+  podSelector: { matchLabels: { openinfra.dev/mail-capture: "true" } }
+  policyTypes: [Egress]
+  egress: []

@@ -760,6 +760,10 @@ spec:
             # and StackId is built in, and the CloudFormation pseudo-parameters resolve to.
             - { name: ACCOUNT_ID, valueFrom: { configMapKeyRef: { name: openinfra-aws-identity, key: ACCOUNT_ID } } }
             - { name: AWS_REGION, valueFrom: { configMapKeyRef: { name: openinfra-aws-identity, key: AWS_REGION } } }
+            # SES (SendEmail / SendRawEmail): the platform SMTP relay (the mail component, mail/relay.yaml or
+            # mail/relay-capture.yaml). The shim serves SES only while this name resolves, so with the mail
+            # component off SES stays not-fronted; turning it on needs no shim change.
+            - { name: SES_SMTP_RELAY, value: "smtp-relay.mail.svc.cluster.local:587" }
             # DynamoDB data layer: FerretDB (Mongo wire) for the data path + the DocumentDB Postgres
             # behind it for atomic Transact* — both provisioned by dynamodb-backend.yaml (the
             # dynamo-mongo-app Secret). Without these the dynamodb front door answers an honest 501.
