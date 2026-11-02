@@ -38,9 +38,11 @@ type s3Handler struct {
 	authz   *dataplaneauthz.Checker // fine-grained kind: Policy data-plane check (additive; may be nil)
 	logger  *slog.Logger
 	// vhostSuffixes are the host suffixes under which a leading label is the BUCKET (virtual-hosted
-	// addressing), e.g. "s3.amazonaws.com" or the external S3 hostname. An unmodified AWS SDK (no
-	// forcePathStyle) addresses "<bucket>.<suffix>", so without this a default client — and every
-	// presigned URL it generates — fails. Empty = path-style only (the v1 default).
+	// addressing): the shim's own in-cluster names (S3_INTERNAL_VHOST_SUFFIXES, so a default SDK client
+	// pointed at AWS_ENDPOINT_URL=https://aws-shim.<ns>.svc.cluster.local:4567 works) and the site's
+	// external S3 hostname (S3_VHOST_SUFFIXES). An unmodified AWS SDK (no forcePathStyle) addresses
+	// "<bucket>.<suffix>", so without this a default client — and every presigned URL it generates —
+	// fails. AWS's own S3 names are recognized without configuration (decode). Empty = path-style only.
 	vhostSuffixes []string
 	// dyn (the shim's own client) finds the kind: Bucket a bucket is; callerDyn impersonates a caller, so
 	// DeleteBucket deletes that claim with the caller's authority. Either nil: DeleteBucket is not served.
@@ -208,14 +210,19 @@ func (h *s3Handler) allowed(r *http.Request, claims iam.Claims, op s3op) bool {
 }
 
 // decode maps a request onto an s3op, choosing virtual-hosted addressing (bucket in the Host header)
-// when the host matches a configured vhostSuffix, else path-style. Virtual-hosted is what an
-// unmodified AWS SDK (no forcePathStyle) and the presigned URLs it mints use when AWS_ENDPOINT_URL
-// names a hostname; path-style stays the explicit LocalStack/MinIO-style client option.
+// when the host matches a configured vhostSuffix or is one of AWS's own virtual-hosted S3 names
+// (<bucket>.s3[.<region>].amazonaws.com, which a VM guest's resolver sends here), else path-style.
+// Virtual-hosted is what an unmodified AWS SDK (no forcePathStyle) and the presigned URLs it mints use
+// when AWS_ENDPOINT_URL names a hostname; path-style stays the explicit LocalStack/MinIO-style client
+// option.
 func (h *s3Handler) decode(r *http.Request) (s3op, bool) {
 	var op s3op
 	var ok bool
-	if b := vhostBucket(hostNoPort(r.Host), h.vhostSuffixes); b != "" {
+	host := hostNoPort(r.Host)
+	if b := vhostBucket(host, h.vhostSuffixes); b != "" {
 		op, ok = decodeVHost(r, b)
+	} else if m := awsS3VhostRe.FindStringSubmatch(host); m != nil {
+		op, ok = decodeVHost(r, m[1])
 	} else {
 		op, ok = decodeS3(r)
 	}

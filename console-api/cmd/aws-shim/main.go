@@ -457,6 +457,7 @@ func run(logger *slog.Logger) error {
 	ddbStreamsH.authz = authzChecker
 	sqsH := newSQSHandler(cs, authzNS, account, region, sqsSt, logger)
 	sqsH.authz = authzChecker
+	sqsH.urlBase = getenv("SQS_QUEUE_URL_BASE", defaultQueueURLBase)
 	snsH := newSNSHandler(cs, authzNS, account, region, snsSt, sqsSt, logger)
 	snsH.authz = authzChecker
 	// lambda subscriptions: SNS invokes the Function at its cluster-local address (sns_lambda.go). A
@@ -533,7 +534,8 @@ func run(logger *slog.Logger) error {
 	appsyncH := newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger)
 	appsyncH.authz = authzChecker
 	services := map[string]awsService{
-		"s3":              newS3Handler(cs, mc, dyn, kc.Config, authzNS, authzChecker, logger, splitCommaTrim(getenv("S3_VHOST_SUFFIXES", ""))),
+		"s3": newS3Handler(cs, mc, dyn, kc.Config, authzNS, authzChecker, logger,
+			splitSuffixes(getenv("S3_INTERNAL_VHOST_SUFFIXES", ""), getenv("S3_VHOST_SUFFIXES", ""))),
 		"sts":             &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
 		"lambda":          lambdaH,
 		"appsync":         appsyncH,
@@ -604,7 +606,7 @@ func run(logger *slog.Logger) error {
 			if cfnSvcOwners != nil {
 				cfnH.services = &cfnServices{sqs: sqsH, sns: snsH, ssm: ssmH, kms: kmsH, owners: cfnSvcOwners, doors: services}
 			}
-			cfnH.sqsURLBase = getenv("SQS_QUEUE_URL_BASE", "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566")
+			cfnH.sqsURLBase = getenv("SQS_QUEUE_URL_BASE", defaultQueueURLBase)
 			if s3H, ok := services["s3"].(*s3Handler); ok {
 				cfnH.s3 = s3H // TemplateURL objects are read from this shim's S3, as the caller (cloudformation_templateurl.go)
 			}
@@ -776,23 +778,15 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
-	// Optional TLS listener for the DNS-interception path. A client that resolves an AWS hostname to
-	// this shim (CoreDNS rewrite, function-scoped) connects over HTTPS on 443. Serving TLS with an
-	// internal-CA cert whose SANs cover the AWS service hostnames — trusted in the runtime images —
-	// lets BOTH aws-sdk v3 AND v2 (which ignores AWS_ENDPOINT_URL_* and endpoint_url entirely) reach
-	// the shim transparently, with no customer-code change and no per-service endpoint config. The
-	// plain :4566 listener above is unchanged, so the existing endpoint-injection path is unaffected.
-	var tlsSrv *http.Server
-	if cert, key := os.Getenv("TLS_CERT_FILE"), os.Getenv("TLS_KEY_FILE"); cert != "" && key != "" {
-		tlsSrv = &http.Server{
-			Addr:              getenv("TLS_LISTEN_ADDR", ":8443"),
-			Handler:           otelhttp.NewHandler(router, "aws-shim"),
-			ReadHeaderTimeout: 10 * time.Second,
-			IdleTimeout:       120 * time.Second,
-		}
+	// TLS listener for AWS's own hostnames (newAWSNamesTLSServer): a VM guest's resolver answers the
+	// amazonaws.com names of the services served here with this shim's address, so a URL or SDK that
+	// ignores AWS_ENDPOINT_URL (a QueueUrl from AWS-side config, a bucket's virtual-hosted URL, aws-sdk v2)
+	// reaches the shim, not AWS. The plain :4566 listener and the endpoint-injection path are unaffected.
+	tlsSrv := newAWSNamesTLSServer(otelhttp.NewHandler(router, "aws-shim"), logger)
+	if tlsSrv != nil {
 		go func() {
-			logger.Info("aws-shim TLS (DNS-interception) listening", "addr", tlsSrv.Addr)
-			if lerr := tlsSrv.ListenAndServeTLS(cert, key); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
+			logger.Info("aws-shim TLS (AWS hostnames) listening", "addr", tlsSrv.Addr)
+			if lerr := tlsSrv.ListenAndServeTLS("", ""); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
 				serverErr <- lerr
 			}
 		}()

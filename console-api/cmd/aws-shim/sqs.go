@@ -51,7 +51,13 @@ type sqsHandler struct {
 	store   *sqsStore // nil => data layer not configured (honest 501)
 	authz   *dataplaneauthz.Checker
 	logger  *slog.Logger
+	// urlBase is the shim's own queue URL base (SQS_QUEUE_URL_BASE): the URL a queue is recorded under
+	// when its creator called by an AWS name (queueURLs).
+	urlBase string
 }
+
+// defaultQueueURLBase is the shim's in-cluster queue URL base, unless SQS_QUEUE_URL_BASE names another.
+const defaultQueueURLBase = "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566"
 
 func newSQSHandler(cs kubernetes.Interface, authzNS, account, region string, store *sqsStore, logger *slog.Logger) *sqsHandler {
 	if region == "" {
@@ -152,7 +158,7 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "CreateQueue":
 		h.createQueue(ctx, w, r, requestID, body)
 	case "GetQueueUrl":
-		h.getQueueURL(ctx, w, requestID, body)
+		h.getQueueURL(ctx, w, r, requestID, body)
 	case "GetQueueAttributes":
 		h.getQueueAttributes(ctx, w, requestID, body)
 	case "SetQueueAttributes":
@@ -160,7 +166,7 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "DeleteQueue":
 		h.deleteQueue(ctx, w, requestID, body)
 	case "ListQueues":
-		h.listQueues(ctx, w, requestID, body)
+		h.listQueues(ctx, w, r, requestID, body)
 	case "SendMessage":
 		h.sendMessage(ctx, w, requestID, body)
 	case "SendMessageBatch":
@@ -201,7 +207,7 @@ func (h *sqsHandler) createQueue(ctx context.Context, w http.ResponseWriter, r *
 	if v, ok := attrs[policyAttr]; ok && strings.TrimSpace(v) == "" {
 		delete(attrs, policyAttr)
 	}
-	url := h.queueURL(r, name)
+	url, answer := h.queueURLs(r, name)
 	existed, err := h.store.createQueue(ctx, name, url, attrs)
 	if err == errQueueExistsDiff {
 		writeSQSError(w, http.StatusBadRequest, "QueueNameExists", requestID,
@@ -213,10 +219,10 @@ func (h *sqsHandler) createQueue(ctx context.Context, w http.ResponseWriter, r *
 		return
 	}
 	_ = existed // idempotent same-config create returns the URL as AWS does
-	writeSQSJSON(w, requestID, map[string]any{"QueueUrl": url})
+	writeSQSJSON(w, requestID, map[string]any{"QueueUrl": answer})
 }
 
-func (h *sqsHandler) getQueueURL(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+func (h *sqsHandler) getQueueURL(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, body map[string]any) {
 	name, _ := body["QueueName"].(string)
 	url, ok, err := h.store.queueURLByName(ctx, name)
 	if err != nil {
@@ -227,7 +233,7 @@ func (h *sqsHandler) getQueueURL(ctx context.Context, w http.ResponseWriter, req
 		writeSQSError(w, http.StatusBadRequest, "QueueDoesNotExist", requestID, "The specified queue does not exist.")
 		return
 	}
-	writeSQSJSON(w, requestID, map[string]any{"QueueUrl": url})
+	writeSQSJSON(w, requestID, map[string]any{"QueueUrl": h.answerURL(r, url)})
 }
 
 func (h *sqsHandler) getQueueAttributes(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -331,12 +337,15 @@ func (h *sqsHandler) deleteQueue(ctx context.Context, w http.ResponseWriter, req
 	writeSQSJSON(w, requestID, map[string]any{})
 }
 
-func (h *sqsHandler) listQueues(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+func (h *sqsHandler) listQueues(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, body map[string]any) {
 	prefix, _ := body["QueueNamePrefix"].(string)
 	urls, err := h.store.listQueues(ctx, prefix, 1000)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
+	}
+	for i, u := range urls {
+		urls[i] = h.answerURL(r, u)
 	}
 	writeSQSJSON(w, requestID, map[string]any{"QueueUrls": urls})
 }
@@ -664,6 +673,33 @@ func (h *sqsHandler) queueURL(r *http.Request, name string) string {
 		scheme = "https"
 	}
 	return scheme + "://" + r.Host + "/" + h.account + "/" + name
+}
+
+// queueURLs is the URL a new queue is recorded under, and the one its creator is answered with. Both are
+// the caller's own endpoint, except when the caller came in by an AWS name (a VM guest whose resolver
+// sends sqs.<region>.amazonaws.com here): that caller is answered in AWS's shape, but the queue is
+// recorded under the shim's own URL. A recorded amazonaws.com URL would be handed to every later caller
+// (GetQueueUrl, ListQueues, a stack's outputs), and an SDK that sends to the QueueUrl's host — the
+// JavaScript SDK v3 does — would send that caller's credentials and messages to AWS.
+func (h *sqsHandler) queueURLs(r *http.Request, name string) (stored, answer string) {
+	answer = h.queueURL(r, name)
+	if !awsSQSHost(r) {
+		return answer, answer
+	}
+	base := h.urlBase
+	if base == "" {
+		base = defaultQueueURLBase
+	}
+	return strings.TrimRight(base, "/") + "/" + h.account + "/" + name, answer
+}
+
+// answerURL is the URL a queue recorded under stored is reported to this caller with: the recorded URL,
+// or, for a caller that came in by an AWS name, the queue's URL at that name (queueURLs).
+func (h *sqsHandler) answerURL(r *http.Request, stored string) string {
+	if !awsSQSHost(r) {
+		return stored
+	}
+	return h.queueURL(r, queueNameFromURL(stored))
 }
 
 // canonicalURL is the stored URL of the queue a QueueUrl addresses: the URL itself when a queue has it,

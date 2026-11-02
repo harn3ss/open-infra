@@ -24,6 +24,7 @@ const defaultInternalTLSAddr = ":4567"
 // at most once per interval, and keeps serving the last good certificate if a new pair fails to load.
 type certReloader struct {
 	certFile, keyFile string
+	label             string // which listener's certificate, for the log
 	interval          time.Duration
 	now               func() time.Time
 	logger            *slog.Logger
@@ -35,7 +36,7 @@ type certReloader struct {
 }
 
 func newCertReloader(certFile, keyFile string, logger *slog.Logger) *certReloader {
-	return &certReloader{certFile: certFile, keyFile: keyFile, interval: 10 * time.Second, now: time.Now, logger: logger}
+	return &certReloader{certFile: certFile, keyFile: keyFile, label: "internal", interval: 10 * time.Second, now: time.Now, logger: logger}
 }
 
 func fileStamp(p string) (string, error) {
@@ -62,17 +63,47 @@ func (c *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, e
 			if err == nil {
 				c.cert, c.stamp = &pair, stamp
 				if c.logger != nil {
-					c.logger.Info("internal TLS certificate loaded", slog.String("cert", c.certFile))
+					c.logger.Info(c.label+" TLS certificate loaded", slog.String("cert", c.certFile))
 				}
 			} else if c.logger != nil {
-				c.logger.Warn("internal TLS certificate did not load; serving the previous one", slog.String("error", err.Error()))
+				c.logger.Warn(c.label+" TLS certificate did not load; serving the previous one", slog.String("error", err.Error()))
 			}
 		}
 	}
 	if c.cert == nil {
-		return nil, errors.New("no internal TLS certificate yet")
+		return nil, errors.New("no " + c.label + " TLS certificate yet")
 	}
 	return c.cert, nil
+}
+
+const defaultAWSNamesTLSAddr = ":8443"
+
+// newAWSNamesTLSServer is the listener for AWS's own hostnames, or nil when TLS_CERT_FILE / TLS_KEY_FILE
+// are unset. A VM guest's resolver (platform/aws-shim/guest-aws-endpoints.yaml) answers the amazonaws.com
+// names of the services this shim serves with its address; the Service maps 443 here. The certificate is
+// the openinfra-aws-endpoints CA's — name-constrained to amazonaws.com and trusted by VM guests only, never
+// by the LAN clients that trust the platform root — and is re-read on renewal like the internal one. A
+// separate listener rather than a second certificate on the internal port: the metadata agent's port
+// keeps exactly the certificate it verifies. The file may not exist yet (the Secret is optional): the
+// shim starts, and handshakes fail until cert-manager issues it. Start it with ListenAndServeTLS("", "").
+func newAWSNamesTLSServer(handler http.Handler, logger *slog.Logger) *http.Server {
+	cert, key := os.Getenv("TLS_CERT_FILE"), os.Getenv("TLS_KEY_FILE")
+	if cert == "" || key == "" {
+		return nil
+	}
+	addr := os.Getenv("TLS_LISTEN_ADDR")
+	if addr == "" {
+		addr = defaultAWSNamesTLSAddr
+	}
+	rl := newCertReloader(cert, key, logger)
+	rl.label = "AWS-names"
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: rl.GetCertificate},
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 }
 
 // newInternalTLSServer is the in-cluster TLS listener, or nil when INTERNAL_TLS_CERT_FILE /
