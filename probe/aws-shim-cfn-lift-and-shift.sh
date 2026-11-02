@@ -20,7 +20,13 @@
 #      invalidation-completed` — and on a re-deploy the next request after the wait serves the new content;
 #      a pre-signed S3 link opens;
 #   4. delete-stack removes everything (DELETE_COMPLETE; with KUBECONFIG set, no claim of the stack is
-#      left in the cluster).
+#      left in the cluster);
+#   5. the instance's DNS names: PrivateDnsName is AWS's ip-a-b-c-d.<zone> form, and PublicDnsName is
+#      either "" (the install sets no public DNS suffix) or ec2-<its address>.<suffix>, resolving to it.
+# With ADDRESS_STACK=1 the address lives in its own stack (cfn/testdata/lift-and-shift/eip.yaml), passed to
+# the app stack as AppAddressAllocationId: the instance is served on that stack's address; releasing the
+# address while it is associated fails (DELETE_FAILED, InvalidIPAddress.InUse); deleting the app stack
+# leaves the address with its stack; the address stack is deleted last.
 # Before deploying it runs `cfn plan` (when CFN_BIN is set) and prints the fidelity summary: every
 # property the template relies on that open-infra accepts without emulating.
 #
@@ -36,6 +42,7 @@
 #   CFN_BIN         (optional) path to the cfn CLI, for the fidelity summary
 #   EVIDENCE_OUT    (optional) write {name, exit_code, reason, when} here
 #   KEEP=1          (optional) leave the stack up for inspection
+#   ADDRESS_STACK=1 (optional) keep the instance's Elastic IP in its own stack (eip.yaml), see above
 # Needs: aws (v2), curl, python3, and crane or docker to push the app image.
 # Exit 0 = pass, 1 = a real failure, 42 = inconclusive.
 #
@@ -46,9 +53,12 @@ EXIT_INCONCLUSIVE=42
 NAME=aws-shim-cfn-lift-and-shift
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE="${TEMPLATE:-$HERE/../cfn/testdata/lift-and-shift/template.yaml}"
+EIP_TEMPLATE="${EIP_TEMPLATE:-$(dirname "$TEMPLATE")/eip.yaml}"
 REGION="${AWS_REGION:-us-east-1}"
 SFX="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 STACK="${STACK:-lsfix-$SFX}"
+ADDR_STACK="${ADDR_STACK:-${STACK}-address}"
+ADDR_STATE=""
 REPO="${REPO:-lsfix-app-$SFX}"
 CFN_NS="${CFN_NS:-open-infra-cfn}"
 CREDS_NS="${CREDS_NS:-openinfra-bucket-creds}"
@@ -111,6 +121,12 @@ cleanup() {
     "${A[@]}" cloudformation delete-stack --stack-name "$STACK" >/dev/null 2>&1 || true
     "${A[@]}" ecr delete-repository --repository-name "$REPO" --force >/dev/null 2>&1 || true
   fi
+  if [ "${KEEP:-0}" != 1 ] && [ -n "$ADDR_STATE" ]; then
+    # The address stack goes last: its address cannot be released while the app stack still holds it.
+    "${A[@]}" cloudformation wait stack-delete-complete --stack-name "$STACK" >/dev/null 2>&1 || true
+    "${A[@]}" cloudformation delete-stack --stack-name "$ADDR_STACK" >/dev/null 2>&1 || true
+    "${A[@]}" cloudformation wait stack-delete-complete --stack-name "$ADDR_STACK" >/dev/null 2>&1 || true
+  fi
   if [ -n "$MINTED_USER" ]; then
     kubectl -n open-infra-console delete user.iam.openinfra.dev "$MINTED_USER" --ignore-not-found >/dev/null 2>&1 || true
     kubectl -n open-infra-aws-shim delete secret "$MINTED_KEY" --ignore-not-found >/dev/null 2>&1 || true
@@ -167,20 +183,54 @@ fi
 log "  ✓ $URI:app"
 
 # --- 2. deploy, unmodified ----------------------------------------------------------------------------
+outof() { "${A[@]}" cloudformation describe-stacks --stack-name "$1" --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue" --output text; }
+ADDR_OVERRIDE=()
+if [ "${ADDRESS_STACK:-0}" = 1 ]; then
+  # The address in its own stack, deployed first; the app stack takes its AllocationId.
+  [ -f "$EIP_TEMPLATE" ] || inconclusive "address template not found: $EIP_TEMPLATE"
+  log "aws cloudformation deploy --stack-name $ADDR_STACK (the instance's Elastic IP, in its own stack)"
+  ADDR_STATE=deploying
+  "${A[@]}" cloudformation deploy --template-file "$EIP_TEMPLATE" --stack-name "$ADDR_STACK" \
+    > "$TMP/deploy-addr.txt" 2>&1 || fail "deploying the address stack failed: $(tail -3 "$TMP/deploy-addr.txt" | tr '\n' ' ')"
+  ALLOC="$(outof "$ADDR_STACK" AllocationId)"; EIP_ADDR="$(outof "$ADDR_STACK" PublicIp)"
+  [[ "$ALLOC" =~ ^eipalloc-[0-9a-f]{17}$ ]] || fail "the address stack's AllocationId output is '$ALLOC'"
+  [ -n "$EIP_ADDR" ] && [ "$EIP_ADDR" != None ] || fail "the address stack returned no PublicIp output"
+  log "  ✓ allocation $ALLOC holds $EIP_ADDR"
+  ADDR_OVERRIDE=("AppAddressAllocationId=$ALLOC")
+fi
 log "aws cloudformation deploy --stack-name $STACK (parameter overrides only)"
 STATE=deploying
 "${A[@]}" cloudformation deploy --template-file "$TEMPLATE" --stack-name "$STACK" --capabilities CAPABILITY_IAM \
-  --parameter-overrides "SiteDomain=$SITE_DOMAIN" "AppRepositoryName=$REPO" \
+  --parameter-overrides "SiteDomain=$SITE_DOMAIN" "AppRepositoryName=$REPO" "${ADDR_OVERRIDE[@]}" \
   > "$TMP/deploy.txt" 2>&1 || fail "aws cloudformation deploy failed: $(tail -3 "$TMP/deploy.txt" | tr '\n' ' ')"
 ST="$("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text)"
 [ "$ST" = CREATE_COMPLETE ] || fail "stack status $ST, want CREATE_COMPLETE"
-out() { "${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
-ADDR="$(out InstanceAddress)"; SITE_URL="$(out SiteUrl)"; APPB="$(out AppBucketName)"; SITEB="$(out SiteBucketName)"
+out() { outof "$STACK" "$1"; }
+if [ "${ADDRESS_STACK:-0}" = 1 ]; then
+  ADDR="$EIP_ADDR"
+  [ "$(out InstanceAllocationId)" = "$ALLOC" ] || fail "the instance carries allocation '$(out InstanceAllocationId)', want $ALLOC"
+else
+  ADDR="$(out InstanceAddress)"
+fi
+SITE_URL="$(out SiteUrl)"; APPB="$(out AppBucketName)"; SITEB="$(out SiteBucketName)"
 DIST="$(out SiteDistributionId)"
 log "  ✓ CREATE_COMPLETE; Outputs: InstanceAddress=$ADDR SiteUrl=$SITE_URL AppBucketName=$APPB SiteBucketName=$SITEB SiteDistributionId=$DIST"
 [ -n "$ADDR" ] && [ "$ADDR" != None ] || fail "the stack returned no InstanceAddress output (the Elastic IP)"
 [ -n "$APPB" ] && [ "$APPB" != None ] || fail "the stack returned no AppBucketName output"
 [ -n "$DIST" ] && [ "$DIST" != None ] || fail "the stack returned no SiteDistributionId output"
+# The instance's DNS names: AWS's private form; the public one names its address on the install's suffix
+# (and resolves to it), or is "" where the install gives instances no public DNS name.
+PUB_DNS="$(out InstancePublicDnsName)"; PRIV_DNS="$(out InstancePrivateDnsName)"
+[ "$PUB_DNS" = None ] && PUB_DNS=""
+[[ "$PRIV_DNS" =~ ^ip-[0-9]+-[0-9]+-[0-9]+-[0-9]+\.(ec2\.internal|[a-z0-9-]+\.compute\.internal)$ ]] || fail "InstancePrivateDnsName is '$PRIV_DNS', want AWS's ip-a-b-c-d.<zone> form"
+if [ -n "$PUB_DNS" ]; then
+  [[ "$PUB_DNS" == "ec2-${ADDR//./-}."* ]] || fail "InstancePublicDnsName '$PUB_DNS' does not name the instance's address $ADDR"
+  RES="$(getent hosts "$PUB_DNS" 2>/dev/null | awk '{print $1; exit}')"
+  [ "$RES" = "$ADDR" ] || fail "InstancePublicDnsName $PUB_DNS resolves to '$RES', want $ADDR"
+  log "  ✓ PublicDnsName $PUB_DNS resolves to $ADDR; PrivateDnsName $PRIV_DNS"
+else
+  log "  ✓ PublicDnsName is \"\" (no public DNS suffix on this install); PrivateDnsName $PRIV_DNS"
+fi
 
 # --- 3. the app's inputs: its config object, and the site's content ----------------------------------
 echo "hello from $STACK" > "$TMP/hello.txt"
@@ -279,6 +329,18 @@ stack_state() { "${A[@]}" cloudformation describe-stacks --stack-name "$STACK" -
 if [ "${KEEP:-0}" = 1 ]; then
   log "KEEP=1: leaving stack $STACK up"; STATE=""
 else
+  if [ "${ADDRESS_STACK:-0}" = 1 ]; then
+    # AWS refuses to release an address that is still associated (InvalidIPAddress.InUse).
+    log "delete-stack $ADDR_STACK while its address is on the instance (AWS: the release fails, InvalidIPAddress.InUse)"
+    "${A[@]}" cloudformation delete-stack --stack-name "$ADDR_STACK" || fail "delete-stack $ADDR_STACK failed"
+    "${A[@]}" cloudformation wait stack-delete-complete --stack-name "$ADDR_STACK" 2>/dev/null \
+      && fail "the address stack was deleted although its address was associated with the instance"
+    ast="$("${A[@]}" cloudformation describe-stacks --stack-name "$ADDR_STACK" --query 'Stacks[0].[StackStatus,StackStatusReason]' --output text 2>&1)"
+    printf '%s' "$ast" | grep -q DELETE_FAILED && printf '%s' "$ast" | grep -q InvalidIPAddress.InUse \
+      || fail "releasing an associated address ended as '$ast', want DELETE_FAILED naming InvalidIPAddress.InUse"
+    curl -s -m 5 -o /dev/null "http://$ADDR/results.json" || fail "the instance stopped answering on $ADDR after the refused release"
+    log "  ✓ refused as AWS refuses it: DELETE_FAILED (InvalidIPAddress.InUse); the instance still answers on $ADDR"
+  fi
   # AWS refuses to delete a stack while one of its buckets still holds data: DELETE_FAILED, BucketNotEmpty,
   # the bucket and its data kept. $APPB still holds the app's object.
   log "delete-stack $STACK while $APPB still holds data (AWS: DELETE_FAILED with BucketNotEmpty)"
@@ -302,6 +364,21 @@ else
     if "${A[@]}" s3api head-bucket --bucket "$b" >/dev/null 2>&1; then fail "bucket $b still exists after the stack was deleted"; fi
   done
   log "  ✓ stack deleted; its buckets are gone (HeadBucket → 404 through the S3 API)"
+  if [ "${ADDRESS_STACK:-0}" = 1 ]; then
+    # The address stays with its allocation when the stack that used it goes; then it is released.
+    still="$(outof "$ADDR_STACK" PublicIp 2>/dev/null)"
+    [ "$still" = "$ADDR" ] || fail "after the app stack was deleted the address stack reports '$still', want $ADDR (the address must stay with its allocation)"
+    log "  ✓ $ADDR_STACK still holds $ADDR after the app stack was deleted"
+    "${A[@]}" cloudformation delete-stack --stack-name "$ADDR_STACK" || fail "delete-stack $ADDR_STACK (retry) failed"
+    "${A[@]}" cloudformation wait stack-delete-complete --stack-name "$ADDR_STACK" 2>/dev/null \
+      || { ast="$("${A[@]}" cloudformation describe-stacks --stack-name "$ADDR_STACK" --query 'Stacks[0].[StackStatus,StackStatusReason]' --output text 2>&1)"
+           printf '%s' "$ast" | grep -q -E "does not exist|DELETE_COMPLETE" || fail "the address stack did not delete once released: $ast"; }
+    ADDR_STATE=""
+    if command -v kubectl >/dev/null && [ -n "${KUBECONFIG:-}" ]; then
+      kubectl -n "$CFN_NS" get service "$ALLOC" >/dev/null 2>&1 && fail "the allocation's holder Service $ALLOC outlived its stack"
+    fi
+    log "  ✓ the address stack deleted once nothing used its address"
+  fi
   if command -v kubectl >/dev/null && [ -n "${KUBECONFIG:-}" ]; then
     left="$(kubectl get virtualmachines.openinfra.dev,buckets.openinfra.dev,staticsites.openinfra.dev,roles.iam.openinfra.dev,policies.iam.openinfra.dev,securitygroups.openinfra.dev,volumes.openinfra.dev -A -l "cfn.openinfra.dev/stack=$STACK" --no-headers 2>/dev/null | wc -l)"
     [ "$left" -eq 0 ] || fail "teardown left $left claim(s) of $STACK in the cluster"
@@ -323,7 +400,7 @@ else
   "${A[@]}" ecr delete-repository --repository-name "$REPO" --force >/dev/null 2>&1 || true
 fi
 
-MSG="unmodified lift-and-shift template deployed through the CloudFormation front door from a LAN client: CREATE_COMPLETE with Outputs; instance checks all passed over the Elastic IP (bash UserData, encrypted Nitro data disk, IMDSv2 token + role creds, s3 cp distro+v2, out-of-policy call denied, ECR pull, container default-chain creds); CloudFront site served with SPA fallback + headers; create-invalidation + wait invalidation-completed after each upload, the re-deployed content served on completion; pre-signed link opened; teardown clean${FIDELITY_N:+; fidelity summary lists $FIDELITY_N not-emulated properties}"
+MSG="unmodified lift-and-shift template deployed through the CloudFormation front door from a LAN client: CREATE_COMPLETE with Outputs; instance checks all passed over the Elastic IP (bash UserData, encrypted Nitro data disk, IMDSv2 token + role creds, s3 cp distro+v2, out-of-policy call denied, ECR pull, container default-chain creds)${ADDR_OVERRIDE:+, the address held by its own stack (released only once unassociated, kept when the app stack went)}; instance DNS names as AWS forms them${PUB_DNS:+ (public name resolves to the address)}; CloudFront site served with SPA fallback + headers; create-invalidation + wait invalidation-completed after each upload, the re-deployed content served on completion; pre-signed link opened; teardown clean${FIDELITY_N:+; fidelity summary lists $FIDELITY_N not-emulated properties}"
 printf '\n✓ PASS — %s\n' "$MSG"
 evidence 0 "$MSG"
 exit 0

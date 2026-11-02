@@ -37,9 +37,16 @@ Parameters:
     Type: String
     Default: fixture-recipient@example.test
     Description: Where the instance's test email goes.
+  AppAddressAllocationId:
+    Type: String
+    Default: ""
+    Description: >-
+      An Elastic IP kept in its own stack (eip.yaml's AllocationId output), so the address outlives this
+      stack. Empty: this stack allocates its own.
 
 Conditions:
   HasZone: !Not [!Equals [!Ref SiteHostedZoneId, ""]]
+  OwnAddress: !Equals [!Ref AppAddressAllocationId, ""]
 
 Resources:
   AppBucket:
@@ -203,13 +210,14 @@ Resources:
 
   AppAddress:
     Type: AWS::EC2::EIP
+    Condition: OwnAddress
     Properties:
       Domain: vpc
 
   AppAddressAssociation:
     Type: AWS::EC2::EIPAssociation
     Properties:
-      AllocationId: !GetAtt AppAddress.AllocationId
+      AllocationId: !If [OwnAddress, !GetAtt AppAddress.AllocationId, !Ref AppAddressAllocationId]
       InstanceId: !Ref AppInstance
 
   SiteOriginAccess:
@@ -287,8 +295,17 @@ Resources:
 
 Outputs:
   InstanceAddress:
-    Description: The instance's static address (Elastic IP).
+    Description: The instance's static address (Elastic IP). With an address from eip.yaml, that stack's PublicIp.
+    Condition: OwnAddress
     Value: !Ref AppAddress
+  InstanceAllocationId:
+    Description: The Elastic IP allocation the instance carries.
+    Value: !If [OwnAddress, !GetAtt AppAddress.AllocationId, !Ref AppAddressAllocationId]
+  InstancePublicDnsName:
+    Description: The instance's public DNS name ("" where the network gives instances none).
+    Value: !GetAtt AppInstance.PublicDnsName
+  InstancePrivateDnsName:
+    Value: !GetAtt AppInstance.PrivateDnsName
   SiteUrl:
     Value: !Sub "https://${SiteDomain}"
   SiteDomainName:

@@ -1,0 +1,23 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  A stable address for the lift-and-shift app, kept in its own stack so it outlives the app stack.
+  Deploy this first and pass its AllocationId to template.yaml (AppAddressAllocationId); the app's
+  instance then carries this address, and re-creating the app stack keeps it. Delete this stack last:
+  releasing an address that is still associated fails.
+
+Resources:
+  Address:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - { Key: Name, Value: !Sub "${AWS::StackName}-address" }
+
+Outputs:
+  AllocationId:
+    Description: Pass to the app stack as AppAddressAllocationId.
+    Value: !GetAtt Address.AllocationId
+    Export:
+      Name: !Sub "${AWS::StackName}-AllocationId"
+  PublicIp:
+    Value: !Ref Address
