@@ -357,14 +357,14 @@ cf wait invalidation-completed --distribution-id "$DIST" --id "$INV" 2>"$TMP/inv
   || fail "wait invalidation-completed did not see $INV complete: $(cat "$TMP/inv.err")"
 ROOT="$(fetch /)"
 printf '%s' "$ROOT" | grep -q "$MARKER2" || fail "invalidation $INV is Completed, but https://$HOST/ still serves the old content: $(snip "$ROOT")"
-LST="$(cf list-invalidations --distribution-id "$DIST" --query "InvalidationList.Items[?Id=='$INV'].Status | [0]" --output text 2>&1)"
+LST="$(cf list-invalidations --distribution-id "$DIST" --query "InvalidationList.Items[?Id=='$INV'].Status | [0]" --output text 2>&1 || true)"
 [ "$LST" = Completed ] || fail "list-invalidations does not show $INV Completed: $LST"
-ERR="$(cf create-invalidation --distribution-id E0000000000000 --paths '/*' 2>&1 >/dev/null)"
+ERR="$(cf create-invalidation --distribution-id E0000000000000 --paths '/*' 2>&1 >/dev/null || true)"
 printf '%s' "$ERR" | grep -q NoSuchDistribution || fail "an unknown distribution should be NoSuchDistribution: $(snip "$ERR")"
 mint_key "cfprobe-cdn-reader-$SFX" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
 sleep 2
 ERR="$(AWS_ACCESS_KEY_ID="$RAK" AWS_SECRET_ACCESS_KEY="$RSK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager \
-  cloudfront create-invalidation --distribution-id "$DIST" --paths '/*' 2>&1 >/dev/null)"
+  cloudfront create-invalidation --distribution-id "$DIST" --paths '/*' 2>&1 >/dev/null || true)"
 printf '%s' "$ERR" | grep -q AccessDenied || fail "a reader's create-invalidation was not AccessDenied: $(snip "$ERR")"
 log "    ✓ Completed once the site serves the new upload (served on the next request); listed Completed; unknown distribution → NoSuchDistribution; a reader → AccessDenied"
 
