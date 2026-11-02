@@ -335,6 +335,17 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# The S3 bucket namespace: a bucket made through S3 CreateBucket is a kind: Bucket claim here, created
+# UNDER the caller's impersonated authority (RBAC decides who may), and set up, encrypted, reaped and
+# deleted exactly like a stack's bucket. The shim itself needs nothing here: it reads the claim with the
+# caller's authority and finds bucket claims through their composites (xbuckets, above).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: open-infra-s3
+  labels:
+    openinfra.dev/component: aws-shim
+---
 # Finding a function by name: a Lambda Invoke, an SNS/EventBridge/API Gateway delivery or a stack's
 # function name check looks for the kind: Function in the Lambda API's namespace (FUNCTIONS_NAMESPACE)
 # and the stack namespace (CFN_NAMESPACE), so a function a stack creates is invoked by the name its stack
@@ -773,6 +784,9 @@ spec:
             # impersonated authority; the bookkeeping ConfigMaps are shim-written (RBAC: aws-shim-cfn-records).
             - { name: CFN_NAMESPACE, value: "open-infra-cfn" }
             - { name: ECS_NAMESPACE, value: "open-infra-ecs" }
+            # S3 CreateBucket: a bucket made through the S3 API is a kind: Bucket claim here (account-wide, as
+            # AWS buckets belong to the account), created under the CALLER's impersonated authority.
+            - { name: S3_BUCKET_NAMESPACE, value: "open-infra-s3" }
             # ECR: the doorway fronts the in-cluster distribution registry (MinIO-backed,
             # platform/aws-shim/ecr-registry.yaml). GetAuthorizationToken hands back the credential in
             # ecr-registry-auth (RBAC: aws-shim-ecr-auth-reader); per-repo records are ConfigMaps in

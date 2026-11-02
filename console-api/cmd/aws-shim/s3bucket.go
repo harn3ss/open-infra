@@ -26,10 +26,11 @@ import (
 )
 
 // newS3Handler builds the S3 front door. dyn and cfg may be nil (no Kubernetes dynamic client): the
-// handler then serves everything but DeleteBucket.
+// handler then serves everything but CreateBucket and DeleteBucket.
 func newS3Handler(cs kubernetes.Interface, mc *minio.Client, dyn dynamic.Interface, cfg *rest.Config, authzNS string,
 	authz *dataplaneauthz.Checker, logger *slog.Logger, vhostSuffixes []string) *s3Handler {
-	h := &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authz, logger: logger, vhostSuffixes: vhostSuffixes}
+	h := &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authz, logger: logger, vhostSuffixes: vhostSuffixes,
+		bucketNS: getenv("S3_BUCKET_NAMESPACE", defaultBucketNamespace)}
 	if dyn != nil && cfg != nil {
 		h.dyn = dyn
 		h.callerDyn = func(user string, groups []string) (dynamic.Interface, error) {
@@ -78,6 +79,8 @@ func decodeTarget(method, bucket, key string, q url.Values) (s3op, bool) {
 			return s3op{kind: "list-objects", bucket: bucket}, true
 		case sub == "" && method == http.MethodHead:
 			return s3op{kind: "head-bucket", bucket: bucket}, true
+		case sub == "" && method == http.MethodPut:
+			return s3op{kind: "create-bucket", bucket: bucket, write: true}, true
 		case sub == "" && method == http.MethodDelete:
 			return s3op{kind: "delete-bucket", bucket: bucket, write: true}, true
 		case sub == "versioning" && method == http.MethodGet:
@@ -142,6 +145,8 @@ func (op s3op) action() string {
 		return "s3:GetBucketLocation"
 	case "get-bucket-encryption":
 		return "s3:GetEncryptionConfiguration"
+	case "create-bucket":
+		return "s3:CreateBucket"
 	case "delete-bucket":
 		return "s3:DeleteBucket"
 	}

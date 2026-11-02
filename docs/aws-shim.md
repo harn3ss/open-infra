@@ -240,6 +240,22 @@ us-east-1) are served too. Each is authorized as its AWS action (`s3:GetBucketVe
 (`?acl`, `?policy`, `?lifecycle`, multipart uploads, object tagging …) is `NotImplemented` rather than
 being answered as a listing or an object read.
 
+**`CreateBucket`.** `aws s3 mb` / `CreateBucket` makes a `kind: Bucket` claim, so a bucket made through the
+API is set up, given the platform's default encryption, reaped and deleted exactly like a stack's. The
+claim lives in one account-wide namespace (`S3_BUCKET_NAMESPACE`, default `open-infra-s3`), named after
+the bucket (shortened with a hash when the name has dots or is long; `spec.bucketName` is the exact
+name), and it is created with the caller's own authority, so their RBAC decides; an assumed role also
+needs `s3:CreateBucket` in its policy. The call answers once the bucket's setup has finished, so an
+immediate `PutObject` works; a setup still running after about 50 seconds answers `503`, which SDKs retry.
+As in us-east-1, re-creating a bucket that is yours (one whose claim you may read) answers `200`; a name
+that is anyone else's, a platform bucket's, or another resource's own bucket is `BucketAlreadyExists`
+(409), and a bucket being deleted is `OperationAborted`. S3's naming rules apply (`InvalidBucketName`).
+Buckets are `BucketOwnerEnforced` (ACLs disabled), so an ACL other than `private`, a grant header, or
+another Object Ownership is refused as AWS refuses it; an explicit `us-east-1` `LocationConstraint` is
+`InvalidLocationConstraint` and another region is `IllegalLocationConstraintException`. Object Lock at
+creation and directory buckets are `NotImplemented` (create a lock-enabled bucket as a `kind: Bucket` or in
+a stack).
+
 **`DeleteBucket`.** A bucket here is the bucket of a `kind: Bucket` claim, so deleting the bucket deletes
 that claim, with the caller's own authority (their RBAC decides), and then the bucket. A bucket that
 still holds objects, prior versions or delete markers is `BucketNotEmpty` (409) and nothing is deleted.

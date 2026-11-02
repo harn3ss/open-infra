@@ -45,8 +45,12 @@ var s3Errors = map[string]s3ErrorInfo{
 	"InvalidTag":            {http.StatusBadRequest, "The tag provided was not a valid tag."},
 	"NoSuchTagSet":          {http.StatusNotFound, "The TagSet does not exist."},
 	"ServerSideEncryptionConfigurationNotFoundError": {http.StatusNotFound, "The server side encryption configuration was not found"},
-	"BucketNotEmpty": {http.StatusConflict, "The bucket you tried to delete is not empty."},
-	"InternalError":  {http.StatusInternalServerError, "We encountered an internal error. Please try again."},
+	"BucketNotEmpty":          {http.StatusConflict, "The bucket you tried to delete is not empty."},
+	"BucketAlreadyExists":     {http.StatusConflict, "The requested bucket name is not available. The bucket namespace is shared by all users of the system. Please select a different name and try again."},
+	"BucketAlreadyOwnedByYou": {http.StatusConflict, "Your previous request to create the named bucket succeeded and you already own it."},
+	"OperationAborted":        {http.StatusConflict, "A conflicting conditional operation is currently in progress against this resource. Please try again."},
+	"InvalidBucketName":       {http.StatusBadRequest, "The specified bucket is not valid."},
+	"InternalError":           {http.StatusInternalServerError, "We encountered an internal error. Please try again."},
 }
 
 // writeS3Error writes an S3-faithful error response: the documented HTTP status, the XML error

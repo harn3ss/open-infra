@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -45,12 +46,16 @@ type s3Handler struct {
 	// DeleteBucket deletes that claim with the caller's authority. Either nil: DeleteBucket is not served.
 	dyn       dynamic.Interface
 	callerDyn func(user string, groups []string) (dynamic.Interface, error)
+	// bucketNS is where a bucket made through CreateBucket gets its kind: Bucket claim (S3_BUCKET_NAMESPACE).
+	// createWait/createPoll bound how long CreateBucket waits for the bucket's setup (0 = the defaults).
+	bucketNS               string
+	createWait, createPoll time.Duration
 }
 
 // s3op describes a decoded S3 request: the operation kind and the target bucket/key.
 type s3op struct {
 	// kind: "list-buckets" | "head-bucket" | "list-objects" | "get" | "head" | "put" | "delete", or a bucket
-	// operation: "delete-bucket", "get-/put-bucket-versioning", "list-object-versions",
+	// operation: "create-bucket", "delete-bucket", "get-/put-bucket-versioning", "list-object-versions",
 	// "get-/put-/delete-bucket-tagging", "get-bucket-location", "get-bucket-encryption" (s3bucket.go).
 	kind      string
 	bucket    string
@@ -127,6 +132,8 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		h.putObject(w, r, op, requestID)
 	case "delete":
 		h.deleteObject(w, r, op, requestID)
+	case "create-bucket":
+		h.createBucket(w, r, claims, op, requestID)
 	case "delete-bucket":
 		h.deleteBucket(w, r, claims, op, requestID)
 	case "get-bucket-versioning":
@@ -217,7 +224,7 @@ func decodeS3(r *http.Request) (s3op, bool) {
 func (h *s3Handler) authorizeS3(ctx context.Context, claims iam.Claims, op s3op) (bool, string) {
 	verb := "get"
 	switch op.kind {
-	case "put", "put-bucket-versioning", "put-bucket-tagging", "delete-bucket-tagging":
+	case "put", "create-bucket", "put-bucket-versioning", "put-bucket-tagging", "delete-bucket-tagging":
 		verb = "create"
 	case "delete", "delete-bucket":
 		verb = "delete"
