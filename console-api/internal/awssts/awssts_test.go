@@ -68,7 +68,14 @@ func TestVerify_FailsClosed(t *testing.T) {
 		}
 	})
 	t.Run("tampered token", func(t *testing.T) {
-		bad := tok[:len(tok)-2] + "xy"
+		// Change a character in the middle: all 6 of its bits are significant, whereas a trailing base64
+		// character can carry unused bits, so a change there may decode to the same bytes (a flaky test).
+		i := len(tok) / 2
+		c := byte('A')
+		if tok[i] == 'A' {
+			c = 'B'
+		}
+		bad := tok[:i] + string(c) + tok[i+1:]
 		if _, ok := m.Verify(akid, bad); ok {
 			t.Fatal("a tampered token must fail the GCM tag")
 		}
