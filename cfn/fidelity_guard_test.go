@@ -298,6 +298,7 @@ var guardShapedSamples = map[string][]any{
 	"SchedulingStrategy":      {"DAEMON"},
 	"Visibility":              {"PRIVATE"},
 	"IntrospectionConfig":     {"DISABLED"},
+	"Device":                  {"/dev/sdh"}, // a VolumeAttachment's device, aliased in the guest
 }
 
 // The guard covers every type with a create translator (a type added without a baseline fails here).

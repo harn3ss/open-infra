@@ -389,13 +389,23 @@ spec:
   dataDisks:
     - { name: pgdata, size: 100Gi }
     - { name: secrets, size: 10Gi, encrypted: true, encryptionKey: db-key }  # LUKS at rest
+    - { name: sdf, size: 50Gi, deviceName: /dev/sdf }                         # also /dev/sdf, /dev/xvdf
 ```
 
-Each is a blank block volume attached as a virtio device in order — `/dev/vdb`, `/dev/vdc`, …. A udev
-rule **aliases the AWS Nitro names** (`/dev/nvme1n1`, …) and their partitions onto the virtio devices
-(root `nvme0n1`→`vda`, data disk *i* `nvme(i+1)n1`→`vd{b,c,…}`), so a lift-and-shift `userData` script
-that formats/mounts by a hard-coded `/dev/nvme*` path works unmodified; you can also reference a disk by
-filesystem UUID/label. Each follows the root's storage policy (`highAvailability` → longhorn-migratable
+Each is a blank block volume attached as a virtio device in order. The kernel names are virtio
+(`/dev/vd*`), and the cloud-init seed disk is a virtio disk too, so `vd*` order does not say which disk is
+which. Instead every disk carries a serial, and udev rules keyed by it **alias the AWS names** onto the
+right disk:
+
+| Alias | Disk |
+|---|---|
+| `/dev/nvme0n1` (+ `p1`, `p2`, …) | the root |
+| `/dev/nvme1n1`, `/dev/nvme2n1`, … (+ partitions) | the data disks in order, then attached `volumes` |
+| a disk's `deviceName` and its sd/xvd twin (`/dev/sdf` and `/dev/xvdf`, + `sdf1`, …) | that disk |
+
+So a lift-and-shift `userData` script that formats/mounts by a hard-coded `/dev/nvme1n1` or `/dev/sdf`
+path works unmodified (the aliases exist before the script runs). Tools that report kernel names
+(`lsblk`, `/proc/mounts`) show `/dev/vd*`; you can also reference a disk by filesystem UUID/label. Each follows the root's storage policy (`highAvailability` → longhorn-migratable
 RWX block so they live-migrate with the VM, else local-path) and is retained across reboots and
 stop/start. The guest partitions/formats/mounts them.
 
@@ -406,6 +416,16 @@ an encrypted `BlockDeviceMapping` whose `KmsKeyId` references an in-stack `AWS::
 opt-in encryption component. An encrypted disk is **RWO** (there is no encrypted+migratable class), so on
 a `highAvailability` VM it pins live migration — keep encrypted data on a non-HA VM, or accept that the
 VM won't live-migrate while it's attached.
+
+**An encrypted root disk.** `rootDisk: { encrypted: true, encryptionKey: <kind: EncryptionKey name> }`
+stores the root disk the same way: LUKS on `longhorn-encrypted`, keyed by that key (the EC2 root
+`BlockDeviceMapping.Ebs.Encrypted` analog; `cfn` maps an encrypted root mapping, with no `KmsKeyId` to the
+stack's default key). CDI cannot write an encrypted device, so the OS image is imported to a temporary
+unencrypted disk (the pristine catalog image, never tenant data) and a Job copies it onto the encrypted
+root; the VM stays stopped until then (a minute or two on a 20Gi root), and `status.rootPopulated`
+records that the copy is done so it never runs again. The temporary disk and the Job are deleted after
+the copy. An encrypted root is RWO, so it cannot be combined with `highAvailability` (no live migration)
+or `existingRootClaim`, and `rootDisk` is fixed at creation.
 
 ## Access
 

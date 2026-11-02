@@ -8,8 +8,9 @@
 # LAN host:
 #   1. the stack reaches CREATE_COMPLETE and returns its Outputs (the instance's address, the site URL);
 #   2. the EC2 instance boots unmodified and its own checks pass (served by the instance at
-#      http://<Elastic IP>/results.json): #!/bin/bash UserData runs, the encrypted data disk mounts by its
-#      Nitro name, IMDSv2 requires a token and serves the role's credentials, `aws s3 cp` works with the
+#      http://<Elastic IP>/results.json): #!/bin/bash UserData runs, the encrypted data disk (the 1 GiB
+#      volume) formats and mounts by its Nitro name /dev/nvme1n1, the root disk is encrypted (with
+#      KUBECONFIG set: its PVC is on longhorn-encrypted), IMDSv2 requires a token and serves the role's credentials, `aws s3 cp` works with the
 #      distro CLI and aws-cli v2, a call outside the role's policy is denied, the role sends email through
 #      SES (SendEmail and SendRawEmail, as the sender identity its policy names), an image pulls from the
 #      registry, and a container in the guest gets the role's credentials through the default chain; with
@@ -284,6 +285,15 @@ if command -v kubectl >/dev/null && [ -n "${KUBECONFIG:-}" ] \
 else
   log "  (with KUBECONFIG set and mail.capture on, the probe also finds the instance's SES messages in the sink)"
 fi
+# The root mapping is Encrypted: the instance booted from a LUKS root (longhorn-encrypted), which the
+# guest cannot tell from inside.
+if command -v kubectl >/dev/null && [ -n "${KUBECONFIG:-}" ]; then
+  VMN="$(kubectl -n "$CFN_NS" get virtualmachines.openinfra.dev -l "cfn.openinfra.dev/stack=$STACK" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  [ -n "$VMN" ] || fail "no kind: VirtualMachine of $STACK in $CFN_NS"
+  RSC="$(kubectl -n "$CFN_NS" get pvc "$VMN-root" -o jsonpath='{.spec.storageClassName}/{.spec.volumeMode}' 2>/dev/null || true)"
+  [ "$RSC" = longhorn-encrypted/Block ] || fail "the instance's root disk is not the encrypted PVC (got '$RSC')"
+  log "  ✓ the root disk is encrypted at rest (PVC $VMN-root on longhorn-encrypted)"
+fi
 
 # --- 5. the static site (CloudFront subset) and a pre-signed link --------------------------------------
 log "the static site at $SITE_URL"
@@ -400,7 +410,7 @@ else
   "${A[@]}" ecr delete-repository --repository-name "$REPO" --force >/dev/null 2>&1 || true
 fi
 
-MSG="unmodified lift-and-shift template deployed through the CloudFormation front door from a LAN client: CREATE_COMPLETE with Outputs; instance checks all passed over the Elastic IP (bash UserData, encrypted Nitro data disk, IMDSv2 token + role creds, s3 cp distro+v2, out-of-policy call denied, ECR pull, container default-chain creds)${ADDR_OVERRIDE:+, the address held by its own stack (released only once unassociated, kept when the app stack went)}; instance DNS names as AWS forms them${PUB_DNS:+ (public name resolves to the address)}; CloudFront site served with SPA fallback + headers; create-invalidation + wait invalidation-completed after each upload, the re-deployed content served on completion; pre-signed link opened; teardown clean${FIDELITY_N:+; fidelity summary lists $FIDELITY_N not-emulated properties}"
+MSG="unmodified lift-and-shift template deployed through the CloudFormation front door from a LAN client: CREATE_COMPLETE with Outputs; instance checks all passed over the Elastic IP (bash UserData, encrypted root, encrypted data disk formatted by its Nitro name, IMDSv2 token + role creds, s3 cp distro+v2, out-of-policy call denied, ECR pull, container default-chain creds)${ADDR_OVERRIDE:+, the address held by its own stack (released only once unassociated, kept when the app stack went)}; instance DNS names as AWS forms them${PUB_DNS:+ (public name resolves to the address)}; CloudFront site served with SPA fallback + headers; create-invalidation + wait invalidation-completed after each upload, the re-deployed content served on completion; pre-signed link opened; teardown clean${FIDELITY_N:+; fidelity summary lists $FIDELITY_N not-emulated properties}"
 printf '\n✓ PASS — %s\n' "$MSG"
 evidence 0 "$MSG"
 exit 0

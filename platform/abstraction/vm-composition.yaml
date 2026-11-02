@@ -129,6 +129,29 @@ spec:
             {{- $ha := $spec.highAvailability | default false }}
             {{- /* adopt an existing root PVC (migration/restore) instead of cloning the image */}}
             {{- $adopt := $spec.existingRootClaim | default "" }}
+            {{- /* An encrypted root disk (spec.rootDisk.encrypted, the EC2 root BlockDeviceMapping
+                   Ebs.Encrypted equivalent): a Block PVC on longhorn-encrypted, keyed by a kind:
+                   EncryptionKey exactly like an encrypted data disk (the volume-crypto reconciler writes its
+                   <pvc>-crypto passphrase). CDI cannot write it (its non-root importer cannot open a dm-crypt
+                   device), so the OS image is imported to a temporary unencrypted disk (<name>-root-image)
+                   and a root-run Job copies it onto the encrypted one (<name>-root-populate). The VM stays
+                   Halted until then; status.rootPopulated records that the copy is done, and is kept, so the
+                   image is never copied over the disk again (the Job also refuses a disk that already holds
+                   a boot record). */}}
+            {{- $rootDiskSpec := $spec.rootDisk | default dict }}
+            {{- $rootEnc := $rootDiskSpec.encrypted | default false }}
+            {{- $rootKey := $rootDiskSpec.encryptionKey | default "" }}
+            {{- if $rootEnc }}
+            {{-   if not $rootKey }}{{ fail "kind: VirtualMachine spec.rootDisk.encrypted requires spec.rootDisk.encryptionKey (the kind: EncryptionKey that keys the root disk)" }}{{ end }}
+            {{-   if $ha }}{{ fail "kind: VirtualMachine spec.rootDisk.encrypted cannot be combined with highAvailability: there is no encrypted, live-migratable storage class (an encrypted root is RWO)" }}{{ end }}
+            {{-   if $adopt }}{{ fail "kind: VirtualMachine spec.rootDisk.encrypted cannot be combined with existingRootClaim: an adopted disk is booted as it is" }}{{ end }}
+            {{- end }}
+            {{- $xrStatus := .observed.composite.resource.status | default dict }}
+            {{- $rootPopulated := $xrStatus.rootPopulated | default false }}
+            {{- $popJob := index (.observed.resources | default dict) "root-populate" }}
+            {{- if $popJob }}{{ with $popJob.resource.status }}{{ with .atProvider }}{{ with .manifest }}{{ with .status }}{{ if .succeeded }}{{ $rootPopulated = true }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}
+            {{- $rootReady := or (not $rootEnc) $rootPopulated }}
+            {{- $rootDV := and (not $adopt) (not $rootEnc) }}
             {{- /* Instance identity: the kind: Role this VM assumes (spec.instanceRole). The VM carries a
                    per-VM ServiceAccount token (a projected disk, copied ROOT-ONLY to
                    /run/openinfra-identity/token at boot). The in-guest metadata agent presents it to the
@@ -238,7 +261,7 @@ spec:
             {{- $dataDisks := list }}
             {{- range $i, $dd := ($spec.dataDisks | default list) }}
             {{-   $ddname := $dd.name | default (printf "data%d" (add $i 1)) }}
-            {{-   $dataDisks = append $dataDisks (dict "name" $ddname "size" $dd.size "encrypted" ($dd.encrypted | default false) "encryptionKey" ($dd.encryptionKey | default "")) }}
+            {{-   $dataDisks = append $dataDisks (dict "name" $ddname "size" $dd.size "encrypted" ($dd.encrypted | default false) "encryptionKey" ($dd.encryptionKey | default "") "deviceName" ($dd.deviceName | default "")) }}
             {{- end }}
             {{- /* An encrypted data disk is a plain PVC attached directly (rendered below), not a CDI
                    DataVolume: a blank disk needs no import, and CDI's non-root importer cannot open a
@@ -288,12 +311,13 @@ spec:
                       openinfra.dev/vm: "true"
                       openinfra.dev/os: {{ $spec.os }}
                   spec:
-                    runStrategy: {{ if $running }}Always{{ else }}Halted{{ end }}
+                    {{- /* An encrypted root boots only once the OS image has been copied onto it. */}}
+                    runStrategy: {{ if and $running $rootReady }}Always{{ else }}Halted{{ end }}
                     {{- /* Root DV when not adopting; data-disk DVs always. Render the key if either
                            exists so an adopted-root VM can still get fresh data disks. */}}
-                    {{- if or (not $adopt) $cdiDisks }}
+                    {{- if or $rootDV $cdiDisks }}
                     dataVolumeTemplates:
-                      {{- if not $adopt }}
+                      {{- if $rootDV }}
                       - metadata:
                           name: {{ $name }}-root
                         spec:
@@ -452,7 +476,12 @@ spec:
                             tpm: {}   # ephemeral vTPM 2.0 (Secure Boot / Windows 11 guests)
                             {{- end }}
                             disks:
+                              {{- /* Every disk the guest addresses carries a serial: oi-nvme0 the root, then
+                                     oi-nvme<n> for the data disks and attached volumes in order. The guest's
+                                     AWS device-name aliases are keyed by it (the kernel's vd* order also counts
+                                     the cloud-init disk, so it cannot name a data disk). */}}
                               - name: root
+                                serial: oi-nvme0
                                 disk:
                                   bus: virtio
                                 bootOrder: 1
@@ -470,14 +499,16 @@ spec:
                               {{- end }}
                               {{- /* Extra data disks (#115), virtio, in order — /dev/vdb, /dev/vdc, …
                                      No bootOrder so they never compete with the root disk for boot. */}}
-                              {{- range $dd := $dataDisks }}
+                              {{- range $i, $dd := $dataDisks }}
                               - name: {{ $dd.name }}
+                                serial: oi-nvme{{ add $i 1 }}
                                 disk:
                                   bus: virtio
                               {{- end }}
                               {{- /* Attached kind: Volumes, after the data disks. */}}
-                              {{- range $av := $attached }}
+                              {{- range $j, $av := $attached }}
                               - name: {{ printf "vol-%s" $av.name | toJson }}
+                                serial: oi-nvme{{ add (len $dataDisks) $j 1 }}
                                 disk:
                                   bus: virtio
                               {{- end }}
@@ -522,6 +553,9 @@ spec:
                             {{- if $adopt }}
                             persistentVolumeClaim:
                               claimName: {{ $adopt }}
+                            {{- else if $rootEnc }}
+                            persistentVolumeClaim:
+                              claimName: {{ $name }}-root
                             {{- else }}
                             dataVolume:
                               name: {{ $name }}-root
@@ -601,6 +635,148 @@ spec:
                     volumeMode: Block
                     storageClassName: longhorn-encrypted
                     resources: { requests: { storage: {{ $dd.size | toJson }} } }
+            {{- end }}
+            {{- end }}
+            {{- if $rootEnc }}
+            ---
+            # --- The encrypted root disk (LUKS at rest): a Block PVC on longhorn-encrypted that the
+            #     volume-crypto reconciler keys from the named EncryptionKey, like an encrypted data disk.
+            #     RWO (there is no encrypted+migratable class), which is why an encrypted root is never HA. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: root-encrypted
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: PersistentVolumeClaim
+                  metadata:
+                    name: {{ $name }}-root
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }} }
+                    annotations:
+                      openinfra.dev/encryption-key: {{ $rootKey | quote }}
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    volumeMode: Block
+                    storageClassName: longhorn-encrypted
+                    resources: { requests: { storage: {{ $disk | toJson }} } }
+            {{- if not $rootPopulated }}
+            ---
+            # --- Until the copy is done: the OS image, imported by CDI onto a TEMPORARY unencrypted disk
+            #     (the pristine catalog image, no tenant data), and the Job that copies it onto the encrypted
+            #     root. Both are dropped (and so deleted) once status.rootPopulated is set. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: root-image
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: cdi.kubevirt.io/v1beta1
+                  kind: DataVolume
+                  metadata:
+                    name: {{ $name }}-root-image
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }} }
+                    annotations:
+                      # Kept until the copy has read it (CDI must not garbage-collect it on completion).
+                      cdi.kubevirt.io/storage.deleteAfterCompletion: "false"
+                  spec:
+                    storage:
+                      accessModes: [ReadWriteOnce]
+                      resources: { requests: { storage: {{ $disk | toJson }} } }
+                      storageClassName: local-path
+                    source:
+                      {{- if $isWin }}
+                      pvc:
+                        namespace: openinfra-images
+                        name: {{ $spec.os }}-golden
+                      {{- else }}
+                      registry:
+                        url: "docker://{{ $profile.image }}"
+                      {{- end }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: root-populate
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: {{ $name }}-root-populate
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }} }
+                  spec:
+                    backoffLimit: 6
+                    # No ttlSecondsAfterFinished: a provider-managed Job that is GC'd is recreated every
+                    # poll. The composition drops it (and so deletes it) once status.rootPopulated is set.
+                    template:
+                      metadata:
+                        labels: { app.kubernetes.io/name: {{ $name }}, openinfra.dev/root-populate: "true" }
+                      spec:
+                        restartPolicy: OnFailure
+                        automountServiceAccountToken: false
+                        enableServiceLinks: false
+                        # Root: it opens the encrypted block device, which (unlike CDI's non-root importer)
+                        # needs no device-ownership support from the container runtime. No privileges.
+                        securityContext: { runAsUser: 0, runAsGroup: 0 }
+                        # Where encrypted disks attach for VMs (the non-HA VM placement, #307).
+                        affinity:
+                          nodeAffinity:
+                            requiredDuringSchedulingIgnoredDuringExecution:
+                              nodeSelectorTerms:
+                                - matchExpressions:
+                                    - { key: openinfra.dev/disk-class, operator: In, values: [nvme, sata-ssd] }
+                                    {{- if $vmArch }}
+                                    - { key: kubernetes.io/arch, operator: In, values: [{{ $vmArch }}] }
+                                    {{- end }}
+                        containers:
+                          - name: copy
+                            image: alpine/k8s:1.30.0
+                            resources:
+                              requests: { cpu: 250m, memory: 128Mi }
+                              limits: { cpu: 250m, memory: 128Mi }
+                            securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - |
+                                set -eu
+                                img=/src/disk.img
+                                dev=/dev/openinfra-root
+                                [ -f "$img" ] || { echo "the imported OS image has no disk.img" >&2; exit 1; }
+                                # Never copy over a disk that already boots: a fresh encrypted disk reads as
+                                # noise, so an MBR signature with a plausible first partition (or a GPT header)
+                                # means the image is already there (a lost status, a re-created Job).
+                                b() { dd if="$dev" bs=1 skip="$1" count="$2" 2>/dev/null | od -An -tx1 | tr -d ' \n'; }
+                                if [ "$(b 510 2)" = 55aa ]; then
+                                  if [ "$(b 512 8)" = 4546492050415254 ] || { case "$(b 446 1)" in 00|80) [ "$(b 450 1)" != 00 ];; *) false;; esac; }; then
+                                    echo "the encrypted root already holds a boot record: leaving it as it is"
+                                    exit 0
+                                  fi
+                                fi
+                                isz=$(stat -c %s "$img")
+                                dsz=$(blockdev --getsize64 "$dev" 2>/dev/null || stat -c %s "$dev")
+                                [ "$isz" -le "$dsz" ] || { echo "the OS image ($isz bytes) is larger than the encrypted root ($dsz bytes)" >&2; exit 1; }
+                                dd if="$img" of="$dev" bs=4M conv=fsync
+                                sync
+                                echo "copied the OS image ($isz bytes) onto the encrypted root"
+                            volumeMounts:
+                              - { name: image, mountPath: /src, readOnly: true }
+                            volumeDevices:
+                              - { name: root, devicePath: /dev/openinfra-root }
+                        volumes:
+                          - name: image
+                            persistentVolumeClaim: { claimName: {{ $name }}-root-image, readOnly: true }
+                          - name: root
+                            persistentVolumeClaim: { claimName: {{ $name }}-root }
             {{- end }}
             {{- end }}
             {{- if $isWin }}
@@ -2446,21 +2622,33 @@ spec:
                           permissions: '0755'
                           content: {{ $spec.userData | toJson }}
                         {{- end }}
-                        {{- if $dataDisks }}
-                        {{- /* AWS Nitro device-name aliases (#115/#344): an unmodified lift-and-shift
-                               UserData script formats/mounts its data disk by the Nitro name AWS gives it
-                               (/dev/nvme1n1, …), but KubeVirt presents the disks as virtio (/dev/vdb, …).
-                               udev symlinks bridge the two so the script runs unchanged. Root is
-                               nvme0n1 -> vda; data disk i (0-based) is nvme(i+1)n1 -> vd{b,c,…}. Partitions
-                               alias through %n (vdb1 -> nvme1n1p1). */}}
-                        {{- $vdl := list "b" "c" "d" "e" "f" "g" "h" "i" "j" "k" "l" "m" "n" "o" "p" }}
+                        {{- if or $dataDisks $attached }}
+                        {{- /* AWS device-name aliases (#115/#344): an unmodified lift-and-shift UserData
+                               script formats/mounts its data disk by the Nitro name AWS gives it
+                               (/dev/nvme1n1, …) or by its mapping's DeviceName (/dev/sdf, /dev/xvdf), but
+                               KubeVirt presents virtio disks (/dev/vd*). udev symlinks bridge the two so the
+                               script runs unchanged. They are keyed by each disk's serial (oi-nvme<n>, set
+                               on the disk above), not by its kernel name: the cloud-init seed disk is a
+                               virtio disk too, so vd* order does not say which disk is which. The root is
+                               nvme0n1; data disks, then attached volumes, are nvme1n1, nvme2n1, … in order;
+                               a disk with a deviceName also gets that name and its sd/xvd twin. Partitions
+                               alias through %n (nvme1n1p1, sdf1). */}}
                         - path: /etc/udev/rules.d/99-openinfra-aws-device-names.rules
                           content: |
-                            KERNEL=="vda", SYMLINK+="nvme0n1"
-                            KERNEL=="vda[0-9]*", SYMLINK+="nvme0n1p%n"
-                            {{- range $i, $dd := $dataDisks }}
-                            KERNEL=="vd{{ index $vdl $i }}", SYMLINK+="nvme{{ add $i 1 }}n1"
-                            KERNEL=="vd{{ index $vdl $i }}[0-9]*", SYMLINK+="nvme{{ add $i 1 }}n1p%n"
+                            KERNEL=="vd*[!0-9]", ATTRS{serial}=="oi-nvme0", SYMLINK+="nvme0n1"
+                            KERNEL=="vd*[0-9]", ATTRS{serial}=="oi-nvme0", SYMLINK+="nvme0n1p%n"
+                            {{- $aliasDisks := list }}
+                            {{- range $dd := $dataDisks }}{{ $aliasDisks = append $aliasDisks ($dd.deviceName | default "") }}{{ end }}
+                            {{- range $av := $attached }}{{ $aliasDisks = append $aliasDisks ($av.deviceName | default "") }}{{ end }}
+                            {{- range $i, $dev := $aliasDisks }}
+                            {{- $n := add $i 1 }}
+                            {{- $sfx := regexReplaceAll "^/dev/(sd|xvd)" (printf "%v" $dev) "" }}
+                            {{- $twins := "" }}{{- $ptwins := "" }}
+                            {{- if and $dev (regexMatch "^[a-z]{1,2}$" $sfx) }}
+                            {{-   $twins = printf " sd%s xvd%s" $sfx $sfx }}{{- $ptwins = printf " sd%s%%n xvd%s%%n" $sfx $sfx }}
+                            {{- end }}
+                            KERNEL=="vd*[!0-9]", ATTRS{serial}=="oi-nvme{{ $n }}", SYMLINK+="nvme{{ $n }}n1{{ $twins }}"
+                            KERNEL=="vd*[0-9]", ATTRS{serial}=="oi-nvme{{ $n }}", SYMLINK+="nvme{{ $n }}n1p%n{{ $ptwins }}"
                             {{- end }}
                         {{- end }}
                       {{- end }}
@@ -2575,9 +2763,9 @@ spec:
                         - [ systemctl, daemon-reload ]
                         - [ systemctl, enable, --now, openinfra-metadata.service ]
                         {{- end }}
-                        {{- if $dataDisks }}
-                        # Materialize the AWS Nitro device-name symlinks BEFORE the user's UserData runs,
-                        # so a script that formats/mounts /dev/nvme1n1 finds it.
+                        {{- if or $dataDisks $attached }}
+                        # Materialize the AWS device-name symlinks BEFORE the user's UserData runs, so a
+                        # script that formats/mounts /dev/nvme1n1 (or /dev/sdf) finds it.
                         - [ udevadm, control, --reload-rules ]
                         - [ udevadm, trigger ]
                         - [ udevadm, settle ]
@@ -2701,6 +2889,10 @@ spec:
             kind: XVirtualMachine
             status:
               lanIp: {{ $lanIp | quote }}
+              {{- if $rootEnc }}
+              {{- /* Kept once set: the copy onto the encrypted root is done exactly once. */}}
+              rootPopulated: {{ $rootPopulated }}
+              {{- end }}
             {{- if not $spec.securityGroups }}
             ---
             # --- Tenant isolation (ingress) for a VM with no security group. A VM with one is governed by

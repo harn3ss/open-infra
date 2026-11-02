@@ -74,9 +74,18 @@ func (c *stackCtx) attachedVolumes(id string) ([]any, []string, []Requirement) {
 		if name == "" {
 			continue // the attachment's own translator refuses it
 		}
-		vols = append(vols, map[string]any{"name": name})
+		vol := map[string]any{"name": name}
 		dev, _ := concrete(c.resolveVal(r.Properties["Device"]))
-		cav = append(cav, fmt.Sprintf("%s attaches kind: Volume %s as a virtio disk after the instance's data disks — not as %s (the Device name is not used; mount it by filesystem UUID or label), and it is attached when the VM starts: added to or removed from a running instance, it takes effect at the next restart", aid, name, cfOr(dev, "its Device")))
+		alias := "the guest gets its Nitro name (/dev/nvme<n>n1, after the data disks) as a udev alias"
+		if dev != "" && !awsDataDeviceRE.MatchString(dev) {
+			alias += "; its Device " + dev + " is not an sd/xvd name, so it is not aliased"
+		}
+		if awsDataDeviceRE.MatchString(dev) {
+			vol["deviceName"] = dev
+			alias = "the guest gets " + dev + " (and its sd/xvd twin) and its Nitro name (/dev/nvme<n>n1, after the data disks) as udev aliases"
+		}
+		vols = append(vols, vol)
+		cav = append(cav, fmt.Sprintf("%s attaches kind: Volume %s as a virtio disk after the instance's data disks; %s, and it is attached when the VM starts: added to or removed from a running instance, it takes effect at the next restart", aid, name, alias))
 	}
 	return vols, cav, req
 }

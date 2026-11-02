@@ -8952,6 +8952,16 @@ components:
           type: object
           required:
           - os
+          x-kubernetes-validations:
+          - rule: '!has(self.rootDisk) || !self.rootDisk.encrypted || (has(self.rootDisk.encryptionKey) && self.rootDisk.encryptionKey
+              != '''')'
+            message: 'spec.rootDisk.encrypted requires spec.rootDisk.encryptionKey (the kind: EncryptionKey that keys the
+              disk)'
+          - rule: '!has(self.rootDisk) || !self.rootDisk.encrypted || (!self.highAvailability && !has(self.existingRootClaim))'
+            message: an encrypted root disk cannot be combined with highAvailability (there is no encrypted, live-migratable
+              storage class) or existingRootClaim (an adopted disk is booted as it is)
+          - rule: has(self.rootDisk) == has(oldSelf.rootDisk) && (!has(self.rootDisk) || self.rootDisk == oldSelf.rootDisk)
+            message: 'spec.rootDisk is immutable: changing the root disk''s encryption would replace the disk'
           properties:
             os:
               type: string
@@ -8983,6 +8993,25 @@ components:
               description: 'Root disk size, retained across reboots and stop/start. Default 20Gi. Linux grows its rootfs to
                 fit via cloud-init; Windows ignores this and uses a fixed 100Gi root (a generalized image''s C: can''t be
                 reliably auto-grown).'
+            rootDisk:
+              type: object
+              description: 'How the root disk is stored. Omitted: an unencrypted disk on the storage policy highAvailability
+                picks. encrypted: true stores it with LUKS at rest on the Longhorn longhorn-encrypted class, keyed by encryptionKey
+                exactly like an encrypted data disk (the EC2 root `BlockDeviceMapping.Ebs.Encrypted` equivalent): the OS image
+                is imported to a temporary disk and copied onto the encrypted one before first boot, so the VM starts a minute
+                or two later. Requires the opt-in encryption component. An encrypted root is RWO, so it cannot be combined
+                with highAvailability or existingRootClaim. Immutable.'
+              properties:
+                encrypted:
+                  type: boolean
+                  default: false
+                  description: Encrypt the root disk at rest (LUKS on longhorn-encrypted).
+                encryptionKey:
+                  type: string
+                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                  maxLength: 63
+                  description: 'Name of the kind: EncryptionKey (in the VM''s namespace) whose data key protects the root
+                    disk. Required when encrypted is true.'
             volumes:
               type: array
               description: 'Existing kind: Volumes in the VM''s namespace, attached as additional virtio disks after the dataDisks
@@ -8999,16 +9028,22 @@ components:
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                     maxLength: 58
                     description: 'The kind: Volume''s name.'
+                  deviceName:
+                    type: string
+                    pattern: ^/dev/(sd|xvd)[a-z]{1,2}$
+                    description: The AWS device name the volume is attached as (/dev/sdh, /dev/xvdh). The guest gets that
+                      name, and its xvd/sd twin, as a udev alias of the virtio disk, as Nitro instances do.
             dataDisks:
               type: array
               description: "Additional persistent data disks attached at boot, beyond the root disk (the EC2 extra-BlockDeviceMapping\
                 \ equivalent \u2014 e.g. a dedicated disk for a database's data directory). Each is a BLANK block volume (CDI),\
-                \ attached as a virtio device in the order listed: the first is /dev/vdb, the next /dev/vdc, and so on. NOTE\
-                \ the device names are virtio; a udev rule aliases the AWS Nitro names (/dev/nvme1n1, \u2026) and the partition\
-                \ names onto them, so a lift-and-shift userData script that mounts by a hard-coded /dev/nvme* path works unmodified.\
-                \ Each disk follows the root's storage policy (highAvailability \u2192 longhorn-migratable RWX block, else\
-                \ local-path) UNLESS it is encrypted, and is retained across reboots and stop/start. The guest is responsible\
-                \ for partitioning/formatting/mounting it."
+                \ attached as a virtio device in the order listed. NOTE the kernel names are virtio (/dev/vd*); each disk\
+                \ carries a serial and a udev rule aliases the AWS Nitro names onto them by that serial (the root is /dev/nvme0n1,\
+                \ the first data disk /dev/nvme1n1, then attached volumes, with partition names /dev/nvme1n1p1, \u2026), plus\
+                \ each disk's deviceName, so a lift-and-shift userData script that mounts by a hard-coded /dev/nvme* or /dev/sdf\
+                \ path works unmodified. Each disk follows the root's storage policy (highAvailability \u2192 longhorn-migratable\
+                \ RWX block, else local-path) UNLESS it is encrypted, and is retained across reboots and stop/start. The guest\
+                \ is responsible for partitioning/formatting/mounting it."
               items:
                 type: object
                 required:
@@ -9023,6 +9058,12 @@ components:
                   size:
                     type: string
                     description: Disk size, e.g. 50Gi.
+                  deviceName:
+                    type: string
+                    pattern: ^/dev/(sd|xvd)[a-z]{1,2}$
+                    description: "The AWS device name of this disk (/dev/sdf, /dev/xvdf). The guest gets that name, and its\
+                      \ xvd/sd twin, as a udev alias of the virtio disk, as Nitro instances do; the Nitro name (/dev/nvme1n1,\
+                      \ \u2026) is aliased either way."
                   encrypted:
                     type: boolean
                     description: "Encrypt this data disk at rest with LUKS (Longhorn longhorn-encrypted class), keyed by encryptionKey\
@@ -9214,6 +9255,10 @@ components:
               type: string
             ready:
               type: boolean
+            rootPopulated:
+              type: boolean
+              description: 'An encrypted root disk (spec.rootDisk.encrypted) holds the OS image: set once the copy onto it
+                has completed, and kept, so the image is never copied over the disk again.'
             lanIp:
               type: string
               description: "The VM's LAN IP \u2014 the MetalLB LoadBalancer address carrying its access port (SSH 22 / RDP\

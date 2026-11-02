@@ -59,8 +59,11 @@ func TestTranslate_EC2Instance_ExtraBDMsToDataDisks(t *testing.T) {
 		t.Fatalf("the /dev/sdf device should map to a dataDisk {name: sdf, size: 50Gi}, got %#v", m.Spec["dataDisks"])
 	}
 	caveats := strings.Join(m.Caveats, "\n")
-	if !strings.Contains(caveats, "virtio") || !strings.Contains(caveats, "/dev/vdb") {
-		t.Fatalf("a device-name divergence caveat (virtio /dev/vdb, not the AWS name) is required: %v", m.Caveats)
+	if dds[0]["deviceName"] != "/dev/sdf" {
+		t.Fatalf("the data disk must carry its AWS DeviceName for the guest alias, got %#v", dds[0])
+	}
+	if !strings.Contains(caveats, "udev aliases") || !strings.Contains(caveats, "/dev/nvme1n1") || !strings.Contains(caveats, "/dev/sdf") {
+		t.Fatalf("a caveat must say the AWS names are udev aliases of virtio disks: %v", m.Caveats)
 	}
 	if !strings.Contains(caveats, "VolumeType") {
 		t.Fatalf("VolumeType on a data disk should be a dropped-knob caveat: %v", m.Caveats)

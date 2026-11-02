@@ -171,22 +171,14 @@ Resources:
 // Disk and key settings that would silently lose a guarantee refuse.
 func TestDisksAndKeys_RefuseLosses(t *testing.T) {
 	for name, c := range map[string]struct{ tmpl, id, want string }{
-		"encrypted root": {`
+		"encrypted root keyed by an out-of-stack key": {`
 Resources:
   I:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: ubuntu-24.04
-      BlockDeviceMappings: [ { DeviceName: /dev/sda1, Ebs: { VolumeSize: 30, Encrypted: true } } ]
-`, "I", "root disk is not encrypted"},
-		"encrypted root as a string": {`
-Resources:
-  I:
-    Type: AWS::EC2::Instance
-    Properties:
-      ImageId: ubuntu-24.04
-      BlockDeviceMappings: [ { DeviceName: /dev/xvda, Ebs: { VolumeSize: 30, Encrypted: "true" } } ]
-`, "I", "root disk is not encrypted"},
+      BlockDeviceMappings: [ { DeviceName: /dev/sda1, Ebs: { VolumeSize: 30, Encrypted: true, KmsKeyId: alias/aws/ebs } } ]
+`, "I", "Refusing rather than booting from an unencrypted root"},
 		"snapshot data disk": {`
 Resources:
   I:

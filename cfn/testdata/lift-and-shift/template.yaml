@@ -133,6 +133,9 @@ Resources:
         HttpPutResponseHopLimit: 2
         HttpEndpoint: enabled
       BlockDeviceMappings:
+        # The root volume, encrypted (as account-default EBS encryption makes it): the AMI's root device.
+        - DeviceName: /dev/sda1
+          Ebs: { VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
         - DeviceName: /dev/sdf
           Ebs: { VolumeSize: 1, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
       UserData:
@@ -153,8 +156,9 @@ Resources:
           # 1. UserData runs under bash (the shebang is honored).
           check userdata_bash '[ -n "$BASH_VERSION" ]'
 
-          # 2. The encrypted data disk, by its Nitro device name.
-          check data_disk 'mkfs.ext4 -q -F /dev/nvme1n1 && mkdir -p /data && mount /dev/nvme1n1 /data && echo ok > /data/probe && grep -q ok /data/probe'
+          # 2. The encrypted data disk, by its Nitro device name: it is the 1 GiB volume (not some other
+          #    disk), and it formats, mounts and holds a file.
+          check data_disk '[ "$(blockdev --getsize64 /dev/nvme1n1)" -ge 1000000000 ] && mkfs.ext4 -q -F /dev/nvme1n1 && mkdir -p /data && mount /dev/nvme1n1 /data && echo ok > /data/probe && grep -q ok /data/probe'
 
           # 3. IMDSv2: a token is required, and the instance role's credentials are served.
           TOKEN=$(curl -s -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 300" http://169.254.169.254/latest/api/token)

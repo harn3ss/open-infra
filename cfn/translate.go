@@ -642,6 +642,10 @@ func (c *stackCtx) defaultEBSKey() *Manifest {
 // AWS::KMS::Key — to that key's kind: EncryptionKey name. ok=false means a KmsKeyId was given but does
 // not map to an in-stack key. The no-KmsKeyId default-key case is handled by the caller (it needs no
 // stack resolution), the way AWS uses the account-default aws/ebs key (#347 Phase 1.7).
+// awsDataDeviceRE is an AWS data-volume device name the guest can be given as an alias (/dev/sdf,
+// /dev/xvdf, /dev/sdba): the kind: VirtualMachine deviceName pattern.
+var awsDataDeviceRE = regexp.MustCompile(`^/dev/(sd|xvd)[a-z]{1,2}$`)
+
 func ebsEncryptionKey(rawEbs any, ctx *stackCtx) (string, bool) {
 	ebs, _ := rawEbs.(map[string]any)
 	if ebs == nil || ctx == nil {
@@ -1030,10 +1034,30 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 				continue
 			}
 			if i == rootIdx {
-				// The VM kind has no encrypted root disk: refuse rather than boot from an unencrypted one.
-				if ebsBool("Encrypted") || ebs["KmsKeyId"] != nil {
-					f = append(f, Finding{"Resource " + id, "the root BlockDeviceMapping is Encrypted (or names a KmsKeyId) — an open-infra VM's root disk is not encrypted (only data disks are: LUKS on longhorn-encrypted); refusing rather than booting from an unencrypted root. Keep sensitive data on an encrypted data disk"})
-					continue
+				// An Encrypted root -> spec.rootDisk: LUKS on longhorn-encrypted, keyed by a customer kind:
+				// EncryptionKey exactly like an encrypted data disk (KmsKeyId must !Ref an in-stack
+				// AWS::KMS::Key; none = the stack's default key, the aws/ebs analog). Never an unencrypted root.
+				if enc, kms := ebsBool("Encrypted"), ebs["KmsKeyId"] != nil; enc || kms {
+					key := ""
+					if kms {
+						var rawEbs any
+						if i < len(rawBDMs) {
+							if rb, _ := rawBDMs[i].(map[string]any); rb != nil {
+								rawEbs = rb["Ebs"]
+							}
+						}
+						k, ok := ebsEncryptionKey(rawEbs, ctx)
+						if !ok {
+							f = append(f, Finding{"Resource " + id, "the encrypted root BlockDeviceMapping's KmsKeyId must reference an in-stack AWS::KMS::Key — open-infra keys a VM's root disk with a customer kind: EncryptionKey (LUKS on longhorn-encrypted); an ARN/alias to an out-of-stack or AWS-managed key has no mappable equivalent. Omit KmsKeyId to use the stack's default key. Refusing rather than booting from an unencrypted root"})
+							continue
+						}
+						key = k
+					} else {
+						key = ctx.defaultEBSKey().Name
+						vmNeedDefaultKey = true
+					}
+					spec["rootDisk"] = map[string]any{"encrypted": true, "encryptionKey": key}
+					cav = append(cav, "root disk: encrypted at rest with LUKS on longhorn-encrypted, keyed by kind: EncryptionKey "+key+" (destroying the key crypto-erases the disk). The OS image is copied onto it before first boot, so the instance starts a minute or two later than an unencrypted one, and the disk is RWO, so the VM does not live-migrate")
 				}
 				if vs, has := ebs["VolumeSize"]; has {
 					spec["diskSize"] = fmt.Sprintf("%dGi", toInt(vs))
@@ -1085,6 +1109,9 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 				if nm := k8sName(strings.TrimPrefix(dn, "/dev/")); nm != "" {
 					disk["name"] = nm
 				}
+				if awsDataDeviceRE.MatchString(dn) {
+					disk["deviceName"] = dn
+				}
 			}
 			if encKey != "" {
 				disk["encrypted"] = true
@@ -1106,7 +1133,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 			spec["dataDisks"] = dataDisks
 		}
 		if mappedExtraDevName {
-			cav = append(cav, "DEVICE NAMES: data disks attach as virtio devices in order (/dev/vdb, /dev/vdc, …), NOT the AWS DeviceName (/dev/sdf) or a Nitro name (/dev/nvme1n1). A UserData script that formats/mounts a data disk by a hard-coded /dev/nvme* or /dev/sd* path must be changed to the virtio path, or reference the disk by filesystem UUID/label.")
+			cav = append(cav, "DEVICE NAMES: the disks are virtio devices (/dev/vd*); the guest gets the AWS names as udev aliases of the right disk — the Nitro names (/dev/nvme0n1 the root, /dev/nvme1n1… the data disks in mapping order, then attached volumes, with their partitions) and each mapping's DeviceName with its sd/xvd twin (/dev/sdf and /dev/xvdf) — so a UserData script that formats/mounts by those paths runs unchanged. Tools that read the kernel name (lsblk, /proc/mounts) show /dev/vd*.")
 		}
 	}
 

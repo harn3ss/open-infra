@@ -128,7 +128,8 @@ a snapshot first.
 ### Longhorn volumes (shipped SC — just use it)
 
 An encrypted `kind: Volume` (`spec.encrypted: true` + `spec.encryptionKey`), an encrypted VM data disk
-(`dataDisks[].encrypted`), and an encrypted database (`storageEncrypted`) all land on the
+(`dataDisks[].encrypted`) or root disk (`rootDisk.encrypted`, the OS image copied onto it before first
+boot; see [virtual-machines.md](virtual-machines.md)), and an encrypted database (`storageEncrypted`) all land on the
 `longhorn-encrypted` StorageClass and are keyed for you:
 
 - **Keying.** The **volume-crypto reconciler** finds each claim on `longhorn-encrypted` that carries the
