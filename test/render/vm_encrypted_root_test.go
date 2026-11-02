@@ -12,6 +12,15 @@ import (
 
 const vmCompositionPath = "../../platform/abstraction/vm-composition.yaml"
 
+// withImportDone marks the temporary image DataVolume Succeeded in the observed resources.
+func withImportDone(ctx map[string]any) map[string]any {
+	ctx["observed"].(map[string]any)["resources"] = map[string]any{
+		"root-image": map[string]any{"resource": map[string]any{"status": map[string]any{"atProvider": map[string]any{
+			"manifest": map[string]any{"metadata": map[string]any{"name": "myvm-root-image"}, "status": map[string]any{"phase": "Succeeded"}}}}}},
+	}
+	return ctx
+}
+
 func encRootCtx(extra map[string]any) map[string]any {
 	spec := map[string]any{"rootDisk": map[string]any{"encrypted": true, "encryptionKey": "app-ebs-default"}}
 	for k, v := range extra {
@@ -40,7 +49,8 @@ func manifestsByKind(t *testing.T, out string) map[string][]map[string]any {
 // An encrypted root disk is a Block PVC on longhorn-encrypted, keyed by the named EncryptionKey (the
 // annotation the volume-crypto reconciler keys by), with no CDI root DataVolume (CDI cannot write a
 // dm-crypt device). Until the OS image has been copied onto it, the VM is Halted and the composition
-// renders the temporary image import and the copy Job.
+// renders the temporary image import — and the copy Job only once that import has Succeeded, so it never
+// copies a partial image.
 func TestVM_EncryptedRoot_BeforeTheCopy(t *testing.T) {
 	tmpl := extractInlineTemplate(t, vmCompositionPath)
 	out := render(t, tmpl, encRootCtx(nil))
@@ -81,8 +91,8 @@ func TestVM_EncryptedRoot_BeforeTheCopy(t *testing.T) {
 	for _, d := range by["DataVolume"] {
 		if digMap(d, "metadata")["name"] == "myvm-root-image" {
 			dv = true
-			if digMap(d, "spec", "storage")["storageClassName"] != "local-path" {
-				t.Errorf("the temporary image disk is unencrypted local-path: %v", digMap(d, "spec", "storage"))
+			if digMap(d, "spec", "storage")["storageClassName"] != "longhorn" {
+				t.Errorf("the temporary image disk is unencrypted Longhorn (bound at once, so CDI imports without a consumer): %v", digMap(d, "spec", "storage"))
 			}
 			if digMap(d, "metadata", "annotations")["cdi.kubevirt.io/storage.deleteAfterCompletion"] != "false" {
 				t.Error("CDI must not garbage-collect the image before the copy reads it")
@@ -94,8 +104,20 @@ func TestVM_EncryptedRoot_BeforeTheCopy(t *testing.T) {
 			job = true
 		}
 	}
-	if !dv || !job {
-		t.Fatalf("before the copy, the image import (%v) and the copy Job (%v) must render", dv, job)
+	if !dv || job {
+		t.Fatalf("before the import completes, the image import must render (%v) and the copy Job must not (%v)", dv, job)
+	}
+	// Once CDI reports the import Succeeded, the copy Job renders (and the import stays until the copy is done).
+	done := manifestsByKind(t, render(t, tmpl, withImportDone(encRootCtx(nil))))
+	job, dv = false, false
+	for _, j := range done["Job"] {
+		job = job || digMap(j, "metadata")["name"] == "myvm-root-populate"
+	}
+	for _, d := range done["DataVolume"] {
+		dv = dv || digMap(d, "metadata")["name"] == "myvm-root-image"
+	}
+	if !job || !dv {
+		t.Fatalf("after the import, the copy Job (%v) and the image (%v) must render", job, dv)
 	}
 	if !strings.Contains(out, "rootPopulated: false") {
 		t.Errorf("status.rootPopulated must report false before the copy:\n%s", grepCtx(out, "rootPopulated"))
@@ -162,7 +184,7 @@ func TestVM_EncryptedRoot_RefusesWhatItCannotHonor(t *testing.T) {
 // than the device, and never writes over a device that already holds a boot record.
 func TestVM_EncryptedRoot_CopyScript(t *testing.T) {
 	tmpl := extractInlineTemplate(t, vmCompositionPath)
-	out := render(t, tmpl, encRootCtx(nil))
+	out := render(t, tmpl, withImportDone(encRootCtx(nil)))
 	docs, err := parseYAMLDocs(out)
 	if err != nil {
 		t.Fatal(err)

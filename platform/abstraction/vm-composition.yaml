@@ -150,6 +150,11 @@ spec:
             {{- $rootPopulated := $xrStatus.rootPopulated | default false }}
             {{- $popJob := index (.observed.resources | default dict) "root-populate" }}
             {{- if $popJob }}{{ with $popJob.resource.status }}{{ with .atProvider }}{{ with .manifest }}{{ with .status }}{{ if .succeeded }}{{ $rootPopulated = true }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}
+            {{- /* The copy Job runs only once CDI reports the image import Succeeded: it must never copy a
+                   partial disk.img (a consumer pod can start while CDI is still writing it). */}}
+            {{- $imgDone := false }}
+            {{- $img := index (.observed.resources | default dict) "root-image" }}
+            {{- if $img }}{{ with $img.resource.status }}{{ with .atProvider }}{{ with .manifest }}{{ with .status }}{{ if eq (.phase | default "") "Succeeded" }}{{ $imgDone = true }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}
             {{- $rootReady := or (not $rootEnc) $rootPopulated }}
             {{- $rootDV := and (not $adopt) (not $rootEnc) }}
             {{- /* Instance identity: the kind: Role this VM assumes (spec.instanceRole). The VM carries a
@@ -666,8 +671,9 @@ spec:
             {{- if not $rootPopulated }}
             ---
             # --- Until the copy is done: the OS image, imported by CDI onto a TEMPORARY unencrypted disk
-            #     (the pristine catalog image, no tenant data), and the Job that copies it onto the encrypted
-            #     root. Both are dropped (and so deleted) once status.rootPopulated is set. ---
+            #     (the pristine catalog image, no tenant data) on Longhorn — bound at once, so CDI imports
+            #     without waiting for a consumer — and, once the import has Succeeded, the Job that copies it
+            #     onto the encrypted root. Both are dropped (and so deleted) once status.rootPopulated is set. ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -689,7 +695,7 @@ spec:
                     storage:
                       accessModes: [ReadWriteOnce]
                       resources: { requests: { storage: {{ $disk | toJson }} } }
-                      storageClassName: local-path
+                      storageClassName: longhorn
                     source:
                       {{- if $isWin }}
                       pvc:
@@ -699,6 +705,7 @@ spec:
                       registry:
                         url: "docker://{{ $profile.image }}"
                       {{- end }}
+            {{- if $imgDone }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
@@ -777,6 +784,7 @@ spec:
                             persistentVolumeClaim: { claimName: {{ $name }}-root-image, readOnly: true }
                           - name: root
                             persistentVolumeClaim: { claimName: {{ $name }}-root }
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- if $isWin }}
