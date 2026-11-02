@@ -155,6 +155,8 @@ Resources:
 
           # 1. UserData runs under bash (the shebang is honored).
           check userdata_bash '[ -n "$BASH_VERSION" ]'
+          # The image's default user exists, as on its AMI (UserData routinely adds it to groups).
+          check default_user 'id ubuntu'
 
           # 2. The encrypted data disk, by its Nitro device name: it is the 1 GiB volume (not some other
           #    disk), and it formats, mounts and holds a file.

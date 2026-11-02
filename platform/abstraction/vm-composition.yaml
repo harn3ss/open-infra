@@ -904,7 +904,13 @@ spec:
                     userdata: |
                       #cloud-config
                       hostname: {{ $name }}
+                      {{- /* "default" first: the image's own default user (ubuntu, debian, fedora,
+                             cloud-user, ...) exists as on its EC2 AMI, so UserData that does
+                             `usermod -aG docker ubuntu` or `chown ubuntu:` works. The key pair's key is
+                             that user's too (top-level ssh_authorized_keys go to the default user), as
+                             on EC2. */}}
                       users:
+                        - default
                         - name: {{ $user }}
                           sudo: ALL=(ALL) NOPASSWD:ALL
                           shell: /bin/bash
@@ -913,6 +919,10 @@ spec:
                           ssh_authorized_keys:
                             - {{ $spec.sshKey }}
                           {{- end }}
+                      {{- if $spec.sshKey }}
+                      ssh_authorized_keys:
+                        - {{ $spec.sshKey }}
+                      {{- end }}
                       ssh_pwauth: true
                       chpasswd:
                         expire: false

@@ -723,3 +723,42 @@ func TestVM_StatusLanIP(t *testing.T) {
 		t.Errorf("a VM that is not exposed must report no LAN IP; got:\n%s", got)
 	}
 }
+
+// The image's own default user (ubuntu, debian, ...) exists as on its EC2 AMI: "default" heads the
+// cloud-config users list, so UserData that runs `usermod -aG docker ubuntu` works, and the key pair's
+// key is that user's too (top-level ssh_authorized_keys, at the same level as users:).
+func TestVM_CloudConfig_DefaultUserFirst(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	out := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"sshKey": "ssh-ed25519 AAAAexample k"}))
+	lines := strings.Split(out, "\n")
+	usersAt := -1
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == "users:" {
+			usersAt = i
+			break
+		}
+	}
+	if usersAt < 0 || usersAt+1 >= len(lines) {
+		t.Fatalf("no cloud-config users list:\n%s", grepCtx(out, "users:"))
+	}
+	if got := strings.TrimSpace(lines[usersAt+1]); got != "- default" {
+		t.Fatalf("the users list must start with the image's default user, got %q:\n%s", got, grepCtx(out, "users:"))
+	}
+	indent := len(lines[usersAt]) - len(strings.TrimLeft(lines[usersAt], " "))
+	topKey := false
+	for _, ln := range lines[usersAt+1:] {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		in := len(ln) - len(strings.TrimLeft(ln, " "))
+		if in < indent {
+			break
+		}
+		if in == indent && strings.TrimSpace(ln) == "ssh_authorized_keys:" {
+			topKey = true
+		}
+	}
+	if !topKey {
+		t.Errorf("the key pair's key must also go to the default user (top-level ssh_authorized_keys):\n%s", grepCtx(out, "ssh_authorized_keys"))
+	}
+}
