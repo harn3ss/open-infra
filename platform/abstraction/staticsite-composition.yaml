@@ -383,7 +383,7 @@ spec:
                             image: alpine/k8s:1.30.0
                             command: ["/bin/sh", "-c"]
                             # A successful sync records the time it STARTED (/status/synced), served on the status port.
-                            args: ['start=$(date +%s); aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "s3://{{ $bucket }}/" /web --delete && echo "$start" > /status/synced || true']
+                            args: ['start=$(date +%s); aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "s3://{{ $bucket }}/" /web --delete --exact-timestamps && echo "$start" > /status/synced || true']
                             env:
                               - name: MINIO_ENDPOINT
                                 valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ENDPOINT } }
@@ -415,8 +415,11 @@ spec:
                           - name: sync
                             image: alpine/k8s:1.30.0
                             command: ["/bin/sh", "-c"]
+                            # --exact-timestamps: without it, an S3-to-local sync skips a changed object of
+                            # the same size (it re-downloads only when the local copy is NEWER), so a
+                            # redeploy that changes a file but not its length would never be served.
                             args:
-                              - 'while true; do start=$(date +%s); if aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "s3://{{ $bucket }}/" /web --delete 2>/dev/null; then echo "$start" > /status/synced.tmp && mv /status/synced.tmp /status/synced; fi; sleep {{ $interval }}; done'
+                              - 'while true; do start=$(date +%s); if aws --endpoint-url "$MINIO_ENDPOINT" s3 sync "s3://{{ $bucket }}/" /web --delete --exact-timestamps 2>/dev/null; then echo "$start" > /status/synced.tmp && mv /status/synced.tmp /status/synced; fi; sleep {{ $interval }}; done'
                             env:
                               - name: MINIO_ENDPOINT
                                 valueFrom: { secretKeyRef: { name: {{ $name }}-minio, key: MINIO_ENDPOINT } }

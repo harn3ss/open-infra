@@ -1,6 +1,7 @@
 package render
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -288,5 +289,27 @@ func TestStaticSite_SingleDomainNoHeaders(t *testing.T) {
 	// Existing sites render an unchanged pod template (no config-hash annotation -> no rollout on upgrade).
 	if !strings.Contains(out, "metadata: { labels: { app: web-site } }") || strings.Contains(out, "site-config") {
 		t.Errorf("a site without responseHeaders must keep its pod template unchanged; got:\n%s", grepCtx(out, "app: web-site"))
+	}
+}
+
+// Every sync of the site from its bucket compares timestamps exactly: the AWS CLI's default S3-to-local
+// sync skips a changed object of the same size, so a redeploy (and the invalidation that waits on it)
+// would serve the old file.
+func TestStaticSite_SyncPicksUpSameSizeChanges(t *testing.T) {
+	raw, err := os.ReadFile(staticsiteCompositionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, ln := range strings.Split(string(raw), "\n") {
+		if strings.Contains(ln, ` s3 sync "s3://`) && strings.Contains(ln, " /web") { // bucket -> site (download)
+			n++
+			if !strings.Contains(ln, "--exact-timestamps") {
+				t.Errorf("a site sync without --exact-timestamps misses same-size changes: %s", strings.TrimSpace(ln))
+			}
+		}
+	}
+	if n < 2 {
+		t.Fatalf("expected the initial and the periodic sync, found %d", n)
 	}
 }
