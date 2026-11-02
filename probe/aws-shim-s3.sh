@@ -201,7 +201,10 @@ awsq "$WAK" "$WSK" put-object --bucket "$MB_BUCKET" --key first.txt --body "$WOR
 awsq "$WAK" "$WSK" get-object --bucket "$MB_BUCKET" --key first.txt "$WORK/mbget.txt" >/dev/null \
   || fail "get-object right after CreateBucket failed"
 cmp -s "$WORK/in.txt" "$WORK/mbget.txt" || fail "the new bucket returned different bytes"
-awss3 "$WAK" "$WSK" ls | grep -q " ${MB_BUCKET}\$" || fail "aws s3 ls does not list the new bucket"
+# Listed to a file first: grep -q stops at the first match, and under pipefail the CLI's broken pipe would
+# fail a listing that did include the bucket.
+awss3 "$WAK" "$WSK" ls >"$WORK/ls.out" 2>&1 || fail "aws s3 ls failed: $(head -c 300 "$WORK/ls.out")"
+grep -q " ${MB_BUCKET}\$" "$WORK/ls.out" || fail "aws s3 ls does not list the new bucket"
 log "  ✓ created; an immediate put/get round-trips; aws s3 ls lists it"
 if [ "$(kubectl -n minio get configmap openinfra-object-encryption -o jsonpath='{.data.enabled}' 2>/dev/null || true)" = true ]; then
   enc="$(awsq "$WAK" "$WSK" get-bucket-encryption --bucket "$MB_BUCKET" \
