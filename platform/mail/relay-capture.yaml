@@ -39,6 +39,9 @@ spec:
           image: docker.io/axllent/mailpit:v1.31.6@sha256:23fe39e81bde596a918000b3135c0f85dc8bb4c9ea6be274b051143f3e300387
           env:
             - { name: MP_SMTP_BIND_ADDR, value: "0.0.0.0:1025" }
+            # No reverse DNS on each connection: the sink has no egress, so every lookup would hang that
+            # session forever, and the kubelet's readiness checks alone pile up until it greets no one.
+            - { name: MP_SMTP_DISABLE_RDNS, value: "true" }
             # The API/UI shows every captured message: loopback only (read it with kubectl exec).
             - { name: MP_UI_BIND_ADDR, value: "127.0.0.1:8025" }
             # Submitters do not authenticate (the platform relay does not either), over plain SMTP.

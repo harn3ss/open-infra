@@ -59,6 +59,9 @@ func TestMailCapture_NeverDelivers(t *testing.T) {
 	if !strings.Contains(raw, `MP_UI_BIND_ADDR, value: "127.0.0.1:8025"`) {
 		t.Error("the sink's API (every captured message) must listen on loopback only")
 	}
+	if !strings.Contains(raw, `MP_SMTP_DISABLE_RDNS, value: "true"`) {
+		t.Error("the sink must not look up its clients' names: with no egress every lookup hangs that session")
+	}
 	if strings.Contains(raw, "MP_SMTP_RELAY") {
 		t.Error("the sink must not be configured to relay anything onward")
 	}
