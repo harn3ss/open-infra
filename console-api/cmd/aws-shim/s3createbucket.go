@@ -89,10 +89,17 @@ type createBucketConfiguration struct {
 	Bucket             *struct{} `xml:"Bucket"`
 }
 
-// createBucketRequestError checks CreateBucket's headers and body as AWS does for a bucket in us-east-1
-// with ACLs disabled (Object Ownership BucketOwnerEnforced, AWS's default since 2023). It returns the S3
-// error code, status and message to answer, or "" when the request is acceptable.
-func createBucketRequestError(r *http.Request) (code string, status int, msg string) {
+// createBucketRequestError checks CreateBucket's headers and body as AWS does for a bucket with ACLs
+// disabled (Object Ownership BucketOwnerEnforced, AWS's default since 2023). It returns the S3 error code,
+// status and message to answer, or "" when the request is acceptable.
+//
+// LocationConstraint is checked against the region the request was signed for, which is the region of the
+// endpoint the client believes it called (the shim accepts every region's signature): a client configured
+// for eu-west-1 (`aws s3 mb` sends its own region as the constraint) is accepted; a constraint naming a
+// region other than the signing region is IllegalLocationConstraintException, as a regional endpoint
+// answers; an explicit us-east-1 is InvalidLocationConstraint (that region is given by omitting it). No
+// constraint is accepted from any region, as before.
+func createBucketRequestError(r *http.Request, signingRegion string) (code string, status int, msg string) {
 	h := r.Header
 	if acl := strings.TrimSpace(h.Get("x-amz-acl")); acl != "" && acl != "private" {
 		return "InvalidBucketAclWithObjectOwnership", http.StatusBadRequest, "Bucket cannot have ACLs set with ObjectOwnership's BucketOwnerEnforced setting"
@@ -126,11 +133,16 @@ func createBucketRequestError(r *http.Request) (code string, status int, msg str
 	if cfg.Location != nil || cfg.Bucket != nil {
 		return "NotImplemented", http.StatusNotImplemented, "Directory buckets (CreateBucketConfiguration Location/Bucket) are not supported."
 	}
-	switch lc := strings.TrimSpace(cfg.LocationConstraint); lc {
-	case "":
-	case "us-east-1":
+	if signingRegion == "" {
+		signingRegion = "us-east-1"
+	}
+	lc := strings.TrimSpace(cfg.LocationConstraint)
+	switch {
+	case lc == "":
+	case lc == "us-east-1" && signingRegion == "us-east-1":
 		// AWS refuses an explicit us-east-1: the region is the default and is given by omitting it.
 		return "InvalidLocationConstraint", http.StatusBadRequest, "The specified location-constraint is not valid"
+	case lc == signingRegion, lc == "EU" && signingRegion == "eu-west-1": // "EU" is eu-west-1's legacy name
 	default:
 		return "IllegalLocationConstraintException", http.StatusBadRequest,
 			"The " + lc + " location constraint is incompatible for the region specific endpoint this request was sent to."
@@ -145,7 +157,7 @@ func (h *s3Handler) createBucket(w http.ResponseWriter, r *http.Request, claims 
 		writeS3Error(w, "InvalidBucketName", requestID, r.URL.Path)
 		return
 	}
-	if code, status, msg := createBucketRequestError(r); code != "" {
+	if code, status, msg := createBucketRequestError(r, requestSigningRegion(r)); code != "" {
 		writeS3ErrorFull(w, code, status, requestID, msg, r.URL.Path)
 		return
 	}
@@ -245,9 +257,8 @@ func (h *s3Handler) createdOrExisting(w http.ResponseWriter, r *http.Request, cd
 	h.answerWhenReady(w, r, cdyn, claim, op, requestID)
 }
 
-// answerWhenReady waits (bounded) for the claim's setup to finish — the claim reports ready once the
-// bucket exists, has the platform's default encryption and its credentials are delivered — and for MinIO
-// to report the bucket, then answers 200. Past the wait it answers 503, which SDKs retry.
+// answerWhenReady waits (bounded) until the bucket is usable (bucketUsable), then answers 200. Past the
+// wait it answers 503, which SDKs retry.
 func (h *s3Handler) answerWhenReady(w http.ResponseWriter, r *http.Request, cdyn dynamic.Interface, claim bucketClaim, op s3op, requestID string) {
 	wait, poll := h.createWait, h.createPoll
 	if wait <= 0 {
@@ -267,13 +278,11 @@ func (h *s3Handler) answerWhenReady(w http.ResponseWriter, r *http.Request, cdyn
 		case err == nil && cur.GetDeletionTimestamp() != nil:
 			writeS3Error(w, "OperationAborted", requestID, r.URL.Path)
 			return
-		case err == nil && claimReady(cur):
-			if exists, err := h.mc.BucketExists(ctx, op.bucket); err == nil && exists {
-				w.Header().Set("Location", "/"+op.bucket)
-				w.Header().Set("x-amz-request-id", requestID)
-				w.WriteHeader(http.StatusOK)
-				return
-			}
+		case err == nil && h.bucketUsable(ctx, cur, op.bucket):
+			w.Header().Set("Location", "/"+op.bucket)
+			w.Header().Set("x-amz-request-id", requestID)
+			w.WriteHeader(http.StatusOK)
+			return
 		}
 		select {
 		case <-ctx.Done():
@@ -286,6 +295,23 @@ func (h *s3Handler) answerWhenReady(w http.ResponseWriter, r *http.Request, cdyn
 		case <-time.After(poll):
 		}
 	}
+}
+
+// bucketUsable reports whether a CreateBucket caller can use the bucket: MinIO has it, and either the
+// claim's setup has finished (claimReady) or the setup has done what this caller depends on — created the
+// bucket and, while the platform encrypts new buckets, set its default encryption. The rest of the setup
+// delivers the claim's own credentials, which only the claim's apps use; waiting for that hand-off
+// (Crossplane observing two Secrets in turn) made `aws s3 mb` take a minute or more for a bucket that was
+// ready in seconds. The caller reaches the bucket through the shim, never with those credentials.
+func (h *s3Handler) bucketUsable(ctx context.Context, cur *unstructured.Unstructured, bucket string) bool {
+	if exists, err := h.mc.BucketExists(ctx, bucket); err != nil || !exists {
+		return false
+	}
+	if claimReady(cur) || h.encryptsNewBuckets == nil || !h.encryptsNewBuckets() {
+		return true
+	}
+	cfg, err := h.mc.GetBucketEncryption(ctx, bucket)
+	return err == nil && cfg != nil && len(cfg.Rules) > 0
 }
 
 // claimReady reports whether a kind: Bucket claim's setup has finished: status.ready, which the

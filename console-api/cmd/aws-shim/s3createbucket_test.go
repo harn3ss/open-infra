@@ -65,32 +65,113 @@ func TestS3CreateBucketDecodes(t *testing.T) {
 }
 
 func TestS3CreateBucketRequestChecks(t *testing.T) {
+	lc := func(region string) string {
+		return `<CreateBucketConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LocationConstraint>` + region + `</LocationConstraint></CreateBucketConfiguration>`
+	}
 	cases := []struct {
 		name, body string
 		hdr        map[string]string
+		signed     string // the request's signing region ("" = none, read as us-east-1)
 		want       string
 	}{
-		{"plain", "", nil, ""},
-		{"private acl", "", map[string]string{"x-amz-acl": "private"}, ""},
-		{"public acl", "", map[string]string{"x-amz-acl": "public-read"}, "InvalidBucketAclWithObjectOwnership"},
-		{"a grant", "", map[string]string{"x-amz-grant-read": "uri=x"}, "InvalidBucketAclWithObjectOwnership"},
-		{"enforced ownership", "", map[string]string{"x-amz-object-ownership": "BucketOwnerEnforced"}, ""},
-		{"object writer", "", map[string]string{"x-amz-object-ownership": "ObjectWriter"}, "InvalidArgument"},
-		{"object lock", "", map[string]string{"x-amz-bucket-object-lock-enabled": "true"}, "NotImplemented"},
-		{"empty constraint", `<CreateBucketConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></CreateBucketConfiguration>`, nil, ""},
-		{"explicit us-east-1", `<CreateBucketConfiguration><LocationConstraint>us-east-1</LocationConstraint></CreateBucketConfiguration>`, nil, "InvalidLocationConstraint"},
-		{"another region", `<CreateBucketConfiguration><LocationConstraint>eu-west-1</LocationConstraint></CreateBucketConfiguration>`, nil, "IllegalLocationConstraintException"},
-		{"directory bucket", `<CreateBucketConfiguration><Location><Name>use1-az4</Name></Location></CreateBucketConfiguration>`, nil, "NotImplemented"},
-		{"not xml", `{`, nil, "MalformedXML"},
+		{"plain", "", nil, "", ""},
+		{"private acl", "", map[string]string{"x-amz-acl": "private"}, "", ""},
+		{"public acl", "", map[string]string{"x-amz-acl": "public-read"}, "", "InvalidBucketAclWithObjectOwnership"},
+		{"a grant", "", map[string]string{"x-amz-grant-read": "uri=x"}, "", "InvalidBucketAclWithObjectOwnership"},
+		{"enforced ownership", "", map[string]string{"x-amz-object-ownership": "BucketOwnerEnforced"}, "", ""},
+		{"object writer", "", map[string]string{"x-amz-object-ownership": "ObjectWriter"}, "", "InvalidArgument"},
+		{"object lock", "", map[string]string{"x-amz-bucket-object-lock-enabled": "true"}, "", "NotImplemented"},
+		{"empty constraint", `<CreateBucketConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></CreateBucketConfiguration>`, nil, "", ""},
+		{"explicit us-east-1", lc("us-east-1"), nil, "us-east-1", "InvalidLocationConstraint"},
+		{"another region, signed for us-east-1", lc("eu-west-1"), nil, "us-east-1", "IllegalLocationConstraintException"},
+		{"another region, unsigned", lc("eu-west-1"), nil, "", "IllegalLocationConstraintException"},
+		// `aws s3 mb` from a client configured for another region sends that region as the constraint.
+		{"the signing region", lc("eu-west-1"), nil, "eu-west-1", ""},
+		{"eu-west-1's legacy EU", lc("EU"), nil, "eu-west-1", ""},
+		{"a third region", lc("ap-south-1"), nil, "eu-west-1", "IllegalLocationConstraintException"},
+		{"us-east-1 from another region", lc("us-east-1"), nil, "eu-west-1", "IllegalLocationConstraintException"},
+		{"no constraint, another region", "", nil, "eu-west-1", ""},
+		{"directory bucket", `<CreateBucketConfiguration><Location><Name>use1-az4</Name></Location></CreateBucketConfiguration>`, nil, "", "NotImplemented"},
+		{"not xml", `{`, nil, "", "MalformedXML"},
 	}
 	for _, c := range cases {
 		r := httptest.NewRequest(http.MethodPut, "/b", strings.NewReader(c.body))
 		for k, v := range c.hdr {
 			r.Header.Set(k, v)
 		}
-		if got, _, _ := createBucketRequestError(r); got != c.want {
+		if got, _, _ := createBucketRequestError(r, c.signed); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// The signing region is read from the request's SigV4 scope: the Authorization header, or a pre-signed
+// URL's X-Amz-Credential.
+func TestRequestSigningRegion(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPut, "/b", nil)
+	r.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261102/eu-west-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc")
+	if got := requestSigningRegion(r); got != "eu-west-1" {
+		t.Errorf("header-signed: %q", got)
+	}
+	r = httptest.NewRequest(http.MethodPut, "/b?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIDEXAMPLE%2F20261102%2Fap-south-1%2Fs3%2Faws4_request&X-Amz-Date=20261102T000000Z&X-Amz-Expires=60&X-Amz-SignedHeaders=host&X-Amz-Signature=abc", nil)
+	if got := requestSigningRegion(r); got != "ap-south-1" {
+		t.Errorf("pre-signed: %q", got)
+	}
+	if got := requestSigningRegion(httptest.NewRequest(http.MethodPut, "/b", nil)); got != "" {
+		t.Errorf("unsigned: %q", got)
+	}
+}
+
+// With the platform's object encryption on, CreateBucket answers once the bucket exists and has its
+// default encryption — the setup's later step (the claim's own credentials) is not waited for — and never
+// before the encryption is set.
+func TestS3CreateBucket_AnswersOnceTheBucketIsEncrypted(t *testing.T) {
+	h, f, dyn := createFixture(t)
+	h.encryptsNewBuckets = func() bool { return true }
+	h.createWait = 2 * time.Second
+	go func() {
+		for i := 0; i < 300; i++ {
+			if _, err := dyn.Resource(bucketListGVR).Namespace("open-infra-s3").Get(context.Background(), "fast-bucket", metav1.GetOptions{}); err == nil {
+				f.mu.Lock()
+				f.buckets["fast-bucket"] = true // created, not yet encrypted
+				f.mu.Unlock()
+				time.Sleep(200 * time.Millisecond)
+				f.mu.Lock()
+				f.encryption["fast-bucket"] = "AES256" // the setup's next step; the claim never reports ready here
+				f.mu.Unlock()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	start := time.Now()
+	w := httptest.NewRecorder()
+	h.createBucket(w, createReq("fast-bucket"), callerClaims(), s3op{kind: "create-bucket", bucket: "fast-bucket", write: true}, "r")
+	if w.Code != 200 {
+		t.Fatalf("CreateBucket = %d %s, want 200 once the bucket is encrypted", w.Code, w.Body)
+	}
+	if time.Since(start) < 150*time.Millisecond {
+		t.Errorf("answered after %v: before the bucket's default encryption was set", time.Since(start))
+	}
+
+	// Encryption off: the bucket existing is enough.
+	h2, f2, dyn2 := createFixture(t)
+	h2.encryptsNewBuckets = func() bool { return false }
+	go func() {
+		for i := 0; i < 300; i++ {
+			if _, err := dyn2.Resource(bucketListGVR).Namespace("open-infra-s3").Get(context.Background(), "plain-bucket", metav1.GetOptions{}); err == nil {
+				f2.mu.Lock()
+				f2.buckets["plain-bucket"] = true
+				f2.mu.Unlock()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	w = httptest.NewRecorder()
+	h2.createBucket(w, createReq("plain-bucket"), callerClaims(), s3op{kind: "create-bucket", bucket: "plain-bucket", write: true}, "r")
+	if w.Code != 200 {
+		t.Fatalf("CreateBucket (encryption off) = %d %s, want 200 once the bucket exists", w.Code, w.Body)
 	}
 }
 

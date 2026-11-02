@@ -12,9 +12,13 @@
 #   - the response carries a well-formed, quoted ETag (SDK-parse faithful)
 #   - list-objects shows the key
 #   - path-style addressing round-trips
+#   - a 20 MiB `aws s3 cp` (a multipart upload: the CLI's threshold is 8 MiB) round-trips byte-identical,
+#     and so do server-side copies above and below that threshold (UploadPartCopy, CopyObject); an
+#     upload can be listed and aborted
 #   - CreateBucket (`aws s3 mb`) makes a bucket an immediate put/get works in, with the platform's default
 #     encryption when that is on; re-creating your own bucket answers 200 (us-east-1); `aws s3 rb` removes
-#     it and its kind: Bucket claim
+#     it and its kind: Bucket claim; a client configured for another region creates one too (its region is
+#     the LocationConstraint), and a constraint naming yet another region is refused
 # and the two NEGATIVES that are the whole point ("prove the no"):
 #   - a request with a valid key ID but a WRONG secret is REJECTED (SignatureDoesNotMatch) — auth
 #     actually fires; naming a key is not enough
@@ -52,8 +56,8 @@ CREATED_USERS=()
 BUCKET_NS="${S3_BUCKET_NAMESPACE:-open-infra-s3}"
 MB_BUCKET="aws-shim-probe-mb-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 cleanup() {
-  # The CreateBucket section's bucket: its claim (the bucket's setup, reaper and MinIO bucket follow it).
-  kubectl -n "$BUCKET_NS" delete buckets.openinfra.dev "$MB_BUCKET" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  # The CreateBucket section's buckets: their claims (each bucket's setup, reaper and MinIO bucket follow).
+  kubectl -n "$BUCKET_NS" delete buckets.openinfra.dev "$MB_BUCKET" "${MB_BUCKET}-eu" --ignore-not-found --wait=false >/dev/null 2>&1 || true
   for s in "${CREATED_KEYS[@]:-}";  do [ -n "$s" ] && kubectl -n "$SHIM_NS" delete secret "$s" --ignore-not-found >/dev/null 2>&1 || true; done
   for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
   rm -rf "$WORK"
@@ -90,6 +94,11 @@ awsq() { # AK SK -- <aws args...>
   AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" \
     aws --endpoint-url "$ENDPOINT" --no-cli-pager s3api "$@"
 }
+awss3() { # AK SK -- <aws s3 args...> (the high-level `aws s3` commands)
+  local ak="$1" sk="$2"; shift 2
+  AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" \
+    aws --endpoint-url "$ENDPOINT" --no-cli-pager s3 "$@"
+}
 
 # --- 1. Seed a WRITER principal + its key -----------------------------------------------------
 log "seeding a writer principal (openinfra:powerusers) + access key"
@@ -125,6 +134,13 @@ awsq "$WAK" "$WSK" list-objects-v2 --bucket "$BUCKET" | grep -q '"Key": "probe.t
   || fail "list-objects-v2 did not include the written key"
 log "  ✓ key listed"
 
+log "ranged get-object (bytes=0-3): just those bytes, as a 206"
+awsq "$WAK" "$WSK" get-object --bucket "$BUCKET" --key probe.txt --range bytes=0-3 "$WORK/range.txt" >"$WORK/range.json" \
+  || fail "a ranged get-object failed"
+[ "$(cat "$WORK/range.txt")" = "$(head -c 4 "$WORK/in.txt")" ] || fail "a ranged get-object returned other bytes: $(head -c 40 "$WORK/range.txt")"
+grep -q '"ContentRange": "bytes 0-3/' "$WORK/range.json" || fail "a ranged get-object carries no Content-Range: $(cat "$WORK/range.json")"
+log "  ✓ range served"
+
 # --- 4b. Chunked upload round-trips (forces aws-chunked framing via a trailing checksum) ---------
 # --checksum-algorithm CRC32 makes the CLI send a STREAMING-…-TRAILER (aws-chunked) body: the wire
 # payload is the file wrapped in per-chunk size/signature framing. If the shim stored that verbatim
@@ -136,6 +152,53 @@ awsq "$WAK" "$WSK" put-object --bucket "$BUCKET" --key chunk.txt --body "$WORK/c
 awsq "$WAK" "$WSK" get-object --bucket "$BUCKET" --key chunk.txt "$WORK/chunk-out.txt" >/dev/null || fail "chunked get-object failed"
 cmp -s "$WORK/chunk-in.txt" "$WORK/chunk-out.txt" || fail "aws-chunked upload was stored WITH framing bytes — dechunking is broken"
 log "  ✓ chunked upload round-trips byte-identical (framing stripped)"
+
+# --- 4c. Multipart upload and server-side copy --------------------------------------------------
+# `aws s3 cp` switches to a multipart upload above 8 MiB, and to UploadPartCopy for a server-side copy
+# above it: what an ordinary build artifact or `aws s3 sync` of a site sends.
+log "multipart: aws s3 cp a 20 MiB file up and down, compare checksums"
+head -c $((20 * 1024 * 1024)) /dev/urandom > "$WORK/big.bin"
+awss3 "$WAK" "$WSK" cp "$WORK/big.bin" "s3://${BUCKET}/big.bin" >"$WORK/mp.out" 2>&1 \
+  || fail "a 20 MiB aws s3 cp (multipart) failed: $(cat "$WORK/mp.out")"
+awss3 "$WAK" "$WSK" cp "s3://${BUCKET}/big.bin" "$WORK/big-out.bin" >/dev/null 2>"$WORK/mpget.err" \
+  || fail "downloading the multipart object failed: $(cat "$WORK/mpget.err")"
+[ "$(sha256sum < "$WORK/big.bin")" = "$(sha256sum < "$WORK/big-out.bin")" ] \
+  || fail "the multipart object's bytes differ from the uploaded file"
+MP_ETAG="$(awsq "$WAK" "$WSK" head-object --bucket "$BUCKET" --key big.bin --query ETag --output text)"
+case "$MP_ETAG" in *-*) ;; *) fail "the 20 MiB object's ETag ${MP_ETAG} is not a multipart ETag (was it uploaded in parts?)";; esac
+log "  ✓ uploaded in parts (ETag ${MP_ETAG}), downloaded byte-identical"
+
+log "server-side copy: above the threshold (UploadPartCopy) and below it (CopyObject)"
+awss3 "$WAK" "$WSK" cp "s3://${BUCKET}/big.bin" "s3://${BUCKET}/big-copy.bin" >"$WORK/cp.out" 2>&1 \
+  || fail "a 20 MiB server-side copy (UploadPartCopy) failed: $(cat "$WORK/cp.out")"
+awss3 "$WAK" "$WSK" cp "s3://${BUCKET}/big-copy.bin" "$WORK/big-copy.bin" >/dev/null 2>&1 || fail "downloading the copy failed"
+cmp -s "$WORK/big.bin" "$WORK/big-copy.bin" || fail "the server-side copy's bytes differ"
+awss3 "$WAK" "$WSK" cp "s3://${BUCKET}/probe.txt" "s3://${BUCKET}/probe-copy.txt" >/dev/null 2>"$WORK/cps.err" \
+  || fail "a small server-side copy (CopyObject) failed: $(cat "$WORK/cps.err")"
+awsq "$WAK" "$WSK" get-object --bucket "$BUCKET" --key probe-copy.txt "$WORK/probe-copy.txt" >/dev/null || fail "get of the small copy failed"
+cmp -s "$WORK/in.txt" "$WORK/probe-copy.txt" || fail "the small copy's bytes differ (a copy must never store an empty object)"
+log "  ✓ both copies byte-identical"
+
+log "an upload can be listed and aborted"
+UPLOAD_ID="$(awsq "$WAK" "$WSK" create-multipart-upload --bucket "$BUCKET" --key aborted.bin --query UploadId --output text)" \
+  || fail "create-multipart-upload failed"
+head -c $((5 * 1024 * 1024)) /dev/urandom > "$WORK/part.bin"
+awsq "$WAK" "$WSK" upload-part --bucket "$BUCKET" --key aborted.bin --upload-id "$UPLOAD_ID" --part-number 1 --body "$WORK/part.bin" >/dev/null \
+  || fail "upload-part failed"
+awsq "$WAK" "$WSK" list-parts --bucket "$BUCKET" --key aborted.bin --upload-id "$UPLOAD_ID" --query 'Parts[0].Size' --output text >"$WORK/lp.out" 2>&1 \
+  && [ "$(cat "$WORK/lp.out")" = $((5 * 1024 * 1024)) ] || fail "list-parts does not show the 5 MiB part: $(cat "$WORK/lp.out")"
+# Listed by the object's key as prefix (MinIO lists an upload under its exact key).
+awsq "$WAK" "$WSK" list-multipart-uploads --bucket "$BUCKET" --prefix aborted.bin --query 'Uploads[].UploadId' --output text >"$WORK/lu.out" 2>&1 \
+  || fail "list-multipart-uploads failed: $(cat "$WORK/lu.out")"
+grep -q "$UPLOAD_ID" "$WORK/lu.out" || fail "list-multipart-uploads does not list the open upload"
+awsq "$WAK" "$WSK" abort-multipart-upload --bucket "$BUCKET" --key aborted.bin --upload-id "$UPLOAD_ID" >/dev/null || fail "abort-multipart-upload failed"
+ERR="$(awsq "$WAK" "$WSK" list-parts --bucket "$BUCKET" --key aborted.bin --upload-id "$UPLOAD_ID" 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q NoSuchUpload || fail "an aborted upload must be NoSuchUpload, got: $ERR"
+log "  ✓ listed, then aborted (NoSuchUpload)"
+
+OWN="$(awsq "$WAK" "$WSK" get-bucket-ownership-controls --bucket "$BUCKET" --query 'OwnershipControls.Rules[0].ObjectOwnership' --output text 2>&1 || true)"
+[ "$OWN" = BucketOwnerEnforced ] || fail "get-bucket-ownership-controls: want BucketOwnerEnforced, got: $OWN"
+log "  ✓ ownership controls: BucketOwnerEnforced"
 
 # --- 5. NEGATIVE: valid key ID, WRONG secret → SignatureDoesNotMatch ---------------------------
 log "negative: valid key ID with a WRONG secret must be rejected"
@@ -158,6 +221,11 @@ fi
 grep -qi 'AccessDenied\|403\|Forbidden' "$WORK/deny.out" \
   || fail "reader write was rejected, but not as AccessDenied/403: $(cat "$WORK/deny.out")"
 log "  ✓ denied as AccessDenied"
+ERR="$(awsq "$RAK" "$RSK" create-multipart-upload --bucket "$BUCKET" --key reader.bin 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q AccessDenied || fail "a reader's create-multipart-upload: want AccessDenied, got: $ERR"
+ERR="$(awsq "$RAK" "$RSK" copy-object --bucket "$BUCKET" --key reader-copy.txt --copy-source "${BUCKET}/probe.txt" 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q AccessDenied || fail "a reader's copy-object: want AccessDenied, got: $ERR"
+log "  ✓ a reader may not start a multipart upload or copy an object (AccessDenied)"
 
 # The reader SHOULD still be able to read (sanity that the deny is scoped to writes, not blanket).
 log "sanity: the reader CAN still get-object (deny is write-scoped)"
@@ -189,13 +257,10 @@ if command -v curl >/dev/null; then
 fi
 
 # --- 8. CreateBucket: mb → immediate put/get → ls → rb, as a deploy script would ---------------
-awss3() { # AK SK -- <aws s3 args...> (the high-level `aws s3` commands)
-  local ak="$1" sk="$2"; shift 2
-  AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" \
-    aws --endpoint-url "$ENDPOINT" --no-cli-pager s3 "$@"
-}
 log "CreateBucket: aws s3 mb s3://${MB_BUCKET}"
+mb_start=$(date +%s)
 awss3 "$WAK" "$WSK" mb "s3://${MB_BUCKET}" >"$WORK/mb.out" 2>&1 || fail "aws s3 mb failed: $(cat "$WORK/mb.out")"
+log "  (aws s3 mb answered in $(( $(date +%s) - mb_start )) s)"
 awsq "$WAK" "$WSK" put-object --bucket "$MB_BUCKET" --key first.txt --body "$WORK/in.txt" >/dev/null 2>"$WORK/mbput.err" \
   || fail "put-object right after CreateBucket failed: $(cat "$WORK/mbput.err")"
 awsq "$WAK" "$WSK" get-object --bucket "$MB_BUCKET" --key first.txt "$WORK/mbget.txt" >/dev/null \
@@ -235,9 +300,24 @@ done
 [ -n "$gone" ] || fail "the kind: Bucket claim ${BUCKET_NS}/${MB_BUCKET} outlived aws s3 rb"
 log "  ✓ aws s3 rb removed the bucket and its claim"
 
+# A client configured for another region: `aws s3 mb` sends that region as the LocationConstraint (signed
+# for that region too), and a constraint naming yet another region is IllegalLocationConstraintException.
+log "CreateBucket from a client configured for eu-west-1"
+REGION=eu-west-1 awss3 "$WAK" "$WSK" mb "s3://${MB_BUCKET}-eu" >"$WORK/mbeu.out" 2>&1 \
+  || fail "aws s3 mb from an eu-west-1 client failed: $(cat "$WORK/mbeu.out")"
+REGION=eu-west-1 awsq "$WAK" "$WSK" put-object --bucket "${MB_BUCKET}-eu" --key first.txt --body "$WORK/in.txt" >/dev/null 2>"$WORK/mbeuput.err" \
+  || fail "put-object into the eu-west-1 client's new bucket failed: $(cat "$WORK/mbeuput.err")"
+ERR="$(awsq "$WAK" "$WSK" create-bucket --bucket "${MB_BUCKET}-x" --create-bucket-configuration LocationConstraint=ap-south-1 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q IllegalLocationConstraintException \
+  || fail "a LocationConstraint other than the signing region: want IllegalLocationConstraintException, got: $ERR"
+REGION=eu-west-1 awsq "$WAK" "$WSK" delete-object --bucket "${MB_BUCKET}-eu" --key first.txt >/dev/null 2>&1 || true
+REGION=eu-west-1 awss3 "$WAK" "$WSK" rb "s3://${MB_BUCKET}-eu" >"$WORK/rbeu.out" 2>&1 || fail "aws s3 rb of the eu-west-1 bucket failed: $(cat "$WORK/rbeu.out")"
+log "  ✓ created from an eu-west-1 client; a mismatched constraint is IllegalLocationConstraintException"
+
 # --- cleanup the object we wrote --------------------------------------------------------------
-awsq "$WAK" "$WSK" delete-object --bucket "$BUCKET" --key probe.txt >/dev/null 2>&1 || true
-awsq "$WAK" "$WSK" delete-object --bucket "$BUCKET" --key chunk.txt >/dev/null 2>&1 || true
+for k in probe.txt chunk.txt big.bin big-copy.bin probe-copy.txt; do
+  awsq "$WAK" "$WSK" delete-object --bucket "$BUCKET" --key "$k" >/dev/null 2>&1 || true
+done
 
 echo
-echo "✓ PASS — aws-shim S3 surface is byte-faithful, serves pre-signed URLs, creates and removes buckets, and enforces auth + the write boundary."
+echo "✓ PASS — aws-shim S3 surface is byte-faithful (multipart and copies included), serves pre-signed URLs, creates and removes buckets, and enforces auth + the write boundary."

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -29,8 +30,11 @@ import (
 // handler then serves everything but CreateBucket and DeleteBucket.
 func newS3Handler(cs kubernetes.Interface, mc *minio.Client, dyn dynamic.Interface, cfg *rest.Config, authzNS string,
 	authz *dataplaneauthz.Checker, logger *slog.Logger, vhostSuffixes []string) *s3Handler {
+	encEnv := os.Getenv("OBJECT_ENCRYPTION") == "true"
+	encFile := getenv("OBJECT_ENCRYPTION_FILE", "/etc/openinfra/object-encryption/enabled")
 	h := &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authz, logger: logger, vhostSuffixes: vhostSuffixes,
-		bucketNS: getenv("S3_BUCKET_NAMESPACE", defaultBucketNamespace)}
+		bucketNS:           getenv("S3_BUCKET_NAMESPACE", defaultBucketNamespace),
+		encryptsNewBuckets: func() bool { return encEnv || fileSaysTrue(encFile) }}
 	if dyn != nil && cfg != nil {
 		h.dyn = dyn
 		h.callerDyn = func(user string, groups []string) (dynamic.Interface, error) {
@@ -99,10 +103,21 @@ func decodeTarget(method, bucket, key string, q url.Values) (s3op, bool) {
 			return s3op{kind: "get-bucket-location", bucket: bucket}, true
 		case sub == "encryption" && method == http.MethodGet:
 			return s3op{kind: "get-bucket-encryption", bucket: bucket}, true
+		case sub == "ownershipControls" && method == http.MethodGet:
+			return s3op{kind: "get-bucket-ownership-controls", bucket: bucket}, true
+		case sub == "uploads" && method == http.MethodGet:
+			return s3op{kind: "list-multipart-uploads", bucket: bucket}, true
 		}
 		return s3op{}, false
 	}
-	if sub != "" { // object tagging, ACLs, multipart, retention… are not served
+	if op, ok, multipart := decodeMultipart(method, bucket, key, q); multipart {
+		return op, ok
+	}
+	// GetObjectTagging: the AWS CLI reads a source object's tags before a large (multipart) copy.
+	if sub == "tagging" && method == http.MethodGet {
+		return s3op{kind: "get-object-tagging", bucket: bucket, key: key, versionID: q.Get("versionId")}, true
+	}
+	if sub != "" { // object tagging, ACLs, retention… are not served
 		return s3op{}, false
 	}
 	v := q.Get("versionId")
@@ -145,6 +160,24 @@ func (op s3op) action() string {
 		return "s3:GetBucketLocation"
 	case "get-bucket-encryption":
 		return "s3:GetEncryptionConfiguration"
+	case "get-bucket-ownership-controls":
+		return "s3:GetBucketOwnershipControls"
+	case "get-object-tagging":
+		if op.versionID != "" {
+			return "s3:GetObjectVersionTagging"
+		}
+		return "s3:GetObjectTagging"
+	// Multipart upload and copy, as AWS authorizes them: every step of an upload is s3:PutObject on the
+	// object (the copy's source is checked separately, as s3:GetObject), aborting and listing have their
+	// own actions.
+	case "create-multipart-upload", "upload-part", "upload-part-copy", "complete-multipart-upload", "copy-object":
+		return "s3:PutObject"
+	case "abort-multipart-upload":
+		return "s3:AbortMultipartUpload"
+	case "list-parts":
+		return "s3:ListMultipartUploadParts"
+	case "list-multipart-uploads":
+		return "s3:ListBucketMultipartUploads"
 	case "create-bucket":
 		return "s3:CreateBucket"
 	case "delete-bucket":

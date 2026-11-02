@@ -51,6 +51,18 @@ var s3Errors = map[string]s3ErrorInfo{
 	"OperationAborted":        {http.StatusConflict, "A conflicting conditional operation is currently in progress against this resource. Please try again."},
 	"InvalidBucketName":       {http.StatusBadRequest, "The specified bucket is not valid."},
 	"InternalError":           {http.StatusInternalServerError, "We encountered an internal error. Please try again."},
+	// Multipart upload and copy (MinIO answers these codes; they pass through as S3's own).
+	"NoSuchUpload":              {http.StatusNotFound, "The specified multipart upload does not exist. The upload ID might be invalid, or the multipart upload might have been aborted or completed."},
+	"InvalidPart":               {http.StatusBadRequest, "One or more of the specified parts could not be found. The part might not have been uploaded, or the specified entity tag might not have matched the part's entity tag."},
+	"InvalidPartOrder":          {http.StatusBadRequest, "The list of parts was not in ascending order. The parts list must be specified in order by part number."},
+	"EntityTooSmall":            {http.StatusBadRequest, "Your proposed upload is smaller than the minimum allowed object size."},
+	"EntityTooLarge":            {http.StatusBadRequest, "Your proposed upload exceeds the maximum allowed object size."},
+	"InvalidArgument":           {http.StatusBadRequest, "Invalid Argument"},
+	"BadDigest":                 {http.StatusBadRequest, "The Content-MD5 you specified did not match what we received."},
+	"XAmzContentSHA256Mismatch": {http.StatusBadRequest, "The provided 'x-amz-content-sha256' header does not match what was computed."},
+	"PreconditionFailed":        {http.StatusPreconditionFailed, "At least one of the pre-conditions you specified did not hold"},
+	"InvalidRange":              {http.StatusRequestedRangeNotSatisfiable, "The requested range is not satisfiable"},
+	"MissingContentLength":      {http.StatusLengthRequired, "You must provide the Content-Length HTTP header."},
 }
 
 // writeS3Error writes an S3-faithful error response: the documented HTTP status, the XML error

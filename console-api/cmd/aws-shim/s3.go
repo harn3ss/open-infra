@@ -50,6 +50,9 @@ type s3Handler struct {
 	// createWait/createPoll bound how long CreateBucket waits for the bucket's setup (0 = the defaults).
 	bucketNS               string
 	createWait, createPoll time.Duration
+	// encryptsNewBuckets reports whether the platform gives new buckets default encryption (the same
+	// switch CloudFormation's BucketEncryption reads, live). nil = no.
+	encryptsNewBuckets func() bool
 }
 
 // s3op describes a decoded S3 request: the operation kind and the target bucket/key.
@@ -62,6 +65,10 @@ type s3op struct {
 	key       string
 	versionID string // an object version the request names (?versionId=)
 	write     bool   // mutates; drives the read-vs-write authorization verb
+	// A multipart upload's id (?uploadId=) and an UploadPart's raw ?partNumber= (validated by the handler,
+	// which answers S3's own InvalidArgument for a bad one).
+	uploadID   string
+	partNumber string
 }
 
 // authFailure writes S3's dialect of an authentication rejection (design's indistinguishable 403).
@@ -81,36 +88,21 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 	}
 
 	// 2. Authorize.
-	if claims.PrincipalType() == "Role" {
-		// An assumed kind: Role has no console user behind it, so the coarse console-user SAR
-		// (get/create applications) does NOT apply — an assumed session's control-plane groups are
-		// deliberately minimal (openinfra:users). Its authority is EXACTLY its attached data-plane
-		// policies, AWS-style default-deny: an ungoverned role (no applicable policy) is denied, never
-		// allowed to fall through the way an ungoverned console user does (#111 Gap C — fail closed).
-		// ListBuckets names no bucket: it is checked on Bucket::* (AWS's Resource "*").
-		allowed, governed, reason := h.authz.Authorize(r.Context(), "Role", claims.PrincipalID(), claims.Groups,
-			op.action(), "Bucket", scopeFor(claims, op.bucket), requestContext(claims, r))
-		if !governed || !allowed {
-			if reason == "" {
-				reason = "assumed role has no data-plane policy allowing this action (default deny)"
-			}
-			h.logger.Warn("s3 denied (assumed role)", "user", claims.Sub, "op", op.kind,
-				"bucket", op.bucket, "key", op.key, "reason", reason)
-			writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
+	if !h.allowed(r, claims, op) {
+		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
+		return
+	}
+	// A copy reads its source as well: the source object is authorized as a read of it (s3:GetObject, or
+	// s3:GetObjectVersion for a version), exactly as AWS evaluates CopyObject and UploadPartCopy.
+	var src copySource
+	if op.kind == "copy-object" || op.kind == "upload-part-copy" {
+		var ok bool
+		if src, ok = parseCopySource(r.Header.Get("x-amz-copy-source")); !ok {
+			writeS3ErrorFull(w, "InvalidArgument", http.StatusBadRequest, requestID,
+				"Copy Source must mention the source bucket and key: sourcebucket/sourcekey", r.URL.Path)
 			return
 		}
-	} else {
-		// 2a. Coarse impersonated SubjectAccessReview — one policy world (console-user principals).
-		if allowed, reason := h.authorizeS3(r.Context(), claims, op); !allowed {
-			h.logger.Warn("s3 denied", "user", claims.Sub, "op", op.kind,
-				"bucket", op.bucket, "key", op.key, "reason", reason)
-			writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
-			return
-		}
-		// 2b. Fine-grained data-plane policy (kind: Policy dataPlane) — additive: can only tighten.
-		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, op.action(), "Bucket", op.bucket, r); denied {
-			h.logger.Warn("s3 denied by data-plane policy", "user", claims.Sub, "op", op.kind,
-				"bucket", op.bucket, "key", op.key, "reason", reason)
+		if !h.allowed(r, claims, s3op{kind: "get", bucket: src.bucket, key: src.key, versionID: src.versionID}) {
 			writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
 			return
 		}
@@ -152,9 +144,67 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		h.getBucketLocation(w, r, op, requestID)
 	case "get-bucket-encryption":
 		h.getBucketEncryption(w, r, op, requestID)
+	case "get-bucket-ownership-controls":
+		h.getBucketOwnershipControls(w, r, op, requestID)
+	case "get-object-tagging":
+		h.getObjectTagging(w, r, op, requestID)
+	case "create-multipart-upload":
+		h.createMultipartUpload(w, r, op, requestID)
+	case "upload-part":
+		h.uploadPart(w, r, op, requestID)
+	case "upload-part-copy":
+		h.uploadPartCopy(w, r, op, src, requestID)
+	case "complete-multipart-upload":
+		h.completeMultipartUpload(w, r, op, requestID)
+	case "abort-multipart-upload":
+		h.abortMultipartUpload(w, r, op, requestID)
+	case "list-parts":
+		h.listParts(w, r, op, requestID)
+	case "list-multipart-uploads":
+		h.listMultipartUploads(w, r, op, requestID)
+	case "copy-object":
+		h.copyObject(w, r, op, src, requestID)
 	default:
 		writeS3Error(w, "NotImplemented", requestID, r.URL.Path)
 	}
+}
+
+// allowed runs the S3 authorization for op: for an assumed role, its data-plane policies alone (default
+// deny); for a User, the coarse SubjectAccessReview and then the data-plane policies, which can only
+// tighten it. A denial is logged with its reason.
+func (h *s3Handler) allowed(r *http.Request, claims iam.Claims, op s3op) bool {
+	if claims.PrincipalType() == "Role" {
+		// An assumed kind: Role has no console user behind it, so the coarse console-user SAR
+		// (get/create applications) does NOT apply — an assumed session's control-plane groups are
+		// deliberately minimal (openinfra:users). Its authority is EXACTLY its attached data-plane
+		// policies, AWS-style default-deny: an ungoverned role (no applicable policy) is denied, never
+		// allowed to fall through the way an ungoverned console user does (#111 Gap C — fail closed).
+		// ListBuckets names no bucket: it is checked on Bucket::* (AWS's Resource "*").
+		allowed, governed, reason := h.authz.Authorize(r.Context(), "Role", claims.PrincipalID(), claims.Groups,
+			op.action(), "Bucket", scopeFor(claims, op.bucket), requestContext(claims, r))
+		if !governed || !allowed {
+			if reason == "" {
+				reason = "assumed role has no data-plane policy allowing this action (default deny)"
+			}
+			h.logger.Warn("s3 denied (assumed role)", "user", claims.Sub, "op", op.kind,
+				"bucket", op.bucket, "key", op.key, "reason", reason)
+			return false
+		}
+		return true
+	}
+	// Coarse impersonated SubjectAccessReview — one policy world (console-user principals).
+	if allowed, reason := h.authorizeS3(r.Context(), claims, op); !allowed {
+		h.logger.Warn("s3 denied", "user", claims.Sub, "op", op.kind,
+			"bucket", op.bucket, "key", op.key, "reason", reason)
+		return false
+	}
+	// Fine-grained data-plane policy (kind: Policy dataPlane) — additive: can only tighten.
+	if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, op.action(), "Bucket", op.bucket, r); denied {
+		h.logger.Warn("s3 denied by data-plane policy", "user", claims.Sub, "op", op.kind,
+			"bucket", op.bucket, "key", op.key, "reason", reason)
+		return false
+	}
+	return true
 }
 
 // decode maps a request onto an s3op, choosing virtual-hosted addressing (bucket in the Host header)
@@ -162,10 +212,14 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 // unmodified AWS SDK (no forcePathStyle) and the presigned URLs it mints use when AWS_ENDPOINT_URL
 // names a hostname; path-style stays the explicit LocalStack/MinIO-style client option.
 func (h *s3Handler) decode(r *http.Request) (s3op, bool) {
+	var op s3op
+	var ok bool
 	if b := vhostBucket(hostNoPort(r.Host), h.vhostSuffixes); b != "" {
-		return decodeVHost(r, b)
+		op, ok = decodeVHost(r, b)
+	} else {
+		op, ok = decodeS3(r)
 	}
-	return decodeS3(r)
+	return asCopy(op, r), ok
 }
 
 // hostNoPort lowercases a Host header and strips any :port (leaving a bracketed IPv6 literal intact).
@@ -224,7 +278,9 @@ func decodeS3(r *http.Request) (s3op, bool) {
 func (h *s3Handler) authorizeS3(ctx context.Context, claims iam.Claims, op s3op) (bool, string) {
 	verb := "get"
 	switch op.kind {
-	case "put", "create-bucket", "put-bucket-versioning", "put-bucket-tagging", "delete-bucket-tagging":
+	case "put", "create-bucket", "put-bucket-versioning", "put-bucket-tagging", "delete-bucket-tagging",
+		"create-multipart-upload", "upload-part", "upload-part-copy", "complete-multipart-upload",
+		"abort-multipart-upload", "copy-object":
 		verb = "create"
 	case "delete", "delete-bucket":
 		verb = "delete"
@@ -295,7 +351,32 @@ func (h *s3Handler) listObjects(w http.ResponseWriter, r *http.Request, op s3op,
 }
 
 func (h *s3Handler) getObject(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {
-	obj, err := h.mc.GetObject(r.Context(), op.bucket, op.key, minio.GetObjectOptions{VersionID: op.versionID})
+	opts := minio.GetObjectOptions{VersionID: op.versionID}
+	// A Range request (the AWS CLI downloads a file over 8 MiB as parallel ranged GETs) is answered 206 with
+	// just that range, as S3 does; answering each part with the whole object would corrupt the download.
+	var full *minio.ObjectInfo
+	var start, end int64
+	if hdr := r.Header.Get("Range"); hdr != "" {
+		st, err := h.mc.StatObject(r.Context(), op.bucket, op.key, minio.StatObjectOptions{VersionID: op.versionID})
+		if err != nil {
+			writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
+			return
+		}
+		s, e, ranged, satisfiable := parseByteRange(hdr, st.Size)
+		if ranged && !satisfiable {
+			w.Header().Set("Content-Range", "bytes */"+strconv.FormatInt(st.Size, 10))
+			writeS3Error(w, "InvalidRange", requestID, r.URL.Path)
+			return
+		}
+		if ranged {
+			if err := opts.SetRange(s, e); err != nil {
+				writeS3Error(w, "InvalidRange", requestID, r.URL.Path)
+				return
+			}
+			full, start, end = &st, s, e
+		}
+	}
+	obj, err := h.mc.GetObject(r.Context(), op.bucket, op.key, opts)
 	if err != nil {
 		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
 		return
@@ -306,10 +387,64 @@ func (h *s3Handler) getObject(w http.ResponseWriter, r *http.Request, op s3op, r
 		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
 		return
 	}
-	setObjectHeaders(w, stat)
+	if full == nil {
+		setObjectHeaders(w, stat)
+		w.Header().Set("x-amz-request-id", requestID)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, obj)
+		return
+	}
+	n := end - start + 1
+	setObjectHeaders(w, *full)
+	w.Header().Set("Content-Length", strconv.FormatInt(n, 10))
+	w.Header().Set("Content-Range", "bytes "+strconv.FormatInt(start, 10)+"-"+strconv.FormatInt(end, 10)+"/"+strconv.FormatInt(full.Size, 10))
 	w.Header().Set("x-amz-request-id", requestID)
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, obj)
+	w.WriteHeader(http.StatusPartialContent)
+	_, _ = io.CopyN(w, obj, n)
+}
+
+// parseByteRange reads a Range header against an object of size bytes. ranged=false means the header is
+// not a single byte range S3 honours (malformed, or several ranges): the whole object is served, as S3
+// does. satisfiable=false is S3's InvalidRange (416): a range starting at or past the end, or an empty
+// suffix. start and end are inclusive offsets, end clamped to the object's last byte.
+func parseByteRange(h string, size int64) (start, end int64, ranged, satisfiable bool) {
+	spec, ok := strings.CutPrefix(strings.TrimSpace(h), "bytes=")
+	if !ok || strings.Contains(spec, ",") {
+		return 0, 0, false, false
+	}
+	a, b, ok := strings.Cut(strings.TrimSpace(spec), "-")
+	if !ok {
+		return 0, 0, false, false
+	}
+	if a == "" { // bytes=-N: the last N bytes
+		n, err := strconv.ParseInt(b, 10, 64)
+		if err != nil || n < 0 {
+			return 0, 0, false, false
+		}
+		if n == 0 || size == 0 {
+			return 0, 0, true, false
+		}
+		if n > size {
+			n = size
+		}
+		return size - n, size - 1, true, true
+	}
+	s, err := strconv.ParseInt(a, 10, 64)
+	if err != nil || s < 0 {
+		return 0, 0, false, false
+	}
+	e := size - 1
+	if b != "" {
+		if e2, err := strconv.ParseInt(b, 10, 64); err != nil || e2 < s {
+			return 0, 0, false, false
+		} else if e2 < e {
+			e = e2
+		}
+	}
+	if s >= size {
+		return 0, 0, true, false
+	}
+	return s, e, true, true
 }
 
 func (h *s3Handler) headObject(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {

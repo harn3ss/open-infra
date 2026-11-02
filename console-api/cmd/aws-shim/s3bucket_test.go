@@ -52,8 +52,8 @@ func TestS3Decode_Subresources(t *testing.T) {
 		{"GET", "/b?policy", false, "", "", false},
 		{"PUT", "/b?lifecycle", false, "", "", false},
 		{"POST", "/b?delete", false, "", "", false},
-		{"GET", "/b/k?tagging", false, "", "", false},
-		{"POST", "/b/k?uploads", false, "", "", false},
+		{"PUT", "/b/k?tagging", false, "", "", false},
+		{"PUT", "/b/k?retention", false, "", "", false},
 		{"GET", "/?acl", false, "", "", false},
 	}
 	h := &s3Handler{}

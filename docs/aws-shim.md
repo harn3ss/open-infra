@@ -221,36 +221,53 @@ CI if they drift from the probes). The shim never claims a service it hasn't mad
 
 ### S3 (faithful, proven)
 
-`PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `HeadBucket`, `ListObjectsV2`,
-`ListBuckets`, with S3-faithful ETags, headers, list XML, and error codes/statuses. `PutObject`
-also **decodes aws-chunked framing** — the per-chunk size/signature wrapping an SDK adds when it
-sends a trailing checksum (the AWS CLI v2 default in many paths) — so the object is stored raw, not
-with the framing bytes. Guarded by a decoder unit test and a probe step that forces a chunked
-upload (`--checksum-algorithm CRC32`) and asserts byte-identity.
+`PutObject`, `GetObject` (including a single byte `Range`, answered `206` with `Content-Range`),
+`HeadObject`, `DeleteObject`, `HeadBucket`, `ListObjectsV2`, `ListBuckets`, with S3-faithful ETags,
+headers, list XML, and error codes/statuses. `PutObject` also **decodes aws-chunked framing** — the
+per-chunk size/signature wrapping an SDK adds when it sends a trailing checksum (the AWS CLI v2 default
+in many paths) — so the object is stored raw, not with the framing bytes. Guarded by a decoder unit test
+and a probe step that forces a chunked upload (`--checksum-algorithm CRC32`) and asserts byte-identity.
+
+**Multipart upload and copies.** `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`,
+`AbortMultipartUpload`, `ListParts` and `ListMultipartUploads` are served, so `aws s3 cp`/`sync` of a file
+over the CLI's 8 MiB threshold (and any SDK's managed upload) works; so are `CopyObject` and
+`UploadPartCopy` (server-side copies below and above the threshold) and `GetObjectTagging`, which the CLI
+reads before a large copy. A part streams through to MinIO without being buffered, and the completed
+object gets the bucket's default encryption like any other. Authorization is AWS's: every upload step is
+`s3:PutObject`, aborting is `s3:AbortMultipartUpload`, listing parts `s3:ListMultipartUploadParts`,
+listing uploads `s3:ListBucketMultipartUploads`, and a copy also needs `s3:GetObject` (or
+`s3:GetObjectVersion`) on its source. A `Content-MD5` or a signed payload hash on a part is checked;
+client checksums (`x-amz-checksum-*`) are not stored, as for `PutObject`. `ListMultipartUploads` lists an
+upload under its object's exact key as the prefix (MinIO's behavior).
 
 **Bucket configuration and versions.** `GetBucketVersioning` / `PutBucketVersioning`, `ListObjectVersions`,
 `GetObject`/`HeadObject`/`DeleteObject` with `versionId`, and `PutObject`'s `x-amz-version-id` behave as
 on S3, so a bucket created with versioning (`kind: Bucket` `versioning: true`, or CloudFormation
 `VersioningConfiguration: Enabled`) shows it through the API. `GetBucketTagging` / `PutBucketTagging` /
-`DeleteBucketTagging` (a bucket with no tags is `NoSuchTagSet`) and `GetBucketLocation` (empty, i.e.
-us-east-1) are served too. Each is authorized as its AWS action (`s3:GetBucketVersioning`,
-`s3:ListBucketVersions`, `s3:GetObjectVersion`, `s3:PutBucketTagging` …). Any other sub-resource
-(`?acl`, `?policy`, `?lifecycle`, multipart uploads, object tagging …) is `NotImplemented` rather than
-being answered as a listing or an object read.
+`DeleteBucketTagging` (a bucket with no tags is `NoSuchTagSet`), `GetBucketLocation` (empty, i.e.
+us-east-1) and `GetBucketOwnershipControls` (`BucketOwnerEnforced`) are served too. Each is authorized as
+its AWS action (`s3:GetBucketVersioning`, `s3:ListBucketVersions`, `s3:GetObjectVersion`,
+`s3:PutBucketTagging` …). Any other sub-resource (`?acl`, `?policy`, `?lifecycle`, object tagging
+writes, `DeleteObjects` …) is `NotImplemented` rather than being answered as a listing or an object read.
 
 **`CreateBucket`.** `aws s3 mb` / `CreateBucket` makes a `kind: Bucket` claim, so a bucket made through the
 API is set up, given the platform's default encryption, reaped and deleted exactly like a stack's. The
 claim lives in one account-wide namespace (`S3_BUCKET_NAMESPACE`, default `open-infra-s3`), named after
 the bucket (shortened with a hash when the name has dots or is long; `spec.bucketName` is the exact
 name), and it is created with the caller's own authority, so their RBAC decides; an assumed role also
-needs `s3:CreateBucket` in its policy. The call answers once the bucket's setup has finished, so an
-immediate `PutObject` works; a setup still running after about 50 seconds answers `503`, which SDKs retry.
+needs `s3:CreateBucket` in its policy. The call answers once the bucket exists and, while the platform
+encrypts new buckets, has its default encryption, so an immediate `PutObject` works and is encrypted (the
+claim's own credentials, which only the claim's apps use, may still be on their way); a setup still
+running after about 50 seconds answers `503`, which SDKs retry.
 As in us-east-1, re-creating a bucket that is yours (one whose claim you may read) answers `200`; a name
 that is anyone else's, a platform bucket's, or another resource's own bucket is `BucketAlreadyExists`
 (409), and a bucket being deleted is `OperationAborted`. S3's naming rules apply (`InvalidBucketName`).
 Buckets are `BucketOwnerEnforced` (ACLs disabled), so an ACL other than `private`, a grant header, or
-another Object Ownership is refused as AWS refuses it; an explicit `us-east-1` `LocationConstraint` is
-`InvalidLocationConstraint` and another region is `IllegalLocationConstraintException`. Object Lock at
+another Object Ownership is refused as AWS refuses it. A `LocationConstraint` is checked against the
+region the request was signed for, as a regional endpoint checks it: a client configured for another
+region (`aws s3 mb` sends its region) is accepted, a constraint naming a region other than the signing
+region is `IllegalLocationConstraintException`, and an explicit `us-east-1` is `InvalidLocationConstraint`
+(that region is given by omitting it); `GetBucketLocation` still answers us-east-1. Object Lock at
 creation and directory buckets are `NotImplemented` (create a lock-enabled bucket as a `kind: Bucket` or in
 a stack).
 
@@ -435,7 +452,8 @@ Native/neutral model first; AWS door second. See [open-appsync/README.md](../ope
 - **Single MinIO identity.** The shim acts to MinIO as one scoped, non-root service account.
   Per-principal MinIO users with per-bucket policies are the graduation that pairs with per-bucket
   authorization.
-- **Path-style only**, header-auth only (no presigned URLs yet), no multipart upload yet.
+- **Not served:** object ACLs, object tagging writes, `DeleteObjects` (batch delete), CORS, and bucket
+  policy and lifecycle through the API (both are set on the `kind: Bucket`).
 
 Each new operation or service graduates the same gated way the chaos-oracle adapters do: built →
 exercised → proven by the probe → counted.
