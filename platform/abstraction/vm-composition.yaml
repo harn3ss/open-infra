@@ -778,14 +778,41 @@ spec:
                             isz=$(stat -c %s "$img")
                             dsz=$(blockdev --getsize64 "$dev" 2>/dev/null || stat -c %s "$dev")
                             [ "$isz" -le "$dsz" ] || { echo "the OS image ($isz bytes) is larger than the encrypted root ($dsz bytes)" >&2; exit 1; }
+                            # Copy the image itself, not the zeros CDI appended: CDI grows disk.img to the
+                            # volume's size, and writing that tail through the encryption to the replicated
+                            # disk was most of the copy. A GPT image's primary header (LBA 1) records where
+                            # its backup header was, the last sector of the image as built, which CDI's
+                            # resize does not move; the copy ends there. What lies past it on the encrypted
+                            # root reads as noise, as any unwritten encrypted sector does, and the guest's
+                            # growpart/resize initialise what they grow into. Anything else (no GPT header,
+                            # a value that does not fit the file) copies the whole file, as before.
+                            ib() { dd if="$img" bs=1 skip="$1" count="$2" 2>/dev/null | od -An -tx1 | tr -d ' \n'; }
+                            le() { h=$1; r=""; while [ -n "$h" ]; do r="${h%"${h#??}"}$r"; h=${h#??}; done; echo "$r"; }
+                            mib=1048576
+                            csz=$isz
+                            if [ "$(ib 512 8)" = 4546492050415254 ] && [ "$(le "$(ib 536 8)")" = 0000000000000001 ]; then
+                              alt=$(le "$(ib 544 8)"); lastu=$(le "$(ib 560 8)")
+                              # Both read as 16 hex digits below 2^63 (the shell's arithmetic is signed).
+                              case "$alt:$lastu" in
+                                [0-7]???????????????:[0-7]???????????????) alt=$((0x$alt)); lastu=$((0x$lastu))
+                                        end=$(( (alt + 1) * 512 ))
+                                        if [ "$alt" -gt 33 ] && [ "$lastu" -lt "$alt" ] && [ "$end" -le "$isz" ]; then
+                                          csz=$(( (end + mib - 1) / mib * mib ))
+                                          [ "$csz" -le "$isz" ] || csz=$isz
+                                        fi ;;
+                              esac
+                            fi
+                            n=$(( (csz + mib - 1) / mib ))
                             # Direct I/O to the device: buffered, the copy fills the page cache faster than
                             # the replicated disk drains it, and the container is OOM-killed part-way.
                             direct=""; [ -b "$dev" ] && direct="oflag=direct"
-                            dd if="$img" of="$dev" bs=1M skip=1 seek=1 iflag=fullblock $direct conv=notrunc,fsync
+                            if [ "$n" -gt 1 ]; then
+                              dd if="$img" of="$dev" bs=1M skip=1 seek=1 count=$((n - 1)) iflag=fullblock $direct conv=notrunc,fsync
+                            fi
                             sync
                             dd if="$img" of="$dev" bs=1M count=1 iflag=fullblock $direct conv=notrunc,fsync
                             sync
-                            echo "copied the OS image ($isz bytes) onto the encrypted root"
+                            echo "copied the OS image ($csz of its file's $isz bytes) onto the encrypted root"
                         volumeMounts:
                           - { name: image, mountPath: /src, readOnly: true }
                         volumeDevices:
