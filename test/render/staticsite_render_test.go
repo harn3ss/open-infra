@@ -234,6 +234,43 @@ func TestStaticSite_ResponseHeadersRollThePod(t *testing.T) {
 	}
 }
 
+// The site is Ready only when its server is: the claim (and so a stack's CloudFront distribution) must not
+// report Ready while the pod still waits for its scoped <name>-minio Secret or nginx is not yet answering.
+// The platform-side creds observer stays force-ready (a claim from before the scoped-creds model has none),
+// so the server's readiness is what gates the claim.
+func TestStaticSite_ReadyOnlyWhenServing(t *testing.T) {
+	tmpl := extractInlineTemplate(t, staticsiteCompositionPath)
+	out := render(t, tmpl, staticsiteCtx(map[string]any{"domain": "app.example.com"}))
+	docs, err := parseYAMLDocs(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]map[string]any{}
+	for _, m := range docs {
+		meta, _ := m["metadata"].(map[string]any)
+		ann, _ := meta["annotations"].(map[string]any)
+		if n, ok := ann["gotemplating.fn.crossplane.io/composition-resource-name"].(string); ok {
+			byName[n] = m
+		}
+	}
+	server := byName["server"]
+	if server == nil {
+		t.Fatalf("no server Object rendered")
+	}
+	r, _ := server["spec"].(map[string]any)["readiness"].(map[string]any)
+	q, _ := r["celQuery"].(string)
+	if r["policy"] != "DeriveFromCelQuery" || !strings.Contains(q, "object.status.readyReplicas == object.spec.replicas") {
+		t.Errorf("server readiness = %v; it must be derived from the Deployment's ready replicas", r)
+	}
+	pc := byName["site-pcreds"]
+	if pc == nil {
+		t.Fatalf("no site-pcreds Object rendered")
+	}
+	if ann := pc["metadata"].(map[string]any)["annotations"].(map[string]any); ann["gotemplating.fn.crossplane.io/ready"] != "True" {
+		t.Errorf("site-pcreds must stay force-ready for claims from before the scoped-creds model; annotations = %v", ann)
+	}
+}
+
 // Without domains/responseHeaders the site renders exactly as before: one Ingress rule, the single
 // domain in the TLS hosts, and no add_header lines.
 func TestStaticSite_SingleDomainNoHeaders(t *testing.T) {

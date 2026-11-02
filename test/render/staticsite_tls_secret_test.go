@@ -34,6 +34,13 @@ func TestStaticSite_TLSSecretIsComposed(t *testing.T) {
 	if strings.Join(got, ",") != "Observe,Create,Delete" {
 		t.Errorf("managementPolicies = %v; the provider must create and delete it but never update it (cert-manager owns its data)", got)
 	}
+	// cert-manager may issue before the provider creates the empty Secret. Such a Secret carries no provider
+	// last-applied annotation, so the default readiness (SuccessfulCreate) never marks it ready (no Update to
+	// reconcile it) and the site stays NotReady; readiness must follow the Secret's existence instead.
+	r, _ := spec["readiness"].(map[string]any)
+	if r["policy"] != "DeriveFromCelQuery" || r["celQuery"] != "object.metadata.uid != ''" {
+		t.Errorf("tls-secret readiness = %v; it must be ready once the Secret exists, whoever created it", r)
+	}
 	man := spec["forProvider"].(map[string]any)["manifest"].(map[string]any)
 	meta := man["metadata"].(map[string]any)
 	if man["type"] != "kubernetes.io/tls" || meta["name"] != "staticsite-web-tls" || meta["namespace"] != "default" {

@@ -356,6 +356,12 @@ spec:
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: server
             spec:
+              # Ready when the site serves, not when the Deployment object exists: the pod cannot start until
+              # the scoped <name>-minio Secret has been delivered, so without this the claim (and a stack's
+              # CloudFront distribution) reports Ready a minute or more before anything answers on its domain.
+              readiness:
+                policy: DeriveFromCelQuery
+                celQuery: object.spec.replicas == 0 || (has(object.status) && has(object.status.readyReplicas) && object.status.readyReplicas == object.spec.replicas)
               forProvider:
                 manifest:
                   apiVersion: apps/v1
@@ -468,6 +474,11 @@ spec:
                 gotemplating.fn.crossplane.io/composition-resource-name: tls-secret
             spec:
               managementPolicies: ["Observe", "Create", "Delete"]
+              # Ready once the Secret exists, whoever created it. The provider's default (SuccessfulCreate) counts
+              # an Object ready only when the live object carries the provider's own last-applied annotation; when
+              # cert-manager issues first and writes the Secret itself, it has none, and with no Update allowed the
+              # Object would never turn ready, holding the site NotReady until its create times out.
+              readiness: { policy: DeriveFromCelQuery, celQuery: "object.metadata.uid != ''" }
               forProvider:
                 manifest:
                   apiVersion: v1
