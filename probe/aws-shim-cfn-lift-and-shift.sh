@@ -136,7 +136,9 @@ trap cleanup EXIT
 # --- 0. the fidelity summary (what a pass here does NOT prove) ---------------------------------------
 if [ -n "${CFN_BIN:-}" ] && [ -x "$CFN_BIN" ]; then
   log "cfn plan: verdict + fidelity summary"
-  "$CFN_BIN" plan -stack-name "$STACK" -param SiteDomain="$SITE_DOMAIN" \
+  # -object-encryption: the fixture's buckets ask for BucketEncryption, which the target (the shim, with
+  # the platform's object encryption on) vouches for; offline the CLI cannot check it.
+  "$CFN_BIN" plan -stack-name "$STACK" -object-encryption -param SiteDomain="$SITE_DOMAIN" \
     -param AppRepositoryName="$REPO" "$TEMPLATE" > "$TMP/plan.txt" 2>&1
   grep -E "^Verdict" "$TMP/plan.txt"
   sed -n '/^Fidelity summary/,/^$/p' "$TMP/plan.txt" | cut -c1-200

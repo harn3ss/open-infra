@@ -64,6 +64,11 @@ function (e.g. a macro/SAM `Fn::Transform`), an `Fn::ImportValue` whose export w
 supplied, a required parameter with no value, a reference to something that does not
 exist, or a dependency cycle.
 
+Some outcomes depend on the cluster, which the CLI cannot see. `-object-encryption` plans for a
+cluster that encrypts every new bucket by default (`components.objectEncryption`); without it, a
+bucket's `BucketEncryption` is a blocker. The aws-shim's front door reads this from the platform, so
+`ValidateTemplate`, change sets and deploys there need no flag.
+
 ### The fidelity summary
 
 A provisionable plan ends with a **fidelity summary**: every property of *this* template that

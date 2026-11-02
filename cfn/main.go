@@ -7,7 +7,7 @@
 //
 // Usage:
 //
-//	cfn plan [-param K=V ...] [-stack-name NAME] [-json] <template.yaml|template.json>
+//	cfn plan [-param K=V ...] [-stack-name NAME] [-object-encryption] [-json] <template.yaml|template.json>
 //
 // Exit codes:
 //
@@ -96,7 +96,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `cfn — open-infra CloudFormation engine
 
 Usage:
-  cfn plan      [-param K=V ...] [-import NAME=VALUE ...] [-stack-name NAME] [-json] <template>
+  cfn plan      [-param K=V ...] [-import NAME=VALUE ...] [-stack-name NAME] [-object-encryption] [-json] <template>
   cfn deploy     -namespace NS -stack-name NAME [-param K=V ...] [-import NAME=VALUE ...] [-no-wait] [-timeout SECS] <template>
   cfn changeset  -namespace NS -stack-name NAME [-param K=V ...] [-import NAME=VALUE ...] <template>
   cfn update     -namespace NS -stack-name NAME [-param K=V ...] [-import NAME=VALUE ...] [-no-wait] [-timeout SECS] <template>
@@ -104,7 +104,9 @@ Usage:
   cfn drift      -namespace NS -stack-name NAME
 
 plan      (read-only) reports whether open-infra can provision a template, with caveats, or
-          not — and exactly why. Provisions nothing.
+          not — and exactly why. Provisions nothing. -object-encryption plans for an environment
+          that encrypts every new bucket by default (the CLI cannot check that; without it, a
+          template's BucketEncryption is refused).
 deploy    provisions a stack live, fail-closed: it refuses unless the whole template maps and
           every property translates, applies in dependency order, records the stack, and rolls
           back on failure leaving no orphans.
@@ -123,12 +125,17 @@ func runPlan(args []string) int {
 	exports := map[string]string{}
 	stackName := ""
 	asJSON := false
+	var caps Capabilities
 	var files []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "-json":
 			asJSON = true
+		case a == "-object-encryption":
+			// The operator vouches that the target environment encrypts every new bucket by default (the
+			// in-cluster front door reads this from the platform; offline the CLI cannot check it).
+			caps.ObjectEncryption = true
 		case a == "-param":
 			i++
 			if i >= len(args) {
@@ -192,7 +199,7 @@ func runPlan(args []string) int {
 		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
 		return 2
 	}
-	plan, err := BuildPlanWithExports(data, params, exports, stackName)
+	plan, err := BuildPlanWithCaps(data, params, exports, stackName, caps)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cfn: %v\n", err)
 		return 2
