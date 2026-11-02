@@ -13,7 +13,11 @@
 #      KUBECONFIG set: its PVC is on longhorn-encrypted), IMDSv2 requires a token and serves the role's credentials, `aws s3 cp` works with the
 #      distro CLI and aws-cli v2, a call outside the role's policy is denied, the role sends email through
 #      SES (SendEmail and SendRawEmail, as the sender identity its policy names), an image pulls from the
-#      registry, and a container in the guest gets the role's credentials through the default chain; with
+#      registry, and a container in the guest gets the role's credentials through the default chain; AWS's
+#      own names reach open-infra (the guest resolver): with no AWS_ENDPOINT_URL the CLI sends and receives
+#      by an AWS-style queue URL and reads the bucket at <bucket>.s3.<region>.amazonaws.com, an image pulls
+#      by <account>.dkr.ecr.<region>.amazonaws.com, and the JavaScript SDK v3's default S3Client and
+#      SQSClient (virtual-hosted bucket, AWS-style QueueUrl) work in a container; with
 #      KUBECONFIG set and the mail relay in capture mode (mail.capture), both messages are in the sink;
 #   3. the Elastic IP is a reachable LAN address; the CloudFront site serves its origin (SPA fallback +
 #      the response-headers policy); the deploy flow's last step works — after the site upload,
@@ -268,11 +272,15 @@ done
 printf '%s' "$R" | grep -q '"done": "yes"' || fail "the instance did not finish its checks over the Elastic IP $ADDR (last: $(printf '%s' "$R" | tr '\n' ' ' | head -c 400))"
 printf '%s\n' "$R" | sed 's/^/    /'
 FAILED="$(printf '%s' "$R" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(" ".join(k for k,v in d.items() if v=="fail"))')"
-# All 11 pass, s3_cp_distro_cli (the distro aws CLI v1) included: v1 predates AWS_ENDPOINT_URL, so the
+# Every check passes, s3_cp_distro_cli (the distro aws CLI v1) included: v1 predates AWS_ENDPOINT_URL, so the
 # guest's endpoint plugin applies it (docs/virtual-machines.md#aws-endpoints-inside-the-guest). The SES
 # checks need the mail component (SES is not fronted without a relay).
 [ -z "$FAILED" ] || fail "instance checks failed: $FAILED"
-for k in ses_send_email ses_send_raw_email ses_v2_send_email; do
+# The image's default user, SES v1 and v2, and AWS's own names inside the guest
+# (platform/aws-shim/guest-aws-endpoints.yaml): an AWS-style queue URL and bucket name with no
+# AWS_ENDPOINT_URL, an image by its ECR name, and the JavaScript SDK v3's default clients all reach the
+# platform.
+for k in default_user ses_send_email ses_send_raw_email ses_v2_send_email sqs_aws_style_queue_url s3_aws_name ecr_pull_aws_name sdk_v3_default_clients; do
   printf '%s' "$R" | grep -q "\"$k\": \"ok\"" || fail "the instance did not report its $k check"
 done
 log "  ✓ every instance check passed (served over the Elastic IP $ADDR)"

@@ -75,6 +75,11 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
 
+  AppQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-jobs"
+
   InstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -110,6 +115,9 @@ Resources:
                 Resource: !Sub
                   - "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SenderDomain}"
                   - SenderDomain: !Select [1, !Split ["@", !Ref SesSenderAddress]]
+              - Effect: Allow
+                Action: [sqs:SendMessage, sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueUrl]
+                Resource: !GetAtt AppQueue.Arn
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -221,6 +229,57 @@ Resources:
 
           # 8. A container in the guest gets the role's credentials through the default chain (IMDS, hop limit 2).
           check container_default_chain "docker run --rm -e AWS_REGION=$REGION '$URI:${AppImageTag}' s3 cp s3://${AppBucket}/hello.txt - | grep -q hello"
+          publish no
+
+          # 9. AWS's own names reach the platform, never AWS. Without AWS_ENDPOINT_URL (an SDK that ignores
+          #    it, a URL from the AWS side's configuration) the CLI calls sqs.<region>.amazonaws.com with an
+          #    AWS-style queue URL, and <bucket>.s3.<region>.amazonaws.com.
+          QURL="https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/${AWS::StackName}-jobs"
+          sqs_by_aws_url() {
+            env -u AWS_ENDPOINT_URL /usr/local/bin/aws --region $REGION sqs send-message --queue-url "$QURL" --message-body cli-aws-style >/dev/null || return 1
+            M=$(env -u AWS_ENDPOINT_URL /usr/local/bin/aws --region $REGION sqs receive-message --queue-url "$QURL" --wait-time-seconds 10 --query 'Messages[0].[Body,ReceiptHandle]' --output text) || return 1
+            [ "$(echo "$M" | cut -f1)" = cli-aws-style ] || return 1
+            env -u AWS_ENDPOINT_URL /usr/local/bin/aws --region $REGION sqs delete-message --queue-url "$QURL" --receipt-handle "$(echo "$M" | cut -f2)"
+          }
+          check sqs_aws_style_queue_url "retry 6 sqs_by_aws_url"
+          check s3_aws_name "env -u AWS_ENDPOINT_URL /usr/local/bin/aws --region $REGION s3 cp s3://${AppBucket}/hello.txt - | grep -q hello"
+
+          # 10. The registry by its ECR name, as UserData and compose files name images.
+          ECRHOST="${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com"
+          ecr_by_aws_name() {
+            /usr/local/bin/aws --region $REGION ecr get-login-password | docker login --username AWS --password-stdin "$ECRHOST" >/dev/null &&
+              docker pull -q "$ECRHOST/${AppRepositoryName}:${AppImageTag}" >/dev/null
+          }
+          check ecr_pull_aws_name "retry 6 ecr_by_aws_name"
+          publish no
+
+          # 11. The JavaScript SDK v3 with its default configuration, in a container: S3Client addresses the
+          #     bucket virtual-hosted on AWS_ENDPOINT_URL's host, and SQSClient sends to an AWS-style
+          #     QueueUrl's host.
+          cat > /tmp/sdkv3.js <<'JS'
+          const { S3Client, GetObjectCommand } = require("@aws-sdk/client-s3");
+          const { SQSClient, SendMessageCommand, ReceiveMessageCommand, DeleteMessageCommand } = require("@aws-sdk/client-sqs");
+          const [bucket, queueUrl] = process.argv.slice(2);
+          (async () => {
+            const obj = await new S3Client({}).send(new GetObjectCommand({ Bucket: bucket, Key: "hello.txt" }));
+            if (!(await obj.Body.transformToString()).includes("hello")) throw new Error("unexpected object body");
+            const sqs = new SQSClient({});
+            await sqs.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: "sdk-v3-aws-style" }));
+            for (let i = 0; i < 5; i++) {
+              const r = await sqs.send(new ReceiveMessageCommand({ QueueUrl: queueUrl, WaitTimeSeconds: 5 }));
+              for (const m of r.Messages || []) {
+                await sqs.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: m.ReceiptHandle }));
+                if (m.Body === "sdk-v3-aws-style") { console.log("ok"); return; }
+              }
+            }
+            throw new Error("the message did not come back");
+          })().catch((e) => { console.error(e); process.exit(1); });
+          JS
+          sdk_v3_defaults() {
+            docker run --rm -e AWS_REGION=$REGION -v /tmp/sdkv3.js:/app/sdkv3.js:ro -w /app node:22-alpine \
+              sh -c 'npm i --silent --no-audit --no-fund @aws-sdk/client-s3@3 @aws-sdk/client-sqs@3 >/dev/null && node sdkv3.js "$0" "$1"' "${AppBucket}" "$QURL"
+          }
+          check sdk_v3_default_clients "retry 3 sdk_v3_defaults"
           publish yes
 
   AppAddress:
