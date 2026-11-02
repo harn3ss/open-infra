@@ -127,6 +127,25 @@ type Capabilities struct {
 	// nothing in its stack allocates one, and an EIPAssociation can name one by its AllocationId from
 	// another stack. Off (the CLI), an EIP must be associated with an in-stack instance.
 	EC2AddressAPI bool
+	// ValidatedDomains are the domains this environment has validated ownership of: ACM's domain
+	// validation, done once by the operator (certificates.validatedDomains). A certificate for a name under
+	// one is issued by the platform's ACM-style CA (ClusterIssuer openinfra-acm: signed by the platform root,
+	// name-constrained to these domains), so a client that trusts the root trusts it, as browsers trust
+	// ACM's. When set, a CloudFront alias outside them refuses: on AWS its certificate would stay
+	// PENDING_VALIDATION. Empty (none configured, or the CLI), sites keep the self-signed openinfra-issuer.
+	ValidatedDomains []string
+}
+
+// underValidatedDomain reports whether host is one of domains or a subdomain of one.
+func underValidatedDomain(host string, domains []string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	for _, d := range domains {
+		d = strings.TrimSuffix(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(d)), "*."), ".")
+		if d != "" && (host == d || strings.HasSuffix(host, "."+d)) {
+			return true
+		}
+	}
+	return false
 }
 
 // BuildPlanWithCaps is BuildPlanWithExports with explicit deploy-environment Capabilities.

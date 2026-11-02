@@ -916,6 +916,7 @@ spec:
           volumeMounts:
             - { name: internal-tls, mountPath: /tls-internal, readOnly: true }
             - { name: object-encryption, mountPath: /etc/openinfra/object-encryption, readOnly: true }
+            - { name: certificates, mountPath: /etc/openinfra/certificates, readOnly: true }
           resources:
             # The shared AWS front door fronts ~25 services; 256Mi/64Mi was too small and scheduled it
             # as needing far less than it does. Raised to a realistic floor (GOMEMLIMIT above keeps the
@@ -931,6 +932,10 @@ spec:
         # kubelet refreshes it, so the shim sees the switch without a restart (OBJECT_ENCRYPTION_FILE).
         - name: object-encryption
           configMap: { name: openinfra-object-encryption, optional: true }
+        # optional: the domains the operator validated (certificates.validatedDomains), written by
+        # install.sh; read live (CERT_VALIDATED_DOMAINS_FILE). Absent = none validated.
+        - name: certificates
+          configMap: { name: openinfra-certificates, optional: true }
 ---
 # Object encryption switch (components.objectEncryption): the minio-kms-enable Job
 # (storage/minio-kms.yaml) writes configmap/openinfra-object-encryption here once MinIO's key works. It

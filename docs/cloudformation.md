@@ -304,7 +304,7 @@ own properties and is read by the distribution that references it.
 | one `Origins` entry: an S3 REST origin (`S3OriginConfig`) whose `DomainName` is an in-stack bucket (`!GetAtt Bucket.RegionalDomainName` / `DomainName`, or `${Bucket}.s3[.<region>].amazonaws.com`) | `spec.bucket` (the bucket's `BucketName`, else its logical id) |
 | `OriginAccessControlId` (an in-stack `AWS::CloudFront::OriginAccessControl`, type `s3`) or `S3OriginConfig.OriginAccessIdentity` (an in-stack `CloudFrontOriginAccessIdentity`), and the bucket-policy grant to `cloudfront.amazonaws.com` (with `aws:SourceArn` naming the distribution) or to the identity's `CanonicalUser` / IAM ARN | the site's own scoped MinIO credentials; the grant is not stored |
 | `Aliases` | `spec.domain` (first) + `spec.domains` (the rest), each with an Ingress rule and a SAN on the certificate |
-| `ViewerCertificate.AcmCertificateArn` (typically an in-stack `AWS::CertificateManager::Certificate`, which must cover the Aliases) | `spec.tls: true` — cert-manager issues the certificate from the `openinfra-issuer` ClusterIssuer |
+| `ViewerCertificate.AcmCertificateArn` (typically an in-stack `AWS::CertificateManager::Certificate`, which must cover the Aliases) | `spec.tls: true` — cert-manager issues the site's certificate (see [Site certificates](#site-certificates-acm-domain-validation)) |
 | `CustomErrorResponses` 403 and/or 404 → `/index.html` with `ResponseCode: 200` | `spec.spa: true` (history fallback) |
 | `CustomErrorResponses` 403/404 → one error page with a 404 response | `spec.spa: false` + `spec.errorDocument` |
 | `DefaultRootObject` | `spec.indexDocument` |
@@ -320,7 +320,7 @@ Completed once the site has re-synced — see [aws-shim.md](aws-shim.md#cloudfro
 site answers on HTTPS only — a plain-HTTP request is neither served nor redirected); `PriceClass`,
 `HttpVersion`, `IPV6Enabled`, `Comment`, `Tags`; `Logging` (nginx logs to the pod's stdout); origin
 timeouts, `OriginShield`, `OriginCustomHeaders`; `MinimumProtocolVersion` (Traefik's TLS defaults
-apply); ACM validation (no validation records are needed); OAC request signing. Two behaviours differ
+apply); ACM's DNS/email validation records (the operator validates domains once, below); OAC request signing. Two behaviours differ
 from an S3 origin by nature: object metadata set at upload (`Content-Type`, `Cache-Control`,
 `Content-Encoding`) is not served — nginx infers `Content-Type` from the file extension — and a missing
 object is a 404 at the origin (an S3 origin without `s3:ListBucket` says 403), so 403 and 404 mappings
@@ -339,6 +339,28 @@ policies), a header the server sets itself (`Content-Type`, `Server`, …), erro
 other than 403/404, an origin bucket with Object Lock, and a bucket-policy CloudFront grant that no
 in-stack distribution holds (or that names a distribution or identity outside the stack). An ACM
 certificate no included distribution uses refuses too — it has no open-infra consumer.
+
+#### Site certificates (ACM domain validation)
+
+ACM issues a trusted certificate only for a domain whose ownership it validated. Here the operator
+validates domains once, at install: `certificates.validatedDomains` in `config.yaml` lists the domains
+the site owns. For them `install.sh` keeps an ACM-style certificate authority, the ClusterIssuer
+`openinfra-acm`: an intermediate that the platform root signs and that is name-constrained to exactly
+those domains, so it can vouch for no other name. Then:
+
+- A distribution whose every Alias is one of those domains or under one gets its certificate from
+  `openinfra-acm`. A client that trusts the platform root (its certificate:
+  `kubectl get environmentconfig openinfra-platform-ca -o jsonpath='{.data.platformRootCA}'`) trusts the site, as browsers trust ACM's certificates.
+- An Alias outside them is refused at plan and deploy: on AWS that certificate would stay
+  `PENDING_VALIDATION` and the distribution could not use it.
+- With no validated domains, sites keep a self-signed certificate (ClusterIssuer `openinfra-issuer`),
+  which a client trusts only if told to. The plan says which applies.
+
+Each validated domain must be inside the platform root's own name constraints (`cluster.local`, `svc`,
+`sslip.io`, or a domain added in `platform/networking/cluster-ca.yaml`). Give sites a domain of their
+own (for example `sites.<LAN-IP-with-dashes>.sslip.io`) rather than the one platform endpoints use, so
+no stack can name a platform hostname. Offline, `cfn plan -validated-domains d1,d2` plans for such an
+environment.
 
 > `AWS::DynamoDB::Table` graduated from gated to **partial** once the aws-shim's DynamoDB
 > data layer gained atomic transactions + TTL and a declarative `kind: Table`. `kind: Table`

@@ -7,7 +7,7 @@
 //
 // Usage:
 //
-//	cfn plan [-param K=V ...] [-stack-name NAME] [-object-encryption] [-json] <template.yaml|template.json>
+//	cfn plan [-param K=V ...] [-stack-name NAME] [-object-encryption] [-validated-domains D,...] [-json] <template.yaml|template.json>
 //
 // Exit codes:
 //
@@ -96,7 +96,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `cfn — open-infra CloudFormation engine
 
 Usage:
-  cfn plan      [-param K=V ...] [-import NAME=VALUE ...] [-stack-name NAME] [-object-encryption] [-json] <template>
+  cfn plan      [-param K=V ...] [-import NAME=VALUE ...] [-stack-name NAME] [-object-encryption] [-validated-domains D,...] [-json] <template>
   cfn deploy     -namespace NS -stack-name NAME [-param K=V ...] [-import NAME=VALUE ...] [-no-wait] [-timeout SECS] <template>
   cfn changeset  -namespace NS -stack-name NAME [-param K=V ...] [-import NAME=VALUE ...] <template>
   cfn update     -namespace NS -stack-name NAME [-param K=V ...] [-import NAME=VALUE ...] [-no-wait] [-timeout SECS] <template>
@@ -106,7 +106,9 @@ Usage:
 plan      (read-only) reports whether open-infra can provision a template, with caveats, or
           not — and exactly why. Provisions nothing. -object-encryption plans for an environment
           that encrypts every new bucket by default (the CLI cannot check that; without it, a
-          template's BucketEncryption is refused).
+          template's BucketEncryption is refused). -validated-domains plans for an environment
+          whose operator validated those domains (certificates.validatedDomains): a CloudFront
+          alias outside them is refused, as ACM would never validate its certificate.
 deploy    provisions a stack live, fail-closed: it refuses unless the whole template maps and
           every property translates, applies in dependency order, records the stack, and rolls
           back on failure leaving no orphans.
@@ -136,6 +138,19 @@ func runPlan(args []string) int {
 			// The operator vouches that the target environment encrypts every new bucket by default (the
 			// in-cluster front door reads this from the platform; offline the CLI cannot check it).
 			caps.ObjectEncryption = true
+		case a == "-validated-domains":
+			// The domains the target environment's operator validated (the front door reads them from the
+			// platform's certificates config; offline the operator names them).
+			i++
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "cfn: -validated-domains needs a comma-separated list")
+				return 2
+			}
+			for _, d := range strings.Split(args[i], ",") {
+				if d = strings.TrimSuffix(strings.TrimPrefix(strings.ToLower(strings.TrimSpace(d)), "*."), "."); d != "" {
+					caps.ValidatedDomains = append(caps.ValidatedDomains, d)
+				}
+			}
 		case a == "-param":
 			i++
 			if i >= len(args) {

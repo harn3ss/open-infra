@@ -140,6 +140,19 @@ tls:
   issuer: selfsigned
   letsencryptEmail: ""   # required if issuer: letsencrypt
 
+certificates:
+  # ACM's domain validation, done once: the domains you own, comma-separated. A static site
+  # (CloudFront Aliases) whose every hostname is under one gets its certificate from an
+  # ACM-style CA (ClusterIssuer openinfra-acm) that the platform root signs and that is
+  # name-constrained to exactly these domains, so a client that trusts the platform root
+  # trusts the site, and the CA can vouch for no other name. The CloudFormation front door
+  # then refuses an alias outside them (on AWS its certificate would never validate). Each
+  # domain must be inside the platform root's own name constraints (cluster.local, svc,
+  # sslip.io, or a domain added in platform/networking/cluster-ca.yaml). Prefer a domain of
+  # its own for sites, so no tenant can name a platform hostname. Blank => sites stay
+  # self-signed (openinfra-issuer). EXAMPLE ONLY — set your own:
+  validatedDomains: ""   # e.g. sites.192-0-2-232.sslip.io
+
 # Public edge — only needed to serve the internet (see docs/architecture.md §edge).
 edge:
   enabled: false

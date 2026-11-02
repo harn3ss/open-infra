@@ -87,6 +87,11 @@ type cfnDoorway struct {
 	// minio-kms-enable Job writes it only after MinIO's key works and new buckets get default encryption
 	// (storage/minio-kms.yaml), so it is the same outcome as OBJECT_ENCRYPTION, read live (no restart).
 	objectEncryptionFile string
+	// validatedDomainsFile, when set, lists the domains the operator has validated (ACM's domain
+	// validation, done once: certificates.validatedDomains), one per line or comma-separated: the
+	// validatedDomains key of configmap/openinfra-certificates, mounted here and read live. A CloudFront
+	// alias outside them refuses; absent or empty, sites keep the self-signed issuer.
+	validatedDomainsFile string
 	// ops makes the long stack operations durable across a front-door restart: ownership leases on the
 	// stack records, the recovery pass for interrupted operations, and refusal of new operations while
 	// shutting down (cloudformation_ops.go).
@@ -138,11 +143,31 @@ func (h *cfnDoorway) caps() cfn.Capabilities {
 		EventsAPI: h.services.doorOK("events"), ECRAPI: h.services.doorOK("ecr"), CloudWatchAPI: h.services.doorOK("monitoring"),
 		// Elastic IP allocations are holder Services the shim keeps in the stack namespace, recorded with
 		// their stack like the other service resources (cfn_addresses.go).
-		EC2AddressAPI: h.shimDyn != nil && h.services != nil && h.services.owners != nil}
+		EC2AddressAPI:    h.shimDyn != nil && h.services != nil && h.services.owners != nil,
+		ValidatedDomains: fileDomains(h.validatedDomainsFile)}
 	if ecr, ok := h.services.door("ecr").(*ecrHandler); ok && ecr != nil && c.ECRAPI {
 		c.ECRRepositoryHost = stripScheme(ecr.proxyEndpoint)
 	}
 	return c
+}
+
+// fileDomains reads a list of domains (one per line, or comma/space separated) from path, lowercased,
+// without a leading "*." or a trailing dot. A missing or unreadable file, or an empty path, is none.
+func fileDomains(path string) []string {
+	if path == "" {
+		return nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, f := range strings.FieldsFunc(string(b), func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\t' || r == '\r' }) {
+		if d := strings.TrimSuffix(strings.TrimPrefix(strings.ToLower(f), "*."), "."); d != "" {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // fileSaysTrue reports whether path holds "true" (surrounding whitespace ignored). A missing or
@@ -173,6 +198,7 @@ func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region,
 		svcSuffix: svcSuffix, invoker: &http.Client{Timeout: 3 * time.Minute}, logger: logger,
 		objectEncryption:     os.Getenv("OBJECT_ENCRYPTION") == "true",
 		objectEncryptionFile: getenv("OBJECT_ENCRYPTION_FILE", "/etc/openinfra/object-encryption/enabled"),
+		validatedDomainsFile: getenv("CERT_VALIDATED_DOMAINS_FILE", "/etc/openinfra/certificates/validatedDomains"),
 		// The in-cluster TLS address VM guests already reach and trust (their credentials come from it).
 		signalBase: getenv("CFN_SIGNAL_BASE_URL", "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567")}
 	h.signals = &signalStore{h: h}

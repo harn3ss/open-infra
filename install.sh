@@ -859,6 +859,94 @@ EOF
   fi
 fi
 
+# ── 4c. validated certificate domains (certificates.validatedDomains) ──
+# ACM issues a trusted certificate only for a domain whose ownership it validated; the operator's
+# equivalent is this list of domains it owns (a site value, never in the repo). For them the platform
+# keeps an ACM-style CA: an intermediate the platform root signs, NAME-CONSTRAINED to exactly these
+# domains (it can vouch for no other name, even if its key leaked), behind ClusterIssuer openinfra-acm.
+# A static site whose every hostname is under one gets its certificate from it (kind: StaticSite reads
+# the openinfra-certificates EnvironmentConfig); the aws-shim's CloudFormation front door refuses a
+# CloudFront alias outside them (configmap/openinfra-certificates, read live). A changed list is a new
+# CA (its Secret is named by the list): cert-manager does not re-issue a CA when only its constraints
+# change. Runs after the app-of-apps, since cert-manager and the platform root must exist; re-run
+# install.sh if they had not converged yet. Blank => the objects are removed and sites stay
+# self-signed (openinfra-issuer).
+VD_LIST=""
+for d in $(yget certificates.validatedDomains | tr -d '[]"' | tr ',' ' ' | tr 'A-Z' 'a-z'); do
+  d="${d#\*.}"; d="${d%.}"
+  [ -n "$d" ] || continue
+  printf '%s' "$d" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$' \
+    || DIE "certificates.validatedDomains: '$d' is not a DNS domain"
+  VD_LIST="$VD_LIST $d"
+done
+VD_LIST="$(printf '%s\n' $VD_LIST | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ *$//')"
+if [ -n "$VD_LIST" ]; then
+  VD_HASH="$(printf '%s' "$VD_LIST" | sha256sum | cut -c1-8)"
+  VD_JSON="$(printf '"%s", ' $VD_LIST | sed 's/, $//')"
+  LOG "validated certificate domains: $VD_LIST (ACM-style CA openinfra-acm)"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  + apply Certificate cert-manager/openinfra-acm-ca (CA, constrained to %s), ClusterIssuer openinfra-acm, EnvironmentConfig + ConfigMap openinfra-certificates\n' "$VD_LIST"
+  elif ! $KUBECTL get clusterissuer openinfra-ca >/dev/null 2>&1; then
+    WARN "certificates.validatedDomains set but the platform root (ClusterIssuer openinfra-ca) is not present yet — skipping. Re-run install.sh once cert-manager has converged."
+  else
+    # Each domain must be inside the root's own name constraints, or no certificate for it would verify.
+    ROOT_DOMAINS="$($KUBECTL -n cert-manager get certificate openinfra-root-ca -o jsonpath='{.spec.nameConstraints.permitted.dnsDomains[*]}' 2>/dev/null || true)"
+    if [ -n "$ROOT_DOMAINS" ]; then
+      for d in $VD_LIST; do
+        inside=0
+        for r in $ROOT_DOMAINS; do case "$d" in "$r"|*".$r") inside=1 ;; esac; done
+        [ "$inside" = 1 ] || DIE "certificates.validatedDomains: $d is outside the platform root's name constraints ($ROOT_DOMAINS), so no certificate for it would verify; add the domain in platform/networking/cluster-ca.yaml first"
+      done
+    fi
+    cat <<EOF | $KUBECTL apply -f -
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openinfra-acm-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: open-infra validated-domain CA
+  subject: { organizations: [open-infra] }
+  secretName: openinfra-acm-ca-$VD_HASH
+  secretTemplate:
+    labels: { openinfra.dev/acm-ca: "true", openinfra.dev/acm-ca-gen: "$VD_HASH" }
+  duration: 43800h
+  renewBefore: 720h
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  nameConstraints:
+    critical: true
+    permitted:
+      dnsDomains: [ $VD_JSON ]
+  issuerRef: { name: openinfra-ca, kind: ClusterIssuer, group: cert-manager.io }
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata: { name: openinfra-acm }
+spec:
+  ca: { secretName: openinfra-acm-ca-$VD_HASH }
+---
+apiVersion: apiextensions.crossplane.io/v1alpha1
+kind: EnvironmentConfig
+metadata: { name: openinfra-certificates }
+data:
+  validatedDomains: [ $VD_JSON ]
+EOF
+    $KUBECTL create namespace open-infra-aws-shim --dry-run=client -o yaml | $KUBECTL apply -f - >/dev/null
+    $KUBECTL -n open-infra-aws-shim create configmap openinfra-certificates \
+      --from-literal=validatedDomains="$(printf '%s\n' $VD_LIST)" --dry-run=client -o yaml | $KUBECTL apply -f -
+    # A previous list's CA: no issuer uses its key any more (certificates it signed carry it in their chain).
+    $KUBECTL -n cert-manager delete secret -l "openinfra.dev/acm-ca=true,openinfra.dev/acm-ca-gen!=$VD_HASH" --ignore-not-found >/dev/null
+  fi
+elif [ "$DRY_RUN" != 1 ] && $KUBECTL get clusterissuer openinfra-acm >/dev/null 2>&1; then
+  LOG "certificates.validatedDomains is blank: removing the ACM-style CA (sites return to openinfra-issuer)"
+  $KUBECTL delete environmentconfig openinfra-certificates --ignore-not-found >/dev/null 2>&1 || true
+  $KUBECTL -n open-infra-aws-shim delete configmap openinfra-certificates --ignore-not-found >/dev/null
+  $KUBECTL delete clusterissuer openinfra-acm --ignore-not-found >/dev/null
+  $KUBECTL -n cert-manager delete certificate openinfra-acm-ca --ignore-not-found >/dev/null
+  $KUBECTL -n cert-manager delete secret -l openinfra.dev/acm-ca=true --ignore-not-found >/dev/null
+fi
+
 # ── 4b. air-gap egress cutoff — kube-ovn variant ─────────────
 # kube-ovn has no cluster-wide egress-policy CRD (unlike Cilium's CCNP / Calico's GNP), so the cutoff
 # is applied as ACLs on the default subnet ovn-default (platform/airgap/egress-deny-kubeovn.yaml) —

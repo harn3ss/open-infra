@@ -22,6 +22,21 @@ spec:
     kind: XStaticSite
   mode: Pipeline
   pipeline:
+    # The domains the operator validated (certificates.validatedDomains; install.sh writes the
+    # EnvironmentConfig). Optional: without it every site keeps the self-signed openinfra-issuer.
+    - step: environment
+      functionRef:
+        name: crossplane-contrib-function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          policy:
+            resolution: Optional
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: openinfra-certificates
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -51,6 +66,23 @@ spec:
             {{- /* Every hostname the site answers on: domain first, then any extra domains (Ingress rules + TLS SANs). */}}
             {{- $hosts := list $spec.domain }}
             {{- range $d := ($spec.domains | default list) }}{{- $hosts = append $hosts $d }}{{- end }}
+            {{- /* The certificate's issuer, as ACM decides: only a domain whose ownership was validated gets a
+                   trusted certificate. The operator validates domains once (certificates.validatedDomains); when
+                   EVERY hostname is one of them or under one, the platform's ACM-style CA issues (openinfra-acm:
+                   signed by the platform root and name-constrained to those domains, so it can vouch for
+                   nothing else). Otherwise the self-signed openinfra-issuer, as before. */}}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $validated := index $envCfg "validatedDomains" | default list }}
+            {{- $issuer := "openinfra-issuer" }}
+            {{- if $validated }}
+            {{-   $allValidated := true }}
+            {{-   range $h := $hosts }}
+            {{-     $ok := false }}
+            {{-     range $d := $validated }}{{- if or (eq (lower $h) (lower $d)) (hasSuffix (printf ".%s" (lower $d)) (lower $h)) }}{{- $ok = true }}{{- end }}{{- end }}
+            {{-     if not $ok }}{{- $allValidated = false }}{{- end }}
+            {{-   end }}
+            {{-   if $allValidated }}{{- $issuer = "openinfra-acm" }}{{- end }}
+            {{- end }}
             {{- /* nginx reads its config only at start: with responseHeaders set, a hash of the config inputs
                    rides the pod template so a changed header (or spa/index/error document) rolls the pod. */}}
             {{- $confHash := printf "%s|%v|%s|%s" $index $spa $error (toJson ($spec.responseHeaders | default list)) | sha256sum | trunc 10 }}
@@ -512,7 +544,7 @@ spec:
                       openinfra.dev/staticsite: {{ $name }}
                     annotations:
                       {{- if $tls }}
-                      cert-manager.io/cluster-issuer: openinfra-issuer
+                      cert-manager.io/cluster-issuer: {{ $issuer }}
                       traefik.ingress.kubernetes.io/router.entrypoints: websecure
                       {{- else }}
                       traefik.ingress.kubernetes.io/router.entrypoints: web

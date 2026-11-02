@@ -257,7 +257,29 @@ func translateCloudFrontDistribution(id string, props map[string]any, ctx *stack
 			cav = append(cav, "ViewerCertificate.MinimumProtocolVersion "+v+" is not applied per site — Traefik's TLS defaults (TLS 1.2+) govern the handshake")
 		}
 	}
-	cav = append(cav, fmt.Sprintf("TLS for %s is terminated by Traefik with a certificate cert-manager issues from the cluster ClusterIssuer openinfra-issuer (self-signed unless the operator configured an ACME issuer) — not an ACM certificate, so a browser trusts it only if it trusts that issuer", cfOr(strings.Join(hosts, ", "), "the Aliases")))
+	// ACM issues a trusted certificate only for a domain whose ownership it validated. Here the operator
+	// validates domains once (certificates.validatedDomains): an alias under one gets a certificate from
+	// the platform's ACM-style CA, which clients that trust the platform root trust; an alias outside them
+	// can never be validated, so it refuses (on AWS the certificate would stay PENDING_VALIDATION).
+	var validated []string
+	if ctx != nil {
+		validated = ctx.caps.ValidatedDomains
+	}
+	if len(validated) > 0 {
+		var outside []string
+		for _, h := range hosts {
+			if !underValidatedDomain(h, validated) {
+				outside = append(outside, h)
+			}
+		}
+		if len(outside) > 0 {
+			refuse("Alias(es) %s are not under a domain this environment has validated (%s) — ACM issues a certificate only for a domain whose ownership it validated, so on AWS this distribution's certificate would stay PENDING_VALIDATION; use a hostname under a validated domain, or have the operator validate the domain (certificates.validatedDomains)", strings.Join(outside, ", "), strings.Join(validated, ", "))
+		} else {
+			cav = append(cav, fmt.Sprintf("TLS for %s is terminated by Traefik with a certificate issued in-cluster by the platform's ACM-style certificate authority for validated domains (ClusterIssuer openinfra-acm: signed by the platform root and constrained to %s), so a client that trusts the platform root trusts it, as browsers trust ACM's", strings.Join(hosts, ", "), strings.Join(validated, ", ")))
+		}
+	} else {
+		cav = append(cav, fmt.Sprintf("TLS for %s is terminated by Traefik with a self-signed certificate (ClusterIssuer openinfra-issuer): this environment has validated no domains (certificates.validatedDomains), so no certificate it issues is trusted the way ACM's is — a client trusts this one only if told to", cfOr(strings.Join(hosts, ", "), "the Aliases")))
+	}
 
 	// --- the single S3 origin -> spec.bucket ---
 	origins, _ := dc["Origins"].([]any)

@@ -620,3 +620,56 @@ func TestCloudFront_ConditionedOffDistributionExcluded(t *testing.T) {
 		t.Fatalf("a grant with no serving distribution must refuse, got %s:\n%s", p.Verdict, blockersJoined(p))
 	}
 }
+
+// ACM's domain validation, as the operator configures it (certificates.validatedDomains): an alias under
+// a validated domain gets the platform's ACM-style certificate; one outside every validated domain
+// refuses, as its certificate would stay PENDING_VALIDATION on AWS; with no validated domains the site
+// keeps the self-signed issuer, said so plainly.
+func TestCloudFront_CertificateNeedsAValidatedDomain(t *testing.T) {
+	data := cfJSON(t, cfSiteTemplate()) // Aliases app.example.com and www.app.example.com
+	distCaveats := func(p *Plan) string {
+		for _, r := range p.Resources {
+			if r.LogicalID == "SiteDistribution" {
+				return strings.Join(r.Caveats, "\n")
+			}
+		}
+		return ""
+	}
+	for _, c := range []struct {
+		name      string
+		validated []string
+		refuse    string
+		caveat    string
+	}{
+		{"none validated", nil, "", "self-signed certificate (ClusterIssuer openinfra-issuer)"},
+		{"the alias's own domain", []string{"example.com"}, "", "ClusterIssuer openinfra-acm"},
+		{"a parent of the aliases", []string{"app.example.com"}, "", "ClusterIssuer openinfra-acm"},
+		{"another domain", []string{"example.org"}, "app.example.com, www.app.example.com are not under a domain this environment has validated", ""},
+		{"only one alias covered", []string{"www.app.example.com"}, "Alias(es) app.example.com are not under", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p, err := BuildPlanWithCaps(data, nil, nil, "site", Capabilities{ValidatedDomains: c.validated})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.refuse != "" {
+				if p.Verdict != Rejected || !strings.Contains(blockersJoined(p), c.refuse) {
+					t.Fatalf("want a refusal containing %q, got %s:\n%s", c.refuse, p.Verdict, blockersJoined(p))
+				}
+				if !strings.Contains(blockersJoined(p), "PENDING_VALIDATION") {
+					t.Errorf("the refusal must say why (ACM would not validate it):\n%s", blockersJoined(p))
+				}
+				return
+			}
+			if p.Verdict == Rejected {
+				t.Fatalf("must not refuse:\n%s", blockersJoined(p))
+			}
+			if got := distCaveats(p); !strings.Contains(got, c.caveat) {
+				t.Errorf("distribution caveats must name %q:\n%s", c.caveat, got)
+			}
+		})
+	}
+	if !underValidatedDomain("App.Example.com.", []string{"*.example.com"}) || underValidatedDomain("badexample.com", []string{"example.com"}) {
+		t.Error("underValidatedDomain: a subdomain (any case, trailing dot) is under its domain; a name merely ending in the same letters is not")
+	}
+}
