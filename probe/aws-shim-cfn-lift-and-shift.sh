@@ -39,6 +39,9 @@
 #   SITE_DOMAIN     (required) the static site's hostname (a CloudFront alias; must resolve to the ingress)
 #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  a deployer identity (admin), or MINT=1 with KUBECONFIG
 #   AWS_CA_BUNDLE   (optional) the cluster root CA, so TLS is verified
+#   SITE_CA_BUNDLE  (optional) verify the static site's TLS against this CA (the platform root, for a
+#                   SITE_DOMAIN under a domain the operator validated: certificates.validatedDomains)
+#   SITE_VALIDATED_DOMAINS (optional) those validated domains, comma-separated, for the offline plan
 #   APP_IMAGE       (optional) the image the instance pulls (default: the aws-cli image, copied into ECR)
 #   CFN_BIN         (optional) path to the cfn CLI, for the fidelity summary
 #   EVIDENCE_OUT    (optional) write {name, exit_code, reason, when} here
@@ -88,6 +91,9 @@ command -v curl >/dev/null || inconclusive "curl is required"
 [ -n "${SITE_DOMAIN:-}" ] || inconclusive "set SITE_DOMAIN to the static site's hostname"
 [ -f "$TEMPLATE" ] || inconclusive "template not found: $TEMPLATE"
 CURL_TLS=(); [ -n "${AWS_CA_BUNDLE:-}" ] && CURL_TLS=(--cacert "$AWS_CA_BUNDLE")
+# The static site's TLS: verified against SITE_CA_BUNDLE when set (a site under a domain the operator
+# validated has a certificate the platform root vouches for, as ACM's are trusted); otherwise not checked.
+SITE_TLS=(-k); [ -n "${SITE_CA_BUNDLE:-}" ] && SITE_TLS=(--cacert "$SITE_CA_BUNDLE")
 
 # --- optional: mint a throwaway admin deployer (cluster access) -------------------------------------
 mint_key() { # <owner> <group>  -> sets MK_AK / MK_SK (called directly, never in $(...))
@@ -157,7 +163,7 @@ if [ -n "${CFN_BIN:-}" ] && [ -x "$CFN_BIN" ]; then
   log "cfn plan: verdict + fidelity summary"
   # -object-encryption: the fixture's buckets ask for BucketEncryption, which the target (the shim, with
   # the platform's object encryption on) vouches for; offline the CLI cannot check it.
-  "$CFN_BIN" plan -stack-name "$STACK" -object-encryption -param SiteDomain="$SITE_DOMAIN" \
+  "$CFN_BIN" plan -stack-name "$STACK" -object-encryption ${SITE_VALIDATED_DOMAINS:+-validated-domains "$SITE_VALIDATED_DOMAINS"} -param SiteDomain="$SITE_DOMAIN" \
     -param AppRepositoryName="$REPO" "$TEMPLATE" > "$TMP/plan.txt" 2>&1
   grep -E "^Verdict" "$TMP/plan.txt"
   sed -n '/^Fidelity summary/,/^$/p' "$TMP/plan.txt" | cut -c1-200
@@ -299,20 +305,24 @@ fi
 log "the static site at $SITE_URL"
 SITE_OK=""
 for i in $(seq 1 12); do
-  B="$(curl -s -k -m 8 "$SITE_URL/" 2>/dev/null)"
+  B="$(curl -s "${SITE_TLS[@]}" -m 8 "$SITE_URL/" 2>/dev/null)"
   printf '%s' "$B" | grep -q "LSFIX_SITE_$SFX" && { SITE_OK=1; break; }
   sleep 10
 done
 [ -n "$SITE_OK" ] || fail "$SITE_URL/ did not serve the uploaded index.html"
-H="$(curl -s -k -m 8 -D - -o "$TMP/deep.html" "$SITE_URL/some/client/route" | tr -d '\r')"
+H="$(curl -s "${SITE_TLS[@]}" -m 8 -D - -o "$TMP/deep.html" "$SITE_URL/some/client/route" | tr -d '\r')"
 printf '%s' "$H" | head -1 | grep -q " 200" && grep -q "LSFIX_SITE_$SFX" "$TMP/deep.html" || fail "SPA fallback: a deep route did not serve index.html with 200"
 printf '%s' "$H" | grep -qi '^x-fixture: lift-and-shift' || fail "the response-headers policy's X-Fixture header is missing"
-log "  ✓ site serves its origin, SPA fallback + response headers (TLS from the cluster issuer; see the fidelity summary)"
+if [ -n "${SITE_CA_BUNDLE:-}" ]; then
+  log "  ✓ site serves its origin, SPA fallback + response headers, over TLS verified against the given CA (a validated domain)"
+else
+  log "  ✓ site serves its origin, SPA fallback + response headers (TLS not verified: set SITE_CA_BUNDLE for a validated domain)"
+fi
 # A re-deploy of the site: new content, the invalidation, the wait — and the very next request serves it.
 printf '<!doctype html><title>fixture</title><p id="m">LSFIX_REDEPLOY_%s</p>\n' "$SFX" > "$TMP/index.html"
 "${A[@]}" s3 cp "$TMP/index.html" "s3://$SITEB/index.html" >/dev/null || fail "re-uploading the site to $SITEB failed"
 invalidate "$DIST"
-B="$(curl -s -k -m 8 "$SITE_URL/" 2>/dev/null)"
+B="$(curl -s "${SITE_TLS[@]}" -m 8 "$SITE_URL/" 2>/dev/null)"
 printf '%s' "$B" | grep -q "LSFIX_REDEPLOY_$SFX" || fail "invalidation $INV_ID completed, but $SITE_URL/ still served the earlier content"
 log "  ✓ re-deploy: upload, create-invalidation $INV_ID, wait → the next request serves the new content"
 U="$("${A[@]}" s3 presign "s3://$APPB/hello.txt" --expires-in 600)"

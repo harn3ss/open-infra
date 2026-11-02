@@ -7,6 +7,9 @@
 # with SPA 403/404 fallback on an Alias — with the real AWS CLI, then asserts over real round-trips:
 #   - NEGATIVE: the same template with a Lambda@Edge association is REFUSED WHOLE at validation (a
 #     synchronous ValidationError naming Lambda@Edge), with no stack record and nothing created;
+#   - NEGATIVE, when the operator validated domains (certificates.validatedDomains): an Alias outside them
+#     is refused (ACM would never validate its certificate), and the probe's Alias is under one, so the
+#     site's certificate must verify against the platform root alone (no -k), as ACM's are trusted;
 #   - create-stack reaches CREATE_COMPLETE, and the distribution became a kind: StaticSite over the
 #     template's bucket (spa: true, the Alias, the response headers) while the bucket stayed a kind: Bucket
 #     whose CloudFront-only policy was realized by the site rather than stored;
@@ -51,7 +54,11 @@ TMP="$(mktemp -d)"
 STACK="cfprobe-cdn-$SFX"
 BAD_STACK="cfprobe-cdn-bad-$SFX"
 BUCKET="cfprobe-$SFX"
-HOST="cfprobe-$SFX.probe.invalid" # .invalid: reserved, never a real site name
+# The Alias: under a domain the environment validated (certificates.validatedDomains — ACM's domain
+# validation, done once by the operator), so its certificate comes from the platform's ACM-style CA and
+# must verify against the platform root; with none validated, a reserved .invalid name (self-signed).
+VALIDATED="$(kubectl -n "${SHIM_NS:-open-infra-aws-shim}" get configmap openinfra-certificates -o jsonpath='{.data.validatedDomains}' 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+if [ -n "$VALIDATED" ]; then HOST="cfprobe-$SFX.$VALIDATED"; else HOST="cfprobe-$SFX.probe.invalid"; fi # .invalid: reserved
 MARKER="CF_PROBE_OK_$SFX"
 # Logical ids carry the suffix so the claims (k8sName(logical id)) are unique in the shared CFN namespace.
 L_BUCKET="Site$SFX"; L_OAC="Oac$SFX"; L_POLICY="Pol$SFX"; L_CERT="Cert$SFX"; L_HDR="Hdr$SFX"; L_CDN="Cdn$SFX"
@@ -252,6 +259,18 @@ grep -q 'Lambda@Edge' "$TMP/bad.err" || fail "the refusal does not name Lambda@E
 cfn describe-stacks --stack-name "$BAD_STACK" >/dev/null 2>&1 && fail "a stack record was created for a refused template"
 kubectl -n "$CFN_NS" get staticsites.openinfra.dev "$SITE" >/dev/null 2>&1 && fail "a StaticSite was created despite the whole-stack refusal"
 log "    ✓ refused whole at validation (names Lambda@Edge), nothing created"
+if [ -n "$VALIDATED" ]; then
+  # ACM validates only a domain you own: an Alias outside every validated domain can never get a
+  # certificate, so the distribution is refused (on AWS its certificate would stay PENDING_VALIDATION).
+  log "negative: an Alias outside the validated domains ($VALIDATED) is refused at validation"
+  (HOST="cfprobe-$SFX.probe.invalid"; template) > "$TMP/unvalidated.json"
+  if cfn create-stack --stack-name "$BAD_STACK" --template-body "file://$TMP/unvalidated.json" >/dev/null 2>"$TMP/unv.err"; then
+    fail "create-stack with an Alias outside the validated domains was ACCEPTED"
+  fi
+  grep -q 'PENDING_VALIDATION' "$TMP/unv.err" || fail "the refusal does not say the certificate could not be validated: $(cat "$TMP/unv.err")"
+  cfn describe-stacks --stack-name "$BAD_STACK" >/dev/null 2>&1 && fail "a stack record was created for the refused template"
+  log "    ✓ refused (its certificate could never be validated), nothing created"
+fi
 
 # --- 2. create-stack → CREATE_COMPLETE, the distribution became a StaticSite ----------------------------
 log "create-stack $STACK: bucket + OAC + policy + ACM cert + headers policy + distribution"
@@ -310,8 +329,17 @@ for _ in 1 2 3; do
 done
 [ -n "$started" ] || inconclusive "could not start the curl client pod"
 kubectl -n "$CLIENT_NS" wait --for=condition=Ready "pod/$CLIENT" --timeout=120s >/dev/null 2>&1 || inconclusive "curl client pod not Ready"
+# Under a validated domain the site must be trusted the way ACM's certificates are: the client verifies
+# it against the platform root alone (no -k). Otherwise the certificate is self-signed and not checked.
+TLS_OPT="-k"
+if [ -n "$VALIDATED" ]; then
+  kubectl get environmentconfig openinfra-platform-ca -o jsonpath='{.data.platformRootCA}' \
+    | kubectl -n "$CLIENT_NS" exec -i "$CLIENT" -- sh -c 'cat > /tmp/root.crt' \
+    || inconclusive "could not hand the platform root to the client"
+  TLS_OPT="--cacert /tmp/root.crt"
+fi
 # fetch <path>: headers, a blank line, then the body — over HTTPS to the Alias through Traefik.
-fetch() { kubectl -n "$CLIENT_NS" exec "$CLIENT" -- curl -sS -m 10 -k -D - --resolve "$HOST:443:$TRAEFIK_IP" "https://$HOST$1" 2>/dev/null | tr -d '\r' || true; }
+fetch() { kubectl -n "$CLIENT_NS" exec "$CLIENT" -- curl -sS -m 10 $TLS_OPT -D - --resolve "$HOST:443:$TRAEFIK_IP" "https://$HOST$1" 2>/dev/null | tr -d '\r' || true; }
 status_of() { printf '%s' "$1" | awk 'NR==1{print $2}'; }
 header_of() {
   printf '%s' "$1" | awk -v h="$(printf '%s' "$2" | tr 'A-Z' 'a-z')" \

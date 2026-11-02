@@ -130,7 +130,10 @@ spec:
 YAML
 CREATED_POLICIES+=("ses-probe-domain-$SFX")
 mint_key "ses-probe-reader-$SFX" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
-sleep 3
+# The shim caches the data-plane policies for 30s (dataplaneauthz TTL): a send checked before the cache
+# picks up the scoped policies is judged as if they did not exist yet. Wait out one TTL, so every check
+# below runs against the policies just created.
+sleep 35
 
 # --- 2. SES is fronted (the mail component is on) -----------------------------------------------------
 Q="$(ses "$AAK" "$ASK" get-send-quota --query Max24HourSend 2>"$TMP/q.err" || true)"
