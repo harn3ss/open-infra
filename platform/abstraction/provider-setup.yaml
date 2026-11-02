@@ -36,6 +36,17 @@ spec:
   serviceAccountTemplate:
     metadata:
       name: provider-kubernetes
+  # --enable-watches: an Object with spec.watch: true has its observed state refreshed when the resource
+  # changes, not only on the provider's slow drift poll (about 10 minutes). Only Objects that opt in are
+  # watched — a step a composition waits on (an encrypted VM root's image import and copy).
+  deploymentTemplate:
+    spec:
+      selector: {}
+      template:
+        spec:
+          containers:
+            - name: package-runtime
+              args: ["--enable-watches"]
 ---
 apiVersion: pkg.crossplane.io/v1
 kind: Provider
@@ -62,7 +73,9 @@ rules:
   - apiGroups: [""]
     # serviceaccounts: an Application with spec.assumeRole (workload identity, #111) runs under a
     # dedicated SA the composition creates, so the provider must be able to manage them.
-    resources: [services, configmaps, secrets, serviceaccounts, resourcequotas, limitranges, persistentvolumeclaims]
+    # pods: an encrypted VM root is filled by a bare copy Pod (vm-composition.yaml, root-populate). No new
+    # power: the provider already creates Deployments, StatefulSets, DaemonSets and Jobs.
+    resources: [services, configmaps, secrets, serviceaccounts, resourcequotas, limitranges, persistentvolumeclaims, pods]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [apps]
     resources: [deployments, statefulsets, daemonsets]

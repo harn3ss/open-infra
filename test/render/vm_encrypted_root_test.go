@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -268,6 +269,29 @@ func TestVM_EncryptedRoot_CopyScript(t *testing.T) {
 			if !c.wantCopied && !bytes.Equal(got, c.dev) {
 				t.Errorf("%s/%s: the device was written", shellName(sh), c.name)
 			}
+		}
+	}
+}
+
+// The encrypted root's copy is a bare Pod the provider must be allowed to manage, and the two steps the
+// VM waits on (the image import, the copy) are watched, so each is seen when it finishes rather than on
+// the provider's drift poll (about 10 minutes apiece — a stack's instance waited past its deadline).
+func TestVM_EncryptedRoot_ProviderCanRunAndSeeTheCopy(t *testing.T) {
+	setup := string(mustRead(t, providerSetupPath))
+	if !regexp.MustCompile(`resources: \[[^\]]*\bpods\b[^\]]*\]`).MatchString(setup) {
+		t.Error("provider-kubernetes must be allowed to manage pods (the encrypted root's copy Pod)")
+	}
+	if !strings.Contains(setup, `args: ["--enable-watches"]`) {
+		t.Error("provider-kubernetes must run with --enable-watches, or spec.watch is ignored")
+	}
+	comp := string(mustRead(t, "../../platform/abstraction/vm-composition.yaml"))
+	for _, rn := range []string{"root-image", "root-populate"} {
+		i := strings.Index(comp, "composition-resource-name: "+rn+"\n")
+		if i < 0 {
+			t.Fatalf("no %s resource in the VM composition", rn)
+		}
+		if !strings.Contains(comp[i:i+600], "watch: true") {
+			t.Errorf("the %s Object must be watched", rn)
 		}
 	}
 }

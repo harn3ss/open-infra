@@ -682,6 +682,9 @@ spec:
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: root-image
             spec:
+              # Watched (the provider runs with --enable-watches): the next step of the root copy keys off this
+              # resource's phase, which the provider's drift poll would otherwise report minutes late.
+              watch: true
               forProvider:
                 manifest:
                   apiVersion: cdi.kubevirt.io/v1beta1
@@ -715,6 +718,9 @@ spec:
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: root-populate
             spec:
+              # Watched (the provider runs with --enable-watches): the next step of the root copy keys off this
+              # resource's phase, which the provider's drift poll would otherwise report minutes late.
+              watch: true
               forProvider:
                 manifest:
                   apiVersion: v1
