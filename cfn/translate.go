@@ -622,14 +622,20 @@ func (c *stackCtx) defaultEBSKey() *Manifest {
 		return defaultEBSEncryptionKey()
 	}
 	policy := "Delete"
-	for _, r := range c.template.Resources {
+	for id, r := range c.template.Resources {
 		if (r.Type == "AWS::EC2::Volume" || r.Type == "AWS::EC2::Instance") && c.included(r) &&
 			(isRetain(StackResource{DeletionPolicy: r.DeletionPolicy}) || strings.EqualFold(r.DeletionPolicy, "Snapshot")) {
 			policy = "Retain"
 		}
+		// A volume kept past its instance (DeleteOnTermination: false) is keyed by it too.
+		if r.Type == "AWS::EC2::Instance" && c.included(r) && c.keepsDefaultKeyedVolume(id) {
+			policy = "Retain"
+		}
 	}
 	return &Manifest{
-		APIVersion: "openinfra.dev/v1", Kind: "EncryptionKey", Name: stackQualifiedName(c.namer.stack, defaultEBSKeyName),
+		// Named around a key an earlier stack of this name retained (for a disk it kept): that key keys
+		// the kept disk, and this stack's own key is a new one.
+		APIVersion: "openinfra.dev/v1", Kind: "EncryptionKey", Name: c.namer.fresh("\x00"+defaultEBSKeyName, stackQualifiedName(c.namer.stack, defaultEBSKeyName), maxPhysNameLen),
 		Spec: map[string]any{
 			"description":  "the stack's default data-disk encryption key — open-infra analog of AWS aws/ebs; created on first use for an Encrypted volume/disk with no KmsKeyId",
 			"rotationDays": 365,
@@ -913,6 +919,8 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	var f []Finding
 	var cav []string
 	vmNeedDefaultKey := false // #347 Phase 1.7: an encrypted data disk with no KmsKeyId used the default key
+	var keptVols []*Manifest  // data volumes that outlive the instance (DeleteOnTermination: false)
+	var keptAttach []any      // ... and their spec.volumes entries
 	f = append(f, blockUnknownProps(id, props, known)...)
 	f = append(f, shapeFindings(id, props, []string{"BlockDeviceMappings"}, []string{"MetadataOptions"}, []string{"InstanceType"})...)
 
@@ -984,9 +992,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 				rawBDMs, _ = rp["BlockDeviceMappings"].([]any)
 			}
 		}
-		rootDevNames := map[string]bool{
-			"/dev/sda1": true, "/dev/sda": true, "/dev/xvda": true, "/dev/xvda1": true, "/dev/nvme0n1": true,
-		}
+		rootDevNames := ec2RootDeviceNames
 		// The root index is the mapping that names the root device; with none, every mapping is a data disk
 		// and the root keeps the image's default size.
 		rootIdx := -1
@@ -1117,8 +1123,35 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 				disk["encrypted"] = true
 				disk["encryptionKey"] = encKey
 			}
-			dataDisks = append(dataDisks, disk)
 			mappedExtraDevName = true
+			// DeleteOnTermination: false -> the volume outlives the instance, as on AWS: a kind: Volume of
+			// its own, attached to the VM (spec.volumes) and retained when the instance goes (a stack delete,
+			// a rolled-back create, an update that removes the instance), then no longer the stack's. An
+			// instance a stack already created with it as a data disk keeps that disk (re-deriving it
+			// would replace the disk and lose its data).
+			if _, ok := ebs["DeleteOnTermination"]; ok && !ebsBool("DeleteOnTermination") {
+				nm, _ := disk["name"].(string)
+				if nm == "" {
+					nm = fmt.Sprintf("disk%d", i)
+				}
+				if !ctx.recordedDataDisk(id, nm) {
+					kv := ctx.keptVolume(id, nm, disk)
+					keptVols = append(keptVols, kv)
+					att := map[string]any{"name": kv.Name}
+					if dn, ok := disk["deviceName"]; ok {
+						att["deviceName"] = dn
+					}
+					keptAttach = append(keptAttach, att)
+					cav = append(cav, "data disk "+nm+": DeleteOnTermination=false — it is kind: Volume "+kv.Name+", attached to the VM and kept when the instance goes (a stack delete, a rolled-back create, an update that removes the instance), as AWS keeps the volume; it is then no longer part of the stack. It is attached after the instance's other data disks, so its Nitro name (/dev/nvme<n>n1) follows theirs")
+					for _, p := range []string{"VolumeType", "Iops", "Throughput"} {
+						if _, ok := ebs[p]; ok {
+							cav = append(cav, "data disk "+nm+": "+p+" dropped — a volume is a StorageClass PVC (Longhorn), not provisioned-IOPS EBS")
+						}
+					}
+					continue
+				}
+			}
+			dataDisks = append(dataDisks, disk)
 			// Perf/lifecycle knobs with no honest VM-disk equivalent (same as EC2::Volume).
 			for _, p := range []string{"VolumeType", "Iops", "Throughput"} {
 				if _, ok := ebs[p]; ok {
@@ -1126,7 +1159,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 				}
 			}
 			if _, ok := ebs["DeleteOnTermination"]; ok && !ebsBool("DeleteOnTermination") {
-				cav = append(cav, "data disk "+fmt.Sprint(disk["name"])+": DeleteOnTermination=false does NOT map — a VM data disk shares the VM's lifecycle (it is deleted with the VM); detach-and-keep is not modeled")
+				cav = append(cav, "data disk "+fmt.Sprint(disk["name"])+": DeleteOnTermination=false does NOT map for this instance — the stack created it with the disk sharing the VM's lifecycle (it is deleted with the VM), and it keeps that disk rather than replace it")
 			}
 		}
 		if len(dataDisks) > 0 {
@@ -1279,8 +1312,11 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		}
 	}
 
-	if vols, vcav, vreq := ctx.attachedVolumes(id); len(vols) > 0 {
-		spec["volumes"] = vols
+	// The volumes the instance launched with and keeps (DeleteOnTermination: false) come first, then the
+	// ones VolumeAttachments attach.
+	vols, vcav, vreq := ctx.attachedVolumes(id)
+	if all := append(keptAttach, vols...); len(all) > 0 {
+		spec["volumes"] = all
 		cav = append(cav, vcav...)
 		requires = append(requires, vreq...)
 	}
@@ -1293,6 +1329,8 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		m.Extra = append(m.Extra, k)
 		cav = append(cav, "an encrypted data disk has no KmsKeyId — keyed by the stack's default kind: EncryptionKey \""+k.Name+"\" (open-infra analog of AWS's account-default aws/ebs key), created on first use")
 	}
+	// After the key that encrypts them: a kept volume is Ready only once its encrypted disk is bound.
+	m.Extra = append(m.Extra, keptVols...)
 
 	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "PrivateIpAddress", "SourceDestCheck", "DisableApiTermination", "Tags"} {
 		if _, ok := props[p]; ok {

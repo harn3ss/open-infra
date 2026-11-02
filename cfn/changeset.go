@@ -49,10 +49,14 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	var owned ownedObjects
 	if found {
 		opts.prior = current.Resources
+		owned = ownedFrom(current.Resources)
 	}
-	desired, err := buildManifests(data, opts)
+	// A resource the update adds is named around anything an earlier stack of this name (or an earlier
+	// update that removed a Retain resource) left behind; what the stack recorded keeps its name.
+	desired, err := buildAvoidingLeftovers(ctx, data, opts, ap, owned)
 	if err != nil {
 		return nil, nil, nil, err
 	}

@@ -180,7 +180,7 @@ func applyOwned(ctx context.Context, ap Applier, b builtResource, stack string, 
 	if !ok || b.shared {
 		return ap.Apply(ctx, b.yml)
 	}
-	if err := physicalNameFree(ctx, ap, b, stack); err != nil {
+	if err := physicalNameFree(ctx, ap, b, stack, owned); err != nil {
 		return err
 	}
 	refuseNotOurs := func(labels map[string]string) error {
@@ -240,7 +240,7 @@ func applyOwned(ctx context.Context, ap Applier, b builtResource, stack string, 
 // objects would silently share it (one stack writing the other's data, applying its own policy to it). An
 // object of this stack with that name is the same resource (its record names it) or a second resource
 // of the stack claiming the name, which AWS refuses too.
-func physicalNameFree(ctx context.Context, ap Applier, b builtResource, stack string) error {
+func physicalNameFree(ctx context.Context, ap Applier, b builtResource, stack string, owned ownedObjects) error {
 	field, value := physicalName(b.res.APIVersion, b.res.Kind, b.res.Name, b.res.Spec)
 	if value == "" {
 		return nil
@@ -262,6 +262,10 @@ func physicalNameFree(ctx context.Context, ap Applier, b builtResource, stack st
 		}
 		owner := o.Labels[labelStack]
 		switch {
+		case owner == stack && owned != nil && !owned[b.res.APIVersion+"/"+b.res.Kind+"/"+o.Name]:
+			// What an earlier stack of this name retained is no longer any stack's: on AWS its name is
+			// taken (BucketAlreadyOwnedByYou), so a new resource cannot have it either.
+			return fmt.Errorf("%s %s's %s %q is still held by %s %s, which an earlier stack named %s left behind (a retained resource, no longer part of any stack) — refusing to create a second object over it, as AWS refuses a name that is taken (give the resource another %s, or delete the retained one)", b.res.Kind, b.res.Name, field, value, b.res.Kind, o.Name, stack, field)
 		case owner == stack:
 			owner = "this stack"
 		case owner == "":
@@ -351,6 +355,9 @@ type DeployOptions struct {
 	// prior is the existing stack's recorded resources (an update or change set): each keeps the name it
 	// was created with (naming.go). Nil for a create.
 	prior []StackResource
+	// leftovers are names held by objects an earlier stack of this name left behind, which the resources
+	// this operation creates are named around (physNamer.leftovers; buildAvoidingLeftovers finds them).
+	leftovers []string
 	// Caps are deploy-environment facts translators depend on (e.g. whether MinIO has SSE-KMS on).
 	// Plan and deploy both evaluate with these, so a PROVISIONABLE* plan still means deploy won't
 	// refuse. Zero = fail-closed (the CLI); the in-cluster aws-shim doorway sets them.
@@ -428,7 +435,9 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	}
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
 	r.evalConditions()
-	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, opts.prior), signalURL: opts.SignalURL}
+	namer := newPhysNamer(opts.StackName, opts.prior)
+	namer.avoid(opts.leftovers)
+	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: namer, signalURL: opts.SignalURL}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, ctx) }
 	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, ctx) }
 	if needsSignals(t) && opts.Signals == nil {
@@ -485,6 +494,67 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	return order, nil
 }
 
+// maxLeftoverPasses bounds how many times a build is redone to name resources around what earlier stacks
+// of the same name left behind (each pass only adds names to avoid, so it settles in a pass or two).
+const maxLeftoverPasses = 8
+
+// buildAvoidingLeftovers is buildManifests for an operation against the live cluster: a resource this
+// operation creates (one not in owned) whose object name is held by an object an earlier stack of this
+// name left behind — a retained resource, kept unmanaged — is renamed (physNamer.fresh) and the stack
+// translated again, so the leftover never blocks the stack and is never taken over. On AWS a retained
+// resource is simply no longer the stack's: re-creating the stack creates the resource anew. Where a
+// name cannot change (an explicit FunctionName) the apply refuses as before (applyOwned), as AWS
+// refuses a name that is taken; so does an explicit physical name (a BucketName) the leftover still has.
+func buildAvoidingLeftovers(ctx context.Context, data []byte, opts DeployOptions, ap Applier, owned ownedObjects) ([]builtResource, error) {
+	for pass := 0; ; pass++ {
+		order, err := buildManifests(data, opts)
+		if err != nil {
+			return nil, err
+		}
+		hit, err := leftoverHits(ctx, ap, order, opts.StackName, owned, opts.leftovers)
+		if err != nil {
+			return nil, err
+		}
+		if len(hit) == 0 || pass+1 >= maxLeftoverPasses {
+			return order, nil
+		}
+		opts.leftovers = append(append([]string(nil), opts.leftovers...), hit...)
+	}
+}
+
+// leftoverHits names the objects among built that an earlier stack of this name left behind: one that
+// exists, carries this stack's label, and is not this operation's (owned). A shared companion (applied
+// by several stacks on purpose) and a resource outside Kubernetes are never one; a name already avoided
+// is not reported again (it could not be changed). An Applier that cannot read labels finds none.
+func leftoverHits(ctx context.Context, ap Applier, built []builtResource, stack string, owned ownedObjects, avoided []string) ([]string, error) {
+	lr, ok := ap.(LabelReader)
+	if !ok {
+		return nil, nil
+	}
+	skip := map[string]bool{}
+	for _, n := range avoided {
+		skip[n] = true
+	}
+	var hit []string
+	for _, b := range built {
+		if b.shared || isOutOfBand(b.res) || skip[b.res.Name] {
+			continue
+		}
+		if owned[b.res.APIVersion+"/"+b.res.Kind+"/"+b.res.Name] {
+			continue
+		}
+		labels, found, err := lr.GetLabels(ctx, b.res.APIVersion, b.res.Kind, b.res.Name)
+		if err != nil {
+			return nil, fmt.Errorf("checking whether %s %s already exists: %w", b.res.Kind, b.res.Name, err)
+		}
+		if found && labels[labelStack] == stack {
+			hit = append(hit, b.res.Name)
+			skip[b.res.Name] = true
+		}
+	}
+	return hit, nil
+}
+
 // objectSet tracks the objects one stack operation applies, by apiVersion, kind and name. Two resources of
 // a stack that resolve to one object (an explicit FunctionName equal to another Function's generated name)
 // would overwrite each other under one stack label, which no ownership check can see; add refuses the
@@ -524,8 +594,9 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	}
 
 	// 1+2. Plan gate + translate gate — build every manifest up front, in dependency order,
-	// refusing (nothing applied) on any blocker or untranslatable property.
-	order, err := buildManifests(data, opts)
+	// refusing (nothing applied) on any blocker or untranslatable property. Named around anything an
+	// earlier stack of this name left behind (a new stack owns nothing yet).
+	order, err := buildAvoidingLeftovers(ctx, data, opts, ap, ownedObjects{})
 	if err != nil {
 		return nil, err
 	}
@@ -840,6 +911,31 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		built, berr := expandManifest(id, res, m, opts)
 		if berr != nil {
 			return rollback(berr)
+		}
+		// Named around anything an earlier stack of this name left behind (buildAvoidingLeftovers, one
+		// resource at a time): translated again under the new name, which later resources then refer to.
+		var avoided []string
+		for pass := 1; pass < maxLeftoverPasses; pass++ {
+			hit, herr := leftoverHits(ctx, ap, built, opts.StackName, owned, avoided)
+			if herr != nil {
+				return rollback(herr)
+			}
+			if len(hit) == 0 {
+				break
+			}
+			avoided = append(avoided, hit...)
+			sctx.namer.avoid(hit)
+			r.where = "Resource " + id
+			resolved, _ = r.resolve(res.Properties).(map[string]any)
+			if m, fs = tr(id, resolved, sctx); len(fs) > 0 {
+				return rollback(fmt.Errorf("translate gate REJECTED:\n  - %s", joinFindings(fs)))
+			}
+			if built, berr = expandManifest(id, res, m, opts); berr != nil {
+				return rollback(berr)
+			}
+			if spec, serr = signalSpecOf(res, m, id); serr != nil {
+				return rollback(serr)
+			}
 		}
 		pending := make([]StackResource, 0, len(built))
 		for _, b := range built {

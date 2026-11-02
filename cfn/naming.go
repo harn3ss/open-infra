@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -38,12 +39,18 @@ type physNamer struct {
 	// legacyDefaultKey is set when the existing stack keys disks with the shared namespace default
 	// EncryptionKey (defaultEBSKeyName), from before each stack had its own: the stack keeps using it.
 	legacyDefaultKey bool
+	// leftovers are names held by objects an earlier stack of this name left behind (a retained resource,
+	// kept unmanaged: a Retain resource of a stack that was deleted or whose create rolled back, or one an
+	// update removed). A resource this operation creates fresh is named around them (fresh), as on AWS a
+	// new stack's resource is a new resource, never the retained one. Found by the operation
+	// (leftoverHits), so it is empty for an offline plan.
+	leftovers map[string]bool
 }
 
 // newPhysNamer builds the namer for a stack. prior is the stack's recorded resources (nil for a new
 // stack); a companion's record (logical id "<id>/<name>") is not a template resource and is skipped.
 func newPhysNamer(stack string, prior []StackResource) *physNamer {
-	n := &physNamer{stack: stack, prior: map[string]string{}, priorRes: prior}
+	n := &physNamer{stack: stack, prior: map[string]string{}, priorRes: prior, leftovers: map[string]bool{}}
 	for _, r := range prior {
 		if r.Name != "" && !strings.Contains(r.LogicalID, "/") {
 			n.prior[r.LogicalID] = r.Name
@@ -78,10 +85,52 @@ func (n *physNamer) nameIn(id string, t *Template) string {
 			}
 		}
 	}
+	base := stackQualifiedName(n.stack, id)
 	if n.folded[k8sName(id)] {
-		return hashedName(n.stack, id, stackQualifiedName(n.stack, id))
+		base = hashedName(n.stack, id, base)
 	}
-	return stackQualifiedName(n.stack, id)
+	return n.fresh(id, base, maxPhysNameLen)
+}
+
+// fresh is base, the name a resource created by this operation gets — unless an object an earlier stack
+// of this name left behind (leftovers) holds it: then the first of a deterministic series of alternatives
+// (base shortened to max with a hash of the stack, key and generation appended) that none holds. key
+// identifies the resource within the stack (its logical id, or the logical id plus what a companion is);
+// the series is the same on every pass, so an update that re-derives the name lands on the one the
+// stack recorded. A name nothing left behind is base itself, so no existing stack's names change.
+func (n *physNamer) fresh(key, base string, max int) string {
+	if n == nil {
+		return base
+	}
+	name := base
+	for gen := 1; n.leftovers[name] && gen <= 64; gen++ {
+		name = leftoverAltName(n.stack, key, base, gen, max)
+	}
+	return name
+}
+
+// avoid adds names to the leftovers this namer names fresh resources around.
+func (n *physNamer) avoid(names []string) {
+	for _, nm := range names {
+		n.leftovers[nm] = true
+	}
+}
+
+// leftoverAltName is fresh's gen'th alternative to base: base shortened to max-9 characters, then "-" and
+// 8 hex digits of a hash of the stack, key and generation — an RFC 1123 label and a valid S3 bucket name,
+// like every generated name.
+func leftoverAltName(stack, key, base string, gen, max int) string {
+	sum := sha256.Sum256([]byte(stack + "\x00" + key + "\x00retained\x00" + strconv.Itoa(gen)))
+	h := hex.EncodeToString(sum[:])[:8]
+	head := base
+	if len(head) > max-9 {
+		head = head[:max-9]
+	}
+	head = strings.Trim(strings.TrimPrefix(head, "xn--"), "-")
+	if head == "" {
+		return "r-" + h
+	}
+	return head + "-" + h
 }
 
 // recorded reports the name an existing stack recorded for id, if any.

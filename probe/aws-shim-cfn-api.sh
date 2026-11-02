@@ -13,6 +13,8 @@
 #     no default (accepted, as on AWS)
 #   - TemplateURL: a template uploaded to the shim's own S3 deploys by URL, including a NESTED stack whose
 #     child template is in S3 too (Fn::GetAtt Child.Outputs.X resolves)
+#   - a Retain bucket a rolled-back create kept: re-creating the stack with its BucketName is refused (the
+#     name is taken), and with a new BucketName completes beside it
 #
 # On-demand (needs a deployed shim with the CloudFormation front door, kube-ovn VPC kinds, and an
 # openinfra:admins caller). Exit 0 = pass, 1 = a real failure, 42 = inconclusive.
@@ -42,8 +44,9 @@ curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not r
 kubectl get ns "$CFN_NS" >/dev/null 2>&1 || inconclusive "CFN namespace ${CFN_NS} missing"
 
 NET="cfnapi-net-$SFX"; APP="cfnapi-app-$SFX"; BAD="cfnapi-bad-$SFX"; FAILST="cfnapi-fail-$SFX"; NEST="cfnapi-nest-$SFX"
+RET="cfnapi-ret-$SFX"
 BUCKET="cfnapi-$SFX-tmpl"
-STACKS=("$NEST" "$FAILST" "$APP" "$NET")
+STACKS=("$RET" "$NEST" "$FAILST" "$APP" "$NET")
 CREATED_USERS=(); CREATED_KEYS=()
 AK=""; SK=""
 
@@ -63,6 +66,8 @@ cleanup() {
   for s in "${STACKS[@]}" "$BAD"; do
     kubectl -n "$SHIM_NS" delete secret "cfn-stack-$s" "cfn-events-$s" "cfn-signals-$s" "noecho-cfn-stack-$s" --ignore-not-found >/dev/null 2>&1 || true
   done
+  # The bucket section 7's failed create retained (no stack owns it any more; the reaper removes the empty bucket).
+  kubectl -n "$CFN_NS" delete buckets.openinfra.dev -l "cfn.openinfra.dev/stack=$RET" --ignore-not-found >/dev/null 2>&1 || true
   for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
   for k in "${CREATED_KEYS[@]:-}";  do [ -n "$k" ] && kubectl -n "$SHIM_NS" delete secret "$k" --ignore-not-found >/dev/null 2>&1 || true; done
   rm -rf "$TMP"
@@ -247,5 +252,50 @@ cfn create-stack --stack-name "$NEST" --template-url "$ENDPOINT/$BUCKET/parent.y
 st="$(poll "$NEST" CREATE_COMPLETE)" || fail "$NEST (TemplateURL + nested stack) did not complete: $st"
 [ "$(output "$NEST" FromChild)" = "cfnapi-$SFX-child" ] || fail "Fn::GetAtt Child.Outputs.ChildQueue: $(output "$NEST" FromChild)"
 log "  ✓ TemplateURL from the shim's S3, with a nested stack's Outputs"
+
+# --- 7. a Retain bucket a failed create kept does not block re-creating the stack ----------------------
+# The create fails (a FAILURE signal) and rolls back, keeping its Retain bucket, which no stack owns any
+# more. Re-created with the same BucketName it is refused (the name is taken, as on AWS); with a new
+# BucketName it completes beside the retained bucket.
+ret_tmpl() { # <bucket name>
+  printf 'Resources:\n  Data:\n    Type: AWS::S3::Bucket\n    DeletionPolicy: Retain\n    Properties: { BucketName: %s }\n  W:\n    Type: AWS::CloudFormation::WaitCondition\n    DependsOn: Data\n    CreationPolicy: { ResourceSignal: { Count: 1, Timeout: PT10M } }\n' "$1"
+}
+signal_when_waiting() { # <stack> <status>
+  for _ in $(seq 1 100); do
+    rs="$(cfn describe-stack-resources --stack-name "$1" --logical-resource-id W --query 'StackResources[0].ResourceStatus' --output text 2>/dev/null || true)"
+    [ "$rs" = CREATE_IN_PROGRESS ] && break
+    sleep 3
+  done
+  cfn signal-resource --stack-name "$1" --logical-resource-id W --unique-id "probe-$2" --status "$2" || fail "signal-resource $2 on $1"
+}
+delete_and_wait() { # <stack>
+  cfn delete-stack --stack-name "$1" >/dev/null || fail "delete-stack $1"
+  for _ in $(seq 1 100); do
+    st="$(cfn describe-stacks --stack-name "$1" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
+    case "$st" in ""|DELETE_COMPLETE) return 0;; *DELETE_FAILED) fail "delete-stack $1: $st";; esac
+    sleep 3
+  done
+  fail "delete-stack $1 did not finish"
+}
+ret_tmpl "cfnapi-$SFX-ret-a" > "$TMP/ret-a.yaml"
+cfn create-stack --stack-name "$RET" --template-body "file://$TMP/ret-a.yaml" >/dev/null || fail "create-stack $RET"
+signal_when_waiting "$RET" FAILURE
+st="$(poll "$RET" CREATE_FAILED)" || fail "the failed create must end CREATE_FAILED, got $st"
+kubectl -n "$CFN_NS" get buckets.openinfra.dev -l "cfn.openinfra.dev/stack=$RET" -o name | grep -q . || fail "the rollback must keep the Retain bucket"
+delete_and_wait "$RET"
+# The same BucketName: still the retained bucket's.
+cfn create-stack --stack-name "$RET" --template-body "file://$TMP/ret-a.yaml" >/dev/null || fail "create-stack $RET (same BucketName)"
+st="$(poll "$RET" CREATE_FAILED)" || fail "re-creating with the retained bucket's BucketName must fail, got $st"
+cfn describe-stack-events --stack-name "$RET" --query 'StackEvents[?ResourceStatus==`CREATE_FAILED`].ResourceStatusReason' --output text \
+  | grep -q "left behind" || fail "the events must say the BucketName is the retained bucket's"
+delete_and_wait "$RET"
+# A new BucketName: completes, beside the retained bucket.
+ret_tmpl "cfnapi-$SFX-ret-b" > "$TMP/ret-b.yaml"
+cfn create-stack --stack-name "$RET" --template-body "file://$TMP/ret-b.yaml" >/dev/null || fail "create-stack $RET (new BucketName)"
+signal_when_waiting "$RET" SUCCESS
+st="$(poll "$RET" CREATE_COMPLETE)" || fail "re-creating with a new BucketName must complete beside the retained bucket, got $st"
+[ "$(kubectl -n "$CFN_NS" get buckets.openinfra.dev -l "cfn.openinfra.dev/stack=$RET" -o name | wc -l)" -eq 2 ] \
+  || fail "the retained bucket and the re-created stack's must both exist"
+log "  ✓ a Retain bucket a failed create kept is refused by name, and does not block a re-created stack with a new BucketName"
 
 printf '✓ PASS — the CloudFormation API surface: Outputs resolve and cross-stack exports import; an unresolvable Output is refused; resource signals (SUCCESS and FAILURE) are waited for; DescribeStackEvents, ListStackResources, DescribeStackResource, ListImports and ValidateTemplate answer as on AWS; TemplateURL and nested stacks deploy from the shim'"'"'s S3.\n'

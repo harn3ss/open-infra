@@ -42,9 +42,20 @@ func (l *listingFake) Create(ctx context.Context, y []byte) (bool, error) {
 	return true, l.fakeApplier.Apply(ctx, y)
 }
 
+// recordedName is the object name stack record rec gives logical id.
+func recordedName(rec *StackRecord, id string) string {
+	for _, r := range rec.Resources {
+		if r.LogicalID == id {
+			return r.Name
+		}
+	}
+	return ""
+}
+
 // A resource a deleted stack retained keeps the stack's label but is no longer the stack's. A new stack
-// of the same name is refused rather than adopting it — adopting would let this stack's rollback (or
-// delete) remove the data the template asked to keep.
+// of the same name neither adopts it (its rollback or delete would remove the data the template asked to
+// keep) nor is blocked by it: as on AWS, the new stack's resource is a new one — named around the
+// retained object, which stays exactly as it was.
 func TestOwnership_RetainedObjectIsNotReadopted(t *testing.T) {
 	keep := []byte(`
 Resources:
@@ -62,21 +73,133 @@ Resources:
 	if _, ok := f.liveSpecs["Bucket/s-data"]; !ok {
 		t.Fatal("test premise: the retained bucket is kept")
 	}
-	// With another resource applied first, the refusal rolls the new stack back.
+	retainedLabels := f.liveLabels["Bucket/s-data"]
+	applied := len(f.applied)
 	again := append(append([]byte{}, keep...), []byte(`  Another:
     Type: AWS::KMS::Key
 `)...)
-	_, err := Deploy(context.Background(), again, deployOpts(), f)
-	if err == nil || !strings.Contains(err.Error(), "an earlier stack named s left it") {
-		t.Fatalf("a re-created stack must refuse the retained object, got %v", err)
+	rec, err := Deploy(context.Background(), again, deployOpts(), f)
+	if err != nil {
+		t.Fatalf("a re-created stack must create its own bucket beside the retained one: %v", err)
+	}
+	name := recordedName(rec, "Data")
+	if name == "" || name == "s-data" || !strings.HasPrefix(name, "s-data-") {
+		t.Fatalf("the re-created stack's bucket must be a new object named around the retained s-data, got %q", name)
+	}
+	for _, a := range f.applied[applied:] {
+		if a == "Bucket/s-data" {
+			t.Fatalf("the retained bucket was written by the new stack: %v", f.applied[applied:])
+		}
+	}
+	if f.liveLabels["Bucket/s-data"]["cfn.openinfra.dev/stack"] != retainedLabels["cfn.openinfra.dev/stack"] {
+		t.Fatal("the retained bucket's labels changed")
+	}
+	// Its Ref (the bucket name) is the new bucket's, and deleting the new stack leaves the retained one.
+	for _, r := range rec.Resources {
+		if r.LogicalID == "Data" && r.PhysicalID != name {
+			t.Fatalf("the re-created bucket's physical id = %q, want %q", r.PhysicalID, name)
+		}
+	}
+	f.deleted = nil
+	f.stored.Resources[0].DeletionPolicy = "Delete" // the new stack's own bucket goes with it
+	if _, err := Destroy(context.Background(), deployOpts(), f); err != nil {
+		t.Fatalf("destroy of the re-created stack: %v", err)
 	}
 	if contains(f.deleted, "Bucket/s-data") {
-		t.Fatalf("the retained bucket was deleted by the new stack's rollback: %v", f.deleted)
+		t.Fatalf("deleting the re-created stack deleted the retained bucket: %v", f.deleted)
+	}
+}
+
+// A create that fails and rolls back keeps its Retain bucket; re-creating the stack with a
+// new BucketName succeeds (the retained bucket's claim name no longer blocks it), and the retained bucket
+// is untouched. The same BucketName is still refused, as AWS refuses a bucket name that is taken.
+func TestOwnership_RetainedFromAFailedCreate_RecreateWithNewBucketName(t *testing.T) {
+	tmpl := func(bucket string) []byte {
+		return []byte(`
+Resources:
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties: { BucketName: ` + bucket + ` }
+  Key:
+    Type: AWS::KMS::Key
+    DependsOn: ConfigBucket
+`)
+	}
+	f := &listingFake{fakeApplier: &fakeApplier{failOn: "EncryptionKey/s-key"}}
+	if _, err := Deploy(context.Background(), tmpl("cfg-one"), deployOpts(), f); err == nil {
+		t.Fatal("test premise: the first create fails")
+	}
+	if _, ok := f.liveSpecs["Bucket/s-configbucket"]; !ok || contains(f.deleted, "Bucket/s-configbucket") {
+		t.Fatal("test premise: the rollback keeps the Retain bucket")
+	}
+	f.stored = nil // as after DeleteStack of the rolled-back stack
+	f.failOn = ""
+
+	// The same BucketName: still the retained bucket's, so refused.
+	if _, err := Deploy(context.Background(), tmpl("cfg-one"), deployOpts(), f); err == nil || !strings.Contains(err.Error(), "an earlier stack named s left behind") {
+		t.Fatalf("re-creating with the retained bucket's BucketName must be refused, got %v", err)
+	}
+	f.stored = nil
+
+	// A new BucketName: created.
+	rec, err := Deploy(context.Background(), tmpl("cfg-two"), deployOpts(), f)
+	if err != nil {
+		t.Fatalf("re-creating with a new BucketName must succeed: %v", err)
+	}
+	name := recordedName(rec, "ConfigBucket")
+	if name == "s-configbucket" {
+		t.Fatal("the new bucket's claim must not be the retained one")
+	}
+	if got := f.liveSpecs["Bucket/"+name]["bucketName"]; got != "cfg-two" {
+		t.Fatalf("the new claim's bucketName = %v, want cfg-two", got)
+	}
+	if got := f.liveSpecs["Bucket/s-configbucket"]["bucketName"]; got != "cfg-one" {
+		t.Fatalf("the retained bucket changed: bucketName = %v", got)
+	}
+	// An update of the re-created stack keeps the name it recorded (no rename, no second object).
+	upd, err := Update(context.Background(), tmpl("cfg-two"), deployOpts(), f)
+	if err != nil {
+		t.Fatalf("no-op update: %v", err)
+	}
+	if recordedName(upd, "ConfigBucket") != name {
+		t.Fatalf("an update renamed the bucket: %q -> %q", name, recordedName(upd, "ConfigBucket"))
+	}
+}
+
+// A resource a stack retained more than once (each re-created stack failing again) never blocks the next:
+// each generation is named around every earlier one.
+func TestOwnership_RetainedTwice(t *testing.T) {
+	tmpl := []byte(`
+Resources:
+  Data:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+  Key:
+    Type: AWS::KMS::Key
+    DependsOn: Data
+`)
+	f := &listingFake{fakeApplier: &fakeApplier{failOn: "EncryptionKey/s-key"}}
+	names := map[string]bool{}
+	for i := 0; i < 3; i++ {
+		rec, err := Deploy(context.Background(), tmpl, deployOpts(), f)
+		if err == nil {
+			t.Fatalf("attempt %d: test premise: the create fails", i)
+		}
+		if strings.Contains(err.Error(), "left it") {
+			t.Fatalf("attempt %d: blocked by an earlier attempt's retained bucket: %v", i, err)
+		}
+		n := recordedName(rec, "Data")
+		if names[n] {
+			t.Fatalf("attempt %d reused %q", i, n)
+		}
+		names[n] = true
+		f.stored = nil
 	}
 }
 
 // The same holds within one stack: a Retain resource removed by an update is unmanaged, and a later
-// update that adds it again is refused instead of quietly adopting it.
+// update that adds it again creates a new object rather than quietly adopting the retained one.
 func TestOwnership_RemovedRetainedObjectIsNotReadoptedByUpdate(t *testing.T) {
 	with := []byte(`
 Resources:
@@ -94,8 +217,18 @@ Resources:
 	if _, err := Update(context.Background(), without, deployOpts(), f); err != nil {
 		t.Fatalf("update removing the bucket: %v", err)
 	}
-	if _, err := Update(context.Background(), with, deployOpts(), f); err == nil || !strings.Contains(err.Error(), "an earlier stack named s left it") {
-		t.Fatalf("re-adding the retained bucket must refuse, got %v", err)
+	applied := len(f.applied)
+	rec, err := Update(context.Background(), with, deployOpts(), f)
+	if err != nil {
+		t.Fatalf("re-adding the bucket must create a new one: %v", err)
+	}
+	if n := recordedName(rec, "Data"); n == "s-data" || !strings.HasPrefix(n, "s-data-") {
+		t.Fatalf("the re-added bucket must be named around the retained s-data, got %q", n)
+	}
+	for _, a := range f.applied[applied:] {
+		if a == "Bucket/s-data" {
+			t.Fatalf("the retained bucket was written by the update: %v", f.applied[applied:])
+		}
 	}
 	// An object the stack's record does name is updated in place as before.
 	if _, err := Update(context.Background(), []byte("Resources:\n  K:\n    Type: AWS::KMS::Key\n    Properties: { Description: changed }\n"), deployOpts(), f); err != nil {
