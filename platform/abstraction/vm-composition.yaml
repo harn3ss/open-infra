@@ -749,9 +749,11 @@ spec:
                           - name: copy
                             image: alpine/k8s:1.30.0
                             resources:
-                              requests: { cpu: 250m, memory: 128Mi }
-                              limits: { cpu: 250m, memory: 128Mi }
-                            securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+                              requests: { cpu: 250m, memory: 256Mi }
+                              limits: { cpu: 250m, memory: 256Mi }
+                            # DAC_OVERRIDE alone: CDI's image file belongs to its non-root importer, and root
+                            # without it cannot read the file (a baseline-PSS capability; nothing else is added).
+                            securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL], add: [DAC_OVERRIDE] } }
                             command: ["/bin/sh", "-c"]
                             args:
                               - |
@@ -761,7 +763,9 @@ spec:
                                 [ -f "$img" ] || { echo "the imported OS image has no disk.img" >&2; exit 1; }
                                 # Never copy over a disk that already boots: a fresh encrypted disk reads as
                                 # noise, so an MBR signature with a plausible first partition (or a GPT header)
-                                # means the image is already there (a lost status, a re-created Job).
+                                # means the image is already there (a lost status, a re-created Job). The copy
+                                # writes the image's first MiB (its boot record) LAST, so only a COMPLETE copy
+                                # leaves one: an interrupted copy is simply copied again.
                                 b() { dd if="$dev" bs=1 skip="$1" count="$2" 2>/dev/null | od -An -tx1 | tr -d ' \n'; }
                                 if [ "$(b 510 2)" = 55aa ]; then
                                   if [ "$(b 512 8)" = 4546492050415254 ] || { case "$(b 446 1)" in 00|80) [ "$(b 450 1)" != 00 ];; *) false;; esac; }; then
@@ -772,7 +776,9 @@ spec:
                                 isz=$(stat -c %s "$img")
                                 dsz=$(blockdev --getsize64 "$dev" 2>/dev/null || stat -c %s "$dev")
                                 [ "$isz" -le "$dsz" ] || { echo "the OS image ($isz bytes) is larger than the encrypted root ($dsz bytes)" >&2; exit 1; }
-                                dd if="$img" of="$dev" bs=4M conv=fsync
+                                dd if="$img" of="$dev" bs=1M skip=1 seek=1 conv=notrunc,fsync
+                                sync
+                                dd if="$img" of="$dev" bs=1M count=1 conv=notrunc,fsync
                                 sync
                                 echo "copied the OS image ($isz bytes) onto the encrypted root"
                             volumeMounts:

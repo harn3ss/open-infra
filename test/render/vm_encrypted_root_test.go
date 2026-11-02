@@ -202,6 +202,12 @@ func TestVM_EncryptedRoot_CopyScript(t *testing.T) {
 	if script == "" || !strings.Contains(script, "/dev/openinfra-root") {
 		t.Fatalf("copy script not found:\n%s", grepCtx(out, "root-populate"))
 	}
+	// The boot record (the image's first MiB) is written after everything else, so a copy interrupted
+	// part-way leaves none and is copied again rather than taken for a populated disk.
+	bulk, boot := strings.Index(script, "skip=1 seek=1"), strings.Index(script, "bs=1M count=1")
+	if bulk < 0 || boot < 0 || boot < bulk {
+		t.Fatalf("the image's first MiB must be written last (bulk at %d, boot record at %d):\n%s", bulk, boot, script)
+	}
 	noise := func(n int) []byte { b := make([]byte, n); _, _ = rand.Read(b); b[510], b[511] = 0x12, 0x34; return b }
 	image := func(n int) []byte {
 		b := bytes.Repeat([]byte{0xab}, n)
@@ -214,6 +220,12 @@ func TestVM_EncryptedRoot_CopyScript(t *testing.T) {
 		b[446], b[450], b[510], b[511] = 0x80, 0x83, 0x55, 0xaa // active, Linux, boot signature
 		return b
 	}
+	// An interrupted copy: everything but the first MiB (written last) is already there.
+	interrupted := func() []byte {
+		b := noise(4 << 20)
+		copy(b[1<<20:], image(3 << 20)[1<<20:])
+		return b
+	}
 	cases := []struct {
 		name          string
 		img, dev      []byte
@@ -221,10 +233,11 @@ func TestVM_EncryptedRoot_CopyScript(t *testing.T) {
 		wantCopied    bool
 		wantOutSubstr string
 	}{
-		{"fresh encrypted disk gets the image", image(64 << 10), noise(96 << 10), true, true, "copied the OS image"},
-		{"an image larger than the disk is refused", image(128 << 10), noise(96 << 10), false, false, "larger than the encrypted root"},
-		{"a disk with a GPT boot record is left alone", image(64 << 10), image(96 << 10), true, false, "already holds a boot record"},
-		{"a disk with an MBR boot record is left alone", image(64 << 10), mbrDisk(96 << 10), true, false, "already holds a boot record"},
+		{"fresh encrypted disk gets the image", image(3 << 20), noise(4 << 20), true, true, "copied the OS image"},
+		{"an interrupted copy is copied again", image(3 << 20), interrupted(), true, true, "copied the OS image"},
+		{"an image larger than the disk is refused", image(5 << 20), noise(4 << 20), false, false, "larger than the encrypted root"},
+		{"a disk with a GPT boot record is left alone", image(3 << 20), image(4 << 20), true, false, "already holds a boot record"},
+		{"a disk with an MBR boot record is left alone", image(3 << 20), mbrDisk(4 << 20), true, false, "already holds a boot record"},
 	}
 	for _, sh := range posixShells(t) {
 		for _, c := range cases {
