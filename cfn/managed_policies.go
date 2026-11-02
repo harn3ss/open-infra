@@ -20,6 +20,10 @@ var awsManagedPolicies = map[string]struct {
 		doc:     `{"Statement":[{"Effect":"Allow","Action":["ecr:GetAuthorizationToken","ecr:BatchCheckLayerAvailability","ecr:GetDownloadUrlForLayer","ecr:DescribeRepositories","ecr:ListImages","ecr:DescribeImages","ecr:BatchGetImage"],"Resource":"*"}]}`,
 		missing: "repository policies, lifecycle policies, scan findings and tags (the registry has none to read)",
 	},
+	"AmazonEC2ContainerRegistryPullOnly": {
+		doc:     `{"Statement":[{"Effect":"Allow","Action":["ecr:GetAuthorizationToken","ecr:BatchGetImage","ecr:GetDownloadUrlForLayer"],"Resource":"*"}]}`,
+		missing: "ecr:BatchImportUpstreamImage (pull-through cache rules are not served)",
+	},
 	"AmazonS3ReadOnlyAccess": {
 		doc:     `{"Statement":[{"Effect":"Allow","Action":["s3:Get*","s3:List*"],"Resource":"*"}]}`,
 		missing: "S3 Object Lambda (not served)",
@@ -70,7 +74,7 @@ func managedPolicyCompanions(id, roleName string, v any) ([]*Manifest, []string,
 		caveats = append(caveats, fmt.Sprintf("managed policy %s is attached as kind: Policy %s with the access open-infra serves; not attached: %s", name, pname, mp.missing))
 	}
 	if len(unmapped) > 0 {
-		caveats = append(caveats, "ManagedPolicyArns "+strings.Join(unmapped, ", ")+" are NOT attached — open-infra attaches AmazonEC2ContainerRegistryReadOnly, AmazonS3ReadOnlyAccess, AmazonSSMManagedInstanceCore and CloudWatchAgentServerPolicy (the parts its services serve); express other access as inline Policies, or a kind: Policy in spec.policies")
+		caveats = append(caveats, "ManagedPolicyArns "+strings.Join(unmapped, ", ")+" are NOT attached — open-infra attaches AmazonEC2ContainerRegistryReadOnly, AmazonEC2ContainerRegistryPullOnly, AmazonS3ReadOnlyAccess, AmazonSSMManagedInstanceCore and CloudWatchAgentServerPolicy (the parts its services serve); express other access as inline Policies, or a kind: Policy in spec.policies")
 	}
 	return out, caveats, f
 }

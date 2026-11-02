@@ -18,6 +18,7 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly
         - arn:aws:iam::aws:policy/AdministratorAccess
 `), DeployOptions{StackName: "app", Namespace: "n"})
 	if err != nil {
@@ -30,7 +31,8 @@ Resources:
 		cav += strings.Join(b.cav, "\n")
 	}
 	got := strings.Join(names, ",")
-	if !strings.Contains(got, "-managed-amazonec2containerregistryreadonly") || !strings.Contains(got, "-managed-amazonssmmanagedinstancecore") {
+	if !strings.Contains(got, "-managed-amazonec2containerregistryreadonly") || !strings.Contains(got, "-managed-amazonssmmanagedinstancecore") ||
+		!strings.Contains(got, "-managed-amazonec2containerregistrypullonly") {
 		t.Fatalf("companions = %s", got)
 	}
 	if strings.Contains(got, "administratoraccess") {
