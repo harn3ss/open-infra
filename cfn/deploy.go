@@ -316,6 +316,11 @@ type StackRecord struct {
 	// front door had to settle *_FAILED without the operation's authority keeps it, so a later Destroy
 	// removes those too (only where the object carries this stack's label — it may never have been applied).
 	Pending []StackResource `json:"pending,omitempty"`
+	// Restarting is the write-ahead of an in-flight update's instance restarts (instance_restart.go): the
+	// logical ids of the instances it stops and starts, recorded before the first is stopped, so recovery
+	// of an update whose process died mid-restart starts them again on their prior spec rather than leaving
+	// one stopped. Empty at every terminal status.
+	Restarting []string `json:"restarting,omitempty"`
 	// Events are the stack's status history, oldest first (events.go) — DescribeStackEvents.
 	Events []StackEvent `json:"events,omitempty"`
 	// Description is the template's Description (DescribeStacks returns it).

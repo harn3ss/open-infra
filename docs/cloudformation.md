@@ -35,7 +35,13 @@ the template either — the guest's environment names the shim
 - **`cfn changeset`** (read-only) diffs a template against the current stack — what would
   be Added, Modified, Removed, or left Unchanged.
 - **`cfn update`** applies that change set, rolling back to the exact prior stack if any
-  step fails.
+  step fails. An EC2 instance whose update changes something it reads only when it starts
+  (its `InstanceType`, `UserData`, disks, metadata options, instance profile) is stopped and
+  started, as AWS does for an update with "some interruptions": the update completes once
+  the instance runs on the new spec, and keeps its private address. A change a running
+  instance takes live (its security groups, its public address and ports) restarts nothing.
+  A stopped instance stays stopped; the change applies when it next starts. If the update
+  then fails, its rollback restarts the instance onto its prior spec.
 - **`cfn destroy`** tears a stack down in reverse dependency order, honoring
   `DeletionPolicy`.
 

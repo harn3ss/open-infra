@@ -149,6 +149,13 @@ func (k kubectlApplier) GetSpec(ctx context.Context, apiVersion, kind, name stri
 
 // GetStatus reads a live resource's .status (StatusReader) — stack Outputs naming a post-deploy
 // attribute (a VM's LAN IP) resolve through it. `--ignore-not-found`: an absent object is found=false.
+// SetRunning stops or starts a kind: VirtualMachine by its spec.running (PowerSetter), as the console's
+// Start/Stop does.
+func (k kubectlApplier) SetRunning(ctx context.Context, apiVersion, kind, name string, running bool) error {
+	return k.run(ctx, nil, "patch", resourceArg(apiVersion, kind), name, "--type", "merge",
+		"--field-manager", "cfn-power", "-p", fmt.Sprintf(`{"spec":{"running":%t}}`, running))
+}
+
 func (k kubectlApplier) GetStatus(ctx context.Context, apiVersion, kind, name string) (map[string]any, bool, error) {
 	out, err := k.runOut(ctx, "get", resourceArg(apiVersion, kind), name, "--ignore-not-found", "-o", "json")
 	if err != nil {

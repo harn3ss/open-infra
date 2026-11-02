@@ -467,7 +467,10 @@ or `existingRootClaim`, and `rootDisk` is fixed at creation.
 
 Power: the console's **Start/Stop** flips `spec.running`, which the Composition
 maps to KubeVirt `runStrategy` (`Always`/`Halted`). The disk is retained while
-stopped.
+stopped. `status.powerState` is the VM's state as KubeVirt reports it (`Running`,
+`Stopped`, `Starting`…), and `status.restartRequired` is true while the running VM was
+started from an earlier spec: a change to its CPU, memory, user data or disks takes effect
+when it is stopped and started (a CloudFormation update does that itself).
 
 Delete: deleting a VM through the console (or `kubectl delete virtualmachines.openinfra.dev
 <name>`) removes the whole stack — the KubeVirt VM, the disk (DataVolume/PVC), and any

@@ -24,6 +24,8 @@
 #      `aws cloudfront create-invalidation` on the distribution in the Outputs and `aws cloudfront wait
 #      invalidation-completed` — and on a re-deploy the next request after the wait serves the new content;
 #      a pre-signed S3 link opens;
+#   3b. a resize: an update to a larger InstanceType (RESIZE_TYPE, default t3.medium) completes once the
+#      instance was stopped and started and runs a new boot with more memory, on the same private address;
 #   4. delete-stack removes everything (DELETE_COMPLETE; with KUBECONFIG set, no claim of the stack is
 #      left in the cluster);
 #   5. the instance's DNS names: PrivateDnsName is AWS's ip-a-b-c-d.<zone> form, and PublicDnsName is
@@ -46,6 +48,8 @@
 #   SITE_CA_BUNDLE  (optional) verify the static site's TLS against this CA (the platform root, for a
 #                   SITE_DOMAIN under a domain the operator validated: certificates.validatedDomains)
 #   SITE_VALIDATED_DOMAINS (optional) those validated domains, comma-separated, for the offline plan
+#   RESIZE_TYPE     (optional) the InstanceType the resize step moves to (default t3.medium; larger than
+#                   the template's default t3.small)
 #   APP_IMAGE       (optional) the image the instance pulls (default: the aws-cli image, copied into ECR)
 #   CFN_BIN         (optional) path to the cfn CLI, for the fidelity summary
 #   EVIDENCE_OUT    (optional) write {name, exit_code, reason, when} here
@@ -72,6 +76,7 @@ CFN_NS="${CFN_NS:-open-infra-cfn}"
 CREDS_NS="${CREDS_NS:-openinfra-bucket-creds}"
 APP_IMAGE="${APP_IMAGE:-docker.io/amazon/aws-cli:2.27.50}"
 RESULTS_TIMEOUT="${RESULTS_TIMEOUT:-1800}"
+RESIZE_TYPE="${RESIZE_TYPE:-t3.medium}"
 TMP="$(mktemp -d)"
 STATE=""; MINTED_USER=""; MINTED_KEY=""
 
@@ -309,6 +314,41 @@ if command -v kubectl >/dev/null && [ -n "${KUBECONFIG:-}" ]; then
   log "  ✓ the root disk is encrypted at rest (PVC $VMN-root on longhorn-encrypted)"
 fi
 
+# --- 4b. a resize: a new InstanceType in a stack update stops and starts the instance, and the update
+#     completes once it runs at the new size (AWS: "Update requires: Some interruptions") ---------------
+# boot_info: the instance's boot.json — its memory and this boot's id, written at every boot.
+boot_info() { curl -s -m 5 "http://$ADDR/boot.json" 2>/dev/null; }
+bfield() { python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1], ""))' "$1" 2>/dev/null; }
+B0="$(boot_info)"; MEM0="$(printf '%s' "$B0" | bfield memTotalKiB)"; BOOT0="$(printf '%s' "$B0" | bfield bootId)"
+[ -n "$MEM0" ] && [ -n "$BOOT0" ] || fail "the instance does not serve its boot.json (got '$B0')"
+log "aws cloudformation deploy --stack-name $STACK with InstanceType=$RESIZE_TYPE (was the template's default; $MEM0 KiB)"
+"${A[@]}" cloudformation deploy --template-file "$TEMPLATE" --stack-name "$STACK" --capabilities CAPABILITY_IAM \
+  --parameter-overrides "SiteDomain=$SITE_DOMAIN" "AppRepositoryName=$REPO" "InstanceType=$RESIZE_TYPE" "${ADDR_OVERRIDE[@]}" \
+  > "$TMP/resize.txt" 2>&1 || fail "the resize (aws cloudformation deploy, InstanceType=$RESIZE_TYPE) failed: $(tail -3 "$TMP/resize.txt" | tr '\n' ' ')"
+ST="$("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text)"
+[ "$ST" = UPDATE_COMPLETE ] || fail "after the resize the stack is $ST, want UPDATE_COMPLETE"
+"${A[@]}" cloudformation describe-stack-events --stack-name "$STACK" \
+  --query "StackEvents[?LogicalResourceId=='AppInstance' && ResourceStatus=='UPDATE_IN_PROGRESS'].ResourceStatusReason" --output text \
+  | grep -q "Stopping and starting the instance" || fail "the resize's events do not say the instance was stopped and started"
+# When the update completes the instance runs at the new size: a new boot (its web unit starts with it),
+# with more memory, on the same private address (AWS keeps it across a stop and start).
+B1=""; MEM1=""; BOOT1=""
+for _ in $(seq 1 30); do
+  B1="$(boot_info)"; BOOT1="$(printf '%s' "$B1" | bfield bootId)"
+  [ -n "$BOOT1" ] && [ "$BOOT1" != "$BOOT0" ] && break
+  sleep 10
+done
+MEM1="$(printf '%s' "$B1" | bfield memTotalKiB)"
+[ -n "$BOOT1" ] && [ "$BOOT1" != "$BOOT0" ] || fail "the instance did not boot again after the resize (boot.json: '$B1')"
+[ -n "$MEM1" ] && [ "$MEM1" -gt $(( MEM0 * 3 / 2 )) ] || fail "after the resize to $RESIZE_TYPE the instance has $MEM1 KiB (was $MEM0 KiB), want the larger size"
+[ "$(out InstancePrivateDnsName)" = "$PRIV_DNS" ] || fail "the resize changed the instance's private address ($PRIV_DNS -> $(out InstancePrivateDnsName)); AWS keeps it across a stop and start"
+curl -s -m 5 "http://$ADDR/results.json" | grep -q '"done": "yes"' || fail "after the resize the instance no longer serves its results on $ADDR"
+if command -v kubectl >/dev/null && [ -n "${KUBECONFIG:-}" ]; then
+  RR="$(kubectl -n "$CFN_NS" get virtualmachines.openinfra.dev "$VMN" -o jsonpath='{.status.powerState}/{.status.restartRequired}' 2>/dev/null || true)"
+  [ "$RR" = Running/false ] || fail "after the resize the VM reports '$RR' (powerState/restartRequired), want Running/false"
+fi
+log "  ✓ resized to $RESIZE_TYPE: UPDATE_COMPLETE after a stop and start; the instance runs a new boot with $MEM1 KiB (was $MEM0), same private address"
+
 # --- 5. the static site (CloudFront subset) and a pre-signed link --------------------------------------
 log "the static site at $SITE_URL"
 SITE_OK=""
@@ -428,7 +468,7 @@ else
   "${A[@]}" ecr delete-repository --repository-name "$REPO" --force >/dev/null 2>&1 || true
 fi
 
-MSG="unmodified lift-and-shift template deployed through the CloudFormation front door from a LAN client: CREATE_COMPLETE with Outputs; instance checks all passed over the Elastic IP (bash UserData, encrypted root, encrypted data disk formatted by its Nitro name, IMDSv2 token + role creds, s3 cp distro+v2, out-of-policy call denied, ECR pull, container default-chain creds)${ADDR_OVERRIDE:+, the address held by its own stack (released only once unassociated, kept when the app stack went)}; instance DNS names as AWS forms them${PUB_DNS:+ (public name resolves to the address)}; CloudFront site served with SPA fallback + headers; create-invalidation + wait invalidation-completed after each upload, the re-deployed content served on completion; pre-signed link opened; teardown clean${FIDELITY_N:+; fidelity summary lists $FIDELITY_N not-emulated properties}"
+MSG="unmodified lift-and-shift template deployed through the CloudFormation front door from a LAN client: CREATE_COMPLETE with Outputs; instance checks all passed over the Elastic IP (bash UserData, encrypted root, encrypted data disk formatted by its Nitro name, IMDSv2 token + role creds, s3 cp distro+v2, out-of-policy call denied, ECR pull, container default-chain creds); resized to $RESIZE_TYPE by a stack update (stopped and started, a new boot with more memory, same private address)${ADDR_OVERRIDE:+, the address held by its own stack (released only once unassociated, kept when the app stack went)}; instance DNS names as AWS forms them${PUB_DNS:+ (public name resolves to the address)}; CloudFront site served with SPA fallback + headers; create-invalidation + wait invalidation-completed after each upload, the re-deployed content served on completion; pre-signed link opened; teardown clean${FIDELITY_N:+; fidelity summary lists $FIDELITY_N not-emulated properties}"
 printf '\n✓ PASS — %s\n' "$MSG"
 evidence 0 "$MSG"
 exit 0

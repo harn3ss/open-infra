@@ -320,6 +320,8 @@ spec:
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: virtualmachine
             spec:
+              # Watched, so a change of the VM's power state reaches status.powerState promptly.
+              watch: true
               forProvider:
                 manifest:
                   apiVersion: kubevirt.io/v1
@@ -2996,6 +2998,15 @@ spec:
             {{- $privIp := "" }}
             {{- $vmiObs := index ($.observed.resources | default dict) "vmi-observe" }}
             {{- if $vmiObs }}{{- with $vmiObs.resource.status }}{{- with .atProvider }}{{- with .manifest }}{{- with .status }}{{- with .interfaces }}{{- if gt (len .) 0 }}{{- $privIp = ((index . 0).ipAddress | default "") }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
+            {{- /* The VM's power state and whether it runs an earlier spec, from the KubeVirt VirtualMachine
+                   (its printableStatus and RestartRequired condition): how a CloudFormation update that
+                   changes the instance's size stops and starts it and knows when it runs at the new size. */}}
+            {{- $powerState := "" }}{{- $restartRequired := false }}
+            {{- $kvObs := index ($.observed.resources | default dict) "virtualmachine" }}
+            {{- if $kvObs }}{{- with $kvObs.resource.status }}{{- with .atProvider }}{{- with .manifest }}{{- with .status }}
+            {{-   $powerState = (.printableStatus | default "") }}
+            {{-   range $c := (.conditions | default list) }}{{- if and (eq ($c.type | default "") "RestartRequired") (eq (printf "%v" ($c.status | default "")) "True") }}{{- $restartRequired = true }}{{- end }}{{- end }}
+            {{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
             ---
             # Observe the running instance (never managed): its address is the VM's status.ip. Absent while the
             # VM is stopped, so it never holds the claim NotReady.
@@ -3020,6 +3031,8 @@ spec:
             status:
               lanIp: {{ $lanIp | quote }}
               ip: {{ $privIp | quote }}
+              powerState: {{ $powerState | quote }}
+              restartRequired: {{ $restartRequired }}
               {{- if $rootEnc }}
               {{- /* Kept once set: the copy onto the encrypted root is done exactly once. */}}
               rootPopulated: {{ $rootPopulated }}

@@ -114,10 +114,17 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	}
 
 	var added []StackResource // to delete on rollback
+	var restarted []string    // instances this update stopped and started, by logical id: restarted again on rollback
 	rollback := func(cause error) (*StackRecord, error) {
 		inProg.stackEvent("UPDATE_ROLLBACK_IN_PROGRESS", cause.Error())
 		// Delete everything this update added (honoring Retain), then re-apply the entire prior stack.
 		_ = restorePrior(ctx, opts, ap, current.Resources, added, false)
+		// An instance restarted onto the new spec is restarted onto its prior spec, as AWS's rollback does.
+		for _, id := range restarted {
+			if prior, ok := currentByID[id]; ok {
+				_ = restartInstance(ctx, opts, ap, prior)
+			}
+		}
 		rec := *current
 		rec.Pending = nil
 		rec.Status = "UPDATE_ROLLBACK_COMPLETE"
@@ -170,6 +177,27 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 			if err := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); err != nil {
 				event(b.res, verb+"_FAILED", err.Error())
 				return rollback(fmt.Errorf("%s/%s did not become ready: %w", b.res.Kind, b.res.Name, err))
+			}
+		}
+		// An instance whose change it reads only when it starts (its InstanceType, UserData…) is stopped and
+		// started, and the update waits until it runs on the new spec (instance_restart.go).
+		if act == Modify && isStackVM(b.res) {
+			if fields := restartFields(currentByID[b.res.LogicalID].Spec, b.res.Spec); len(fields) > 0 {
+				if !opts.Wait {
+					event(b.res, verb+"_IN_PROGRESS", "the instance runs its earlier "+strings.Join(fields, ", ")+" until it is next stopped and started (this update does not wait)")
+				} else {
+					restarted = append(restarted, b.res.LogicalID)
+					inProg.Restarting = append([]string(nil), restarted...)
+					if err := writeStackRecord(ctx, ap, &inProg, opts); err != nil {
+						event(b.res, verb+"_FAILED", err.Error())
+						return rollback(fmt.Errorf("could not record the restart of %s: %w", b.res.LogicalID, err))
+					}
+					event(b.res, verb+"_IN_PROGRESS", restartReason(fields))
+					if err := restartInstance(ctx, opts, ap, b.res); err != nil {
+						event(b.res, verb+"_FAILED", err.Error())
+						return rollback(err)
+					}
+				}
 			}
 		}
 		if act == Add && b.signals != nil { // a CreationPolicy applies when the resource is created

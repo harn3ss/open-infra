@@ -156,7 +156,28 @@ Resources:
           exec >/var/log/fixture.log 2>&1
           set -u
           mkdir -p /var/www && cd /var/www
-          nohup python3 -m http.server 80 >/dev/null 2>&1 &
+          # Served by a unit, so the results outlive a stop and start (a resize); each boot also records
+          # the memory the instance has and the boot's id at /boot.json.
+          cat > /usr/local/bin/fixture-boot-info <<'SH'
+          #!/bin/sh
+          mem=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+          printf '{"memTotalKiB": %s, "bootId": "%s"}\n' "$mem" "$(cat /proc/sys/kernel/random/boot_id)" > /var/www/boot.json
+          SH
+          chmod +x /usr/local/bin/fixture-boot-info
+          cat > /etc/systemd/system/fixture-web.service <<'UNIT'
+          [Unit]
+          Description=The fixture's results and this boot's memory, on port 80
+          After=network-online.target
+          [Service]
+          WorkingDirectory=/var/www
+          ExecStartPre=/usr/local/bin/fixture-boot-info
+          ExecStart=/usr/bin/python3 -m http.server 80
+          Restart=always
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now fixture-web.service
           REGION="${AWS::Region}"
           check() { if eval "$2"; then r=ok; else r=fail; fi; echo "  \"$1\": \"$r\"," >> /var/www/r.part; echo "$1: $r"; }
           # retry <tries> <command>: the app's inputs (its config object, its image) arrive after boot.

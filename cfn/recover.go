@@ -129,8 +129,20 @@ func recoverUpdate(ctx context.Context, opts DeployOptions, ap Applier, rec *Sta
 		return rec, fmt.Errorf("could not record UPDATE_ROLLBACK_IN_PROGRESS: %w", err)
 	}
 	rerr := restorePrior(ctx, opts, ap, rec.Resources, rec.Pending, true)
+	// An instance the update was stopping and starting is started again on its prior spec (it may have been
+	// left stopped, or running the new one).
+	for _, id := range rec.Restarting {
+		for _, r := range rec.Resources {
+			if r.LogicalID == id && isStackVM(r) {
+				if err := restartInstance(ctx, opts, ap, r); err != nil && rerr == nil {
+					rerr = err
+				}
+			}
+		}
+	}
 	out := *rec // the prior stack: its resources, specs and Outputs
 	out.Pending = nil
+	out.Restarting = nil
 	out.UpdatedAt = recoverNow()
 	if rerr != nil {
 		out.Status = "UPDATE_ROLLBACK_FAILED"

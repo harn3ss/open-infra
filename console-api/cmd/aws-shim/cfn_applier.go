@@ -404,6 +404,22 @@ func (a *impersonatingApplier) GetStatus(ctx context.Context, apiVersion, kind, 
 	return st, true, nil
 }
 
+// SetRunning stops or starts a kind: VirtualMachine (cfn.PowerSetter) by its spec.running, as the console's
+// Start/Stop does, via the CALLER: an update that changes what the instance reads only when it starts (its
+// InstanceType) stops and starts it with the same authority that applied the change.
+func (a *impersonatingApplier) SetRunning(ctx context.Context, apiVersion, kind, name string, running bool) error {
+	gvr, err := a.gvrFor(apiVersion, kind)
+	if err != nil {
+		return err
+	}
+	patch := []byte(fmt.Sprintf(`{"spec":{"running":%t}}`, running))
+	if _, err := a.caller.Resource(gvr).Namespace(a.ns).Patch(ctx, name, types.MergePatchType, patch,
+		metav1.PatchOptions{FieldManager: cfnFieldManager + "-power"}); err != nil {
+		return fmt.Errorf("set %s/%s running=%t: %w", kind, name, running, err)
+	}
+	return nil
+}
+
 // GetLabels reads a live resource's metadata.labels via the CALLER (cfn.LabelReader) — how recovery checks
 // an object carries this stack's label before rolling it back, under the operation's own authority.
 func (a *impersonatingApplier) GetLabels(ctx context.Context, apiVersion, kind, name string) (map[string]string, bool, error) {

@@ -9259,6 +9259,15 @@ components:
               type: boolean
               description: 'An encrypted root disk (spec.rootDisk.encrypted) holds the OS image: set once the copy onto it
                 has completed, and kept, so the image is never copied over the disk again.'
+            powerState:
+              type: string
+              description: 'The VM''s state as KubeVirt reports it (its printableStatus): Running, Stopped, Starting, Stopping,
+                Provisioning, or an error state such as ErrorUnschedulable. Empty until first reported.'
+            restartRequired:
+              type: boolean
+              description: "The running VM was started from an earlier spec: a change it reads only when it starts (its CPU\
+                \ or memory, user data, disks, firmware\u2026) is not in effect yet. Stopping and starting the VM (spec.running\
+                \ false, then true) applies it."
             lanIp:
               type: string
               description: "The VM's LAN IP \u2014 the MetalLB LoadBalancer address carrying its access port (SSH 22 / RDP\
