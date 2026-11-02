@@ -59,7 +59,8 @@ type s3Handler struct {
 
 // s3op describes a decoded S3 request: the operation kind and the target bucket/key.
 type s3op struct {
-	// kind: "list-buckets" | "head-bucket" | "list-objects" | "get" | "head" | "put" | "delete", or a bucket
+	// kind: "list-buckets" | "head-bucket" | "list-objects" | "get" | "head" | "put" | "delete",
+	// "delete-objects" (DeleteObjects, s3deleteobjects.go), or a bucket
 	// operation: "create-bucket", "delete-bucket", "get-/put-bucket-versioning", "list-object-versions",
 	// "get-/put-/delete-bucket-tagging", "get-bucket-location", "get-bucket-encryption" (s3bucket.go).
 	kind      string
@@ -89,8 +90,9 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		return
 	}
 
-	// 2. Authorize.
-	if !h.allowed(r, claims, op) {
+	// 2. Authorize. DeleteObjects is the exception: as on AWS the batch is not authorized as a whole, each
+	// key is (in the handler), and a key the caller may not delete is that key's AccessDenied.
+	if op.kind != "delete-objects" && !h.allowed(r, claims, op) {
 		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
 		return
 	}
@@ -126,6 +128,8 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		h.putObject(w, r, op, requestID)
 	case "delete":
 		h.deleteObject(w, r, op, requestID)
+	case "delete-objects":
+		h.deleteObjects(w, r, claims, op, requestID)
 	case "create-bucket":
 		h.createBucket(w, r, claims, op, requestID)
 	case "delete-bucket":

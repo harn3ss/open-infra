@@ -59,6 +59,7 @@ var s3Errors = map[string]s3ErrorInfo{
 	"EntityTooLarge":            {http.StatusBadRequest, "Your proposed upload exceeds the maximum allowed object size."},
 	"InvalidArgument":           {http.StatusBadRequest, "Invalid Argument"},
 	"BadDigest":                 {http.StatusBadRequest, "The Content-MD5 you specified did not match what we received."},
+	"InvalidDigest":             {http.StatusBadRequest, "The Content-MD5 you specified is not valid."},
 	"XAmzContentSHA256Mismatch": {http.StatusBadRequest, "The provided 'x-amz-content-sha256' header does not match what was computed."},
 	"PreconditionFailed":        {http.StatusPreconditionFailed, "At least one of the pre-conditions you specified did not hold"},
 	"InvalidRange":              {http.StatusRequestedRangeNotSatisfiable, "The requested range is not satisfiable"},

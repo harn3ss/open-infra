@@ -51,7 +51,9 @@ func TestS3Decode_Subresources(t *testing.T) {
 		{"GET", "/b?acl", false, "", "", false},
 		{"GET", "/b?policy", false, "", "", false},
 		{"PUT", "/b?lifecycle", false, "", "", false},
-		{"POST", "/b?delete", false, "", "", false},
+		// DeleteObjects is a POST ?delete on the bucket; a GET or PUT ?delete is not an operation
+		{"GET", "/b?delete", false, "", "", false},
+		{"PUT", "/b?delete", false, "", "", false},
 		{"PUT", "/b/k?tagging", false, "", "", false},
 		{"PUT", "/b/k?retention", false, "", "", false},
 		{"GET", "/?acl", false, "", "", false},

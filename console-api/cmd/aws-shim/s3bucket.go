@@ -107,6 +107,8 @@ func decodeTarget(method, bucket, key string, q url.Values) (s3op, bool) {
 			return s3op{kind: "get-bucket-ownership-controls", bucket: bucket}, true
 		case sub == "uploads" && method == http.MethodGet:
 			return s3op{kind: "list-multipart-uploads", bucket: bucket}, true
+		case sub == "delete" && method == http.MethodPost: // DeleteObjects: the keys are in the body
+			return s3op{kind: "delete-objects", bucket: bucket, write: true}, true
 		}
 		return s3op{}, false
 	}
@@ -146,6 +148,10 @@ func (op s3op) action() string {
 		if op.versionID != "" {
 			return "s3:DeleteObjectVersion"
 		}
+	case "delete-objects":
+		// AWS has no s3:DeleteObjects: DeleteObjects is authorized key by key, each as s3:DeleteObject (or
+		// s3:DeleteObjectVersion), by the handler (s3deleteobjects.go). This is only the action it is known by.
+		return "s3:DeleteObject"
 	case "get-bucket-versioning":
 		return "s3:GetBucketVersioning"
 	case "put-bucket-versioning":

@@ -15,6 +15,9 @@
 #   - a 20 MiB `aws s3 cp` (a multipart upload: the CLI's threshold is 8 MiB) round-trips byte-identical,
 #     and so do server-side copies above and below that threshold (UploadPartCopy, CopyObject); an
 #     upload can be listed and aborted
+#   - DeleteObjects deletes the keys it names (Quiet lists none of them), and a key the caller may not
+#     delete is that key's AccessDenied error while the request still answers 200; `aws s3 rm --recursive`
+#     empties a prefix
 #   - CreateBucket (`aws s3 mb`) makes a bucket an immediate put/get works in, with the platform's default
 #     encryption when that is on; re-creating your own bucket answers 200 (us-east-1); `aws s3 rb` removes
 #     it and its kind: Bucket claim; a client configured for another region creates one too (its region is
@@ -234,6 +237,40 @@ awsq "$RAK" "$RSK" get-object --bucket "$BUCKET" --key probe.txt "$WORK/reader.t
 cmp -s "$WORK/in.txt" "$WORK/reader.txt" || fail "reader read returned wrong bytes"
 log "  ✓ reader read succeeded"
 
+# --- 6b. DeleteObjects (batch delete): each key authorized, Quiet honored --------------------------
+log "DeleteObjects: delete-objects of two keys, then a Quiet one, then a reader's (per-key AccessDenied)"
+for k in del/a.txt del/b.txt del/c.txt del/r.txt; do
+  awsq "$WAK" "$WSK" put-object --bucket "$BUCKET" --key "$k" --body "$WORK/in.txt" >/dev/null || fail "put-object ${k} failed"
+done
+N="$(awsq "$WAK" "$WSK" delete-objects --bucket "$BUCKET" --delete '{"Objects":[{"Key":"del/a.txt"},{"Key":"del/b.txt"}]}' \
+  --query 'join(`,`, [to_string(length(Deleted || `[]`)), to_string(length(Errors || `[]`))])' --output text 2>&1 || true)"
+[ "$N" = "2,0" ] || fail "delete-objects of two keys: want 2 deleted and no errors, got: $N"
+for k in del/a.txt del/b.txt; do
+  if awsq "$WAK" "$WSK" head-object --bucket "$BUCKET" --key "$k" >/dev/null 2>&1; then
+    fail "${k} still exists after delete-objects listed it as deleted"
+  fi
+done
+N="$(awsq "$WAK" "$WSK" delete-objects --bucket "$BUCKET" --delete '{"Objects":[{"Key":"del/c.txt"}],"Quiet":true}' \
+  --query 'length(Deleted || `[]`)' --output text 2>&1 || true)"
+[ "$N" = 0 ] || fail "a Quiet delete-objects must list no deleted keys, got: $N"
+if awsq "$WAK" "$WSK" head-object --bucket "$BUCKET" --key del/c.txt >/dev/null 2>&1; then
+  fail "del/c.txt still exists after a Quiet delete-objects"
+fi
+CODE="$(awsq "$RAK" "$RSK" delete-objects --bucket "$BUCKET" --delete '{"Objects":[{"Key":"del/r.txt"}]}' \
+  --query 'Errors[0].Code' --output text 2>&1 || true)"
+[ "$CODE" = AccessDenied ] || fail "a reader's delete-objects: want the key's AccessDenied error, got: $CODE"
+awsq "$WAK" "$WSK" head-object --bucket "$BUCKET" --key del/r.txt >/dev/null 2>&1 \
+  || fail "a reader's denied delete-objects deleted the key"
+log "  ✓ two keys deleted; Quiet lists none; a reader's key is its AccessDenied and stays"
+log "aws s3 rm --recursive removes a prefix"
+for k in rm/1.txt rm/2.txt rm/3.txt; do
+  awsq "$WAK" "$WSK" put-object --bucket "$BUCKET" --key "$k" --body "$WORK/in.txt" >/dev/null || fail "put-object ${k} failed"
+done
+awss3 "$WAK" "$WSK" rm "s3://${BUCKET}/rm/" --recursive >"$WORK/rm.out" 2>&1 || fail "aws s3 rm --recursive failed: $(cat "$WORK/rm.out")"
+LEFT="$(awsq "$WAK" "$WSK" list-objects-v2 --bucket "$BUCKET" --prefix rm/ --query 'length(Contents || `[]`)' --output text 2>&1 || true)"
+[ "$LEFT" = 0 ] || fail "aws s3 rm --recursive left keys under rm/: $LEFT"
+log "  ✓ the prefix is empty"
+
 # --- 7. Pre-signed GET URL (query-string SigV4): the browser-download path --------------------
 # The app hands pre-signed GetObject URLs to the user's browser — a plain HTTP client with NO AWS
 # credentials. So curl must fetch the object from the URL alone, and an EXPIRED URL must be refused.
@@ -315,9 +352,9 @@ REGION=eu-west-1 awss3 "$WAK" "$WSK" rb "s3://${MB_BUCKET}-eu" >"$WORK/rbeu.out"
 log "  ✓ created from an eu-west-1 client; a mismatched constraint is IllegalLocationConstraintException"
 
 # --- cleanup the object we wrote --------------------------------------------------------------
-for k in probe.txt chunk.txt big.bin big-copy.bin probe-copy.txt; do
+for k in probe.txt chunk.txt big.bin big-copy.bin probe-copy.txt del/r.txt; do
   awsq "$WAK" "$WSK" delete-object --bucket "$BUCKET" --key "$k" >/dev/null 2>&1 || true
 done
 
 echo
-echo "✓ PASS — aws-shim S3 surface is byte-faithful (multipart and copies included), serves pre-signed URLs, creates and removes buckets, and enforces auth + the write boundary."
+echo "✓ PASS — aws-shim S3 surface is byte-faithful (multipart and copies included), serves pre-signed URLs, batch-deletes key by key, creates and removes buckets, and enforces auth + the write boundary."

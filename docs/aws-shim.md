@@ -258,6 +258,16 @@ listing uploads `s3:ListBucketMultipartUploads`, and a copy also needs `s3:GetOb
 client checksums (`x-amz-checksum-*`) are not stored, as for `PutObject`. `ListMultipartUploads` lists an
 upload under its object's exact key as the prefix (MinIO's behavior).
 
+**`DeleteObjects` (batch delete).** Up to 1000 keys (with or without a `VersionId`) in one request, as on
+S3: the request is not authorized as a whole (there is no `s3:DeleteObjects` action), each key is — as
+`s3:DeleteObject`, or `s3:DeleteObjectVersion` for an entry naming a version — and a key the caller may not
+delete comes back as that key's `AccessDenied` error while the others are deleted (the answer is a `200`
+either way). A key that does not exist is reported deleted; a versionless delete in a versioned bucket
+reports its delete marker (`DeleteMarker`, `DeleteMarkerVersionId`); `Quiet` leaves the deleted keys out
+and still lists every error. The document's `Content-MD5`, or an `x-amz-checksum-crc32` / `-crc32c` /
+`-sha1` / `-sha256` header, is checked (`BadDigest` on a mismatch); more than 1000 keys, none, or an empty
+key is `MalformedXML`.
+
 **Bucket configuration and versions.** `GetBucketVersioning` / `PutBucketVersioning`, `ListObjectVersions`,
 `GetObject`/`HeadObject`/`DeleteObject` with `versionId`, and `PutObject`'s `x-amz-version-id` behave as
 on S3, so a bucket created with versioning (`kind: Bucket` `versioning: true`, or CloudFormation
@@ -266,7 +276,7 @@ on S3, so a bucket created with versioning (`kind: Bucket` `versioning: true`, o
 us-east-1) and `GetBucketOwnershipControls` (`BucketOwnerEnforced`) are served too. Each is authorized as
 its AWS action (`s3:GetBucketVersioning`, `s3:ListBucketVersions`, `s3:GetObjectVersion`,
 `s3:PutBucketTagging` …). Any other sub-resource (`?acl`, `?policy`, `?lifecycle`, object tagging
-writes, `DeleteObjects` …) is `NotImplemented` rather than being answered as a listing or an object read.
+writes …) is `NotImplemented` rather than being answered as a listing or an object read.
 
 **`CreateBucket`.** `aws s3 mb` / `CreateBucket` makes a `kind: Bucket` claim, so a bucket made through the
 API is set up, given the platform's default encryption, reaped and deleted exactly like a stack's. The
@@ -474,8 +484,8 @@ Native/neutral model first; AWS door second. See [open-appsync/README.md](../ope
 - **Single MinIO identity.** The shim acts to MinIO as one scoped, non-root service account.
   Per-principal MinIO users with per-bucket policies are the graduation that pairs with per-bucket
   authorization.
-- **Not served:** object ACLs, object tagging writes, `DeleteObjects` (batch delete), CORS, and bucket
-  policy and lifecycle through the API (both are set on the `kind: Bucket`).
+- **Not served:** object ACLs, object tagging writes, CORS, and bucket policy and lifecycle through the
+  API (both are set on the `kind: Bucket`).
 
 Each new operation or service graduates the same gated way the chaos-oracle adapters do: built →
 exercised → proven by the probe → counted.
