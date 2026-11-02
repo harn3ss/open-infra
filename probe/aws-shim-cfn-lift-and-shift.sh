@@ -10,8 +10,10 @@
 #   2. the EC2 instance boots unmodified and its own checks pass (served by the instance at
 #      http://<Elastic IP>/results.json): #!/bin/bash UserData runs, the encrypted data disk mounts by its
 #      Nitro name, IMDSv2 requires a token and serves the role's credentials, `aws s3 cp` works with the
-#      distro CLI and aws-cli v2, a call outside the role's policy is denied, an image pulls from the
-#      registry, and a container in the guest gets the role's credentials through the default chain;
+#      distro CLI and aws-cli v2, a call outside the role's policy is denied, the role sends email through
+#      SES (SendEmail and SendRawEmail, as the sender identity its policy names), an image pulls from the
+#      registry, and a container in the guest gets the role's credentials through the default chain; with
+#      KUBECONFIG set and the mail relay in capture mode (mail.capture), both messages are in the sink;
 #   3. the Elastic IP is a reachable LAN address; the CloudFront site serves its origin (SPA fallback +
 #      the response-headers policy); the deploy flow's last step works — after the site upload,
 #      `aws cloudfront create-invalidation` on the distribution in the Outputs and `aws cloudfront wait
@@ -209,10 +211,29 @@ done
 printf '%s' "$R" | grep -q '"done": "yes"' || fail "the instance did not finish its checks over the Elastic IP $ADDR (last: $(printf '%s' "$R" | tr '\n' ' ' | head -c 400))"
 printf '%s\n' "$R" | sed 's/^/    /'
 FAILED="$(printf '%s' "$R" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(" ".join(k for k,v in d.items() if v=="fail"))')"
-# All 9 pass, s3_cp_distro_cli (the distro aws CLI v1) included: v1 predates AWS_ENDPOINT_URL, so the
-# guest's endpoint plugin applies it (docs/virtual-machines.md#aws-endpoints-inside-the-guest).
+# All 11 pass, s3_cp_distro_cli (the distro aws CLI v1) included: v1 predates AWS_ENDPOINT_URL, so the
+# guest's endpoint plugin applies it (docs/virtual-machines.md#aws-endpoints-inside-the-guest). The SES
+# checks need the mail component (SES is not fronted without a relay).
 [ -z "$FAILED" ] || fail "instance checks failed: $FAILED"
+for k in ses_send_email ses_send_raw_email; do
+  printf '%s' "$R" | grep -q "\"$k\": \"ok\"" || fail "the instance did not report its $k check"
+done
 log "  ✓ every instance check passed (served over the Elastic IP $ADDR)"
+
+# The two messages the instance sent, in the capturing relay (a test cluster's mail.capture sink). Read
+# from inside the sink's pod: its API listens on loopback only (platform/mail/relay-capture.yaml).
+if command -v kubectl >/dev/null && [ -n "${KUBECONFIG:-}" ] \
+   && [ "$(kubectl -n mail get deploy smtp-relay -o jsonpath='{.metadata.labels.openinfra\.dev/mail-capture}' 2>/dev/null)" = true ]; then
+  SUBJECTS="$(kubectl -n mail exec deploy/smtp-relay -- wget -qO- 'http://127.0.0.1:8025/api/v1/messages?limit=500' 2>/dev/null \
+    | python3 -c 'import json,sys; print("\n".join(m.get("Subject","") for m in json.load(sys.stdin).get("messages",[])))' 2>/dev/null || true)"
+  for kind in send-email send-raw-email; do
+    printf '%s\n' "$SUBJECTS" | grep -qx "lift-and-shift $STACK $kind" \
+      || fail "the capturing relay has no message 'lift-and-shift $STACK $kind' (the instance's SES $kind)"
+  done
+  log "  ✓ both SES messages (SendEmail, SendRawEmail) reached the capturing relay"
+else
+  log "  (with KUBECONFIG set and mail.capture on, the probe also finds the instance's SES messages in the sink)"
+fi
 
 # --- 5. the static site (CloudFront subset) and a pre-signed link --------------------------------------
 log "the static site at $SITE_URL"

@@ -27,6 +27,16 @@ Parameters:
   AppImageTag:
     Type: String
     Default: app
+  SesSenderAddress:
+    Type: String
+    Default: fixture-sender@example.test
+    Description: >-
+      The address the instance sends email as through SES. On AWS it must be a verified SES identity
+      (and, while the account is in the SES sandbox, so must the recipient).
+  SesRecipientAddress:
+    Type: String
+    Default: fixture-recipient@example.test
+    Description: Where the instance's test email goes.
 
 Conditions:
   HasZone: !Not [!Equals [!Ref SiteHostedZoneId, ""]]
@@ -87,6 +97,9 @@ Resources:
               - Effect: Allow
                 Action: [ecr:DescribeRepositories, ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
                 Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${AppRepositoryName}"
+              - Effect: Allow
+                Action: [ses:SendEmail, ses:SendRawEmail]
+                Resource: !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesSenderAddress}"
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -156,7 +169,26 @@ Resources:
           check denied_outside_policy "/usr/local/bin/aws --region $REGION s3 ls s3://${SiteBucket} 2>&1 | grep -q 'An error occurred (AccessDenied) when calling the ListObjectsV2 operation'"
           publish no
 
-          # 6. An image pulls from the registry (pushed after the stack creates the repository).
+          # 6. Email through SES with the instance role, as the identity its policy names: SendEmail, then
+          #    SendRawEmail with a MIME message built here.
+          #    (Functions, so check/retry's eval keeps the message's spaces intact.)
+          send_email() {
+            /usr/local/bin/aws --region $REGION ses send-email --from '${SesSenderAddress}' \
+              --destination 'ToAddresses=${SesRecipientAddress}' --query MessageId --output text \
+              --message 'Subject={Data=lift-and-shift ${AWS::StackName} send-email},Body={Text={Data=sent by the instance role}}'
+          }
+          printf 'From: %s\r\nTo: %s\r\nSubject: lift-and-shift %s send-raw-email\r\n\r\nsent raw by the instance role\r\n' \
+            '${SesSenderAddress}' '${SesRecipientAddress}' '${AWS::StackName}' > /tmp/raw.eml
+          python3 -c 'import json; json.dump({"Data": open("/tmp/raw.eml", newline="").read()}, open("/tmp/raw.json", "w"))'
+          send_raw_email() {
+            /usr/local/bin/aws --region $REGION ses send-raw-email --cli-binary-format raw-in-base64-out \
+              --raw-message file:///tmp/raw.json --query MessageId --output text
+          }
+          check ses_send_email "retry 6 send_email"
+          check ses_send_raw_email "retry 6 send_raw_email"
+          publish no
+
+          # 7. An image pulls from the registry (pushed after the stack creates the repository).
           URI=$(/usr/local/bin/aws --region $REGION ecr describe-repositories --repository-names ${AppRepositoryName} --query 'repositories[0].repositoryUri' --output text)
           REG=$(echo "$URI" | cut -d/ -f1)
           for i in $(seq 1 90); do
@@ -165,7 +197,7 @@ Resources:
           done
           check ecr_pull "docker image inspect '$URI:${AppImageTag}' >/dev/null"
 
-          # 7. A container in the guest gets the role's credentials through the default chain (IMDS, hop limit 2).
+          # 8. A container in the guest gets the role's credentials through the default chain (IMDS, hop limit 2).
           check container_default_chain "docker run --rm -e AWS_REGION=$REGION '$URI:${AppImageTag}' s3 cp s3://${AppBucket}/hello.txt - | grep -q hello"
           publish yes
 

@@ -140,12 +140,11 @@ services:
     experimental: true
     probes: [appsync]
 
-  # --- written but gated OFF (no probe yet) ---
   - name: SES
-    cell: "SES v1 `SendEmail`/`SendRawEmail` over the in-cluster SMTP relay (`kind: EmailSender`)"
-    tier: gated
-    note: "OFF until the operator enables the `mail` component and sets `SES_SMTP_RELAY`; not yet probe-proven, so it counts as not-fronted on the probe bar."
-    probes: []
+    cell: "v1 `SendEmail`/`SendRawEmail` → the platform SMTP relay (the `mail` component; a capturing sink on test clusters)"
+    tier: proven
+    note: "Served while the `mail` component's relay exists; with it off, SES answers as not fronted."
+    probes: [ses]
 
   # --- honest 501 (no handler) ---
   - name: Route 53
