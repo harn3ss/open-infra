@@ -2902,12 +2902,36 @@ spec:
             {{- $lanObs := index ($.observed.resources | default dict) "vm-lan" }}
             {{- if $lanObs }}{{- with $lanObs.resource.status }}{{- with .atProvider }}{{- with .manifest.status }}{{- with .loadBalancer }}{{- with .ingress }}{{- if gt (len .) 0 }}{{- $lanIp = ((index . 0).ip | default "") }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
             {{- end }}
+            {{- /* The VM's private IP: the running instance's first interface address (the pod-network or
+                   subnet address — an EC2 instance's PrivateIp), read from a watched observation of the
+                   KubeVirt VirtualMachineInstance, which exists only while the VM runs. Empty otherwise. */}}
+            {{- $privIp := "" }}
+            {{- $vmiObs := index ($.observed.resources | default dict) "vmi-observe" }}
+            {{- if $vmiObs }}{{- with $vmiObs.resource.status }}{{- with .atProvider }}{{- with .manifest }}{{- with .status }}{{- with .interfaces }}{{- if gt (len .) 0 }}{{- $privIp = ((index . 0).ipAddress | default "") }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
             ---
-            # --- Composite status: the VM's LAN IP (see above). ---
+            # Observe the running instance (never managed): its address is the VM's status.ip. Absent while the
+            # VM is stopped, so it never holds the claim NotReady.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: vmi-observe
+                gotemplating.fn.crossplane.io/ready: "True"
+            spec:
+              managementPolicies: ["Observe"]
+              watch: true
+              forProvider:
+                manifest:
+                  apiVersion: kubevirt.io/v1
+                  kind: VirtualMachineInstance
+                  metadata: { name: {{ $name }}, namespace: {{ $ns }} }
+            ---
+            # --- Composite status: the VM's LAN IP (see above) and private IP. ---
             apiVersion: openinfra.dev/v1
             kind: XVirtualMachine
             status:
               lanIp: {{ $lanIp | quote }}
+              ip: {{ $privIp | quote }}
               {{- if $rootEnc }}
               {{- /* Kept once set: the copy onto the encrypted root is done exactly once. */}}
               rootPopulated: {{ $rootPopulated }}

@@ -295,3 +295,31 @@ func TestVM_EncryptedRoot_ProviderCanRunAndSeeTheCopy(t *testing.T) {
 		}
 	}
 }
+
+// The VM's private IP (an EC2 instance's PrivateIp, and its PrivateDnsName) is the running instance's first
+// interface address: the composition observes the VirtualMachineInstance (watched, never managed, never
+// blocking readiness) and reports it as status.ip.
+func TestVM_PrivateIPFromTheRunningInstance(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	ctx := vmCtx("ubuntu-24.04", "")
+	none := render(t, tmpl, ctx)
+	if !strings.Contains(none, "composition-resource-name: vmi-observe") || !strings.Contains(none, `ip: ""`) {
+		t.Fatalf("a VM must observe its instance and report an empty status.ip until it runs:\n%s", grepCtx(none, "vmi-observe"))
+	}
+	i := strings.Index(none, "composition-resource-name: vmi-observe")
+	blk := none[i : i+600]
+	for _, want := range []string{`managementPolicies: ["Observe"]`, "watch: true", "kind: VirtualMachineInstance", `gotemplating.fn.crossplane.io/ready: "True"`} {
+		if !strings.Contains(none[i-200:i+600], want) {
+			t.Errorf("the instance observation lacks %q:\n%s", want, blk)
+		}
+	}
+	obs := ctx["observed"].(map[string]any)
+	obs["resources"] = map[string]any{"vmi-observe": map[string]any{"resource": map[string]any{"status": map[string]any{
+		"atProvider": map[string]any{"manifest": map[string]any{"status": map[string]any{
+			"interfaces": []any{map[string]any{"ipAddress": "10.16.4.7", "name": "default"}},
+		}}},
+	}}}}
+	if got := render(t, tmpl, ctx); !strings.Contains(got, `ip: "10.16.4.7"`) {
+		t.Fatalf("status.ip must be the instance's first interface address:\n%s", grepCtx(got, "ip:"))
+	}
+}
