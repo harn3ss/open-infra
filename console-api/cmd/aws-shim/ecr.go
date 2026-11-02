@@ -404,6 +404,7 @@ func (h *ecrHandler) describeRepositories(ctx context.Context, w http.ResponseWr
 			repos = append(repos, h.repoObject(rec))
 		}
 	}
+	h.audit(ctx, "DescribeRepositories", strings.Join(names, ","), "allow", "")
 	writeECRJSON(w, requestID, map[string]any{"repositories": repos})
 }
 
