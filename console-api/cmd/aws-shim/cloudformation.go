@@ -429,6 +429,24 @@ func (h *cfnDoorway) templateBody(r *http.Request) (string, error) {
 	return h.withNestedFlattened(r, body)
 }
 
+// updateTemplate is an update's template (UpdateStack, CreateChangeSet): the request's own, or — with
+// UsePreviousTemplate=true, as AWS takes it — the template the stack was last deployed with.
+func (h *cfnDoorway) updateTemplate(r *http.Request, name string, current *cfn.StackRecord, found bool) (string, error) {
+	if !strings.EqualFold(r.PostFormValue("UsePreviousTemplate"), "true") {
+		return h.templateBody(r)
+	}
+	if strings.TrimSpace(r.PostFormValue("TemplateBody")) != "" || strings.TrimSpace(r.PostFormValue("TemplateURL")) != "" {
+		return "", fmt.Errorf("You cannot specify both usePreviousTemplate and Template Body/Template URL.")
+	}
+	if !found || current == nil {
+		return "", fmt.Errorf("Stack [%s] does not exist.", name)
+	}
+	if strings.TrimSpace(current.Template) == "" {
+		return "", fmt.Errorf("Stack [%s] has no template to reuse; send TemplateBody or TemplateURL.", name)
+	}
+	return current.Template, nil
+}
+
 func parseCFNParams(r *http.Request) map[string]string {
 	out, _ := parseCFNParamsPrev(r)
 	return out
@@ -663,14 +681,14 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 
 func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
 	name := r.PostFormValue("StackName")
-	body, err := h.templateBody(r)
+	ctx := r.Context()
+	current, found, _ := ap.GetStack(ctx, name)
+	body, err := h.updateTemplate(r, name, current, found)
 	if err != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, err.Error(), cfnXMLNamespace)
 		return
 	}
 	params, prevKeys := parseCFNParamsPrev(r)
-	ctx := r.Context()
-	current, found, _ := ap.GetStack(ctx, name)
 	params = withPreviousValues(params, prevKeys, current, h.previousNoEcho(ctx, name))
 	if !found {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist.", cfnXMLNamespace)
@@ -974,18 +992,17 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 			"StackName and ChangeSetName must start with a letter and contain only letters, digits and hyphens.", cfnXMLNamespace)
 		return
 	}
-	body, err := h.templateBody(r)
+	ctx := r.Context()
+	prior, priorFound, _ := ap.GetStack(ctx, stack)
+	body, err := h.updateTemplate(r, stack, prior, priorFound)
 	if err != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, err.Error(), cfnXMLNamespace)
 		return
 	}
 	params, prevKeys := parseCFNParamsPrev(r)
-	ctx := r.Context()
 	ex := h.exportsFor(ctx, stack)
-	if len(prevKeys) > 0 {
-		if cur, ok, _ := ap.GetStack(ctx, stack); ok {
-			params = withPreviousValues(params, prevKeys, cur, h.previousNoEcho(ctx, stack))
-		}
+	if len(prevKeys) > 0 && priorFound {
+		params = withPreviousValues(params, prevKeys, prior, h.previousNoEcho(ctx, stack))
 	}
 
 	// BuildChangeSet computes the diff against the current stack record and APPLIES NOTHING.

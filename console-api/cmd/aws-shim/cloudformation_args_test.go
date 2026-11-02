@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/harn3ss/open-infra/cfn"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -103,5 +104,35 @@ func TestTemplateParametersXML(t *testing.T) {
 	}
 	if templateParametersXML([]byte("Resources: {X: {Type: AWS::S3::Bucket}}"), false) != "<Parameters/>" {
 		t.Errorf("a template without Parameters renders an empty list")
+	}
+}
+
+// `aws cloudformation update-stack --use-previous-template` updates a stack with the template it was last
+// deployed with (a parameter-only change, such as a new InstanceType); sending a template as well is
+// refused, as AWS refuses it, and so is a stack that does not exist.
+func TestUpdateTemplate_UsePreviousTemplate(t *testing.T) {
+	h := &cfnDoorway{}
+	form := func(v url.Values) *http.Request {
+		r := httptest.NewRequest("POST", "/", strings.NewReader(v.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		_ = r.ParseForm()
+		return r
+	}
+	cur := &cfn.StackRecord{Name: "web", Template: "Resources:\n  X: { Type: AWS::S3::Bucket }\n"}
+	got, err := h.updateTemplate(form(url.Values{"UsePreviousTemplate": {"true"}}), "web", cur, true)
+	if err != nil || got != cur.Template {
+		t.Fatalf("UsePreviousTemplate: got %q, %v; want the stack's template", got, err)
+	}
+	if _, err := h.updateTemplate(form(url.Values{"UsePreviousTemplate": {"true"}, "TemplateBody": {"Resources: {}"}}), "web", cur, true); err == nil ||
+		!strings.Contains(err.Error(), "cannot specify both") {
+		t.Errorf("UsePreviousTemplate with a TemplateBody must be refused, got %v", err)
+	}
+	if _, err := h.updateTemplate(form(url.Values{"UsePreviousTemplate": {"true"}}), "gone", nil, false); err == nil ||
+		!strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("UsePreviousTemplate on a missing stack must say it does not exist, got %v", err)
+	}
+	if _, err := h.updateTemplate(form(url.Values{}), "web", cur, true); err == nil ||
+		!strings.Contains(err.Error(), "TemplateBody or TemplateURL is required") {
+		t.Errorf("without UsePreviousTemplate a template is still required, got %v", err)
 	}
 }
