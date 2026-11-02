@@ -117,18 +117,18 @@ func TestBucketReaper_Credentials(t *testing.T) {
 		e.creds = []string{
 			"app-dead\tBucket/team-a/dead\t" + live,      // claim deleted → reaped
 			"app-live\tBucket/team-a/live\t" + live,      // same instance → kept
-			"app-again\tBucket/team-a/again\t" + earlier, // an earlier instance → reaped
+			"app-again\tBucket/team-a/again\t" + earlier, // an earlier instance, re-created → kept (its setup rotates them)
 			"app-odd\tWidget/team-a/thing\t" + live,      // unknown kind → kept
 			"app-noinst\tStaticSite/team-a/live-site\t",  // claim gone, no instance → reaped
 			"app-unmarked\t\t",                           // no owner yet → kept
 		}
 		_, acts := e.run(t, sh)
-		for _, want := range []string{"user-rm app-dead", "delete-secret app-dead", "user-rm app-again", "delete-secret app-again", "user-rm app-noinst"} {
+		for _, want := range []string{"user-rm app-dead", "delete-secret app-dead", "user-rm app-noinst"} {
 			if !strings.Contains(acts, want+"\n") {
 				t.Errorf("%s: missing %q in actions:\n%s", shellName(sh), want, acts)
 			}
 		}
-		for _, keep := range []string{"app-live", "app-odd", "app-unmarked"} {
+		for _, keep := range []string{"app-live", "app-again", "app-odd", "app-unmarked"} {
 			if strings.Contains(acts, keep+"\n") {
 				t.Errorf("%s: %s should be kept; actions:\n%s", shellName(sh), keep, acts)
 			}
@@ -155,6 +155,7 @@ func TestBucketReaper_Buckets(t *testing.T) {
 		e := newReaperEnv(t)
 		e.claim(t, "buckets", "team-a", "live", "live-x1", live)
 		e.claim(t, "buckets", "team-a", "legacy", "legacy-x1", live)
+		e.claim(t, "buckets", "team-a", "again", "again-x2", live) // re-created: a newer composite
 		rec := func(b, owner, inst, orphan string) string {
 			return "bucket-owner-" + b + "\t" + b64(owner) + "\t" + b64(inst) + "\t" + orphan
 		}
@@ -168,8 +169,11 @@ func TestBucketReaper_Buckets(t *testing.T) {
 			rec("velero", "Bucket/team-a/gone5", live, ""),   // platform bucket → never
 			"bucket-owner-nsonly\t\t\t",                      // legacy namespace-only record → skipped
 			rec("orph", "Bucket/team-a/gone6", live, "true"), // already labelled → not relabelled
+			// an earlier instance of a re-created claim: left to the new instance's setup, which takes the
+			// empty bucket over (a sweep here would delete what it has just adopted)
+			rec("again", "Bucket/team-a/again", earlier, ""),
 		}
-		for _, b := range []string{"empty", "full", "listfail", "live", "legacy", "velero", "orph"} {
+		for _, b := range []string{"empty", "full", "listfail", "live", "legacy", "velero", "orph", "again"} {
 			writeFileMode(t, filepath.Join(e.dir, "buckets", b), "2026-09-01T00:00:00+00:00\n", 0o644)
 		}
 		writeFileMode(t, filepath.Join(e.dir, "objects", "full"), "k", 0o644)
@@ -186,7 +190,7 @@ func TestBucketReaper_Buckets(t *testing.T) {
 				t.Errorf("%s: missing %q in actions:\n%s", shellName(sh), want, acts)
 			}
 		}
-		for _, never := range []string{"rb full", "bucket-owner-full\n", "listfail", "bucket-owner-live", "velero", "nsonly", "bucket-owner-orph", "rb orph"} {
+		for _, never := range []string{"rb full", "bucket-owner-full\n", "listfail", "bucket-owner-live", "velero", "nsonly", "bucket-owner-orph", "rb orph", "rb again", "bucket-owner-again"} {
 			if strings.Contains(acts, never) {
 				t.Errorf("%s: unexpected action matching %q:\n%s", shellName(sh), never, acts)
 			}

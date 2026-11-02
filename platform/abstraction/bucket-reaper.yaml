@@ -3,7 +3,9 @@
 # garbage-collect: its MinIO user, that user's platform-side credentials Secret, and — for the claim that
 # created it — the bucket and its owner record. Crossplane has no pre-delete hook for a composed Job, so
 # this reaper finds those leftovers by the claim INSTANCE they name (Kind/namespace/name plus the
-# composite's creation time, recorded by bucket-ownership.sh) and removes them once that instance is gone:
+# composite's creation time, recorded by bucket-ownership.sh) and removes them once that claim is gone
+# (a claim created again under the same name is handled by its own setup, which rotates the earlier
+# credentials and takes over or refuses the earlier bucket):
 #   - a deleted claim's MinIO user + policy + credentials Secret: always removed (a deleted claim's key
 #     must stop working);
 #   - a deleted claim's bucket: removed with its owner record when EMPTY (no objects, versions or delete
@@ -133,9 +135,11 @@ spec:
                       BatchTransform) echo batchtransforms ;; ModelMonitor) echo modelmonitors ;; *) echo "" ;;
                     esac
                   }
-                  # gone <Kind/ns/name> <instance>: true only when that claim instance is certainly gone —
-                  # the claim is NotFound, or its composite now has a different creation time (the claim was
-                  # deleted and created again). Any doubt (an unknown kind, another error) is "alive".
+                  # gone <Kind/ns/name>: true only when that claim is certainly gone — the claim is NotFound,
+                  # or the composite it names is. Any doubt (an unknown kind, another error) is "alive". A
+                  # claim deleted and created again under the same name is NOT gone: its new instance's setup
+                  # rotates the earlier credentials and takes over (or refuses) the earlier bucket itself
+                  # (bucket-ownership.sh), so a sweep never deletes what a re-created claim has just adopted.
                   gone() {
                     kind=${1%%/*}; rest=${1#*/}; ns=${rest%%/*}; name=${rest#*/}
                     pl=$(plural "$kind")
@@ -144,12 +148,11 @@ spec:
                       grep -q NotFound "$W/err" && return 0
                       return 1
                     fi
-                    [ -n "$2" ] && [ -n "$xr" ] || return 1
-                    if ! made=$(kubectl get "x$pl.openinfra.dev" "$xr" -o jsonpath='{.metadata.creationTimestamp}' 2>"$W/err"); then
+                    [ -n "$xr" ] || return 1
+                    if ! kubectl get "x$pl.openinfra.dev" "$xr" -o jsonpath='{.metadata.creationTimestamp}' >/dev/null 2>"$W/err"; then
                       grep -q NotFound "$W/err" && return 0
-                      return 1
                     fi
-                    [ -n "$made" ] && [ "$made" != "$2" ]
+                    return 1
                   }
                   # live_instance <Kind/ns/name>: the creation time of the claim's current composite ("" if unknown).
                   live_instance() {
@@ -168,7 +171,7 @@ spec:
                       > "$W/creds.tsv" || return 1
                     while IFS="$TAB" read -r user owner inst; do
                       [ -n "$user" ] && [ -n "$owner" ] || continue
-                      gone "$owner" "$inst" || continue
+                      gone "$owner" || continue
                       "$MC" admin user rm m "$user" >/dev/null 2>&1 || true
                       "$MC" admin policy rm m "$user" >/dev/null 2>&1 || true
                       kubectl delete secret "$user" -n "$OWN_NS" --ignore-not-found >/dev/null \
@@ -185,7 +188,7 @@ spec:
                       platform "$b" && continue
                       owner=$(printf '%s' "$rawowner" | base64 -d 2>/dev/null) || continue
                       inst=$(printf '%s' "$rawinst" | base64 -d 2>/dev/null) || inst=""
-                      if ! gone "$owner" "$inst"; then
+                      if ! gone "$owner"; then
                         if [ -z "$inst" ]; then # a record from before instances: name the live one
                           li=$(live_instance "$owner")
                           [ -n "$li" ] && kubectl patch secret "$rec" -n "$OWN_NS" --type merge \

@@ -474,6 +474,20 @@ data:
     mint_scoped_user() {
       user="$1"; polfile="$2"
       sk=$(kubectl get secret "$user" -n "$OWN_NS" -o jsonpath='{.data.MINIO_SECRET_KEY}' 2>/dev/null | base64 -d || true)
+      # Credentials left by an EARLIER instance of this claim (deleted and created again under the same
+      # name): rotate them. A re-created stack gets new credentials on AWS too, and taking them over here
+      # (rather than leaving them to the bucket reaper) means a re-create never races the reaper's sweep.
+      if [ -n "$sk" ] && [ -n "${XR_CREATED:-}" ]; then
+        was=$(kubectl get secret "$user" -n "$OWN_NS" -o jsonpath='{.metadata.annotations.openinfra\.dev/instance}' 2>/dev/null || true)
+        if [ -n "$was" ] && [ "$was" != "$XR_CREATED" ]; then
+          sk=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+          kubectl create secret generic "$user" -n "$OWN_NS" \
+            --from-literal=MINIO_ACCESS_KEY="$user" --from-literal=MINIO_SECRET_KEY="$sk" \
+            --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          oi_mark_creds "$user"
+          echo "rotated the credentials $user left by an earlier $OWNER_REF (created $was)"
+        fi
+      fi
       if [ -n "$sk" ]; then
         "$MC" admin user add m "$user" "$sk" >/dev/null                     # platform creds exist: same key, no rotation
       elif "$MC" admin user info m "$user" >/dev/null 2>&1; then
