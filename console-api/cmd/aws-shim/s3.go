@@ -242,10 +242,20 @@ func (h *s3Handler) listBuckets(w http.ResponseWriter, r *http.Request, requestI
 	for _, b := range buckets {
 		res.Buckets.Bucket = append(res.Buckets.Bucket, s3Bucket{
 			Name:         b.Name,
-			CreationDate: b.CreationDate.UTC().Format(iso8601Millis),
+			CreationDate: bucketCreationDate(b.CreationDate),
 		})
 	}
 	writeXML(w, http.StatusOK, requestID, res)
+}
+
+// bucketCreationDate is a ListBuckets CreationDate. A bucket MinIO has no creation time for (one made
+// before it recorded them) reports the Unix epoch: S3 never sends the zero time, and SDKs and the
+// AWS CLI fail the whole listing on year 0001 ("date value out of range").
+func bucketCreationDate(t time.Time) string {
+	if t.IsZero() || t.Year() < 1970 {
+		t = time.Unix(0, 0)
+	}
+	return t.UTC().Format(iso8601Millis)
 }
 
 func (h *s3Handler) headBucket(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {

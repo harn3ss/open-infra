@@ -22,6 +22,7 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"time"
 )
 
 func TestS3Decode_Subresources(t *testing.T) {
@@ -409,5 +410,17 @@ func TestS3GetBucketEncryption(t *testing.T) {
 	h.getBucketEncryption(w, httptest.NewRequest("GET", "/plain?encryption", nil), s3op{kind: "get-bucket-encryption", bucket: "plain"}, "r")
 	if w.Code != 404 || !strings.Contains(w.Body.String(), "ServerSideEncryptionConfigurationNotFoundError") {
 		t.Fatalf("GetBucketEncryption (none) = %d %s", w.Code, w.Body)
+	}
+}
+
+// ListBuckets never sends the zero time: a bucket with no recorded creation time reports the epoch, so
+// the AWS CLI's `aws s3 ls` (which fails the whole listing on year 0001) still lists every bucket.
+func TestBucketCreationDate_NeverZero(t *testing.T) {
+	if got := bucketCreationDate(time.Time{}); got != "1970-01-01T00:00:00.000Z" {
+		t.Fatalf("zero time -> %q", got)
+	}
+	when := time.Date(2026, 11, 2, 1, 2, 3, 4e6, time.UTC)
+	if got := bucketCreationDate(when); got != "2026-11-02T01:02:03.004Z" {
+		t.Fatalf("a real time -> %q", got)
 	}
 }
