@@ -295,3 +295,34 @@ func TestComplementAndBoundary(t *testing.T) {
 		t.Error("an exclude-everything NotAction boundary must cap to nothing (deny all)")
 	}
 }
+
+// ExplicitDeny is set only when a statement's Deny decided: not for default deny, and not for a request
+// only the permission boundary refused — even though the boundary is also a Cedar forbid. A statement Deny
+// under a boundary is still explicit.
+func TestEngine_ExplicitDenyIsTheStatementsNotTheBoundarys(t *testing.T) {
+	identity := []Statement{
+		{Effect: Allow, Actions: []string{"ses:SendEmail"}, Resources: []string{"Identity::*"}},
+		{Effect: Deny, Actions: []string{"ses:SendEmail"}, Resources: []string{"Identity::blocked@example.test"}},
+	}
+	boundary := []Statement{{Effect: Allow, Actions: []string{"ses:SendEmail"}, Resources: []string{"Identity::example.test", "Identity::blocked@example.test"}}}
+	eng, err := NewEngineWithBoundary(identity, boundary)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	p := Principal{Type: "Role", ID: "r"}
+	if d := eng.Authorize(Request{p, "ses:SendEmail", Resource{"Identity", "example.test"}, nil}); !d.Allowed || d.ExplicitDeny {
+		t.Errorf("inside the boundary and allowed: %+v", d)
+	}
+	out := eng.Authorize(Request{p, "ses:SendEmail", Resource{"Identity", "app@example.test"}, nil})
+	if out.Allowed || out.ExplicitDeny || !strings.Contains(out.Reason, "permission boundary") {
+		t.Errorf("outside the boundary only: want a boundary denial, not an explicit Deny: %+v", out)
+	}
+	deny := eng.Authorize(Request{p, "ses:SendEmail", Resource{"Identity", "blocked@example.test"}, nil})
+	if deny.Allowed || !deny.ExplicitDeny || !strings.Contains(deny.Reason, "explicit forbid") {
+		t.Errorf("a statement Deny inside the boundary is explicit: %+v", deny)
+	}
+	def, _ := NewEngine([]Statement{{Effect: Allow, Actions: []string{"s3:GetObject"}, Resources: []string{"*"}}})
+	if d := def.Authorize(Request{p, "ses:SendEmail", Resource{"Identity", "x"}, nil}); d.Allowed || d.ExplicitDeny {
+		t.Errorf("default deny is not explicit: %+v", d)
+	}
+}

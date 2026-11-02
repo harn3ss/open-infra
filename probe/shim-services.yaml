@@ -141,7 +141,7 @@ services:
     probes: [appsync]
 
   - name: SES
-    cell: "v1 `SendEmail`/`SendRawEmail` → the platform SMTP relay (the `mail` component; a capturing sink on test clusters)"
+    cell: "v1 `SendEmail`/`SendRawEmail` + v2 `SendEmail` → the platform SMTP relay (the `mail` component; a capturing sink on test clusters)"
     tier: proven
     note: "Served while the `mail` component's relay exists; with it off, SES answers as not fronted."
     probes: [ses]

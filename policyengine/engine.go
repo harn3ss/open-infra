@@ -103,11 +103,20 @@ type Request struct {
 	Context   map[string]any // string/bool values (authenticated, sourceIp, ...)
 }
 
-// Decision is the engine's answer.
+// Decision is the engine's answer. ExplicitDeny reports that a statement's Deny decided it, as opposed
+// to default deny (nothing allowed it) or the permission boundary (an Allow it does not carve out). A
+// caller that weighs one request against alternatives (an SES address identity or its domain identity)
+// needs the difference: an explicit Deny on either must win, while a boundary that covers only the
+// alternative must not.
 type Decision struct {
-	Allowed bool
-	Reason  string
+	Allowed      bool
+	Reason       string
+	ExplicitDeny bool
 }
+
+// boundaryAnnotation marks the permission-boundary guard in the compiled policy set, so a denial that
+// only the boundary decided is told apart from a statement's Deny.
+const boundaryAnnotation = "openinfra"
 
 // Engine holds a compiled Cedar policy set plus the set of context attributes any IP condition reads
 // (ipKeys), which Authorize sanitises so a malformed IP cannot make a Deny fail open.
@@ -234,11 +243,17 @@ func (e *Engine) Authorize(r Request) Decision {
 	if d == cedar.Allow {
 		return Decision{Allowed: true, Reason: "allowed by policy"}
 	}
-	// Distinguish the two denials — they are different security events an audit log must not
-	// conflate. A non-empty diagnostic reason set means an explicit `forbid` (a Deny overriding an
-	// allow) determined the decision; an empty set means nothing permitted the action at all.
+	// Distinguish the denials — they are different security events an audit log must not conflate. A
+	// non-empty diagnostic reason set means a `forbid` determined the decision: a statement's Deny
+	// overriding an allow, or the permission boundary's guard (when it is the only forbid that fired);
+	// an empty set means nothing permitted the action at all.
 	if len(diag.Reasons) > 0 {
-		return Decision{Allowed: false, Reason: "denied by an explicit forbid policy"}
+		for _, dr := range diag.Reasons {
+			if p := e.ps.Get(dr.PolicyID); p == nil || p.Annotations()[boundaryAnnotation] != "boundary" {
+				return Decision{Allowed: false, Reason: "denied by an explicit forbid policy", ExplicitDeny: true}
+			}
+		}
+		return Decision{Allowed: false, Reason: "denied by the permission boundary (the action is outside it)"}
 	}
 	return Decision{Allowed: false, Reason: "no policy allows this action (default deny)"}
 }
@@ -397,7 +412,7 @@ func compileBoundary(boundary []Statement) (string, error) {
 		}
 		permits = append(permits, "("+strings.Join(match, " && ")+")")
 	}
-	head := "forbid (\n  principal,\n  action,\n  resource\n)"
+	head := "@" + boundaryAnnotation + "(\"boundary\")\nforbid (\n  principal,\n  action,\n  resource\n)"
 	if len(permits) == 0 {
 		return head + ";", nil // allows nothing → forbid everything (fail closed)
 	}

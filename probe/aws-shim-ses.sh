@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Compatibility probe for the aws-shim SES surface (SES v1: SendEmail / SendRawEmail over the platform
-# SMTP relay, the mail component).
+# Compatibility probe for the aws-shim SES surface (SES v1: SendEmail / SendRawEmail, and SES v2's
+# SendEmail, over the platform SMTP relay, the mail component).
 #
 # Fires REAL AWS SDK calls (the aws CLI) at a deployed shim and asserts what an app that mails through SES
 # depends on — that a send which reports a MessageId was really handed to the relay, as the identity it
 # names — not merely HTTP 200:
 #   - SendEmail returns a MessageId; SendRawEmail (a MIME message whose sender is only its From header)
-#     returns one too; GetSendQuota answers
+#     returns one too; SES v2's SendEmail (`aws sesv2 send-email`) returns one; GetSendQuota answers
 #   - identity verification is refused honestly (the shim will not claim a verified identity no DNS backs)
 # and the NEGATIVES:
 #   - a principal whose policy grants ses:SendEmail on ONE identity sends as it, and is DENIED as another
 #     (SendEmail and SendRawEmail alike: a raw message is authorized as its From header)
+#   - a principal whose policy grants a DOMAIN identity (the usual verified-domain setup) sends as an address
+#     of that domain, through v1 and v2, and is DENIED as an address of another domain — and DENIED a raw
+#     message whose Source is its domain but whose From header names another identity
 #   - a read-only principal is DENIED
 # With the relay in capture mode (mail.capture: a test cluster's sink, platform/mail/relay-capture.yaml),
 # every message that was accepted is found in the sink, and none that was denied is.
@@ -30,6 +33,9 @@ REGION="${AWS_REGION:-us-east-1}"
 SFX="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 SENDER="ses-probe-${SFX}@example.test"
 OTHER="someone-else-${SFX}@example.test"
+DOMAIN="ses-probe-${SFX}.example.test"          # a domain identity no other run shares
+DSENDER="app@${DOMAIN}"
+DOTHER="app@elsewhere-${SFX}.example.test"
 RCPT="ses-probe-rcpt-${SFX}@example.test"
 TMP="$(mktemp -d)"
 
@@ -80,14 +86,24 @@ send() { # AK SK FROM SUBJECT
   ses "$1" "$2" send-email --from "$3" --destination "ToAddresses=$RCPT" --query MessageId \
     --message "Subject={Data=$4},Body={Text={Data=sent by the ses probe}}"
 }
-send_raw() { # AK SK FROM SUBJECT — the sender is only the message's From header
+send_raw() { # AK SK FROM SUBJECT [SOURCE] — the sender is the message's From header (and SOURCE, if given)
   printf 'From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\nraw, sent by the ses probe\r\n' "$3" "$RCPT" "$4" > "$TMP/raw.eml"
   python3 -c 'import json,sys; json.dump({"Data": open(sys.argv[1], newline="").read()}, open(sys.argv[2], "w"))' "$TMP/raw.eml" "$TMP/raw.json"
-  ses "$1" "$2" send-raw-email --cli-binary-format raw-in-base64-out --raw-message "file://$TMP/raw.json" --query MessageId
+  if [ -n "${5:-}" ]; then
+    ses "$1" "$2" send-raw-email --cli-binary-format raw-in-base64-out --raw-message "file://$TMP/raw.json" --source "$5" --query MessageId
+  else
+    ses "$1" "$2" send-raw-email --cli-binary-format raw-in-base64-out --raw-message "file://$TMP/raw.json" --query MessageId
+  fi
+}
+send_v2() { # AK SK FROM SUBJECT — SES v2 SendEmail (REST-JSON), Simple content
+  AWS_ACCESS_KEY_ID="$1" AWS_SECRET_ACCESS_KEY="$2" AWS_REGION="$REGION" \
+    aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text sesv2 send-email --from-email-address "$3" \
+      --destination "ToAddresses=$RCPT" --query MessageId \
+      --content "Simple={Subject={Data=$4},Body={Text={Data=sent by the ses probe through SES v2}}}"
 }
 
 # --- 1. principals ------------------------------------------------------------------------------------
-log "seeding a sender (openinfra:admins), a sender scoped to one identity, and a reader"
+log "seeding a sender (openinfra:admins), a sender scoped to one identity, one scoped to a domain identity, and a reader"
 mint_key "ses-probe-$SFX" "admins"; AAK="$MK_AK"; ASK="$MK_SK"
 mint_key "ses-probe-scoped-$SFX" "admins"; SAK="$MK_AK"; SSK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
@@ -101,6 +117,18 @@ spec:
       - { effect: Allow, actions: ["ses:SendEmail", "ses:SendRawEmail"], resources: ["Identity::$SENDER"] }
 YAML
 CREATED_POLICIES+=("ses-probe-scoped-$SFX")
+mint_key "ses-probe-domain-$SFX" "admins"; DAK="$MK_AK"; DSK="$MK_SK"
+cat <<YAML | kubectl apply -f - >/dev/null
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata: { name: "ses-probe-domain-$SFX", namespace: "${USERS_NS}" }
+spec:
+  dataPlane:
+    appliesTo: ["User::ses-probe-domain-$SFX"]
+    statements:
+      - { effect: Allow, actions: ["ses:SendEmail", "ses:SendRawEmail"], resources: ["Identity::$DOMAIN"] }
+YAML
+CREATED_POLICIES+=("ses-probe-domain-$SFX")
 mint_key "ses-probe-reader-$SFX" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
 sleep 3
 
@@ -113,12 +141,14 @@ fi
 log "  ✓ GetSendQuota answers (Max24HourSend=$Q)"
 
 # --- 3. SendEmail + SendRawEmail ----------------------------------------------------------------------
-log "send-email and send-raw-email as $SENDER"
+log "send-email, send-raw-email and sesv2 send-email as $SENDER"
 ID1="$(send "$AAK" "$ASK" "$SENDER" "ses-probe $SFX send-email" 2>"$TMP/e1")" || fail "send-email failed: $(tr '\n' ' ' < "$TMP/e1")"
 [ -n "$ID1" ] && [ "$ID1" != None ] || fail "send-email returned no MessageId"
 ID2="$(send_raw "$AAK" "$ASK" "$SENDER" "ses-probe $SFX send-raw-email" 2>"$TMP/e2")" || fail "send-raw-email failed: $(tr '\n' ' ' < "$TMP/e2")"
 [ -n "$ID2" ] && [ "$ID2" != None ] || fail "send-raw-email returned no MessageId"
-log "  ✓ MessageIds $ID1, $ID2"
+ID3="$(send_v2 "$AAK" "$ASK" "$SENDER" "ses-probe $SFX sesv2-send-email" 2>"$TMP/e4")" || fail "sesv2 send-email failed: $(tr '\n' ' ' < "$TMP/e4")"
+[ -n "$ID3" ] && [ "$ID3" != None ] || fail "sesv2 send-email returned no MessageId"
+log "  ✓ MessageIds $ID1, $ID2, $ID3"
 
 # --- 4. identity verification is refused honestly ----------------------------------------------------
 ERR="$(ses "$AAK" "$ASK" verify-email-identity --email-address "$SENDER" 2>&1 >/dev/null || true)"
@@ -137,17 +167,29 @@ ERR="$(send "$RAK" "$RSK" "$SENDER" "ses-probe $SFX reader-denied" 2>&1 >/dev/nu
 printf '%s' "$ERR" | grep -q AccessDenied || fail "a reader's send-email should be AccessDenied: $ERR"
 log "  ✓ a reader is DENIED"
 
+# --- 5b. a domain identity grant, through v1 and v2 --------------------------------------------------
+log "a principal granted ses:Send* on the domain identity Identity::$DOMAIN"
+send "$DAK" "$DSK" "$DSENDER" "ses-probe $SFX domain-allowed" >/dev/null 2>"$TMP/e5" || fail "the domain principal could not send as an address of its domain: $(tr '\n' ' ' < "$TMP/e5")"
+send_v2 "$DAK" "$DSK" "$DSENDER" "ses-probe $SFX v2-domain-allowed" >/dev/null 2>"$TMP/e6" || fail "the domain principal could not send through SES v2: $(tr '\n' ' ' < "$TMP/e6")"
+ERR="$(send "$DAK" "$DSK" "$DOTHER" "ses-probe $SFX domain-denied" 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q AccessDenied || fail "sending as an address of another domain should be AccessDenied: $ERR"
+ERR="$(send_v2 "$DAK" "$DSK" "$DOTHER" "ses-probe $SFX v2-domain-denied" 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q AccessDeniedException || fail "a v2 send as an address of another domain should be AccessDeniedException: $ERR"
+ERR="$(send_raw "$DAK" "$DSK" "$OTHER" "ses-probe $SFX domain-raw-from-denied" "$DSENDER" 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q AccessDenied || fail "a raw message whose Source is granted but whose From header is not should be AccessDenied: $ERR"
+log "  ✓ sends as an address of its domain (v1 and v2); DENIED at another domain, and DENIED a From header outside it"
+
 # --- 6. what was accepted reached the relay (capture mode) -------------------------------------------
 if [ "$(kubectl -n mail get deploy smtp-relay -o jsonpath='{.metadata.labels.openinfra\.dev/mail-capture}' 2>/dev/null)" = true ]; then
   SUBJECTS="$(kubectl -n mail exec deploy/smtp-relay -- wget -qO- 'http://127.0.0.1:8025/api/v1/messages?limit=500' 2>/dev/null \
     | python3 -c 'import json,sys; print("\n".join(m.get("Subject","") for m in json.load(sys.stdin).get("messages",[])))' || true)"
-  for s in send-email send-raw-email scoped-allowed; do
+  for s in send-email send-raw-email sesv2-send-email scoped-allowed domain-allowed v2-domain-allowed; do
     printf '%s\n' "$SUBJECTS" | grep -qx "ses-probe $SFX $s" || fail "the capturing relay has no message 'ses-probe $SFX $s'"
   done
-  for s in scoped-denied scoped-raw-denied reader-denied; do
+  for s in scoped-denied scoped-raw-denied reader-denied domain-denied v2-domain-denied domain-raw-from-denied; do
     printf '%s\n' "$SUBJECTS" | grep -qx "ses-probe $SFX $s" && fail "a DENIED send reached the relay: 'ses-probe $SFX $s'"
   done
-  log "  ✓ the capturing relay holds the 3 accepted messages and none of the 3 denied"
+  log "  ✓ the capturing relay holds the 6 accepted messages and none of the 6 denied"
 else
   log "  (the relay delivers — not in capture mode — so the sink check is skipped)"
 fi

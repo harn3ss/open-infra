@@ -266,7 +266,7 @@ FAILED="$(printf '%s' "$R" | python3 -c 'import json,sys; d=json.load(sys.stdin)
 # guest's endpoint plugin applies it (docs/virtual-machines.md#aws-endpoints-inside-the-guest). The SES
 # checks need the mail component (SES is not fronted without a relay).
 [ -z "$FAILED" ] || fail "instance checks failed: $FAILED"
-for k in ses_send_email ses_send_raw_email; do
+for k in ses_send_email ses_send_raw_email ses_v2_send_email; do
   printf '%s' "$R" | grep -q "\"$k\": \"ok\"" || fail "the instance did not report its $k check"
 done
 log "  ✓ every instance check passed (served over the Elastic IP $ADDR)"
@@ -277,11 +277,11 @@ if command -v kubectl >/dev/null && [ -n "${KUBECONFIG:-}" ] \
    && [ "$(kubectl -n mail get deploy smtp-relay -o jsonpath='{.metadata.labels.openinfra\.dev/mail-capture}' 2>/dev/null)" = true ]; then
   SUBJECTS="$(kubectl -n mail exec deploy/smtp-relay -- wget -qO- 'http://127.0.0.1:8025/api/v1/messages?limit=500' 2>/dev/null \
     | python3 -c 'import json,sys; print("\n".join(m.get("Subject","") for m in json.load(sys.stdin).get("messages",[])))' 2>/dev/null || true)"
-  for kind in send-email send-raw-email; do
+  for kind in send-email send-raw-email sesv2-send-email; do
     printf '%s\n' "$SUBJECTS" | grep -qx "lift-and-shift $STACK $kind" \
       || fail "the capturing relay has no message 'lift-and-shift $STACK $kind' (the instance's SES $kind)"
   done
-  log "  ✓ both SES messages (SendEmail, SendRawEmail) reached the capturing relay"
+  log "  ✓ the three SES messages (SendEmail, SendRawEmail, v2 SendEmail) reached the capturing relay"
 else
   log "  (with KUBECONFIG set and mail.capture on, the probe also finds the instance's SES messages in the sink)"
 fi

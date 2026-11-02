@@ -52,11 +52,38 @@ func scopeFor(claims iam.Claims, resID string) string {
 // a role with no policy can list nothing and create nothing (AWS evaluates those actions on Resource "*").
 func dataPlaneDenied(ctx context.Context, authz *dataplaneauthz.Checker, claims iam.Claims,
 	action, resType, resID string, r *http.Request) (bool, string) {
+	denied, _, reason := dataPlaneVerdict(ctx, authz, claims, action, resType, resID, r)
+	return denied, reason
+}
+
+// dataPlaneVerdict is dataPlaneDenied plus whether the denial is an explicit Deny — a statement's Deny, as
+// opposed to default deny, the permission boundary, or no engine. A front door that weighs one request
+// against an alternative resource (SES: an address identity or its domain identity) needs the difference:
+// an explicit Deny on either must win, while a missing grant on one is made up by the other.
+func dataPlaneVerdict(ctx context.Context, authz *dataplaneauthz.Checker, claims iam.Claims,
+	action, resType, resID string, r *http.Request) (denied, explicit bool, reason string) {
 	resID = scopeFor(claims, resID)
 	if resID == "" {
-		return false, ""
+		return false, false, ""
 	}
-	return deniedByDataPlane(ctx, authz, claims, action, resType, resID, r)
+	d := authz.Decide(ctx, claims.PrincipalType(), claims.PrincipalID(), claims.Groups,
+		action, resType, resID, requestContext(claims, r))
+	if claims.AssumedRole != "" {
+		// Closed, as allowedForAssumedRole.
+		if d.Governed && d.Allowed {
+			return false, false, ""
+		}
+		reason = d.Reason
+		if !d.Governed || reason == "" {
+			reason = "assumed role has no data-plane policy allowing " + action + " (default deny)"
+		}
+		return true, d.Governed && d.ExplicitDeny, reason
+	}
+	// A User: additive over the coarse grant, as deniedByDataPlane.
+	if d.Governed && !d.Allowed {
+		return true, d.ExplicitDeny, d.Reason
+	}
+	return false, false, ""
 }
 
 // allowedForAssumedRole is the CLOSED (default-deny) data-plane check for an sts:AssumeRole session. An

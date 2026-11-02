@@ -64,8 +64,9 @@ email, and its UserData, without mailing anyone.
 
 ## AWS SDK code (SES)
 
-The aws-shim fronts SES v1 over this relay — `SendEmail`, `SendRawEmail` — so unmodified SDK code, and an
-EC2 instance role from a CloudFormation template, can send ([aws-shim.md](aws-shim.md#ses-sendemail--sendrawemail-over-the-platform-smtp-relay-query-protocol-probe-proven)).
+The aws-shim fronts SES over this relay — v1 `SendEmail` and `SendRawEmail`, and v2 `SendEmail` — so
+unmodified SDK code, and an EC2 instance role from a CloudFormation template, can send, as an address identity
+or any address of a domain identity its policy names ([aws-shim.md](aws-shim.md#ses-v1-sendemail--sendrawemail-and-v2-sendemail-over-the-platform-smtp-relay-probe-proven)).
 SES is served only while this component is on.
 
 ## Status and scope

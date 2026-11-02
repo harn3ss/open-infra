@@ -270,7 +270,7 @@ unlike LocalStack — fidelity isn't bounded by what a mock chose to implement.
 | **SNS** → durable SQS fan-out | **EventBridge** scheduled + event-driven rules | **Kinesis Data Streams** ordered, sharded, replayable (Postgres) |
 | **SSM Parameter Store** → Postgres + KMS-encrypted `SecureString` | **API Gateway** HTTP API v2 + REST v1 → runtime proxy to Lambda | **CloudWatch** metrics + alarms that evaluate and fire SNS |
 | **CloudWatch Logs** → Postgres | **Step Functions** (experimental) owned ASL engine; Tasks run under the state machine's IAM role (per-execution STS) | **CloudFormation** owned cfn engine; stacks provision under the caller's authority (impersonation) |
-| **CloudFront** invalidations of a stack's distribution (`kind: StaticSite`): Completed once the site serves the upload | **AppSync** (experimental) → open-appsync (VTL-faithful engine) | **SES** v1 `SendEmail`/`SendRawEmail` → the platform SMTP relay (the `mail` component; a capturing sink on test clusters) |
+| **CloudFront** invalidations of a stack's distribution (`kind: StaticSite`): Completed once the site serves the upload | **AppSync** (experimental) → open-appsync (VTL-faithful engine) | **SES** v1 `SendEmail`/`SendRawEmail` + v2 `SendEmail` → the platform SMTP relay (the `mail` component; a capturing sink on test clusters) |
 <!-- END shimgen:readme-matrix -->
 
 ```sh

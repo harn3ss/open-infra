@@ -104,9 +104,12 @@ Resources:
               - Effect: Allow
                 Action: [ecr:DescribeRepositories, ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
                 Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${AppRepositoryName}"
+              # The sender's DOMAIN identity (the usual verified-domain setup): any address at it may send.
               - Effect: Allow
                 Action: [ses:SendEmail, ses:SendRawEmail]
-                Resource: !Sub "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesSenderAddress}"
+                Resource: !Sub
+                  - "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SenderDomain}"
+                  - SenderDomain: !Select [1, !Split ["@", !Ref SesSenderAddress]]
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -182,8 +185,8 @@ Resources:
           check denied_outside_policy "/usr/local/bin/aws --region $REGION s3 ls s3://${SiteBucket} 2>&1 | grep -q 'An error occurred (AccessDenied) when calling the ListObjectsV2 operation'"
           publish no
 
-          # 6. Email through SES with the instance role, as the identity its policy names: SendEmail, then
-          #    SendRawEmail with a MIME message built here.
+          # 6. Email through SES with the instance role, as an address of the domain identity its policy
+          #    names: SendEmail, SendRawEmail with a MIME message built here, and SES v2's SendEmail.
           #    (Functions, so check/retry's eval keeps the message's spaces intact.)
           send_email() {
             /usr/local/bin/aws --region $REGION ses send-email --from '${SesSenderAddress}' \
@@ -197,8 +200,14 @@ Resources:
             /usr/local/bin/aws --region $REGION ses send-raw-email --cli-binary-format raw-in-base64-out \
               --raw-message file:///tmp/raw.json --query MessageId --output text
           }
+          send_email_v2() {
+            /usr/local/bin/aws --region $REGION sesv2 send-email --from-email-address '${SesSenderAddress}' \
+              --destination 'ToAddresses=${SesRecipientAddress}' --query MessageId --output text \
+              --content 'Simple={Subject={Data=lift-and-shift ${AWS::StackName} sesv2-send-email},Body={Text={Data=sent by the instance role through SES v2}}}'
+          }
           check ses_send_email "retry 6 send_email"
           check ses_send_raw_email "retry 6 send_raw_email"
+          check ses_v2_send_email "retry 6 send_email_v2"
           publish no
 
           # 7. An image pulls from the registry (pushed after the stack creates the repository).

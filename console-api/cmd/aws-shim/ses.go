@@ -11,7 +11,11 @@
 //
 // Identity verification (VerifyEmailIdentity/VerifyDomainIdentity) is refused honestly — a verified
 // identity is backed by the domain's DNS (SPF/DKIM/DMARC), which this shim cannot fake. Who may send as an
-// identity is the caller's policy: ses:SendEmail / ses:SendRawEmail on Identity::<the From address>.
+// identity is the caller's policy: ses:SendEmail / ses:SendRawEmail on Identity::<the From address> or on
+// its domain's identity (Identity::<domain>), for every address the message is sent as.
+//
+// SES v2 (REST-JSON, /v2/email/…) is served by the same handler (sesv2.go): SendEmail, with the same
+// relay and the same authorization.
 package main
 
 import (
@@ -80,12 +84,21 @@ func (h *sesHandler) relayExists(ctx context.Context) bool {
 	return h.relayLive
 }
 
-func (h *sesHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
+func (h *sesHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	if r != nil && isSESv2(r) {
+		sesV2Error(w, http.StatusForbidden, "SignatureDoesNotMatch", requestID,
+			"The request signature we calculated does not match the signature you provided.")
+		return
+	}
 	writeQueryError(w, http.StatusForbidden, "SignatureDoesNotMatch", requestID,
 		"The request signature we calculated does not match the signature you provided.", sesXMLNamespace)
 }
 
 func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
+	if isSESv2(r) {
+		h.serveV2(w, r, claims, requestID)
+		return
+	}
 	if !h.relayExists(r.Context()) {
 		// The mail component is off: there is nowhere to deliver, so SES is not fronted here.
 		writeUnsupportedService(w, "ses", requestID)
@@ -108,33 +121,46 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 
-	// Resource for authz: the sending identity (From address). Coarse at the RBAC layer, scopable at the
-	// fine-grained Cedar data-plane layer (ses:SendEmail on the identity).
-	source := r.PostFormValue("Source")
-	if source == "" {
-		source = r.PostFormValue("FromEmailAddress")
+	// Resource for authz: the sending identities. Coarse at the RBAC layer, scopable at the fine-grained
+	// Cedar data-plane layer (ses:SendEmail on the identity). A send is authorized as EVERY address it
+	// sends as: SendEmail's Source; SendRawEmail's Source AND each address in the message's From header
+	// (a raw message with no Source is sent as its From header, as SES does) — so a principal allowed to
+	// send as one identity cannot name another in From.
+	var senders []string
+	if s := emailAddr(r.PostFormValue("Source")); s != "" {
+		senders = append(senders, s)
 	}
-	if source == "" && op == "SendRawEmail" {
-		// As SES does, a raw message with no Source is sent (and authorized) as its From header.
+	if op == "SendRawEmail" {
 		if data, err := b64Decode(r.PostFormValue("RawMessage.Data")); err == nil {
-			source, _ = envelopeFromRaw(data)
+			senders = appendUnique(senders, rawFromAddrs(data)...)
 		}
 	}
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, emailAddr(source)); !allowed {
+	first := ""
+	if len(senders) > 0 {
+		first = senders[0]
+	}
+	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, first); !allowed {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, sesXMLNamespace)
 		return
 	}
-	identity := ""
-	if source != "" {
-		identity = emailAddr(source)
-	} else if claims.AssumedRole != "" {
+	if len(senders) > 0 {
+		for _, s := range senders {
+			if denied, reason := h.identityDenied(r.Context(), claims, "ses:"+op, s, r); denied {
+				writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, sesXMLNamespace)
+				return
+			}
+		}
+	} else {
 		// An assumed role is checked on every op: a Verify*Identity on the identity it names, the
 		// identity-less ops (GetSendQuota, ListIdentities, …) on Identity::*.
-		identity = formFirst(r, "EmailAddress", "Domain")
-	}
-	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "ses:"+op, "Identity", identity, r); denied {
-		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, sesXMLNamespace)
-		return
+		identity := ""
+		if claims.AssumedRole != "" {
+			identity = formFirst(r, "EmailAddress", "Domain")
+		}
+		if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "ses:"+op, "Identity", identity, r); denied {
+			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, sesXMLNamespace)
+			return
+		}
 	}
 
 	switch op {
@@ -153,6 +179,28 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	}
 }
 
+// identityDenied authorizes sending as addr the way SES does: on its email address identity
+// (Identity::<addr>) or its domain identity (Identity::<domain>), so a role granted ses:SendEmail on
+// identity/example.com sends as any address at example.com. An explicit Deny on either wins — a Deny on
+// one address is not lifted by a grant on its domain, nor a Deny on the domain by a grant on one address.
+// The permission boundary is not an explicit Deny: a boundary that covers only the domain identity
+// still lets a domain grant send.
+func (h *sesHandler) identityDenied(ctx context.Context, claims iam.Claims, action, addr string, r *http.Request) (bool, string) {
+	denied, explicit, reason := dataPlaneVerdict(ctx, h.authz, claims, action, "Identity", addr, r)
+	dom := identityDomain(addr)
+	if dom == "" || (denied && explicit) {
+		return denied, reason
+	}
+	dDenied, dExplicit, dReason := dataPlaneVerdict(ctx, h.authz, claims, action, "Identity", dom, r)
+	switch {
+	case dDenied && dExplicit:
+		return true, dReason
+	case !denied || !dDenied:
+		return false, ""
+	}
+	return true, reason + " — sending as " + addr + " needs " + action + " on its address identity or its domain identity (" + dom + ")"
+}
+
 // sendEmail — SES v1 SendEmail (structured Source/Destination/Message). Builds an RFC 5322 message and
 // submits it to the relay. A returned MessageId means the relay ACCEPTED the message for delivery; final
 // internet deliverability depends on the relay's smarthost + the domain's DNS (operator concern).
@@ -169,7 +217,8 @@ func (h *sesHandler) sendEmail(w http.ResponseWriter, r *http.Request, requestID
 			"SendEmail requires a Source and at least one destination address.", sesXMLNamespace)
 		return
 	}
-	msg := buildMIME(from, to, cc, subject, text, html)
+	msg := buildMIMEMessage(mimeParts{From: from, To: to, Cc: cc, ReplyTo: sesAddrList(r, "ReplyToAddresses.member"),
+		Subject: subject, Text: text, HTML: html})
 	rcpts := append(append(append([]string{}, to...), cc...), bcc...)
 	if err := h.smtpSend(emailAddr(from), addrsOnly(rcpts), msg); err != nil {
 		h.internal(w, requestID, err)

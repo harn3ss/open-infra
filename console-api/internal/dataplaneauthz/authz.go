@@ -72,12 +72,26 @@ func New(load Loader, ttl time.Duration) *Checker { return &Checker{load: load, 
 // so a data-plane policy can only tighten within the service it governs.
 func (c *Checker) Authorize(ctx context.Context, principalType, principalID string, groups []string,
 	action, resType, resID string, reqCtx map[string]any) (allowed, governed bool, reason string) {
+	d := c.Decide(ctx, principalType, principalID, groups, action, resType, resID, reqCtx)
+	return d.Allowed, d.Governed, d.Reason
+}
+
+// Decision is Authorize's verdict plus ExplicitDeny: a statement's Deny decided it (not default deny, not
+// the permission boundary, not a load or compile failure). See policyengine.Decision.
+type Decision struct {
+	Allowed, Governed, ExplicitDeny bool
+	Reason                          string
+}
+
+// Decide is Authorize, returning the whole Decision.
+func (c *Checker) Decide(ctx context.Context, principalType, principalID string, groups []string,
+	action, resType, resID string, reqCtx map[string]any) Decision {
 	if c == nil || c.load == nil {
-		return true, false, "data-plane policy disabled"
+		return Decision{Allowed: true, Reason: "data-plane policy disabled"}
 	}
 	snap, err := c.get(ctx)
 	if err != nil {
-		return false, true, "data-plane policy load failed: " + err.Error() // fail closed
+		return Decision{Governed: true, Reason: "data-plane policy load failed: " + err.Error()} // fail closed
 	}
 	service := action
 	if i := strings.IndexByte(action, ':'); i > 0 {
@@ -130,7 +144,7 @@ func (c *Checker) Authorize(ctx context.Context, principalType, principalID stri
 		}
 	}
 	if !governs && !closed {
-		return true, false, "no data-plane policy governs " + service + " for this principal"
+		return Decision{Allowed: true, Reason: "no data-plane policy governs " + service + " for this principal"}
 	}
 	// Permission boundary (§4): if this principal (its User, or the Role it assumed) carries a
 	// spec.permissionBoundary, cap the compiled set with the boundary Policy's Allow ceiling — the
@@ -139,7 +153,7 @@ func (c *Checker) Authorize(ctx context.Context, principalType, principalID stri
 	// fails CLOSED rather than silently lifting the cap.
 	eng, err := c.engineFor(stmts, byName, snap.Boundary[principalType+"::"+principalID])
 	if err != nil {
-		return false, true, "data-plane policy compile error: " + err.Error() // fail closed
+		return Decision{Governed: true, Reason: "data-plane policy compile error: " + err.Error()} // fail closed
 	}
 	d := eng.Authorize(policyengine.Request{
 		Principal: policyengine.Principal{Type: principalType, ID: principalID},
@@ -147,7 +161,7 @@ func (c *Checker) Authorize(ctx context.Context, principalType, principalID stri
 		Resource:  policyengine.Resource{Type: resType, ID: resID},
 		Context:   reqCtx,
 	})
-	return d.Allowed, true, d.Reason
+	return Decision{Allowed: d.Allowed, Governed: true, ExplicitDeny: d.ExplicitDeny, Reason: d.Reason}
 }
 
 // engineFor compiles the principal's identity statements, applying a permission boundary when one is
