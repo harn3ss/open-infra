@@ -35,6 +35,10 @@ func TestResolve_SupportedIntrinsics(t *testing.T) {
 		{"SubEscape", map[string]any{"Fn::Sub": "${!Literal}-${Env}"}, "${Literal}-prod"},
 		{"FindInMap", map[string]any{"Fn::FindInMap": []any{"Sizes", map[string]any{"Ref": "Env"}, "cpu"}}, "4"},
 		{"Select", map[string]any{"Fn::Select": []any{1, []any{"x", "y", "z"}}}, "y"},
+		// Fn::Split's result feeds Select and Join (the domain of an address, a path segment).
+		{"SelectOfSplit", map[string]any{"Fn::Select": []any{1, map[string]any{"Fn::Split": []any{"@", "app@example.test"}}}}, "example.test"},
+		{"JoinOfSplit", map[string]any{"Fn::Join": []any{".", map[string]any{"Fn::Split": []any{"-", "a-b-c"}}}}, "a.b.c"},
+		{"SubVarFromSplit", map[string]any{"Fn::Sub": []any{"identity/${D}", map[string]any{"D": map[string]any{"Fn::Select": []any{1, map[string]any{"Fn::Split": []any{"@", "app@example.test"}}}}}}}, "identity/example.test"},
 		{"IfTrue", map[string]any{"Fn::If": []any{"IsProd", "big", "small"}}, "big"},
 	}
 	for _, c := range cases {

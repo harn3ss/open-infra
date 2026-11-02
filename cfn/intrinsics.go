@@ -500,8 +500,15 @@ func (r *resolver) ifFn(arg any) any {
 }
 
 func (r *resolver) list(v any) []any {
-	if a, ok := v.([]any); ok {
+	switch a := v.(type) {
+	case []any:
 		return a
+	case []string: // Fn::Split's result, so !Select [N, !Split [...]] and !Join [d, !Split [...]] work
+		out := make([]any, len(a))
+		for i, s := range a {
+			out[i] = s
+		}
+		return out
 	}
 	return nil
 }
