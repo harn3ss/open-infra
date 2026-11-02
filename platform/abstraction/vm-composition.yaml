@@ -44,6 +44,11 @@ spec:
             - type: Reference
               ref:
                 name: openinfra-aws-identity
+            # The guest resolver (platform/aws-shim/guest-aws-endpoints.yaml): AWS's names of the services
+            # the aws-shim serves resolve to the platform inside the guest. Absent: the cluster DNS.
+            - type: Reference
+              ref:
+                name: openinfra-guest-dns
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -203,6 +208,16 @@ spec:
             {{- $trustPlatformCA := true }}
             {{- $platformCA := index $envCfg "platformRootCA" | default "" }}
             {{- $caFile := "/etc/openinfra/platform-root-ca.pem" }}
+            {{- /* AWS's own names inside the guest (platform/aws-shim/guest-aws-endpoints.yaml): the guest
+                   resolver answers the amazonaws.com names of the services the aws-shim serves with the
+                   platform's addresses, and the AWS endpoints CA (published beside the platform root, and
+                   name-constrained to amazonaws.com) is what the platform serves them with. The agent adds
+                   it to the system trust store as a second anchor, so $caBundle carries it too. A guest
+                   whose AWS-side configuration names sqs.<region>.amazonaws.com or
+                   <account>.dkr.ecr.<region>.amazonaws.com reaches the platform, never AWS. */}}
+            {{- $awsEndpointsCA := index $envCfg "awsEndpointsCA" | default "" }}
+            {{- $awsCaFile := "/etc/openinfra/aws-endpoints-ca.pem" }}
+            {{- $guestNameserver := index $envCfg "guestNameserver" | default "" }}
             {{- $caBundle := "/etc/openinfra/ca-bundle.pem" }}
             {{- /* The AWS SDK environment every guest process gets (rendered below into /etc/environment,
                    /etc/openinfra-aws.env and the systemd DefaultEnvironment drop-in). */}}
@@ -255,6 +270,7 @@ spec:
                   "relay" (dict "enabled" $credsRelay "address" "127.0.0.1" "port" (int $credsPort))
                   "trustPlatformCA" $trustPlatformCA
                   "caFile" $caFile
+                  "awsEndpointsCaFile" $awsCaFile
                   "caBundleLink" $caBundle
                   "containers" (dict "env" $containerEnv "caBundle" $caBundle)
                   "awscliV1Plugin" (dict "enabled" (and $metadataAgent $trustPlatformCA) "module" "/usr/local/lib/openinfra/awscli-plugins/openinfra_endpoint_plugin.py" "name" "openinfra_endpoint" "configFile" $awsConfigFile "endpointEnv" "AWS_ENDPOINT_URL") }}
@@ -424,6 +440,18 @@ spec:
                                     {{- if not $ha }}
                                     - { key: openinfra.dev/disk-class, operator: In, values: [nvme, sata-ssd] }
                                     {{- end }}
+                        {{- end }}
+                        {{- if and $guestNameserver $metadataAgent }}
+                        # The guest resolver (platform/aws-shim/guest-aws-endpoints.yaml). KubeVirt's DHCP
+                        # hands the guest its launcher pod's DNS, so inside the guest AWS's names of the
+                        # services the aws-shim serves resolve to the platform; every other name gets the
+                        # cluster DNS's answer, under the usual search domains. Takes effect at the VM's
+                        # next start.
+                        dnsPolicy: "None"
+                        dnsConfig:
+                          nameservers: [{{ $guestNameserver | toJson }}]
+                          searches: [{{ printf "%s.svc.cluster.local" $ns | toJson }}, svc.cluster.local, cluster.local]
+                          options: [{ name: ndots, value: "5" }]
                         {{- end }}
                         domain:
                           cpu:
@@ -991,6 +1019,11 @@ spec:
                           permissions: '0644'
                           content: {{ $platformCA | toJson }}
                         {{- end }}
+                        {{- if and $trustPlatformCA $awsEndpointsCA }}
+                        - path: {{ $awsCaFile }}
+                          permissions: '0644'
+                          content: {{ $awsEndpointsCA | toJson }}
+                        {{- end }}
                         - path: /etc/openinfra/metadata-agent.json
                           permissions: '0644'
                           content: {{ $agentCfg | toJson | toJson }}
@@ -1097,6 +1130,7 @@ spec:
                                 "relay": {"enabled": False, "address": "127.0.0.1", "port": 16349},
                                 "trustPlatformCA": True,
                                 "caFile": "",
+                                "awsEndpointsCaFile": "",
                                 "caBundleLink": "",
                                 "containers": {"env": [], "caBundle": ""},  # added to every Docker/Podman container (see configure_containers)
                             }
@@ -1118,6 +1152,7 @@ spec:
                             SAFE_IFNAME = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")  # names that can be quoted into a rule as they are
                             CLONE_NEWNET = 0x40000000
                             CA_FILE_NAME = "openinfra-root-ca.crt"
+                            AWS_ENDPOINTS_CA_FILE_NAME = "openinfra-aws-endpoints-ca.crt"  # its own anchor file: one certificate per file
                             OCI_WRAPPER = "/usr/local/lib/openinfra/oci-aws-env"  # the OCI runtime wrapper Docker runs containers through
                             DOCKER_RUNTIME = "openinfra-aws"
                             DOCKER_DAEMON_JSON = "/etc/docker/daemon.json"
@@ -2029,12 +2064,13 @@ spec:
                                 return None
 
 
-                            def install_ca(pem, store, run_cmd=None):
-                                """Install pem as the platform CA anchor and refresh the trust store. Idempotent: 'unchanged' (no
-                                rewrite, no refresh) when the same certificate is already installed, else 'installed'. Raises
-                                RuntimeError if the refresh command fails (the anchor is removed so the next start retries)."""
+                            def install_ca(pem, store, run_cmd=None, name=CA_FILE_NAME):
+                                """Install pem as the anchor `name` (the platform CA's by default) and refresh the trust store.
+                                Idempotent: 'unchanged' (no rewrite, no refresh) when the same certificate is already installed,
+                                else 'installed'. Raises RuntimeError if the refresh command fails (the anchor is removed so the
+                                next start retries)."""
                                 family, directory, cmd = store
-                                path = os.path.join(directory, CA_FILE_NAME)
+                                path = os.path.join(directory, name)
                                 try:
                                     with open(path) as fh:
                                         if fh.read() == pem:
@@ -2065,32 +2101,46 @@ spec:
                                 return data if data.strip() else None
 
 
-                            def trust_platform_ca(path, store=None, read=read_ca_file, install=install_ca):
+                            def trust_platform_ca(path, store=None, read=read_ca_file, install=install_ca, what="platform root CA",
+                                                  name=CA_FILE_NAME):
                                 """Add the platform root CA from this VM's spec (path) to the system trust store. Never raises: a
                                 VM without a platform CA, an invalid file or an unsupported distro is logged and the boot
                                 continues. Nothing is ever fetched over the network. Returns the outcome."""
                                 store = store or trust_store()
                                 if store is None:
-                                    LOG.warning("platform root CA not installed: no supported system trust store "
-                                                "(update-ca-trust or update-ca-certificates) on this guest")
+                                    LOG.warning("%s not installed: no supported system trust store "
+                                                "(update-ca-trust or update-ca-certificates) on this guest", what)
                                     return "unsupported"
                                 data = read(path)
                                 if data is None:
-                                    LOG.warning("this VM's spec carries no platform root CA (%s); nothing to trust", path or "caFile unset")
+                                    LOG.warning("this VM's spec carries no %s (%s); nothing to trust", what, path or "file unset")
                                     return "absent"
                                 try:
                                     pem = validate_ca_pem(data)
                                 except ValueError as e:
-                                    LOG.error("refusing the platform CA file %s: %s", path, e)
+                                    LOG.error("refusing the %s file %s: %s", what, path, e)
                                     return "invalid"
                                 try:
                                     result = install(pem, store)
                                 except Exception as e:
-                                    LOG.error("installing the platform root CA into the %s trust store failed: %s", store[0], e)
+                                    LOG.error("installing the %s into the %s trust store failed: %s", what, store[0], e)
                                     return "failed"
-                                LOG.info("platform root CA %s: %s (%s trust store)", "already trusted" if result == "unchanged" else "installed",
-                                         os.path.join(store[1], CA_FILE_NAME), store[0])
+                                LOG.info("%s %s: %s (%s trust store)", what, "already trusted" if result == "unchanged" else "installed",
+                                         os.path.join(store[1], name), store[0])
                                 return result
+
+
+                            def trust_aws_endpoints_ca(path, store=None, read=read_ca_file, install=None):
+                                """Add the AWS endpoints CA from this VM's spec (path) to the system trust store, as its own anchor.
+                                The platform serves AWS's names of the services it fronts with certificates from it (the guest
+                                resolver answers those names with the platform's addresses); it is name-constrained to
+                                amazonaws.com. A platform without it (no guest resolver) is not an error: 'absent', quietly."""
+                                if read(path) is None:
+                                    LOG.info("this VM's spec carries no AWS endpoints CA: AWS's names resolve as they always did")
+                                    return "absent"
+                                return trust_platform_ca(path, store=store, read=read,
+                                                         install=install or (lambda pem, st: install_ca(pem, st, name=AWS_ENDPOINTS_CA_FILE_NAME)),
+                                                         what="AWS endpoints CA", name=AWS_ENDPOINTS_CA_FILE_NAME)
 
 
                             def system_bundle(family=None, isfile=os.path.isfile):
@@ -2466,7 +2516,8 @@ spec:
                                     ca = None
                                     if self.cfg.get("trustPlatformCA"):
                                         ca = trust_platform_ca(self.cfg.get("caFile"))
-                                    if self.cfg.get("caBundleLink"):  # after the CA step, so the bundle it names carries the root
+                                        trust_aws_endpoints_ca(self.cfg.get("awsEndpointsCaFile"))
+                                    if self.cfg.get("caBundleLink"):  # after the CA steps, so the bundle it names carries the roots
                                         store = trust_store()
                                         publish_ca_bundle(self.cfg["caBundleLink"], store[0] if store else None,
                                                           platform_ca=ca in ("installed", "unchanged"))

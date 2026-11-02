@@ -1,6 +1,7 @@
 {
   "accountId": "000000000000",
   "availabilityZone": "us-east-1a",
+  "awsEndpointsCaFile": "/etc/openinfra/aws-endpoints-ca.pem",
   "awscliV1Plugin": {
     "configFile": "/etc/openinfra/aws-config",
     "enabled": true,

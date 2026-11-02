@@ -129,6 +129,13 @@ incl() {
   fi
 }
 incl awsShim "aws-shim/*"
+# AWS's own names inside VM guests (rides on the aws-shim; ON unless
+# networking.guestAwsEndpoints: false): the guest resolver, the guest-only AWS endpoints CA,
+# and the registry's ECR names. Off => guests use the cluster DNS.
+if [ "$(yget networking.guestAwsEndpoints)" = "false" ]; then
+  EXCLUDES="${EXCLUDES},aws-shim/guest-aws-endpoints.yaml"
+  LOG "guest AWS endpoints off (networking.guestAwsEndpoints: false)"
+fi
 incl openAppsync "open-appsync/*" # open-appsync engine (backs the shim's AppSync surface)
 # Customer-owned encryption: Vault (Transit KMS), kind: EncryptionKey + its reconciler, and the
 # encrypted Longhorn StorageClass. OFF unless components.encryption: true (Vault needs an operator to

@@ -586,6 +586,36 @@ class PlatformCATest(unittest.TestCase):
             raise RuntimeError("update-ca-certificates failed")
         self.assertEqual(agent.trust_platform_ca(ca_file(TEST_CA), store=store, install=broken), "failed")
 
+    def test_aws_endpoints_ca_is_its_own_anchor(self):
+        """The AWS endpoints CA (guest-aws-endpoints.yaml) is installed beside the platform root, in a file of
+        its own (one certificate per anchor file, so hashed-directory lookups find both); a VM without one is
+        not an error."""
+        d = tempfile.mkdtemp(dir=TMP)
+        store = ("debian", d, ["update-ca-certificates"])
+        src = tempfile.mkdtemp(dir=TMP)
+        path = os.path.join(src, "aws-endpoints-ca.pem")
+        self.assertEqual(agent.trust_aws_endpoints_ca(path, store=store), "absent", "no file: nothing to trust, no error")
+        self.assertEqual(agent.trust_aws_endpoints_ca("", store=store), "absent")
+        self.assertEqual(os.listdir(d), [])
+        with open(path, "wb") as fh:
+            fh.write(TEST_CA)
+        run = FakeRun()
+        orig = agent.run
+        agent.run = run
+        try:
+            self.assertEqual(agent.trust_aws_endpoints_ca(path, store=store), "installed")
+            self.assertEqual(agent.trust_aws_endpoints_ca(path, store=store), "unchanged")
+        finally:
+            agent.run = orig
+        self.assertEqual(os.listdir(d), [agent.AWS_ENDPOINTS_CA_FILE_NAME])
+        self.assertNotEqual(agent.AWS_ENDPOINTS_CA_FILE_NAME, agent.CA_FILE_NAME)
+        with open(os.path.join(d, agent.AWS_ENDPOINTS_CA_FILE_NAME)) as fh:
+            self.assertEqual(fh.read(), agent.validate_ca_pem(TEST_CA))
+        self.assertEqual(run.calls, [["update-ca-certificates"]], "refreshed once, when it changed")
+        with open(path, "wb") as fh:
+            fh.write(TEST_LEAF)
+        self.assertEqual(agent.trust_aws_endpoints_ca(path, store=store), "invalid", "a non-CA certificate is never installed")
+
     def test_the_agent_fetches_no_ca_over_the_network(self):
         for gone in ("fetch_ca_bundle", "CAFetchError"):
             self.assertFalse(hasattr(agent, gone), "%s must not exist: the root never comes from the network" % gone)

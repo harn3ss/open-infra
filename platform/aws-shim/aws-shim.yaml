@@ -74,6 +74,10 @@ spec:
   dnsNames:
     - aws-shim.open-infra-aws-shim.svc
     - aws-shim.open-infra-aws-shim.svc.cluster.local
+    # Virtual-hosted S3 against AWS_ENDPOINT_URL: a default SDK client asks for <bucket>.<this name>
+    # (a VM guest's resolver answers it, guest-aws-endpoints.yaml; S3_INTERNAL_VHOST_SUFFIXES).
+    - "*.aws-shim.open-infra-aws-shim.svc"
+    - "*.aws-shim.open-infra-aws-shim.svc.cluster.local"
   usages: [server auth, digital signature]
   duration: 2160h    # 90 days
   renewBefore: 720h
@@ -747,6 +751,8 @@ spec:
               containerPort: 4566
             - name: https-internal
               containerPort: 4567
+            - name: https-aws
+              containerPort: 8443
           env:
             - { name: LISTEN_ADDR, value: ":4566" }
             # EC2 instance metadata (IMDS): serve rotating role credentials (/v1/vm-credentials) to the
@@ -760,6 +766,16 @@ spec:
             - { name: INTERNAL_TLS_LISTEN_ADDR, value: ":4567" }
             - { name: INTERNAL_TLS_CERT_FILE, value: /tls-internal/tls.crt }
             - { name: INTERNAL_TLS_KEY_FILE, value: /tls-internal/tls.key }
+            # AWS's own hostnames (guest-aws-endpoints.yaml): a VM guest's resolver answers the amazonaws.com
+            # names of the services served here with this Service; port 443 lands on this listener, which
+            # serves aws-shim-aws-endpoints-tls (the guest-only openinfra-aws-endpoints CA), re-read on
+            # renewal. Absent Secret (networking.guestAwsEndpoints: false): handshakes fail, nothing else.
+            - { name: TLS_LISTEN_ADDR, value: ":8443" }
+            - { name: TLS_CERT_FILE, value: /tls-aws/tls.crt }
+            - { name: TLS_KEY_FILE, value: /tls-aws/tls.key }
+            # The shim's own names, virtual-hosted: a default AWS SDK client (no forcePathStyle — the
+            # JavaScript SDK v3's default) pointed at AWS_ENDPOINT_URL addresses <bucket>.<this name>.
+            - { name: S3_INTERNAL_VHOST_SUFFIXES, value: "aws-shim.open-infra-aws-shim.svc.cluster.local,aws-shim.open-infra-aws-shim.svc" }
             # The platform root CA certificate served at /v1/ca-bundle (public; VM guests trust it at
             # boot): ca.crt of this Secret in the shim's namespace (the openinfra-ca-bundle Certificate
             # above). "" turns the endpoint off.
@@ -915,6 +931,7 @@ spec:
               drop: [ALL]
           volumeMounts:
             - { name: internal-tls, mountPath: /tls-internal, readOnly: true }
+            - { name: aws-endpoints-tls, mountPath: /tls-aws, readOnly: true }
             - { name: object-encryption, mountPath: /etc/openinfra/object-encryption, readOnly: true }
             - { name: certificates, mountPath: /etc/openinfra/certificates, readOnly: true }
           resources:
@@ -928,6 +945,9 @@ spec:
         # and VM agents retry. The kubelet fills the volume once the Secret exists.
         - name: internal-tls
           secret: { secretName: aws-shim-internal-tls, optional: true }
+        # optional: issued by guest-aws-endpoints.yaml (off with networking.guestAwsEndpoints: false).
+        - name: aws-endpoints-tls
+          secret: { secretName: aws-shim-aws-endpoints-tls, optional: true }
         # optional: written by storage/minio-kms.yaml once MinIO encrypts new buckets by default; the
         # kubelet refreshes it, so the shim sees the switch without a restart (OBJECT_ENCRYPTION_FILE).
         - name: object-encryption
@@ -981,6 +1001,10 @@ spec:
     - name: https-internal
       port: 4567
       targetPort: 4567
+    # AWS's own hostnames, as a VM guest's resolver answers them (guest-aws-endpoints.yaml).
+    - name: https-aws
+      port: 443
+      targetPort: 8443
 ---
 # Step Functions StartSyncExecution endpoint alias. The AWS SDK/CLI resolve StartSyncExecution to a
 # SEPARATE, "sync-"prefixed host (AWS's sync-states.<region>.amazonaws.com), and apply that prefix even

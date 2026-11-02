@@ -24,9 +24,13 @@ echo "kubectl $*" >> "$STUB/calls.log"
 ns=""
 if [ "$1" = "-n" ]; then ns=$2; shift 2; fi
 serve() { if [ -f "$STUB/$1" ]; then cat "$STUB/$1"; else echo '{"items":[]}'; fi; }
+optional() { if [ -f "$STUB/$1" ]; then cat "$STUB/$1"; fi; }
 case "$*" in
   "get certificate openinfra-root-ca -o json") cat "$STUB/root-cert.json" ;;
   "get clusterissuer openinfra-ca -o jsonpath={.spec.ca.secretName}") jq -j '.spec.ca.secretName' "$STUB/issuer.json" ;;
+  "get certificate openinfra-aws-endpoints-ca -o json --ignore-not-found") optional aws-cert.json ;;
+  "get clusterissuer openinfra-aws-endpoints -o jsonpath={.spec.ca.secretName}") jq -j '.spec.ca.secretName' "$STUB/aws-issuer.json" ;;
+  "get environmentconfig openinfra-platform-ca -o json --ignore-not-found") optional envcfg.json ;;
   "get certificaterequests -o json") serve "crs-$ns.json" ;;
   "get certificates -o json") serve "certs-$ns.json" ;;
   "apply --server-side --field-manager=platform-ca-publisher -f -") cat > "$STUB/applied.json" ;;
@@ -99,6 +103,7 @@ func runPublisher(t *testing.T, sh []string, fixtures map[string]any) (dir, out 
 	cmd := exec.CommandContext(ctx, sh[0], append(sh[1:], "-ceu", extractArgsScript(t, publisherPath))...)
 	cmd.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "STUB=" + dir, "HOME=" + tmp, "TMPDIR=" + tmp,
 		"ROOT_NS=cert-manager", "ROOT_CERT=openinfra-root-ca", "ISSUER=openinfra-ca",
+		"AWS_CA_CERT=openinfra-aws-endpoints-ca", "AWS_CA_ISSUER=openinfra-aws-endpoints",
 		"PLATFORM_NAMESPACES=open-infra-aws-shim open-infra-ecr", "RENEW_BACKOFF_SECONDS=1800"}
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
@@ -259,5 +264,95 @@ func TestPlatformCAPublisher_RefusesAnythingButTheIssuedRoot(t *testing.T) {
 				t.Fatalf("nothing may be published or renewed\n%s", out)
 			}
 		})
+	}
+}
+
+const awsCAUID = "5a1f00d2-0000-4aaa-8bbb-0a5ca0000001"
+
+func awsCACert(rev int, secret string, ready bool) map[string]any {
+	st := "True"
+	if !ready {
+		st = "False"
+	}
+	return map[string]any{"metadata": map[string]any{"name": "openinfra-aws-endpoints-ca", "uid": awsCAUID},
+		"spec":   map[string]any{"secretName": secret, "issuerRef": map[string]any{"name": "openinfra-issuer", "kind": "ClusterIssuer", "group": "cert-manager.io"}},
+		"status": map[string]any{"revision": rev, "conditions": []any{map[string]any{"type": "Ready", "status": st}}}}
+}
+
+// The AWS endpoints CA (guest-aws-endpoints.yaml) is published beside the root, from its own current
+// revision's request, by the same rules; without one (guest AWS endpoints off) only the root is published;
+// and while it cannot be read (not ready, its issuer signing with another Secret, a refused PEM) the one
+// published before stays, never dropped or replaced by something unverified.
+func TestPlatformCAPublisher_PublishesTheAWSEndpointsCA(t *testing.T) {
+	needJQ(t)
+	sh := posixShells(t)[0]
+	awsCA := pemOf("QVdTQ0E=")
+	before := pemOf("QkVGT1JF")
+	base := func() map[string]any {
+		return map[string]any{
+			"root-cert.json": rootCert(3, "openinfra-root-ca-2"),
+			"issuer.json":    map[string]any{"spec": map[string]any{"ca": map[string]any{"secretName": "openinfra-root-ca-2"}}},
+			"crs-cert-manager.json": items(
+				certReq("openinfra-root-ca-3", "openinfra-root-ca", "3", rootUID, "openinfra-issuer", newRoot, newRoot, true),
+				certReq("openinfra-aws-endpoints-ca-1", "openinfra-aws-endpoints-ca", "1", awsCAUID, "openinfra-issuer", awsCA, awsCA, true),
+				certReq("aws-look-alike", "openinfra-aws-endpoints-ca", "1", "", "openinfra-issuer", pemOf("RVZJTA=="), "", true),
+			),
+			"aws-issuer.json": map[string]any{"spec": map[string]any{"ca": map[string]any{"secretName": "openinfra-aws-endpoints-ca-1"}}},
+			"envcfg.json":     map[string]any{"data": map[string]any{"platformRootCA": newRoot, "awsEndpointsCA": before}},
+		}
+	}
+	published := func(t *testing.T, fx map[string]any) map[string]any {
+		t.Helper()
+		dir, out, err := runPublisher(t, sh, fx)
+		if err != nil {
+			t.Fatalf("publisher failed: %v\n%s", err, out)
+		}
+		var ec map[string]any
+		if err := json.Unmarshal([]byte(readStub(dir, "applied.json")), &ec); err != nil {
+			t.Fatalf("no EnvironmentConfig applied: %v\n%s", err, out)
+		}
+		data := ec["data"].(map[string]any)
+		if s, _ := data["platformRootCA"].(string); strings.TrimSpace(s) != strings.TrimSpace(newRoot) {
+			t.Fatalf("the root must be published as always, got %q", s)
+		}
+		return data
+	}
+	same := func(got any, want string) bool {
+		s, _ := got.(string)
+		return strings.TrimSpace(s) == strings.TrimSpace(want)
+	}
+
+	fx := base()
+	fx["aws-cert.json"] = awsCACert(1, "openinfra-aws-endpoints-ca-1", true)
+	if got := published(t, fx)["awsEndpointsCA"]; !same(got, awsCA) {
+		t.Errorf("issued: awsEndpointsCA = %q, want its revision-1 certificate", got)
+	}
+
+	fx = base() // no openinfra-aws-endpoints-ca: guest AWS endpoints off
+	if got, ok := published(t, fx)["awsEndpointsCA"]; ok {
+		t.Errorf("without the CA only the root is published, got awsEndpointsCA %q", got)
+	}
+
+	fx = base()
+	fx["aws-cert.json"] = awsCACert(2, "openinfra-aws-endpoints-ca-1", false)
+	if got := published(t, fx)["awsEndpointsCA"]; !same(got, before) {
+		t.Errorf("not ready: the CA published before must stay, got %q", got)
+	}
+
+	fx = base()
+	fx["aws-cert.json"] = awsCACert(1, "openinfra-aws-endpoints-ca-2", true) // its issuer still signs with -1
+	if got := published(t, fx)["awsEndpointsCA"]; !same(got, before) {
+		t.Errorf("mid-rotation: the CA published before must stay, got %q", got)
+	}
+
+	fx = base()
+	fx["aws-cert.json"] = awsCACert(1, "openinfra-aws-endpoints-ca-1", true)
+	fx["crs-cert-manager.json"] = items(
+		certReq("openinfra-root-ca-3", "openinfra-root-ca", "3", rootUID, "openinfra-issuer", newRoot, newRoot, true),
+		certReq("openinfra-aws-endpoints-ca-1", "openinfra-aws-endpoints-ca", "1", awsCAUID, "openinfra-issuer",
+			awsCA+"-----BEGIN EC PRIVATE KEY-----\nS0VZ\n-----END EC PRIVATE KEY-----\n", "", true),
+	)
+	if got := published(t, fx)["awsEndpointsCA"]; !same(got, before) {
+		t.Errorf("a key in its PEM is never published; the one before stays, got %q", got)
 	}
 }

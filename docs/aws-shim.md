@@ -175,6 +175,24 @@ SigV4-signed, and these match only their exact paths.
 curl -fsS http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566/v1/ca-bundle -o openinfra-root-ca.crt
 ```
 
+### AWS's own hostnames (VM guests)
+
+Inside a VM guest, the `amazonaws.com` names of the services this shim serves resolve to it, so a URL the
+guest carries from its AWS-side configuration, or an SDK that ignores `AWS_ENDPOINT_URL`, reaches the shim
+rather than AWS (`platform/aws-shim/guest-aws-endpoints.yaml`; on unless `networking.guestAwsEndpoints:
+false`). The shim serves them on its **AWS-names listener** — Service port `443` → `:8443`
+(`TLS_LISTEN_ADDR`, `TLS_CERT_FILE`, `TLS_KEY_FILE`) — with the Certificate `aws-shim-aws-endpoints-tls`
+from the **AWS endpoints CA** (ClusterIssuer `openinfra-aws-endpoints`): a root name-constrained to
+`amazonaws.com` that only VM guests trust (the `platform-ca-publisher` publishes it beside the platform
+root as `awsEndpointsCA`), and that issues only in the shim's and the registry's namespaces. The listener
+re-reads the certificate on renewal and starts before it exists. Routing is unchanged (by the SigV4
+credential scope); the Host matters only to S3 (virtual-hosted, above), API Gateway (`<id>.execute-api`)
+and SQS: a caller that came by `sqs.<region>.amazonaws.com` is answered with queue URLs at that name,
+while the queue is recorded under the shim's own URL (`SQS_QUEUE_URL_BASE`), so no other caller is ever
+handed an `amazonaws.com` URL. The registry answers `<account>.dkr.ecr.<region>.amazonaws.com` through
+`ecr-registry-aws`, a third instance of the same registry that serves TLS itself (its token realm is this
+shim's in-cluster TLS port).
+
 ## Services
 
 The shim dispatches by the AWS service the client signed for (read from the SigV4 credential
@@ -280,10 +298,14 @@ resource that owns it. The claim's MinIO user and credentials are removed by the
 
 **Path-style and virtual-hosted-style requests, and pre-signed URLs.** Requests address a bucket either
 in the path (`https://<s3 host>/<bucket>/<key>`) or in the hostname (`https://<bucket>.<s3 host>/<key>`,
-the SDK default for many clients). Virtual-hosted style is accepted for the hosts listed in
-`S3_VHOST_SUFFIXES`; set it, with this installation's LAN addresses, in the optional `aws-shim-site`
-ConfigMap in the shim's namespace (e.g. `S3_VHOST_SUFFIXES: s3.<your domain>`), and give the S3 Ingress
-both `<s3 host>` and `*.<s3 host>`. A pre-signed URL (`aws s3 presign`, or any SDK presigner) is verified
+the SDK default for many clients). Virtual-hosted style is accepted for the shim's own in-cluster names
+(`S3_INTERNAL_VHOST_SUFFIXES`, set in the manifest, so a default client pointed at
+`AWS_ENDPOINT_URL=https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567` works; the internal
+certificate covers `*.aws-shim.open-infra-aws-shim.svc[.cluster.local]`), for AWS's own S3 names
+(`<bucket>.s3[.<region>].amazonaws.com`, which a VM guest's resolver sends here — see "AWS's own
+hostnames" below), and for the hosts listed in `S3_VHOST_SUFFIXES`; set that, with this installation's
+LAN addresses, in the optional `aws-shim-site` ConfigMap in the shim's namespace (e.g.
+`S3_VHOST_SUFFIXES: s3.<your domain>`), and give the S3 Ingress both `<s3 host>` and `*.<s3 host>`. A pre-signed URL (`aws s3 presign`, or any SDK presigner) is verified
 like any SigV4 request, so it opens in a browser for its lifetime and a tampered signature is refused.
 For browsers and LAN clients to trust the TLS certificate, issue it from the cluster CA
 (`cert-manager.io/cluster-issuer: openinfra-ca`, see `platform/networking/cluster-ca.yaml`) and trust its

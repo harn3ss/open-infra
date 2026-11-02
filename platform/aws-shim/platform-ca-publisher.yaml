@@ -15,6 +15,11 @@
 # ClusterIssuer openinfra-ca still signs with a different Secret than the root Certificate writes (a key
 # rotation part-way through a sync), nothing changes: guests keep the root that signs.
 #
+# The AWS endpoints CA (cert-manager/openinfra-aws-endpoints-ca, guest-aws-endpoints.yaml) is published
+# the same way, beside the root (data.awsEndpointsCA): guests trust it for the amazonaws.com names their
+# resolver answers with the platform's addresses. It is optional — absent (networking.guestAwsEndpoints:
+# false), not issued yet, or with its ClusterIssuer signing with another Secret, it is left out this run.
+#
 # Then every certificate openinfra-ca issued in a platform namespace (the namespaces the admission policy
 # in cluster-ca.yaml allows) whose latest CertificateRequest was signed by another root is renewed, as
 # `cmctl renew` does it: an Issuing condition on its status. After a key rotation that re-signs the shim,
@@ -22,8 +27,8 @@
 #
 # Public data: the publisher reads no Secret.
 #
-# Least privilege: in cert-manager, get the root Certificate and list CertificateRequests; get the
-# openinfra-ca ClusterIssuer; in each platform namespace, list Certificates and CertificateRequests and
+# Least privilege: in cert-manager, get the two root Certificates and list CertificateRequests; get their
+# ClusterIssuers; in each platform namespace, list Certificates and CertificateRequests and
 # set a Certificate's status (to renew it); create EnvironmentConfigs, and get/update only
 # openinfra-platform-ca. RBAC cannot scope create by name, so the admission policy below confines this
 # identity to openinfra-platform-ca, and lets nobody else but system:masters write that config.
@@ -91,7 +96,7 @@ metadata:
 rules:
   - apiGroups: [cert-manager.io]
     resources: [certificates]
-    resourceNames: [openinfra-root-ca]
+    resourceNames: [openinfra-root-ca, openinfra-aws-endpoints-ca]
     verbs: [get]
   - apiGroups: [cert-manager.io]
     resources: [certificaterequests]
@@ -122,7 +127,7 @@ rules:
     verbs: [get, update, patch]
   - apiGroups: [cert-manager.io]
     resources: [clusterissuers]
-    resourceNames: [openinfra-ca]
+    resourceNames: [openinfra-ca, openinfra-aws-endpoints]
     verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -207,17 +212,44 @@ spec:
                 - { name: ROOT_NS, value: cert-manager }
                 - { name: ROOT_CERT, value: openinfra-root-ca }
                 - { name: ISSUER, value: openinfra-ca }
+                # The AWS endpoints CA guests also trust (guest-aws-endpoints.yaml), and its ClusterIssuer.
+                - { name: AWS_CA_CERT, value: openinfra-aws-endpoints-ca }
+                - { name: AWS_CA_ISSUER, value: openinfra-aws-endpoints }
                 # The namespaces openinfra-ca may issue in (cluster-ca.yaml, openinfra-ca-issuance).
                 - { name: PLATFORM_NAMESPACES, value: "open-infra-aws-shim open-infra-ecr" }
                 - { name: RENEW_BACKOFF_SECONDS, value: "1800" }
               args:
                 - |
+                  # issued_pem CERT_JSON: a root Certificate's own certificate, from the CertificateRequest of
+                  # its current revision, owned by it, approved and ready (cert-manager sets status, which only
+                  # it can write). Certificates only: anything else (a key, stray text) is refused, never
+                  # published. Fails, saying why, when there is no such certificate.
+                  issued_pem() {
+                    i_name="$(printf '%s' "$1" | jq -r .metadata.name)"
+                    i_uid="$(printf '%s' "$1" | jq -r .metadata.uid)"
+                    i_rev="$(printf '%s' "$1" | jq -r '.status.revision // 0')"
+                    i_b64="$(kubectl -n "$ROOT_NS" get certificaterequests -o json \
+                      | jq -r --arg uid "$i_uid" --arg rev "$i_rev" --argjson ref "$(printf '%s' "$1" | jq -c .spec.issuerRef)" '[.items[]
+                          | select(any(.metadata.ownerReferences[]?; .uid == $uid and .kind == "Certificate"))
+                          | select((.metadata.annotations["cert-manager.io/certificate-revision"] // "") == $rev)
+                          | select(.spec.issuerRef.name == $ref.name and .spec.issuerRef.kind == $ref.kind)
+                          | select(any(.status.conditions[]?; .type == "Approved" and .status == "True"))
+                          | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+                          | .status.certificate // empty] | if length == 1 then .[0] else empty end')"
+                    [ -n "$i_b64" ] || { echo "no single issued CertificateRequest for $i_name revision $i_rev" >&2; return 1; }
+                    i_pem="$(printf '%s' "$i_b64" | base64 -d)"
+                    if printf '%s\n' "$i_pem" | grep -q -v -x -e '-----BEGIN CERTIFICATE-----' -e '-----END CERTIFICATE-----' -e '[A-Za-z0-9+/=]*'; then
+                      echo "refusing to publish: $i_name is not PEM certificates only" >&2; return 1
+                    fi
+                    printf '%s' "$i_pem"
+                  }
+                  ready() { printf '%s' "$1" | jq -e 'any(.status.conditions[]?; .type == "Ready" and .status == "True")' >/dev/null; }
+
                   # The root Certificate, and the Secret the ClusterIssuer signs with.
                   crt="$(kubectl -n "$ROOT_NS" get certificate "$ROOT_CERT" -o json)"
-                  if ! printf '%s' "$crt" | jq -e 'any(.status.conditions[]?; .type == "Ready" and .status == "True")' >/dev/null; then
+                  if ! ready "$crt"; then
                     echo "$ROOT_NS/$ROOT_CERT is not issued yet; nothing to publish"; exit 0
                   fi
-                  uid="$(printf '%s' "$crt" | jq -r .metadata.uid)"
                   rev="$(printf '%s' "$crt" | jq -r '.status.revision // 0')"
                   secret="$(printf '%s' "$crt" | jq -r .spec.secretName)"
                   signs="$(kubectl get clusterissuer "$ISSUER" -o jsonpath='{.spec.ca.secretName}')"
@@ -225,25 +257,26 @@ spec:
                     echo "$ISSUER signs with Secret $signs while $ROOT_CERT writes $secret (a key rotation in progress); nothing changed this run"
                     exit 0
                   fi
-                  # Its certificate: from the CertificateRequest of its current revision, owned by it,
-                  # approved and ready (cert-manager sets status, which only it can write).
-                  b64="$(kubectl -n "$ROOT_NS" get certificaterequests -o json \
-                    | jq -r --arg uid "$uid" --arg rev "$rev" --argjson ref "$(printf '%s' "$crt" | jq -c .spec.issuerRef)" '[.items[]
-                        | select(any(.metadata.ownerReferences[]?; .uid == $uid and .kind == "Certificate"))
-                        | select((.metadata.annotations["cert-manager.io/certificate-revision"] // "") == $rev)
-                        | select(.spec.issuerRef.name == $ref.name and .spec.issuerRef.kind == $ref.kind)
-                        | select(any(.status.conditions[]?; .type == "Approved" and .status == "True"))
-                        | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
-                        | .status.certificate // empty] | if length == 1 then .[0] else empty end')"
-                  [ -n "$b64" ] || { echo "no single issued CertificateRequest for $ROOT_CERT revision $rev" >&2; exit 1; }
-                  pem="$(printf '%s' "$b64" | base64 -d)"
-                  # Certificates only: anything else (a key, stray text) is refused, never published.
-                  if printf '%s\n' "$pem" | grep -q -v -x -e '-----BEGIN CERTIFICATE-----' -e '-----END CERTIFICATE-----' -e '[A-Za-z0-9+/=]*'; then
-                    echo "refusing to publish: the root is not PEM certificates only" >&2; exit 1
+                  pem="$(issued_pem "$crt")" || exit 1
+
+                  # The AWS endpoints CA, when there is one (guest-aws-endpoints.yaml). While it cannot be read
+                  # this run (not issued yet, its ClusterIssuer signing with another Secret, an API error),
+                  # the one published before stays.
+                  aws=""
+                  if acrt="$(kubectl -n "$ROOT_NS" get certificate "$AWS_CA_CERT" -o json --ignore-not-found)" && [ -z "$acrt" ]; then
+                    echo "no $ROOT_NS/$AWS_CA_CERT (guest AWS endpoints off): the AWS endpoints CA is not published"
+                  elif [ -n "$acrt" ] && ready "$acrt" \
+                      && [ "$(kubectl get clusterissuer "$AWS_CA_ISSUER" -o jsonpath='{.spec.ca.secretName}')" = "$(printf '%s' "$acrt" | jq -r .spec.secretName)" ] \
+                      && aws="$(issued_pem "$acrt")"; then
+                    echo "the AWS endpoints CA ($AWS_CA_CERT revision $(printf '%s' "$acrt" | jq -r '.status.revision // 0')) is published beside the root"
+                  else
+                    aws="$(kubectl get environmentconfig openinfra-platform-ca -o json --ignore-not-found | jq -r '.data.awsEndpointsCA // empty')"
+                    echo "$ROOT_NS/$AWS_CA_CERT cannot be read this run (not issued, its issuer signs with another Secret, or an error): ${aws:+the one published before stays}${aws:-none is published}"
                   fi
-                  jq -n --arg pem "$pem" '{apiVersion: "apiextensions.crossplane.io/v1alpha1", kind: "EnvironmentConfig",
+
+                  jq -n --arg pem "$pem" --arg aws "$aws" '{apiVersion: "apiextensions.crossplane.io/v1alpha1", kind: "EnvironmentConfig",
                       metadata: {name: "openinfra-platform-ca", labels: {"app.kubernetes.io/managed-by": "platform-ca-publisher"}},
-                      data: {platformRootCA: ($pem + "\n")}}' \
+                      data: ({platformRootCA: ($pem + "\n")} + (if $aws == "" then {} else {awsEndpointsCA: ($aws + "\n")} end))}' \
                     | kubectl apply --server-side --field-manager=platform-ca-publisher -f -
                   echo "openinfra-platform-ca holds the platform root CA ($ROOT_CERT revision $rev)"
 

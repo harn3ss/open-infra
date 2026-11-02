@@ -337,8 +337,10 @@ AWS_ENDPOINT_URL=https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567
 
 the shim's in-cluster TLS port, which serves the whole AWS surface and verifies against the platform root
 through `AWS_CA_BUNDLE`. aws-cli v2 2.13 and later, and current releases of the AWS SDKs, read it for
-every service (no per-service `AWS_ENDPOINT_URL_<SERVICE>` is needed: one shim serves them all), and use
-path-style S3 addressing against it.
+every service (no per-service `AWS_ENDPOINT_URL_<SERVICE>` is needed: one shim serves them all). botocore
+uses path-style S3 addressing against it; the JavaScript SDK v3's default `S3Client` addresses the bucket
+virtual-hosted, `<bucket>.aws-shim.open-infra-aws-shim.svc.cluster.local`, which the guest resolver below
+answers and the shim's certificate covers.
 
 **The distro aws CLI v1.** Ubuntu 22.04's `awscli` 1.22 (botocore 1.23) predates `AWS_ENDPOINT_URL` and
 would call AWS's own endpoints. So the guest also carries a one-line aws-cli *plugin*: the agent ships
@@ -373,11 +375,28 @@ or CRI-O used directly, a Kubernetes inside the guest) are not configured. The c
 role credentials from the instance metadata service through the default chain, which needs
 `metadataOptions.httpPutResponseHopLimit: 2` as on EC2.
 
-**What is still not covered.** The plugin hooks the aws CLI only. A program that uses **raw botocore or
-boto3** of the same era (botocore before ~1.27) does not read `AWS_ENDPOINT_URL` and has no plugin hook,
-so an unmodified call from it calls AWS's own endpoints — an open gap. Closing it for arbitrary old SDKs
-would need the guest to resolve and trust AWS's own hostnames, a deliberate design decision that is not
-taken here. Use a current SDK, or aws-cli (v1 or v2), in the guest.
+**AWS's own hostnames.** Some calls never consult `AWS_ENDPOINT_URL`: a URL the guest carries from its
+AWS-side configuration (an SQS queue URL `https://sqs.<region>.amazonaws.com/<account>/<queue>` — the
+JavaScript SDK v3 sends to the queue URL's host — an image named
+`<account>.dkr.ecr.<region>.amazonaws.com/<repo>`, a bucket's `https://<bucket>.s3.<region>.amazonaws.com/`
+URL, an API's `execute-api` invoke URL), and SDKs that ignore it (raw botocore/boto3 before ~1.27,
+aws-sdk-go v1). With the aws-shim on, guests use a resolver of their own
+(`platform/aws-shim/guest-aws-endpoints.yaml`; the VMI's `dnsConfig`, which KubeVirt's DHCP hands the
+guest) that answers the `amazonaws.com` names of the services the shim serves with the shim's address and
+`<account>.dkr.ecr.<region>.amazonaws.com` with the registry's, and forwards every other name to the
+cluster DNS. The platform serves those names with certificates from the **AWS endpoints CA**, a root of
+its own, name-constrained to `amazonaws.com`, that guests trust beside the platform root (the agent
+installs it as a second anchor, so `/etc/openinfra/ca-bundle.pem` carries it). LAN workstations never
+trust it: they import the platform root only. A guest that calls SQS by an AWS name is answered with queue
+URLs in that shape; the queue is recorded under the shim's own URL, so no other caller is handed an
+`amazonaws.com` URL.
+
+The resolver takes effect when the VM next starts. `networking.guestAwsEndpoints: false` turns it off (the
+cluster DNS again). Not covered: AWS names of services the shim does not serve (`ec2`, `ssmmessages`, and
+so on resolve to AWS as before), S3's dash-region and dualstack names, and other partitions' domains —
+those still leave the cluster unless guest egress to AWS is blocked. A guest cannot download anonymously
+from a bucket on AWS (an agent installer in a public bucket): every `<bucket>.s3…amazonaws.com` name is
+answered by the platform.
 
 ## Extra data disks (`dataDisks`) — the EC2 BlockDeviceMapping analog
 

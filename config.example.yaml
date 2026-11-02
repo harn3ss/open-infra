@@ -56,6 +56,15 @@ networking:
   # (restart the shim after changing it). EXAMPLE ONLY — set your own:
   publicDnsSuffix: ""
 
+  # AWS's own names inside VM guests (with components.awsShim): a resolver for guests
+  # only answers the amazonaws.com names of the services the aws-shim serves (and
+  # <account>.dkr.ecr.<region>.amazonaws.com) with the platform's addresses, and guests
+  # trust a CA name-constrained to amazonaws.com that only they trust. A queue URL, image
+  # name or bucket URL a guest carries from its AWS-side config then reaches the platform,
+  # never AWS (platform/aws-shim/guest-aws-endpoints.yaml). false => guests use the
+  # cluster DNS, and such URLs reach AWS. A guest picks the change up at its next start.
+  guestAwsEndpoints: true
+
   # Ingress controller bundled with k3s. Keep traefik for v1.
   ingress: traefik
 

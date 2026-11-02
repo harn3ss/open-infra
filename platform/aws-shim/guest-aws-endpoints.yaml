@@ -1,0 +1,669 @@
+# AWS's own hostnames inside VM guests: a resolver and a CA for guests only, so an amazonaws.com URL a
+# guest carries reaches this platform's AWS front door, never AWS.
+#
+# A Linux VM guest calls AWS through AWS_ENDPOINT_URL (the aws-shim's in-cluster TLS port). Two kinds of
+# call bypass it:
+#   - a URL the guest carries from its AWS-side configuration: an SQS QueueUrl
+#     (https://sqs.<region>.amazonaws.com/<account>/<queue>; the JavaScript SDK v3 sends to the QueueUrl's
+#     host), an image named <account>.dkr.ecr.<region>.amazonaws.com/<repo>, a bucket's virtual-hosted URL,
+#     an API's execute-api invoke URL;
+#   - an SDK or tool that ignores AWS_ENDPOINT_URL (aws-sdk v2, older botocore).
+# Without this file both reach AWS, carrying the role's key id, session token and the request's body. And
+# an SDK that addresses buckets virtual-hosted (the JavaScript SDK v3's default) asks for
+# <bucket>.aws-shim.open-infra-aws-shim.svc.cluster.local, a name the cluster DNS does not answer.
+#
+# 1. The guest resolver (kube-system/openinfra-guest-dns at 10.43.0.53), a CoreDNS that answers
+#    - <bucket>.aws-shim.open-infra-aws-shim.svc[.cluster.local] with the shim's address;
+#    - the amazonaws.com names of the services the aws-shim serves (their regional endpoints; the
+#      execute-api, appsync-api and S3 virtual-hosted names; the global sts, iam, cloudfront, s3 and the
+#      legacy queue names) with the shim's address;
+#    - <account>.dkr.ecr.<region>.amazonaws.com with the guest-facing registry's (ecr-registry-aws);
+#    and forwards every other name to the cluster DNS. AWS names of services the shim does not serve
+#    (ec2, ssmmessages, awscli.amazonaws.com, ...) resolve as they always did. VM guests use it through
+#    their VMI's dnsConfig (vm-composition.yaml, from the openinfra-guest-dns EnvironmentConfig below); no
+#    other pod does, so platform components that call AWS itself are unaffected. It runs in kube-system on
+#    port 53 because a security group with egress rules always allows DNS to kube-system:53
+#    (securitygroup-composition.yaml).
+# 2. The AWS endpoints CA (cert-manager/openinfra-aws-endpoints-ca): a root of its own, name-constrained to
+#    amazonaws.com, that signs only the shim's and the registry's AWS-names certificates, and only in their
+#    namespaces (the admission policy below). VM guests trust it: the platform-ca-publisher publishes it
+#    beside the platform root (openinfra-platform-ca, awsEndpointsCA) and the guest's agent adds it to the
+#    system trust store. LAN clients, which import the platform root, never trust it, so no workstation
+#    accepts a certificate this platform minted for an AWS name. (The platform root could not sign these
+#    anyway: it is name-constrained to in-cluster and private names, networking/cluster-ca.yaml.)
+# 3. The aws-shim serves the AWS names on its AWS-names TLS listener (Service port 443 -> :8443) with
+#    aws-shim-aws-endpoints-tls. A caller that came by sqs.<region>.amazonaws.com is answered with queue
+#    URLs in that shape, but a queue is always recorded under the shim's own URL, so no other caller is
+#    ever handed an amazonaws.com URL. (The shim's internal certificate also covers
+#    *.aws-shim.open-infra-aws-shim.svc[.cluster.local], for item one above.)
+# 4. ecr-registry-aws: the same registry (same storage, same token trust anchor) serving TLS for
+#    <account>.dkr.ecr.<region>.amazonaws.com, its token realm the shim's in-cluster TLS port.
+#
+# On by default with the aws-shim; networking.guestAwsEndpoints: false makes install.sh exclude this file,
+# and guests keep the cluster DNS. Not covered: AWS names of services the shim does not serve, S3's
+# dash-region and dualstack forms, and other partitions' domains (amazonaws.com.cn). Those still leave the
+# cluster unless guest egress to AWS is blocked. A guest cannot download anonymously from a bucket on AWS
+# (an agent installer in a public AWS bucket): every <bucket>.s3... name is answered here.
+#
+# The resolver's address is a fixed ClusterIP in the statically-assigned band of the Service CIDR
+# (10.43.0.0/24 on k3s and RKE2). On a cluster with another Service CIDR, change it in the Service and in
+# the EnvironmentConfig below (a render test checks the two agree).
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openinfra-aws-endpoints-ca
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  isCA: true
+  commonName: open-infra AWS endpoints CA (VM guests)
+  subject:
+    organizations: [open-infra]
+  # The number is the key's generation, as for the platform root (cluster-ca.yaml): a renewal re-signs
+  # with the same key; a new key is a new Secret name here and in the ClusterIssuer.
+  secretName: openinfra-aws-endpoints-ca-1
+  duration: 87600h      # 10 years
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  # It can vouch for AWS's names only: a client that trusts it is not exposed for any other domain, even
+  # if its key leaked.
+  nameConstraints:
+    critical: true
+    permitted:
+      dnsDomains: [amazonaws.com]
+  issuerRef:
+    name: openinfra-issuer  # self-signed: the root signs itself
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: openinfra-aws-endpoints
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  ca:
+    secretName: openinfra-aws-endpoints-ca-1
+---
+# openinfra-aws-endpoints issues only in the aws-shim's and the registry's namespaces: a tenant who can
+# create a Certificate would otherwise get one for an AWS name that every VM guest trusts.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-aws-endpoints-issuance
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: [open-infra-aws-shim, open-infra-ecr]
+    resourceRules:
+      - apiGroups: [cert-manager.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [certificates, certificaterequests]
+      - apiGroups: [certificates.k8s.io]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [certificatesigningrequests]
+  validations:
+    - expression: >-
+        request.resource.group != 'cert-manager.io'
+        || !has(object.spec.issuerRef)
+        || !(object.spec.issuerRef.name == 'openinfra-aws-endpoints'
+             && has(object.spec.issuerRef.kind) && object.spec.issuerRef.kind == 'ClusterIssuer'
+             && (!has(object.spec.issuerRef.group) || object.spec.issuerRef.group in ['', 'cert-manager.io']))
+      reason: Forbidden
+      message: "the openinfra-aws-endpoints ClusterIssuer signs only for the aws-shim and the registry"
+    - expression: >-
+        request.resource.group != 'certificates.k8s.io'
+        || object.spec.signerName != 'clusterissuers.cert-manager.io/openinfra-aws-endpoints'
+      reason: Forbidden
+      message: "the openinfra-aws-endpoints ClusterIssuer does not sign Kubernetes CertificateSigningRequests"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-aws-endpoints-issuance
+spec:
+  policyName: openinfra-aws-endpoints-issuance
+  validationActions: [Deny]
+---
+# The shim's certificate for the AWS names its guests' resolver answers with it. A wildcard covers one
+# label, so each region has its own: *.<region> (the service endpoints, s3.<region>), *.s3.<region>
+# (buckets), *.execute-api.<region> and *.appsync-api.<region> (APIs), *.ecr.<region> (api.ecr) and
+# *.dynamodb.<region> (streams.dynamodb). A region missing here fails TLS in the guest; it never reaches
+# AWS. (test/render checks this list against the resolver's names.)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: aws-shim-aws-endpoints-tls
+  namespace: open-infra-aws-shim
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  secretName: aws-shim-aws-endpoints-tls
+  usages: [server auth, digital signature]
+  duration: 2160h    # 90 days
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  issuerRef:
+    name: openinfra-aws-endpoints
+    kind: ClusterIssuer
+    group: cert-manager.io
+  dnsNames:
+    - "*.amazonaws.com"
+    - "*.s3.amazonaws.com"
+    - "*.queue.amazonaws.com"
+    - "*.us-east-1.amazonaws.com"
+    - "*.s3.us-east-1.amazonaws.com"
+    - "*.execute-api.us-east-1.amazonaws.com"
+    - "*.appsync-api.us-east-1.amazonaws.com"
+    - "*.ecr.us-east-1.amazonaws.com"
+    - "*.dynamodb.us-east-1.amazonaws.com"
+    - "*.us-east-2.amazonaws.com"
+    - "*.s3.us-east-2.amazonaws.com"
+    - "*.execute-api.us-east-2.amazonaws.com"
+    - "*.appsync-api.us-east-2.amazonaws.com"
+    - "*.ecr.us-east-2.amazonaws.com"
+    - "*.dynamodb.us-east-2.amazonaws.com"
+    - "*.us-west-1.amazonaws.com"
+    - "*.s3.us-west-1.amazonaws.com"
+    - "*.execute-api.us-west-1.amazonaws.com"
+    - "*.appsync-api.us-west-1.amazonaws.com"
+    - "*.ecr.us-west-1.amazonaws.com"
+    - "*.dynamodb.us-west-1.amazonaws.com"
+    - "*.us-west-2.amazonaws.com"
+    - "*.s3.us-west-2.amazonaws.com"
+    - "*.execute-api.us-west-2.amazonaws.com"
+    - "*.appsync-api.us-west-2.amazonaws.com"
+    - "*.ecr.us-west-2.amazonaws.com"
+    - "*.dynamodb.us-west-2.amazonaws.com"
+    - "*.us-gov-east-1.amazonaws.com"
+    - "*.s3.us-gov-east-1.amazonaws.com"
+    - "*.execute-api.us-gov-east-1.amazonaws.com"
+    - "*.appsync-api.us-gov-east-1.amazonaws.com"
+    - "*.ecr.us-gov-east-1.amazonaws.com"
+    - "*.dynamodb.us-gov-east-1.amazonaws.com"
+    - "*.us-gov-west-1.amazonaws.com"
+    - "*.s3.us-gov-west-1.amazonaws.com"
+    - "*.execute-api.us-gov-west-1.amazonaws.com"
+    - "*.appsync-api.us-gov-west-1.amazonaws.com"
+    - "*.ecr.us-gov-west-1.amazonaws.com"
+    - "*.dynamodb.us-gov-west-1.amazonaws.com"
+    - "*.ca-central-1.amazonaws.com"
+    - "*.s3.ca-central-1.amazonaws.com"
+    - "*.execute-api.ca-central-1.amazonaws.com"
+    - "*.appsync-api.ca-central-1.amazonaws.com"
+    - "*.ecr.ca-central-1.amazonaws.com"
+    - "*.dynamodb.ca-central-1.amazonaws.com"
+    - "*.ca-west-1.amazonaws.com"
+    - "*.s3.ca-west-1.amazonaws.com"
+    - "*.execute-api.ca-west-1.amazonaws.com"
+    - "*.appsync-api.ca-west-1.amazonaws.com"
+    - "*.ecr.ca-west-1.amazonaws.com"
+    - "*.dynamodb.ca-west-1.amazonaws.com"
+    - "*.mx-central-1.amazonaws.com"
+    - "*.s3.mx-central-1.amazonaws.com"
+    - "*.execute-api.mx-central-1.amazonaws.com"
+    - "*.appsync-api.mx-central-1.amazonaws.com"
+    - "*.ecr.mx-central-1.amazonaws.com"
+    - "*.dynamodb.mx-central-1.amazonaws.com"
+    - "*.sa-east-1.amazonaws.com"
+    - "*.s3.sa-east-1.amazonaws.com"
+    - "*.execute-api.sa-east-1.amazonaws.com"
+    - "*.appsync-api.sa-east-1.amazonaws.com"
+    - "*.ecr.sa-east-1.amazonaws.com"
+    - "*.dynamodb.sa-east-1.amazonaws.com"
+    - "*.eu-west-1.amazonaws.com"
+    - "*.s3.eu-west-1.amazonaws.com"
+    - "*.execute-api.eu-west-1.amazonaws.com"
+    - "*.appsync-api.eu-west-1.amazonaws.com"
+    - "*.ecr.eu-west-1.amazonaws.com"
+    - "*.dynamodb.eu-west-1.amazonaws.com"
+    - "*.eu-west-2.amazonaws.com"
+    - "*.s3.eu-west-2.amazonaws.com"
+    - "*.execute-api.eu-west-2.amazonaws.com"
+    - "*.appsync-api.eu-west-2.amazonaws.com"
+    - "*.ecr.eu-west-2.amazonaws.com"
+    - "*.dynamodb.eu-west-2.amazonaws.com"
+    - "*.eu-west-3.amazonaws.com"
+    - "*.s3.eu-west-3.amazonaws.com"
+    - "*.execute-api.eu-west-3.amazonaws.com"
+    - "*.appsync-api.eu-west-3.amazonaws.com"
+    - "*.ecr.eu-west-3.amazonaws.com"
+    - "*.dynamodb.eu-west-3.amazonaws.com"
+    - "*.eu-central-1.amazonaws.com"
+    - "*.s3.eu-central-1.amazonaws.com"
+    - "*.execute-api.eu-central-1.amazonaws.com"
+    - "*.appsync-api.eu-central-1.amazonaws.com"
+    - "*.ecr.eu-central-1.amazonaws.com"
+    - "*.dynamodb.eu-central-1.amazonaws.com"
+    - "*.eu-central-2.amazonaws.com"
+    - "*.s3.eu-central-2.amazonaws.com"
+    - "*.execute-api.eu-central-2.amazonaws.com"
+    - "*.appsync-api.eu-central-2.amazonaws.com"
+    - "*.ecr.eu-central-2.amazonaws.com"
+    - "*.dynamodb.eu-central-2.amazonaws.com"
+    - "*.eu-north-1.amazonaws.com"
+    - "*.s3.eu-north-1.amazonaws.com"
+    - "*.execute-api.eu-north-1.amazonaws.com"
+    - "*.appsync-api.eu-north-1.amazonaws.com"
+    - "*.ecr.eu-north-1.amazonaws.com"
+    - "*.dynamodb.eu-north-1.amazonaws.com"
+    - "*.eu-south-1.amazonaws.com"
+    - "*.s3.eu-south-1.amazonaws.com"
+    - "*.execute-api.eu-south-1.amazonaws.com"
+    - "*.appsync-api.eu-south-1.amazonaws.com"
+    - "*.ecr.eu-south-1.amazonaws.com"
+    - "*.dynamodb.eu-south-1.amazonaws.com"
+    - "*.eu-south-2.amazonaws.com"
+    - "*.s3.eu-south-2.amazonaws.com"
+    - "*.execute-api.eu-south-2.amazonaws.com"
+    - "*.appsync-api.eu-south-2.amazonaws.com"
+    - "*.ecr.eu-south-2.amazonaws.com"
+    - "*.dynamodb.eu-south-2.amazonaws.com"
+    - "*.il-central-1.amazonaws.com"
+    - "*.s3.il-central-1.amazonaws.com"
+    - "*.execute-api.il-central-1.amazonaws.com"
+    - "*.appsync-api.il-central-1.amazonaws.com"
+    - "*.ecr.il-central-1.amazonaws.com"
+    - "*.dynamodb.il-central-1.amazonaws.com"
+    - "*.me-south-1.amazonaws.com"
+    - "*.s3.me-south-1.amazonaws.com"
+    - "*.execute-api.me-south-1.amazonaws.com"
+    - "*.appsync-api.me-south-1.amazonaws.com"
+    - "*.ecr.me-south-1.amazonaws.com"
+    - "*.dynamodb.me-south-1.amazonaws.com"
+    - "*.me-central-1.amazonaws.com"
+    - "*.s3.me-central-1.amazonaws.com"
+    - "*.execute-api.me-central-1.amazonaws.com"
+    - "*.appsync-api.me-central-1.amazonaws.com"
+    - "*.ecr.me-central-1.amazonaws.com"
+    - "*.dynamodb.me-central-1.amazonaws.com"
+    - "*.af-south-1.amazonaws.com"
+    - "*.s3.af-south-1.amazonaws.com"
+    - "*.execute-api.af-south-1.amazonaws.com"
+    - "*.appsync-api.af-south-1.amazonaws.com"
+    - "*.ecr.af-south-1.amazonaws.com"
+    - "*.dynamodb.af-south-1.amazonaws.com"
+    - "*.ap-east-1.amazonaws.com"
+    - "*.s3.ap-east-1.amazonaws.com"
+    - "*.execute-api.ap-east-1.amazonaws.com"
+    - "*.appsync-api.ap-east-1.amazonaws.com"
+    - "*.ecr.ap-east-1.amazonaws.com"
+    - "*.dynamodb.ap-east-1.amazonaws.com"
+    - "*.ap-east-2.amazonaws.com"
+    - "*.s3.ap-east-2.amazonaws.com"
+    - "*.execute-api.ap-east-2.amazonaws.com"
+    - "*.appsync-api.ap-east-2.amazonaws.com"
+    - "*.ecr.ap-east-2.amazonaws.com"
+    - "*.dynamodb.ap-east-2.amazonaws.com"
+    - "*.ap-south-1.amazonaws.com"
+    - "*.s3.ap-south-1.amazonaws.com"
+    - "*.execute-api.ap-south-1.amazonaws.com"
+    - "*.appsync-api.ap-south-1.amazonaws.com"
+    - "*.ecr.ap-south-1.amazonaws.com"
+    - "*.dynamodb.ap-south-1.amazonaws.com"
+    - "*.ap-south-2.amazonaws.com"
+    - "*.s3.ap-south-2.amazonaws.com"
+    - "*.execute-api.ap-south-2.amazonaws.com"
+    - "*.appsync-api.ap-south-2.amazonaws.com"
+    - "*.ecr.ap-south-2.amazonaws.com"
+    - "*.dynamodb.ap-south-2.amazonaws.com"
+    - "*.ap-southeast-1.amazonaws.com"
+    - "*.s3.ap-southeast-1.amazonaws.com"
+    - "*.execute-api.ap-southeast-1.amazonaws.com"
+    - "*.appsync-api.ap-southeast-1.amazonaws.com"
+    - "*.ecr.ap-southeast-1.amazonaws.com"
+    - "*.dynamodb.ap-southeast-1.amazonaws.com"
+    - "*.ap-southeast-2.amazonaws.com"
+    - "*.s3.ap-southeast-2.amazonaws.com"
+    - "*.execute-api.ap-southeast-2.amazonaws.com"
+    - "*.appsync-api.ap-southeast-2.amazonaws.com"
+    - "*.ecr.ap-southeast-2.amazonaws.com"
+    - "*.dynamodb.ap-southeast-2.amazonaws.com"
+    - "*.ap-southeast-3.amazonaws.com"
+    - "*.s3.ap-southeast-3.amazonaws.com"
+    - "*.execute-api.ap-southeast-3.amazonaws.com"
+    - "*.appsync-api.ap-southeast-3.amazonaws.com"
+    - "*.ecr.ap-southeast-3.amazonaws.com"
+    - "*.dynamodb.ap-southeast-3.amazonaws.com"
+    - "*.ap-southeast-4.amazonaws.com"
+    - "*.s3.ap-southeast-4.amazonaws.com"
+    - "*.execute-api.ap-southeast-4.amazonaws.com"
+    - "*.appsync-api.ap-southeast-4.amazonaws.com"
+    - "*.ecr.ap-southeast-4.amazonaws.com"
+    - "*.dynamodb.ap-southeast-4.amazonaws.com"
+    - "*.ap-southeast-5.amazonaws.com"
+    - "*.s3.ap-southeast-5.amazonaws.com"
+    - "*.execute-api.ap-southeast-5.amazonaws.com"
+    - "*.appsync-api.ap-southeast-5.amazonaws.com"
+    - "*.ecr.ap-southeast-5.amazonaws.com"
+    - "*.dynamodb.ap-southeast-5.amazonaws.com"
+    - "*.ap-southeast-6.amazonaws.com"
+    - "*.s3.ap-southeast-6.amazonaws.com"
+    - "*.execute-api.ap-southeast-6.amazonaws.com"
+    - "*.appsync-api.ap-southeast-6.amazonaws.com"
+    - "*.ecr.ap-southeast-6.amazonaws.com"
+    - "*.dynamodb.ap-southeast-6.amazonaws.com"
+    - "*.ap-southeast-7.amazonaws.com"
+    - "*.s3.ap-southeast-7.amazonaws.com"
+    - "*.execute-api.ap-southeast-7.amazonaws.com"
+    - "*.appsync-api.ap-southeast-7.amazonaws.com"
+    - "*.ecr.ap-southeast-7.amazonaws.com"
+    - "*.dynamodb.ap-southeast-7.amazonaws.com"
+    - "*.ap-northeast-1.amazonaws.com"
+    - "*.s3.ap-northeast-1.amazonaws.com"
+    - "*.execute-api.ap-northeast-1.amazonaws.com"
+    - "*.appsync-api.ap-northeast-1.amazonaws.com"
+    - "*.ecr.ap-northeast-1.amazonaws.com"
+    - "*.dynamodb.ap-northeast-1.amazonaws.com"
+    - "*.ap-northeast-2.amazonaws.com"
+    - "*.s3.ap-northeast-2.amazonaws.com"
+    - "*.execute-api.ap-northeast-2.amazonaws.com"
+    - "*.appsync-api.ap-northeast-2.amazonaws.com"
+    - "*.ecr.ap-northeast-2.amazonaws.com"
+    - "*.dynamodb.ap-northeast-2.amazonaws.com"
+    - "*.ap-northeast-3.amazonaws.com"
+    - "*.s3.ap-northeast-3.amazonaws.com"
+    - "*.execute-api.ap-northeast-3.amazonaws.com"
+    - "*.appsync-api.ap-northeast-3.amazonaws.com"
+    - "*.ecr.ap-northeast-3.amazonaws.com"
+    - "*.dynamodb.ap-northeast-3.amazonaws.com"
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ecr-registry-aws-endpoints-tls
+  namespace: open-infra-ecr
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  secretName: ecr-registry-aws-endpoints-tls
+  usages: [server auth, digital signature]
+  duration: 2160h    # 90 days
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  issuerRef:
+    name: openinfra-aws-endpoints
+    kind: ClusterIssuer
+    group: cert-manager.io
+  dnsNames:
+    - "*.dkr.ecr.us-east-1.amazonaws.com"
+    - "*.dkr.ecr.us-east-2.amazonaws.com"
+    - "*.dkr.ecr.us-west-1.amazonaws.com"
+    - "*.dkr.ecr.us-west-2.amazonaws.com"
+    - "*.dkr.ecr.us-gov-east-1.amazonaws.com"
+    - "*.dkr.ecr.us-gov-west-1.amazonaws.com"
+    - "*.dkr.ecr.ca-central-1.amazonaws.com"
+    - "*.dkr.ecr.ca-west-1.amazonaws.com"
+    - "*.dkr.ecr.mx-central-1.amazonaws.com"
+    - "*.dkr.ecr.sa-east-1.amazonaws.com"
+    - "*.dkr.ecr.eu-west-1.amazonaws.com"
+    - "*.dkr.ecr.eu-west-2.amazonaws.com"
+    - "*.dkr.ecr.eu-west-3.amazonaws.com"
+    - "*.dkr.ecr.eu-central-1.amazonaws.com"
+    - "*.dkr.ecr.eu-central-2.amazonaws.com"
+    - "*.dkr.ecr.eu-north-1.amazonaws.com"
+    - "*.dkr.ecr.eu-south-1.amazonaws.com"
+    - "*.dkr.ecr.eu-south-2.amazonaws.com"
+    - "*.dkr.ecr.il-central-1.amazonaws.com"
+    - "*.dkr.ecr.me-south-1.amazonaws.com"
+    - "*.dkr.ecr.me-central-1.amazonaws.com"
+    - "*.dkr.ecr.af-south-1.amazonaws.com"
+    - "*.dkr.ecr.ap-east-1.amazonaws.com"
+    - "*.dkr.ecr.ap-east-2.amazonaws.com"
+    - "*.dkr.ecr.ap-south-1.amazonaws.com"
+    - "*.dkr.ecr.ap-south-2.amazonaws.com"
+    - "*.dkr.ecr.ap-southeast-1.amazonaws.com"
+    - "*.dkr.ecr.ap-southeast-2.amazonaws.com"
+    - "*.dkr.ecr.ap-southeast-3.amazonaws.com"
+    - "*.dkr.ecr.ap-southeast-4.amazonaws.com"
+    - "*.dkr.ecr.ap-southeast-5.amazonaws.com"
+    - "*.dkr.ecr.ap-southeast-6.amazonaws.com"
+    - "*.dkr.ecr.ap-southeast-7.amazonaws.com"
+    - "*.dkr.ecr.ap-northeast-1.amazonaws.com"
+    - "*.dkr.ecr.ap-northeast-2.amazonaws.com"
+    - "*.dkr.ecr.ap-northeast-3.amazonaws.com"
+---
+# The guest resolver. Rules are tried in order and the first match wins; a rewritten question is
+# answered under its original name (answer auto). Every name no rule matches is forwarded unchanged.
+# (test/render checks the rules against the services the aws-shim registers and the certificates above.)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openinfra-guest-dns
+  namespace: kube-system
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health :8080
+        ready :8181
+        # The shim's own name, virtual-hosted (S3 against AWS_ENDPOINT_URL with a default SDK client).
+        rewrite stop name regex ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.aws-shim\.open-infra-aws-shim\.svc(\.cluster\.local)?\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        # A registry by its ECR name.
+        rewrite stop name regex ^[0-9]{12}\.dkr\.ecr\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ ecr-registry-aws.open-infra-ecr.svc.cluster.local. answer auto
+        # The regional endpoints of the services the aws-shim serves.
+        rewrite stop name regex ^(api\.ecr|athena|apigateway|appsync|cloudformation|cognito-idp|dynamodb|ecr|ecs|eks|email|events|glue|kinesis|kms|lambda|logs|monitoring|rds|s3|secretsmanager|sns|sqs|ssm|states|streams\.dynamodb|sts|sync-states)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        # An API's invoke name, an AppSync API's, a bucket's (regional or global).
+        rewrite stop name regex ^[a-z0-9]+\.(execute-api|appsync-api)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        rewrite stop name regex ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3(\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+)?\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        # Global endpoints, and SQS's legacy names.
+        rewrite stop name regex ^(sts|iam|cloudfront|s3|queue|[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.queue)\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        # Everything else: the cluster DNS (this pod's own resolv.conf, ClusterFirst).
+        forward . /etc/resolv.conf
+        cache 30
+        loop
+        reload
+        loadbalance
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openinfra-guest-dns
+  namespace: kube-system
+  labels: { app.kubernetes.io/name: openinfra-guest-dns }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: openinfra-guest-dns }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: openinfra-guest-dns }
+      annotations:
+        # A Corefile change restarts the pods (reload also picks it up in place).
+        openinfra.dev/corefile-rev: "1"
+    spec:
+      priorityClassName: system-cluster-critical
+      dnsPolicy: ClusterFirst
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: { app.kubernetes.io/name: openinfra-guest-dns }
+      containers:
+        - name: coredns
+          # The cluster DNS's own CoreDNS release (k3s), by digest.
+          image: docker.io/rancher/mirrored-coredns-coredns:1.14.3@sha256:b21d26b915e10acb5bc78715c1e8b6047ab2675389b2bcc18b3a6499d90e74c0
+          args: [-conf, /etc/coredns/Corefile]
+          ports:
+            - { name: dns, containerPort: 53, protocol: UDP }
+            - { name: dns-tcp, containerPort: 53, protocol: TCP }
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /ready, port: 8181 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { add: [NET_BIND_SERVICE], drop: [ALL] }
+          volumeMounts:
+            - { name: config, mountPath: /etc/coredns, readOnly: true }
+      volumes:
+        - name: config
+          configMap: { name: openinfra-guest-dns }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: openinfra-guest-dns
+  namespace: kube-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: openinfra-guest-dns }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openinfra-guest-dns
+  namespace: kube-system
+  labels: { app.kubernetes.io/name: openinfra-guest-dns }
+spec:
+  type: ClusterIP
+  clusterIP: 10.43.0.53
+  selector: { app.kubernetes.io/name: openinfra-guest-dns }
+  ports:
+    - { name: dns, port: 53, targetPort: 53, protocol: UDP }
+    - { name: dns-tcp, port: 53, targetPort: 53, protocol: TCP }
+---
+# The resolver VM guests use (vm-composition.yaml reads it through an Optional environment step: without
+# this file, guests keep the cluster DNS).
+apiVersion: apiextensions.crossplane.io/v1alpha1
+kind: EnvironmentConfig
+metadata:
+  name: openinfra-guest-dns
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+data:
+  guestNameserver: "10.43.0.53"
+---
+# The registry for its ECR names: the same distribution instance as ecr-registry-public (same storage
+# bucket, same upload secret, same token trust anchor), serving TLS itself with the AWS-names
+# certificate, so a guest pulls <account>.dkr.ecr.<region>.amazonaws.com/<repo> after an unmodified
+# `aws ecr get-login-password | docker login`. Its token realm is the shim's in-cluster TLS port, which
+# guests verify against the platform root. distribution reads its certificate once, so the wrapper
+# restarts the container when cert-manager renews it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ecr-registry-aws
+  namespace: open-infra-ecr
+  labels: { app: ecr-registry-aws }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: ecr-registry-aws }
+  template:
+    metadata:
+      labels: { app: ecr-registry-aws }
+    spec:
+      serviceAccountName: ecr-registry
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - { name: config, configMap: { name: ecr-registry-config } }
+        - { name: tmp, emptyDir: {} }
+        - { name: token-cert, configMap: { name: ecr-token-cert } }
+        - { name: tls, secret: { secretName: ecr-registry-aws-endpoints-tls } }
+      containers:
+        - name: registry
+          image: ghcr.io/distribution/distribution@sha256:4ba3adf47f5c866e9a29288c758c5328ef03396cb8f5f6454463655fa8bc83e2
+          command: [/bin/sh, -c]
+          args:
+            - |
+              set -u
+              stamp() { stat -L -c '%Y/%s' /tls/tls.crt /tls/tls.key | tr '\n' ' '; }
+              first="$(stamp)"
+              registry serve /etc/distribution/config.yml &
+              pid=$!
+              trap 'kill -TERM "$pid" 2>/dev/null; wait "$pid"; exit 0' TERM INT
+              while kill -0 "$pid" 2>/dev/null; do
+                sleep 60 &
+                wait $!
+                if [ "$(stamp)" != "$first" ]; then
+                  echo "the TLS certificate was renewed: restarting to serve it"
+                  kill -TERM "$pid"
+                  wait "$pid"
+                  exit 0
+                fi
+              done
+              wait "$pid"
+          ports: [{ name: https, containerPort: 5000 }]
+          env:
+            - { name: REGISTRY_STORAGE_S3_ACCESSKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: accessKey } } }
+            - { name: REGISTRY_STORAGE_S3_SECRETKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: secretKey } } }
+            - { name: REGISTRY_HTTP_SECRET, valueFrom: { secretKeyRef: { name: ecr-registry-auth, key: httpSecret } } }
+            - { name: REGISTRY_HTTP_RELATIVEURLS, value: "true" }
+            - { name: REGISTRY_HTTP_TLS_CERTIFICATE, value: /tls/tls.crt }
+            - { name: REGISTRY_HTTP_TLS_KEY, value: /tls/tls.key }
+            - { name: REGISTRY_AUTH_TOKEN_REALM, value: "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567/ecr/token" }
+          volumeMounts:
+            - { name: config, mountPath: /etc/distribution }
+            - { name: tmp, mountPath: /tmp }
+            - { name: token-cert, mountPath: /token-cert, readOnly: true }
+            - { name: tls, mountPath: /tls, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /, port: https, scheme: HTTPS }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: https, scheme: HTTPS }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ecr-registry-aws
+  namespace: open-infra-ecr
+  labels: { app: ecr-registry-aws }
+spec:
+  type: ClusterIP
+  selector: { app: ecr-registry-aws }
+  ports:
+    - { name: https, port: 443, targetPort: https }
