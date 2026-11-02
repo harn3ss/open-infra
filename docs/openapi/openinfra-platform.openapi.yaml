@@ -8998,8 +8998,8 @@ components:
               description: 'How the root disk is stored. Omitted: an unencrypted disk on the storage policy highAvailability
                 picks. encrypted: true stores it with LUKS at rest on the Longhorn longhorn-encrypted class, keyed by encryptionKey
                 exactly like an encrypted data disk (the EC2 root `BlockDeviceMapping.Ebs.Encrypted` equivalent): the OS image
-                is imported to a temporary disk and copied onto the encrypted one before first boot, so the VM starts a minute
-                or two later. Requires the opt-in encryption component. An encrypted root is RWO, so it cannot be combined
+                is imported to a temporary disk and copied onto the encrypted one before first boot, so the VM starts a few
+                minutes later. Requires the opt-in encryption component. An encrypted root is RWO, so it cannot be combined
                 with highAvailability or existingRootClaim. Immutable.'
               properties:
                 encrypted:

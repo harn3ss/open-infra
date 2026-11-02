@@ -1057,7 +1057,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 						vmNeedDefaultKey = true
 					}
 					spec["rootDisk"] = map[string]any{"encrypted": true, "encryptionKey": key}
-					cav = append(cav, "root disk: encrypted at rest with LUKS on longhorn-encrypted, keyed by kind: EncryptionKey "+key+" (destroying the key crypto-erases the disk). The OS image is copied onto it before first boot, so the instance starts a minute or two later than an unencrypted one, and the disk is RWO, so the VM does not live-migrate")
+					cav = append(cav, "root disk: encrypted at rest with LUKS on longhorn-encrypted, keyed by kind: EncryptionKey "+key+" (destroying the key crypto-erases the disk). The OS image is copied onto it before first boot, so the instance starts a few minutes later than an unencrypted one, and the disk is RWO, so the VM does not live-migrate")
 				}
 				if vs, has := ebs["VolumeSize"]; has {
 					spec["diskSize"] = fmt.Sprintf("%dGi", toInt(vs))

@@ -77,7 +77,7 @@ spec:
                     longhorn-encrypted class, keyed by encryptionKey exactly like an encrypted data disk (the
                     EC2 root `BlockDeviceMapping.Ebs.Encrypted` equivalent): the OS image is imported to a
                     temporary disk and copied onto the encrypted one before first boot, so the VM starts a
-                    minute or two later. Requires the opt-in encryption component. An encrypted root is RWO,
+                    few minutes later. Requires the opt-in encryption component. An encrypted root is RWO,
                     so it cannot be combined with highAvailability or existingRootClaim. Immutable.
                   properties:
                     encrypted: { type: boolean, default: false, description: "Encrypt the root disk at rest (LUKS on longhorn-encrypted)." }

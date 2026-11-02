@@ -49,7 +49,7 @@ func manifestsByKind(t *testing.T, out string) map[string][]map[string]any {
 // An encrypted root disk is a Block PVC on longhorn-encrypted, keyed by the named EncryptionKey (the
 // annotation the volume-crypto reconciler keys by), with no CDI root DataVolume (CDI cannot write a
 // dm-crypt device). Until the OS image has been copied onto it, the VM is Halted and the composition
-// renders the temporary image import — and the copy Job only once that import has Succeeded, so it never
+// renders the temporary image import — and the copy pod only once that import has Succeeded, so it never
 // copies a partial image.
 func TestVM_EncryptedRoot_BeforeTheCopy(t *testing.T) {
 	tmpl := extractInlineTemplate(t, vmCompositionPath)
@@ -99,51 +99,51 @@ func TestVM_EncryptedRoot_BeforeTheCopy(t *testing.T) {
 			}
 		}
 	}
-	for _, j := range by["Job"] {
+	for _, j := range by["Pod"] {
 		if digMap(j, "metadata")["name"] == "myvm-root-populate" {
 			job = true
 		}
 	}
 	if !dv || job {
-		t.Fatalf("before the import completes, the image import must render (%v) and the copy Job must not (%v)", dv, job)
+		t.Fatalf("before the import completes, the image import must render (%v) and the copy pod must not (%v)", dv, job)
 	}
-	// Once CDI reports the import Succeeded, the copy Job renders (and the import stays until the copy is done).
+	// Once CDI reports the import Succeeded, the copy pod renders (and the import stays until the copy is done).
 	done := manifestsByKind(t, render(t, tmpl, withImportDone(encRootCtx(nil))))
 	job, dv = false, false
-	for _, j := range done["Job"] {
+	for _, j := range done["Pod"] {
 		job = job || digMap(j, "metadata")["name"] == "myvm-root-populate"
 	}
 	for _, d := range done["DataVolume"] {
 		dv = dv || digMap(d, "metadata")["name"] == "myvm-root-image"
 	}
 	if !job || !dv {
-		t.Fatalf("after the import, the copy Job (%v) and the image (%v) must render", job, dv)
+		t.Fatalf("after the import, the copy pod (%v) and the image (%v) must render", job, dv)
 	}
 	if !strings.Contains(out, "rootPopulated: false") {
 		t.Errorf("status.rootPopulated must report false before the copy:\n%s", grepCtx(out, "rootPopulated"))
 	}
 }
 
-// Once the copy Job has succeeded — or once status.rootPopulated says so, after the Job is gone — the VM
-// runs and the temporary image and the Job are no longer rendered (Crossplane deletes them); the status
+// Once the copy pod has succeeded — or once status.rootPopulated says so, after the pod is gone — the VM
+// runs and the temporary image and the pod are no longer rendered (Crossplane deletes them); the status
 // keeps saying populated, so the image is never copied over the disk again.
 func TestVM_EncryptedRoot_AfterTheCopy(t *testing.T) {
 	tmpl := extractInlineTemplate(t, vmCompositionPath)
 	viaJob := encRootCtx(nil)
 	viaJob["observed"].(map[string]any)["resources"] = map[string]any{
 		"root-populate": map[string]any{"resource": map[string]any{"status": map[string]any{"atProvider": map[string]any{
-			"manifest": map[string]any{"metadata": map[string]any{"name": "myvm-root-populate"}, "status": map[string]any{"succeeded": int64(1)}}}}}},
+			"manifest": map[string]any{"metadata": map[string]any{"name": "myvm-root-populate"}, "status": map[string]any{"phase": "Succeeded"}}}}}},
 	}
 	viaStatus := encRootCtx(nil)
 	viaStatus["observed"].(map[string]any)["composite"].(map[string]any)["resource"].(map[string]any)["status"] = map[string]any{"rootPopulated": true}
-	for name, ctx := range map[string]map[string]any{"job succeeded": viaJob, "status kept": viaStatus} {
+	for name, ctx := range map[string]map[string]any{"copy pod succeeded": viaJob, "status kept": viaStatus} {
 		out := render(t, tmpl, ctx)
 		by := manifestsByKind(t, out)
 		if got := digMap(by["VirtualMachine"][0], "spec")["runStrategy"]; got != "Always" {
 			t.Errorf("%s: the VM must run once the image is on the encrypted root, got %v", name, got)
 		}
 		if strings.Contains(out, "myvm-root-image") || strings.Contains(out, "myvm-root-populate") {
-			t.Errorf("%s: the image import and the copy Job must no longer render:\n%s", name, grepCtx(out, "root-"))
+			t.Errorf("%s: the image import and the copy pod must no longer render:\n%s", name, grepCtx(out, "root-"))
 		}
 		if !strings.Contains(out, "rootPopulated: true") {
 			t.Errorf("%s: status.rootPopulated must be kept true", name)
@@ -179,7 +179,7 @@ func TestVM_EncryptedRoot_RefusesWhatItCannotHonor(t *testing.T) {
 	}
 }
 
-// The copy Job's script, run under the setup image's shells with files standing in for the image and
+// The copy pod's script, run under the setup image's shells with files standing in for the image and
 // the encrypted device: it copies the image onto a fresh (noise-filled) device, refuses an image larger
 // than the device, and never writes over a device that already holds a boot record.
 func TestVM_EncryptedRoot_CopyScript(t *testing.T) {
@@ -191,7 +191,7 @@ func TestVM_EncryptedRoot_CopyScript(t *testing.T) {
 	}
 	var script string
 	for _, d := range docs {
-		if m := digMap(d, "spec", "forProvider", "manifest"); m != nil && m["kind"] == "Job" {
+		if m := digMap(d, "spec", "forProvider", "manifest"); m != nil && m["kind"] == "Pod" {
 			var s []string
 			scriptTexts(m, "copy", &s)
 			if len(s) == 1 {

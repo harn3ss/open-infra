@@ -421,10 +421,10 @@ VM won't live-migrate while it's attached.
 stores the root disk the same way: LUKS on `longhorn-encrypted`, keyed by that key (the EC2 root
 `BlockDeviceMapping.Ebs.Encrypted` analog; `cfn` maps an encrypted root mapping, with no `KmsKeyId` to the
 stack's default key). CDI cannot write an encrypted device, so the OS image is imported to a temporary
-unencrypted disk (the pristine catalog image, never tenant data) and a Job copies it onto the encrypted
-root; the VM stays stopped until then (a minute or two on a 20Gi root), and `status.rootPopulated`
-records that the copy is done so it never runs again. The temporary disk and the Job are deleted after
-the copy. An encrypted root is RWO, so it cannot be combined with `highAvailability` (no live migration)
+unencrypted disk (the pristine catalog image, never tenant data) and, once that import has succeeded, a
+pod copies it onto the encrypted root (the boot record last, so an interrupted copy is simply redone);
+the VM stays stopped until then (a few minutes on a 20Gi root), and `status.rootPopulated` records that
+the copy is done so it never runs again. The temporary disk and the copy pod are deleted after the copy. An encrypted root is RWO, so it cannot be combined with `highAvailability` (no live migration)
 or `existingRootClaim`, and `rootDisk` is fixed at creation.
 
 ## Access
