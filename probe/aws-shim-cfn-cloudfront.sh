@@ -320,15 +320,18 @@ header_of() {
 
 log "waiting for the site to sync the upload (every 30s) and serve it on https://$HOST/"
 ROOT=""
+# The policy's X-Probe-Header carries $MARKER too, so match the BODY (after the headers) and a 200: a
+# site that answers before its first sync returns 403 with the header, which is not the upload served.
+body_of() { printf '%s' "$1" | awk 'f; /^$/ {f=1}'; }
 for i in $(seq 1 24); do
   ROOT="$(fetch /)"
-  printf '%s' "$ROOT" | grep -q "$MARKER" && break
+  [ "$(status_of "$ROOT")" = 200 ] && body_of "$ROOT" | grep -q "$MARKER" && break
   sleep 5
 done
-printf '%s' "$ROOT" | grep -q "$MARKER" || fail "https://$HOST/ never served the uploaded index.html; last response: $(snip "$ROOT")"
+body_of "$ROOT" | grep -q "$MARKER" || fail "https://$HOST/ never served the uploaded index.html; last response: $(snip "$ROOT")"
 [ "$(status_of "$ROOT")" = "200" ] || fail "https://$HOST/ returned $(status_of "$ROOT"), want 200"
 DEEP="$(fetch /deep/client/route)"
-[ "$(status_of "$DEEP")" = "200" ] && printf '%s' "$DEEP" | grep -q "$MARKER" \
+[ "$(status_of "$DEEP")" = "200" ] && body_of "$DEEP" | grep -q "$MARKER" \
   || fail "a deep SPA route did not fall back to index.html with 200 (the 403/404 -> /index.html mapping); got: $(snip "$DEEP")"
 ASSET="$(fetch /assets/app.js)"
 printf '%s' "$ASSET" | grep -q "asset-$SFX" || fail "a real asset was not served as itself: $(snip "$ASSET")"

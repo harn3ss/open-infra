@@ -189,6 +189,8 @@ kubectl -n "$NS" wait --for=condition=Ready "pod/$CLIENT" --timeout=120s >/dev/n
 # fetch prints the response headers, a blank line, then the body (curl -D -).
 fetch() { kubectl -n "$NS" exec "$CLIENT" -- curl -sS -m 10 -D - "$@" 2>/dev/null | tr -d '\r' || true; }
 status_of() { printf '%s' "$1" | awk 'NR==1{print $2}'; }
+# The X-Probe-Header carries $MARKER too: the body (after the headers) is what shows the upload is served.
+body_of() { printf '%s' "$1" | awk 'f; /^$/ {f=1}'; }
 # header_of <response> <name>: the header's value (case-insensitive name, header block only).
 header_of() {
   printf '%s' "$1" | awk -v h="$(printf '%s' "$2" | tr 'A-Z' 'a-z')" \
@@ -199,17 +201,17 @@ log "waiting for the server to sync the upload (every 10s)"
 OUT=""
 for i in $(seq 1 18); do
   OUT="$(fetch "http://$SITE-site/")"
-  printf '%s' "$OUT" | grep -q "$MARKER" && break
+  [ "$(status_of "$OUT")" = 200 ] && body_of "$OUT" | grep -q "$MARKER" && break
   sleep 5
 done
-printf '%s' "$OUT" | grep -q "$MARKER" || fail "GET / never served the uploaded index.html (bucket→sync→nginx broken); last response: $(snip "$OUT")"
+body_of "$OUT" | grep -q "$MARKER" || fail "GET / never served the uploaded index.html (bucket→sync→nginx broken); last response: $(snip "$OUT")"
 [ "$(status_of "$OUT")" = "200" ] || fail "GET / returned $(status_of "$OUT"), want 200"
 log "  ✓ GET / → 200, serves the uploaded index.html"
 
 # --- 4. SPA fallback, real asset, headers ---------------------------------------------------------
 DEEP="$(fetch "http://$SITE-site/deep/client/route")"
 [ "$(status_of "$DEEP")" = "200" ] || fail "deep route returned $(status_of "$DEEP"), want 200 (SPA fallback)"
-printf '%s' "$DEEP" | grep -q "$MARKER" || fail "deep route did not fall back to index.html; got: $(snip "$DEEP")"
+body_of "$DEEP" | grep -q "$MARKER" || fail "deep route did not fall back to index.html; got: $(snip "$DEEP")"
 log "  ✓ GET /deep/client/route → 200 index.html (SPA fallback)"
 
 ASSET="$(fetch "http://$SITE-site/assets/app.js")"
