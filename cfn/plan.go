@@ -122,6 +122,11 @@ type Capabilities struct {
 	// ECRRepositoryHost is the registry host an ECR repository's URI starts with (RepositoryUri is
 	// <host>/<name>); "" leaves Fn::GetAtt RepositoryUri unresolved before deploy.
 	ECRRepositoryHost string
+	// EC2AddressAPI: this environment keeps Elastic IP allocations of their own (an address held for its
+	// stack whether or not an instance is associated, translate_ec2eip.go), so an EIP associated with
+	// nothing in its stack allocates one, and an EIPAssociation can name one by its AllocationId from
+	// another stack. Off (the CLI), an EIP must be associated with an in-stack instance.
+	EC2AddressAPI bool
 }
 
 // BuildPlanWithCaps is BuildPlanWithExports with explicit deploy-environment Capabilities.

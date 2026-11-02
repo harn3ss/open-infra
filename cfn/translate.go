@@ -1211,6 +1211,14 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	// #347 1.6: an in-stack AWS::EC2::EIP associated with this instance folds onto the VM's LAN IP
 	// (spec.expose + spec.ports derived from its SecurityGroups) — translate_ec2eip.go.
 	cav = append(cav, eipExposeVM(id, spec, ctx)...)
+	if eip, ok := spec["elasticIp"].(map[string]any); ok {
+		if alloc, _ := eip["allocationId"].(string); alloc != "" {
+			// Another stack's allocation must exist (an AWS account's allocation ids have the same shape).
+			requires = append(requires, Requirement{APIVersion: ServiceAPIVersion, Kind: KindEC2Address, Name: alloc,
+				Why: "the Elastic IP allocation this instance's EIPAssociation names (another stack's AWS::EC2::EIP)"})
+		}
+	}
+	cav = append(cav, instanceDNSNameCaveats(id, spec, ctx)...)
 	// On AWS an instance with no security group gets the VPC default group, which admits inbound only from
 	// its own members and all outbound. A VM with none here has no firewall, so a published one gets the
 	// stack's default group (defaultSecurityGroup) instead — never every port open to the LAN.
@@ -2672,7 +2680,8 @@ func resolveInstanceRole(id string, ctx *stackCtx) (string, bool) {
 // data-plane policy engine (kind: Policy spec.dataPlane, Cedar-backed, enforced at the aws-shim)
 // removes that barrier for exactly the actions the shim fronts — the services in
 // policyengine.SupportedServices (today 17: s3, dynamodb, lambda, sqs, sns, kinesis, kms, ssm,
-// secretsmanager, ecr, ecs, logs, rds, ses, apigateway, cloudwatch, cloudfront). So this translator imports the
+// secretsmanager, ecr, ecs, logs, rds, ses, apigateway, cloudwatch, cloudfront), plus ec2's Elastic IP
+// address actions (policyengine.SupportedActions). So this translator imports the
 // DATA-PLANE part of the document (policyengine.ImportAWS) into a real, enforced Policy.
 //
 // It is fail-closed to a fault: a partially-translated security policy is worse than none (a dropped

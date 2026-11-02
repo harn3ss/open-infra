@@ -178,7 +178,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties: { GroupDescription: test }
 Outputs:
-  Dns: { Value: !Sub "${Web.PrivateDnsName}:443" }
+  Vpc: { Value: !Sub "${Web.VpcId}:443" }
   Ok:  { Value: !GetAtt Web.PrivateIp }
 `
 	plan, err := BuildPlan([]byte(tmpl), nil, "s")
@@ -186,7 +186,7 @@ Outputs:
 		t.Fatal(err)
 	}
 	joined := strings.Join(plan.Blockers, "\n")
-	if plan.Verdict != Rejected || !strings.Contains(joined, "Output Dns: Fn::GetAtt Web.PrivateDnsName (AWS::EC2::Instance) does not resolve on open-infra") ||
+	if plan.Verdict != Rejected || !strings.Contains(joined, "Output Vpc: Fn::GetAtt Web.VpcId (AWS::EC2::Instance) does not resolve on open-infra") ||
 		!strings.Contains(joined, "PrivateIp") {
 		t.Fatalf("an unsupported attribute must refuse at plan, naming what is supported: %v", plan.Blockers)
 	}

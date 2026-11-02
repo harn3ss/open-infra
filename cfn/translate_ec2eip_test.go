@@ -447,7 +447,7 @@ Resources:
 	for id, want := range map[string]string{
 		"ByEni":        "NetworkInterfaceId does not map",
 		"ToExternal":   "InstanceId must !Ref an in-stack AWS::EC2::Instance",
-		"FromExternal": "must name an in-stack AWS::EC2::EIP",
+		"FromExternal": "this deploy path keeps no allocations", // offline: no allocations to associate
 		"NoInstance":   "needs an InstanceId",
 	} {
 		if _, fs := translateIn(t, tmpl, id, nil); !strings.Contains(findingsText(fs), want) {

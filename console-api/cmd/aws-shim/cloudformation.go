@@ -135,7 +135,10 @@ func (h *cfnDoorway) caps() cfn.Capabilities {
 		SQSAPI: h.services.sqsOK(), SNSAPI: h.services.snsOK(), SSMAPI: h.services.ssmOK(), KMSAPI: h.services.kmsOK(),
 		SQSURLBase:        h.sqsURLBase,
 		SecretsManagerAPI: h.services.doorOK("secretsmanager"), LogsAPI: h.services.doorOK("logs"),
-		EventsAPI: h.services.doorOK("events"), ECRAPI: h.services.doorOK("ecr"), CloudWatchAPI: h.services.doorOK("monitoring")}
+		EventsAPI: h.services.doorOK("events"), ECRAPI: h.services.doorOK("ecr"), CloudWatchAPI: h.services.doorOK("monitoring"),
+		// Elastic IP allocations are holder Services the shim keeps in the stack namespace, recorded with
+		// their stack like the other service resources (cfn_addresses.go).
+		EC2AddressAPI: h.shimDyn != nil && h.services != nil && h.services.owners != nil}
 	if ecr, ok := h.services.door("ecr").(*ecrHandler); ok && ecr != nil && c.ECRAPI {
 		c.ECRRepositoryHost = stripScheme(ecr.proxyEndpoint)
 	}

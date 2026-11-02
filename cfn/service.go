@@ -51,6 +51,9 @@ const (
 	KindEventsEventBus       = "EventsEventBus"       // an EventBridge custom bus (name = bus name)
 	KindECRRepository        = "ECRRepository"        // an ECR repository (name = repository name)
 	KindCloudWatchAlarm      = "CloudWatchAlarm"      // a CloudWatch alarm (name = alarm name)
+
+	// An Elastic IP allocation the shim holds for its stack (translate_ec2eip.go; name = allocation id).
+	KindEC2Address = "EC2Address"
 )
 
 // IsServiceKind reports whether apiVersion/kind is a resource the shim's AWS APIs serve.
@@ -61,7 +64,7 @@ func IsServiceKind(apiVersion, kind string) bool {
 	switch kind {
 	case KindSQSQueue, KindSNSTopic, KindSNSSubscription, KindSSMParameter, KindKMSKey, KindKMSAlias,
 		KindSecretsManagerSecret, KindLogsLogGroup, KindEventsRule, KindEventsEventBus, KindECRRepository, KindCloudWatchAlarm,
-		KindSQSQueuePolicy, KindSNSTopicPolicy:
+		KindSQSQueuePolicy, KindSNSTopicPolicy, KindEC2Address:
 		return true
 	}
 	return false

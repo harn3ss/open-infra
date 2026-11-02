@@ -482,6 +482,22 @@ EOF
   fi
 fi
 
+# ── 2a-dns. instances' public DNS suffix (networking.publicDnsSuffix) ──
+# A site value (never in the repo): the aws-shim builds an instance's PublicDnsName as
+# ec2-<LAN IP with dashes>.<suffix>. Unset => no public DNS names (the shim reads the
+# ConfigMap optionally). Restart the aws-shim after changing it.
+PUBLIC_DNS_SUFFIX="$(yget networking.publicDnsSuffix)"
+if [ "$(yget components.awsShim)" = "true" ] && [ -n "$PUBLIC_DNS_SUFFIX" ]; then
+  LOG "instances' public DNS names: ec2-<ip>.$PUBLIC_DNS_SUFFIX"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  + apply ConfigMap/openinfra-public-dns (PUBLIC_DNS_SUFFIX=%s)\n' "$PUBLIC_DNS_SUFFIX"
+  else
+    $KUBECTL create namespace open-infra-aws-shim --dry-run=client -o yaml | $KUBECTL apply -f - >/dev/null
+    $KUBECTL -n open-infra-aws-shim create configmap openinfra-public-dns \
+      --from-literal=PUBLIC_DNS_SUFFIX="$PUBLIC_DNS_SUFFIX" --dry-run=client -o yaml | $KUBECTL apply -f -
+  fi
+fi
+
 # ── 2a-edge. traefik as a host-network edge (networking.traefik.hostNetwork) ──
 # The routed-ingress shape (an AWS ALB): traefik runs on the host network, so a LAN
 # request is answered by the node it reached, with no overlay DNAT on the way in and

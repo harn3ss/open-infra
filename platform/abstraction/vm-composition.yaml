@@ -92,6 +92,21 @@ spec:
             {{- /* Extra TCP ports to publish on the VM's LAN IP (the masquerade NIC
                    forwards all ports to the guest; the Service just advertises these). */}}
             {{- $ports := $spec.ports | default (list) }}
+            {{- /* spec.elasticIp: the LAN address an Elastic IP allocation holds. The allocation is a
+                   holder Service of the aws-shim's in THIS namespace (labelled openinfra.dev/eip-holder),
+                   named by its AllocationId; the VM's LAN Service shares its address (same MetalLB sharing
+                   key, same selector), so the address follows whichever VM names the allocation. Only a
+                   holder in the VM's own namespace is read. Until it reports an address, the VM gets no
+                   LAN Service (no address of its own to lose later). */}}
+            {{- $eipAlloc := "" }}{{- $eipAddr := "" }}
+            {{- with $spec.elasticIp }}{{- $eipAlloc = .allocationId | default "" }}{{- end }}
+            {{- if $eipAlloc }}
+            {{- $holder := index (.observed.resources | default dict) "vm-eip-holder" }}
+            {{- if $holder }}{{- with $holder.resource.status }}{{- with .atProvider }}{{- with .manifest }}
+            {{- $isHolder := printf "%v" (index (.metadata.labels | default dict) "openinfra.dev/eip-holder" | default "") }}
+            {{- if eq $isHolder "true" }}{{- with .status }}{{- with .loadBalancer }}{{- with .ingress }}{{- if gt (len .) 0 }}{{- $eipAddr = ((index . 0).ip | default "") }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
+            {{- end }}{{- end }}{{- end }}{{- end }}
+            {{- end }}
             {{- /* Windows root disk is FIXED and NOT user-selectable: a generalized
                    image's C: can't be reliably auto-grown, so a larger root would only
                    strand unallocated space. Extra Windows storage is added as separate
@@ -335,6 +350,10 @@ spec:
                                  themselves are resolved from the VM's ServiceAccount token. */}}
                           {{- if $instanceRole }}
                           openinfra.dev/instance-role: {{ $instanceRole | toJson }}
+                          {{- end }}
+                          {{- if $eipAlloc }}
+                          {{- /* The selector the allocation's holder and the VM's LAN Service share. */}}
+                          openinfra.dev/eip-allocation: {{ $eipAlloc | toJson }}
                           {{- end }}
                         {{- if $spec.subnet }}
                         annotations:
@@ -2603,7 +2622,27 @@ spec:
                       openinfra.dev/instance-role: {{ $instanceRole | toJson }}
                       openinfra.dev/vm: {{ $name }}
             {{- end }}
-            {{- if or $spec.expose $ports }}
+            {{- if $eipAlloc }}
+            ---
+            # --- The Elastic IP allocation's holder Service (the aws-shim's, in this namespace): observed
+            #     only, for the address it holds. Ready once it holds one. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: vm-eip-holder
+            spec:
+              managementPolicies: ["Observe"]
+              readiness:
+                policy: DeriveFromCelQuery
+                celQuery: "has(object.metadata.labels) && 'openinfra.dev/eip-holder' in object.metadata.labels && object.metadata.labels['openinfra.dev/eip-holder'] == 'true' && has(object.status.loadBalancer.ingress) && size(object.status.loadBalancer.ingress) > 0"
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Service
+                  metadata: { name: {{ $eipAlloc | toJson }}, namespace: {{ $ns | toJson }} }
+            {{- end }}
+            {{- if and (or $spec.expose $ports) (or (not $eipAlloc) $eipAddr) }}
             ---
             # --- LAN LoadBalancer (MetalLB): reach the VM from workstations. One IP
             #     carries the access port (SSH/RDP) plus any spec.ports (e.g. 80/443). ---
@@ -2621,6 +2660,12 @@ spec:
                     name: {{ $name }}-lan
                     namespace: {{ $ns }}
                     labels: { openinfra.dev/vm-lan: {{ $name }} }
+                    {{- if $eipAlloc }}
+                    # The allocation's address, shared with its holder (same key, same selector).
+                    annotations:
+                      metallb.universe.tf/loadBalancerIPs: {{ $eipAddr | toJson }}
+                      metallb.universe.tf/allow-shared-ip: {{ $eipAlloc | toJson }}
+                    {{- end }}
                   spec:
                     type: LoadBalancer
                     # Preserve the client's real source IP so SecurityGroup CIDR rules
@@ -2628,7 +2673,11 @@ spec:
                     # this, MetalLB SNATs the source to a node IP and CIDR rules can't
                     # distinguish callers). MetalLB L2 announces from the VM's node.
                     externalTrafficPolicy: Local
+                    {{- if $eipAlloc }}
+                    selector: { openinfra.dev/eip-allocation: {{ $eipAlloc | toJson }} }
+                    {{- else }}
                     selector: { kubevirt.io/domain: {{ $name }} }
+                    {{- end }}
                     ports:
                       - { name: {{ $proto }}, port: {{ $port }}, targetPort: {{ $port }} }
                       {{- range $p := $ports }}

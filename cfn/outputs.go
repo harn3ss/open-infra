@@ -9,8 +9,11 @@
 // AllocationId. On top of that a small, documented set of attributes that exist only once the stack is
 // running resolve from the deployed claims' status (deployedAttrs.lookup):
 //
-//	Ref <AWS::EC2::EIP> / Fn::GetAtt <EIP>.PublicIp  -> the associated VM's LAN IP (status.lanIp)
+//	Ref <AWS::EC2::EIP> / Fn::GetAtt <EIP>.PublicIp  -> the associated VM's LAN IP (status.lanIp), or the
+//	                                                     address an allocation of its own holds
 //	Fn::GetAtt <AWS::EC2::Instance>.PublicIp          -> the VM's LAN IP, when it is exposed
+//	Fn::GetAtt <AWS::EC2::Instance>.PrivateDnsName    -> ip-a-b-c-d.ec2.internal for the VM's address
+//	Fn::GetAtt <AWS::EC2::Instance>.PublicDnsName     -> ec2-<LAN IP>.<public DNS suffix>, or ""
 //	Ref <AWS::S3::Bucket>                             -> the bucket name (status.bucket)
 //
 // A post-deploy attribute that is supported but not populated yet (MetalLB has not assigned the IP) is
@@ -327,6 +330,10 @@ func (d *deployedAttrs) eipAddress(id string) (any, bool) {
 		}
 	}
 	if inst == "" {
+		// An allocation of its own (KindEC2Address): the address it holds, from the allocation's status.
+		if sr, ok := d.byID[id]; ok && sr.Kind == KindEC2Address {
+			return d.statusString(id, "publicIp", "Elastic IP "+id+"'s address")
+		}
 		d.notes = append(d.notes, "Elastic IP "+id+" is not associated with an in-stack instance, so it has no address")
 		return nil, false
 	}

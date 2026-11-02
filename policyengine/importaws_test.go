@@ -104,6 +104,33 @@ func TestImportAWS_ExtendedServices(t *testing.T) {
 	}
 }
 
+// ec2 is enforced only for a stack's Elastic IP allocations: exactly those actions import, onto the
+// allocation the ARN names; any other ec2 action, or an ec2 wildcard, is unsupported.
+func TestImportAWS_EC2AddressActionsOnly(t *testing.T) {
+	stmts, unsupported, err := ImportAWS(`{"Statement":[
+	  {"Effect":"Allow","Action":["ec2:AssociateAddress","ec2:DescribeAddresses"],"Resource":"arn:aws:ec2:us-east-1:123:elastic-ip/eipalloc-0123456789abcdef0"}
+	]}`)
+	if err != nil || len(unsupported) != 0 {
+		t.Fatalf("the address actions must import: %v %v", err, unsupported)
+	}
+	eng, err := NewEngine(stmts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Principal{Type: "User", ID: "a"}
+	if d := eng.Authorize(Request{p, "ec2:AssociateAddress", Resource{"ElasticIp", "eipalloc-0123456789abcdef0"}, nil}); !d.Allowed {
+		t.Error("associating the granted allocation should be allowed")
+	}
+	if d := eng.Authorize(Request{p, "ec2:AssociateAddress", Resource{"ElasticIp", "eipalloc-fffffffffffffffff"}, nil}); d.Allowed {
+		t.Error("associating another allocation must be denied")
+	}
+	for _, a := range []string{"ec2:RunInstances", "ec2:*", "ec2:Describe*"} {
+		if _, uns, _ := ImportAWS(`{"Statement":[{"Effect":"Allow","Action":"` + a + `","Resource":"*"}]}`); len(uns) == 0 {
+			t.Errorf("%s must be unsupported (the shim enforces only the address actions)", a)
+		}
+	}
+}
+
 func TestImportAWS_ReportsUnsupported(t *testing.T) {
 	doc := `{"Statement":[
 	  {"Effect":"Allow","Action":["ec2:RunInstances","s3:GetObject"],"Resource":"*"},

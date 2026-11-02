@@ -346,6 +346,30 @@ metadata:
   labels:
     openinfra.dev/component: aws-shim
 ---
+# A stack's Elastic IP allocations (cfn_addresses.go): each is a holder LoadBalancer Service the shim
+# creates in the stack namespace (named by its AllocationId, labelled openinfra.dev/eip-holder) after
+# checking the caller may allocate it; release refuses while a VM's LAN Service shares its address (list).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-cfn-addresses
+  namespace: open-infra-cfn
+rules:
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-cfn-addresses
+  namespace: open-infra-cfn
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-cfn-addresses }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # Finding a function by name: a Lambda Invoke, an SNS/EventBridge/API Gateway delivery or a stack's
 # function name check looks for the kind: Function in the Lambda API's namespace (FUNCTIONS_NAMESPACE)
 # and the stack namespace (CFN_NAMESPACE), so a function a stack creates is invoked by the name its stack
@@ -764,6 +788,10 @@ spec:
             # mail/relay-capture.yaml). The shim serves SES only while this name resolves, so with the mail
             # component off SES stays not-fronted; turning it on needs no shim change.
             - { name: SES_SMTP_RELAY, value: "smtp-relay.mail.svc.cluster.local:587" }
+            # The DNS suffix instances' public DNS names are built on (ec2-a-b-c-d.<suffix>, GetAtt
+            # PublicDnsName): a site value (config.yaml awsShim.publicDnsSuffix, applied by install.sh),
+            # never in the repo. Absent: instances have no public DNS name, as in a VPC without DNS hostnames.
+            - { name: PUBLIC_DNS_SUFFIX, valueFrom: { configMapKeyRef: { name: openinfra-public-dns, key: PUBLIC_DNS_SUFFIX, optional: true } } }
             # DynamoDB data layer: FerretDB (Mongo wire) for the data path + the DocumentDB Postgres
             # behind it for atomic Transact* — both provisioned by dynamodb-backend.yaml (the
             # dynamo-mongo-app Secret). Without these the dynamodb front door answers an honest 501.

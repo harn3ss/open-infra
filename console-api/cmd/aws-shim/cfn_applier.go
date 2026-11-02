@@ -117,6 +117,9 @@ func (a *impersonatingApplier) Apply(ctx context.Context, manifestYAML []byte) e
 		_, err := a.svcPut(ctx, obj, false)
 		return err
 	}
+	if err := a.checkAddressAssociation(ctx, obj); err != nil {
+		return err
+	}
 	if isStackRecord(gvk.Kind, name) {
 		data, _, _ := unstructured.NestedStringMap(obj.Object, "data")
 		labels := map[string]any{}
@@ -161,6 +164,9 @@ func (a *impersonatingApplier) Create(ctx context.Context, manifestYAML []byte) 
 	name := obj.GetName()
 	if cfn.IsServiceKind(obj.GetAPIVersion(), gvk.Kind) {
 		return a.svcPut(ctx, obj, true)
+	}
+	if err := a.checkAddressAssociation(ctx, obj); err != nil {
+		return false, err
 	}
 	ns := obj.GetNamespace()
 	if ns == "" {
@@ -374,7 +380,11 @@ func (a *impersonatingApplier) GetSpec(ctx context.Context, apiVersion, kind, na
 func (a *impersonatingApplier) GetStatus(ctx context.Context, apiVersion, kind, name string) (map[string]any, bool, error) {
 	if cfn.IsServiceKind(apiVersion, kind) {
 		_, found, err := a.svcSpec(ctx, kind, name)
-		return map[string]any{"ready": found}, found, err
+		st := map[string]any{"ready": found}
+		if found && err == nil && kind == cfn.KindEC2Address {
+			st["publicIp"] = a.addressIP(ctx, name) // "" while MetalLB has not assigned it (pending)
+		}
+		return st, found, err
 	}
 	gvr, err := a.gvrFor(apiVersion, kind)
 	if err != nil {

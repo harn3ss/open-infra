@@ -21,6 +21,13 @@ var SupportedServices = map[string]bool{
 	"ses": true, "apigateway": true, "cloudwatch": true, "cloudfront": true,
 }
 
+// SupportedActions are the actions of a service the aws-shim enforces only in part: just these import
+// (named exactly — a wildcard such as ec2:* would also cover actions it does not enforce, so it is
+// refused like any unsupported action). ec2: a CloudFormation stack's Elastic IP allocations.
+var SupportedActions = map[string]map[string]bool{
+	"ec2": {"AllocateAddress": true, "ReleaseAddress": true, "DescribeAddresses": true, "AssociateAddress": true, "DisassociateAddress": true},
+}
+
 // condType classifies a populated request-context attribute by value type, which fixes the AWS
 // condition operators that map onto it faithfully.
 type condType int
@@ -328,8 +335,8 @@ func importActions(actions []string) (kept, unsupported []string) {
 			kept = append(kept, "*")
 			continue
 		}
-		svc, _, ok := strings.Cut(a, ":")
-		if ok && SupportedServices[svc] {
+		svc, op, ok := strings.Cut(a, ":")
+		if ok && (SupportedServices[svc] || SupportedActions[svc][op]) {
 			kept = append(kept, a)
 		} else {
 			unsupported = append(unsupported, "action "+a+" has no open-infra data plane")
@@ -449,6 +456,8 @@ func arnToResource(arn string) (string, bool) {
 		return cut("identity/", "Identity")
 	case "cloudfront": // arn:aws:cloudfront::<acct>:distribution/<id> (the invalidation calls)
 		return cut("distribution/", "Distribution")
+	case "ec2": // arn:aws:ec2:<r>:<acct>:elastic-ip/<eipalloc-…> (a stack's Elastic IP allocations)
+		return cut("elastic-ip/", "ElasticIp")
 	case "apigateway": // arn:aws:apigateway:r::/restapis/<id>[/...]
 		if n, ok := strings.CutPrefix(tail, "/restapis/"); ok && n != "" {
 			n, _, _ = strings.Cut(n, "/")

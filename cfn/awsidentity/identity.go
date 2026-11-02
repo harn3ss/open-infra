@@ -43,6 +43,11 @@ type Identity struct {
 	// StackNamespace is the namespace the CloudFormation front door keeps stacks in. A StackId's unique
 	// part is derived from it and the stack name, so a stack keeps its StackId across shim restarts.
 	StackNamespace string
+	// PublicDNSSuffix is the DNS suffix an instance's public DNS name is built on: ec2-<a-b-c-d>.<suffix>
+	// for an instance whose address is a.b.c.d (PUBLIC_DNS_SUFFIX). A site sets one that resolves on its
+	// LAN (a wildcard zone that answers a name carrying an address with that address). Empty: instances
+	// have no public DNS name, and PublicDnsName is "" — as on AWS in a VPC without DNS hostnames.
+	PublicDNSSuffix string
 }
 
 // Default is the identity of an install that configures none.
@@ -52,7 +57,32 @@ func Default() Identity {
 
 var accountRe = regexp.MustCompile(`^[0-9]{12}$`)
 
-// FromEnv reads ACCOUNT_ID, AWS_REGION (else AWS_DEFAULT_REGION) and CFN_NAMESPACE through getenv,
+// dnsSuffixRe is a DNS name: dot-separated labels of lower-case letters, digits and inner hyphens.
+var dnsSuffixRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+var ipv4Re = regexp.MustCompile(`^([0-9]{1,3}\.){3}[0-9]{1,3}$`)
+
+// PrivateDNSName is the private DNS name AWS gives an instance with private address ip in region:
+// ip-a-b-c-d.ec2.internal in us-east-1, ip-a-b-c-d.<region>.compute.internal elsewhere.
+func PrivateDNSName(ip, region string) string {
+	host := "ip-" + strings.ReplaceAll(ip, ".", "-")
+	if region == "us-east-1" {
+		return host + ".ec2.internal"
+	}
+	return host + "." + region + ".compute.internal"
+}
+
+// PublicDNSName is the public DNS name of an instance whose public address is ip: ec2-a-b-c-d.<suffix>
+// (AWS's ec2-a-b-c-d.compute-1.amazonaws.com, on a suffix that resolves where the address is reachable),
+// or "" when the install configures no suffix or ip is not an IPv4 address.
+func (i Identity) PublicDNSName(ip string) string {
+	if i.PublicDNSSuffix == "" || !ipv4Re.MatchString(ip) {
+		return ""
+	}
+	return "ec2-" + strings.ReplaceAll(ip, ".", "-") + "." + i.PublicDNSSuffix
+}
+
+// FromEnv reads ACCOUNT_ID, AWS_REGION (else AWS_DEFAULT_REGION), CFN_NAMESPACE and PUBLIC_DNS_SUFFIX through getenv,
 // defaulting each. It returns a warning for each value AWS would reject (an account id that is not 12
 // digits), so the caller can log it; the value is still used.
 func FromEnv(getenv func(string) string) (Identity, []string) {
@@ -71,6 +101,13 @@ func FromEnv(getenv func(string) string) (Identity, []string) {
 	}
 	if v := strings.TrimSpace(getenv("CFN_NAMESPACE")); v != "" {
 		id.StackNamespace = v
+	}
+	if v := strings.ToLower(strings.Trim(strings.TrimSpace(getenv("PUBLIC_DNS_SUFFIX")), ".")); v != "" {
+		if dnsSuffixRe.MatchString(v) {
+			id.PublicDNSSuffix = v
+		} else {
+			warns = append(warns, "PUBLIC_DNS_SUFFIX "+v+" is not a DNS name: instances get no public DNS name")
+		}
 	}
 	return id, warns
 }

@@ -7326,10 +7326,11 @@ components:
               type: object
               description: "Fine-grained DATA-PLANE authorization for the aws-shim front doors \u2014 the services the shim\
                 \ enforces (today 17: s3, dynamodb, lambda, sqs, sns, kinesis, kms, ssm, secretsmanager, ecr, ecs, logs, rds,\
-                \ ses, apigateway, cloudwatch, cloudfront; the authoritative set is policyengine.SupportedServices), evaluated\
-                \ by the Cedar-backed policy engine. Unlike the control-plane statements above, it supports explicit Deny\
-                \ (which overrides Allow) and request conditions \u2014 the model Kubernetes RBAC cannot express. Additive:\
-                \ it can only tighten a grant the coarse RBAC check already allowed. See docs/policy-engine.md."
+                \ ses, apigateway, cloudwatch, cloudfront, plus ec2's Elastic IP address actions; the authoritative set is\
+                \ policyengine.SupportedServices and SupportedActions), evaluated by the Cedar-backed policy engine. Unlike\
+                \ the control-plane statements above, it supports explicit Deny (which overrides Allow) and request conditions\
+                \ \u2014 the model Kubernetes RBAC cannot express. Additive: it can only tighten a grant the coarse RBAC check\
+                \ already allowed. See docs/policy-engine.md."
               properties:
                 appliesTo:
                   type: array
@@ -9051,6 +9052,19 @@ components:
               description: "Give the VM a LAN IP (MetalLB LoadBalancer) carrying its access port \u2014 SSH 22 (Linux) or\
                 \ RDP 3389 (Windows). Default false: reach the VM via port-forward or the web VNC console instead. Setting\
                 \ any entry in ports also implies this."
+            elasticIp:
+              type: object
+              description: 'Give an exposed VM the LAN address an Elastic IP allocation holds (a CloudFormation AWS::EC2::EIP
+                allocated by another stack, held by its holder Service in this namespace), instead of an address of its own:
+                the address follows whichever VM names the allocation, and stays with the allocation when the VM goes. Until
+                the allocation reports its address, the VM gets no LAN address.'
+              required:
+              - allocationId
+              properties:
+                allocationId:
+                  type: string
+                  pattern: ^eipalloc-[0-9a-f]{17}$
+                  description: The allocation's AllocationId (its AWS::EC2::EIP's GetAtt AllocationId).
             ports:
               type: array
               items:

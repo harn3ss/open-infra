@@ -134,6 +134,8 @@ func (a *impersonatingApplier) svcFor(kind string) error {
 		ok = a.svc.ssmOK()
 	case cfn.KindKMSKey, cfn.KindKMSAlias:
 		ok = a.svc.kmsOK()
+	case cfn.KindEC2Address:
+		ok = a.addressOK()
 	}
 	if !ok {
 		return fmt.Errorf("the %s front door is not configured on this shim", kind)
@@ -181,6 +183,10 @@ func svcSteps(kind, op, name string, spec map[string]any) []svcStep {
 	case cfn.KindKMSAlias:
 		svcOp := pick(map[string]string{"create": "CreateAlias", "update": "UpdateAlias", "delete": "DeleteAlias", "get": "ListAliases"})
 		return []svcStep{step(verbForKMSOp, "kms", svcOp, "Key", str("targetKeyId"))}
+	case cfn.KindEC2Address:
+		// An allocation has nothing to change: an update re-reads it (cfn_addresses.go).
+		svcOp := pick(map[string]string{"create": "AllocateAddress", "update": "DescribeAddresses", "delete": "ReleaseAddress", "get": "DescribeAddresses"})
+		return []svcStep{step(verbForEC2Op, "ec2", svcOp, "ElasticIp", name)}
 	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
 		// Setting (or removing) a queue's or topic's Policy is SetQueueAttributes / SetTopicAttributes on it.
 		service, svcOp, resType, verbOp := "sqs", "SetQueueAttributes", "Queue", verbForSQSOp
@@ -303,6 +309,8 @@ func (a *impersonatingApplier) svcExistsAt(ctx context.Context, kind, name strin
 		// A policy is the Policy attribute of the queues or topics it names; it exists while it is recorded.
 		_, _, found, err := a.svc.owners.get(ctx, kind, name)
 		return found, err
+	case cfn.KindEC2Address:
+		return a.addressExists(ctx, name)
 	}
 	return false, fmt.Errorf("unknown service kind %s", kind)
 }
@@ -398,6 +406,8 @@ func (a *impersonatingApplier) svcCreate(ctx context.Context, kind, name string,
 		return a.svc.kms.store.createAlias(ctx, name, str("targetKeyId"))
 	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
 		return a.svcApplyPolicy(ctx, kind, name, spec)
+	case cfn.KindEC2Address:
+		return a.addressCreate(ctx, name, "")
 	}
 	return fmt.Errorf("unknown service kind %s", kind)
 }
@@ -454,6 +464,8 @@ func (a *impersonatingApplier) svcUpdate(ctx context.Context, kind, name string,
 		return err
 	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
 		return a.svcApplyPolicy(ctx, kind, name, spec)
+	case cfn.KindEC2Address:
+		return nil // an allocation has nothing to change
 	}
 	return fmt.Errorf("unknown service kind %s", kind)
 }
@@ -840,6 +852,10 @@ func (a *impersonatingApplier) svcDelete(ctx context.Context, kind, name string)
 			if err := a.clearResourcePolicy(ctx, kind, t, doc); err != nil {
 				return err
 			}
+		}
+	case cfn.KindEC2Address:
+		if err := a.addressDelete(ctx, name); err != nil {
+			return err
 		}
 	}
 	return a.svc.owners.del(ctx, kind, name)

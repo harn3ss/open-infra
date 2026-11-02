@@ -14,8 +14,12 @@
 //
 //   - an EIP used as a NAT gateway's address (an AWS::EC2::NatGateway AllocationId) — that is the
 //     kind: NatGateway + kind: ElasticIp border-device case, still authored natively;
-//   - an EIP associated with nothing in the stack (no in-stack instance to carry the address);
-//   - an InstanceId / AllocationId naming something out of stack;
+//   - an EIP associated with nothing in the stack, where no allocations are kept (the CLI) — through the
+//     aws-shim's front door (Capabilities.EC2AddressAPI) it is an allocation of its own instead
+//     (KindEC2Address): a LAN address held for its stack, which an EIPAssociation in another stack
+//     associates by AllocationId, the VM then carrying that address (spec.elasticIp, #347 item 8);
+//   - an InstanceId naming something out of stack, and an AllocationId that is neither an in-stack EIP's
+//     nor an allocation open-infra holds;
 //   - an association by NetworkInterfaceId (this engine models no standalone ENI);
 //   - more than one EIP on one instance, or one EIP on more than one instance (a VM has ONE LAN IP).
 //
@@ -29,21 +33,77 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
 
-// eipBinding is one association of an in-stack AWS::EC2::EIP with an in-stack AWS::EC2::Instance.
+// eipBinding is one association of an Elastic IP with an in-stack AWS::EC2::Instance: an in-stack
+// AWS::EC2::EIP (eip), or an allocation another stack holds, named by its AllocationId (alloc).
 type eipBinding struct {
-	eip, instance string // logical ids
+	eip, instance string // logical ids (eip "" for an allocation from another stack)
+	alloc         string // the AllocationId of an allocation from another stack ("" for an in-stack EIP)
 	via           string // the resource declaring the association: the EIP itself, or an EIPAssociation
 }
 
-// eipAllocationID is the stable synthetic AllocationId of an in-stack EIP: deterministic per stack +
-// logical id, in the AWS shape (eipalloc- + 17 hex). It names the allocation; no open-infra API takes it.
+// address names the Elastic IP a binding associates, for conflict checks and messages.
+func (b eipBinding) address() string {
+	if b.alloc != "" {
+		return "allocation " + b.alloc
+	}
+	return b.eip
+}
+
+// eipAllocationID is the stable AllocationId of an in-stack EIP: deterministic per stack + logical id, in
+// the AWS shape (eipalloc- + 17 hex). An EIP folded onto its in-stack instance is only named by it; an
+// EIP associated with nothing in its stack is an allocation held under that id (KindEC2Address), which an
+// EIPAssociation in another stack can name.
 func eipAllocationID(stackName, logicalID string) string {
 	sum := sha256.Sum256([]byte(stackName + "/" + logicalID))
 	return "eipalloc-" + hex.EncodeToString(sum[:])[:17]
+}
+
+// allocationIDRe is an AllocationId as eipAllocationID makes them.
+var allocationIDRe = regexp.MustCompile(`^eipalloc-[0-9a-f]{17}$`)
+
+// eipHolderPort is the one port an allocation's holder Service declares (a Service needs one). The holder
+// and the associated VM's LAN Service share the address, so the VM must not publish this port itself.
+const eipHolderPort, eipHolderProto = 9, "UDP"
+
+// externalAllocation is the AllocationId an EIPAssociation names when it is not an in-stack EIP's: a
+// parameter or an Fn::ImportValue that resolves to an allocation another stack holds. ok=false when the
+// property is absent, refers to an in-stack resource, or does not resolve to a concrete value.
+func (c *stackCtx) externalAllocation(assocID string) (string, bool) {
+	if _, inStack := c.assocEIP(assocID); inStack {
+		return "", false
+	}
+	return c.externalAllocationValue(assocID)
+}
+
+// externalAllocationValue is the concrete value an EIPAssociation's AllocationId resolves to, unless it is
+// a bare reference to an in-stack resource.
+func (c *stackCtx) externalAllocationValue(assocID string) (string, bool) {
+	raw, _ := c.rawProps(assocID)
+	v, present := raw["AllocationId"]
+	if !present {
+		return "", false
+	}
+	if t, ok := getAttTarget(v); ok {
+		if _, inStack := c.template.Resources[t]; inStack {
+			return "", false
+		}
+	}
+	if c.resolver == nil {
+		return "", false
+	}
+	prev := c.resolver.where
+	rp, _ := c.resolveProps(assocID)
+	c.resolver.where = prev
+	s, ok := concrete(rp["AllocationId"])
+	if !ok || s == "" {
+		return "", false
+	}
+	return strings.TrimSpace(s), true
 }
 
 // refID returns the logical id resource rid's property prop references: a raw {Ref}/{Fn::GetAtt}, or —
@@ -91,6 +151,15 @@ func (c *stackCtx) assocEIP(assocID string) (string, bool) {
 			return t, true
 		}
 	}
+	// GetAtt <EIP>.AllocationId resolves to a concrete id, so behind another intrinsic (an Fn::If that picks
+	// it) the reference shows only as the id: match it against the stack's own EIPs.
+	if alloc, ok := c.externalAllocationValue(assocID); ok {
+		for _, rid := range c.sortedResourceIDs() {
+			if c.includedType(rid, "AWS::EC2::EIP") && eipAllocationID(c.stackName(), rid) == alloc {
+				return rid, true
+			}
+		}
+	}
 	return "", false
 }
 
@@ -118,6 +187,8 @@ func (c *stackCtx) eipBindings() []eipBinding {
 			}
 			if eip, ok := c.assocEIP(rid); ok {
 				out = append(out, eipBinding{eip: eip, instance: inst, via: rid})
+			} else if alloc, ok := c.externalAllocation(rid); ok && c.caps.EC2AddressAPI && allocationIDRe.MatchString(alloc) {
+				out = append(out, eipBinding{alloc: alloc, instance: inst, via: rid})
 			}
 		}
 	}
@@ -129,15 +200,15 @@ func (c *stackCtx) eipBindings() []eipBinding {
 func eipConflict(b eipBinding, all []eipBinding) string {
 	insts, eips := map[string]bool{}, map[string]bool{}
 	for _, o := range all {
-		if o.eip == b.eip {
+		if o.address() == b.address() {
 			insts[o.instance] = true
 		}
 		if o.instance == b.instance {
-			eips[o.eip] = true
+			eips[o.address()] = true
 		}
 	}
 	if len(insts) > 1 {
-		return fmt.Sprintf("Elastic IP %s is associated with more than one instance (%s) — an EIP is one address on one instance, and open-infra maps it onto ONE VM's LAN IP", b.eip, strings.Join(sortedSet(insts), ", "))
+		return fmt.Sprintf("Elastic IP %s is associated with more than one instance (%s) — an EIP is one address on one instance, and open-infra maps it onto ONE VM's LAN IP", b.address(), strings.Join(sortedSet(insts), ", "))
 	}
 	if len(eips) > 1 {
 		return fmt.Sprintf("instance %s would carry %d Elastic IPs (%s) — open-infra gives a VM ONE LAN IP (spec.expose); associate a single EIP with it (secondary addresses on additional ENIs are not modeled)", b.instance, len(eips), strings.Join(sortedSet(eips), ", "))
@@ -213,7 +284,21 @@ func translateEC2EIP(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 		return refuse("InstanceId must !Ref an in-stack AWS::EC2::Instance — open-infra maps an Elastic IP onto that VM's LAN IP (spec.expose); an out-of-stack instance (a raw i- id or a parameter) has no VM in this stack to carry the address")
 	}
 	if len(ctx.eipAssociationsNaming(id)) == 0 {
-		return refuse("this Elastic IP is associated with nothing in the stack (no InstanceId, and no AWS::EC2::EIPAssociation names it) — open-infra's Elastic IP analog is a VM's LAN IP, so an unassociated address has nothing to carry it (allocating one with no holder would publish an address that reaches nothing). Associate it with an in-stack AWS::EC2::Instance (InstanceId or an EIPAssociation), or author kind: ElasticIp natively")
+		if ctx.caps.EC2AddressAPI {
+			// An allocation of its own: a LAN address held for this stack until the stack deletes it, which
+			// an EIPAssociation in another stack names by this AllocationId (GetAtt <EIP>.AllocationId, passed
+			// by parameter or export). The aws-shim holds it (a MetalLB address on a holder Service).
+			alloc := eipAllocationID(ctx.stackName(), id)
+			m := serviceManifest(KindEC2Address, alloc, map[string]any{"allocationId": alloc})
+			m.Caveats = append(m.Caveats, "Elastic IP "+id+" is an allocation of its own ("+alloc+"): a LAN address (not a public internet IP) the platform holds for this stack, which an AWS::EC2::EIPAssociation in another stack can associate with its instance by this AllocationId; the address follows that instance and stays with the allocation when the other stack is deleted. Deleting this stack while the address is associated fails (InvalidIPAddress.InUse), as on AWS")
+			for _, p := range []string{"NetworkBorderGroup", "Tags"} {
+				if _, has := props[p]; has {
+					m.Caveats = append(m.Caveats, "Elastic IP "+id+": "+p+" dropped — no open-infra equivalent (one site, one LAN address pool)")
+				}
+			}
+			return m, f
+		}
+		return refuse("this Elastic IP is associated with nothing in the stack (no InstanceId, and no AWS::EC2::EIPAssociation names it) — here an Elastic IP is a VM's LAN IP, and this deploy path keeps no allocations of its own (the aws-shim's CloudFormation front door does: deploy there to allocate an address that another stack associates by AllocationId). Associate it with an in-stack AWS::EC2::Instance (InstanceId or an EIPAssociation), or author kind: ElasticIp natively")
 	}
 	return nil, f // an EIPAssociation carries the binding (and refuses on its own if it can't be honored)
 }
@@ -245,11 +330,34 @@ func translateEC2EIPAssociation(id string, props map[string]any, ctx *stackCtx) 
 	if !ok || !ctx.includedType(inst, "AWS::EC2::Instance") {
 		return refuse("InstanceId must !Ref an in-stack AWS::EC2::Instance — an out-of-stack instance (a raw i- id or a parameter) has no VM in this stack to carry the address")
 	}
-	eip, ok := ctx.assocEIP(id)
-	if !ok {
-		return refuse("AllocationId (!GetAtt <EIP>.AllocationId) or EIP (!Ref <EIP>) must name an in-stack AWS::EC2::EIP — an out-of-stack allocation/address can't be moved onto the VM, whose LAN IP open-infra allocates per VM")
+	b := eipBinding{instance: inst, via: id}
+	if eip, ok := ctx.assocEIP(id); ok {
+		b.eip = eip
+	} else {
+		// An allocation another stack holds, named by its AllocationId (a parameter or an export).
+		if _, ok := props["EIP"]; ok {
+			return refuse("EIP (an address) must !Ref an in-stack AWS::EC2::EIP — an Elastic IP from another stack is associated by its AllocationId (that stack's GetAtt <EIP>.AllocationId, passed by parameter or Fn::ImportValue)")
+		}
+		alloc, ok := ctx.externalAllocation(id)
+		switch {
+		case !ok:
+			return refuse("AllocationId must name an Elastic IP: !GetAtt <EIP>.AllocationId of an in-stack AWS::EC2::EIP, or the AllocationId of one another stack allocated (a parameter or Fn::ImportValue that resolves to it)")
+		case !allocationIDRe.MatchString(alloc):
+			return refuse("AllocationId " + alloc + " is not an Elastic IP allocation open-infra holds (eipalloc- followed by 17 hex digits, the AllocationId another stack's AWS::EC2::EIP reports) — an AWS account's allocation ids do not exist here")
+		case !ctx.caps.EC2AddressAPI:
+			return refuse("AllocationId " + alloc + " names an Elastic IP from another stack, and this deploy path keeps no allocations (the aws-shim's CloudFormation front door does) — associate an in-stack AWS::EC2::EIP instead")
+		}
+		b.alloc = alloc
+		// The allocation's holder Service and the VM's LAN Service share the address; they must not
+		// publish the same port.
+		ports, _, _ := eipPortsFromSGs(inst, 22, ctx) // the access port is TCP; only the UDP holder port matters
+		for _, p := range ports {
+			if m, _ := p.(map[string]any); m != nil && m["port"] == eipHolderPort && m["protocol"] == eipHolderProto {
+				return refuse(fmt.Sprintf("the instance's SecurityGroups publish %d/%s, which an Elastic IP allocation from another stack reserves on its address — publish the workload on another port", eipHolderPort, eipHolderProto))
+			}
+		}
 	}
-	if why := eipConflict(eipBinding{eip: eip, instance: inst, via: id}, ctx.eipBindings()); why != "" {
+	if why := eipConflict(b, ctx.eipBindings()); why != "" {
 		return refuse(why)
 	}
 	return nil, f // folded into the instance's VM
@@ -270,11 +378,16 @@ func eipExposeVM(instID string, spec map[string]any, ctx *stackCtx) []string {
 			mine = append(mine, b)
 		}
 	}
-	if len(mine) == 0 || eipConflict(mine[0], all) != "" || len(ctx.natGatewaysUsingEIP(mine[0].eip)) > 0 {
+	if len(mine) == 0 || eipConflict(mine[0], all) != "" || (mine[0].eip != "" && len(ctx.natGatewaysUsingEIP(mine[0].eip)) > 0) {
 		return nil
 	}
-	eip := mine[0].eip
+	eip := mine[0].address()
 	spec["expose"] = true
+	if alloc := mine[0].alloc; alloc != "" {
+		// The VM's LAN IP is the allocation's address: its LAN Service shares that address with the holder
+		// (vm-composition.yaml, spec.elasticIp), so it is the same address whichever VM carries it.
+		spec["elasticIp"] = map[string]any{"allocationId": alloc}
+	}
 
 	accessPort, accessName := 22, "SSH 22"
 	if os, _ := spec["os"].(string); strings.HasPrefix(os, "windows") {
@@ -287,6 +400,11 @@ func eipExposeVM(instID string, spec map[string]any, ctx *stackCtx) []string {
 
 	cav := []string{
 		"Elastic IP " + eip + " maps onto this VM's LAN IP (spec.expose — a MetalLB LoadBalancer carrying the access port, " + accessName + ", plus spec.ports). It is a LAN address, NOT a public internet IP. It is stable for the life of the VM but is held by the VM's LoadBalancer Service, so it does not outlive the VM the way an AWS allocation outlives its instance: a replaced (deleted + recreated) VM may draw a different LAN IP. Ref/GetAtt " + eip + ".PublicIp are assigned at apply and do not resolve at translate time; GetAtt " + eip + ".AllocationId is a stable synthetic eipalloc- id",
+	}
+	if mine[0].alloc != "" {
+		cav = []string{
+			"Elastic IP " + eip + " (from another stack) maps onto this VM's LAN IP: the address that allocation holds, shared by the VM's LAN Service (spec.expose + spec.elasticIp — a MetalLB LoadBalancer carrying the access port, " + accessName + ", plus spec.ports). It is a LAN address, NOT a public internet IP. It follows the instance: a replaced VM carries the same address, and deleting this stack leaves the address with its allocation. The VM's address is known once the allocation's is (the instance's PublicIp)",
+		}
 	}
 	if len(published) > 0 {
 		cav = append(cav, "ports published on the LAN IP are those the instance's SecurityGroups allow inbound from a CIDR (TCP/UDP): "+strings.Join(published, ", ")+" — each port's reachability is still enforced by the attached kind: SecurityGroups (the LoadBalancer preserves the client source IP), and the access port is always published by expose")

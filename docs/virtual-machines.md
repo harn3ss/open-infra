@@ -419,6 +419,12 @@ VM won't live-migrate while it's attached.
   the VM reports it as **`status.lanIp`**
   (`kubectl get virtualmachines.openinfra.dev <name> -o jsonpath='{.status.lanIp}'`);
   it is empty while unassigned and when the VM is not exposed.
+- **`elasticIp: { allocationId: eipalloc-… }`** gives an exposed VM the address an Elastic IP
+  allocation holds, instead of one of its own: a CloudFormation `AWS::EC2::EIP` allocated by another
+  stack (see [CloudFormation](cloudformation.md), "An address kept in its own stack"). The allocation is a
+  holder Service in the same namespace; the VM's LAN Service shares its address, so the address follows
+  whichever VM names the allocation and stays with the allocation when the VM goes. Until the allocation
+  reports its address, the VM gets no LAN Service at all.
 
 Power: the console's **Start/Stop** flips `spec.running`, which the Composition
 maps to KubeVirt `runStrategy` (`Always`/`Halted`). The disk is retained while

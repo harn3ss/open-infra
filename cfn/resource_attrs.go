@@ -348,6 +348,17 @@ var resourceAttrs = map[string]typeAttrs{
 			return s, ok
 		},
 		"PrivateIp": func(e *attrEnv) (string, bool) { return e.status("ip", "VM "+e.name()+"'s private IP") },
+		// AWS's private DNS name for that address (ip-a-b-c-d.ec2.internal in us-east-1).
+		"PrivateDnsName": func(e *attrEnv) (string, bool) {
+			ip, ok := e.status("ip", "VM "+e.name()+"'s private IP")
+			if !ok {
+				return "", false
+			}
+			return awsidentity.PrivateDNSName(ip, e.region()), true
+		},
+		// The public DNS name of the VM's LAN IP on the install's public DNS suffix; "" for an instance with
+		// no public address, or on an install with no suffix, as AWS reports it then.
+		"PublicDnsName": instancePublicDNSName,
 	}},
 	"AWS::ECS::Cluster": {ref: static(func(e *attrEnv) string { return e.awsName("ClusterName") }), attrs: map[string]attrFunc{
 		"Arn": static(func(e *attrEnv) string { return e.arn("ecs", "cluster/"+e.awsName("ClusterName")) }),
@@ -501,6 +512,31 @@ var resourceAttrs = map[string]typeAttrs{
 }
 
 // eipPublicIP is an Elastic IP's address: its instance VM's LAN IP.
+// instancePublicDNSName is an instance's PublicDnsName: ec2-<lan ip>.<PublicDNSSuffix> once its VM has a
+// LAN IP; "" when the VM is not exposed (it has no public address) or the install sets no suffix.
+func instancePublicDNSName(e *attrEnv) (string, bool) {
+	if e.d == nil {
+		return "", false
+	}
+	if sr, ok := e.d.byID[e.id]; ok && sr.Kind == "VirtualMachine" {
+		expose, _ := sr.Spec["expose"].(bool)
+		ports, _ := sr.Spec["ports"].([]any)
+		if !expose && len(ports) == 0 {
+			return "", true // no public address, so no public DNS name
+		}
+	}
+	id := awsidentity.Current()
+	if id.PublicDNSSuffix == "" {
+		return "", true
+	}
+	v, ok := e.d.vmLanIP(e.id)
+	ip, _ := v.(string)
+	if !ok {
+		return "", false
+	}
+	return id.PublicDNSName(ip), true
+}
+
 func eipPublicIP(e *attrEnv) (string, bool) {
 	if e.d == nil {
 		return "", false

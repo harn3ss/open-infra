@@ -47,6 +47,15 @@ networking:
   # Comma-separate ranges to leave gaps. EXAMPLE ONLY — set your own:
   metallbPool: "192.0.2.211-192.0.2.229"
 
+  # The DNS suffix an instance's public DNS name is built on (CloudFormation GetAtt
+  # <Instance>.PublicDnsName, the shape of AWS's ec2-a-b-c-d.compute-1.amazonaws.com):
+  # ec2-<LAN IP with dashes>.<suffix>. Use a zone that resolves such names on your LAN
+  # (a wildcard DNS zone that answers a name carrying an address with that address).
+  # Blank => instances have no public DNS name (""), as in an AWS VPC without DNS
+  # hostnames. install.sh writes it to configmap/openinfra-public-dns for the aws-shim
+  # (restart the shim after changing it). EXAMPLE ONLY — set your own:
+  publicDnsSuffix: ""
+
   # Ingress controller bundled with k3s. Keep traefik for v1.
   ingress: traefik
 
