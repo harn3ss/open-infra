@@ -98,7 +98,7 @@ Resources:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action: [s3:GetObject]
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
                 Resource: !Sub "${AppBucket.Arn}/*"
               - Effect: Allow
                 Action: [s3:ListBucket]
@@ -275,15 +275,28 @@ Resources:
           publish no
 
           # 11. The JavaScript SDK v3 with its default configuration, in a container: S3Client addresses the
-          #     bucket virtual-hosted on AWS_ENDPOINT_URL's host, and SQSClient sends to an AWS-style
-          #     QueueUrl's host.
+          #     bucket virtual-hosted on AWS_ENDPOINT_URL's host, batch-deletes (DeleteObjects: each key
+          #     authorized, a key the role may not delete is that key's AccessDenied), and SQSClient sends to
+          #     an AWS-style QueueUrl's host.
           cat > /tmp/sdkv3.js <<'JS'
-          const { S3Client, GetObjectCommand } = require("@aws-sdk/client-s3");
+          const { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectsCommand, HeadObjectCommand } = require("@aws-sdk/client-s3");
           const { SQSClient, SendMessageCommand, ReceiveMessageCommand, DeleteMessageCommand } = require("@aws-sdk/client-sqs");
-          const [bucket, queueUrl] = process.argv.slice(2);
+          const [bucket, queueUrl, otherBucket] = process.argv.slice(2);
           (async () => {
-            const obj = await new S3Client({}).send(new GetObjectCommand({ Bucket: bucket, Key: "hello.txt" }));
+            const s3 = new S3Client({});
+            const obj = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: "hello.txt" }));
             if (!(await obj.Body.transformToString()).includes("hello")) throw new Error("unexpected object body");
+            const keys = ["batch/one.txt", "batch/two.txt"];
+            for (const Key of keys) await s3.send(new PutObjectCommand({ Bucket: bucket, Key, Body: Key }));
+            const del = await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: keys.map((Key) => ({ Key })) } }));
+            if ((del.Deleted || []).length !== 2 || (del.Errors || []).length !== 0) throw new Error("DeleteObjects: " + JSON.stringify(del));
+            for (const Key of keys) {
+              const gone = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key })).then(() => false, (e) => e.$metadata?.httpStatusCode === 404);
+              if (!gone) throw new Error(Key + " is still there after DeleteObjects");
+            }
+            // The role may not delete in the other bucket: a 200 whose one error is that key's AccessDenied.
+            const denied = await s3.send(new DeleteObjectsCommand({ Bucket: otherBucket, Delete: { Objects: [{ Key: "no-such-key.txt" }] } }));
+            if ((denied.Errors || []).length !== 1 || denied.Errors[0].Code !== "AccessDenied") throw new Error("DeleteObjects outside the policy: " + JSON.stringify(denied));
             const sqs = new SQSClient({});
             await sqs.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: "sdk-v3-aws-style" }));
             for (let i = 0; i < 5; i++) {
@@ -298,7 +311,7 @@ Resources:
           JS
           sdk_v3_defaults() {
             docker run --rm -e AWS_REGION=$REGION -v /tmp/sdkv3.js:/app/sdkv3.js:ro -w /app node:22-alpine \
-              sh -c 'npm i --silent --no-audit --no-fund @aws-sdk/client-s3@3 @aws-sdk/client-sqs@3 >/dev/null && node sdkv3.js "$0" "$1"' "${AppBucket}" "$QURL"
+              sh -c 'npm i --silent --no-audit --no-fund @aws-sdk/client-s3@3 @aws-sdk/client-sqs@3 >/dev/null && node sdkv3.js "$0" "$1" "$2"' "${AppBucket}" "$QURL" "${SiteBucket}"
           }
           check sdk_v3_default_clients "retry 3 sdk_v3_defaults"
           publish yes

@@ -17,7 +17,8 @@
 #      own names reach open-infra (the guest resolver): with no AWS_ENDPOINT_URL the CLI sends and receives
 #      by an AWS-style queue URL and reads the bucket at <bucket>.s3.<region>.amazonaws.com, an image pulls
 #      by <account>.dkr.ecr.<region>.amazonaws.com, and the JavaScript SDK v3's default S3Client and
-#      SQSClient (virtual-hosted bucket, AWS-style QueueUrl) work in a container; with
+#      SQSClient (virtual-hosted bucket, a batch delete with a per-key AccessDenied, AWS-style QueueUrl)
+#      work in a container; with
 #      KUBECONFIG set and the mail relay in capture mode (mail.capture), both messages are in the sink;
 #   3. the Elastic IP is a reachable LAN address; the CloudFront site serves its origin (SPA fallback +
 #      the response-headers policy); the deploy flow's last step works — after the site upload,
