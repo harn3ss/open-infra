@@ -12,10 +12,14 @@
 #   - the response carries a well-formed, quoted ETag (SDK-parse faithful)
 #   - list-objects shows the key
 #   - path-style addressing round-trips
+#   - CreateBucket (`aws s3 mb`) makes a bucket an immediate put/get works in, with the platform's default
+#     encryption when that is on; re-creating your own bucket answers 200 (us-east-1); `aws s3 rb` removes
+#     it and its kind: Bucket claim
 # and the two NEGATIVES that are the whole point ("prove the no"):
 #   - a request with a valid key ID but a WRONG secret is REJECTED (SignatureDoesNotMatch) — auth
 #     actually fires; naming a key is not enough
 #   - a valid key whose owner lacks write permission is DENIED (AccessDenied) — the boundary fires
+#   - CreateBucket of a platform bucket's name is BucketAlreadyExists, and a reader's is AccessDenied
 #
 # On-demand (needs a deployed shim + MinIO + the platform IAM). Run from a host with cluster
 # access. Exit 0 = pass, 1 = a real failure (the shim is not faithful), 42 = INCONCLUSIVE (a
@@ -45,7 +49,11 @@ curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not r
 WORK="$(mktemp -d)"
 CREATED_KEYS=()
 CREATED_USERS=()
+BUCKET_NS="${S3_BUCKET_NAMESPACE:-open-infra-s3}"
+MB_BUCKET="aws-shim-probe-mb-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 cleanup() {
+  # The CreateBucket section's bucket: its claim (the bucket's setup, reaper and MinIO bucket follow it).
+  kubectl -n "$BUCKET_NS" delete buckets.openinfra.dev "$MB_BUCKET" --ignore-not-found --wait=false >/dev/null 2>&1 || true
   for s in "${CREATED_KEYS[@]:-}";  do [ -n "$s" ] && kubectl -n "$SHIM_NS" delete secret "$s" --ignore-not-found >/dev/null 2>&1 || true; done
   for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
   rm -rf "$WORK"
@@ -180,9 +188,53 @@ if command -v curl >/dev/null; then
   log "  ✓ expired pre-signed URL refused (403)"
 fi
 
+# --- 8. CreateBucket: mb → immediate put/get → ls → rb, as a deploy script would ---------------
+awss3() { # AK SK -- <aws s3 args...> (the high-level `aws s3` commands)
+  local ak="$1" sk="$2"; shift 2
+  AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" \
+    aws --endpoint-url "$ENDPOINT" --no-cli-pager s3 "$@"
+}
+log "CreateBucket: aws s3 mb s3://${MB_BUCKET}"
+awss3 "$WAK" "$WSK" mb "s3://${MB_BUCKET}" >"$WORK/mb.out" 2>&1 || fail "aws s3 mb failed: $(cat "$WORK/mb.out")"
+awsq "$WAK" "$WSK" put-object --bucket "$MB_BUCKET" --key first.txt --body "$WORK/in.txt" >/dev/null 2>"$WORK/mbput.err" \
+  || fail "put-object right after CreateBucket failed: $(cat "$WORK/mbput.err")"
+awsq "$WAK" "$WSK" get-object --bucket "$MB_BUCKET" --key first.txt "$WORK/mbget.txt" >/dev/null \
+  || fail "get-object right after CreateBucket failed"
+cmp -s "$WORK/in.txt" "$WORK/mbget.txt" || fail "the new bucket returned different bytes"
+awss3 "$WAK" "$WSK" ls | grep -q " ${MB_BUCKET}\$" || fail "aws s3 ls does not list the new bucket"
+log "  ✓ created; an immediate put/get round-trips; aws s3 ls lists it"
+if [ "$(kubectl -n minio get configmap openinfra-object-encryption -o jsonpath='{.data.enabled}' 2>/dev/null || true)" = true ]; then
+  enc="$(awsq "$WAK" "$WSK" get-bucket-encryption --bucket "$MB_BUCKET" \
+    --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm' --output text 2>&1 || true)"
+  [ "$enc" = AES256 ] || fail "the platform encrypts new buckets, but the new bucket's default encryption is: $enc"
+  log "  ✓ default encryption AES256 (the platform's object encryption is on)"
+fi
+kubectl -n "$BUCKET_NS" get buckets.openinfra.dev "$MB_BUCKET" >/dev/null 2>&1 \
+  || fail "no kind: Bucket claim ${BUCKET_NS}/${MB_BUCKET} behind the new bucket"
+awsq "$WAK" "$WSK" create-bucket --bucket "$MB_BUCKET" >/dev/null 2>"$WORK/again.err" \
+  || fail "re-creating your own bucket must answer 200 in us-east-1: $(cat "$WORK/again.err")"
+log "  ✓ it is a kind: Bucket claim in ${BUCKET_NS}; re-creating your own bucket answers 200"
+ERR="$(awsq "$WAK" "$WSK" create-bucket --bucket velero 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q BucketAlreadyExists || fail "CreateBucket of a platform bucket's name: want BucketAlreadyExists, got: $ERR"
+ERR="$(awsq "$RAK" "$RSK" create-bucket --bucket "${MB_BUCKET}-r" 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q AccessDenied || fail "a reader's CreateBucket: want AccessDenied, got: $ERR"
+log "  ✓ a platform bucket's name is BucketAlreadyExists; a reader's CreateBucket is AccessDenied"
+awsq "$WAK" "$WSK" delete-object --bucket "$MB_BUCKET" --key first.txt >/dev/null 2>&1 || true
+awss3 "$WAK" "$WSK" rb "s3://${MB_BUCKET}" >"$WORK/rb.out" 2>&1 || fail "aws s3 rb failed: $(cat "$WORK/rb.out")"
+if awsq "$WAK" "$WSK" head-bucket --bucket "$MB_BUCKET" >/dev/null 2>&1; then
+  fail "the bucket still exists after aws s3 rb"
+fi
+gone=""
+for i in $(seq 1 30); do
+  kubectl -n "$BUCKET_NS" get buckets.openinfra.dev "$MB_BUCKET" >/dev/null 2>&1 || { gone=1; break; }
+  sleep 2
+done
+[ -n "$gone" ] || fail "the kind: Bucket claim ${BUCKET_NS}/${MB_BUCKET} outlived aws s3 rb"
+log "  ✓ aws s3 rb removed the bucket and its claim"
+
 # --- cleanup the object we wrote --------------------------------------------------------------
 awsq "$WAK" "$WSK" delete-object --bucket "$BUCKET" --key probe.txt >/dev/null 2>&1 || true
 awsq "$WAK" "$WSK" delete-object --bucket "$BUCKET" --key chunk.txt >/dev/null 2>&1 || true
 
 echo
-echo "✓ PASS — aws-shim S3 surface is byte-faithful, serves pre-signed URLs, and enforces auth + the write boundary."
+echo "✓ PASS — aws-shim S3 surface is byte-faithful, serves pre-signed URLs, creates and removes buckets, and enforces auth + the write boundary."
