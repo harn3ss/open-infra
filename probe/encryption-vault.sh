@@ -71,6 +71,17 @@ got="$(vault_ write -field=plaintext "transit/decrypt/$KNAME" ciphertext="$ct" |
 [ "$got" = "$PLAIN" ] || fail "decrypt did NOT return the original plaintext (got '$got') — the KEK does not round-trip."
 echo "  PASS — customer KEK wraps + unwraps byte-identical."
 
+# A Destruction waits out its waiting period (pendingWindowInDays, 7-30 days, as AWS KMS) before the
+# key is destroyed. A platform administrator's immediate entry lets this one throwaway verification
+# Destruction skip it; the entry is removed at cleanup.
+prev_imm="$(kubectl -n "$CONSOLE_NS" get configmap openinfra-destruction-config -o jsonpath='{.data.immediate}' 2>/dev/null || true)"
+had_cfg="$(kubectl -n "$CONSOLE_NS" get configmap openinfra-destruction-config -o name --ignore-not-found 2>/dev/null || true)"
+case " $(printf '%s' "$prev_imm" | tr ',' ' ') " in
+  *" default/$KEY "*) ;;
+  *) kubectl -n "$CONSOLE_NS" create configmap openinfra-destruction-config --from-literal=immediate="${prev_imm:+$prev_imm,}default/$KEY" \
+       --dry-run=client -o yaml | kubectl apply -f - >/dev/null || fail "could not let the verification Destruction skip the waiting period" ;;
+esac
+
 echo "▸ crypto-erase: kind: Destruction must make $KPATH unrecoverable"
 kubectl apply -f - >/dev/null <<YAML || fail "could not apply Destruction"
 apiVersion: openinfra.dev/v1
@@ -91,5 +102,11 @@ echo "  PASS — key destroyed; the previously-encrypted value is now unrecovera
 
 echo "▸ cleanup"
 kubectl delete encryptionkey "$KEY" destruction "$KEY" -n default --ignore-not-found >/dev/null 2>&1 || true
+if [ -n "$had_cfg" ]; then
+  kubectl -n "$CONSOLE_NS" create configmap openinfra-destruction-config --from-literal=immediate="$prev_imm" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1 || true
+else
+  kubectl -n "$CONSOLE_NS" delete configmap openinfra-destruction-config --ignore-not-found >/dev/null 2>&1 || true
+fi
 kubectl -n crossplane-system delete job enc-verify-probe-destroy --ignore-not-found >/dev/null 2>&1 || true
 echo "▸ PASS — encryption stack live-verified: provision -> round-trip -> crypto-erase. Safe to drop the EXPERIMENTAL flag on vault.yaml (see docs/encryption.md)."

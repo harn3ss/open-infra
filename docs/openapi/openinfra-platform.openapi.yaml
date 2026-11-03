@@ -5534,6 +5534,15 @@ components:
             reason:
               type: string
               description: Why the data is being destroyed, recorded on the certificate (AU / MP-6).
+            pendingWindowInDays:
+              type: integer
+              minimum: 7
+              maximum: 30
+              default: 30
+              description: "The waiting period before the key is destroyed, in days from the Destruction's creation \u2014\
+                \ AWS KMS ScheduleKeyDeletion's PendingWindowInDays (7-30, default 30). Until then the destruction is PendingDeletion,\
+                \ with its deletion date on its state record; deleting the Destruction before that date cancels it (CancelKeyDeletion),\
+                \ and the key is kept. A destruction already under way when this was introduced is not paused."
           required:
           - encryptionKey
           - confirm
@@ -5542,7 +5551,8 @@ components:
           properties:
             phase:
               type: string
-              description: Pending | Refused | Destroyed | Error.
+              description: Pending | PendingDeletion | Refused | Destroyed | Error (the destroyer's state record also has
+                Cancelled).
             message:
               type: string
             certificate:

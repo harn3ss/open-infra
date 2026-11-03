@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -660,6 +662,8 @@ case "$*" in
   "get secret audit-offsite-minio-creds -n monitoring -o jsonpath="*) printf 'YWs=' ;;
   "get xencryptionkeys.openinfra.dev -o json") cat "$STUB/xenckeys.json" ;;
   "get destructions.openinfra.dev -A -o json") cat "$STUB/destructions.json" ;;
+  "get configmaps -n "*" -l openinfra.dev/destruction -o json")
+    jq -s '{items: [.[] | select((.metadata.labels // {})["openinfra.dev/destruction"] != null)]}' "$STUB"/cms/*.json 2>/dev/null || echo '{"items":[]}' ;;
   "get persistentvolumeclaims -A -o json")
     [ -f "$STUB/fail-pvc-list" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
     if [ -f "$STUB/pvcs.json" ]; then cat "$STUB/pvcs.json"; else echo '{"items":[]}'; fi ;;
@@ -718,6 +722,25 @@ func destroyerEnv(t *testing.T, fixtures map[string]any, cms map[string]map[stri
 	}
 	if err := os.MkdirAll(filepath.Join(e.dir, "cms"), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	// Unless a test sets the destroyer's config itself, every fixture Destruction may skip the waiting
+	// period (the administrator's immediate list), so a test of what is destroyed need not wait 30 days;
+	// the waiting-period tests set the config.
+	if _, set := cms["openinfra-destruction-config"]; !set {
+		var immediate []string
+		if d, ok := fixtures["destructions.json"].(map[string]any); ok {
+			l, _ := d["items"].([]any)
+			for _, it := range l {
+				md, _ := it.(map[string]any)["metadata"].(map[string]any)
+				immediate = append(immediate, fmt.Sprint(md["namespace"])+"/"+fmt.Sprint(md["name"]))
+			}
+		}
+		cms = maps.Clone(cms)
+		if cms == nil {
+			cms = map[string]map[string]any{}
+		}
+		cms["openinfra-destruction-config"] = map[string]any{"metadata": map[string]any{"name": "openinfra-destruction-config", "namespace": "open-infra-console"},
+			"data": map[string]any{"immediate": strings.Join(immediate, ",")}}
 	}
 	for name, obj := range cms {
 		b, _ := json.Marshal(obj)
@@ -1222,6 +1245,84 @@ func TestEncryptionKeyReconciler_NeverRecreatesADestroyedKey(t *testing.T) {
 			}
 			if strings.Contains(applied, "openinfra-enckey-state-team.busy") {
 				t.Errorf("a key being destroyed gets no state write; applied:\n%s", applied)
+			}
+		})
+	}
+}
+
+// destructionIn is a Destruction created ago before now, with a waiting period of window days (0: the
+// default).
+func destructionIn(ns, name, key string, ago time.Duration, window int) map[string]any {
+	d := destruction(ns, name, key, time.Now().UTC().Add(-ago).Format(time.RFC3339))
+	if window > 0 {
+		d["spec"].(map[string]any)["pendingWindowInDays"] = window
+	}
+	return d
+}
+
+// #348: a Destruction waits out its pendingWindowInDays (AWS KMS ScheduleKeyDeletion: 7-30, default 30)
+// before the key is destroyed: until then it is PendingDeletion with its deletion date, and nothing is
+// destroyed. One whose window has passed is destroyed; the administrator's immediate list skips the window.
+func TestDestroyer_WaitsOutThePendingWindow(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, destroyerPath)
+	noImmediate := map[string]map[string]any{"openinfra-destruction-config": {"metadata": map[string]any{"name": "openinfra-destruction-config"},
+		"data": map[string]any{"immediate": "team-c/erase-now"}}}
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := destroyerEnv(t, map[string]any{
+				"xenckeys.json": items(xek("team-a", "app", "transit/keys/ek_team-a_app"), xek("team-b", "old", "transit/keys/ek_team-b_old"),
+					xek("team-c", "now", "transit/keys/ek_team-c_now")),
+				"destructions.json": items(
+					destructionIn("team-a", "erase-app", "app", 24*time.Hour, 0),   // default 30 days: waits
+					destructionIn("team-b", "erase-old", "old", 8*24*time.Hour, 7), // 7 days, 8 days old: due
+					destructionIn("team-c", "erase-now", "now", time.Minute, 0),    // the administrator's immediate entry
+				),
+			}, noImmediate, "ek_team-a_app", "ek_team-b_old", "ek_team-c_now")
+			out, err := e.run(t, sh, script, destroyerEnvVars...)
+			if err != nil {
+				t.Fatalf("destroyer run failed: %v\n%s", err, out)
+			}
+			if got := strings.Fields(e.read("vault-deleted.txt")); strings.Join(got, ",") != "ek_team-b_old,ek_team-c_now" {
+				t.Fatalf("want only the due and the immediate keys destroyed; got %v\nlog:\n%s", got, out)
+			}
+			a := cmData(e.cm(t, "openinfra-destruction-state-team-a.erase-app"))
+			want := time.Now().UTC().Add(-24*time.Hour + 30*24*time.Hour)
+			when, perr := time.Parse(time.RFC3339, fmt.Sprint(a["deletionDate"]))
+			if a["phase"] != "PendingDeletion" || perr != nil || when.Sub(want).Abs() > 2*time.Minute {
+				t.Fatalf("team-a must be PendingDeletion until %s; got %v\nlog:\n%s", want.Format(time.RFC3339), a, out)
+			}
+			if !strings.Contains(fmt.Sprint(a["message"]), "delete this Destruction before then to cancel") {
+				t.Errorf("the pending state must say how to cancel; got %v", a["message"])
+			}
+		})
+	}
+}
+
+// Deleting a Destruction before its deletion date cancels it (CancelKeyDeletion): its state becomes
+// Cancelled and its key is never destroyed.
+func TestDestroyer_DeletedBeforeTheDateIsCancelled(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, destroyerPath)
+	pending := map[string]any{"metadata": map[string]any{"name": "openinfra-destruction-state-team-a.erase-app", "namespace": "open-infra-console",
+		"labels": map[string]any{"openinfra.dev/destruction": "erase-app"}},
+		"data": map[string]any{"destruction": "erase-app", "namespace": "team-a", "encryptionKey": "app", "phase": "PendingDeletion",
+			"vaultKeyPath": "transit/keys/ek_team-a_app", "deletionDate": "2026-12-01T00:00:00Z"}}
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := destroyerEnv(t, map[string]any{
+				"xenckeys.json":     items(xek("team-a", "app", "transit/keys/ek_team-a_app")),
+				"destructions.json": items(),
+			}, map[string]map[string]any{"openinfra-destruction-state-team-a.erase-app": pending}, "ek_team-a_app")
+			out, err := e.run(t, sh, script, destroyerEnvVars...)
+			if err != nil {
+				t.Fatalf("destroyer run failed: %v\n%s", err, out)
+			}
+			if got := e.read("vault-deleted.txt"); strings.TrimSpace(got) != "" {
+				t.Fatalf("a cancelled destruction destroyed %q", got)
+			}
+			if d := cmData(e.cm(t, "openinfra-destruction-state-team-a.erase-app")); d["phase"] != "Cancelled" {
+				t.Fatalf("want Cancelled; got %v\nlog:\n%s", d, out)
 			}
 		})
 	}

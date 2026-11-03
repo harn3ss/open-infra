@@ -16,6 +16,7 @@ spec:
   encryptionKey: tenant-a
   confirm: tenant-a          # must EQUAL encryptionKey — a typo-guard; destruction is irreversible
   reason: "contract ended 2026-08; customer data must be destroyed"
+  pendingWindowInDays: 7     # optional: the waiting period, 7-30 days (default 30), as KMS ScheduleKeyDeletion
 ```
 
 ## What happens
@@ -34,7 +35,15 @@ see [`encryption.md`](encryption.md)) picks up the request and:
    EncryptionKey that records the key, and any encrypted volume in another namespace keyed under it,
    including one whose own EncryptionKey has since been deleted (data outlives the key object). If the
    volume list cannot be read, the run destroys nothing.
-2. **Crypto-erases** — records what it observes (the key's version count) as `InProgress` *before*
+2. **Waits out the waiting period** — as AWS KMS `ScheduleKeyDeletion`, nothing is destroyed until
+   `pendingWindowInDays` (7-30, default 30) have passed since the Destruction was created. Until then
+   it is `PendingDeletion`, and its state records the `deletionDate`. **Deleting the Destruction before
+   that date cancels it** (`CancelKeyDeletion`): its state becomes `Cancelled` and the key is kept. Unlike
+   a KMS key pending deletion, the EncryptionKey stays usable during the window. A platform
+   administrator can let a named Destruction skip the window by listing it in
+   `open-infra-console/openinfra-destruction-config` (`data.immediate: "<namespace>/<name>,…"`), which
+   tenants cannot write; the encryption verification probe does this for its throwaway key.
+3. **Crypto-erases** — records what it observes (the key's version count) as `InProgress` *before*
    deleting, then sets `deletion_allowed` and deletes the Vault Transit key. Every DEK/volume/object
    wrapped by it is now undecryptable, and the key is never re-created for that EncryptionKey (a new
    EncryptionKey of the same name, created later, gets a new key). If the key is **absent and no destruction was in progress**
@@ -42,7 +51,7 @@ see [`encryption.md`](encryption.md)) picks up the request and:
    **no certificate**, because a certificate attesting to an erasure that never happened is worse than
    none. A crash between delete and certify resumes from the `InProgress` record (true count, no
    duplicate).
-3. **Erases the volumes under the key.** Longhorn reads an encrypted volume's LUKS passphrase from its
+4. **Erases the volumes under the key.** Longhorn reads an encrypted volume's LUKS passphrase from its
    `<pvc>-crypto` Secret every time it opens the volume, so that Secret holds the passphrase in plain
    text, and destroying the key alone would leave the volume readable. Once the key is gone, the
    volume-crypto reconciler deletes the passphrase Secret of every volume in the Destruction's
@@ -52,7 +61,7 @@ see [`encryption.md`](encryption.md)) picks up the request and:
    A volume attached at that moment keeps working until it detaches, because the kernel holds its key
    (an attached EBS volume behaves the same after its KMS key is deleted). It can never be opened
    again, and neither can its Longhorn snapshots and backups, which are under the same passphrase.
-4. **Writes a destruction certificate** — a JSON record (key, its namespace and exact Transit path,
+5. **Writes a destruction certificate** — a JSON record (key, its namespace and exact Transit path,
    versions destroyed, how many volume passphrases were erased, reason, time, SP 800-88 method) to the **WORM audit store** under
    `certificates/<namespace>/`, with COMPLIANCE retention. The
    certificate's original version cannot be deleted or overwritten until retention expires. Its
@@ -60,7 +69,7 @@ see [`encryption.md`](encryption.md)) picks up the request and:
    versioning still lets a bucket-writer lay a *newer* version over it at "latest", but the locked
    original survives and can be verified against the anchored hash — the same shadowing caveat as
    [audit off-siting](audit-offsite.md#immutability-worm-vs-tamper-evidence-chain--stated-precisely).
-5. **Records the outcome** — phase (`Destroyed`/`Refused`/`Error`), the certificate path + sha256, and
+6. **Records the outcome** — phase (`PendingDeletion`/`Cancelled`/`Destroyed`/`Refused`/`Error`), the certificate path + sha256, and
    the time, shown on the console **Security & Identity → Encryption Keys** page. The privileged
    destroyer writes this to a single-writer **state ConfigMap**, which the console reads — it does **not**
    write back onto the `Destruction` CR, so the CR's own `status.phase` stays `Pending` even after a
@@ -84,8 +93,8 @@ Destroying a key is irreversible, so the power is fenced hard:
   there. Crossplane's generated `crossplane-edit` and `crossplane-admin` roles are such roles (Crossplane
   adds every claim kind to them), so binding them in a namespace grants Destruction too. Whoever creates
   it, a Destruction reaches only its own namespace's keys, much like an AWS principal allowed
-  `kms:ScheduleKeyDeletion` on its own account's keys. Unlike KMS, there is no waiting period: the
-  erase runs on the destroyer's next pass, within 5 minutes. The `confirm` field is the guard.
+  `kms:ScheduleKeyDeletion` on its own account's keys. As with KMS, the erase waits out a waiting
+  period (7-30 days, default 30), during which deleting the Destruction cancels it.
 - **Typo-guard** — the `confirm` field must repeat the key name.
 - **Separated privilege** — only the destroyer's Vault role can delete a key; day-to-day key
   management (the reconciler) cannot. The destroyer can delete keys but cannot read/export their

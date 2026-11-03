@@ -25,6 +25,12 @@
 #     reconciler's erasure receipts beside them); and
 #     GET exactly ONE secret (the audit off-siter's scoped put+retain MinIO identity) to write the
 #     certificate — resourceName-fenced.
+#   * Waiting period: as AWS KMS ScheduleKeyDeletion, a key is destroyed only once the Destruction's
+#     pendingWindowInDays (7-30, default 30) have passed since it was created. Until then its state is
+#     PendingDeletion with the deletionDate; deleting the Destruction before that date cancels it (the
+#     state record becomes Cancelled and nothing is destroyed). A platform administrator can let a named
+#     Destruction skip the window (open-infra-console/openinfra-destruction-config, data.immediate:
+#     "<namespace>/<name>" entries) — the live verification probe uses this; tenants cannot write it.
 #   * Certificate: written under certificates/ in the WORM bucket with COMPLIANCE retention, so the
 #     proof of destruction is itself undeletable. The Destruction object's create/complete lifecycle is
 #     also captured in the API-server audit log, which audit off-siting makes tamper-evident.
@@ -226,9 +232,29 @@ spec:
                     printf '%s' "$p"
                   }
 
-                  kubectl get destructions.openinfra.dev -A -o json \
-                    | jq -r '.items[] | [.metadata.namespace, .metadata.name, .spec.encryptionKey, (.spec.confirm // ""), (.spec.reason // ""), (.metadata.creationTimestamp // "")] | @tsv' \
-                    | while IFS="$(printf '\t')" read -r ns name key confirm reason created; do
+                  # Destructions a platform administrator lets skip the waiting period ("<namespace>/<name>",
+                  # space or comma separated; the console namespace is not tenant-writable).
+                  immediate=" $(kubectl get configmap openinfra-destruction-config -n "$CONSOLE_NS" -o jsonpath='{.data.immediate}' 2>/dev/null | tr ',' ' ') "
+
+                  dj="$(kubectl get destructions.openinfra.dev -A -o json)" || { echo "cannot list Destructions" >&2; exit 1; }
+                  # Cancellation (CancelKeyDeletion): a destruction still waiting out its window whose
+                  # Destruction has been deleted is cancelled — nothing is destroyed.
+                  printf '%s' "$dj" | jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name)"' > "$W/live.txt"
+                  kubectl get configmaps -n "$CONSOLE_NS" -l openinfra.dev/destruction -o json 2>/dev/null \
+                    | jq -r '.items[] | select(.data.phase == "PendingDeletion") | [.metadata.name, (.data.namespace // ""), (.data.destruction // "")] | @tsv' \
+                    | while IFS="$(printf '\t')" read -r cm cns cname; do
+                        [ -n "$cns" ] && [ -n "$cname" ] || continue
+                        grep -qxF "$cns/$cname" "$W/live.txt" && continue
+                        kubectl patch configmap "$cm" -n "$CONSOLE_NS" --type merge \
+                          -p '{"data":{"phase":"Cancelled","message":"deletion cancelled: the Destruction was deleted before its deletion date; the key was kept"}}' >/dev/null \
+                          && echo "CANCELLED $cns/$cname: deleted before its deletion date — nothing destroyed"
+                      done
+
+                  printf '%s' "$dj" \
+                    | jq -r '.items[] | [.metadata.namespace, .metadata.name, .spec.encryptionKey, (.spec.confirm // ""), (.spec.reason // ""), (.metadata.creationTimestamp // ""),
+                        ((.spec.pendingWindowInDays // 30) | tostring),
+                        ((.metadata.creationTimestamp // "") | if . == "" then "" else (fromdateiso8601 | tostring) end)] | @tsv' \
+                    | while IFS="$(printf '\t')" read -r ns name key confirm reason created window createdEpoch; do
                         # The state record is per namespace + name. A record written before namespacing
                         # (openinfra-destruction-state-<name>, no namespace) is adopted ONCE, by a
                         # Destruction of that name that already existed when it was written (a state record
@@ -259,14 +285,14 @@ spec:
                         # named key later exists; otherwise it just re-errors harmlessly.)
                         case "$prev" in Destroyed | Refused) continue ;; esac
 
-                        writestate() { # phase message certificate destroyedAt observedVersions certSha256 vaultKeyPath
+                        writestate() { # phase message certificate destroyedAt observedVersions certSha256 vaultKeyPath [deletionDate]
                           kubectl create configmap "$st" -n "$CONSOLE_NS" \
                             --from-literal=destruction="$name" --from-literal=namespace="$ns" \
                             --from-literal=encryptionKey="$key" \
                             --from-literal=phase="$1" --from-literal=message="$2" \
                             --from-literal=certificate="$3" --from-literal=destroyedAt="$4" \
                             --from-literal=observedVersions="$5" --from-literal=certSha256="$6" \
-                            --from-literal=vaultKeyPath="$7" \
+                            --from-literal=vaultKeyPath="$7" --from-literal=deletionDate="${8:-}" \
                             --dry-run=client -o yaml \
                             | kubectl label --local -f - "openinfra.dev/destruction=$name" -o yaml \
                             | kubectl apply -f - >/dev/null
@@ -318,6 +344,26 @@ spec:
                           echo "REFUSED-SHARED $ns/$name: $path is also the Transit key of $others other EncryptionKey(s) and $vols volume(s) in other namespaces — nothing destroyed"
                           writestate "Error" "$path is shared with another namespace ($others other EncryptionKey(s), $vols encrypted volume(s); a key created before namespacing) — destroying it would erase that namespace's data; nothing was destroyed" "" "" "" "" "$path"
                           continue
+                        fi
+
+                        # The waiting period (KMS ScheduleKeyDeletion's PendingWindowInDays): nothing is destroyed
+                        # until the Destruction is pendingWindowInDays old. A destruction already InProgress is
+                        # finished (it started before the window, or after it passed); an administrator's
+                        # immediate entry skips it.
+                        if [ "$prev" != "InProgress" ]; then
+                          case "$window" in "" | *[!0-9]*) window=30 ;; esac
+                          [ "$window" -ge 7 ] && [ "$window" -le 30 ] || window=30
+                          case "$createdEpoch" in "" | *[!0-9]*) createdEpoch="$now" ;; esac
+                          due=$((createdEpoch + window * 86400))
+                          case "$immediate" in *" $ns/$name "*) due="$now" ;; esac
+                          if [ "$now" -lt "$due" ]; then
+                            when="$(jq -nr --argjson t "$due" '$t | todateiso8601')"
+                            if [ "$prev" != "PendingDeletion" ]; then
+                              echo "SCHEDULED $ns/$name: $path will be destroyed on $when (pendingWindowInDays $window)"
+                            fi
+                            writestate "PendingDeletion" "the key will be destroyed on $when; delete this Destruction before then to cancel" "" "" "" "" "$path" "$when"
+                            continue
+                          fi
                         fi
 
                         # Reuse a stable cert path + the observed version count across retries (recorded
