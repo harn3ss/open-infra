@@ -711,10 +711,25 @@ func translateCloudWatchAlarm(id string, props map[string]any, ctx *stackCtx) (*
 	}
 	if dl, ok := props["Dimensions"].([]any); ok {
 		var dims []any
+		var rawDims []any
+		if ctx != nil {
+			if rp, ok := ctx.rawProps(id); ok {
+				rawDims, _ = rp["Dimensions"].([]any)
+			}
+		}
 		for i, d := range dl {
 			dm, _ := d.(map[string]any)
 			n, nok := concrete(dm["Name"])
 			v, vok := concrete(dm["Value"])
+			if nok && !vok && i < len(rawDims) {
+				// A dimension naming an in-stack instance (Value: !Ref <instance>, or its InstanceId) is that
+				// instance's id — its VM's name, what its Ref is (#350 X).
+				rd, _ := rawDims[i].(map[string]any)
+				if inst, lid, ok := instanceIDRef(rd["Value"], ctx); ok {
+					v, vok = inst, true
+					m.Caveats = append(m.Caveats, fmt.Sprintf("Dimensions[%d] names the in-stack instance %s: no AWS/EC2 metrics are published for an instance, so a metric of it reaches the alarm only if something puts it (PutMetricData)", i, lid))
+				}
+			}
 			if !nok || !vok {
 				f = append(f, Finding{"Resource " + id, fmt.Sprintf("Dimensions[%d] needs a concrete Name and Value", i)})
 				continue
@@ -769,6 +784,25 @@ func translateCloudWatchAlarm(id string, props map[string]any, ctx *stackCtx) (*
 		spec["tags"] = t
 	}
 	return m, f
+}
+
+// instanceIDRef resolves a raw value that is an in-stack AWS::EC2::Instance's id — {Ref: X} or
+// {Fn::GetAtt: [X, InstanceId]} — to that id: the instance's VM name, its Ref (resource_attrs.go).
+func instanceIDRef(raw any, ctx *stackCtx) (id, logicalID string, ok bool) {
+	if ctx == nil {
+		return "", "", false
+	}
+	m, _ := raw.(map[string]any)
+	var target string
+	if ref, isRef := m["Ref"].(string); isRef {
+		target = ref
+	} else if ga, isAtt := m["Fn::GetAtt"].([]any); isAtt && len(ga) == 2 && fmt.Sprint(ga[1]) == "InstanceId" {
+		target = fmt.Sprint(ga[0])
+	}
+	if r, in := ctx.template.Resources[target]; !in || r.Type != "AWS::EC2::Instance" || !ctx.included(r) {
+		return "", "", false
+	}
+	return ctx.name(target), target, true
 }
 
 // ---- AWS::Lambda::Permission ----

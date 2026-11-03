@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/harn3ss/open-infra/cfn/resourcepolicy"
@@ -90,10 +91,71 @@ func translateSQSQueuePolicy(id string, props map[string]any, ctx *stackCtx) (*M
 			}
 		}
 	}
+	if doc != "" {
+		var arns []string
+		for _, n := range names {
+			arns = append(arns, svcQueueARN(fmt.Sprint(n), ctx))
+		}
+		f = append(f, foreignResources(id, doc, arns, "queue")...)
+	}
 	if len(f) > 0 {
 		return nil, f
 	}
 	return serviceManifest(KindSQSQueuePolicy, svcPolicyID(id, ctx), map[string]any{"queues": names, "document": doc}), nil
+}
+
+// foreignResources refuses a policy statement's Resource that names a queue (or topic) the policy is not
+// attached to: one policy may cover several of its own (each statement applies to the ones its Resource
+// matches, as on AWS), but a grant for one it is not attached to would be applied nowhere.
+func foreignResources(id, doc string, attached []string, what string) []Finding {
+	var d struct {
+		Statement json.RawMessage
+	}
+	if json.Unmarshal([]byte(doc), &d) != nil {
+		return nil // policyDocJSON / resourcepolicy.Parse report a malformed document
+	}
+	var stmts []map[string]any
+	if json.Unmarshal(d.Statement, &stmts) != nil {
+		var one map[string]any
+		if json.Unmarshal(d.Statement, &one) != nil {
+			return nil
+		}
+		stmts = []map[string]any{one}
+	}
+	svc := ""
+	if len(attached) > 0 {
+		if p := strings.SplitN(attached[0], ":", 6); len(p) == 6 {
+			svc = p[2]
+		}
+	}
+	var f []Finding
+	for _, st := range stmts {
+		var res []string
+		switch r := st["Resource"].(type) {
+		case string:
+			res = []string{r}
+		case []any:
+			for _, e := range r {
+				if s, ok := e.(string); ok {
+					res = append(res, s)
+				}
+			}
+		}
+		for _, r := range res {
+			p := strings.SplitN(r, ":", 6)
+			if r == "*" || strings.ContainsAny(r, "*?") || len(p) != 6 || p[2] != svc {
+				continue
+			}
+			mine := false
+			for _, a := range attached {
+				mine = mine || resourcepolicy.SameResource(r, a)
+			}
+			if !mine {
+				f = append(f, Finding{"Resource " + id, "PolicyDocument names " + r + ", a " + what + " this policy is not attached to — list it in the policy's " + map[string]string{"queue": "Queues", "topic": "Topics"}[what] + ", or drop it"})
+			}
+		}
+	}
+	return f
 }
 
 // translateSNSTopicPolicy maps an AWS::SNS::TopicPolicy to the Policy attribute of each topic it names,
@@ -127,6 +189,13 @@ func translateSNSTopicPolicy(id string, props map[string]any, ctx *stackCtx) (*M
 				f = append(f, Finding{"Resource " + id, "PolicyDocument (topic " + arn + "): " + err.Error()})
 			}
 		}
+	}
+	if doc != "" {
+		var attached []string
+		for _, a := range arns {
+			attached = append(attached, fmt.Sprint(a))
+		}
+		f = append(f, foreignResources(id, doc, attached, "topic")...)
 	}
 	if len(f) > 0 {
 		return nil, f

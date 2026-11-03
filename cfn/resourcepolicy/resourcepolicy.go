@@ -77,6 +77,7 @@ func Parse(doc, resourceARN string) (*Policy, error) {
 		return nil, err
 	}
 	p := &Policy{}
+	elsewhere := 0 // statements for another queue or topic the policy is attached to
 	for i, st := range stmts {
 		s, skip, err := parseStatement(st, svc, resourceARN)
 		if err != nil {
@@ -88,7 +89,14 @@ func Parse(doc, resourceARN string) (*Policy, error) {
 		}
 		if !skip {
 			p.Statements = append(p.Statements, s)
+		} else if applies, _ := checkResource(st["Resource"], resourceARN); !applies {
+			elsewhere++
 		}
+	}
+	// A policy every statement of which is for other resources says nothing about this one: refused, as
+	// a policy that would grant nothing it seems to.
+	if len(p.Statements) == 0 && elsewhere > 0 {
+		return nil, fmt.Errorf("no statement of the policy is for this resource (%s): each Resource names another queue or topic", resourceARN)
 	}
 	return p, nil
 }
@@ -135,7 +143,8 @@ func parseStatement(st map[string]any, svc, resourceARN string) (Statement, bool
 		return s, false, err
 	}
 	s.Actions = acts
-	if err := checkResource(st["Resource"], resourceARN); err != nil {
+	applies, err := checkResource(st["Resource"], resourceARN)
+	if err != nil {
 		return s, false, err
 	}
 	conds, err := conditions(st["Condition"])
@@ -160,7 +169,7 @@ func parseStatement(st map[string]any, svc, resourceARN string) (Statement, bool
 		return s, false, errors.New(`a grant to every principal ("*") with no aws:SourceArn/aws:SourceAccount condition would make the resource public; it is not honored here — grant callers through IAM`)
 	}
 	s.Any, s.Services = everyone, services
-	return s, false, nil
+	return s, !applies, nil // a statement for another resource the policy is attached to does not apply here
 }
 
 func strList(v any) ([]string, bool) {
@@ -204,21 +213,31 @@ func actions(v any, svc string) ([]string, error) {
 // checkResource accepts "*", an absent Resource, this resource's ARN (by service and name: the shim
 // addresses a queue or topic by its name whatever account or region an ARN names), or a pattern that
 // matches its ARN.
-func checkResource(v any, resourceARN string) error {
+//
+// One policy may be attached to several queues or topics (an AWS::SQS::QueuePolicy's Queues: [A, B], with
+// Resource: [A's ARN, B's ARN]): as on AWS, a statement applies to the resources its Resource matches, so
+// an entry naming another queue (or topic) is not refused — and a statement none of whose entries is this
+// resource does not apply to it (applies=false). An entry that is not a queue (or topic) ARN at all still
+// refuses the policy.
+func checkResource(v any, resourceARN string) (applies bool, err error) {
 	if v == nil {
-		return nil
+		return true, nil
 	}
 	res, ok := strList(v)
 	if !ok {
-		return errors.New("Resource must be a string or a list of strings")
+		return false, errors.New("Resource must be a string or a list of strings")
 	}
 	for _, r := range res {
 		if r == "*" || SameResource(r, resourceARN) || (strings.ContainsAny(r, "*?") && Glob(r, resourceARN)) {
+			applies = true
 			continue
 		}
-		return fmt.Errorf("Resource %q is not this resource (%s)", r, resourceARN)
+		if svc := arnPart(r, 2); svc != "" && svc == arnPart(resourceARN, 2) && arnPart(r, 5) != "" {
+			continue // another queue (or topic) of the same service: the statement is for it
+		}
+		return false, fmt.Errorf("Resource %q is not this resource (%s)", r, resourceARN)
 	}
-	return nil
+	return applies, nil
 }
 
 // SameResource reports whether two ARNs name the same queue or topic: the same service and name.

@@ -152,3 +152,24 @@ func TestGlob(t *testing.T) {
 		}
 	}
 }
+
+// One policy attached to several queues: a statement applies to the queues its Resource names, and a
+// statement for another queue of the policy does not apply here (it is not refused).
+func TestParse_PolicyOverSeveralQueues(t *testing.T) {
+	doc := `{"Statement":[
+		{"Effect":"Allow","Principal":{"Service":"sns.amazonaws.com"},"Action":"sqs:SendMessage","Resource":["arn:aws:sqs:us-east-1:123456789012:orders","arn:aws:sqs:us-east-1:123456789012:other"]},
+		{"Effect":"Deny","Principal":{"Service":"sns.amazonaws.com"},"Action":"sqs:SendMessage","Resource":"arn:aws:sqs:us-east-1:123456789012:other"}]}`
+	p, err := Parse(doc, queueARN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Statements) != 1 || !p.Allows(Request{Service: "sns.amazonaws.com", Action: "sqs:SendMessage"}) {
+		t.Fatalf("only the statement naming this queue applies: %+v", p.Statements)
+	}
+	if _, err := Parse(doc, "arn:aws:sqs:us-east-1:123456789012:other"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(`{"Statement":[{"Effect":"Allow","Principal":{"Service":"sns.amazonaws.com"},"Action":"sqs:SendMessage","Resource":"arn:aws:sns:us-east-1:123456789012:t"}]}`, queueARN); err == nil {
+		t.Fatal("a Resource of another service must still refuse")
+	}
+}
