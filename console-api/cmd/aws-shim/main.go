@@ -177,6 +177,7 @@ func run(logger *slog.Logger) error {
 	var ddbStreamSt *ddbStreamStore
 	var cognitoSt *cognitoStore
 	var cfnSvcOwners *cfnServiceOwners
+	var ec2KeySt *ec2KeyStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		// A backing-store outage must NOT take the whole shim down. Build these shared-Postgres stores in
 		// a closure; on ANY failure, log and leave them nil — each service is nil-guarded at registration,
@@ -273,13 +274,18 @@ func run(logger *slog.Logger) error {
 			if serr := cfnSvcOwners.ensureSchema(context.Background()); serr != nil {
 				return fmt.Errorf("CloudFormation service-resource schema init failed: %w", serr)
 			}
+			// EC2 key pairs (ec2_keypairs.go): an instance's KeyName carries one into its VM's spec.sshKey.
+			ec2KeySt = &ec2KeyStore{db: db}
+			if serr := ec2KeySt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("EC2 key-pair schema init failed: %w", serr)
+			}
 			logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/Cognito Postgres")
 			return nil
 		}()
 		if initErr != nil {
 			logger.Warn("shared SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/DynamoDBStreams/Cognito Postgres unavailable — those services answer 501 until recovery; the shim + Cedar enforcement stay up", slog.String("err", initErr.Error()))
 			sqsSt, snsSt, kmsSt, secretsSt, ebSt, cwlSt, ssmSt, apigwSt, apigwV1St, cwSt, kinesisSt, ddbStreamSt, cognitoSt = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
-			cfnSvcOwners = nil
+			cfnSvcOwners, ec2KeySt = nil, nil
 		}
 	}
 
@@ -614,6 +620,12 @@ func run(logger *slog.Logger) error {
 			services["cloudformation"] = cfnH
 			// CloudFront (cloudfront.*): the invalidations of a stack's distributions (cloudfront.go).
 			services["cloudfront"] = newCloudFrontHandler(cfnH, logger)
+			// EC2 (ec2.*): the stack namespace's instances, volumes, groups, VPCs and subnets, the catalog,
+			// and the key pairs an instance's KeyName names (ec2.go).
+			services["ec2"] = newEC2Handler(cfnH, ec2KeySt, logger)
+			if ec2KeySt != nil {
+				cfnH.keyPairs = ec2KeySt.publicKeys
+			}
 			cfnDoor = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
 		}

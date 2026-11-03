@@ -51,6 +51,7 @@ var servedHostForms = map[string][]string{
 	"glue":            {"glue.{r}"},
 	"athena":          {"athena.{r}"},
 	"eks":             {"eks.{r}"},
+	"ec2":             {"ec2.{r}"},
 }
 
 type rewriteRule struct {
@@ -251,7 +252,7 @@ func TestGuestAWSEndpoints_OtherNamesAreForwarded(t *testing.T) {
 	_, docs := guestAWSDocs(t)
 	rules, corefile := guestCorefile(t, docs)
 	for _, host := range []string{
-		"awscli.amazonaws.com", "ec2.us-east-1.amazonaws.com", "ssmmessages.us-east-1.amazonaws.com",
+		"awscli.amazonaws.com", "ssmmessages.us-east-1.amazonaws.com",
 		"ec2messages.us-east-1.amazonaws.com", "elasticloadbalancing.us-east-1.amazonaws.com",
 		"examplebucket.s3-website-us-east-1.amazonaws.com", "s3.dualstack.us-east-1.amazonaws.com",
 		"sqs.cn-north-1.amazonaws.com.cn", "notsqs.us-east-1.amazonaws.com", "sqs.us-east-1.amazonaws.com.example.com",

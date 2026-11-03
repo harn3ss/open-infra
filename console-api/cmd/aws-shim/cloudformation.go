@@ -134,6 +134,9 @@ type cfnDoorway struct {
 	// stack's function is refused a name another of them already has, since a function name is unique,
 	// as on AWS. nil = not checked.
 	fns *fnLocator
+	// keyPairs reads the EC2 key pairs (name -> public key) an instance's KeyName may name (ec2_keypairs.go);
+	// nil = this shim keeps none.
+	keyPairs func(context.Context) (map[string]string, error)
 }
 
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
@@ -150,6 +153,18 @@ func (h *cfnDoorway) caps() cfn.Capabilities {
 		ValidatedDomains: fileDomains(h.validatedDomainsFile)}
 	if ecr, ok := h.services.door("ecr").(*ecrHandler); ok && ecr != nil && c.ECRAPI {
 		c.ECRRepositoryHost = stripScheme(ecr.proxyEndpoint)
+	}
+	// The EC2 key pairs an instance's KeyName may name (ec2_keypairs.go). Unreadable: none are known, and
+	// KeyName stays a caveat rather than refusing a key pair that may exist.
+	if h.keyPairs != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		kp, err := h.keyPairs(ctx)
+		cancel()
+		if err == nil {
+			c.KeyPairs = kp
+		} else if h.logger != nil {
+			h.logger.Warn("cloudformation: reading the EC2 key pairs failed", "error", err.Error())
+		}
 	}
 	return c
 }

@@ -19,7 +19,7 @@
 #      legacy queue names) with the shim's address;
 #    - <account>.dkr.ecr.<region>.amazonaws.com with the guest-facing registry's (ecr-registry-aws);
 #    and forwards every other name to the cluster DNS. AWS names of services the shim does not serve
-#    (ec2, ssmmessages, awscli.amazonaws.com, ...) resolve as they always did. VM guests use it through
+#    (ssmmessages, ec2messages, awscli.amazonaws.com, ...) resolve as they always did. VM guests use it through
 #    their VMI's dnsConfig (vm-composition.yaml, from the openinfra-guest-dns EnvironmentConfig below); no
 #    other pod does, so platform components that call AWS itself are unaffected. It runs in kube-system on
 #    port 53 because a security group with egress rules always allows DNS to kube-system:53
@@ -464,7 +464,7 @@ data:
         # A registry by its ECR name.
         rewrite stop name regex ^[0-9]{12}\.dkr\.ecr\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ ecr-registry-aws.open-infra-ecr.svc.cluster.local. answer auto
         # The regional endpoints of the services the aws-shim serves.
-        rewrite stop name regex ^(api\.ecr|athena|apigateway|appsync|cloudformation|cognito-idp|dynamodb|ecr|ecs|eks|email|events|glue|kinesis|kms|lambda|logs|monitoring|rds|s3|secretsmanager|sns|sqs|ssm|states|streams\.dynamodb|sts|sync-states)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        rewrite stop name regex ^(api\.ecr|athena|apigateway|appsync|cloudformation|cognito-idp|dynamodb|ec2|ecr|ecs|eks|email|events|glue|kinesis|kms|lambda|logs|monitoring|rds|s3|secretsmanager|sns|sqs|ssm|states|streams\.dynamodb|sts|sync-states)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
         # An API's invoke name, an AppSync API's, a bucket's (regional or global).
         rewrite stop name regex ^[a-z0-9]+\.(execute-api|appsync-api)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
         rewrite stop name regex ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3(\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+)?\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto

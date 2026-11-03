@@ -146,7 +146,7 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// The client signed for a service this shim does not front. Be honest and specific rather
 		// than pretending: a 501 with the service name, so the caller knows it isn't implemented.
 		rt.logger.Warn("unsupported AWS service", "service", cred.Service, "path", r.URL.Path)
-		writeUnsupportedService(w, cred.Service, requestID)
+		writeUnsupportedService(w, r, cred.Service, requestID)
 		return
 	}
 
@@ -185,7 +185,7 @@ func isWebIdentityAssume(r *http.Request) bool {
 func (rt *serviceRouter) serveAppsyncJWT(w http.ResponseWriter, r *http.Request, token, requestID string) {
 	appsvc, ok := rt.services["appsync"]
 	if !ok {
-		writeUnsupportedService(w, "appsync", requestID)
+		writeUnsupportedService(w, r, "appsync", requestID)
 		return
 	}
 	// The AppSync MANAGEMENT plane (/v1/...) is control-plane — IAM/console only, never a data-plane
@@ -216,7 +216,7 @@ func (rt *serviceRouter) serveAppsyncJWT(w http.ResponseWriter, r *http.Request,
 func (rt *serviceRouter) serveAppsyncLambda(w http.ResponseWriter, r *http.Request, token, requestID string) {
 	appsvc, ok := rt.services["appsync"]
 	if !ok {
-		writeUnsupportedService(w, "appsync", requestID)
+		writeUnsupportedService(w, r, "appsync", requestID)
 		return
 	}
 	// The management plane (/v1/...) is control-plane — IAM/console only, never a data-plane token.
@@ -235,12 +235,4 @@ func (rt *serviceRouter) serveAppsyncLambda(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	appsvc.serve(w, r.WithContext(withForwardedMode(r.Context(), "aws_lambda")), claims, requestID)
-}
-
-// writeUnsupportedService reports a not-fronted service. It uses an S3-style error body as a
-// lowest-common-denominator (valid XML, a clear NotImplemented code); the HTTP 501 is what SDKs key
-// their "operation unsupported" handling off regardless of dialect.
-func writeUnsupportedService(w http.ResponseWriter, service, requestID string) {
-	writeS3ErrorMsg(w, "NotImplemented", http.StatusNotImplemented, requestID,
-		"AWS service '"+service+"' is not fronted by this open-infra shim")
 }

@@ -101,7 +101,7 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	}
 	if !h.relayExists(r.Context()) {
 		// The mail component is off: there is nowhere to deliver, so SES is not fronted here.
-		writeUnsupportedService(w, "ses", requestID)
+		writeUnsupportedService(w, r, "ses", requestID)
 		return
 	}
 	_ = r.ParseForm()

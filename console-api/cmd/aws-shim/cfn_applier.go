@@ -401,6 +401,13 @@ func (a *impersonatingApplier) GetStatus(ctx context.Context, apiVersion, kind, 
 	if st == nil {
 		st = map[string]any{}
 	}
+	// A VM's instance id (its Ref): a composite rendered before it carried status.instanceId gets it
+	// derived the same way (ec2_ids.go), so the stack reports the id the guest's metadata does.
+	if kind == "VirtualMachine" && strings.HasPrefix(apiVersion, "openinfra.dev/") && st["instanceId"] == nil {
+		if id := vmInstanceID(ctx, u, a.shim); id != "" {
+			st["instanceId"] = id
+		}
+	}
 	return st, true, nil
 }
 
