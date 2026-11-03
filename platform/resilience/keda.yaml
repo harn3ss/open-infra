@@ -29,6 +29,15 @@ spec:
           operator:
             restrict:
               secret: true
+        # The kinds a ScaledObject may target. The chart's default is every resource of every group, which
+        # renders `get` on all of them — Secrets (the root CA's key among them) included. The platform's
+        # only ScaledObject targets a CloudNativePG Cluster (database.autoscaling in composition.yaml);
+        # Deployments and StatefulSets are granted by the chart regardless. Add a kind here before
+        # pointing a ScaledObject at it.
+        rbac:
+          scaledRefKinds:
+            - apiGroup: postgresql.cnpg.io
+              kind: clusters
   destination:
     server: https://kubernetes.default.svc
     namespace: keda
