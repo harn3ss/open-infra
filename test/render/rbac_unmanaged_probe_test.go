@@ -86,6 +86,15 @@ func TestRBACUnmanagedProbe_ClassifiesFixtures(t *testing.T) {
 		rbacObj("ClusterRole", "", "copied", hand, nil, tid("platform", "ClusterRole", "argocd", "tracked"), rules),
 		rbacObj("ClusterRole", "", "pruned", hand, nil, tid("platform", "ClusterRole", "argocd", "pruned"), rules),
 		rbacObj("ClusterRoleBinding", "", "dangling-bind", hand, nil, nil, bind("no-such-role")),
+		// acknowledged: nothing manages it, on purpose, and the reason is on the object
+		rbacObj("ClusterRole", "", "engagement-grant", hand, nil,
+			map[string]any{"openinfra.dev/rbac-unmanaged-reason": "  per-site key for one engagement; revoked with its User  "}, rules),
+		// an empty reason acknowledges nothing
+		rbacObj("ClusterRole", "", "blank-reason", hand, nil, map[string]any{"openinfra.dev/rbac-unmanaged-reason": "   "}, rules),
+		// a tracking-id problem stays a finding whatever the annotation says
+		rbacObj("ClusterRole", "", "copied-acked", hand, nil, map[string]any{
+			"argocd.argoproj.io/tracking-id":      "platform:rbac.authorization.k8s.io/ClusterRole:argocd/tracked",
+			"openinfra.dev/rbac-unmanaged-reason": "not a way out of a copied tracking-id"}, rules),
 	)
 	ns := items(
 		rbacObj("Role", "open-infra-console", "ns-hand", hand, nil, nil, rules),
@@ -99,6 +108,75 @@ func TestRBACUnmanagedProbe_ClassifiesFixtures(t *testing.T) {
 	apps := items(map[string]any{"metadata": map[string]any{"namespace": "argocd", "name": "platform"},
 		"status": map[string]any{"resources": []any{map[string]any{"kind": "ClusterRole", "name": "pruned", "requiresPruning": true}}}})
 
+	out, code, calls := runRBACProbe(t, cluster, ns, objects, apps)
+	if code != 1 {
+		t.Fatalf("with findings the probe must exit 1; exit=%d\n%s", code, out)
+	}
+
+	var reported []string
+	for _, ln := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(ln, "✗ ") || !strings.Contains(ln, " — ") {
+			continue
+		}
+		if id := strings.SplitN(strings.TrimPrefix(ln, "✗ "), " — ", 2)[0]; strings.Contains(id, "/") {
+			reported = append(reported, id) // a finding line (the summary line has no Kind/ id)
+		}
+	}
+	want := []string{
+		"ClusterRole/blank-reason", "ClusterRole/copied", "ClusterRole/copied-acked", "ClusterRole/hand-role",
+		"ClusterRole/kustomized", "ClusterRole/orphan-app", "ClusterRole/pruned", "ClusterRole/system:sneaky",
+		"ClusterRoleBinding/dangling-bind", "Role/open-infra-console/ns-hand",
+	}
+	if strings.Join(reported, "\n") != strings.Join(want, "\n") {
+		t.Errorf("reported findings:\n  %s\nwant:\n  %s\noutput:\n%s", strings.Join(reported, "\n  "), strings.Join(want, "\n  "), out)
+	}
+	for _, want := range []string{
+		"names Application \"gone-app\", which no longer exists",
+		"names a different object",
+		"requiresPruning",
+		"⚠ does not exist — dangling",
+		"⚠ secrets",
+		"subjects: ServiceAccount app/sa",
+		// acknowledged objects stay in view, with the trimmed reason
+		"ℹ 1 unmanaged RBAC object(s) acknowledged",
+		"ℹ ClusterRole/engagement-grant — acknowledged: per-site key for one engagement; revoked with its User\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("probe output missing %q:\n%s", want, out)
+		}
+	}
+	assertReadOnlyCalls(t, calls)
+}
+
+// Acknowledged objects alone pass the probe, and are still printed with their reason and rules.
+func TestRBACUnmanagedProbe_AcknowledgedOnlyPasses(t *testing.T) {
+	needJQ(t)
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not installed")
+	}
+	rules := map[string]any{"rules": []any{map[string]any{"apiGroups": []any{"openinfra.dev"}, "resources": []any{"applications"}, "verbs": []any{"create"}}}}
+	cluster := items(rbacObj("ClusterRole", "", "engagement-writer", []string{"kubectl-client-side-apply"}, nil,
+		map[string]any{"openinfra.dev/rbac-unmanaged-reason": "write-only key for one engagement"}, rules))
+	out, code, calls := runRBACProbe(t, cluster, items(), items(), items())
+	if code != 0 {
+		t.Fatalf("acknowledged-only RBAC must pass; exit=%d\n%s", code, out)
+	}
+	for _, want := range []string{
+		"ℹ ClusterRole/engagement-writer — acknowledged: write-only key for one engagement",
+		"rules (1): openinfra.dev/applications: create",
+		"✓ PASS — every audited ClusterRole/ClusterRoleBinding/Role/RoleBinding is managed or acknowledged.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("probe output missing %q:\n%s", want, out)
+		}
+	}
+	assertReadOnlyCalls(t, calls)
+}
+
+// runRBACProbe runs probe/rbac-unmanaged.sh against the stub kubectl serving the given fixtures and
+// returns its output, exit code and the kubectl calls it made.
+func runRBACProbe(t *testing.T, cluster, ns, objects, apps any) (string, int, string) {
+	t.Helper()
 	root := t.TempDir()
 	stub, bin := filepath.Join(root, "stub"), filepath.Join(root, "bin")
 	for _, d := range []string{stub, bin} {
@@ -121,43 +199,22 @@ func TestRBACUnmanagedProbe_ClassifiesFixtures(t *testing.T) {
 	cmd.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"), "STUB=" + stub,
 		"TMPDIR=" + root, "HOME=" + root, "RBAC_REPO_DIR="}
 	outb, err := cmd.CombinedOutput()
-	out := string(outb)
-	ee, ok := err.(*exec.ExitError)
-	if !ok || ee.ExitCode() != 1 {
-		t.Fatalf("with findings the probe must exit 1; err=%v\n%s", err, out)
-	}
-
-	var reported []string
-	for _, ln := range strings.Split(out, "\n") {
-		if !strings.HasPrefix(ln, "✗ ") || !strings.Contains(ln, " — ") {
-			continue
+	code := 0
+	if err != nil {
+		ee, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("running the probe: %v\n%s", err, outb)
 		}
-		if id := strings.SplitN(strings.TrimPrefix(ln, "✗ "), " — ", 2)[0]; strings.Contains(id, "/") {
-			reported = append(reported, id) // a finding line (the summary line has no Kind/ id)
-		}
+		code = ee.ExitCode()
 	}
-	want := []string{
-		"ClusterRole/copied", "ClusterRole/hand-role", "ClusterRole/kustomized", "ClusterRole/orphan-app",
-		"ClusterRole/pruned", "ClusterRole/system:sneaky", "ClusterRoleBinding/dangling-bind", "Role/open-infra-console/ns-hand",
-	}
-	if strings.Join(reported, "\n") != strings.Join(want, "\n") {
-		t.Errorf("reported findings:\n  %s\nwant:\n  %s\noutput:\n%s", strings.Join(reported, "\n  "), strings.Join(want, "\n  "), out)
-	}
-	for _, want := range []string{
-		"names Application \"gone-app\", which no longer exists",
-		"names a different object",
-		"requiresPruning",
-		"⚠ does not exist — dangling",
-		"⚠ secrets",
-		"subjects: ServiceAccount app/sa",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("probe output missing %q:\n%s", want, out)
-		}
-	}
-	// Read-only: only get / version / api-resources, ever.
 	calls, _ := os.ReadFile(filepath.Join(stub, "calls.log"))
-	for _, c := range strings.Split(strings.TrimSpace(string(calls)), "\n") {
+	return string(outb), code, string(calls)
+}
+
+// assertReadOnlyCalls: the probe only ever runs get / version / api-resources.
+func assertReadOnlyCalls(t *testing.T, calls string) {
+	t.Helper()
+	for _, c := range strings.Split(strings.TrimSpace(calls), "\n") {
 		verb := strings.Fields(strings.TrimPrefix(strings.TrimPrefix(c, "-n argocd "), " "))[0]
 		if verb != "get" && verb != "version" && verb != "api-resources" {
 			t.Errorf("the probe must be read-only; it ran: kubectl %s", c)

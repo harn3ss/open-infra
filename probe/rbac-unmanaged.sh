@@ -32,6 +32,12 @@
 #   controller  every field manager in metadata.managedFields is a program and none is a hand tool
 #               (RBAC_HAND_MANAGERS) — e.g. an operator applying its own manifests.
 #   allow       an object that would otherwise be a finding matches the allow-list.
+#   acknowledged  an object that nothing manages, deliberately, carries the annotation
+#               openinfra.dev/rbac-unmanaged-reason with the reason (for example a per-site grant that
+#               belongs to one engagement, not to the platform). It is not a finding, but it is always
+#               printed, with its reason and rules or subjects, so it stays in view. Only the "nothing
+#               manages it" case can be acknowledged: an ArgoCD tracking-id that is copied, orphaned or
+#               marked requiresPruning stays a finding whatever the annotation says.
 #
 # ALLOW-LIST — RBAC_ALLOW_DEFAULT plus RBAC_ALLOW: whitespace- or comma-separated extended regexes,
 # each matched ANCHORED against the object id: `Kind/name` (cluster-scoped) or `Kind/namespace/name`.
@@ -204,8 +210,10 @@ jq --rawfile xp "$WORK/xp.txt" --rawfile argo "$WORK/argo.tsv" --rawfile roles "
           elif (($l["objectset.rio.cattle.io/hash"] // "") != "") or (($a["objectset.rio.cattle.io/id"] // "") != "")
                or (($l["addonmanager.kubernetes.io/mode"] // "") != "") then {managed: "k3s"}
           elif $programOnly then {managed: "controller"}
-          else {finding: "no owner, GitOps tracking, chart, controller or default manages it"} end ) as $c
+          else {finding: "no owner, GitOps tracking, chart, controller or default manages it", unowned: true} end ) as $c
       | (if $c.finding and ($allow | any(. as $re | $id | test("^(" + $re + ")$"))) then {managed: "allow"} else $c end) as $c
+      | (($a["openinfra.dev/rbac-unmanaged-reason"] // "") | gsub("^\\s+|\\s+$"; "")) as $why
+      | (if $c.unowned and $why != "" then {managed: "acknowledged", reason: $why} else $c end) as $c
       | { id: $id, kind: $k, ns: $ns, name: $n, created: .metadata.creationTimestamp, managers: $mgrs,
           roleRef: .roleRef, subjects: (.subjects // []), rules: (.rules // []),
           aggregated: (.aggregationRule != null),
@@ -235,15 +243,9 @@ in_repo() { # in_repo <name>: the repo files that declare `name: <name>`, if any
   fi
 }
 
-if [ "$nfind" -eq 0 ]; then
-  echo
-  echo "✓ PASS — every audited ClusterRole/ClusterRoleBinding/Role/RoleBinding is managed."
-  exit 0
-fi
-
-echo
-jq -r '.[] | select(.finding) | [.id, .name] | @tsv' "$WORK/classified.json" | sort | while IFS=$'\t' read -r id name; do
-  jq -r --arg id "$id" '
+# describe <id> <name> <mark>: one object's header, writers, and its subjects or rules.
+describe() {
+  jq -r --arg id "$1" --arg mark "$3" '
     def rule: (if .nonResourceURLs then "nonResource " + (.nonResourceURLs | join(","))
                else ((.apiGroups // [""]) | map(if . == "" then "core" else . end) | join(",")) + "/"
                     + ((.resources // []) | join(",")) end)
@@ -253,7 +255,7 @@ jq -r '.[] | select(.finding) | [.id, .name] | @tsv' "$WORK/classified.json" | s
                  (if any(.[]; any((.resources // [])[]; . == "secrets")) then "secrets" else empty end),
                  (if any(.[]; any((.verbs // [])[]; . == "escalate" or . == "bind" or . == "impersonate")) then "escalate/bind/impersonate" else empty end) ];
     .[] | select(.id == $id) |
-    "✗ \(.id) — \(.finding)",
+    (if .finding then "\($mark) \(.id) — \(.finding)" else "\($mark) \(.id) — acknowledged: \(.reason)" end),
     "    written by: \(if (.managers | length) > 0 then (.managers | join(", ")) else "(no managedFields)" end) · created \(.created)",
     ( if .roleRef then
         "    roleRef: \(.roleRef.kind)/\(.roleRef.name)" + (if .roleRef.name == "cluster-admin" then "   ⚠ cluster-admin" else "" end)
@@ -267,15 +269,36 @@ jq -r '.[] | select(.finding) | [.id, .name] | @tsv' "$WORK/classified.json" | s
       end )
   ' "$WORK/classified.json"
   if [ -n "$RBAC_REPO_DIR" ] && [ -d "$RBAC_REPO_DIR" ]; then
-    where="$(in_repo "$name")"
+    where="$(in_repo "$2")"
     if [ -n "$where" ]; then
       echo "    repo: named in ${where} — in the repo but not tracked (applied out of band)"
     else
       echo "    repo: not found — live-only"
     fi
   fi
-done
+}
+
+# Acknowledged objects are printed on every run, pass or fail: an annotation ends the finding, not
+# the review.
+nack="$(jq '[.[] | select(.managed == "acknowledged")] | length' "$WORK/classified.json")"
+if [ "$nack" -gt 0 ]; then
+  echo
+  echo "ℹ ${nack} unmanaged RBAC object(s) acknowledged (annotation openinfra.dev/rbac-unmanaged-reason):"
+  jq -r '.[] | select(.managed == "acknowledged") | [.id, .name] | @tsv' "$WORK/classified.json" | sort \
+    | while IFS=$'\t' read -r id name; do describe "$id" "$name" "ℹ"; done
+fi
+
+if [ "$nfind" -eq 0 ]; then
+  echo
+  ack_note=""; [ "$nack" -gt 0 ] && ack_note=" or acknowledged"
+  echo "✓ PASS — every audited ClusterRole/ClusterRoleBinding/Role/RoleBinding is managed${ack_note}."
+  exit 0
+fi
 
 echo
-printf '✗ %s unmanaged RBAC object(s) of %s audited — bring each under GitOps (or its operator), delete it, or allow-list it (RBAC_ALLOW) with a reason.\n' "$nfind" "$total"
+jq -r '.[] | select(.finding) | [.id, .name] | @tsv' "$WORK/classified.json" | sort \
+  | while IFS=$'\t' read -r id name; do describe "$id" "$name" "✗"; done
+
+echo
+printf '✗ %s unmanaged RBAC object(s) of %s audited — bring each under GitOps (or its operator), delete it, allow-list it (RBAC_ALLOW), or acknowledge it with the annotation openinfra.dev/rbac-unmanaged-reason.\n' "$nfind" "$total"
 exit 1
