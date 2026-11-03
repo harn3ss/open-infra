@@ -80,6 +80,13 @@ spec:
             # a plain reschedule — no volume to move. Re-apply the label if that node ever re-registers.
             nodeSelector:
               openinfra.dev/monitoring: "true"
+        # node-exporter listens on the host network, and so does Traefik where it runs as the routed-ingress
+        # edge (networking.traefik.hostNetwork), holding 9100 for its own metrics; node-exporter on 9100
+        # then cannot schedule on that node. So node-exporter takes 9101 on every node.
+        prometheus-node-exporter:
+          service:
+            port: 9101
+            targetPort: 9101
         # kube-state-metrics lists every Secret in the cluster, data included, only to export the
         # kube_secret_* metrics, which nothing here uses. Without the secrets collector the chart gives
         # it no access to Secrets (the root CA's key among them). The chart's default list otherwise.
