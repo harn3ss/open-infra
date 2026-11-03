@@ -87,15 +87,10 @@ func TestVMBases_DefaultRootIsALocalCopy(t *testing.T) {
 	if strings.Contains(out, "dataVolumeTemplates:") {
 		t.Errorf("no root DataVolume (and no data disks here):\n%s", grepCtx(out, "dataVolumeTemplates"))
 	}
-	if docNamed(out, "root-populate") != "" {
-		t.Errorf("the copy waits until its source volume is Bound")
-	}
-	// Once the source is Bound, the copy pod runs: block source, the local root mounted, placed where the VM can run.
-	bound := map[string]any{"root-image": map[string]any{"resource": map[string]any{
-		"spec":   map[string]any{"forProvider": map[string]any{"manifest": map[string]any{"kind": "PersistentVolumeClaim"}}},
-		"status": map[string]any{"atProvider": map[string]any{"manifest": map[string]any{"status": map[string]any{"phase": "Bound"}}}},
-	}}}
-	pop := docNamed(render(t, tmpl, withObserved(vmBaseCtx("ubuntu-24.04", nil), bound)), "root-populate")
+	// A thin volume on the base is whole from the start: the copy pod is made in the same render (no
+	// wait for a reconcile that sees the volume Bound): block source, the local root mounted, placed where
+	// the VM can run.
+	pop := docNamed(out, "root-populate")
 	for _, want := range []string{
 		"devicePath: /dev/openinfra-image", "mountPath: /dst", "kubevirt.io/schedulable", "openinfra.dev/disk-class",
 		`memory: "4Gi"`, "CHOWN", "chmod 0660 /dst/disk.img.part && chown 107:107", `value: "20Gi"`,

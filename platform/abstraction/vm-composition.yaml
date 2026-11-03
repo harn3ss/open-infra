@@ -835,7 +835,10 @@ spec:
                         url: "docker://{{ $profile.image }}"
                       {{- end }}
             {{- end }}
-            {{- if $imgDone }}
+            {{- /* A thin volume on the base is whole from the moment it exists, so its copy is made in the same
+                   render (the pod waits for its volumes to attach); a CDI import is copied only once it has
+                   Succeeded. */}}
+            {{- if or $imgDone $fromBase }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
