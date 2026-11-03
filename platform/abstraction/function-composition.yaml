@@ -366,6 +366,8 @@ spec:
                       # (platform/serverless/function-gateway-isolation.yaml); it calls only this Function.
                       metadata: { labels: { app: {{ $name }}-pump, openinfra.dev/function-invoker: pump } }
                       spec:
+                        # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                        enableServiceLinks: false
                         containers:
                           - name: pump
                             image: jeffail/benthos:4.27.0

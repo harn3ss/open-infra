@@ -104,6 +104,8 @@ spec:
                           metadata: { labels: { openinfra.dev/scheduledjob: {{ $name }} } }
                           spec:
                             restartPolicy: Never
+                            # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+                            enableServiceLinks: false
                             {{- if $useGpu }}
                             runtimeClassName: nvidia
                             affinity:
