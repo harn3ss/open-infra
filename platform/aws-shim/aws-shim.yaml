@@ -122,7 +122,9 @@ subjects:
 # CreateResolver/CreateDataSource/etc. It is cluster-wide because an apiId can name any team namespace;
 # the CALLER's permission is still enforced per-request by the impersonated SubjectAccessReview
 # ("update graphqlapis" in the target namespace), so this SA capability is only ever exercised on behalf
-# of a caller who already passed that gate — the same trust model as the shim's Secret/User reads.
+# of a caller who already passed that gate — the same trust model as the shim's Secret/User reads. The
+# management reads (GetGraphqlApi …) check "get graphqlapis" there; ListGraphqlApis lists a page at a time
+# and keeps only the APIs in namespaces where the caller may "list graphqlapis".
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -130,7 +132,7 @@ metadata:
 rules:
   - apiGroups: [openinfra.dev]
     resources: [graphqlapis]
-    verbs: [get, update, patch]
+    verbs: [get, list, update, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

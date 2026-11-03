@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net/http/httptest"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -31,6 +33,35 @@ func (s *fakeAPIStore) Get(_ context.Context, ns, name string) (map[string]any, 
 func (s *fakeAPIStore) Update(_ context.Context, ns, name string, obj map[string]any) error {
 	s.objs[ns+"/"+name] = obj
 	return nil
+}
+
+// List pages the claims in ns/name order; the continue token is the next index.
+func (s *fakeAPIStore) List(_ context.Context, limit int64, cont string) ([]map[string]any, string, error) {
+	keys := make([]string, 0, len(s.objs))
+	for k := range s.objs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	start := 0
+	if cont != "" {
+		start, _ = strconv.Atoi(cont)
+	}
+	end := len(keys)
+	if limit > 0 && start+int(limit) < end {
+		end = start + int(limit)
+	}
+	var out []map[string]any
+	for _, k := range keys[start:end] {
+		ns, name, _ := strings.Cut(k, "/")
+		o := s.objs[k]
+		o["metadata"] = map[string]any{"namespace": ns, "name": name}
+		out = append(out, o)
+	}
+	next := ""
+	if end < len(keys) {
+		next = strconv.Itoa(end)
+	}
+	return out, next, nil
 }
 func (s *fakeAPIStore) resolvers(ns, name string) []any {
 	spec, _ := s.objs[ns+"/"+name]["spec"].(map[string]any)

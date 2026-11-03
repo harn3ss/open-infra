@@ -540,6 +540,7 @@ func run(logger *slog.Logger) error {
 	}
 	appsyncH := newAppsyncHandler(cs, graphqlEndpoint, authzNS, logger)
 	appsyncH.authz = authzChecker
+	appsyncH.account, appsyncH.region = account, ident.Region // an API's ARN in the management reads
 	services := map[string]awsService{
 		"s3": newS3Handler(cs, mc, dyn, kc.Config, authzNS, authzChecker, logger,
 			splitSuffixes(getenv("S3_INTERNAL_VHOST_SUFFIXES", ""), getenv("S3_VHOST_SUFFIXES", ""))),

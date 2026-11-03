@@ -60,11 +60,20 @@
         "CreateResolver",
         "DeleteDataSource",
         "DeleteResolver",
+        "GetDataSource",
+        "GetFunction",
+        "GetGraphqlApi",
+        "GetIntrospectionSchema",
         "GetResolver",
+        "GetSchemaCreationStatus",
+        "ListDataSources",
+        "ListFunctions",
+        "ListGraphqlApis",
         "UpdateResolver"
       ],
       "actions": [
-        "appsync:GraphQL"
+        "appsync:GraphQL",
+        "appsync:ListGraphqlApis"
       ]
     },
     "athena": {

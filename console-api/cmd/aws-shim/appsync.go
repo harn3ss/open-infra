@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,8 @@ type appsyncHandler struct {
 	// default-deny under it. nil = no engine — a role is then denied.
 	authz  *dataplaneauthz.Checker
 	logger *slog.Logger
+	// account and region make an API's ARN in the management reads (appsync_read.go).
+	account, region string
 }
 
 func newAppsyncHandler(cs kubernetes.Interface, endpoint, authzNS string, logger *slog.Logger) *appsyncHandler {
@@ -72,6 +75,29 @@ func (s restAPIStore) Get(ctx context.Context, ns, name string) (map[string]any,
 		return nil, err
 	}
 	return obj, nil
+}
+
+// List reads a page of GraphQLApi claims across the cluster with the API server's limit/continue paging.
+func (s restAPIStore) List(ctx context.Context, limit int64, cont string) ([]map[string]any, string, error) {
+	req := s.cs.CoreV1().RESTClient().Get().AbsPath("/apis/openinfra.dev/v1/graphqlapis").
+		Param("limit", strconv.FormatInt(limit, 10))
+	if cont != "" {
+		req = req.Param("continue", cont)
+	}
+	raw, err := req.DoRaw(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	var list struct {
+		Metadata struct {
+			Continue string `json:"continue"`
+		} `json:"metadata"`
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, "", err
+	}
+	return list.Items, list.Metadata.Continue, nil
 }
 
 func (s restAPIStore) Update(ctx context.Context, ns, name string, obj map[string]any) error {

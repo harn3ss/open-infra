@@ -118,14 +118,6 @@ exceptions:
       to answer GetInstanceProfile or ListInstanceProfiles from. Serving them needs the engine to record a
       stack's instance profiles first.
     issue: "untracked — raised by the coverage registry"
-  - types: [AWS::AppSync::GraphQLApi, AWS::AppSync::GraphQLSchema, AWS::AppSync::DataSource,
-            AWS::AppSync::FunctionConfiguration]
-    check: read
-    reason: >-
-      A stack's API is one kind: GraphQLApi, served at its GraphQL endpoint (appsync:GraphQL). The AppSync
-      management surface serves resolver and data-source writes and GetResolver only — no GetGraphqlApi,
-      GetIntrospectionSchema, GetDataSource or GetFunction.
-    issue: "untracked — raised by the coverage registry"
   - types: [AWS::CloudFront::Distribution, AWS::CloudFront::CachePolicy, AWS::CloudFront::OriginRequestPolicy,
             AWS::CloudFront::ResponseHeadersPolicy, AWS::CloudFront::OriginAccessControl,
             AWS::CloudFront::CloudFrontOriginAccessIdentity]

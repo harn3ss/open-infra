@@ -28,6 +28,9 @@ import (
 type apiStore interface {
 	Get(ctx context.Context, ns, name string) (map[string]any, error)
 	Update(ctx context.Context, ns, name string, obj map[string]any) error
+	// List is a page of at most limit claims across the cluster from the continue token cont, and the
+	// token of the next page ("" at the end): the API server's own paging (ListGraphqlApis).
+	List(ctx context.Context, limit int64, cont string) ([]map[string]any, string, error)
 }
 
 // mgmtParams is a parsed management request (path segments + decoded body).
@@ -37,6 +40,7 @@ type mgmtParams struct {
 	typeName  string
 	fieldName string
 	dsName    string
+	fnID      string // a pipeline function's id (GetFunction)
 	body      map[string]any
 }
 
@@ -52,7 +56,12 @@ func (h *appsyncHandler) serveManagement(w http.ResponseWriter, r *http.Request,
 	}
 	if verb == "" {
 		writeMgmtError(w, http.StatusNotImplemented, "NotImplementedException", requestID,
-			"this AppSync management operation is not fronted by open-infra (proven verbs: CreateResolver, UpdateResolver, DeleteResolver, GetResolver, CreateDataSource, DeleteDataSource)")
+			"this AppSync management operation is not fronted by open-infra (proven verbs: CreateResolver, UpdateResolver, DeleteResolver, GetResolver, CreateDataSource, DeleteDataSource, and the reads in appsync_read.go)")
+		return
+	}
+	// The reads need get (list) on graphqlapis, not update (appsync_read.go).
+	if appsyncReadVerb(verb) {
+		h.serveRead(w, r, claims, requestID, p, verb)
 		return
 	}
 
@@ -113,11 +122,22 @@ func (h *appsyncHandler) serveManagement(w http.ResponseWriter, r *http.Request,
 // parseManagement turns an HTTP request into (params, verb). An unknown/unhandled shape returns verb=""
 // so the caller answers with an honest NotImplemented (per-verb graduation, no faking).
 func parseManagement(r *http.Request) (mgmtParams, string, error) {
+	// /v1/apis                                        GET ListGraphqlApis
+	// /v1/apis/{apiId}                                GET GetGraphqlApi
+	// /v1/apis/{apiId}/schema                         GET GetIntrospectionSchema
+	// /v1/apis/{apiId}/schemacreation                 GET GetSchemaCreationStatus
 	// /v1/apis/{apiId}/types/{typeName}/resolvers[/{fieldName}]
-	// /v1/apis/{apiId}/datasources[/{name}]
+	// /v1/apis/{apiId}/datasources[/{name}]           (GET ListDataSources / GetDataSource)
+	// /v1/apis/{apiId}/functions[/{functionId}]       GET ListFunctions / GetFunction
 	segs := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(segs) < 3 || segs[0] != "v1" || segs[1] != "apis" {
+	if len(segs) < 2 || segs[0] != "v1" || segs[1] != "apis" {
 		return mgmtParams{}, "", fmt.Errorf("unrecognized management path")
+	}
+	if len(segs) == 2 {
+		if r.Method == http.MethodGet {
+			return mgmtParams{}, "ListGraphqlApis", nil
+		}
+		return mgmtParams{}, "", nil
 	}
 	p := mgmtParams{apiID: segs[2]}
 	p.ns, p.name = splitAPIID(p.apiID)
@@ -131,7 +151,19 @@ func parseManagement(r *http.Request) (mgmtParams, string, error) {
 		}
 	}
 
+	get := r.Method == http.MethodGet
 	switch {
+	case len(segs) == 3 && get:
+		return p, "GetGraphqlApi", nil
+	case len(segs) == 4 && segs[3] == "schema" && get:
+		return p, "GetIntrospectionSchema", nil
+	case len(segs) == 4 && segs[3] == "schemacreation" && get:
+		return p, "GetSchemaCreationStatus", nil
+	case len(segs) == 4 && segs[3] == "functions" && get:
+		return p, "ListFunctions", nil
+	case len(segs) == 5 && segs[3] == "functions" && get:
+		p.fnID = segs[4]
+		return p, "GetFunction", nil
 	case len(segs) >= 6 && segs[3] == "types" && segs[5] == "resolvers":
 		p.typeName = segs[4]
 		if len(segs) >= 7 { // .../resolvers/{fieldName}
@@ -154,9 +186,14 @@ func parseManagement(r *http.Request) (mgmtParams, string, error) {
 			if r.Method == http.MethodDelete {
 				return p, "DeleteDataSource", nil
 			}
+			if get {
+				return p, "GetDataSource", nil
+			}
 		} else if r.Method == http.MethodPost {
 			p.dsName, _ = p.body["name"].(string)
 			return p, "CreateDataSource", nil
+		} else if get {
+			return p, "ListDataSources", nil
 		}
 	}
 	return p, "", nil // recognized path shape but unhandled verb → honest NotImplemented

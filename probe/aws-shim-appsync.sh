@@ -105,5 +105,38 @@ echo "$NEG" | grep -q '^STATUS 401' || fail "wrong secret not rejected with 401:
 echo "$NEG" | grep -qi 'UnauthorizedException' || fail "401 body not the AppSync UnauthorizedException dialect:\n$NEG"
 log "  ✓ rejected as 401 UnauthorizedException"
 
+# Management reads over a kind: GraphQLApi (the first in the cluster, or PROBE_GRAPHQL_API=<ns>/<name>),
+# with the real AWS CLI.
+command -v aws >/dev/null || inconclusive "the aws CLI (a real AWS SDK) is required for the management reads"
+apiq() { AWS_ACCESS_KEY_ID="$AK" AWS_SECRET_ACCESS_KEY="$SK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager appsync "$@"; }
+GQL="${PROBE_GRAPHQL_API:-$(kubectl get graphqlapis.openinfra.dev -A -o jsonpath='{.items[0].metadata.namespace}/{.items[0].metadata.name}' 2>/dev/null || true)}"
+[ -n "$GQL" ] && [ "$GQL" != "/" ] || inconclusive "no kind: GraphQLApi in the cluster to read back"
+API_ID="${GQL%%/*}.${GQL#*/}"
+log "management reads of ${API_ID}: get-graphql-api, list-graphql-apis, schema, data sources, functions"
+[ "$(apiq get-graphql-api --api-id "$API_ID" --query graphqlApi.apiId --output text 2>"$WORK/ga")" = "$API_ID" ] \
+  || fail "get-graphql-api did not answer the API: $(cat "$WORK/ga")"
+apiq list-graphql-apis --query 'graphqlApis[].apiId' --output text >"$WORK/la" 2>&1 || fail "list-graphql-apis: $(cat "$WORK/la")"
+tr '\t' '\n' <"$WORK/la" | grep -qx "$API_ID" || fail "list-graphql-apis did not list ${API_ID}: $(head -c 300 "$WORK/la")"
+apiq get-schema-creation-status --api-id "$API_ID" --query status --output text >"$WORK/sc" 2>&1 \
+  || fail "get-schema-creation-status: $(cat "$WORK/sc")"
+grep -Eqx 'SUCCESS|PROCESSING|NOT_APPLICABLE|FAILED' "$WORK/sc" || fail "get-schema-creation-status answered: $(cat "$WORK/sc")"
+if [ "$(cat "$WORK/sc")" != NOT_APPLICABLE ]; then
+  apiq get-introspection-schema --api-id "$API_ID" --format SDL "$WORK/schema.graphql" >/dev/null 2>"$WORK/is" \
+    || fail "get-introspection-schema: $(cat "$WORK/is")"
+  grep -q 'type ' "$WORK/schema.graphql" || fail "get-introspection-schema answered no SDL: $(head -c 300 "$WORK/schema.graphql")"
+fi
+apiq list-data-sources --api-id "$API_ID" >"$WORK/ds" 2>&1 || fail "list-data-sources: $(cat "$WORK/ds")"
+DS="$(apiq list-data-sources --api-id "$API_ID" --query 'dataSources[0].name' --output text 2>/dev/null || true)"
+if [ -n "$DS" ] && [ "$DS" != None ]; then
+  [ "$(apiq get-data-source --api-id "$API_ID" --name "$DS" --query dataSource.name --output text 2>/dev/null)" = "$DS" ] \
+    || fail "get-data-source did not answer ${DS}"
+fi
+apiq list-functions --api-id "$API_ID" >"$WORK/fn" 2>&1 || fail "list-functions: $(cat "$WORK/fn")"
+if apiq get-data-source --api-id "$API_ID" --name "probe-missing-$RANDOM" >/dev/null 2>"$WORK/nd"; then
+  fail "get-data-source of a data source that does not exist succeeded"
+fi
+grep -q NotFoundException "$WORK/nd" || fail "missing data source: $(cat "$WORK/nd")"
+log "  ✓ the API, its schema, data sources and functions read back; a missing data source is NotFound"
+
 echo
-echo "✓ PASS — aws-shim AppSync proxies a signed GraphQL query to the engine and rejects a bad signature."
+echo "✓ PASS — aws-shim AppSync proxies a signed GraphQL query to the engine, rejects a bad signature, and reads its API back."

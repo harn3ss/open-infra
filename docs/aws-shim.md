@@ -259,7 +259,7 @@ create on its own API's front door):
 | Service | Signing name | Operations served | Types a stack creates for it |
 |---|---|---|---|
 | API Gateway | `apigateway` | 40: CreateApi, CreateApiKey, CreateAuthorizer, CreateDeployment, CreateIntegration, CreateModel, CreateRequestValidator, CreateResource, CreateRestApi, CreateRoute, CreateStage, CreateUsagePlan, CreateUsagePlanKey, DeleteApi, DeleteRestApi, GetApi, GetApiKey, GetApiKeys, GetApis, GetAuthorizer, GetAuthorizers, GetDeployment, GetDeployments, GetMethod, GetModel, GetModels, GetRequestValidator, GetRequestValidators, GetResources, GetRestApi, GetRestApis, GetRoutes, GetStages, GetUsagePlan, GetUsagePlanKeys, GetUsagePlans, PutIntegration, PutIntegrationResponse, PutMethod, PutMethodResponse | 11 |
-| AppSync | `appsync` | 6: CreateDataSource, CreateResolver, DeleteDataSource, DeleteResolver, GetResolver, UpdateResolver; authorizes `appsync:GraphQL` | 5 |
+| AppSync | `appsync` | 14: CreateDataSource, CreateResolver, DeleteDataSource, DeleteResolver, GetDataSource, GetFunction, GetGraphqlApi, GetIntrospectionSchema, GetResolver, GetSchemaCreationStatus, ListDataSources, ListFunctions, ListGraphqlApis, UpdateResolver; authorizes `appsync:GraphQL` | 5 |
 | Athena | `athena` | 28: BatchGetNamedQuery, BatchGetQueryExecution, CreateDataCatalog, CreateNamedQuery, CreatePreparedStatement, CreateWorkGroup, DeleteDataCatalog, DeleteNamedQuery, DeletePreparedStatement, DeleteWorkGroup, GetDataCatalog, GetDatabase, GetNamedQuery, GetPreparedStatement, GetQueryExecution, GetQueryResults, GetTableMetadata, GetWorkGroup, ListDataCatalogs, ListDatabases, ListNamedQueries, ListPreparedStatements, ListTableMetadata, ListWorkGroups, StartQueryExecution, StopQueryExecution, UpdateDataCatalog, UpdateWorkGroup | 0 |
 | CloudFormation | `cloudformation` | 23: CreateChangeSet, CreateStack, DeleteChangeSet, DeleteStack, DescribeChangeSet, DescribeStackDriftDetectionStatus, DescribeStackEvents, DescribeStackResource, DescribeStackResourceDrifts, DescribeStackResources, DescribeStacks, DetectStackDrift, ExecuteChangeSet, GetTemplate, GetTemplateSummary, ListChangeSets, ListExports, ListImports, ListStackResources, ListStacks, UpdateStack, UpdateTerminationProtection, ValidateTemplate; authorizes `cloudformation:SignalResource` | 3 |
 | CloudFront | `cloudfront` | 3: CreateInvalidation, GetInvalidation, ListInvalidations | 6 |
@@ -550,9 +550,20 @@ verbs into a **patch on the neutral `GraphQLApi` object**, so AWS tooling (Cloud
 identity mapping (apiId = `<namespace>.<name>`); the neutral kind never learns AWS's addressing. It
 graduates **per verb**, like every shim service — proven so far (front door + negatives):
 `CreateResolver`, `UpdateResolver`, `DeleteResolver`, `GetResolver`, `CreateDataSource`,
-`DeleteDataSource`. An unhandled verb answers an honest `NotImplemented`. The caller is gated by the
-same impersonated `SubjectAccessReview` as every other front door (`update graphqlapis` in the target
-namespace). This is **not** "AppSync management API compatible" — it is exactly the verbs listed.
+`DeleteDataSource`, and the reads `GetGraphqlApi`, `ListGraphqlApis`, `GetIntrospectionSchema` (format
+`SDL`: the schema as written, directives included; `JSON` is refused — the engine's own `__schema` query
+answers it), `GetSchemaCreationStatus` (`SUCCESS` once the claim is Ready, `NOT_APPLICABLE` with no
+schema), `GetDataSource`/`ListDataSources` (AWS's data-source types; a source's credentials secret is not
+part of the answer) and `GetFunction`/`ListFunctions` (the distinct functions the pipeline resolvers run —
+a pipeline keeps its functions inline without their FunctionConfiguration name, so a function's id is a
+hash of its data source, runtime and templates, and serves as its name). An API has no API-wide
+authentication type here (the schema's `@aws_*` directives are enforced), so none is answered. An
+unhandled verb answers an honest `NotImplemented`. The caller is gated by the same impersonated
+`SubjectAccessReview` as every other front door: `update graphqlapis` in the target namespace for the
+writes, `get graphqlapis` for the reads, and `list graphqlapis` in each namespace for `ListGraphqlApis`
+(an API in a namespace the caller may not list is not listed); an assumed role needs
+`appsync:<Operation>` on `GraphQLApi::<apiId>`. This is **not** "AppSync management API compatible" — it
+is exactly the verbs listed.
 Native/neutral model first; AWS door second. See [open-appsync/README.md](../open-appsync/README.md).
 
 **Honest limitations (flagged, not hidden):**
