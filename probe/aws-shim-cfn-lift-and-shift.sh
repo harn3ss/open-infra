@@ -28,7 +28,9 @@
 #   3a. the deploy flow's code update: `aws ssm send-command` on the stack's InstanceId output runs as root
 #      through the instance's agent, `aws ssm wait command-executed` sees it succeed, and the instance-id
 #      its metadata reports is that output;
-#   3b. a resize: an update to a larger InstanceType (RESIZE_TYPE, default t3.medium) completes once the
+#   3b. the shell route: a key pair imported with `aws ec2 import-key-pair`, named by KeyName, logs in over
+#      SSH from the one address an SshCidr rule allows, and a client outside it is refused on 22;
+#   3c. a resize: an update to a larger InstanceType (RESIZE_TYPE, default t3.medium) completes once the
 #      instance was stopped and started and runs a new boot with more memory, on the same private address;
 #   4. delete-stack removes everything (DELETE_COMPLETE; with KUBECONFIG set, no claim of the stack is
 #      left in the cluster);
@@ -218,10 +220,26 @@ if [ "${ADDRESS_STACK:-0}" = 1 ]; then
   log "  ✓ allocation $ALLOC holds $EIP_ADDR"
   ADDR_OVERRIDE=("AppAddressAllocationId=$ALLOC")
 fi
+# The shell route (#347 item 24): a key pair imported as on AWS, named by the template's KeyName, and an SSH
+# rule scoped to this host's address alone (SSH_CIDR overrides it), the usual admin-only ingress.
+SSH_OVERRIDE=(); KEY_NAME=""
+if command -v ssh-keygen >/dev/null && command -v ssh >/dev/null; then
+  KEY_NAME="lsfix-key-$SFX"
+  ssh-keygen -q -t ed25519 -N "" -C "$KEY_NAME" -f "$TMP/ssh-key" || fail "ssh-keygen failed"
+  "${A[@]}" ec2 import-key-pair --key-name "$KEY_NAME" --public-key-material "fileb://$TMP/ssh-key.pub" \
+    --query KeyFingerprint --output text > "$TMP/kp.txt" 2>&1 || fail "aws ec2 import-key-pair failed: $(tr '\n' ' ' < "$TMP/kp.txt")"
+  SSH_SRC="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i=="src") {print $(i+1); exit}}')"
+  SSH_CIDR="${SSH_CIDR:-${SSH_SRC:+$SSH_SRC/32}}"
+  [ -n "$SSH_CIDR" ] || inconclusive "could not find this host's address for the SSH rule (set SSH_CIDR)"
+  log "  ✓ imported key pair $KEY_NAME ($(cat "$TMP/kp.txt")); SSH limited to $SSH_CIDR"
+  SSH_OVERRIDE=("KeyName=$KEY_NAME" "SshCidr=$SSH_CIDR")
+else
+  log "  (no ssh client here: the shell-route step is skipped)"
+fi
 log "aws cloudformation deploy --stack-name $STACK (parameter overrides only)"
 STATE=deploying
 "${A[@]}" cloudformation deploy --template-file "$TEMPLATE" --stack-name "$STACK" --capabilities CAPABILITY_IAM \
-  --parameter-overrides "SiteDomain=$SITE_DOMAIN" "AppRepositoryName=$REPO" "${ADDR_OVERRIDE[@]}" \
+  --parameter-overrides "SiteDomain=$SITE_DOMAIN" "AppRepositoryName=$REPO" "${ADDR_OVERRIDE[@]}" "${SSH_OVERRIDE[@]}" \
   > "$TMP/deploy.txt" 2>&1 || fail "aws cloudformation deploy failed: $(tail -3 "$TMP/deploy.txt" | tr '\n' ' ')"
 ST="$("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text)"
 [ "$ST" = CREATE_COMPLETE ] || fail "stack status $ST, want CREATE_COMPLETE"
@@ -353,6 +371,41 @@ RC_OUT="$("${A[@]}" ssm get-command-invocation --command-id "$CMD" --instance-id
 [ "$(curl -s -m 5 "http://$ADDR/deployed.txt")" = "deployed-$SFX" ] || fail "the command ran, but the instance does not serve what it wrote"
 log "  ✓ send-command $CMD → wait command-executed → Success: ran as root, IMDS instance-id = the InstanceId output ($IID)"
 
+# --- 4c. the shell route: the imported key logs in over SSH from the one address the rule names, and a
+#     client outside it is refused while it still reaches the instance's open port (#347 item 24) --------
+if [ -n "$KEY_NAME" ]; then
+  SSH_OPTS=(-i "$TMP/ssh-key" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10)
+  WHO=""
+  for _ in $(seq 1 18); do
+    WHO="$(ssh "${SSH_OPTS[@]}" "ubuntu@$ADDR" 'id -un' 2>"$TMP/ssh.err")" && break
+    sleep 10
+  done
+  [ "$WHO" = ubuntu ] || fail "ssh -i <the imported key> ubuntu@$ADDR from $SSH_CIDR (the rule's own address) did not log in: $(tail -2 "$TMP/ssh.err" | tr '\n' ' ')"
+  log "  ✓ ssh with key pair $KEY_NAME logs in as ubuntu from $SSH_CIDR, the address the rule allows"
+  if [ -n "${KUBECONFIG:-}" ] && command -v kubectl >/dev/null; then
+    # An in-cluster client: its address is outside $SSH_CIDR, so 22 must be refused while 80 (0.0.0.0/0)
+    # answers it, which shows the refusal is the rule's and not a path that reaches nothing.
+    PROBE_POD="lsfix-outside-$SFX"
+    kubectl -n "$CFN_NS" run "$PROBE_POD" --restart=Never --image=docker.io/library/busybox:1.36.1 \
+      --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"c","image":"docker.io/library/busybox:1.36.1","command":["sh","-c","nc -z -w 8 '"$ADDR"' 80 && echo open80 || echo closed80; nc -z -w 8 '"$ADDR"' 22 && echo open22 || echo closed22"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' \
+      >/dev/null 2>"$TMP/pod.err" || fail "could not start the outside client pod: $(tr '\n' ' ' < "$TMP/pod.err")"
+    for _ in $(seq 1 30); do
+      ph="$(kubectl -n "$CFN_NS" get pod "$PROBE_POD" -o jsonpath='{.status.phase}' 2>/dev/null)"
+      [ "$ph" = Succeeded ] || [ "$ph" = Failed ] && break
+      sleep 2
+    done
+    OUTSIDE="$(kubectl -n "$CFN_NS" logs "$PROBE_POD" 2>/dev/null | tr '\n' ' ')"
+    kubectl -n "$CFN_NS" delete pod "$PROBE_POD" --wait=false >/dev/null 2>&1 || true
+    case "$OUTSIDE" in
+      *open80*closed22*) log "  ✓ a client outside $SSH_CIDR reaches port 80 but is refused on 22" ;;
+      *open80*open22*)   fail "a client outside $SSH_CIDR reached SSH on $ADDR (the rule allows only $SSH_CIDR)" ;;
+      *)                 log "  ⚠ NOT PROVEN: the outside client could not reach port 80 either ('$OUTSIDE'), so its refusal on 22 shows nothing" ;;
+    esac
+  else
+    log "  ⚠ NOT PROVEN: refusal of a client outside $SSH_CIDR needs KUBECONFIG (an in-cluster client)"
+  fi
+fi
+
 # --- 4b. a resize: a new InstanceType in a stack update stops and starts the instance, and the update
 #     completes once it runs at the new size (AWS: "Update requires: Some interruptions") ---------------
 # boot_info: the instance's boot.json — its memory and this boot's id, written at every boot.
@@ -433,6 +486,9 @@ empty_bucket() {
   return 0
 }
 stack_state() { "${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].[StackStatus,StackStatusReason]' --output text 2>&1; }
+if [ -n "$KEY_NAME" ] && [ "${KEEP:-0}" != 1 ]; then
+  "${A[@]}" ec2 delete-key-pair --key-name "$KEY_NAME" >/dev/null 2>&1 || log "  (could not delete key pair $KEY_NAME)"
+fi
 if [ "${KEEP:-0}" = 1 ]; then
   log "KEEP=1: leaving stack $STACK up"; STATE=""
 else

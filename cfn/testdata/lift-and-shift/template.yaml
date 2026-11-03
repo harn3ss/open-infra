@@ -43,8 +43,17 @@ Parameters:
     Description: >-
       An Elastic IP kept in its own stack (eip.yaml's AllocationId output), so the address outlives this
       stack. Empty: this stack allocates its own.
+  KeyName:
+    Type: String
+    Default: ""
+    Description: An EC2 key pair to log in to the app instance with over SSH (optional)
+  SshCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: The addresses allowed to reach the app instance over SSH (e.g. an office or admin /32)
 
 Conditions:
+  HasKey: !Not [!Equals [!Ref KeyName, ""]]
   HasZone: !Not [!Equals [!Ref SiteHostedZoneId, ""]]
   OwnAddress: !Equals [!Ref AppAddressAllocationId, ""]
 
@@ -129,7 +138,7 @@ Resources:
     Properties:
       GroupDescription: SSH and HTTP to the app instance
       SecurityGroupIngress:
-        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: !Ref SshCidr }
         - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
 
   AppInstance:
@@ -137,6 +146,7 @@ Resources:
     Properties:
       ImageId: !Ref LatestUbuntuAmi
       InstanceType: !Ref InstanceType
+      KeyName: !If [HasKey, !Ref KeyName, !Ref "AWS::NoValue"]
       IamInstanceProfile: !Ref InstanceProfile
       SecurityGroupIds: [!GetAtt AppSecurityGroup.GroupId]
       MetadataOptions:
