@@ -217,7 +217,7 @@ func (h *athenaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 
 	switch op {
 	case "StartQueryExecution":
-		h.startQueryExecution(ctx, w, requestID, body)
+		h.startQueryExecution(ctx, w, r, claims, requestID, body)
 	case "GetQueryExecution":
 		h.getQueryExecution(ctx, w, requestID, body)
 	case "GetQueryResults":
@@ -236,7 +236,7 @@ func (h *athenaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 
 // --- query submission + polling + results ---
 
-func (h *athenaHandler) startQueryExecution(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+func (h *athenaHandler) startQueryExecution(ctx context.Context, w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string, body map[string]any) {
 	sql := firstString(body, "QueryString")
 	if strings.TrimSpace(sql) == "" {
 		h.invalidRequest(w, requestID, "QueryString is required and must be non-empty.")
@@ -284,9 +284,26 @@ func (h *athenaHandler) startQueryExecution(ctx context.Context, w http.Response
 		TrinoNS:        h.trinoNS,
 		TrinoDeploy:    h.trinoDeploy,
 		ReadyTimeout:   athenaReadyTimeout,
+		Authorize:      h.tableAuthorizer(ctx, claims, r),
 	})
 	h.audit(ctx, "StartQueryExecution", wg, "allow", "id="+ex.Id)
 	writeAthenaJSON(w, requestID, map[string]any{"QueryExecutionId": ex.Id})
+}
+
+// tableAuthorizer checks a query's tables for the caller (athena_tables.go) once its plan is known, after
+// the request has returned: the request is copied, so the check sees the caller's own request context.
+func (h *athenaHandler) tableAuthorizer(ctx context.Context, claims iam.Claims, r *http.Request) func(context.Context, [][2]string) string {
+	req := r.Clone(context.Background())
+	principal := principalFromCtx(ctx)
+	return func(ctx context.Context, checks [][2]string) string {
+		for _, c := range checks {
+			if denied, reason := dataPlaneDenied(ctx, h.authz, claims, c[0], "Table", c[1], req); denied {
+				h.audit(withPrincipal(ctx, principal), "StartQueryExecution", c[1], "deny", c[0]+": "+reason)
+				return "not authorized to " + c[0] + " on table " + c[1] + ": " + reason
+			}
+		}
+		return ""
+	}
 }
 
 func (h *athenaHandler) getQueryExecution(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {

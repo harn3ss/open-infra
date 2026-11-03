@@ -1822,7 +1822,14 @@ is never blocked.
 
 **Authorization is the one policy world**: coarse impersonated `SubjectAccessReview` on
 `openinfra.dev/applications` (submit → `create`, reads → `get`, stop → `delete`) + additive Cedar `athena:<Op>`
-at workgroup granularity. A reader cannot submit a query.
+at workgroup granularity. A reader cannot submit a query. The query engine authenticates nobody, so each
+query is also authorized on **every table it touches**, as AWS needs `glue:GetTable` on them: before it runs,
+Trino plans it (`EXPLAIN (TYPE IO, FORMAT JSON)`), and the caller needs `glue:GetTable` on each table it reads
+and `glue:UpdateTable` on the one it writes (`Table::<schema>/<table>`, the Glue front door's naming); a denied
+table FAILs the query with `AccessDeniedException` and it never runs. Fail-closed: a statement Trino cannot
+plan that way (DDL, `SHOW`) or a table outside the fronted catalog is checked on `Table::*`, so an assumed role
+needs a grant on every table to run one. Object-level S3 permissions on the data are not checked (the engine
+reads the warehouse with its own credentials).
 
 **Refused, not faked** (400 `InvalidRequestException` naming the op + why): workgroup CUD (only `primary`
 exists), named/saved queries, prepared statements, data-catalog management, and the **Athena

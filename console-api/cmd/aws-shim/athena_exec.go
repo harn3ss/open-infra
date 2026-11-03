@@ -235,6 +235,9 @@ type athenaStartParams struct {
 	TrinoNS      string
 	TrinoDeploy  string
 	ReadyTimeout time.Duration
+	// Authorize decides the (Glue action, Table) pairs the query's tables need (athena_tables.go) and
+	// returns a denial reason, or "" when every one is allowed. Nil runs no table check (unit tests only).
+	Authorize func(ctx context.Context, checks [][2]string) string
 }
 
 // start creates a QUEUED execution with a fresh UUID and launches its run goroutine. The goroutine runs on
@@ -284,6 +287,18 @@ func (s *athenaExecStore) runExec(ctx context.Context, ex *athenaExec, client *t
 				return
 			}
 			s.fail(ex, "Trino did not become ready: "+err.Error(), start)
+			return
+		}
+	}
+
+	// Every table the statement reads or writes is authorized before it runs: Trino authenticates nobody.
+	if p.Authorize != nil {
+		tables, perr := explainIO(ctx, client, p.Query, p.User, p.Catalog, p.Database)
+		if perr != nil && ctx.Err() != nil && ex.isCancelled() {
+			return
+		}
+		if reason := p.Authorize(ctx, athenaTableChecks(tables, perr == nil, p.Catalog)); reason != "" {
+			s.fail(ex, "AccessDeniedException: "+reason, start)
 			return
 		}
 	}
