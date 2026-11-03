@@ -19,7 +19,9 @@
 // delete marker) that shadows the locked original at the "latest" layer. So:
 //   - ship resumes from the bucket head, never a mutable side cursor, so a crash can't fork the chain;
 //   - verify reads each segment's OLDEST (locked) version, and counts any content-differing newer
-//     version or delete marker as a tamper attempt — a latest-version read would be fooled;
+//     version, or a delete marker laid while the original was locked, as a tamper attempt — a
+//     latest-version read would be fooled. A delete marker laid after the lock lapsed, and a segment
+//     removed after its retention, are retain-then-dispose (a lifecycle rule), reported separately;
 //   - the head (seq+hash) is anchored in a Kubernetes ConfigMap, a different trust domain than the
 //     bucket, so forging the record undetectably would require compromising BOTH. The strongest
 //     anchor is the optional external off-site bucket (AU-9(2)).
@@ -359,6 +361,11 @@ type statusReport struct {
 	// through to the locked original and count any delete marker or content-differing newer version
 	// as a tamper attempt (a benign byte-identical re-ship is not counted).
 	ShadowVersions int `json:"shadowVersions"`
+	// Retain-then-dispose, reported apart from tampering: segments before the retained chain (disposed,
+	// or being disposed, after their retention lapsed), and the delete markers lifecycle expiry laid on
+	// segments after their lock lapsed. Neither counts against Intact.
+	DisposedSegments int `json:"disposedSegments"`
+	DisposalMarkers  int `json:"disposalMarkers"`
 	// Anchor cross-check against a Kubernetes ConfigMap (a different trust domain than the bucket):
 	// "ok" | "new" | "regressed" | "rewritten" | "unavailable".
 	Anchor string `json:"anchor"`
@@ -402,122 +409,217 @@ func seqFromKey(key string) (int, bool) {
 	return n, true
 }
 
-func verify() bool {
-	ctx := context.Background()
-	cl, bucket := primaryClient()
+// lockSkew absorbs clock skew between the shipper, which computes a segment's retain-until, and the
+// object store, which stamps versions and lays lifecycle delete markers.
+const lockSkew = time.Hour
 
-	// Read every segment's LOCKED ORIGINAL version (see oldestReal). A latest-version read would be
-	// fooled by a shadowing overwrite; this cannot be.
+// segStore is what verification reads from the bucket: minioStore for the real one, a fake in tests.
+type segStore interface {
+	listVersions(ctx context.Context) (map[string][]minio.ObjectInfo, error)
+	getVersion(ctx context.Context, key, versionID string) ([]byte, error)
+	// retainUntil is a version's COMPLIANCE retain-until date; ok=false when it cannot be read.
+	retainUntil(ctx context.Context, key, versionID string) (time.Time, bool)
+}
+
+type minioStore struct {
+	cl     *minio.Client
+	bucket string
+}
+
+func (m minioStore) listVersions(ctx context.Context) (map[string][]minio.ObjectInfo, error) {
 	perKey := map[string][]minio.ObjectInfo{}
-	for obj := range cl.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: segmentPrefix, Recursive: true, WithVersions: true}) {
+	for obj := range m.cl.ListObjects(ctx, m.bucket, minio.ListObjectsOptions{Prefix: segmentPrefix, Recursive: true, WithVersions: true}) {
 		if obj.Err != nil {
-			fatalf("list segment versions: %v", obj.Err)
+			return nil, obj.Err
 		}
 		perKey[obj.Key] = append(perKey[obj.Key], obj)
 	}
+	return perKey, nil
+}
 
-	// Stream segments in Seq order — keys are segments/%012d.json, so a lexical key sort IS a
-	// Seq sort — and push each into a StreamVerifier, freeing its records right after. This keeps
-	// verification memory O(1) in the chain length; the previous whole-chain load OOM-killed the
-	// verify job once the chain had grown to thousands of segments (the anchor stalled for days).
+func (m minioStore) getVersion(ctx context.Context, key, versionID string) ([]byte, error) {
+	return getVersion(ctx, m.cl, m.bucket, key, versionID)
+}
+
+func (m minioStore) retainUntil(ctx context.Context, key, versionID string) (time.Time, bool) {
+	_, until, err := m.cl.GetObjectRetention(ctx, m.bucket, key, versionID)
+	if err != nil || until == nil {
+		return time.Time{}, false
+	}
+	return *until, true
+}
+
+// verifyOutcome is what one pass over the segments found.
+type verifyOutcome struct {
+	res   auditchain.VerifyResult
+	heads []auditchain.Segment // Seq+Hash per verified segment, for the anchor cross-check
+	// shadow counts object-lock shadowing attempts: a delete marker laid on a segment while its original
+	// was still locked, or an extra version laid over it.
+	shadow int
+	// disposed counts the segments before the retained chain: retain-then-dispose has removed them, or is
+	// removing them, after their retention lapsed. disposalMarkers counts the delete markers lifecycle
+	// expiry laid on segments after their lock lapsed (the first step of that disposal).
+	disposed        int
+	disposalMarkers int
+	retainedFrom    int // Seq of the oldest segment of the retained chain
+	perKey          map[string][]minio.ObjectInfo
+}
+
+type chainCheck struct {
+	ctx       context.Context
+	st        segStore
+	now       time.Time
+	retention time.Duration // the configured retention: the fallback when a version's retain-until can't be read
+}
+
+// lapsedBy reports whether a segment version's lock had lapsed by t: its retain-until as the store
+// reports it, or, when that can't be read, its write time plus the configured retention.
+func (c chainCheck) lapsedBy(key string, v minio.ObjectInfo, t time.Time) bool {
+	until, ok := c.st.retainUntil(c.ctx, key, v.VersionID)
+	if !ok {
+		until = v.LastModified.Add(c.retention)
+	}
+	return !t.Add(lockSkew).Before(until)
+}
+
+// classifyMarkers sorts the delete markers on a segment whose original exists. A marker laid after the
+// original's lock lapsed is disposal (lifecycle expiry); one laid while it was locked is a shadowing
+// attempt, and stays one after the lock lapses.
+func (c chainCheck) classifyMarkers(out *verifyOutcome, key string, versions []minio.ObjectInfo, orig *minio.ObjectInfo) {
+	for _, v := range versions {
+		if !v.IsDeleteMarker {
+			continue
+		}
+		if c.lapsedBy(key, *orig, v.LastModified) {
+			out.disposalMarkers++
+		} else {
+			out.shadow++
+		}
+	}
+}
+
+// pushSegment re-derives one segment from its locked original into the chain, and counts any extra
+// version whose content differs from it (a byte-identical re-ship is benign).
+func (c chainCheck) pushSegment(out *verifyOutcome, sv *auditchain.StreamVerifier, key string, versions []minio.ObjectInfo, orig *minio.ObjectInfo) error {
+	origData, err := c.st.getVersion(c.ctx, key, orig.VersionID)
+	if err != nil {
+		return fmt.Errorf("get %s (original version): %w", key, err)
+	}
+	var s auditchain.Segment
+	if err := json.Unmarshal(origData, &s); err != nil {
+		return fmt.Errorf("parse %s: %w", key, err)
+	}
+	sv.Push(s)
+	out.heads = append(out.heads, auditchain.Segment{Seq: s.Seq, Hash: s.Hash})
+	for _, v := range versions {
+		if v.IsDeleteMarker || v.VersionID == orig.VersionID {
+			continue
+		}
+		d, err := c.st.getVersion(c.ctx, key, v.VersionID)
+		if err != nil {
+			return fmt.Errorf("get %s (shadow version %s): %w", key, v.VersionID, err)
+		}
+		if !bytes.Equal(d, origData) {
+			out.shadow++
+		}
+	}
+	return nil
+}
+
+// verifySegments checks the chain and its object-lock state. With an anchor (incremental and rotating
+// modes) it trusts the anchored, locked prefix and re-derives only the segments after it; without one
+// it re-derives every retained segment from its contents.
+//
+// Retain-then-dispose (a lifecycle rule) removes a segment's original only once its lock has lapsed —
+// Object Lock refuses it any earlier — oldest first, though not strictly in order. So a missing
+// segment is disposal only when the segment after it is itself past retention: written later, its lock
+// lapses later, so the missing one had certainly lapsed. The retained chain starts after the highest
+// missing segment; if the segment after it is still locked, the missing one is a gap (removed, not
+// disposed) and the chain fails.
+func verifySegments(ctx context.Context, st segStore, now time.Time, retention time.Duration, anchor *anchorState) (verifyOutcome, error) {
+	c := chainCheck{ctx: ctx, st: st, now: now, retention: retention}
+	perKey, err := st.listVersions(ctx)
+	if err != nil {
+		return verifyOutcome{}, fmt.Errorf("list segment versions: %w", err)
+	}
+	out := verifyOutcome{perKey: perKey}
 	keys := make([]string, 0, len(perKey))
 	for k := range perKey {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	sort.Strings(keys) // segments/%012d.json: a lexical sort IS a Seq sort
 
-	// Full (default) re-derives every segment from its locked contents, trusting nothing. Incremental
-	// (opt-in, AUDIT_VERIFY_MODE=incremental) trusts the external anchor for the already-verified prefix
-	// and only re-GETs + chain-verifies segments NEWER than it — O(new) instead of O(chain) — while still
-	// checking the WORM-locked prefix cheaply from the version LIST (a delete-marker or any extra version
-	// on a locked segment is a lock-bypass attempt, visible without a GET). PAIR it with a periodic FULL
-	// run (AUDIT_VERIFY_MODE unset) so a prefix content-tamper is still re-derived from contents; incremental
-	// only shortens the common path, it does not replace the trust-nothing sweep.
-	// "rotating" (the durable anti-treadmill mode, #294) behaves like "incremental" for the head/anchor
-	// (O(new) GETs), but ALSO re-derives a bounded WINDOW of the already-locked prefix from contents each
-	// run — a rotating cursor sweeps the whole chain over N runs, so the trust-nothing content check of the
-	// prefix happens in fixed-size chunks instead of all-at-once (whose cost grows with the chain → the
-	// deadline treadmill). "full" (default) re-derives everything, unchanged.
-	mode := getenv("AUDIT_VERIFY_MODE", "full")
-	var sv *auditchain.StreamVerifier
-	verifiedSeq := -1
-	var verifiedHash string
-	if mode == "incremental" || mode == "rotating" {
-		if a, ok := readAnchor(ctx); ok {
-			verifiedSeq, verifiedHash = a.HeadSeq, a.HeadHash
-			sv = auditchain.NewStreamVerifierFrom(a.HeadSeq, a.HeadHash)
-		} else {
-			fmt.Fprintln(os.Stderr, "audit-offsite: "+mode+" requested but no anchor yet — doing a full verify")
-		}
-	}
-	if sv == nil {
-		sv = &auditchain.StreamVerifier{}
-	}
-
-	// heads holds only Seq+Hash per segment (never records) — the anchor cross-check needs no more.
-	heads := make([]auditchain.Segment, 0, len(keys))
-	if verifiedSeq >= 0 {
-		// Seed with the trusted anchor so checkAndUpdateAnchor cross-checks the new head against it.
-		heads = append(heads, auditchain.Segment{Seq: verifiedSeq, Hash: verifiedHash})
-	}
-	shadow := 0
-	// verifySegKey re-derives one segment from its LOCKED ORIGINAL (trust-nothing), pushes it into the
-	// chain in Seq order, and tallies any object-lock shadowing. Shared by the main pass and the tip
-	// catch-up below (closes over sv/heads/shadow, mutating them).
-	verifySegKey := func(key string, versions []minio.ObjectInfo) {
-		orig := oldestReal(versions)
-		if orig == nil {
-			shadow++ // only delete markers — the original is fully shadowed
-			return
-		}
-		origData, err := getVersion(ctx, cl, bucket, key, orig.VersionID)
-		if err != nil {
-			fatalf("get %s (original version): %v", key, err)
-		}
-		var s auditchain.Segment
-		if err := json.Unmarshal(origData, &s); err != nil {
-			fatalf("parse %s: %v", key, err)
-		}
-		sv.Push(s)
-		heads = append(heads, auditchain.Segment{Seq: s.Seq, Hash: s.Hash})
-		for i := range versions {
-			v := versions[i]
-			if v.VersionID == orig.VersionID {
-				continue
-			}
-			if v.IsDeleteMarker {
-				shadow++
-				continue
-			}
-			d, err := getVersion(ctx, cl, bucket, key, v.VersionID)
-			if err != nil {
-				fatalf("get %s (shadow version %s): %v", key, v.VersionID, err)
-			}
-			if !bytes.Equal(d, origData) {
-				shadow++
+	present := map[int]string{} // Seq -> key, for segments whose original exists
+	maxReal := -1
+	for _, k := range keys {
+		if seq, ok := seqFromKey(k); ok && oldestReal(perKey[k]) != nil {
+			present[seq] = k
+			if seq > maxReal {
+				maxReal = seq
 			}
 		}
 	}
+	gap := -1
+	for seq := maxReal - 1; seq >= 0; seq-- {
+		if _, ok := present[seq]; !ok {
+			out.retainedFrom = seq + 1
+			next := present[seq+1]
+			if !c.lapsedBy(next, *oldestReal(perKey[next]), now) {
+				gap = seq
+			}
+			break
+		}
+	}
+	out.disposed = out.retainedFrom
 
 	for _, key := range keys {
+		seq, ok := seqFromKey(key)
+		if !ok {
+			continue
+		}
 		versions := perKey[key]
-		if seq, ok := seqFromKey(key); ok && seq <= verifiedSeq {
-			// Already-verified, WORM-locked prefix: skip the GET + chain re-derivation. Still confirm the
-			// lock held — exactly one real version and no delete marker; anything else is a bypass ATTEMPT.
-			real := 0
-			for i := range versions {
-				if versions[i].IsDeleteMarker {
-					shadow++
-				} else {
-					real++
-				}
-			}
-			if real > 1 {
-				shadow += real - 1
+		orig := oldestReal(versions)
+		switch {
+		case seq < out.retainedFrom && gap < 0 && orig == nil:
+			// Disposed: its original is gone, which Object Lock allows only after its retain-until. The
+			// markers left on it are disposal. (A segment still present below the retained chain is
+			// classified like any other: it may be locked longer than later ones, if retention was lowered.)
+			out.disposalMarkers += countMarkers(versions)
+		case orig == nil:
+			out.shadow++ // only delete markers, and not a disposed segment: the original is shadowed
+		default:
+			c.classifyMarkers(&out, key, versions, orig)
+		}
+	}
+
+	var sv *auditchain.StreamVerifier
+	verifiedSeq := -1
+	if anchor != nil && anchor.HeadSeq >= out.retainedFrom {
+		// Seed with the trusted anchor so checkAndUpdateAnchor cross-checks the new head against it.
+		verifiedSeq = anchor.HeadSeq
+		sv = auditchain.NewStreamVerifierFrom(anchor.HeadSeq, anchor.HeadHash)
+		out.heads = append(out.heads, auditchain.Segment{Seq: anchor.HeadSeq, Hash: anchor.HeadHash})
+	} else {
+		// No anchor, or the anchored head itself has been disposed: re-derive the retained chain.
+		sv = &auditchain.StreamVerifier{}
+	}
+	for _, key := range keys {
+		seq, ok := seqFromKey(key)
+		if !ok || seq < out.retainedFrom || seq > maxReal {
+			continue
+		}
+		versions := perKey[key]
+		if seq <= verifiedSeq {
+			// Already-verified, WORM-locked prefix: skip the GET + chain re-derivation, but any extra real
+			// version on it is a bypass ATTEMPT (its markers were classified above).
+			if n := len(versions) - countMarkers(versions); n > 1 {
+				out.shadow += n - 1
 			}
 			continue
 		}
-		verifySegKey(key, versions)
+		if err := c.pushSegment(&out, sv, key, versions, oldestReal(versions)); err != nil {
+			return out, err
+		}
 	}
 
 	// Catch up to the current tip. A full pass can take tens of minutes, during which new segments arrive
@@ -528,16 +630,13 @@ func verify() bool {
 	// bounded as a backstop against pathological churn.
 	for round := 0; round < 8; round++ {
 		curHead := sv.Result().HeadSeq
-		fresh := map[string][]minio.ObjectInfo{}
-		for obj := range cl.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: segmentPrefix, Recursive: true, WithVersions: true}) {
-			if obj.Err != nil {
-				fatalf("re-list segment versions (catch-up): %v", obj.Err)
-			}
-			fresh[obj.Key] = append(fresh[obj.Key], obj)
+		fresh, err := st.listVersions(ctx)
+		if err != nil {
+			return out, fmt.Errorf("re-list segment versions (catch-up): %w", err)
 		}
 		var newKeys []string
 		for k := range fresh {
-			if seq, ok := seqFromKey(k); ok && seq > curHead {
+			if seq, ok := seqFromKey(k); ok && seq > curHead && seq > maxReal {
 				newKeys = append(newKeys, k)
 			}
 		}
@@ -546,35 +645,95 @@ func verify() bool {
 		}
 		sort.Strings(newKeys)
 		for _, key := range newKeys {
-			verifySegKey(key, fresh[key])
+			orig := oldestReal(fresh[key])
+			if orig == nil {
+				out.shadow++
+				continue
+			}
+			c.classifyMarkers(&out, key, fresh[key], orig)
+			if err := c.pushSegment(&out, sv, key, fresh[key], orig); err != nil {
+				return out, err
+			}
+			out.perKey[key] = fresh[key]
+		}
+		if seq, ok := seqFromKey(newKeys[len(newKeys)-1]); ok && seq > maxReal {
+			maxReal = seq
 		}
 	}
 
-	res := sv.Result()
-	if shadow > 0 && res.OK {
-		res.Reason = fmt.Sprintf("%d object-lock shadowing attempt(s) detected (overwrite/delete-marker on locked segments)", shadow)
+	out.res = sv.Result()
+	if gap >= 0 {
+		g := gap
+		out.res.OK = false
+		out.res.BrokenAt = &g
+		out.res.Reason = fmt.Sprintf("segment %d is missing while segment %d after it is still under retention: a gap in the retained chain (removed, not disposed)", gap, gap+1)
+	} else if out.shadow > 0 && out.res.OK {
+		out.res.Reason = fmt.Sprintf("%d object-lock shadowing attempt(s) detected (overwrite/delete-marker on locked segments)", out.shadow)
 	}
+	return out, nil
+}
 
-	anchor := checkAndUpdateAnchor(ctx, heads, res)
+func countMarkers(versions []minio.ObjectInfo) int {
+	n := 0
+	for _, v := range versions {
+		if v.IsDeleteMarker {
+			n++
+		}
+	}
+	return n
+}
+
+func verify() bool {
+	ctx := context.Background()
+	cl, bucket := primaryClient()
+	st := minioStore{cl: cl, bucket: bucket}
+
+	// Full (default) re-derives every retained segment from its locked contents, trusting nothing.
+	// Incremental (AUDIT_VERIFY_MODE=incremental) trusts the external anchor for the already-verified prefix
+	// and only re-GETs + chain-verifies segments NEWER than it — O(new) instead of O(chain) — while still
+	// checking the WORM-locked prefix cheaply from the version LIST (a delete-marker laid while a segment was
+	// locked, or any extra version on it, is a lock-bypass attempt, visible without a GET). PAIR it with a
+	// periodic FULL or rotating run so a prefix content-tamper is still re-derived from contents.
+	// "rotating" (the durable anti-treadmill mode, #294) behaves like "incremental" for the head/anchor
+	// (O(new) GETs), but ALSO re-derives a bounded WINDOW of the already-locked prefix from contents each
+	// run — a rotating cursor sweeps the whole chain over N runs.
+	mode := getenv("AUDIT_VERIFY_MODE", "full")
+	var anchor *anchorState
+	if mode == "incremental" || mode == "rotating" {
+		if a, ok := readAnchor(ctx); ok {
+			anchor = &a
+		} else {
+			fmt.Fprintln(os.Stderr, "audit-offsite: "+mode+" requested but no anchor yet — doing a full verify")
+		}
+	}
+	out, err := verifySegments(ctx, st, time.Now(), time.Duration(retentionDays())*24*time.Hour, anchor)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	res := out.res
+
+	anchorStatus := checkAndUpdateAnchor(ctx, out.heads, res)
 
 	// Rotating mode (#294): re-derive a bounded window of the locked prefix from contents, advancing a
 	// persisted cursor so the whole chain is content-re-verified over successive runs at fixed per-run
 	// cost. A tamper found in the swept window makes the run NOT Intact (same weight as the main chain).
 	resweep, resweepOK := "", true
 	if mode == "rotating" {
-		resweep, resweepOK = resweepPrefix(ctx, cl, bucket, perKey, res.HeadSeq)
+		resweep, resweepOK = resweepPrefix(ctx, st, out.perKey, out.retainedFrom, res.HeadSeq)
 	}
 
 	report := statusReport{
-		Result:         res,
-		ShadowVersions: shadow,
-		Anchor:         anchor,
-		Intact:         res.OK && shadow == 0 && (anchor == "ok" || anchor == "new") && resweepOK,
-		HeadSeq:        res.HeadSeq,
-		HeadHash:       res.HeadHash,
-		VerifiedAt:     time.Now().UTC().Format(time.RFC3339),
-		Bucket:         bucket,
-		Resweep:        resweep,
+		Result:           res,
+		ShadowVersions:   out.shadow,
+		DisposedSegments: out.disposed,
+		DisposalMarkers:  out.disposalMarkers,
+		Anchor:           anchorStatus,
+		Intact:           res.OK && out.shadow == 0 && (anchorStatus == "ok" || anchorStatus == "new") && resweepOK,
+		HeadSeq:          res.HeadSeq,
+		HeadHash:         res.HeadHash,
+		VerifiedAt:       time.Now().UTC().Format(time.RFC3339),
+		Bucket:           bucket,
+		Resweep:          resweep,
 	}
 	blob, _ := json.MarshalIndent(report, "", "  ")
 
@@ -717,18 +876,13 @@ func writeResweepCursor(ctx context.Context, nextSeq int) {
 // runs the whole chain's contents are re-verified at FIXED per-run cost (the #294 anti-treadmill). The
 // window overlaps the previous one by one segment so every chain LINK is re-checked across windows too.
 // A content-tamper or lock-shadow in the swept window returns ok=false (making the run not Intact).
-func resweepPrefix(ctx context.Context, cl *minio.Client, bucket string, perKey map[string][]minio.ObjectInfo, head int) (string, bool) {
+// base is the oldest segment of the retained chain: those before it have been disposed.
+func resweepPrefix(ctx context.Context, st segStore, perKey map[string][]minio.ObjectInfo, base, head int) (string, bool) {
 	window := 2000
 	if w, err := strconv.Atoi(getenv("AUDIT_RESWEEP_WINDOW", "2000")); err == nil && w > 0 {
 		window = w
 	}
-	base := 1 << 30
-	for k := range perKey {
-		if seq, ok := seqFromKey(k); ok && seq < base {
-			base = seq
-		}
-	}
-	if base == 1<<30 || head < base {
+	if len(perKey) == 0 || head < base {
 		return "rotating: empty chain, nothing to re-sweep", true
 	}
 	cursor := readResweepCursor(ctx)
@@ -755,7 +909,7 @@ func resweepPrefix(ctx context.Context, cl *minio.Client, bucket string, perKey 
 		if orig == nil {
 			return fmt.Sprintf("rotating: segment seq=%d is fully shadowed (no locked original)", seq), false
 		}
-		data, err := getVersion(ctx, cl, bucket, key, orig.VersionID)
+		data, err := st.getVersion(ctx, key, orig.VersionID)
 		if err != nil {
 			return fmt.Sprintf("rotating: get seq=%d failed: %v", seq, err), false
 		}

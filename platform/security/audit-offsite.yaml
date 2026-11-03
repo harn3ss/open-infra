@@ -120,15 +120,22 @@ spec:
               fi
               echo "  object lock: ACTIVE (COMPLIANCE retention set per-object by the exporter)"
 
-              # 1b) Self-trim lifecycle (optional; default off = keep forever). Expire segments
-              #     AUDIT_EXPIRE_DAYS after creation; the expiry RESPECTS Object Lock, so with
-              #     AUDIT_EXPIRE_DAYS == the exporter's retentionDays the chain is retained exactly that
-              #     long then auto-disposed (AU-11 retain-then-dispose) and the bucket self-trims instead
-              #     of growing forever. Idempotent: clear prior rules, then set one.
+              # 1b) Retain-then-dispose lifecycle (optional; default off = keep forever). On this
+              #     versioned bucket, expiring a segment only lays a delete marker over it; the original
+              #     becomes a noncurrent version and is removed one day later, and a marker left with no
+              #     version is cleaned up by the same Days rule. Object Lock refuses to remove an original
+              #     before its retain-until, so nothing is disposed early: set AUDIT_EXPIRE_DAYS >= the
+              #     exporter's retentionDays, or the markers land on still-locked segments and the verifier
+              #     reports them as shadowing attempts. Idempotent: clear prior rules, then set one; with
+              #     no AUDIT_EXPIRE_DAYS any earlier rule is removed, so turning disposal off turns it off.
+              "$MC" ilm rule remove --all --force "m/$BUCKET" >/dev/null 2>&1 || true
               if [ -n "${AUDIT_EXPIRE_DAYS:-}" ] && [ "${AUDIT_EXPIRE_DAYS}" -gt 0 ] 2>/dev/null; then
-                "$MC" ilm rule remove --all --force "m/$BUCKET" >/dev/null 2>&1 || true
-                "$MC" ilm rule add --expire-days "$AUDIT_EXPIRE_DAYS" "m/$BUCKET" >/dev/null
-                echo "  lifecycle: expire segments ${AUDIT_EXPIRE_DAYS}d after creation (self-trimming)"
+                if "$MC" ilm rule add --expire-days "$AUDIT_EXPIRE_DAYS" --noncurrent-expire-days 1 "m/$BUCKET" >/dev/null; then
+                  echo "  lifecycle: dispose of segments ${AUDIT_EXPIRE_DAYS}d after creation (originals removed 1d later)"
+                else
+                  # Keep the sync going: without the rule the bucket only stops trimming.
+                  echo "ERROR: could not set the retain-then-dispose lifecycle rule; the bucket keeps every segment" >&2
+                fi
               else
                 echo "  lifecycle: none (segments kept until retention lifts + a manual sweep)"
               fi
@@ -325,6 +332,11 @@ spec:
                 - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: audit-offsite-minio-creds, key: secretKey } } }
                 - { name: AUDIT_BUCKET, value: "openinfra-audit" }
                 - { name: AUDIT_VERIFY_MODE, value: "incremental" } # O(new) hourly; daily full is the backstop
+                # The shipper's retention (audit-config retentionDays): tells a disposed segment from a removed
+                # one when a version's retain-until can't be read.
+                - name: RETENTION_DAYS
+                  valueFrom:
+                    configMapKeyRef: { name: audit-config, key: retentionDays, optional: true }
                 - { name: GOMEMLIMIT, value: "224MiB" } # bound the GC under the cgroup limit (falls back to full with no anchor) (#294)
               resources:
                 # Incremental re-derives only segments newer than the anchor, so hourly cost no longer scales
@@ -385,6 +397,11 @@ spec:
                 # not every single run, in exchange for bounding the cost (the AU-9(3) tradeoff #294 chose).
                 # Revert to full (every-run whole-chain) by removing this env.
                 - { name: AUDIT_VERIFY_MODE, value: "rotating" }
+                # The shipper's retention (audit-config retentionDays): tells a disposed segment from a removed
+                # one when a version's retain-until can't be read.
+                - name: RETENTION_DAYS
+                  valueFrom:
+                    configMapKeyRef: { name: audit-config, key: retentionDays, optional: true }
                 - { name: AUDIT_RESWEEP_WINDOW, value: "2000" } # segments re-derived per run (~8 runs/full rotation at 15k)
                 # Go's GC does NOT read the cgroup limit, so under GOGC=100 it can grow the heap to ~2x the
                 # live set and be OOMKilled before collecting — the risk that grows with the chain. A soft

@@ -43,8 +43,8 @@ hash over all of that. So:
 
 `Verify` detects all three and reports the first break (`brokenAt` + a reason). It is a *pure*
 function with a table of unit tests covering edit / reforge / delete / reorder / front-truncation.
-Front-truncation (old segments aging past retention and dropping off the front) is allowed and
-distinguished from a mid-chain hole by a non-zero base sequence.
+Front-truncation (old segments disposed of after their retention) is allowed only below the
+retention cutoff: see [Retain-then-dispose](#retain-then-dispose).
 
 ### Immutability (WORM) vs. tamper-evidence (chain) — stated precisely
 
@@ -60,8 +60,8 @@ cover, because the interesting adversary here is a *privileged insider* (AU-9's 
     "read latest" would be fooled even though the original survives.
 - **Tamper-evidence** is this system's, and it is built to see through exactly that:
   - `verify` reads each segment's **oldest (locked) version**, never "latest", so a shadowing
-    overwrite cannot change what is verified; and it **counts** any delete marker or
-    content-differing newer version as a detected tamper attempt.
+    overwrite cannot change what is verified; and it **counts** a delete marker laid while the
+    original was still locked, or any content-differing newer version, as a detected tamper attempt.
   - the chain links each segment to the previous by hash, so an edit/reorder/mid-chain deletion of
     the locked originals (were it even possible) breaks it.
   - the verified head (seq + hash) is anchored in a Kubernetes ConfigMap — a **different trust
@@ -88,12 +88,39 @@ Provisioning (`platform/security/audit-offsite.yaml`) creates the locked bucket
 (`openinfra-audit`) and a scoped `openinfra-audit-offsite` MinIO identity automatically. Tunables
 on the `audit-offsite-ship` CronJob:
 
-- `RETENTION_DAYS` — per-segment COMPLIANCE retention (default `2555`, ~7 years). Cannot be
-  shortened after a segment is written.
+- `RETENTION_DAYS` — per-segment COMPLIANCE retention (default `2555`, ~7 years), set with the
+  `retentionDays` key of an `audit-config` ConfigMap in `monitoring`. Each segment keeps the retention
+  it was written with: COMPLIANCE retention can never be shortened per segment, so lowering the
+  setting applies only to segments written afterwards. The verify CronJobs read the same key.
+- `expireDays` (an `audit-config` ConfigMap in `minio`) — turns on retain-then-dispose, below.
 - **External off-site copy (AU-9(2))** — set `OFFSITE_ENDPOINT` / `OFFSITE_BUCKET` /
   `OFFSITE_ACCESS_KEY` / `OFFSITE_SECRET_KEY` (and `OFFSITE_SECURE=true`) to also write each
   segment to an operator-controlled S3 outside the cluster. When set, the cursor does not advance
   until the off-site write succeeds, so a copy on a separate system is not silently skipped.
+
+### Retain-then-dispose
+
+With `expireDays` set, the bucket disposes of segments once they have been retained (AU-11): the setup
+Job installs a lifecycle rule that expires each segment `expireDays` after it was written. On this
+versioned, locked bucket, expiry first lays a delete marker over the segment. The original then becomes
+a noncurrent version and is removed one day later, and the marker goes once no version is left under it.
+Object Lock refuses to remove an original before its retain-until, so disposal can never come early.
+Removing `expireDays` removes the rule.
+
+`expireDays` must be at least `retentionDays`. A marker laid while a segment is still locked cannot
+remove it, and the verifier counts it as a shadowing attempt, as it would one laid by hand.
+
+The verifier tells disposal from tampering:
+
+- a delete marker laid **after** its segment's retain-until is disposal; one laid **before** is a
+  shadowing attempt, and stays one after the lock lapses;
+- a missing segment is disposal only when the segment after it is itself past retention (it was written
+  later, so its lock lapses later). The chain is verified from the oldest retained segment, and a
+  segment missing while the one after it is still locked fails the chain as a gap;
+- content checks, extra versions and the anchor are unchanged.
+
+The status reports `disposedSegments` (segments before the retained chain) and `disposalMarkers`
+(markers laid after retention) apart from `shadowVersions`; neither counts against Intact.
 
 ## Limits (stated plainly)
 
