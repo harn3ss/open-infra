@@ -97,6 +97,32 @@
   },
   "generatedBy": "probe/shimgen.py (probe/coverage.py) from probe/registry/cfn-types.json, probe/registry/shim-router.json, probe/shim-services.yaml and probe/registry/coverage.yaml",
   "services": {
+    "acm": {
+      "actions": [
+        "acm:DescribeCertificate",
+        "acm:GetCertificate",
+        "acm:ListCertificates"
+      ],
+      "conditional": true,
+      "deployableTypes": [
+        "AWS::CertificateManager::Certificate"
+      ],
+      "handler": "acmHandler",
+      "namespaces": [
+        "AWS::CertificateManager"
+      ],
+      "operations": [
+        "DescribeCertificate",
+        "GetCertificate",
+        "ListCertificates"
+      ],
+      "probes": [
+        "acm"
+      ],
+      "refused": [],
+      "service": "ACM",
+      "tier": "proven"
+    },
     "apigateway": {
       "actions": [],
       "conditional": false,
@@ -138,6 +164,11 @@
         "GetApiKey",
         "GetApiKeys",
         "GetApis",
+        "GetAuthorizer",
+        "GetAuthorizers",
+        "GetDeployment",
+        "GetDeployments",
+        "GetMethod",
         "GetModel",
         "GetModels",
         "GetRequestValidator",
@@ -166,7 +197,8 @@
     },
     "appsync": {
       "actions": [
-        "appsync:GraphQL"
+        "appsync:GraphQL",
+        "appsync:ListGraphqlApis"
       ],
       "conditional": false,
       "deployableTypes": [
@@ -185,7 +217,15 @@
         "CreateResolver",
         "DeleteDataSource",
         "DeleteResolver",
+        "GetDataSource",
+        "GetFunction",
+        "GetGraphqlApi",
+        "GetIntrospectionSchema",
         "GetResolver",
+        "GetSchemaCreationStatus",
+        "ListDataSources",
+        "ListFunctions",
+        "ListGraphqlApis",
         "UpdateResolver"
       ],
       "probes": [
@@ -292,7 +332,9 @@
       "tier": "proven"
     },
     "cloudfront": {
-      "actions": [],
+      "actions": [
+        "cloudfront:ListDistributions"
+      ],
       "conditional": true,
       "deployableTypes": [
         "AWS::CloudFront::CachePolicy",
@@ -308,7 +350,15 @@
       ],
       "operations": [
         "CreateInvalidation",
+        "GetCachePolicy",
+        "GetCloudFrontOriginAccessIdentity",
+        "GetDistribution",
+        "GetDistributionConfig",
         "GetInvalidation",
+        "GetOriginAccessControl",
+        "GetOriginRequestPolicy",
+        "GetResponseHeadersPolicy",
+        "ListDistributions",
         "ListInvalidations"
       ],
       "probes": [
@@ -341,10 +391,12 @@
         "CreateUserPoolClient",
         "DeleteUserPool",
         "DescribeUserPool",
+        "DescribeUserPoolClient",
         "ForgotPassword",
         "GetUser",
         "GlobalSignOut",
         "InitiateAuth",
+        "ListUserPoolClients",
         "ResendConfirmationCode",
         "RespondToAuthChallenge",
         "SignUp"
@@ -848,7 +900,11 @@
     },
     "lambda": {
       "actions": [
-        "lambda:InvokeFunction"
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration",
+        "lambda:GetPolicy",
+        "lambda:InvokeFunction",
+        "lambda:ListFunctions"
       ],
       "conditional": false,
       "deployableTypes": [
@@ -859,7 +915,12 @@
       "namespaces": [
         "AWS::Lambda"
       ],
-      "operations": [],
+      "operations": [
+        "GetFunction",
+        "GetFunctionConfiguration",
+        "GetPolicy",
+        "ListFunctions"
+      ],
       "probes": [
         "lambda"
       ],
@@ -992,6 +1053,7 @@
         "GetBucketEncryption",
         "GetBucketLocation",
         "GetBucketOwnershipControls",
+        "GetBucketPolicy",
         "GetBucketTagging",
         "GetBucketVersioning",
         "GetObject",
@@ -1267,17 +1329,17 @@
   },
   "summary": {
     "cfnTypes": 97,
-    "covered": 48,
+    "covered": 66,
     "deployable": 74,
-    "excFrontDoor": 1,
-    "excRead": 25,
-    "excepted": 26,
+    "excFrontDoor": 0,
+    "excRead": 8,
+    "excepted": 8,
     "flattened": 1,
-    "operations": 481,
+    "operations": 512,
     "planOnly": 11,
     "refused": 11,
-    "services": 28,
-    "signingNames": 30,
+    "services": 29,
+    "signingNames": 31,
     "violations": 0
   },
   "types": {
@@ -1305,18 +1367,16 @@
     },
     "AWS::ApiGateway::Authorizer": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "The REST v1 surface the stack provisions through creates methods, deployments and authorizers but serves no call that reads them (GetMethod, GetDeployments, GetAuthorizers); GetRestApi, GetResources, GetStages, GetModels, GetRequestValidators, GetApiKeys and GetUsagePlans read the rest of the API."
-      },
       "flattened": false,
       "frontDoor": [
         "apigateway"
       ],
       "kind": "aws-shim apigateway (v1)",
       "namespace": "AWS::ApiGateway",
-      "readCalls": [],
+      "readCalls": [
+        "GetAuthorizer",
+        "GetAuthorizers"
+      ],
       "service": "API Gateway",
       "serviceTier": "proven",
       "signingNames": [
@@ -1325,22 +1385,20 @@
       "stackProbes": [],
       "status": "partial",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::ApiGateway::Deployment": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "The REST v1 surface the stack provisions through creates methods, deployments and authorizers but serves no call that reads them (GetMethod, GetDeployments, GetAuthorizers); GetRestApi, GetResources, GetStages, GetModels, GetRequestValidators, GetApiKeys and GetUsagePlans read the rest of the API."
-      },
       "flattened": false,
       "frontDoor": [
         "apigateway"
       ],
       "kind": "aws-shim apigateway (v1)",
       "namespace": "AWS::ApiGateway",
-      "readCalls": [],
+      "readCalls": [
+        "GetDeployment",
+        "GetDeployments"
+      ],
       "service": "API Gateway",
       "serviceTier": "proven",
       "signingNames": [
@@ -1351,22 +1409,19 @@
       ],
       "status": "partial",
       "templateUses": 1,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::ApiGateway::Method": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "The REST v1 surface the stack provisions through creates methods, deployments and authorizers but serves no call that reads them (GetMethod, GetDeployments, GetAuthorizers); GetRestApi, GetResources, GetStages, GetModels, GetRequestValidators, GetApiKeys and GetUsagePlans read the rest of the API."
-      },
       "flattened": false,
       "frontDoor": [
         "apigateway"
       ],
       "kind": "aws-shim apigateway (v1)",
       "namespace": "AWS::ApiGateway",
-      "readCalls": [],
+      "readCalls": [
+        "GetMethod"
+      ],
       "service": "API Gateway",
       "serviceTier": "proven",
       "signingNames": [
@@ -1377,7 +1432,7 @@
       ],
       "status": "partial",
       "templateUses": 1,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::ApiGateway::Model": {
       "deployable": true,
@@ -1539,18 +1594,16 @@
     },
     "AWS::AppSync::DataSource": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "A stack's API is one kind: GraphQLApi, served at its GraphQL endpoint (appsync:GraphQL). The AppSync management surface serves resolver and data-source writes and GetResolver only \u2014 no GetGraphqlApi, GetIntrospectionSchema, GetDataSource or GetFunction."
-      },
       "flattened": false,
       "frontDoor": [
         "appsync"
       ],
       "kind": "GraphQLApi",
       "namespace": "AWS::AppSync",
-      "readCalls": [],
+      "readCalls": [
+        "GetDataSource",
+        "ListDataSources"
+      ],
       "service": "AppSync",
       "serviceTier": "proven",
       "signingNames": [
@@ -1559,22 +1612,20 @@
       "stackProbes": [],
       "status": "supported",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::AppSync::FunctionConfiguration": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "A stack's API is one kind: GraphQLApi, served at its GraphQL endpoint (appsync:GraphQL). The AppSync management surface serves resolver and data-source writes and GetResolver only \u2014 no GetGraphqlApi, GetIntrospectionSchema, GetDataSource or GetFunction."
-      },
       "flattened": false,
       "frontDoor": [
         "appsync"
       ],
       "kind": "GraphQLApi",
       "namespace": "AWS::AppSync",
-      "readCalls": [],
+      "readCalls": [
+        "GetFunction",
+        "ListFunctions"
+      ],
       "service": "AppSync",
       "serviceTier": "proven",
       "signingNames": [
@@ -1583,22 +1634,20 @@
       "stackProbes": [],
       "status": "supported",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::AppSync::GraphQLApi": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "A stack's API is one kind: GraphQLApi, served at its GraphQL endpoint (appsync:GraphQL). The AppSync management surface serves resolver and data-source writes and GetResolver only \u2014 no GetGraphqlApi, GetIntrospectionSchema, GetDataSource or GetFunction."
-      },
       "flattened": false,
       "frontDoor": [
         "appsync"
       ],
       "kind": "GraphQLApi",
       "namespace": "AWS::AppSync",
-      "readCalls": [],
+      "readCalls": [
+        "GetGraphqlApi",
+        "ListGraphqlApis"
+      ],
       "service": "AppSync",
       "serviceTier": "proven",
       "signingNames": [
@@ -1607,22 +1656,20 @@
       "stackProbes": [],
       "status": "supported",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::AppSync::GraphQLSchema": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "A stack's API is one kind: GraphQLApi, served at its GraphQL endpoint (appsync:GraphQL). The AppSync management surface serves resolver and data-source writes and GetResolver only \u2014 no GetGraphqlApi, GetIntrospectionSchema, GetDataSource or GetFunction."
-      },
       "flattened": false,
       "frontDoor": [
         "appsync"
       ],
       "kind": "GraphQLApi",
       "namespace": "AWS::AppSync",
-      "readCalls": [],
+      "readCalls": [
+        "GetIntrospectionSchema",
+        "GetSchemaCreationStatus"
+      ],
       "service": "AppSync",
       "serviceTier": "proven",
       "signingNames": [
@@ -1631,7 +1678,7 @@
       "stackProbes": [],
       "status": "supported",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::AppSync::Resolver": {
       "deployable": true,
@@ -1690,18 +1737,19 @@
     },
     "AWS::CertificateManager::Certificate": {
       "deployable": true,
-      "exception": {
-        "check": "front-door",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "A certificate exists only as the TLS certificate of the CloudFront static site in the same stack (kind: StaticSite), issued in-cluster by the platform's ACM-style CA; its Ref resolves for that distribution, but there is no ACM front door (DescribeCertificate, ListCertificates)."
-      },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "acm"
+      ],
       "kind": "StaticSite(tls)",
       "namespace": "AWS::CertificateManager",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeCertificate",
+        "GetCertificate",
+        "ListCertificates"
+      ],
+      "service": "ACM",
+      "serviceTier": "proven",
       "signingNames": [
         "acm"
       ],
@@ -1710,7 +1758,7 @@
       ],
       "status": "partial",
       "templateUses": 2,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::CloudFormation::CustomResource": {
       "deployable": true,
@@ -1809,18 +1857,15 @@
     },
     "AWS::CloudFront::CachePolicy": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
-      },
       "flattened": false,
       "frontDoor": [
         "cloudfront"
       ],
       "kind": "(implicit)",
       "namespace": "AWS::CloudFront",
-      "readCalls": [],
+      "readCalls": [
+        "GetCachePolicy"
+      ],
       "service": "CloudFront",
       "serviceTier": "proven",
       "signingNames": [
@@ -1829,22 +1874,19 @@
       "stackProbes": [],
       "status": "partial",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::CloudFront::CloudFrontOriginAccessIdentity": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
-      },
       "flattened": false,
       "frontDoor": [
         "cloudfront"
       ],
       "kind": "StaticSite(origin access)",
       "namespace": "AWS::CloudFront",
-      "readCalls": [],
+      "readCalls": [
+        "GetCloudFrontOriginAccessIdentity"
+      ],
       "service": "CloudFront",
       "serviceTier": "proven",
       "signingNames": [
@@ -1853,22 +1895,21 @@
       "stackProbes": [],
       "status": "partial",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::CloudFront::Distribution": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
-      },
       "flattened": false,
       "frontDoor": [
         "cloudfront"
       ],
       "kind": "StaticSite",
       "namespace": "AWS::CloudFront",
-      "readCalls": [],
+      "readCalls": [
+        "GetDistribution",
+        "GetDistributionConfig",
+        "ListDistributions"
+      ],
       "service": "CloudFront",
       "serviceTier": "proven",
       "signingNames": [
@@ -1879,22 +1920,19 @@
       ],
       "status": "partial",
       "templateUses": 2,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::CloudFront::OriginAccessControl": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
-      },
       "flattened": false,
       "frontDoor": [
         "cloudfront"
       ],
       "kind": "StaticSite(origin access)",
       "namespace": "AWS::CloudFront",
-      "readCalls": [],
+      "readCalls": [
+        "GetOriginAccessControl"
+      ],
       "service": "CloudFront",
       "serviceTier": "proven",
       "signingNames": [
@@ -1905,22 +1943,19 @@
       ],
       "status": "partial",
       "templateUses": 2,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::CloudFront::OriginRequestPolicy": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
-      },
       "flattened": false,
       "frontDoor": [
         "cloudfront"
       ],
       "kind": "(implicit)",
       "namespace": "AWS::CloudFront",
-      "readCalls": [],
+      "readCalls": [
+        "GetOriginRequestPolicy"
+      ],
       "service": "CloudFront",
       "serviceTier": "proven",
       "signingNames": [
@@ -1929,22 +1964,19 @@
       "stackProbes": [],
       "status": "partial",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::CloudFront::ResponseHeadersPolicy": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
-      },
       "flattened": false,
       "frontDoor": [
         "cloudfront"
       ],
       "kind": "StaticSite(responseHeaders)",
       "namespace": "AWS::CloudFront",
-      "readCalls": [],
+      "readCalls": [
+        "GetResponseHeadersPolicy"
+      ],
       "service": "CloudFront",
       "serviceTier": "proven",
       "signingNames": [
@@ -1955,7 +1987,7 @@
       ],
       "status": "partial",
       "templateUses": 2,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::CloudWatch::Alarm": {
       "deployable": true,
@@ -1987,7 +2019,9 @@
       "kind": "UserPool",
       "namespace": "AWS::Cognito",
       "readCalls": [
-        "DescribeUserPool"
+        "DescribeUserPool",
+        "DescribeUserPoolClient",
+        "ListUserPoolClients"
       ],
       "service": "Cognito",
       "serviceTier": "proven",
@@ -2001,18 +2035,16 @@
     },
     "AWS::Cognito::UserPoolClient": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "Collated into its pool (kind: UserPool provisions one app client); DescribeUserPool is served, DescribeUserPoolClient and ListUserPoolClients are not."
-      },
       "flattened": false,
       "frontDoor": [
         "cognito-idp"
       ],
       "kind": "UserPool(client)",
       "namespace": "AWS::Cognito",
-      "readCalls": [],
+      "readCalls": [
+        "DescribeUserPoolClient",
+        "ListUserPoolClients"
+      ],
       "service": "Cognito",
       "serviceTier": "proven",
       "signingNames": [
@@ -2021,7 +2053,7 @@
       "stackProbes": [],
       "status": "partial",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::DynamoDB::Table": {
       "deployable": true,
@@ -3025,18 +3057,17 @@
     },
     "AWS::Lambda::Function": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "The Lambda front door serves Invoke only (lambda:InvokeFunction): a stack's function is invocable by the name and ARN the stack reports, but GetFunction and ListFunctions are not served."
-      },
       "flattened": false,
       "frontDoor": [
         "lambda"
       ],
       "kind": "Function",
       "namespace": "AWS::Lambda",
-      "readCalls": [],
+      "readCalls": [
+        "GetFunction",
+        "GetFunctionConfiguration",
+        "ListFunctions"
+      ],
       "service": "Lambda",
       "serviceTier": "proven",
       "signingNames": [
@@ -3047,22 +3078,19 @@
       ],
       "status": "supported",
       "templateUses": 4,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::Lambda::Permission": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "Provisions nothing: the integration that invokes the function is authorized when it is created, against its creator's authority, not by a resource policy. GetPolicy is not served."
-      },
       "flattened": false,
       "frontDoor": [
         "lambda"
       ],
       "kind": "(implicit)",
       "namespace": "AWS::Lambda",
-      "readCalls": [],
+      "readCalls": [
+        "GetPolicy"
+      ],
       "service": "Lambda",
       "serviceTier": "proven",
       "signingNames": [
@@ -3071,7 +3099,7 @@
       "stackProbes": [],
       "status": "partial",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::Lambda::Version": {
       "deployable": false,
@@ -3199,6 +3227,7 @@
         "GetBucketEncryption",
         "GetBucketLocation",
         "GetBucketOwnershipControls",
+        "GetBucketPolicy",
         "GetBucketTagging",
         "GetBucketVersioning",
         "HeadBucket",
@@ -3219,18 +3248,15 @@
     },
     "AWS::S3::BucketPolicy": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "Collated into its bucket (kind: Bucket spec.policy, applied to MinIO verbatim); the S3 front door serves no GetBucketPolicy."
-      },
       "flattened": false,
       "frontDoor": [
         "s3"
       ],
       "kind": "Bucket",
       "namespace": "AWS::S3",
-      "readCalls": [],
+      "readCalls": [
+        "GetBucketPolicy"
+      ],
       "service": "S3",
       "serviceTier": "proven",
       "signingNames": [
@@ -3241,7 +3267,7 @@
       ],
       "status": "supported",
       "templateUses": 2,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::SNS::Subscription": {
       "deployable": true,
