@@ -58,7 +58,9 @@ type queryCapture struct {
 	body   bytes.Buffer
 }
 
-func newQueryCapture() *queryCapture { return &queryCapture{header: http.Header{}, status: http.StatusOK} }
+func newQueryCapture() *queryCapture {
+	return &queryCapture{header: http.Header{}, status: http.StatusOK}
+}
 
 func (c *queryCapture) Header() http.Header         { return c.header }
 func (c *queryCapture) WriteHeader(status int)      { c.status = status }
