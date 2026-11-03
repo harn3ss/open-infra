@@ -1,6 +1,20 @@
 {
   "generatedBy": "console-api/cmd/aws-shim/coverage_registry_test.go",
   "services": {
+    "acm": {
+      "handler": "acmHandler",
+      "operations": [
+        "DescribeCertificate",
+        "GetCertificate",
+        "ListCertificates"
+      ],
+      "actions": [
+        "acm:DescribeCertificate",
+        "acm:GetCertificate",
+        "acm:ListCertificates"
+      ],
+      "conditional": true
+    },
     "apigateway": {
       "handler": "apigwMux",
       "operations": [

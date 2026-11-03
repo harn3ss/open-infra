@@ -419,6 +419,16 @@ tr '\t' '\n' <"$TMP/ld.txt" | grep -qx "$DIST" || fail "list-distributions did n
 ERR="$(cf get-distribution --id E0000000000000 2>&1 >/dev/null || true)"
 printf '%s' "$ERR" | grep -q NoSuchDistribution || fail "get-distribution of an unknown id: $(snip "$ERR")"
 log "    ✓ the distribution, its headers policy and OAC read back by the ids the stack gave them; listed; an unknown id → NoSuchDistribution"
+CERT_ARN="$(cf get-distribution-config --id "$DIST" --query 'DistributionConfig.ViewerCertificate.ACMCertificateArn' --output text 2>/dev/null || true)"
+acmq() { AWS_ACCESS_KEY_ID="$AAK" AWS_SECRET_ACCESS_KEY="$ASK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager acm "$@"; }
+CERT_STATUS="$(acmq describe-certificate --certificate-arn "$CERT_ARN" --query Certificate.Status --output text 2>&1 || true)"
+[ "$CERT_STATUS" = ISSUED ] || fail "acm describe-certificate of the stack's certificate ($CERT_ARN): $(snip "$CERT_STATUS")"
+acmq describe-certificate --certificate-arn "$CERT_ARN" --query 'Certificate.InUseBy' --output text 2>/dev/null | grep -q "distribution/$DIST" \
+  || fail "acm describe-certificate does not name $DIST in InUseBy"
+acmq get-certificate --certificate-arn "$CERT_ARN" --output json >"$TMP/cert.json" 2>&1 || fail "acm get-certificate: $(snip "$(cat "$TMP/cert.json")")"
+grep -q 'BEGIN CERTIFICATE' "$TMP/cert.json" || fail "acm get-certificate answered no certificate"
+if grep -q 'PRIVATE KEY' "$TMP/cert.json"; then fail "acm get-certificate answered a private key"; fi
+log "    ✓ the stack's certificate through ACM: ISSUED, in use by $DIST, its PEM certificate (no key)"
 
 # --- 5. delete-stack removes the StaticSite, the Bucket and everything they held ------------------------
 # As on AWS, a stack whose bucket still holds data does not delete (BucketNotEmpty): empty it first, as a

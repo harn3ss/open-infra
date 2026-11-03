@@ -226,7 +226,7 @@ per-type registry, the exceptions to the front-door gate and the breadth gaps ar
 | `AWS::ApiGateway` | 11 | 0 | 0 | `apigateway` |
 | `AWS::AppSync` | 5 | 0 | 0 | `appsync` |
 | `AWS::AutoScaling` | 0 | 0 | 2 | none |
-| `AWS::CertificateManager` | 1 | 0 | 0 | none |
+| `AWS::CertificateManager` | 1 | 0 | 0 | `acm` |
 | `AWS::CloudFormation` | 3 | 0 | 0 | `cloudformation` |
 | `AWS::CloudFront` | 6 | 0 | 0 | `cloudfront` |
 | `AWS::CloudWatch` | 1 | 0 | 0 | `monitoring` |

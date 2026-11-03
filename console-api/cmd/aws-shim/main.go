@@ -636,6 +636,9 @@ func run(logger *slog.Logger) error {
 			// SSM Run Command targets these instances (ssm_runcommand.go); their agents poll below.
 			ssmH.ec2 = ec2H
 			accountNS = cfnNS
+			// ACM (acm.*): the reads of a stack's certificates — its distribution's site TLS, issued by
+			// cert-manager (acm.go).
+			services["acm"] = newACMHandler(cfnH, logger)
 			cfnDoor = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
 		}

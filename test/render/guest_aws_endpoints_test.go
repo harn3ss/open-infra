@@ -46,6 +46,7 @@ var servedHostForms = map[string][]string{
 	"states":          {"states.{r}", "sync-states.{r}"},
 	"cloudformation":  {"cloudformation.{r}"},
 	"cloudfront":      {"cloudfront"},
+	"acm":             {"acm.{r}"},
 	"ecs":             {"ecs.{r}"},
 	"ecr":             {"api.ecr.{r}", "ecr.{r}"},
 	"glue":            {"glue.{r}"},

@@ -166,10 +166,15 @@ services:
     sigv4: [cloudformation]
     probes: [cloudformation, cfn-customresource, cfn-lift-and-shift, cfn-data-services, cfn-api]
   - name: CloudFront
-    cell: "invalidations of a stack's distribution (`kind: StaticSite`): Completed once the site serves the upload"
+    cell: "a stack's distribution (`kind: StaticSite`): its invalidations (Completed once the site serves the upload) and reads of it, its policies and origin access"
     tier: proven
     sigv4: [cloudfront]
     probes: [cfn-cloudfront]
+  - name: ACM
+    cell: "a stack's certificates (its distribution's site TLS, issued by cert-manager): `ListCertificates` / `DescribeCertificate` / `GetCertificate`, never the key"
+    tier: proven
+    sigv4: [acm]
+    probes: [acm]
   - name: AppSync
     cell: "→ open-appsync (VTL-faithful engine)"
     tier: proven

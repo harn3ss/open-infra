@@ -420,6 +420,31 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# ACM (acm.go): a stack's certificate is its distribution's site TLS, issued by cert-manager as the
+# Certificate staticsite-<site>-tls in the stack namespace. DescribeCertificate reads that Certificate's
+# status, and GetCertificate the issued certificate and chain from its CertificateRequest's status — read
+# only, and never the site's TLS Secret (the private key): no Secret grant here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-acm-certificates
+  namespace: open-infra-cfn
+rules:
+  - apiGroups: [cert-manager.io]
+    resources: [certificates, certificaterequests]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-acm-certificates
+  namespace: open-infra-cfn
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-acm-certificates }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # Athena doorway: Trino runs scale-to-zero (console trino-autostop). The doorway scales
 # Trino up on StartQueryExecution and stamps the athena.openinfra.dev/last-query annotation the autostop
 # honors — so it needs get/list/patch on the ONE trino Deployment in the lakehouse namespace, nothing more.
