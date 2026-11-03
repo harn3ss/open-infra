@@ -1,0 +1,51 @@
+# A namespace that stays Terminating is waiting on something, and nothing else says so: its content
+# looks deleted to everyone who asked for it, while the namespace (and its name) stays taken.
+#
+#   NamespaceStuckTerminating — a namespace has been Terminating for 30 minutes.
+#
+# What holds one up here, in the order to check (read-only):
+#   1. An aggregated API is down (`kubectl get apiservices` — kubevirt subresources, CDI upload, KEDA
+#      external metrics, metrics-server). The namespace controller cannot list every kind, so it will
+#      not finalize ANY namespace until discovery works again; KubeAggregatedAPIDown fires too. The
+#      namespace's conditions say NamespaceDeletionDiscoveryFailure.
+#   2. Objects waiting on their controller's finalizer: Knative Routes (the serving controller) and
+#      KIngresses (net-kourier) behind every kind: Function, KubeVirt VMs/VMIs (virt-controller, and
+#      virt-handler on the VM's node), Longhorn-backed PVCs (pvc-protection until their pods are gone),
+#      Crossplane claims (their composite). The conditions say NamespaceFinalizersRemaining, naming the
+#      finalizer; the fix is that controller, not the finalizer.
+#   3. Pods that will not terminate (a node that is NotReady, or a CNI that cannot tear the sandbox
+#      down). The conditions say NamespaceContentRemaining for pods.
+# Removing finalizers by hand orphans whatever the controller would have cleaned up (cluster-scoped
+# composites, Longhorn volumes, KIngress routes in Kourier) — find the cause first.
+#
+# `release: kube-prometheus-stack` is how that stack's Prometheus discovers PrometheusRules. The CRD
+# ships with the stack (a later sync-wave), so skip the dry-run + defer the wave like the other raw
+# monitoring manifests, or a fresh/DR sync aborts before the CRD exists.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: namespace-lifecycle
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  groups:
+    - name: namespace-lifecycle
+      rules:
+        - alert: NamespaceStuckTerminating
+          expr: kube_namespace_status_phase{phase="Terminating"} == 1
+          for: 30m
+          labels: { severity: warning }
+          annotations:
+            summary: "Namespace {{ $labels.namespace }} has been terminating for 30 minutes"
+            description: >-
+              Its deletion is waiting on something. `kubectl get namespace {{ $labels.namespace }} -o
+              jsonpath='{.status.conditions}'` names it: NamespaceDeletionDiscoveryFailure means an
+              aggregated API is down (check `kubectl get apiservices`; every namespace deletion waits on
+              it); NamespaceFinalizersRemaining names the controller whose finalizer is pending (Knative
+              serving or net-kourier for Functions, KubeVirt for VMs, Crossplane for claims);
+              NamespaceContentRemaining for pods means pods that cannot terminate. Fix that cause rather
+              than removing finalizers by hand, which orphans what the controller would clean up.
