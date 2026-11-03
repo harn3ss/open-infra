@@ -257,14 +257,17 @@ log "  ✓ DescribeRule allowed, PutTargets denied (separable)"
 # --- 5d. Mismatched pair: PutEvents granted on the default bus, an entry naming another bus ---
 log "PutEvents granted on EventBus::default only: an entry naming another bus is denied"
 OTHER_BUS="eb-probe-other-$SFX"
-if ev "$DAK" "$DSK" put-events --entries "Source=probe,DetailType=t,Detail={},EventBusName=$OTHER_BUS" >/dev/null 2>"$PWD/.eb_bus"; then
+# Detail is a JSON string, which the CLI shorthand would read as a map: pass the entries as JSON.
+OTHER_JSON="$(mktemp)"; printf '[{"Source":"probe","DetailType":"t","Detail":"{}","EventBusName":"%s"}]' "$OTHER_BUS" > "$OTHER_JSON"
+DEFAULT_JSON="$(mktemp)"; printf '[{"Source":"probe","DetailType":"t","Detail":"{}"}]' > "$DEFAULT_JSON"
+if ev "$DAK" "$DSK" put-events --entries "file://$OTHER_JSON" >/dev/null 2>"$PWD/.eb_bus"; then
   fail "PutEvents onto a bus the caller holds no grant on was accepted (authorized on the default bus only)"
 fi
 grep -qiE 'AccessDenied|denied' "$PWD/.eb_bus" || fail "cross-bus PutEvents denial had the wrong error: $(cat "$PWD/.eb_bus")"
 rm -f "$PWD/.eb_bus"
-ev "$DAK" "$DSK" put-events --entries "Source=probe,DetailType=t,Detail={}" >/dev/null 2>"$PWD/.eb_bus" \
+ev "$DAK" "$DSK" put-events --entries "file://$DEFAULT_JSON" >/dev/null 2>"$PWD/.eb_bus" \
   || fail "PutEvents onto the granted default bus was denied: $(cat "$PWD/.eb_bus")"
-rm -f "$PWD/.eb_bus"
+rm -f "$PWD/.eb_bus" "$OTHER_JSON" "$DEFAULT_JSON"
 log "  ✓ PutEvents is authorized on the bus each entry names"
 
 printf '\n✓ PASS — aws-shim EventBridge schedules (rate + six-field cron) and routes (event patterns) to targets with the correct envelope, DisableRule stops it, and it enforces auth + the escalation fence.\n'
