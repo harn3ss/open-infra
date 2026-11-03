@@ -132,11 +132,11 @@ services:
     probes: [kinesis]
 
   # --- app / config / observability ---
-  - name: SSM Parameter Store
-    cell: "→ Postgres + KMS-encrypted `SecureString`"
+  - name: SSM
+    cell: "Parameter Store → Postgres + KMS-encrypted `SecureString`; Run Command (`AWS-RunShellScript`) on the platform's VMs through their metadata agent"
     tier: proven
     sigv4: [ssm]
-    probes: [ssm]
+    probes: [ssm, ssm-runcommand]
   - name: API Gateway
     cell: "HTTP API v2 + REST v1 → runtime proxy to Lambda"
     tier: proven

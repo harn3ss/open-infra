@@ -268,7 +268,7 @@ unlike LocalStack — fidelity isn't bounded by what a mock chose to implement.
 | **EC2** `Describe*` over the platform's VMs, volumes, groups, VPCs and subnets (the guest's i- ids); key pairs an instance's `KeyName` carries | **ECR** → a backing OCI registry (Distribution /v2) | **RDS** → real PostgreSQL (CloudNativePG) |
 | **DynamoDB** → FerretDB (+ transactions, Streams) | **Athena** serverless SQL → Trino over the Iceberg lake | **Glue** Data Catalog → the Iceberg REST metastore |
 | **SQS** → Postgres-backed queues | **SNS** → durable SQS fan-out | **EventBridge** scheduled + event-driven rules |
-| **Kinesis Data Streams** ordered, sharded, replayable (Postgres) | **SSM Parameter Store** → Postgres + KMS-encrypted `SecureString` | **API Gateway** HTTP API v2 + REST v1 → runtime proxy to Lambda |
+| **Kinesis Data Streams** ordered, sharded, replayable (Postgres) | **SSM** Parameter Store → Postgres + KMS-encrypted `SecureString`; Run Command (`AWS-RunShellScript`) on the platform's VMs through their metadata agent | **API Gateway** HTTP API v2 + REST v1 → runtime proxy to Lambda |
 | **CloudWatch** metrics + alarms that evaluate and fire SNS | **CloudWatch Logs** → Postgres | **Step Functions** (experimental) owned ASL engine; Tasks run under the state machine's IAM role (per-execution STS) |
 | **CloudFormation** owned cfn engine; stacks provision under the caller's authority (impersonation) | **CloudFront** invalidations of a stack's distribution (`kind: StaticSite`): Completed once the site serves the upload | **AppSync** (experimental) → open-appsync (VTL-faithful engine) |
 | **SES** v1 `SendEmail`/`SendRawEmail` + v2 `SendEmail` → the platform SMTP relay (the `mail` component; a capturing sink on test clusters) |  |  |

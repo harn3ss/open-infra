@@ -402,6 +402,11 @@ Resources:
                 AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${SiteDistribution}"
 
 Outputs:
+  InstanceId:
+    Description: >-
+      The instance (what its instance metadata reports as instance-id). The deploy flow's code update runs
+      on it with `aws ssm send-command --instance-ids` (its role attaches AmazonSSMManagedInstanceCore).
+    Value: !Ref AppInstance
   InstanceAddress:
     Description: The instance's static address (Elastic IP). With an address from eip.yaml, that stack's PublicIp.
     Condition: OwnAddress

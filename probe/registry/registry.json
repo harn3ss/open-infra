@@ -80,7 +80,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 6
+      "probe": 7
     },
     "undeployableUses": [
       {
@@ -1204,10 +1204,11 @@
         "SendCommand"
       ],
       "probes": [
-        "ssm"
+        "ssm",
+        "ssm-runcommand"
       ],
       "refused": [],
-      "service": "SSM Parameter Store",
+      "service": "SSM",
       "tier": "proven"
     },
     "states": {
@@ -2120,9 +2121,11 @@
       "signingNames": [
         "ec2"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "ssm-runcommand"
+      ],
       "status": "partial",
-      "templateUses": 1,
+      "templateUses": 2,
       "verdict": "ok"
     },
     "AWS::EC2::InternetGateway": {
@@ -2290,10 +2293,11 @@
         "ec2"
       ],
       "stackProbes": [
-        "cfn-api"
+        "cfn-api",
+        "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 2,
+      "templateUses": 3,
       "verdict": "ok"
     },
     "AWS::EC2::SecurityGroupEgress": {
@@ -2850,9 +2854,11 @@
       "signingNames": [
         "iam"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "ssm-runcommand"
+      ],
       "status": "partial",
-      "templateUses": 1,
+      "templateUses": 2,
       "verdict": "excepted"
     },
     "AWS::IAM::ManagedPolicy": {
@@ -2916,9 +2922,11 @@
       "signingNames": [
         "iam"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "ssm-runcommand"
+      ],
       "status": "partial",
-      "templateUses": 2,
+      "templateUses": 3,
       "verdict": "ok"
     },
     "AWS::IAM::User": {
@@ -3364,7 +3372,7 @@
         "GetParameters",
         "GetParametersByPath"
       ],
-      "service": "SSM Parameter Store",
+      "service": "SSM",
       "serviceTier": "proven",
       "signingNames": [
         "ssm"

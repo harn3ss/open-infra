@@ -25,6 +25,9 @@
 #      `aws cloudfront create-invalidation` on the distribution in the Outputs and `aws cloudfront wait
 #      invalidation-completed` — and on a re-deploy the next request after the wait serves the new content;
 #      a pre-signed S3 link opens;
+#   3a. the deploy flow's code update: `aws ssm send-command` on the stack's InstanceId output runs as root
+#      through the instance's agent, `aws ssm wait command-executed` sees it succeed, and the instance-id
+#      its metadata reports is that output;
 #   3b. a resize: an update to a larger InstanceType (RESIZE_TYPE, default t3.medium) completes once the
 #      instance was stopped and started and runs a new boot with more memory, on the same private address;
 #   4. delete-stack removes everything (DELETE_COMPLETE; with KUBECONFIG set, no claim of the stack is
@@ -314,6 +317,41 @@ if command -v kubectl >/dev/null && [ -n "${KUBECONFIG:-}" ]; then
   [ "$RSC" = longhorn-encrypted/Block ] || fail "the instance's root disk is not the encrypted PVC (got '$RSC')"
   log "  ✓ the root disk is encrypted at rest (PVC $VMN-root on longhorn-encrypted)"
 fi
+
+# --- 4a. the deploy flow's code update: Run Command on the instance the stack reports ---------------------
+#     (aws ssm send-command --instance-ids <InstanceId output>, then aws ssm wait command-executed). The
+#     command reads the instance's own instance-id from its metadata, so the InstanceId output is shown to
+#     be the id the guest reports; it runs as root and changes what the instance serves.
+IID="$(out InstanceId)"
+[[ "$IID" =~ ^i-[0-9a-f]{17}$ ]] || fail "the InstanceId output is '$IID', want an i- id (the instance's own)"
+log "Run Command on $IID: waiting for its agent to register (describe-instance-information)"
+PING=""
+for _ in $(seq 1 30); do
+  PING="$("${A[@]}" ssm describe-instance-information --filters "Key=InstanceIds,Values=$IID" \
+    --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)"
+  [ "$PING" = Online ] && break
+  sleep 10
+done
+[ "$PING" = Online ] || fail "the instance's agent did not register with SSM (PingStatus '$PING'; its role attaches AmazonSSMManagedInstanceCore)"
+cat > "$TMP/rc-params.json" <<JSON
+{"commands": [
+  "set -e",
+  "T=\$(curl -s -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)",
+  "curl -s -H \"X-aws-ec2-metadata-token: \$T\" http://169.254.169.254/latest/meta-data/instance-id; echo",
+  "id -un",
+  "echo deployed-$SFX > /var/www/deployed.txt"
+]}
+JSON
+CMD="$("${A[@]}" ssm send-command --document-name AWS-RunShellScript --instance-ids "$IID" --comment "lift-and-shift deploy" \
+  --parameters "file://$TMP/rc-params.json" --query Command.CommandId --output text 2>"$TMP/rc.err")" \
+  || fail "aws ssm send-command failed: $(tr '\n' ' ' < "$TMP/rc.err")"
+"${A[@]}" ssm wait command-executed --command-id "$CMD" --instance-id "$IID" 2>"$TMP/rc.err" \
+  || fail "aws ssm wait command-executed: $(tr '\n' ' ' < "$TMP/rc.err") ($("${A[@]}" ssm get-command-invocation --command-id "$CMD" --instance-id "$IID" --query '[Status,StandardErrorContent]' --output text 2>/dev/null | tr '\n' ' '))"
+RC_OUT="$("${A[@]}" ssm get-command-invocation --command-id "$CMD" --instance-id "$IID" --query StandardOutputContent --output text)"
+[ "$(printf '%s\n' "$RC_OUT" | sed -n 1p)" = "$IID" ] || fail "the instance's metadata reports instance-id '$(printf '%s\n' "$RC_OUT" | sed -n 1p)', but the stack's InstanceId output is $IID"
+[ "$(printf '%s\n' "$RC_OUT" | sed -n 2p)" = root ] || fail "the command did not run as root (ran as '$(printf '%s\n' "$RC_OUT" | sed -n 2p)')"
+[ "$(curl -s -m 5 "http://$ADDR/deployed.txt")" = "deployed-$SFX" ] || fail "the command ran, but the instance does not serve what it wrote"
+log "  ✓ send-command $CMD → wait command-executed → Success: ran as root, IMDS instance-id = the InstanceId output ($IID)"
 
 # --- 4b. a resize: a new InstanceType in a stack update stops and starts the instance, and the update
 #     completes once it runs at the new size (AWS: "Update requires: Some interruptions") ---------------
