@@ -26,7 +26,10 @@ un-altered — which is what NIST SP 800-53 asks of audit records:
   root user or a cluster admin — until retention expires. ship resumes from the **bucket head** (the
   WORM record of truth), not a mutable side cursor, so a crash between writes can never fork the
   chain; rotation is detected by file **inode**, not size, so a rotated-then-regrown log can't cause
-  a silent gap. If an external sink is configured, it writes there too.
+  a silent gap. After a rotation, the next run first finishes the rotated file from where the chain
+  left it (found among the log's backups by its inode and the last record shipped from it), then any
+  backup rotated after it, then the new log, so a rotation loses no record. If an external sink is
+  configured, it writes there too.
 - **verify** (hourly) reads every segment's **locked original version** back and re-derives the whole
   chain **from the segments' own contents**, trusting nothing it is told, then records the verified
   head (seq + hash) in a Kubernetes **ConfigMap anchor** — a different trust domain than the object
@@ -170,8 +173,12 @@ the old chain's head, and when and why the chain restarted. The audit trail itse
   forbids `hostPath` entirely (e.g. OKD) needs a different collection mechanism (a log-forwarder), not
   this job.
 - Between a segment being shipped and the next run, records live only on the node and in Loki; keep
-  the interval short. A log rotation restarts at offset 0 of the new file and is a bounded coverage
-  gap (logged), not an integrity gap — the chain stays contiguous.
+  the interval short. A rotation loses nothing while the rotated file is still among the log's
+  backups (`--audit-log-maxbackup` files of `--audit-log-maxsize` MB each; on a busy cluster 100 MB
+  files rotate every few minutes, so keep enough backups to span the longest shipper outage you want
+  to ride out). If the shipper is down longer than that, the records in the backups that aged out are
+  lost: the run says so in its log, and the chain stays contiguous (a coverage gap, not an integrity
+  gap).
 - **Scope of the immutable copy.** The off-sited, tamper-evident record is the **k3s API-server
   audit log**. It records every mutation, and for impersonated calls (console/kubectl/Terraform/Argo)
   it carries `impersonatedUser`, so those attribute to a **person** even in the WORM copy. The

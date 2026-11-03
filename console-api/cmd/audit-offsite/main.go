@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -250,87 +251,228 @@ func ship() {
 	// and anything else can never fork the chain (the next run just continues from what actually
 	// landed). No mutable side cursor is trusted.
 	head := bucketHead(ctx, pcl, pbucket)
-	var prev *auditchain.Segment
-	resumeOffset := int64(0)
-	var prevInode uint64
-	if head != nil {
-		prev = head
-		resumeOffset = head.EndOffset
-		prevInode = head.SourceInode
-	}
-
-	path := getenv("AUDIT_LOG_PATH", "/var/lib/rancher/k3s/server/logs/audit.log")
-	f, err := os.Open(path)
-	if err != nil {
-		fatalf("open audit log %s: %v", path, err)
-	}
-	defer func() { _ = f.Close() }()
-	fi, err := f.Stat()
-	if err != nil {
-		fatalf("stat audit log: %v", err)
-	}
-	curInode := fileInode(fi)
-
-	// Rotation handling by file IDENTITY, not size: k3s rotates by rename + fresh file, and the
-	// fresh file can grow PAST our old offset before the next run — a size-only check would then
-	// seek into the middle of a different file and silently skip records. If the inode changed,
-	// start the new file at 0. (A shrink is the belt-and-suspenders fallback.)
-	if prev != nil && prevInode != 0 && curInode != prevInode {
-		fmt.Fprintf(os.Stderr, "audit-offsite: log rotated (inode %d→%d), restarting at 0 (bounded coverage gap)\n", prevInode, curInode)
-		resumeOffset = 0
-	} else if fi.Size() < resumeOffset {
-		fmt.Fprintf(os.Stderr, "audit-offsite: log shrank (size %d < offset %d), restarting at 0\n", fi.Size(), resumeOffset)
-		resumeOffset = 0
-	}
-
-	// Ship in bounded segments: a segment's bytes are held a few times over (the raw lines, their strings,
-	// the segment's JSON), so reading the whole unshipped log at once — a large log after a rotation
-	// restarts it at 0 — got the job OOM-killed and it never caught up. A run ships as many bounded
-	// segments as it takes, each chained to the one before.
-	maxBytes, hardMax := segmentBytes(), int64(256<<20)
-	shipped := 0
 	ocl, obucket := offsiteClient()
-	for {
-		// Only COMPLETE lines: up to and including the last newline. A trailing partial line waits until
-		// it is finished, so a segment never contains half a record.
-		lines, consumed, err := readSegment(f, resumeOffset, maxBytes, hardMax)
-		if err != nil {
-			fatalf("read: %v", err)
-		}
-		if consumed == 0 {
-			break
-		}
-		if len(lines) == 0 { // only blank lines: carried into the next segment's EndOffset
-			resumeOffset += consumed
-			continue
-		}
-		seg := auditchain.BuildSegment(prev, lines, tsOf(lines[0]), tsOf(lines[len(lines)-1]))
-		seg.EndOffset = resumeOffset + consumed
-		seg.SourceInode = curInode
-		blob, err := json.Marshal(seg)
-		if err != nil {
-			fatalf("marshal segment: %v", err)
-		}
-		key := segmentKey(seg.Seq)
 
-		// Write to every configured sink. Because resume is derived from the bucket head, a crash after
-		// this PUT (before the off-site copy, or before the process exits) simply re-derives the SAME
-		// next segment next run — no fork.
+	// Write to every configured sink. Because resume is derived from the bucket head, a crash after
+	// the primary PUT (before the off-site copy, or before the process exits) simply re-derives the SAME
+	// next segment next run — no fork.
+	put := func(seg auditchain.Segment, blob []byte) error {
+		key := segmentKey(seg.Seq)
 		if err := putSegment(ctx, pcl, pbucket, key, blob); err != nil {
-			fatalf("put segment to primary: %v", err)
+			return fmt.Errorf("put segment to primary: %w", err)
 		}
 		if ocl != nil {
 			if err := putSegment(ctx, ocl, obucket, key, blob); err != nil {
-				fatalf("put segment to off-site: %v", err)
+				return fmt.Errorf("put segment to off-site: %w", err)
 			}
 		}
-		fmt.Printf("shipped segment seq=%d records=%d endOffset=%d head=%s\n", seg.Seq, seg.Count, seg.EndOffset, seg.Hash[:12])
-		prev, resumeOffset = &seg, seg.EndOffset
-		shipped++
+		fmt.Printf("shipped segment seq=%d records=%d endOffset=%d inode=%d head=%s\n", seg.Seq, seg.Count, seg.EndOffset, seg.SourceInode, seg.Hash[:12])
+		return nil
+	}
+
+	path := getenv("AUDIT_LOG_PATH", "/var/lib/rancher/k3s/server/logs/audit.log")
+	shipped, note, err := shipRun(path, head, put, segmentBytes(), 256<<20)
+	if note != "" {
+		fmt.Fprintf(os.Stderr, "audit-offsite: %s\n", note)
+	}
+	if err != nil {
+		fatalf("%v", err)
 	}
 	if shipped == 0 {
 		fmt.Fprintln(os.Stderr, "audit-offsite: no complete new line to ship")
 	}
+}
+
+// logFile is one audit log file a run can read — the live log or one of its rotated backups — held
+// open, so its identity cannot change under the run (the live log may be rotated while it is read).
+type logFile struct {
+	name  string   // base name in the log directory
+	f     *os.File // the open file (nil only in tests that plan without reading)
+	inode uint64
+	size  int64
+	mtime time.Time
+}
+
+// logSource is one file a run reads, and the byte offset it starts at.
+type logSource struct {
+	file *logFile
+	from int64
+}
+
+// gatherLogs opens the live log, then lists and opens its rotated backups. kube-apiserver rotates its
+// audit log (lumberjack) by renaming it <stem>-<UTC timestamp><ext> and opening a fresh <stem><ext>, so
+// the backups' name order is their rotation order. The live log is opened FIRST: if it is rotated
+// meanwhile, the open file is the renamed one, which the listing then also finds — it is dropped from
+// the backups, so it is read once, to its end. Compressed backups (.gz) cannot be read in place and are
+// not listed.
+func gatherLogs(path string) (cur *logFile, rotated []*logFile, closeAll func(), err error) {
+	var opened []*os.File
+	closeAll = func() {
+		for _, f := range opened {
+			_ = f.Close()
+		}
+	}
+	open := func(p string) (*logFile, error) {
+		f, err := os.Open(p)
+		if err != nil {
+			return nil, err
+		}
+		fi, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		opened = append(opened, f)
+		return &logFile{name: filepath.Base(p), f: f, inode: fileInode(fi), size: fi.Size(), mtime: fi.ModTime()}, nil
+	}
+	if cur, err = open(path); err != nil {
+		return nil, nil, closeAll, fmt.Errorf("open audit log %s: %w", path, err)
+	}
+	dir, base := filepath.Split(path)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext) + "-"
+	entries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return cur, nil, closeAll, fmt.Errorf("list the audit log directory: %w", err)
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if n == base || !e.Type().IsRegular() || !strings.HasPrefix(n, stem) || !strings.HasSuffix(n, ext) {
+			continue
+		}
+		lf, oerr := open(filepath.Join(dir, n))
+		if oerr != nil {
+			continue // removed by the rotation's own cleanup since the listing
+		}
+		if lf.inode == cur.inode {
+			continue // the live log, rotated after it was opened: read once, as the live log
+		}
+		rotated = append(rotated, lf)
+	}
+	sort.Slice(rotated, func(i, j int) bool { return rotated[i].name < rotated[j].name })
+	return cur, rotated, closeAll, nil
+}
+
+// planSources decides what a run reads, so that a rotation never loses the rotated file's tail.
+//
+// The chain records, on each segment, the identity (inode) of the file it was read from and the byte
+// offset it ended at. When the live log is that file, the run continues it from that offset. When the
+// log has been rotated since, the file the chain last read is now a backup: the run FINISHES it from that
+// offset, then reads every backup rotated after it, whole and in rotation order, then the new live log
+// from 0. A backup is taken for the chain's file only if it also ends the head segment's last record at
+// that offset (endsAt) — an inode alone can be reused by a later file once the original is deleted.
+//
+// note is non-empty when records were unavoidably missed (or the log shrank in place): the file the
+// chain last read is gone (it aged out of the backups — the shipper was down longer than the log keeps
+// them), so the run starts from the backups written after the head's last record.
+func planSources(cur *logFile, rotated []*logFile, head *auditchain.Segment, endsAt func(lf *logFile, off int64, rec string) bool) ([]logSource, string) {
+	if head == nil {
+		return []logSource{{file: cur}}, ""
+	}
+	if head.SourceInode == 0 || head.SourceInode == cur.inode {
+		// The same file as the head (or a head from before inodes were recorded): continue it. A file
+		// shorter than the offset was truncated in place, so its records restart at 0.
+		if cur.size < head.EndOffset {
+			return []logSource{{file: cur}}, fmt.Sprintf("log shrank (size %d < offset %d): reading it from 0", cur.size, head.EndOffset)
+		}
+		return []logSource{{file: cur, from: head.EndOffset}}, ""
+	}
+	last := ""
+	if n := len(head.Records); n > 0 {
+		last = head.Records[n-1]
+	}
+	for i, lf := range rotated {
+		if lf.inode != head.SourceInode || lf.size < head.EndOffset || last == "" || !endsAt(lf, head.EndOffset, last) {
+			continue
+		}
+		plan := []logSource{{file: lf, from: head.EndOffset}}
+		for _, later := range rotated[i+1:] {
+			plan = append(plan, logSource{file: later})
+		}
+		return append(plan, logSource{file: cur}), ""
+	}
+	// The chain's file is gone. Read what was written after the head's last record: the backups last
+	// written after it (whole), then the live log.
+	note := fmt.Sprintf("the file the chain last read (inode %d, to byte %d, last record %s) is no longer among the log's backups: "+
+		"records written after it and before the oldest file read now were not shipped", head.SourceInode, head.EndOffset, head.LastTS)
+	var plan []logSource
+	if after, err := time.Parse(time.RFC3339Nano, head.LastTS); err == nil {
+		for _, lf := range rotated {
+			if lf.mtime.After(after) {
+				plan = append(plan, logSource{file: lf})
+			}
+		}
+	}
+	return append(plan, logSource{file: cur}), note
+}
+
+// endsAtRecord reports whether the bytes of lf just before off end with rec (blank lines between them
+// allowed: a segment's EndOffset includes the blank lines after its last record).
+func endsAtRecord(lf *logFile, off int64, rec string) bool {
+	if lf.f == nil || off <= 0 {
+		return false
+	}
+	w := int64(len(rec)) + 4096
+	if w > off {
+		w = off
+	}
+	b := make([]byte, w)
+	n, err := lf.f.ReadAt(b, off-w)
+	if err != nil && err != io.EOF {
+		return false
+	}
+	return bytes.HasSuffix(bytes.TrimRight(b[:n], " \t\r\n"), bytes.TrimRight([]byte(rec), " \t\r\n"))
+}
+
+// shipRun ships everything not yet in the chain after head: it plans the files to read (planSources),
+// then reads each in bounded segments of complete lines, chaining every segment to the one before and
+// handing it to put. A segment never spans two files: each records the inode of the file it came from
+// and the offset it ended at, which is where the next run resumes.
+func shipRun(path string, head *auditchain.Segment, put func(auditchain.Segment, []byte) error, maxBytes, hardMax int64) (int, string, error) {
+	cur, rotated, closeAll, err := gatherLogs(path)
+	defer closeAll()
+	if err != nil {
+		return 0, "", err
+	}
+	plan, note := planSources(cur, rotated, head, endsAtRecord)
+	prev, shipped := head, 0
+	for _, src := range plan {
+		if src.file != cur {
+			fmt.Fprintf(os.Stderr, "audit-offsite: reading rotated %s (inode %d) from byte %d\n", src.file.name, src.file.inode, src.from)
+		}
+		// Ship in bounded segments: a segment's bytes are held a few times over (the raw lines, their
+		// strings, the segment's JSON), so reading a whole backlog at once got the job OOM-killed and it
+		// never caught up. A run ships as many bounded segments as it takes.
+		off := src.from
+		for {
+			// Only COMPLETE lines: up to and including the last newline. A trailing partial line waits
+			// until it is finished, so a segment never contains half a record.
+			lines, consumed, err := readSegment(src.file.f, off, maxBytes, hardMax)
+			if err != nil {
+				return shipped, note, fmt.Errorf("read %s: %w", src.file.name, err)
+			}
+			if consumed == 0 {
+				break
+			}
+			if len(lines) == 0 { // only blank lines: carried into the next segment's EndOffset
+				off += consumed
+				continue
+			}
+			seg := auditchain.BuildSegment(prev, lines, tsOf(lines[0]), tsOf(lines[len(lines)-1]))
+			seg.EndOffset = off + consumed
+			seg.SourceInode = src.file.inode
+			blob, err := json.Marshal(seg)
+			if err != nil {
+				return shipped, note, fmt.Errorf("marshal segment: %w", err)
+			}
+			if err := put(seg, blob); err != nil {
+				return shipped, note, err
+			}
+			prev, off = &seg, seg.EndOffset
+			shipped++
+		}
+	}
+	return shipped, note, nil
 }
 
 // segmentBytes is how much of the log one segment carries at most (SEGMENT_MAX_BYTES, default 16 MiB).
