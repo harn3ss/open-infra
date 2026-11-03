@@ -60,6 +60,10 @@
 #   CFN_BIN         (optional) path to the cfn CLI, for the fidelity summary
 #   EVIDENCE_OUT    (optional) write {name, exit_code, reason, when} here
 #   KEEP=1          (optional) leave the stack up for inspection
+#   SSH_CIDR        (optional) the SSH rule's cidr (default: this host's address /32)
+#   SSH_OUTSIDE_RUN (optional) a command prefix that runs a check from a client OUTSIDE SSH_CIDR (e.g.
+#                   `nsenter -t 1 -n --` when the probe runs in its own network namespace); else an
+#                   in-cluster pod is used when KUBECONFIG is set
 #   ADDRESS_STACK=1 (optional) keep the instance's Elastic IP in its own stack (eip.yaml), see above
 # Needs: aws (v2), curl, python3, and crane or docker to push the app image.
 # Exit 0 = pass, 1 = a real failure, 42 = inconclusive.
@@ -382,7 +386,20 @@ if [ -n "$KEY_NAME" ]; then
   done
   [ "$WHO" = ubuntu ] || fail "ssh -i <the imported key> ubuntu@$ADDR from $SSH_CIDR (the rule's own address) did not log in: $(tail -2 "$TMP/ssh.err" | tr '\n' ' ')"
   log "  ✓ ssh with key pair $KEY_NAME logs in as ubuntu from $SSH_CIDR, the address the rule allows"
-  if [ -n "${KUBECONFIG:-}" ] && command -v kubectl >/dev/null; then
+  if [ -n "${SSH_OUTSIDE_RUN:-}" ]; then
+    # SSH_OUTSIDE_RUN is a command prefix that runs a command from a client outside $SSH_CIDR (e.g.
+    # `nsenter -t 1 -n --` from a probe running in its own network namespace). 22 must be refused while
+    # 80 (0.0.0.0/0) answers that client.
+    o80=closed80; o22=closed22
+    $SSH_OUTSIDE_RUN timeout 8 bash -c "exec 3<>/dev/tcp/$ADDR/80" 2>/dev/null && o80=open80
+    $SSH_OUTSIDE_RUN timeout 8 bash -c "exec 3<>/dev/tcp/$ADDR/22" 2>/dev/null && o22=open22
+    OUTSIDE="$o80 $o22"
+    case "$OUTSIDE" in
+      *open80*closed22*) log "  ✓ a client outside $SSH_CIDR (SSH_OUTSIDE_RUN) reaches port 80 but is refused on 22" ;;
+      *open80*open22*)   fail "a client outside $SSH_CIDR reached SSH on $ADDR (the rule allows only $SSH_CIDR)" ;;
+      *)                 log "  ⚠ NOT PROVEN: the outside client could not reach port 80 either ('$OUTSIDE'), so its refusal on 22 shows nothing" ;;
+    esac
+  elif [ -n "${KUBECONFIG:-}" ] && command -v kubectl >/dev/null; then
     # An in-cluster client: its address is outside $SSH_CIDR, so 22 must be refused while 80 (0.0.0.0/0)
     # answers it, which shows the refusal is the rule's and not a path that reaches nothing.
     PROBE_POD="lsfix-outside-$SFX"
@@ -402,7 +419,7 @@ if [ -n "$KEY_NAME" ]; then
       *)                 log "  ⚠ NOT PROVEN: the outside client could not reach port 80 either ('$OUTSIDE'), so its refusal on 22 shows nothing" ;;
     esac
   else
-    log "  ⚠ NOT PROVEN: refusal of a client outside $SSH_CIDR needs KUBECONFIG (an in-cluster client)"
+    log "  ⚠ NOT PROVEN: refusal of a client outside $SSH_CIDR needs SSH_OUTSIDE_RUN or KUBECONFIG (an in-cluster client)"
   fi
 fi
 
