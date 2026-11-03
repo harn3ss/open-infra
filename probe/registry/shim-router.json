@@ -197,6 +197,25 @@
         "ListStreams"
       ]
     },
+    "ec2": {
+      "handler": "ec2Handler",
+      "operations": [
+        "CreateKeyPair",
+        "DeleteKeyPair",
+        "DeleteVolume",
+        "DescribeAddresses",
+        "DescribeAvailabilityZones",
+        "DescribeImages",
+        "DescribeInstances",
+        "DescribeKeyPairs",
+        "DescribeRegions",
+        "DescribeSecurityGroups",
+        "DescribeSubnets",
+        "DescribeVolumes",
+        "DescribeVpcs"
+      ],
+      "conditional": true
+    },
     "ecr": {
       "handler": "ecrHandler",
       "operations": [

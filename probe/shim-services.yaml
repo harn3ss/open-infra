@@ -76,6 +76,11 @@ services:
     tier: proven
     sigv4: [eks]
     probes: [eks]
+  - name: EC2
+    cell: "`Describe*` over the platform's VMs, volumes, groups, VPCs and subnets (the guest's i- ids); key pairs an instance's `KeyName` carries"
+    tier: proven
+    sigv4: [ec2]
+    probes: [ec2]
   - name: ECR
     cell: "→ a backing OCI registry (Distribution /v2)"
     tier: proven

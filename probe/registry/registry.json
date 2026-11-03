@@ -418,6 +418,54 @@
       "service": "DynamoDB",
       "tier": "proven"
     },
+    "ec2": {
+      "actions": [],
+      "conditional": true,
+      "deployableTypes": [
+        "AWS::EC2::EIP",
+        "AWS::EC2::EIPAssociation",
+        "AWS::EC2::Instance",
+        "AWS::EC2::InternetGateway",
+        "AWS::EC2::Route",
+        "AWS::EC2::RouteTable",
+        "AWS::EC2::SecurityGroup",
+        "AWS::EC2::SecurityGroupEgress",
+        "AWS::EC2::SecurityGroupIngress",
+        "AWS::EC2::Subnet",
+        "AWS::EC2::SubnetNetworkAclAssociation",
+        "AWS::EC2::SubnetRouteTableAssociation",
+        "AWS::EC2::VPC",
+        "AWS::EC2::VPCEndpoint",
+        "AWS::EC2::VPCGatewayAttachment",
+        "AWS::EC2::Volume",
+        "AWS::EC2::VolumeAttachment"
+      ],
+      "handler": "ec2Handler",
+      "namespaces": [
+        "AWS::EC2"
+      ],
+      "operations": [
+        "CreateKeyPair",
+        "DeleteKeyPair",
+        "DeleteVolume",
+        "DescribeAddresses",
+        "DescribeAvailabilityZones",
+        "DescribeImages",
+        "DescribeInstances",
+        "DescribeKeyPairs",
+        "DescribeRegions",
+        "DescribeSecurityGroups",
+        "DescribeSubnets",
+        "DescribeVolumes",
+        "DescribeVpcs"
+      ],
+      "probes": [
+        "ec2"
+      ],
+      "refused": [],
+      "service": "EC2",
+      "tier": "proven"
+    },
     "ecr": {
       "actions": [
         "ecr:BatchCheckLayerAvailability",
@@ -1205,17 +1253,17 @@
   },
   "summary": {
     "cfnTypes": 97,
-    "covered": 38,
+    "covered": 48,
     "deployable": 74,
-    "excFrontDoor": 18,
-    "excRead": 18,
-    "excepted": 36,
+    "excFrontDoor": 1,
+    "excRead": 25,
+    "excepted": 26,
     "flattened": 1,
-    "operations": 460,
+    "operations": 473,
     "planOnly": 11,
     "refused": 11,
-    "services": 27,
-    "signingNames": 29,
+    "services": 28,
+    "signingNames": 30,
     "violations": 0
   },
   "types": {
@@ -1987,57 +2035,57 @@
     },
     "AWS::EC2::EIP": {
       "deployable": true,
-      "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
-      },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "VirtualMachine(spec.expose)",
       "namespace": "AWS::EC2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeAddresses"
+      ],
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
       "stackProbes": [],
       "status": "partial",
       "templateUses": 2,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::EC2::EIPAssociation": {
       "deployable": true,
-      "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
-      },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "VirtualMachine(spec.expose)",
       "namespace": "AWS::EC2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeAddresses"
+      ],
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
       "stackProbes": [],
       "status": "partial",
       "templateUses": 1,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::EC2::FlowLog": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "FlowLog",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2048,40 +2096,41 @@
     },
     "AWS::EC2::Instance": {
       "deployable": true,
-      "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
-      },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "VirtualMachine",
       "namespace": "AWS::EC2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeInstances"
+      ],
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
       "stackProbes": [],
       "status": "partial",
       "templateUses": 1,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::EC2::InternetGateway": {
       "deployable": true,
       "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "(implicit)",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2093,12 +2142,14 @@
     "AWS::EC2::LaunchTemplate": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2110,12 +2161,14 @@
     "AWS::EC2::NatGateway": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "NatGateway",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2127,12 +2180,14 @@
     "AWS::EC2::NetworkAcl": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "Subnet(acls)",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2144,12 +2199,14 @@
     "AWS::EC2::NetworkAclEntry": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "Subnet(acls)",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2161,17 +2218,19 @@
     "AWS::EC2::Route": {
       "deployable": true,
       "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "Vpc(routes)",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2183,17 +2242,19 @@
     "AWS::EC2::RouteTable": {
       "deployable": true,
       "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "Vpc(routes)",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2204,18 +2265,17 @@
     },
     "AWS::EC2::SecurityGroup": {
       "deployable": true,
-      "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
-      },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "SecurityGroup",
       "namespace": "AWS::EC2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeSecurityGroups"
+      ],
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2224,66 +2284,63 @@
       ],
       "status": "partial",
       "templateUses": 2,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::EC2::SecurityGroupEgress": {
       "deployable": true,
-      "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
-      },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "SecurityGroup",
       "namespace": "AWS::EC2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeSecurityGroups"
+      ],
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
       "stackProbes": [],
       "status": "partial",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::EC2::SecurityGroupIngress": {
       "deployable": true,
-      "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
-      },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "SecurityGroup",
       "namespace": "AWS::EC2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeSecurityGroups"
+      ],
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
       "stackProbes": [],
       "status": "partial",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::EC2::Subnet": {
       "deployable": true,
-      "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
-      },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "Subnet",
       "namespace": "AWS::EC2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeSubnets"
+      ],
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2292,22 +2349,24 @@
       ],
       "status": "partial",
       "templateUses": 2,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::EC2::SubnetNetworkAclAssociation": {
       "deployable": true,
       "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "(implicit)",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2319,17 +2378,19 @@
     "AWS::EC2::SubnetRouteTableAssociation": {
       "deployable": true,
       "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "(implicit)",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2341,12 +2402,14 @@
     "AWS::EC2::TransitGateway": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "TransitGateway",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2358,12 +2421,14 @@
     "AWS::EC2::TransitGatewayAttachment": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "TransitGateway",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2374,18 +2439,17 @@
     },
     "AWS::EC2::VPC": {
       "deployable": true,
-      "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
-      },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "Vpc",
       "namespace": "AWS::EC2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeVpcs"
+      ],
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2394,22 +2458,24 @@
       ],
       "status": "partial",
       "templateUses": 1,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::EC2::VPCEndpoint": {
       "deployable": true,
       "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "VpcEndpoint",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2421,17 +2487,19 @@
     "AWS::EC2::VPCGatewayAttachment": {
       "deployable": true,
       "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "(implicit)",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2443,12 +2511,14 @@
     "AWS::EC2::VPCPeeringConnection": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "Vpc(peerings)",
       "namespace": "AWS::EC2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
@@ -2459,47 +2529,46 @@
     },
     "AWS::EC2::Volume": {
       "deployable": true,
-      "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
-      },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "Volume",
       "namespace": "AWS::EC2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeVolumes"
+      ],
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
       "stackProbes": [],
       "status": "partial",
       "templateUses": 1,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::EC2::VolumeAttachment": {
       "deployable": true,
-      "exception": {
-        "check": "front-door",
-        "issue": "EC2 front door \u2014 in progress",
-        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
-      },
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "ec2"
+      ],
       "kind": "VirtualMachine(spec.volumes)",
       "namespace": "AWS::EC2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeInstances",
+        "DescribeVolumes"
+      ],
+      "service": "EC2",
+      "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
       "stackProbes": [],
       "status": "partial",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::ECR::Repository": {
       "deployable": true,

@@ -230,7 +230,7 @@ per-type registry, the exceptions to the front-door gate and the breadth gaps ar
 | `AWS::CloudWatch` | 1 | 0 | 0 | `monitoring` |
 | `AWS::Cognito` | 2 | 0 | 0 | `cognito-idp` |
 | `AWS::DynamoDB` | 1 | 0 | 0 | `dynamodb` |
-| `AWS::EC2` | 17 | 7 | 1 | none |
+| `AWS::EC2` | 17 | 7 | 1 | `ec2` |
 | `AWS::ECR` | 1 | 0 | 0 | `ecr` |
 | `AWS::ECS` | 3 | 0 | 0 | `ecs` |
 | `AWS::EFS` | 0 | 1 | 0 | none |

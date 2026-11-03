@@ -90,18 +90,6 @@ reads:
 #   issue:  where the gap is tracked (described generically: this repository is public)
 exceptions:
   # --- no front door for the type's own API ---
-  - types: [AWS::EC2::Instance, AWS::EC2::Volume, AWS::EC2::VolumeAttachment, AWS::EC2::VPC, AWS::EC2::Subnet,
-            AWS::EC2::SecurityGroup, AWS::EC2::SecurityGroupIngress, AWS::EC2::SecurityGroupEgress,
-            AWS::EC2::VPCEndpoint, AWS::EC2::EIP, AWS::EC2::EIPAssociation, AWS::EC2::InternetGateway,
-            AWS::EC2::VPCGatewayAttachment, AWS::EC2::RouteTable, AWS::EC2::Route,
-            AWS::EC2::SubnetRouteTableAssociation, AWS::EC2::SubnetNetworkAclAssociation]
-    check: front-door
-    reason: >-
-      A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup,
-      VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their
-      associations are structural no-ops), visible in the console and the Kubernetes API but not through
-      `aws ec2 describe-*`: the shim has no EC2 front door yet.
-    issue: "EC2 front door — in progress"
   - types: [AWS::CertificateManager::Certificate]
     check: front-door
     reason: >-
@@ -111,6 +99,15 @@ exceptions:
     issue: "untracked — raised by the coverage registry"
 
   # --- the front door exists, but serves no call that reads the type ---
+  - types: [AWS::EC2::InternetGateway, AWS::EC2::VPCGatewayAttachment, AWS::EC2::RouteTable, AWS::EC2::Route,
+            AWS::EC2::SubnetRouteTableAssociation, AWS::EC2::SubnetNetworkAclAssociation, AWS::EC2::VPCEndpoint]
+    check: read
+    reason: >-
+      Gateways, route tables and their associations are structural on open-infra (the border device and
+      the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2
+      front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no
+      DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints.
+    issue: "untracked — raised by the coverage registry"
   - types: [AWS::Lambda::Function]
     check: read
     reason: >-
