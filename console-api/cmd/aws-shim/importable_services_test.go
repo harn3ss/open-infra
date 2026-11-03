@@ -62,6 +62,13 @@ var dynamicServices = map[string][]string{
 	"cfn_services_doors.go": {"secretsmanager", "logs", "events", "ecr", "cloudwatch"},
 }
 
+// delegated are services whose data-plane check lives in a shared package the shim calls, each with that
+// package's source file, the call the shim makes into it, and the check the package runs for a User (a
+// governed User's Deny holds), and the resource type it checks.
+var delegated = map[string]struct{ file, shimCall, userCheck, resType string }{
+	"s3": {"../../internal/s3authz/s3authz.go", "s3authz.Gate{", "g.Authz.Authorize(ctx, c.PrincipalType(), c.PrincipalID()", "Bucket"},
+}
+
 // passThrough are wrappers whose own data-plane call forwards their parameters; their callers are scanned
 // instead (callerPolicyAllows: action and type at arguments 2 and 3).
 var passThrough = map[string]bool{"callerPolicyAllows": true}
@@ -225,6 +232,26 @@ func TestImportableServicesMatchTheShimsChecks(t *testing.T) {
 		} else {
 			t.Errorf("%s: %s's resource type is not a literal and %s has no dynamicResourceTypes entry", c.where, c.checkFunc, file)
 		}
+	}
+	shimSrc := ""
+	if files, err := filepath.Glob("*.go"); err == nil {
+		for _, f := range files {
+			if !strings.HasSuffix(f, "_test.go") {
+				b, _ := os.ReadFile(f)
+				shimSrc += string(b)
+			}
+		}
+	}
+	for svc, d := range delegated {
+		src, err := os.ReadFile(d.file)
+		if err != nil {
+			t.Fatalf("%s's check: %v", svc, err)
+		}
+		if !strings.Contains(shimSrc, d.shimCall) || !strings.Contains(string(src), d.userCheck) {
+			t.Errorf("service %q is meant to be checked in %s (the shim calling %s, the package checking a User with %s), and it is not", svc, d.file, d.shimCall, d.userCheck)
+			continue
+		}
+		checked[svc], userChecked[svc], types[d.resType] = true, true, true
 	}
 	for svc := range policyengine.SupportedServices {
 		if !userChecked[svc] {
