@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -2323,15 +2324,35 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
 
-	if !ec2TrustOnly(props["AssumeRolePolicyDocument"]) {
-		f = append(f, Finding{"Resource " + id, "only an EC2 instance-trust role translates: the AssumeRolePolicyDocument must Allow sts:AssumeRole for the ec2.amazonaws.com service principal and nothing else. A role trusting an account/ARN, a federated/SAML/OIDC principal, or a mix has no template-derivable open-infra trust — author the kind: Role natively (spec.trust)"})
+	svcs, ok := trustServices(props["AssumeRolePolicyDocument"])
+	trust := []any{}
+	appsyncTrust := false
+	for _, s := range svcs {
+		switch s {
+		case "ec2.amazonaws.com":
+			trust = []any{"vm"}
+		case "appsync.amazonaws.com":
+			appsyncTrust = true
+		default:
+			ok = false
+		}
+	}
+	if !ok {
+		f = append(f, Finding{"Resource " + id, "only an EC2 instance role or an AppSync service role translates: the AssumeRolePolicyDocument must Allow sts:AssumeRole for the ec2.amazonaws.com and/or appsync.amazonaws.com service principals and nothing else. A role trusting another service, an account/ARN, a federated/SAML/OIDC principal, or a mix with one of those has no template-derivable open-infra trust — author the kind: Role natively (spec.trust)"})
 		return nil, f
 	}
-	spec := map[string]any{"trust": []any{"vm"}}
+	spec := map[string]any{"trust": trust}
 	if d, ok := concrete(props["Description"]); ok && d != "" {
 		spec["description"] = d
 	}
 	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "Role", Name: ctx.name(id), Spec: spec}
+	if appsyncTrust {
+		// AppSync assumes a service role to reach a data source, and the role's policy bounds what the
+		// source's resolvers may do. open-appsync reaches its sources with the engine's own connection, so
+		// nothing assumes the role here: the trust entry has no open-infra principal and is left out, the
+		// role exists (as on AWS, GetRole finds it) with its policies attached, and grants nothing.
+		m.Caveats = append(m.Caveats, "trusted by the appsync.amazonaws.com service: the role exists with its policies, but nothing assumes it — open-appsync reaches its data sources with the engine's own connection, so the role's policies do not limit what the resolvers that use it read or write")
+	}
 	// Inline Policies -> companion kind: Policy objects (spec.dataPlane, appliesTo Role::<name>), which
 	// govern this role's assumed sessions at the aws-shim. This is the narrow data-plane subset the
 	// finding asked for: s3/sqs/... actions on recognizable in-stack ARNs, imported by the same engine
@@ -2659,38 +2680,57 @@ func inStackARN(id string, ctx *stackCtx) (string, bool) {
 	return "", false
 }
 
-// ec2TrustOnly reports whether an AssumeRolePolicyDocument Allows sts:AssumeRole for the
-// ec2.amazonaws.com service principal and NOTHING else — the one trust shape with a faithful
-// open-infra mapping (spec.trust: [vm]).
-func ec2TrustOnly(doc any) bool {
-	m, ok := doc.(map[string]any)
-	if !ok {
-		return false
+// trustServices returns the service principals an AssumeRolePolicyDocument trusts, sorted, when every
+// statement Allows sts:AssumeRole for service principals and nothing else; ok is false for any other
+// shape (an account/ARN, a federated principal, a Deny, another action). The caller decides which
+// services have an open-infra form.
+func trustServices(doc any) (svcs []string, ok bool) {
+	m, isMap := doc.(map[string]any)
+	if !isMap {
+		return nil, false
 	}
-	stmts, ok := m["Statement"].([]any)
-	if !ok || len(stmts) == 0 {
-		return false
+	stmts, isList := m["Statement"].([]any)
+	if !isList || len(stmts) == 0 {
+		return nil, false
 	}
+	seen := map[string]bool{}
 	for _, raw := range stmts {
-		s, ok := raw.(map[string]any)
-		if !ok {
-			return false
+		s, isStmt := raw.(map[string]any)
+		if !isStmt {
+			return nil, false
 		}
 		if eff, _ := concrete(s["Effect"]); eff != "Allow" {
-			return false
+			return nil, false
 		}
-		p, ok := s["Principal"].(map[string]any)
-		if !ok || len(p) != 1 {
-			return false
+		p, isP := s["Principal"].(map[string]any)
+		if !isP || len(p) != 1 {
+			return nil, false
 		}
-		if !onlyStringValue(p["Service"], "ec2.amazonaws.com") {
-			return false
+		var names []any
+		if l, isL := p["Service"].([]any); isL {
+			names = l
+		} else if _, has := p["Service"]; has {
+			names = []any{p["Service"]}
+		}
+		if len(names) == 0 {
+			return nil, false
+		}
+		for _, n := range names {
+			svc, isStr := concrete(n)
+			if !isStr || svc == "" {
+				return nil, false
+			}
+			seen[svc] = true
 		}
 		if !allAssumeRole(s["Action"]) {
-			return false
+			return nil, false
 		}
 	}
-	return true
+	for s := range seen {
+		svcs = append(svcs, s)
+	}
+	sort.Strings(svcs)
+	return svcs, true
 }
 
 // onlyStringValue reports whether v is exactly want, either as a bare string or a single-element list.

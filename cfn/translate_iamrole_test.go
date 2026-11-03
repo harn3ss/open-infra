@@ -505,13 +505,125 @@ Resources:
 	}
 }
 
-// A role trusting anything other than the ec2 service (here an AWS account principal) refuses —
+// A role trusting anything other than the ec2 or appsync service (here an AWS account principal) refuses —
 // no template-derivable open-infra trust.
 func TestTranslate_IAMRole_NonEc2TrustRefuses(t *testing.T) {
 	ctx := ecsCtx(t, iamRoleTmpl)
 	_, fs := translateIAMRole("UserRole", resolvedProps(t, ctx, "UserRole"), ctx)
-	if !strings.Contains(findingsText(fs), "ec2.amazonaws.com service principal") {
+	if !strings.Contains(findingsText(fs), "appsync.amazonaws.com service principals and nothing else") {
 		t.Fatalf("a non-ec2-trust role must refuse with help, got: %s", findingsText(fs))
+	}
+}
+
+// An AppSync service role (trusting appsync.amazonaws.com) translates: the role exists, as on AWS, with
+// its inline policy attached — but with no trust entry, since nothing here assumes it (open-appsync reaches
+// its sources with its own connection), so it grants nothing, and a caveat says so. A role trusting both
+// ec2 and appsync is assumable by its VMs only. Another service still refuses.
+func TestTranslate_IAMRole_AppSyncServiceRole(t *testing.T) {
+	tmpl := `
+Resources:
+  Table: { Type: AWS::DynamoDB::Table, Properties: { TableName: todos, BillingMode: PAY_PER_REQUEST, AttributeDefinitions: [ { AttributeName: id, AttributeType: S } ], KeySchema: [ { AttributeName: id, KeyType: HASH } ] } }
+  DsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: [ { Effect: Allow, Principal: { Service: appsync.amazonaws.com }, Action: sts:AssumeRole } ]
+      Policies:
+        - PolicyName: table
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement: [ { Effect: Allow, Action: [ "dynamodb:GetItem", "dynamodb:PutItem" ], Resource: !GetAtt Table.Arn } ]
+  Both:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement: [ { Effect: Allow, Principal: { Service: [ ec2.amazonaws.com, appsync.amazonaws.com ] }, Action: sts:AssumeRole } ]
+  Fn:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement: [ { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole } ]
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateIAMRole("DsRole", resolvedProps(t, ctx, "DsRole"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("an AppSync service role must translate: %s", findingsText(fs))
+	}
+	if trust, _ := m.Spec["trust"].([]any); len(trust) != 0 {
+		t.Fatalf("an AppSync service role must trust nobody here (nothing assumes it), got %#v", m.Spec["trust"])
+	}
+	if len(m.Extra) != 1 || m.Extra[0].Kind != "Policy" {
+		t.Fatalf("its inline policy must be attached as a companion kind: Policy, got %d extras", len(m.Extra))
+	}
+	if cav := strings.Join(m.Caveats, "\n"); !strings.Contains(cav, "nothing assumes it") {
+		t.Fatalf("the role must say nothing assumes it: %v", m.Caveats)
+	}
+
+	m, fs = translateIAMRole("Both", resolvedProps(t, ctx, "Both"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("an ec2+appsync role must translate: %s", findingsText(fs))
+	}
+	if trust, _ := m.Spec["trust"].([]any); len(trust) != 1 || trust[0] != "vm" {
+		t.Fatalf("an ec2+appsync role must be assumable by its VMs only, got %#v", m.Spec["trust"])
+	}
+
+	if _, fs = translateIAMRole("Fn", resolvedProps(t, ctx, "Fn"), ctx); len(fs) == 0 {
+		t.Fatal("a role trusting another service must still refuse")
+	}
+}
+
+// A real AppSync template — an API whose DynamoDB data source names an in-stack service role by
+// !GetAtt — plans with no blocker: the role is a kind: Role nothing assumes, and both the role and the
+// data source say that its policy does not limit the engine.
+func TestPlan_AppSyncWithInStackServiceRole(t *testing.T) {
+	tmpl := `
+Resources:
+  Table: { Type: AWS::DynamoDB::Table, Properties: { TableName: todos, BillingMode: PAY_PER_REQUEST, AttributeDefinitions: [ { AttributeName: id, AttributeType: S } ], KeySchema: [ { AttributeName: id, KeyType: HASH } ] } }
+  DsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: [ { Effect: Allow, Principal: { Service: appsync.amazonaws.com }, Action: sts:AssumeRole } ]
+      Policies:
+        - PolicyName: table
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement: [ { Effect: Allow, Action: [ "dynamodb:GetItem", "dynamodb:PutItem" ], Resource: !GetAtt Table.Arn } ]
+  Api: { Type: AWS::AppSync::GraphQLApi, Properties: { Name: todos, AuthenticationType: AWS_IAM } }
+  Schema:
+    Type: AWS::AppSync::GraphQLSchema
+    Properties: { ApiId: !GetAtt Api.ApiId, Definition: "type Query { todo(id: ID!): String @aws_iam }" }
+  Ds:
+    Type: AWS::AppSync::DataSource
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      Name: todos
+      Type: AMAZON_DYNAMODB
+      ServiceRoleArn: !GetAtt DsRole.Arn
+      DynamoDBConfig: { TableName: !Ref Table, AwsRegion: !Ref AWS::Region }
+  Get:
+    Type: AWS::AppSync::Resolver
+    Properties:
+      ApiId: !GetAtt Api.ApiId
+      TypeName: Query
+      FieldName: todo
+      DataSourceName: !GetAtt Ds.Name
+      RequestMappingTemplate: '{"version":"2017-02-28","operation":"GetItem","key":{"id":$util.dynamodb.toDynamoDBJson($ctx.args.id)}}'
+      ResponseMappingTemplate: '$util.toJson($ctx.result)'
+`
+	p := mustPlan(t, []byte(tmpl), nil, "todos")
+	if p.Verdict == Rejected {
+		t.Fatalf("an AppSync template with an in-stack service role must plan, got blockers: %v", p.Blockers)
+	}
+	var notes []string
+	for _, f := range p.Fidelity {
+		notes = append(notes, f.Resource+": "+f.Detail)
+	}
+	all := strings.Join(notes, "\n")
+	if !strings.Contains(all, "nothing assumes it") || !strings.Contains(all, "ServiceRoleArn is not assumed") {
+		t.Fatalf("the plan must say the role is not assumed:\n%s", all)
 	}
 }
 
