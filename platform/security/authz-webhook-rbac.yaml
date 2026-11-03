@@ -1,0 +1,41 @@
+# Cedar control-plane authorization webhook: its identity and RBAC (docs/authz-webhook.md).
+#
+# GitOps-managed (the root app syncs security/*.yaml), so the webhook's grants are reviewed in git and
+# re-applied by Argo like the rest of the platform's RBAC. The webhook Deployment itself stays in
+# manifests/authz-webhook-shadow.yaml, applied by hand: it sits in the API server's authorization path,
+# and its rollout is a deliberate step, not an auto-sync. On a cluster without the webhook these grants
+# are inert (nothing runs as the ServiceAccount).
+#
+# The namespace is the one the corpus audit uses (corpus-audit-cronjob.yaml).
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: authz-webhook, namespace: open-infra-authz }
+---
+# Read kind: Policy cluster-wide for the control-plane corpus (spec.controlPlane). Read-only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: open-infra-authz-webhook-policies }
+rules:
+  - { apiGroups: [iam.openinfra.dev], resources: [policies], verbs: [get, list, watch] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: open-infra-authz-webhook-policies }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-authz-webhook-policies }
+subjects: [{ kind: ServiceAccount, name: authz-webhook, namespace: open-infra-authz }]
+---
+# Read the optional compiled corpus bundle (control-plane-corpus ConfigMap). This MUST be allowed
+# here by RBAC so the loader's own read is authorized BEFORE the webhook is consulted — otherwise the
+# read falls through to the webhook and recurses (bootstrap acyclicity), which cancels the load.
+# Scoped to the one ConfigMap, get-only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: authz-webhook-corpus-reader, namespace: open-infra-authz }
+rules:
+  - { apiGroups: [""], resources: [configmaps], verbs: [get], resourceNames: [control-plane-corpus] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: authz-webhook-corpus-reader, namespace: open-infra-authz }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: authz-webhook-corpus-reader }
+subjects: [{ kind: ServiceAccount, name: authz-webhook, namespace: open-infra-authz }]

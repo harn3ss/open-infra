@@ -186,7 +186,8 @@ not a silent pass.
       Cedar decisions before RBAC. Live-verified: 0 legitimate denials in steady state, cluster healthy
       (nodes Ready, apiserver `readyz` ok, argocd Healthy). `hostNetwork` on the control-plane node,
       loopback-only TLS, `Recreate`, break-glass floor + corpus-gating (above). Manifest:
-      `platform/security/manifests/authz-webhook-shadow.yaml` (`AUTHZ_MODE=enforce`). Applying the corpus
+      `platform/security/manifests/authz-webhook-shadow.yaml` (`AUTHZ_MODE=enforce`), applied by hand;
+      its ServiceAccount and RBAC are GitOps-managed in `platform/security/authz-webhook-rbac.yaml`. Applying the corpus
       is a deliberate, cluster-specific operator step (regenerated, not committed):
       ```
       KUBECONFIG=... go run ./cmd/rbac-to-cedar -configmap | kubectl apply --server-side -f -
