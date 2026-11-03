@@ -35,6 +35,9 @@ spec:
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $job := printf "%s-proc" $name }}
             {{- $gpu := 0 }}{{- if hasKey $spec "gpu" }}{{- $gpu = $spec.gpu }}{{- end }}
+            {{- /* A spec number arrives as a float (JSON); Go templates refuse to compare a float with an int
+                   literal, so a claim that set gpu never rendered. Compare it as an int. */}}
+            {{- $gpu = int $gpu }}
             {{- $useGpu := gt $gpu 0 }}
             {{- $tier := $spec.gpuTier | default "smallgpu" }}
             {{- $cpu := $spec.cpu | default "2" }}

@@ -56,12 +56,12 @@ spec:
                     # cluster, so it was inert (created but silently never injected). The honest disk-
                     # durability coverage is scenario-storage-replica-loss.sh (kills a storage replica).
                 # Blast radius — REQUIRED. Chaos only ever touches pods matching this
-                # selector in this namespace (defaults to the FaultInjection's namespace).
+                # selector in the FaultInjection's own namespace.
                 target:
                   type: object
                   required: [labelSelector]
                   properties:
-                    namespace: { type: string, description: "Defaults to the FaultInjection's namespace." }
+                    namespace: { type: string, description: "The FaultInjection's own namespace (the default). Any other namespace is refused: a fault can only target pods in its own namespace." }
                     labelSelector:
                       type: object
                       additionalProperties: { type: string }

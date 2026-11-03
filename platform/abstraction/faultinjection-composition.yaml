@@ -34,7 +34,11 @@ spec:
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
             {{- $claimNs := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $type := $spec.type }}
-            {{- $ns := $spec.target.namespace | default $claimNs }}
+            {{- /* The blast radius is the claim's own namespace: a fault may never reach another tenant's pods.
+                   target.namespace may only repeat it. */}}
+            {{- $tns := (($spec.target | default dict).namespace) | default "" }}
+            {{- if and $tns (ne $tns $claimNs) }}{{ fail (printf "kind: FaultInjection spec.target.namespace %q is not the FaultInjection's own namespace %q: a fault can only target pods in its own namespace" $tns $claimNs) }}{{ end }}
+            {{- $ns := $claimNs }}
             {{- $mode := $spec.mode | default "one" }}
             {{- $dur := $spec.duration | default "60s" }}
             {{- /* type -> Chaos Mesh kind */}}

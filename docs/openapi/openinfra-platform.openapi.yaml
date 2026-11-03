@@ -5719,7 +5719,8 @@ components:
               properties:
                 namespace:
                   type: string
-                  description: Defaults to the FaultInjection's namespace.
+                  description: 'The FaultInjection''s own namespace (the default). Any other namespace is refused: a fault
+                    can only target pods in its own namespace.'
                 labelSelector:
                   type: object
                   additionalProperties:

@@ -57,6 +57,9 @@ spec:
             {{- end }}
             {{- /* GPU: gpu=0 is CPU-only. Avoid sprig `default` on gpu (it treats 0 as empty). */}}
             {{- $gpu := 0 }}{{- if hasKey $spec "gpu" }}{{- $gpu = $spec.gpu }}{{- end }}
+            {{- /* A spec number arrives as a float (JSON); Go templates refuse to compare a float with an int
+                   literal, so a claim that set gpu never rendered. Compare it as an int. */}}
+            {{- $gpu = int $gpu }}
             {{- $useGpu := gt $gpu 0 }}
             {{- $tier := $spec.gpuTier | default "smallgpu" }}
             {{- $cpu := $spec.cpu | default "1" }}
