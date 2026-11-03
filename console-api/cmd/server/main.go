@@ -193,10 +193,13 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		// MinIO object storage (S3 browser) + NATS JetStream (queues). These talk
 		// to in-cluster MinIO/NATS rather than the k8s API, so they're their own
 		// endpoints (not the /k8s proxy).
+		// The bucket browser authorizes each call as the signed-in user with the aws-shim's own
+		// object-storage check (bucket_authz.go): one policy world, whichever door.
+		buckets := newBucketAuthz(client, auth, logger)
 		api.With(middleware.Timeout(15*time.Second)).
-			Get("/buckets", handleBuckets(*client.Clientset, logger))
+			Get("/buckets", handleBuckets(*client.Clientset, buckets, logger))
 		api.With(middleware.Timeout(20*time.Second)).
-			Get("/buckets/{bucket}/objects", handleBucketObjects(*client.Clientset, logger))
+			Get("/buckets/{bucket}/objects", handleBucketObjects(*client.Clientset, buckets, logger))
 		api.With(middleware.Timeout(10*time.Second)).
 			Get("/queues", handleQueues(logger))
 
@@ -204,13 +207,13 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		// queue publish/purge. Upload/download have no request timeout (large
 		// transfers); chat allows a long timeout for generation.
 		api.With(middleware.Timeout(10*time.Second)).
-			Post("/buckets", handleCreateBucket(*client.Clientset, logger))
+			Post("/buckets", handleCreateBucket(*client.Clientset, buckets, logger))
 		api.With(middleware.Timeout(10*time.Second)).
-			Delete("/buckets/{bucket}", handleDeleteBucket(*client.Clientset, logger))
-		api.Put("/buckets/{bucket}/object", handleUploadObject(*client.Clientset, logger))
-		api.Get("/buckets/{bucket}/object", handleDownloadObject(*client.Clientset, logger))
+			Delete("/buckets/{bucket}", handleDeleteBucket(*client.Clientset, buckets, logger))
+		api.Put("/buckets/{bucket}/object", handleUploadObject(*client.Clientset, buckets, logger))
+		api.Get("/buckets/{bucket}/object", handleDownloadObject(*client.Clientset, buckets, logger))
 		api.With(middleware.Timeout(10*time.Second)).
-			Delete("/buckets/{bucket}/object", handleDeleteObject(*client.Clientset, logger))
+			Delete("/buckets/{bucket}/object", handleDeleteObject(*client.Clientset, buckets, logger))
 		api.With(middleware.Timeout(125*time.Second)).
 			Post("/models/{namespace}/{name}/chat", handleModelChat(*client.Clientset, logger))
 		api.With(middleware.Timeout(30*time.Second)).

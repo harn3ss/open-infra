@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -67,8 +68,11 @@ type bucketResp struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func handleBuckets(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleBuckets(cs kubernetes.Interface, az *bucketAuthz, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !az.allow(w, r, s3authz.Request{Action: "s3:ListAllMyBuckets", Verb: "get"}) {
+			return
+		}
 		cl, err := minioClient(cs)
 		if err != nil {
 			logger.Error("minio client", slog.String("error", err.Error()))
@@ -98,10 +102,13 @@ type objectResp struct {
 	IsPrefix     bool      `json:"isPrefix"`
 }
 
-func handleBucketObjects(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleBucketObjects(cs kubernetes.Interface, az *bucketAuthz, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		bucket := chi.URLParam(r, "bucket")
 		prefix := r.URL.Query().Get("prefix")
+		if !az.allow(w, r, s3authz.Request{Action: "s3:ListBucket", Verb: "get", Bucket: bucket}) {
+			return
+		}
 		cl, err := minioClient(cs)
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "object storage unavailable")
@@ -201,13 +208,16 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 
 // --- MinIO bucket + object writes -------------------------------------------
 
-func handleCreateBucket(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleCreateBucket(cs kubernetes.Interface, az *bucketAuthz, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Name string `json:"name"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
 			writeError(w, http.StatusBadRequest, "bucket name required")
+			return
+		}
+		if !az.allow(w, r, s3authz.Request{Action: "s3:CreateBucket", Verb: "create", Bucket: body.Name}) {
 			return
 		}
 		cl, err := minioClient(cs)
@@ -226,8 +236,17 @@ func handleCreateBucket(cs kubernetes.Interface, logger *slog.Logger) http.Handl
 	}
 }
 
-func handleDeleteBucket(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleDeleteBucket(cs kubernetes.Interface, az *bucketAuthz, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		bucket := chi.URLParam(r, "bucket")
+		// A platform bucket is never deleted from here, by anyone — as through the S3 API.
+		if s3authz.IsPlatformBucket(bucket) {
+			writeError(w, http.StatusForbidden, "bucket "+bucket+" is owned by the platform and cannot be deleted")
+			return
+		}
+		if !az.allow(w, r, s3authz.Request{Action: "s3:DeleteBucket", Verb: "delete", Bucket: bucket}) {
+			return
+		}
 		cl, err := minioClient(cs)
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, "object storage unavailable")
@@ -235,7 +254,7 @@ func handleDeleteBucket(cs kubernetes.Interface, logger *slog.Logger) http.Handl
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
-		if err := cl.RemoveBucket(ctx, chi.URLParam(r, "bucket")); err != nil {
+		if err := cl.RemoveBucket(ctx, bucket); err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -243,12 +262,15 @@ func handleDeleteBucket(cs kubernetes.Interface, logger *slog.Logger) http.Handl
 	}
 }
 
-func handleUploadObject(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleUploadObject(cs kubernetes.Interface, az *bucketAuthz, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		bucket := chi.URLParam(r, "bucket")
 		key := r.URL.Query().Get("key")
 		if key == "" {
 			writeError(w, http.StatusBadRequest, "key required")
+			return
+		}
+		if !az.allow(w, r, s3authz.Request{Action: "s3:PutObject", Verb: "create", Bucket: bucket, Key: key, Object: true}) {
 			return
 		}
 		cl, err := minioClient(cs)
@@ -270,12 +292,15 @@ func handleUploadObject(cs kubernetes.Interface, logger *slog.Logger) http.Handl
 	}
 }
 
-func handleDownloadObject(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleDownloadObject(cs kubernetes.Interface, az *bucketAuthz, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		bucket := chi.URLParam(r, "bucket")
 		key := r.URL.Query().Get("key")
 		if key == "" {
 			writeError(w, http.StatusBadRequest, "key required")
+			return
+		}
+		if !az.allow(w, r, s3authz.Request{Action: "s3:GetObject", Verb: "get", Bucket: bucket, Key: key, Object: true}) {
 			return
 		}
 		cl, err := minioClient(cs)
@@ -303,12 +328,15 @@ func handleDownloadObject(cs kubernetes.Interface, logger *slog.Logger) http.Han
 	}
 }
 
-func handleDeleteObject(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+func handleDeleteObject(cs kubernetes.Interface, az *bucketAuthz, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		bucket := chi.URLParam(r, "bucket")
 		key := r.URL.Query().Get("key")
 		if key == "" {
 			writeError(w, http.StatusBadRequest, "key required")
+			return
+		}
+		if !az.allow(w, r, s3authz.Request{Action: "s3:DeleteObject", Verb: "delete", Bucket: bucket, Key: key, Object: true}) {
 			return
 		}
 		cl, err := minioClient(cs)
