@@ -89,7 +89,7 @@ func TestOutputs_EncryptedRootStillCopyingFailsAtTheLongerBound(t *testing.T) {
 	if el < 500*time.Millisecond || el > 3*time.Second {
 		t.Fatalf("waited %s, want the encrypted-root bound (500ms)", el)
 	}
-	if rec.Status != "CREATE_FAILED" || len(f.deleted) == 0 {
+	if rec.Status != "ROLLBACK_COMPLETE" || len(f.deleted) == 0 {
 		t.Fatalf("the failed create must be rolled back: status=%s deleted=%v", rec.Status, f.deleted)
 	}
 }
@@ -146,8 +146,8 @@ func TestOutputs_EncryptedRootWaitLeavesTimeForTheRecord(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "still copying") {
 		t.Fatalf("the create fails, saying the VM was still copying: %v", err)
 	}
-	if rec.Status != "CREATE_FAILED" || f.stored == nil || f.stored.Status != "CREATE_FAILED" {
-		t.Fatalf("want a stored CREATE_FAILED record (written before the deadline): %+v / %+v", rec, f.stored)
+	if rec.Status != "ROLLBACK_COMPLETE" || f.stored == nil || f.stored.Status != "ROLLBACK_COMPLETE" {
+		t.Fatalf("want a stored ROLLBACK_COMPLETE record (written before the deadline): %+v / %+v", rec, f.stored)
 	}
 	if el := time.Since(start); el > 700*time.Millisecond {
 		t.Fatalf("the wait ran into the record's reserve (%s)", el)

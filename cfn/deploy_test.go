@@ -369,8 +369,8 @@ Resources:
 	if err == nil {
 		t.Fatal("expected the deploy to fail")
 	}
-	if rec == nil || rec.Status != "CREATE_FAILED" {
-		t.Fatalf("status = %v, want CREATE_FAILED", rec)
+	if rec == nil || rec.Status != "ROLLBACK_COMPLETE" {
+		t.Fatalf("status = %v, want ROLLBACK_COMPLETE", rec)
 	}
 	// keya was applied then rolled back; keyb never applied.
 	if len(f.deleted) != 1 || f.deleted[0] != "EncryptionKey/s-keya" {
@@ -391,8 +391,8 @@ Resources:
 `)
 	f := &fakeApplier{notReady: "s-keya"}
 	rec, err := Deploy(context.Background(), tmpl, deployOpts(), f)
-	if err == nil || rec.Status != "CREATE_FAILED" {
-		t.Fatalf("a never-ready resource should CREATE_FAILED, got status=%v err=%v", rec, err)
+	if err == nil || rec.Status != "ROLLBACK_COMPLETE" {
+		t.Fatalf("a never-ready resource should roll back the create, got status=%v err=%v", rec, err)
 	}
 	if len(f.deleted) != 1 || f.deleted[0] != "EncryptionKey/s-keya" {
 		t.Fatalf("not-ready resource should be rolled back, deleted: %v", f.deleted)

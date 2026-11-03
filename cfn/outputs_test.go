@@ -247,10 +247,10 @@ Outputs:
 	if err == nil || !strings.Contains(err.Error(), "LAN IP was not assigned before the stack completed") {
 		t.Fatalf("an Output that never resolves must fail the create, saying why: %v", err)
 	}
-	if rec.Status != "CREATE_FAILED" || len(never.deleted) == 0 {
+	if rec.Status != "ROLLBACK_COMPLETE" || len(never.deleted) == 0 {
 		t.Fatalf("the failed create must be rolled back: status=%s deleted=%v", rec.Status, never.deleted)
 	}
-	if !hasEvent(rec, "s", "ROLLBACK_IN_PROGRESS") || !hasEvent(rec, "s", "CREATE_FAILED") {
+	if !hasEvent(rec, "s", "ROLLBACK_IN_PROGRESS") || !hasEvent(rec, "s", "ROLLBACK_COMPLETE") {
 		t.Fatalf("the stack's events must show the rollback: %+v", rec.Events)
 	}
 }

@@ -502,10 +502,11 @@ Stack "tickets" is CREATE_COMPLETE (2 resources).
    CLI, which has no access to the table data, deletes only the `kind: Table` claim.
 4. **Rollback** — if any create or readiness wait fails, what is still being created is
    cancelled (`CREATE_FAILED`, "Resource creation cancelled"), everything created in that deploy
-   is deleted in reverse order and the stack is marked `CREATE_FAILED`. A failed create
-   leaves no orphans. A `DeletionPolicy: Retain` resource is kept, as AWS keeps it on
-   rollback. One example is the shared default `EncryptionKey`, which may already key a
-   sibling stack's disks.
+   is deleted in reverse order (a custom resource gets its Function's `Delete` event), and the
+   stack ends `ROLLBACK_COMPLETE`, as on AWS — or `ROLLBACK_FAILED` when something could not be
+   deleted. Either way the stack stays until it is deleted. A failed create leaves no orphans. A
+   `DeletionPolicy: Retain` resource is kept, as AWS keeps it on rollback. One example is the
+   shared default `EncryptionKey`, which may already key a sibling stack's disks.
 
 The stack record lists every resource a create plans before it applies the first one. An
 update records the resources it adds before it adds them. So if the process running an

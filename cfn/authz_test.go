@@ -108,8 +108,8 @@ Outputs:
 	if err == nil || !strings.Contains(err.Error(), "LAN IP was not assigned") {
 		t.Fatalf("the create fails, saying the address was never assigned: %v", err)
 	}
-	if rec.Status != "CREATE_FAILED" || f.stored == nil || f.stored.Status != "CREATE_FAILED" {
-		t.Fatalf("want a stored CREATE_FAILED record (written before the deadline): %+v / %+v", rec, f.stored)
+	if rec.Status != "ROLLBACK_COMPLETE" || f.stored == nil || f.stored.Status != "ROLLBACK_COMPLETE" {
+		t.Fatalf("want a stored ROLLBACK_COMPLETE record (written before the deadline): %+v / %+v", rec, f.stored)
 	}
 	if el := time.Since(start); el > 500*time.Millisecond {
 		t.Fatalf("the wait ran into the record's reserve (%s)", el)

@@ -116,7 +116,7 @@ func TestSignals_FailureAndTimeoutRollBack(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "FAILURE signal with UniqueId i-1 (bootstrap failed)") {
 		t.Fatalf("a FAILURE signal must fail the create with its reason: %v", err)
 	}
-	if rec.Status != "CREATE_FAILED" || len(f.deleted) == 0 || !hasEvent(rec, "Web", "CREATE_FAILED") {
+	if rec.Status != "ROLLBACK_COMPLETE" || len(f.deleted) == 0 || !hasEvent(rec, "Web", "CREATE_FAILED") {
 		t.Fatalf("the failed create rolls back: %s deleted=%v events=%+v", rec.Status, f.deleted, rec.Events)
 	}
 

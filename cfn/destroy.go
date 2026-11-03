@@ -104,6 +104,66 @@ type LabelReader interface {
 	GetLabels(ctx context.Context, apiVersion, kind, name string) (labels map[string]string, found bool, err error)
 }
 
+// customResourceDelete sends a custom resource's Function AWS's Delete event (RequestType=Delete), as a
+// stack delete and a rolled-back create do. Nothing is sent where functions cannot be invoked (the CLI).
+func customResourceDelete(ctx context.Context, opts DeployOptions, r StackResource) (map[string]any, error) {
+	if opts.Invoke == nil {
+		return nil, nil
+	}
+	fnName, _ := r.Spec["function"].(string)
+	resType, _ := r.Spec["resourceType"].(string)
+	props, _ := r.Spec["properties"].(map[string]any)
+	event, _ := json.Marshal(map[string]any{
+		"RequestType": "Delete", "ResponseURL": "", "StackId": awsidentity.Current().StackID(opts.StackName),
+		"RequestId": opts.StackName + "/" + r.LogicalID, "ResourceType": resType,
+		"LogicalResourceId": r.LogicalID, "ResourceProperties": props,
+	})
+	return opts.Invoke(ctx, opts.Namespace, fnName, event)
+}
+
+// rollbackCreate undoes a failed create: everything it created, newest first, honoring Retain — a Retain
+// resource (e.g. the shared default EncryptionKey, which may pre-date this stack and key a sibling's
+// disks) survives, as AWS retains it on rollback. A custom resource gets its Function's Delete event; a
+// DynamoDB table goes with its data. Each step is a resource event. It reports whether every delete
+// succeeded: the stack then ends ROLLBACK_COMPLETE, else ROLLBACK_FAILED, as on AWS.
+func rollbackCreate(ctx context.Context, opts DeployOptions, ap Applier, rec *StackRecord, applied []StackResource) bool {
+	ok := true
+	for i := len(applied) - 1; i >= 0; i-- {
+		a := applied[i]
+		if keptOnRollback(a) {
+			rec.resourceEvent(a, "DELETE_SKIPPED", "")
+			continue
+		}
+		rec.resourceEvent(a, "DELETE_IN_PROGRESS", "")
+		var err error
+		if IsCustomResource(a) {
+			if resp, ierr := customResourceDelete(ctx, opts, a); ierr != nil {
+				err = ierr
+			} else if st, _ := resp["Status"].(string); resp != nil && !strings.EqualFold(st, "SUCCESS") {
+				reason, _ := resp["Reason"].(string)
+				err = fmt.Errorf("the custom resource's Function answered the Delete with %s: %s", st, reason)
+			}
+		} else if err = ap.Delete(ctx, a.APIVersion, a.Kind, a.Name); err == nil {
+			err = removeTableData(ctx, opts, a)
+		}
+		if err != nil {
+			rec.resourceEvent(a, "DELETE_FAILED", err.Error())
+			ok = false
+			continue
+		}
+		rec.resourceEvent(a, "DELETE_COMPLETE", "")
+	}
+	return ok
+}
+
+// rolledBackStatus is a rolled-back create's final status.
+func rolledBackStatus(ok bool) string {
+	if ok {
+		return "ROLLBACK_COMPLETE"
+	}
+	return "ROLLBACK_FAILED"
+}
+
 // isRetain reports whether a resource's DeletionPolicy keeps it through a stack delete and through
 // removal by an update: Retain and RetainExceptOnCreate. A rollback of the operation that created it uses
 // keptOnRollback instead.
@@ -182,18 +242,8 @@ func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []S
 		// (it would otherwise leave the whole stack undeletable), so it is not fatal. A refusal because the
 		// caller may not invoke the Function is: the resource stays and the teardown fails.
 		if r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind {
-			if opts.Invoke != nil {
-				fnName, _ := r.Spec["function"].(string)
-				resType, _ := r.Spec["resourceType"].(string)
-				props, _ := r.Spec["properties"].(map[string]any)
-				event, _ := json.Marshal(map[string]any{
-					"RequestType": "Delete", "ResponseURL": "", "StackId": awsidentity.Current().StackID(opts.StackName),
-					"RequestId": opts.StackName + "/" + r.LogicalID, "ResourceType": resType,
-					"LogicalResourceId": r.LogicalID, "ResourceProperties": props,
-				})
-				if _, err := opts.Invoke(ctx, opts.Namespace, fnName, event); IsUnauthorized(err) {
-					return remaining(), fmt.Errorf("custom resource %s: %w", r.LogicalID, err)
-				}
+			if _, err := customResourceDelete(ctx, opts, r); IsUnauthorized(err) {
+				return remaining(), fmt.Errorf("custom resource %s: %w", r.LogicalID, err)
 			}
 			gone[i] = true
 			continue

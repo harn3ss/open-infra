@@ -722,7 +722,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		return
 	}
 	createOpts := h.asCaller(h.stackOpts(name, params, ex, body), ap)
-	h.runStackOp(name, "CreateStack", "CREATE_FAILED", ap, func(bctx context.Context) error {
+	h.runStackOp(name, "CreateStack", "ROLLBACK_COMPLETE", ap, func(bctx context.Context) error {
 		rec, derr := cfn.Deploy(bctx, []byte(body), createOpts, ap)
 		if derr == nil {
 			h.logOutputs("CreateStack", name, rec)
@@ -1252,7 +1252,7 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 	}
 	status := "UPDATE_FAILED"
 	if create {
-		status = "CREATE_FAILED"
+		status = "ROLLBACK_COMPLETE" // a create that fails is rolled back, as on AWS
 		// A CREATE change set seeds the record like CreateStack: already owned, atomically (a stack that
 		// was created since the change set was is refused, never overwritten).
 		now := time.Now().UTC().Format(time.RFC3339)

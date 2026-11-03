@@ -9,7 +9,7 @@
 #   - parameter values are refused in AWS's words before anything is created: an undeclared key, a
 #     missing value, a value outside AllowedValues, an AWS::EC2::Subnet::Id that names no subnet
 #   - a CreationPolicy ResourceSignal on a WaitCondition holds the stack CREATE_IN_PROGRESS until
-#     SignalResource sends SUCCESS; a FAILURE signal fails the create (CREATE_FAILED, events say why)
+#     SignalResource sends SUCCESS; a FAILURE signal fails the create (rolled back to ROLLBACK_COMPLETE, events say why)
 #   - DescribeStackEvents (newest first, per resource), ListStackResources (AWS types, physical ids),
 #     DescribeStackResource (Metadata, what cfn-init reads), ValidateTemplate with a parameter that has
 #     no default (accepted, as on AWS)
@@ -258,7 +258,7 @@ for _ in $(seq 1 100); do
   sleep 3
 done
 cfn signal-resource --stack-name "$FAILST" --logical-resource-id W --unique-id probe-f --status FAILURE || fail "signal-resource FAILURE"
-st="$(poll "$FAILST" CREATE_FAILED)" || fail "a FAILURE signal must fail the create, got $st"
+st="$(poll "$FAILST" ROLLBACK_COMPLETE)" || fail "a FAILURE signal must fail the create (rolled back: ROLLBACK_COMPLETE), got $st"
 cfn describe-stack-events --stack-name "$FAILST" --query 'StackEvents[?ResourceStatus==`CREATE_FAILED`].ResourceStatusReason' --output text \
   | grep -q "FAILURE signal" || fail "the events must say a FAILURE signal failed it"
 log "  ✓ a FAILURE signal fails the create, and the events say why"
@@ -307,12 +307,12 @@ delete_and_wait() { # <stack>
 ret_tmpl "cfnapi-$SFX-ret-a" > "$TMP/ret-a.yaml"
 cfn create-stack --stack-name "$RET" --template-body "file://$TMP/ret-a.yaml" >/dev/null || fail "create-stack $RET"
 signal_when_waiting "$RET" FAILURE
-st="$(poll "$RET" CREATE_FAILED)" || fail "the failed create must end CREATE_FAILED, got $st"
+st="$(poll "$RET" ROLLBACK_COMPLETE)" || fail "the failed create must end ROLLBACK_COMPLETE, got $st"
 kubectl -n "$CFN_NS" get buckets.openinfra.dev -l "cfn.openinfra.dev/stack=$RET" -o name | grep -q . || fail "the rollback must keep the Retain bucket"
 delete_and_wait "$RET"
 # The same BucketName: still the retained bucket's.
 cfn create-stack --stack-name "$RET" --template-body "file://$TMP/ret-a.yaml" >/dev/null || fail "create-stack $RET (same BucketName)"
-st="$(poll "$RET" CREATE_FAILED)" || fail "re-creating with the retained bucket's BucketName must fail, got $st"
+st="$(poll "$RET" ROLLBACK_COMPLETE)" || fail "re-creating with the retained bucket's BucketName must fail, got $st"
 cfn describe-stack-events --stack-name "$RET" --query 'StackEvents[?ResourceStatus==`CREATE_FAILED`].ResourceStatusReason' --output text \
   | grep -q "left behind" || fail "the events must say the BucketName is the retained bucket's"
 delete_and_wait "$RET"

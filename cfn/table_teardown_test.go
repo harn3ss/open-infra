@@ -76,7 +76,7 @@ func TestTables_CreateRefusesAnExistingTable(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Table already exists: s-orders") {
 		t.Fatalf("want the create refused: %v", err)
 	}
-	if rec.Status != "CREATE_FAILED" || len(tables.removed) != 0 || !tables.exists["s-orders"] {
+	if rec.Status != "ROLLBACK_COMPLETE" || len(tables.removed) != 0 || !tables.exists["s-orders"] {
 		t.Fatalf("the existing table must be left alone: %s removed=%v", rec.Status, tables.removed)
 	}
 	if f.appliedHas("Table/s-orders") {

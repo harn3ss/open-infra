@@ -657,31 +657,16 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 			}
 		}
 		rec.stackEvent("ROLLBACK_IN_PROGRESS", rollbackReason(failed))
-		// Reverse order, honoring Retain: a Retain resource (e.g. the shared default EncryptionKey, which
-		// may pre-date this stack and key a sibling's disks) survives a failed create — AWS retains it on
-		// rollback too.
-		for i := len(applied) - 1; i >= 0; i-- {
-			a := applied[i]
-			if keptOnRollback(a) {
-				rec.resourceEvent(a, "DELETE_SKIPPED", "")
-				continue
-			}
-			rec.resourceEvent(a, "DELETE_IN_PROGRESS", "")
-			if err := ap.Delete(ctx, a.APIVersion, a.Kind, a.Name); err != nil {
-				rec.resourceEvent(a, "DELETE_FAILED", err.Error())
-				continue
-			}
-			if err := removeTableData(ctx, opts, a); err != nil {
-				rec.resourceEvent(a, "DELETE_FAILED", err.Error())
-				continue
-			}
-			rec.resourceEvent(a, "DELETE_COMPLETE", "")
-		}
-		rec.Status = "CREATE_FAILED"
+		// As on AWS, a rolled-back create ends ROLLBACK_COMPLETE (ROLLBACK_FAILED when a delete failed):
+		// the stack stays, to be deleted.
+		rec.Status = rolledBackStatus(rollbackCreate(ctx, opts, ap, rec, applied))
 		rec.Message = cause.Error()
 		rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		rec.stackEvent("CREATE_FAILED", cause.Error())
+		rec.stackEvent(rec.Status, "")
 		_ = writeStackRecord(ctx, ap, rec, opts)
+		if rec.Status == "ROLLBACK_FAILED" {
+			return rec, fmt.Errorf("deploy failed and its rollback could not delete everything it created (ROLLBACK_FAILED; delete the stack): %w", cause)
+		}
 		return rec, fmt.Errorf("deploy failed and was rolled back (no orphans): %w", cause)
 	}
 	progress := func() { flushEvents(ctx, ap, rec) } // so DescribeStackEvents shows the create as it goes
@@ -855,27 +840,24 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			}
 		}
 		rec.stackEvent("ROLLBACK_IN_PROGRESS", rollbackReason(failedID))
-		for i := len(applied) - 1; i >= 0; i-- { // reverse order, honoring Retain (as Deploy does)
-			a := applied[i]
-			if keptOnRollback(a) {
-				rec.resourceEvent(a, "DELETE_SKIPPED", "")
-				continue
-			}
-			_ = ap.Delete(ctx, a.APIVersion, a.Kind, a.Name)
-			_ = removeTableData(ctx, opts, a)
-			rec.resourceEvent(a, "DELETE_COMPLETE", "")
-		}
+		// Reverse order, honoring Retain (as Deploy does); a created custom resource gets its Delete event.
+		ok := rollbackCreate(ctx, opts, ap, rec, applied)
 		for i := len(provisionedAPIs) - 1; i >= 0; i-- { // tear down provisioned REST v1 APIs too
 			if opts.DeprovisionRestAPI != nil {
-				_ = opts.DeprovisionRestAPI(ctx, provisionedAPIs[i])
+				if err := opts.DeprovisionRestAPI(ctx, provisionedAPIs[i]); err != nil {
+					ok = false
+				}
 			}
 		}
-		rec.Status = "CREATE_FAILED"
+		rec.Status = rolledBackStatus(ok)
 		rec.Message = cause.Error()
 		rec.Pending = nil
 		rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		rec.stackEvent("CREATE_FAILED", cause.Error())
+		rec.stackEvent(rec.Status, "")
 		_ = writeStackRecord(ctx, ap, rec, opts)
+		if !ok {
+			return rec, fmt.Errorf("deploy failed and its rollback could not delete everything it created (ROLLBACK_FAILED; delete the stack): %w", cause)
+		}
 		return rec, fmt.Errorf("deploy failed and was rolled back (no orphans): %w", cause)
 	}
 	// Write-ahead (#347): this path builds the record as it goes, so before creating each resource it
@@ -945,6 +927,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			if cerr != nil {
 				return rollback(cerr)
 			}
+			applied = append(applied, sr) // a rollback sends it the Delete event, as AWS does
 			rec.Resources = append(rec.Resources, sr)
 			rec.Pending = nil
 			rec.resourceEvent(sr, "CREATE_COMPLETE", "")

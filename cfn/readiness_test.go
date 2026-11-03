@@ -244,7 +244,7 @@ Resources:
 	if time.Since(start) > 5*time.Second {
 		t.Fatalf("the failure must not wait out the wait condition (took %s)", time.Since(start))
 	}
-	if rec.Status != "CREATE_FAILED" || !hasEvent(rec, "K", "CREATE_FAILED") {
+	if rec.Status != "ROLLBACK_COMPLETE" || !hasEvent(rec, "K", "CREATE_FAILED") {
 		t.Fatalf("status %s, events %+v", rec.Status, rec.Events)
 	}
 	cancelled := false

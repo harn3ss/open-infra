@@ -93,8 +93,8 @@ Resources:
 	if err == nil {
 		t.Fatalf("expected the deploy to FAIL (second resource rejected at apply), got status %s", rec.Status)
 	}
-	if rec == nil || rec.Status != "CREATE_FAILED" {
-		t.Fatalf("status = %v, want CREATE_FAILED", rec)
+	if rec == nil || rec.Status != "ROLLBACK_COMPLETE" {
+		t.Fatalf("status = %v, want ROLLBACK_COMPLETE", rec)
 	}
 	// Zero orphans: the first, successfully-created Bucket must have been rolled back.
 	if err := ap.WaitGone(context.Background(), "openinfra.dev/v1", "Bucket", "good", 60*time.Second); err != nil {

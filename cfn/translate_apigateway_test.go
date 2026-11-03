@@ -184,8 +184,8 @@ func TestDeploy_RestV1_RollbackDeprovisions(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the deploy to fail and roll back")
 	}
-	if rec.Status != "CREATE_FAILED" {
-		t.Errorf("status = %q, want CREATE_FAILED", rec.Status)
+	if rec.Status != "ROLLBACK_COMPLETE" {
+		t.Errorf("status = %q, want ROLLBACK_COMPLETE", rec.Status)
 	}
 	if len(deprovisioned) != 1 || deprovisioned[0] != "api-xyz" {
 		t.Errorf("deprovisioned = %v, want [api-xyz] (rollback must tear the API down)", deprovisioned)

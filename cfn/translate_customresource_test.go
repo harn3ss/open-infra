@@ -177,8 +177,8 @@ Resources:
 	if err == nil {
 		t.Fatal("a FAILED custom resource must fail the deploy")
 	}
-	if rec != nil && rec.Status != "CREATE_FAILED" {
-		t.Errorf("status = %s, want CREATE_FAILED", rec.Status)
+	if rec != nil && rec.Status != "ROLLBACK_COMPLETE" {
+		t.Errorf("status = %s, want ROLLBACK_COMPLETE", rec.Status)
 	}
 	// The Function applied before the failing custom resource must have been rolled back (deleted).
 	var fnDeleted bool
@@ -209,6 +209,53 @@ Resources:
 	_, err := Deploy(context.Background(), []byte(tmpl), opts, f)
 	if err == nil || !strings.Contains(err.Error(), "in-cluster") {
 		t.Fatalf("a custom-resource stack with no invoker must refuse with an in-cluster hint, got: %v", err)
+	}
+}
+
+// #348: a custom resource a rolled-back create had already created gets its Function's Delete event (as
+// AWS sends it), before its Function is deleted; one whose Delete fails leaves the stack ROLLBACK_FAILED.
+func TestDeploy_CustomResource_RollbackSendsDelete(t *testing.T) {
+	tmpl := `
+Resources:
+  Fn:
+    Type: AWS::Lambda::Function
+    Properties: { PackageType: Image, Code: { ImageUri: ghcr.io/x/handler:latest } }
+  Setup:
+    Type: Custom::Setup
+    Properties: { ServiceToken: !GetAtt Fn.Arn, Seed: x }
+  Last:
+    Type: AWS::KMS::Key
+    DependsOn: Setup
+`
+	for deleteStatus, want := range map[string][2]string{"SUCCESS": {"ROLLBACK_COMPLETE", "DELETE_COMPLETE"}, "FAILED": {"ROLLBACK_FAILED", "DELETE_FAILED"}} {
+		f := &fakeApplier{notReady: "s-last"}
+		opts := deployOpts()
+		var requests []string
+		opts.Invoke = func(_ context.Context, _, _ string, event []byte) (map[string]any, error) {
+			var ev map[string]any
+			_ = json.Unmarshal(event, &ev)
+			rt, _ := ev["RequestType"].(string)
+			requests = append(requests, rt)
+			if rt == "Delete" {
+				for _, d := range f.deleted {
+					if strings.HasPrefix(d, "Function/") {
+						t.Errorf("the Delete event must come before the Function is deleted: %v", f.deleted)
+					}
+				}
+				return map[string]any{"Status": deleteStatus, "Reason": "cleanup"}, nil
+			}
+			return map[string]any{"Status": "SUCCESS"}, nil
+		}
+		rec, err := Deploy(context.Background(), []byte(tmpl), opts, f)
+		if err == nil {
+			t.Fatal("test premise: the create fails at Last")
+		}
+		if strings.Join(requests, ",") != "Create,Delete" {
+			t.Fatalf("want the custom resource's Create then Delete on rollback, got %v", requests)
+		}
+		if rec.Status != want[0] || !hasEvent(rec, "Setup", want[1]) {
+			t.Fatalf("Delete answered %s: status %s, events %+v", deleteStatus, rec.Status, rec.Events)
+		}
 	}
 }
 
