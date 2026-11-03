@@ -168,6 +168,21 @@ func TestS3Authz_PlatformBucketsAreAdminOnly(t *testing.T) {
 	}
 }
 
+// CreateBucket with a platform bucket's name answers BucketAlreadyExists, as AWS answers a name another
+// account holds, not the fence's AccessDenied; nothing is created.
+func TestS3CreateBucket_PlatformNameIsTaken(t *testing.T) {
+	user := allowAllSAR()
+	user.authz = userPolicy(dpAllow([]string{"s3:*"}, "*"))
+	for _, b := range platformBuckets {
+		r := httptest.NewRequest(http.MethodPut, "/"+b, nil)
+		w := httptest.NewRecorder()
+		user.serve(w, r, testUser, "req-1")
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "BucketAlreadyExists") {
+			t.Errorf("CreateBucket %s: %d %s, want 409 BucketAlreadyExists", b, w.Code, w.Body)
+		}
+	}
+}
+
 // Changing an object's tags is a write: a reader (get/list only) may read tags but not set or remove them.
 func TestS3Authz_ObjectTaggingIsAWrite(t *testing.T) {
 	h := &s3Handler{cs: readerSAR(), authzNS: "default", logger: discardLogger()}

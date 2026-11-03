@@ -90,6 +90,14 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		return
 	}
 
+	// A platform bucket's name is taken, as another account's bucket is on AWS: CreateBucket answers
+	// BucketAlreadyExists, which the platform-bucket fence would otherwise turn into AccessDenied. Nothing is
+	// created, and the name's existence is no secret (the namespace is shared).
+	if op.kind == "create-bucket" && isPlatformBucket(op.bucket) {
+		writeS3Error(w, "BucketAlreadyExists", requestID, r.URL.Path)
+		return
+	}
+
 	// 2. Authorize. DeleteObjects is the exception: as on AWS the batch is not authorized as a whole, each
 	// key is (in the handler), and a key the caller may not delete is that key's AccessDenied.
 	if op.kind != "delete-objects" && !h.allowed(r, claims, op) {
