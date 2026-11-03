@@ -748,7 +748,13 @@
       "tier": "proven"
     },
     "kms": {
-      "actions": [],
+      "actions": [
+        "kms:Decrypt",
+        "kms:DeleteAlias",
+        "kms:ReEncryptFrom",
+        "kms:ReEncryptTo",
+        "kms:UpdateAlias"
+      ],
       "conditional": false,
       "deployableTypes": [
         "AWS::KMS::Alias",
@@ -1039,15 +1045,29 @@
         "AWS::SNS"
       ],
       "operations": [
+        "ChangeMessageVisibility",
+        "ChangeMessageVisibilityBatch",
+        "CreateQueue",
         "CreateTopic",
+        "DeleteMessage",
+        "DeleteMessageBatch",
+        "DeleteQueue",
         "DeleteTopic",
+        "GetQueueAttributes",
+        "GetQueueUrl",
         "GetSubscriptionAttributes",
         "GetTopicAttributes",
+        "ListQueues",
         "ListSubscriptions",
         "ListSubscriptionsByTopic",
         "ListTopics",
         "Publish",
         "PublishBatch",
+        "PurgeQueue",
+        "ReceiveMessage",
+        "SendMessage",
+        "SendMessageBatch",
+        "SetQueueAttributes",
         "SetSubscriptionAttributes",
         "SetTopicAttributes",
         "Subscribe",
@@ -1061,7 +1081,9 @@
       "tier": "proven"
     },
     "sqs": {
-      "actions": [],
+      "actions": [
+        "sqs:SendMessage"
+      ],
       "conditional": false,
       "deployableTypes": [
         "AWS::SQS::Queue",
@@ -1187,7 +1209,7 @@
     "excRead": 18,
     "excepted": 36,
     "flattened": 1,
-    "operations": 446,
+    "operations": 460,
     "planOnly": 11,
     "refused": 11,
     "services": 27,

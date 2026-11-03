@@ -451,6 +451,13 @@
         "ReEncrypt",
         "ScheduleKeyDeletion",
         "UpdateAlias"
+      ],
+      "actions": [
+        "kms:Decrypt",
+        "kms:DeleteAlias",
+        "kms:ReEncryptFrom",
+        "kms:ReEncryptTo",
+        "kms:UpdateAlias"
       ]
     },
     "lambda": {
@@ -598,15 +605,29 @@
     "sns": {
       "handler": "snsHandler",
       "operations": [
+        "ChangeMessageVisibility",
+        "ChangeMessageVisibilityBatch",
+        "CreateQueue",
         "CreateTopic",
+        "DeleteMessage",
+        "DeleteMessageBatch",
+        "DeleteQueue",
         "DeleteTopic",
+        "GetQueueAttributes",
+        "GetQueueUrl",
         "GetSubscriptionAttributes",
         "GetTopicAttributes",
+        "ListQueues",
         "ListSubscriptions",
         "ListSubscriptionsByTopic",
         "ListTopics",
         "Publish",
         "PublishBatch",
+        "PurgeQueue",
+        "ReceiveMessage",
+        "SendMessage",
+        "SendMessageBatch",
+        "SetQueueAttributes",
         "SetSubscriptionAttributes",
         "SetTopicAttributes",
         "Subscribe",
@@ -634,6 +655,9 @@
         "SendMessage",
         "SendMessageBatch",
         "SetQueueAttributes"
+      ],
+      "actions": [
+        "sqs:SendMessage"
       ]
     },
     "ssm": {
