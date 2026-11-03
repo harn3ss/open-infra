@@ -6,7 +6,8 @@
 // with a TokenReview and bound to the VM's own launcher pod (k8sSARoleResolver), never by anything in the
 // request. The instance id is the shim's own (the VM's status.instanceId, ec2_ids.go), so an agent fetches
 // and reports only its own instance's invocations. As on AWS, an instance is managed when it has an
-// instance role (the token exists only then) that trusts the vm principal and allows the SSM agent's
+// instance role (its ServiceAccount names one: every VM with instance metadata has a token, for its signed
+// identity document, but a token without a role is refused here) that trusts the vm principal and allows the SSM agent's
 // actions — ssm:UpdateInstanceInformation and ec2messages:GetMessages to register and fetch,
 // ec2messages:SendReply to report (AmazonSSMManagedInstanceCore attaches them) — and when it is in the
 // account's namespace, the one SendCommand reaches. GET long-polls: it answers as soon as a command is

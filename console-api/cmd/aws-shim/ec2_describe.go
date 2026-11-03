@@ -108,18 +108,7 @@ func (h *ec2Handler) instanceOf(ctx context.Context, u *unstructured.Unstructure
 	if p := str(st, "powerState"); in.state == "pending" && strings.HasPrefix(p, "Err") {
 		in.stateReason = p
 	}
-	in.instanceType = view.InstanceType
-	if in.instanceType == "" {
-		cpu, _ := spec["cpu"].(int64)
-		if cpu == 0 {
-			cpu = 2
-		}
-		mem := str(spec, "memory")
-		if mem == "" {
-			mem = "2Gi"
-		}
-		in.instanceType = cfn.InstanceTypeForShape(int(cpu), mem)
-	}
+	in.instanceType = claimInstanceType(u)
 	if in.subnet != "" {
 		in.vpc = subnetVPC[in.subnet]
 	}

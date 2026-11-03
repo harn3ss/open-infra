@@ -770,6 +770,25 @@ func run(logger *slog.Logger) error {
 				maxWait: 20 * time.Second, recheck: 2 * time.Second, cacheTTL: time.Minute, logger: logger}
 			logger.Info("SSM Run Command agent channel enabled", slog.String("namespace", accountNS))
 		}
+		// Instance identity documents (instance_identity.go): every VM guest's metadata agent fetches its
+		// platform-signed document here with its token, and the CloudFormation front door accepts calls signed
+		// with one (CFN_V1: cfn-init / cfn-signal with no credentials) for the instance's own stack. The key
+		// is a Secret in this namespace, made on first use.
+		ttl := defaultIdentityTTL
+		if v := getenv("INSTANCE_IDENTITY_TTL", ""); v != "" {
+			if d, derr := time.ParseDuration(v); derr == nil && d >= 5*time.Minute && d <= 24*time.Hour {
+				ttl = d
+			} else {
+				logger.Warn("INSTANCE_IDENTITY_TTL must be a duration from 5m to 24h; using the default", slog.String("value", v))
+			}
+		}
+		signer := newIdentitySigner(cs, keysNS, ttl, logger)
+		vmCredsH.identity = &vmIdentityHandler{resolver: vmCredsH.resolver, dyn: dyn, signer: signer,
+			account: account, region: region, logger: logger}
+		if cfnDoor != nil {
+			cfnDoor.identity = signer
+		}
+		logger.Info("instance identity documents enabled", slog.String("key", keysNS+"/"+identityKeySecretName), slog.Duration("ttl", ttl))
 	}
 	// The platform root CA certificate (public), for VM guests' trust stores: read from a Secret in the
 	// shim's OWN namespace that cert-manager fills with openinfra-ca's certificate (Certificate

@@ -76,6 +76,9 @@ type cfnDoorway struct {
 	invoker   *http.Client // invokes a custom resource's backing Function synchronously
 	logger    *slog.Logger
 	restV1    *apigwV1Handler // drives the apigateway REST v1 store for AWS::ApiGateway::* resources (#295); nil = unconfigured
+	// identity verifies instance identity documents: a call signed CFN_V1 (cfn-init / cfn-signal with no
+	// credentials) is its instance's, for its own stack (cloudformation_cfnv1.go). nil = CFN_V1 refused.
+	identity *identitySigner
 	// authz is the data-plane engine: an assumed role's stack operations are default-deny under it
 	// (cloudformation:<Action> on Stack::<name>). nil = no engine — a role is then denied every action.
 	authz *dataplaneauthz.Checker
@@ -333,6 +336,18 @@ func (h *cfnDoorway) canDo(ctx context.Context, claims iam.Claims, verb, stack s
 
 func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	_ = r.ParseForm()
+	queryParamsAsForm(r) // aws-cfn-bootstrap calls with GET and its parameters in the query string
+	// …and asks for JSON (ContentType=JSON) on the calls it makes: answered in JSON (cloudformation_cfnv1.go).
+	if wantsQueryJSON(r) {
+		cw := newQueryCapture()
+		h.serveQuery(cw, r, claims, requestID)
+		cw.flushJSON(w)
+		return
+	}
+	h.serveQuery(w, r, claims, requestID)
+}
+
+func (h *cfnDoorway) serveQuery(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	// A change set named by its ARN alone (what `aws cloudformation deploy` prints) names its stack too:
 	// found before the ARN is reduced to a name, so the action is authorized on that stack.
 	if csArn := r.PostFormValue("ChangeSetName"); strings.HasPrefix(csArn, "arn:") && r.PostFormValue("StackName") == "" {
@@ -985,6 +1000,11 @@ func (h *cfnDoorway) describeStackResources(w http.ResponseWriter, r *http.Reque
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist.", cfnXMLNamespace)
 		return
 	}
+	h.describeStackResourcesOf(w, r, rec, requestID)
+}
+
+// describeStackResourcesOf answers DescribeStackResources for a stack record already read (and authorized).
+func (h *cfnDoorway) describeStackResourcesOf(w http.ResponseWriter, r *http.Request, rec *cfn.StackRecord, requestID string) {
 	var b strings.Builder
 	only := r.PostFormValue("LogicalResourceId")
 	for _, row := range h.stackResourceRows(r.Context(), rec) {

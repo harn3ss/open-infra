@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/harn3ss/open-infra/console-api/internal/awssig"
@@ -84,6 +85,16 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rt.vmCreds.serve(w, r, requestID)
 		return
 	}
+	// A VM's signed instance identity document (instance_identity.go), identified the same way; 404 while
+	// it is off.
+	if p := path.Clean("/" + r.URL.Path); isVMIdentityPath(p) {
+		if rt.vmCreds != nil && rt.vmCreds.identity != nil {
+			rt.vmCreds.identity.serve(w, r, requestID)
+		} else {
+			http.NotFound(w, r)
+		}
+		return
+	}
 	// SSM Run Command's agent channel, identified the same way (vmcommands.go). 404 while it is off, so an
 	// agent backs off rather than retrying a refusal.
 	if isVMCommandsPath(r.URL.Path) {
@@ -103,6 +114,17 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authHdr := r.Header.Get("Authorization")
+	// A CloudFormation call signed with an instance identity document (cfn-init / cfn-signal / cfn-hup with
+	// no credentials) carries no SigV4: the platform-signed document is the credential, checked by the
+	// CloudFormation front door alone (cloudformation_cfnv1.go).
+	if strings.HasPrefix(authHdr, "CFN_V1 ") {
+		if cfnDoor, ok := rt.services["cloudformation"].(*cfnDoorway); ok {
+			cfnDoor.serveCFNV1(w, r, requestID)
+		} else {
+			writeUnsupportedService(w, r, "cloudformation", requestID)
+		}
+		return
+	}
 	cred, err := awssig.ParseAuthorization(authHdr)
 	if err != nil {
 		// Presigned URL (query-string SigV4): no Authorization header, so ParseAuthorization fails —

@@ -216,12 +216,18 @@ func (h *cfnDoorway) listStackResources(w http.ResponseWriter, r *http.Request, 
 // describeStackResource serves DescribeStackResource: one resource, with its Metadata (from the template the
 // stack was deployed with) — what cfn-init reads for AWS::CloudFormation::Init.
 func (h *cfnDoorway) describeStackResource(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
-	name, lid := r.PostFormValue("StackName"), r.PostFormValue("LogicalResourceId")
+	name := r.PostFormValue("StackName")
 	rec, found, err := ap.GetStack(r.Context(), name)
 	if err != nil || !found {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+name+" does not exist", cfnXMLNamespace)
 		return
 	}
+	h.describeStackResourceOf(w, r, rec, requestID)
+}
+
+// describeStackResourceOf answers DescribeStackResource for a stack record already read (and authorized).
+func (h *cfnDoorway) describeStackResourceOf(w http.ResponseWriter, r *http.Request, rec *cfn.StackRecord, requestID string) {
+	name, lid := r.PostFormValue("StackName"), r.PostFormValue("LogicalResourceId")
 	var row *resourceRow
 	for _, rr := range h.stackResourceRows(r.Context(), rec) {
 		if rr.logicalID == lid {
@@ -433,6 +439,18 @@ func (h *cfnDoorway) signalResource(w http.ResponseWriter, r *http.Request, clai
 	if !h.maySignal(r, claims, rec) {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
 			"not authorized to perform cloudformation:SignalResource on stack "+stack, cfnXMLNamespace)
+		return
+	}
+	h.recordSignal(w, r, rec, requestID)
+}
+
+// recordSignal records an authorized SignalResource on a stack record already read.
+func (h *cfnDoorway) recordSignal(w http.ResponseWriter, r *http.Request, rec *cfn.StackRecord, requestID string) {
+	stack, lid := rec.Name, r.PostFormValue("LogicalResourceId")
+	uid, status := r.PostFormValue("UniqueId"), strings.ToUpper(r.PostFormValue("Status"))
+	if lid == "" || uid == "" || (status != "SUCCESS" && status != "FAILURE") {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+			"StackName, LogicalResourceId, UniqueId and Status (SUCCESS or FAILURE) are required.", cfnXMLNamespace)
 		return
 	}
 	if !strings.HasSuffix(rec.Status, "_IN_PROGRESS") {

@@ -46,6 +46,9 @@ type vmCredsHandler struct {
 	// commands is SSM Run Command's agent channel (vmcommands.go), served beside the credentials with the
 	// same identity; nil = off.
 	commands *vmCommandsHandler
+	// identity serves the VM's signed instance identity document (instance_identity.go), with the same
+	// identity; nil = off.
+	identity *vmIdentityHandler
 }
 
 // vmCredsPath is the container-credentials endpoint (AWS_CONTAINER_CREDENTIALS_FULL_URI on the VM).
