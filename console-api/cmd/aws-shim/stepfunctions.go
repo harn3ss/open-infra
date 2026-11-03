@@ -135,14 +135,13 @@ func (h *sfnHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
-	// An assumed role's authority is its data-plane policy alone (CanDo passes a role), default-deny on every
-	// op: states:<Op> on the state machine it names (an execution resolves to its state machine), and
-	// ListStateMachines on StateMachine::*. Users keep the RBAC gate above.
-	if claims.AssumedRole != "" {
-		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "states:"+op, "StateMachine", sfnStateMachine(op, body), r); denied {
-			writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
-		}
+	// The data-plane check, states:<Op> on the state machine the op names (an execution resolves to its
+	// state machine, and the handler holds it to that one: boundExecution). An assumed role's authority is
+	// its data-plane policy alone (CanDo passes a role), default-deny on every op, ListStateMachines on
+	// StateMachine::*. A User's policy can only tighten the RBAC gate above, on an op naming a state machine.
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "states:"+op, "StateMachine", sfnStateMachine(op, body), r); denied {
+		writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
 	}
 	// iam:PassRole: giving a state machine an execution role needs permission to pass that Role, as on
 	// AWS (passrole.go). The shim writes the StateMachine with its own identity, so the check is here,
@@ -630,10 +629,34 @@ func (h *sfnHandler) storeExecutionCreds(ctx context.Context, exec *unstructured
 	return nil
 }
 
-func (h *sfnHandler) stopExecution(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
-	_, execName := execParts(str(body["executionArn"]))
+// boundExecution is the Execution an executionArn names, only if it runs the state machine the ARN names:
+// the op was authorized on that state machine (sfnStateMachine), so an ARN pairing an authorized state
+// machine with another one's execution is ExecutionDoesNotExist, as an ARN that names no execution.
+func (h *sfnHandler) boundExecution(ctx context.Context, w http.ResponseWriter, requestID, arn string) (*unstructured.Unstructured, string, bool) {
+	sm, execName := execParts(arn)
 	if execName == "" {
-		writeSFNError(w, http.StatusBadRequest, "InvalidArn", requestID, "StopExecution requires executionArn.")
+		writeSFNError(w, http.StatusBadRequest, "InvalidArn", requestID, "Invalid executionArn: "+arn)
+		return nil, "", false
+	}
+	u, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).Get(ctx, execName, metav1.GetOptions{})
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			writeSFNError(w, http.StatusInternalServerError, "InternalFailure", requestID, err.Error())
+			return nil, "", false
+		}
+		writeSFNError(w, http.StatusBadRequest, "ExecutionDoesNotExist", requestID, "Execution "+execName+" does not exist.")
+		return nil, "", false
+	}
+	if runs, _, _ := unstructured.NestedString(u.Object, "spec", "stateMachineRef", "name"); runs != sm {
+		writeSFNError(w, http.StatusBadRequest, "ExecutionDoesNotExist", requestID, "Execution "+arn+" does not exist.")
+		return nil, "", false
+	}
+	return u, execName, true
+}
+
+func (h *sfnHandler) stopExecution(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+	_, execName, ok := h.boundExecution(ctx, w, requestID, str(body["executionArn"]))
+	if !ok {
 		return
 	}
 	cause := str(body["cause"])
@@ -656,10 +679,8 @@ func (h *sfnHandler) stopExecution(ctx context.Context, w http.ResponseWriter, r
 }
 
 func (h *sfnHandler) describeExecution(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
-	_, execName := execParts(str(body["executionArn"]))
-	u, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).Get(ctx, execName, metav1.GetOptions{})
-	if err != nil {
-		writeSFNError(w, http.StatusBadRequest, "ExecutionDoesNotExist", requestID, "Execution "+execName+" does not exist.")
+	u, execName, ok := h.boundExecution(ctx, w, requestID, str(body["executionArn"]))
+	if !ok {
 		return
 	}
 	smName, _, _ := unstructured.NestedString(u.Object, "spec", "stateMachineRef", "name")
@@ -691,10 +712,8 @@ func (h *sfnHandler) describeExecution(ctx context.Context, w http.ResponseWrite
 }
 
 func (h *sfnHandler) getExecutionHistory(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
-	_, execName := execParts(str(body["executionArn"]))
-	u, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).Get(ctx, execName, metav1.GetOptions{})
-	if err != nil {
-		writeSFNError(w, http.StatusBadRequest, "ExecutionDoesNotExist", requestID, "Execution "+execName+" does not exist.")
+	u, _, ok := h.boundExecution(ctx, w, requestID, str(body["executionArn"]))
+	if !ok {
 		return
 	}
 	hist, _, _ := unstructured.NestedSlice(u.Object, "status", "history")
