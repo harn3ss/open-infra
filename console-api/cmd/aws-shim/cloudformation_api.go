@@ -194,9 +194,23 @@ func withFoldedEvents(evs []cfn.StackEvent, folded []cfn.FoldedResource, stackNa
 	if len(folded) == 0 {
 		return evs
 	}
-	own := map[string]bool{}
-	for _, e := range evs {
-		own[e.LogicalID] = true
+	// A folded resource an update changed has events of its own (the engine records them). From its first
+	// own event on, those are its history; before it, its creation follows its carriers — unless the update
+	// created it (its first own event is its create), when nothing before is its.
+	type firstOwn struct {
+		idx    int // index into evs (newest first) of its oldest own event
+		status string
+	}
+	own := map[string]firstOwn{}
+	for k, e := range evs {
+		own[e.LogicalID] = firstOwn{idx: k, status: e.Status} // later k is older: the last write is the oldest
+	}
+	suppressed := func(id string, k int) bool {
+		f, ok := own[id]
+		if !ok {
+			return false
+		}
+		return f.status == "CREATE_IN_PROGRESS" || k <= f.idx
 	}
 	carriedBy := map[string][]int{} // carrier logical id -> indexes into folded
 	for i, f := range folded {
@@ -221,7 +235,7 @@ func withFoldedEvents(evs []cfn.StackEvent, folded []cfn.FoldedResource, stackNa
 		chrono = append(chrono, e)
 		if e.Type == cfn.StackTypeName && e.LogicalID == stackName {
 			for i, f := range folded {
-				if len(f.Carriers) > 0 || own[f.LogicalID] {
+				if len(f.Carriers) > 0 || suppressed(f.LogicalID, k) {
 					continue
 				}
 				switch {
@@ -237,7 +251,7 @@ func withFoldedEvents(evs []cfn.StackEvent, folded []cfn.FoldedResource, stackNa
 			continue
 		}
 		for _, i := range carriedBy[e.LogicalID] {
-			if own[folded[i].LogicalID] {
+			if suppressed(folded[i].LogicalID, k) {
 				continue
 			}
 			carrierStatus[i][e.LogicalID] = e.Status
@@ -309,6 +323,9 @@ func (h *cfnDoorway) provisionedResourceRows(ctx context.Context, rec *cfn.Stack
 	sort.Strings(pending)
 	for _, id := range pending {
 		e := latest[id]
+		if strings.HasPrefix(rec.Status, "UPDATE_") && (e.Status == "DELETE_COMPLETE" || e.Status == "DELETE_SKIPPED") {
+			continue // removed (or retained out of the stack) by an update: no longer the stack's, as on AWS
+		}
 		rows = append(rows, resourceRow{logicalID: id, physicalID: e.PhysicalID, typ: e.Type, status: e.Status,
 			reason: e.Reason, timestamp: e.Timestamp})
 	}

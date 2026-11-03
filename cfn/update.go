@@ -93,7 +93,12 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	}
 	action := map[string]ChangeAction{}
 	var removed []StackResource
+	var folded []Change // resources that provision nothing of their own: the update records their changes
 	for _, c := range cs.Changes {
+		if c.Folded {
+			folded = append(folded, c)
+			continue
+		}
 		action[c.LogicalID] = c.Action
 		if c.Action == Remove {
 			removed = append(removed, currentByID[c.LogicalID])
@@ -307,10 +312,27 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	if err := outputFailure(newRec); err != nil {
 		return rollback(err)
 	}
+	// A resource that provisions nothing of its own is created or updated with nothing to apply: its
+	// change is the new template the stack records, and its events say so, as AWS's do.
+	for _, c := range folded {
+		verb := map[ChangeAction]string{Add: "CREATE", Modify: "UPDATE"}[c.Action]
+		if verb == "" {
+			continue
+		}
+		inProg.addEvent(c.LogicalID, c.Name, c.Type, verb+"_IN_PROGRESS", "")
+		inProg.addEvent(c.LogicalID, c.Name, c.Type, verb+"_COMPLETE", "")
+	}
+	flushEvents(ctx, ap, &inProg)
 
 	inProg.stackEvent("UPDATE_COMPLETE_CLEANUP_IN_PROGRESS", "")
+	for _, c := range folded {
+		if c.Action == Remove {
+			inProg.addEvent(c.LogicalID, c.Name, c.Type, "DELETE_IN_PROGRESS", "")
+			inProg.addEvent(c.LogicalID, c.Name, c.Type, "DELETE_COMPLETE", "")
+		}
+	}
 	for _, c := range cs.Changes {
-		if c.Action != Remove {
+		if c.Action != Remove || c.Folded {
 			continue
 		}
 		r := currentByID[c.LogicalID]

@@ -26,6 +26,8 @@ type FoldedResource struct {
 	// None means it exists as soon as the stack's create begins: a WaitConditionHandle (AWS creates it
 	// at once; the condition waits, not the handle), or a resource nothing provisioned is tied to.
 	Carriers []string
+	// props are its properties as the template resolves them (a change set compares them across templates).
+	props map[string]any
 }
 
 // FoldedResources lists the folded resources of a deployed stack, in template order. opts are the
@@ -59,6 +61,7 @@ func FoldedResources(ctx context.Context, rec *StackRecord, opts DeployOptions, 
 	// Each included resource's references (what its properties name), and which provision nothing.
 	refs := map[string][]string{}
 	folded := map[string]bool{}
+	propsOf := map[string]map[string]any{}
 	var ids []string
 	for _, id := range t.rawOrder {
 		res := t.Resources[id]
@@ -77,6 +80,7 @@ func FoldedResources(ctx context.Context, rec *StackRecord, opts DeployOptions, 
 		props, _ := sctx.resolveProps(id)
 		if m, f := tr(id, props, sctx); m == nil && len(f) == 0 {
 			folded[id] = true
+			propsOf[id] = props
 		}
 	}
 	referrers := map[string][]string{}
@@ -118,7 +122,7 @@ func FoldedResources(ctx context.Context, rec *StackRecord, opts DeployOptions, 
 			continue
 		}
 		res := t.Resources[id]
-		fr := FoldedResource{LogicalID: id, Type: res.Type}
+		fr := FoldedResource{LogicalID: id, Type: res.Type, props: propsOf[id]}
 		if v, ok := resolveResourceAttr(d.env(id, res), ""); ok {
 			fr.PhysicalID = v
 		} else if ta, known := resourceAttrs[res.Type]; !known || ta.ref == nil {

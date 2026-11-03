@@ -32,6 +32,10 @@ type Change struct {
 	Name      string
 	Action    ChangeAction
 	Caveats   []string
+	// Folded marks a resource that provisions nothing of its own (folded.go): the change set lists its
+	// change, as AWS does, but an update has no object of its to apply or delete — it records the change
+	// (the new template, and the resource's events). Name is its physical id (its Ref).
+	Folded bool `json:",omitempty"`
 }
 
 type ChangeSet struct {
@@ -117,7 +121,77 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 			}
 		}
 	}
+	var cur *StackRecord
+	if found {
+		cur = current
+	}
+	cs.Changes = append(cs.Changes, foldedChanges(ctx, cur, data, opts, desired)...)
 	return cs, desired, current, nil
+}
+
+// foldedChanges are the changes of the resources that provision nothing of their own (folded.go) between
+// the current stack (nil for a create) and the new template: one that only the new template has is an Add,
+// one only the current stack has a Remove, and one whose type or resolved properties differ a Modify. A
+// logical id provisioned on either side is not listed here: its provisioned change covers it.
+func foldedChanges(ctx context.Context, current *StackRecord, data []byte, opts DeployOptions, desired []builtResource) []Change {
+	next := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Template: string(data), Parameters: opts.Params}
+	provisioned := map[string]bool{}
+	for _, b := range desired {
+		next.Resources = append(next.Resources, b.res)
+		provisioned[strings.SplitN(b.res.LogicalID, "/", 2)[0]] = true
+	}
+	newF := FoldedResources(ctx, next, opts, nil)
+	var oldF []FoldedResource
+	if current != nil {
+		for _, r := range current.Resources {
+			provisioned[strings.SplitN(r.LogicalID, "/", 2)[0]] = true
+		}
+		// The current stack resolves with the parameters it was deployed with. A NoEcho value is not
+		// recorded, so it is taken as the one this operation passes (an unchanged NoEcho parameter is
+		// passed with its previous value).
+		old := opts
+		old.Params = map[string]string{}
+		for k, v := range current.Parameters {
+			old.Params[k] = v
+		}
+		for _, k := range current.NoEchoParameters {
+			if v, ok := opts.Params[k]; ok {
+				old.Params[k] = v
+			}
+		}
+		oldF = FoldedResources(ctx, current, old, nil)
+	}
+	oldByID := map[string]FoldedResource{}
+	for _, f := range oldF {
+		oldByID[f.LogicalID] = f
+	}
+	var out []Change
+	inNew := map[string]bool{}
+	for _, f := range newF {
+		inNew[f.LogicalID] = true
+		if provisioned[f.LogicalID] {
+			continue
+		}
+		ch := Change{LogicalID: f.LogicalID, Type: f.Type, Name: f.PhysicalID, Folded: true}
+		prev, had := oldByID[f.LogicalID]
+		switch {
+		case !had:
+			ch.Action = Add
+		case prev.Type != f.Type || !specEqual(prev.props, f.props):
+			ch.Action, ch.Name = Modify, prev.PhysicalID
+		default:
+			continue
+		}
+		out = append(out, ch)
+	}
+	for i := len(oldF) - 1; i >= 0; i-- { // removals in reverse template order, as the provisioned ones
+		f := oldF[i]
+		if inNew[f.LogicalID] || provisioned[f.LogicalID] {
+			continue
+		}
+		out = append(out, Change{LogicalID: f.LogicalID, Type: f.Type, Name: f.PhysicalID, Action: Remove, Folded: true})
+	}
+	return out
 }
 
 // hasChanges reports whether the change set would actually change anything.
@@ -140,8 +214,12 @@ func policyOrDelete(p string) string {
 
 // specEqual compares two specs through canonical JSON, so the number-typing difference between
 // a freshly-built spec (int) and one round-tripped through the stored record (float64) does
-// not read as a spurious Modify.
+// not read as a spurious Modify. An empty spec equals none: the stored record omits an empty one (a VPC's
+// spec is {}), so it reads back as nil.
 func specEqual(a, b map[string]any) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
 	ja, _ := json.Marshal(a)
 	jb, _ := json.Marshal(b)
 	return bytes.Equal(ja, jb)

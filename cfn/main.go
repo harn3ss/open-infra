@@ -640,7 +640,11 @@ func printChangeSet(cs *ChangeSet) {
 	}
 	for _, c := range cs.Changes {
 		mark := map[ChangeAction]string{Add: "+ ", Modify: "~ ", Remove: "- ", Unchanged: "  "}[c.Action]
-		fmt.Printf("  %s%-8s %-20s %s/%s\n", mark, c.Action, c.LogicalID, c.Kind, c.Name)
+		if c.Folded {
+			fmt.Printf("  %s%-8s %-20s %s (provisions nothing of its own)\n", mark, c.Action, c.LogicalID, c.Type)
+		} else {
+			fmt.Printf("  %s%-8s %-20s %s/%s\n", mark, c.Action, c.LogicalID, c.Kind, c.Name)
+		}
 		for _, cav := range c.Caveats {
 			fmt.Printf("        caveat: %s\n", cav)
 		}
