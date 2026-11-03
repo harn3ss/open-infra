@@ -113,6 +113,14 @@ serve() { # serve <base>: <base>.next.json from the second call on, if present
   if [ "$n" -ge 2 ] && [ -f "$STUB/$1.next.json" ]; then cat "$STUB/$1.next.json"; else cat "$STUB/$1.json"; fi
 }
 case "$*" in
+  "get configmap -n open-infra-console -l openinfra.dev/destruction -o json")
+    [ -f "$STUB/fail-dcm-list" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
+    if [ -f "$STUB/dcms.json" ]; then cat "$STUB/dcms.json"; else echo '{"items":[]}'; fi ;;
+  "get secret -n "*" -l openinfra.dev/volume-crypto -o json")
+    jq --arg ns "$4" '{items: [.items[] | select(.metadata.namespace == $ns and .metadata.labels["openinfra.dev/volume-crypto"] != null)]}' "$STUB/secrets.json" ;;
+  "get configmap "*" -n "*" -o name")
+    grep -qxF "  name: $3" "$STUB/applied.yaml" 2>/dev/null && echo "configmap/$3" ;;
+  "get configmap "*" -n "*" -o jsonpath={.data.erased}") exit 1 ;;
   "get pvc -A -o json")
     [ -f "$STUB/fail-pvc-list" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
     serve pvcs ;;
@@ -150,7 +158,9 @@ case "$*" in
     [ -f "$STUB/fail-xek-list" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
     serve xenckeys ;;
   "get configmap "*" -o jsonpath={.data.lastRotatedEpoch}") exit 1 ;;
-  "create configmap "*) printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n' "$3" ;;
+  "create configmap "*)
+    printf 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\ndata:\n' "$3"
+    for a in "$@"; do case "$a" in --from-literal=*) kv=${a#--from-literal=}; printf '  %s: "%s"\n' "${kv%%=*}" "${kv#*=}" ;; esac; done ;;
   "label --local -f - "*) cat ;;
   "apply -f -") cat >> "$STUB/applied.yaml"; echo "---" >> "$STUB/applied.yaml" ;;
   *) echo "stub kubectl: unhandled: $*" >&2; exit 99 ;;
@@ -520,17 +530,19 @@ func TestVolumeCrypto_SecretWritesConfinedByAdmission(t *testing.T) {
 		"object.type == 'Opaque'",
 		"object.metadata.name.endsWith('-crypto')",
 		"'openinfra.dev/volume-crypto' in oldObject.metadata.labels",
-		"verbs: [get, list, create, delete]",
+		"resources: [secrets]\n    verbs: [get, list, create, delete]\n",
+		// The console-namespace ConfigMap grant is confined to the erasure receipts.
+		"policyName: openinfra-volume-crypto-receipts",
+		`operations: ["CREATE", "UPDATE", "DELETE"]`,
+		"request.name.startsWith('openinfra-volume-erasure-')",
 	} {
 		if !strings.Contains(m, want) {
 			t.Errorf("volume-crypto.yaml missing %q", want)
 		}
 	}
-	// No write verb beyond what the policy gates: update/patch on Secrets would bypass it.
-	for _, bad := range []string{"verbs: [get, list, create, delete, update", "patch]"} {
-		if strings.Contains(m, bad) {
-			t.Errorf("volume-crypto.yaml grants a Secret write verb the admission policy does not gate (%q)", bad)
-		}
+	// No write verb on Secrets beyond what the policy gates: update/patch would bypass it.
+	if strings.Count(m, "resources: [secrets]") != 1 {
+		t.Errorf("volume-crypto.yaml must grant Secrets in exactly one rule (get, list, create, delete)")
 	}
 }
 
@@ -758,7 +770,7 @@ func TestDestroyer_DestroysOnlyItsOwnNamespacesKey(t *testing.T) {
 					destruction("team-b", "erase-app", "app", "2026-11-01T00:00:00Z"),
 					destruction("team-c", "steal", "app", "2026-11-01T00:00:00Z"),
 				),
-			}, nil, "ek_team-a_app", "ek_team-b_app", "app")
+			}, receipts(map[string]string{"team-b.erase-app": "transit/keys/ek_team-b_app"}), "ek_team-a_app", "ek_team-b_app", "app")
 			out, err := e.run(t, sh, script, destroyerEnvVars...)
 			if err != nil {
 				t.Fatalf("destroyer run failed: %v\n%s", err, out)
@@ -932,7 +944,7 @@ func TestDestroyer_RefusesWhileAnotherNamespacesVolumesAreUnderTheKey(t *testing
 					destruction("team-a", "erase-app", "app", "2026-11-01T00:00:00Z"),
 					destruction("team-a", "erase-logs", "logs", "2026-11-01T00:00:00Z"),
 				),
-			}, nil, "app", "ek_team-a_logs")
+			}, receipts(map[string]string{"team-a.erase-logs": "transit/keys/ek_team-a_logs"}), "app", "ek_team-a_logs")
 			out, err := e.run(t, sh, script, destroyerEnvVars...)
 			if err != nil {
 				t.Fatalf("destroyer run failed: %v\n%s", err, out)
@@ -967,5 +979,250 @@ func TestDestroyer_VolumeListFailureDestroysNothing(t *testing.T) {
 	}
 	if got := e.read("vault-deleted.txt"); got != "" {
 		t.Fatalf("a failed volume list must destroy nothing; deleted %q", got)
+	}
+}
+
+// receipts are the volume-crypto reconciler's erasure receipts, by <namespace>.<destruction>: every
+// passphrase under the key erased, checked after any deletion time a test produces.
+func receipts(paths map[string]string) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for id, path := range paths {
+		n := "openinfra-volume-erasure-" + id
+		out[n] = map[string]any{"metadata": map[string]any{"name": n, "namespace": "open-infra-console"},
+			"data": map[string]any{"vaultKeyPath": path, "erased": "2", "remaining": "0", "checkedAt": "2999-01-01T00:00:00Z"}}
+	}
+	return out
+}
+
+// Destroying the Transit key alone leaves an encrypted volume readable: its passphrase is in plain
+// text in its <pvc>-crypto Secret. So the erase is certified only once the volume-crypto reconciler's
+// receipt, from after the key was destroyed, shows every passphrase under it erased. Until then the
+// Destruction stays InProgress (key destroyed, deletion time recorded) and the next run resumes; a
+// receipt from before the deletion, one for another key, or one with passphrases left, is not enough.
+func TestDestroyer_CertifiesOnlyOnceVolumePassphrasesAreErased(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, destroyerPath)
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := destroyerEnv(t, map[string]any{
+				"xenckeys.json":     items(xek("team-a", "app", "transit/keys/ek_team-a_app")),
+				"destructions.json": items(destruction("team-a", "erase-app", "app", "2026-11-01T00:00:00Z")),
+			}, nil, "ek_team-a_app")
+			state := "openinfra-destruction-state-team-a.erase-app"
+			out, err := e.run(t, sh, script, destroyerEnvVars...)
+			if err != nil {
+				t.Fatalf("destroyer run failed: %v\n%s", err, out)
+			}
+			if got := strings.TrimSpace(e.read("vault-deleted.txt")); got != "ek_team-a_app" {
+				t.Fatalf("the key is destroyed first; deleted %q\nlog:\n%s", got, out)
+			}
+			d := cmData(e.cm(t, state))
+			if d["phase"] != "InProgress" || d["destroyedAt"] == "" || d["certificate"] == "" || e.read("mc-certs.txt") != "" {
+				t.Fatalf("without a receipt: InProgress with the deletion time, no certificate written; got %v\nlog:\n%s", d, out)
+			}
+			gone := d["destroyedAt"].(string)
+			rc := filepath.Join(e.dir, "cms", "openinfra-volume-erasure-team-a.erase-app.json")
+			put := func(data map[string]any) {
+				b, _ := json.Marshal(map[string]any{"metadata": map[string]any{"name": "openinfra-volume-erasure-team-a.erase-app"}, "data": data})
+				if err := os.WriteFile(rc, b, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, data := range map[string]map[string]any{
+				"from before the deletion": {"vaultKeyPath": "transit/keys/ek_team-a_app", "erased": "1", "remaining": "0", "checkedAt": "2000-01-01T00:00:00Z"},
+				"for another key":          {"vaultKeyPath": "transit/keys/ek_team-a_other", "erased": "1", "remaining": "0", "checkedAt": "2999-01-01T00:00:00Z"},
+				"with passphrases left":    {"vaultKeyPath": "transit/keys/ek_team-a_app", "erased": "1", "remaining": "1", "checkedAt": "2999-01-01T00:00:00Z"},
+			} {
+				put(data)
+				out, err := e.run(t, sh, script, destroyerEnvVars...)
+				if err != nil {
+					t.Fatalf("destroyer run failed: %v\n%s", err, out)
+				}
+				if d := cmData(e.cm(t, state)); d["phase"] != "InProgress" || e.read("mc-certs.txt") != "" {
+					t.Fatalf("a receipt %s must not complete the erase; got %v\nlog:\n%s", name, d, out)
+				}
+			}
+			put(map[string]any{"vaultKeyPath": "transit/keys/ek_team-a_app", "erased": "3", "remaining": "0", "checkedAt": "2999-01-01T00:00:00Z"})
+			out, err = e.run(t, sh, script, destroyerEnvVars...)
+			if err != nil {
+				t.Fatalf("destroyer run failed: %v\n%s", err, out)
+			}
+			d = cmData(e.cm(t, state))
+			if d["phase"] != "Destroyed" || d["destroyedAt"] != gone {
+				t.Fatalf("with the receipt: Destroyed at the recorded deletion time %s; got %v\nlog:\n%s", gone, d, out)
+			}
+			var c map[string]any
+			if err := json.Unmarshal([]byte(e.read("cert-"+strings.ReplaceAll("audit/audit/"+d["certificate"].(string), "/", "_"))), &c); err != nil {
+				t.Fatalf("certificate not written as JSON: %v\nlog:\n%s", err, out)
+			}
+			if c["volumePassphrasesErased"] != float64(3) || c["destroyedAt"] != gone {
+				t.Errorf("the certificate records the passphrases erased and the deletion time; got %v", c)
+			}
+			if got := strings.TrimSpace(e.read("vault-deleted.txt")); got != "ek_team-a_app" {
+				t.Errorf("the key is destroyed once; deleted %q", got)
+			}
+		})
+	}
+}
+
+// cryptoSecretUnder is a reconciler-written passphrase Secret under Transit path <path> of EncryptionKey
+// <key> ("" path = written before Secrets recorded one), created at <created>.
+func cryptoSecretUnder(ns, pvcName, key, path, created string) map[string]any {
+	d := map[string]any{"CRYPTO_KEY_VALUE": b64("PLAIN"), "WRAPPED_KEY": b64("vault:v1:WRAP"), "OPENINFRA_ENCRYPTION_KEY": b64(key)}
+	if path != "" {
+		d["OPENINFRA_VAULT_KEY_PATH"] = b64(path)
+	}
+	return map[string]any{"type": "Opaque", "data": d, "metadata": map[string]any{"namespace": ns, "name": pvcName + "-crypto",
+		"creationTimestamp": created, "labels": map[string]any{"openinfra.dev/volume-crypto": pvcName},
+		"ownerReferences": []any{map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "name": pvcName, "uid": "uid-" + pvcName}}}}
+}
+
+func destructionState(ns, name, key, path, phase, destroyedAt string) map[string]any {
+	return map[string]any{"metadata": map[string]any{"name": "openinfra-destruction-state-" + ns + "." + name,
+		"labels": map[string]any{"openinfra.dev/destruction": name}},
+		"data": map[string]any{"namespace": ns, "destruction": name, "encryptionKey": key, "vaultKeyPath": path,
+			"phase": phase, "destroyedAt": destroyedAt}}
+}
+
+func pvcAt(ns, name, uid, key, created string) map[string]any {
+	o := pvc(ns, name, uid, "longhorn-encrypted", key, false)
+	o["metadata"].(map[string]any)["creationTimestamp"] = created
+	return o
+}
+
+// When a Destruction destroys a key, every passphrase Secret under it in the Destruction's namespace is
+// deleted (including one written before Secrets recorded their path, which names the key), and the
+// receipt the destroyer certifies from says so. Kept: another key's, another namespace's (a Destruction
+// reaches only its own), and one created after the destruction under a new key of that name. A claim
+// from before the destruction is never keyed again; one created since is.
+func TestVolumeCrypto_ErasesPassphrasesUnderADestroyedKey(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, volumeCryptoPath)
+	const at = "2026-11-02T00:00:00Z"
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := newStubEnv(t, map[string]any{
+				"pvcs.json": items(
+					pvcAt("team", "erased", "uid-1", "k1", "2026-11-01T00:00:00Z"), // its Secret is gone: never re-keyed
+					pvcAt("team", "fresh", "uid-2", "k1", "2026-11-03T00:00:00Z"),  // created since, under the new k1
+					pvcAt("team", "busy", "uid-3", "k3", "2026-11-01T00:00:00Z"),   // its key is being destroyed
+				),
+				"secrets.json": items(
+					cryptoSecretUnder("team", "a", "k1", "transit/keys/ek_team_k1", "2026-11-01T00:00:00Z"),
+					cryptoSecretUnder("team", "legacy", "k1", "", "2026-10-01T00:00:00Z"),
+					cryptoSecretUnder("team", "other-key", "k2", "transit/keys/ek_team_k2", "2026-11-01T00:00:00Z"),
+					cryptoSecretUnder("team", "later", "k1", "transit/keys/ek_team_k1", "2026-11-03T00:00:00Z"),
+					cryptoSecretUnder("elsewhere", "a", "k1", "transit/keys/ek_team_k1", "2026-11-01T00:00:00Z"),
+					cryptoSecretUnder("team", "c", "k3", "transit/keys/ek_team_k3", "2026-11-02T12:00:00Z"),
+				),
+				"pvs.json": items(),
+				"dcms.json": items(
+					destructionState("team", "erase-k1", "k1", "transit/keys/ek_team_k1", "Destroyed", at),
+					destructionState("team", "erase-k3", "k3", "transit/keys/ek_team_k3", "InProgress", ""),
+					destructionState("team", "refused", "k2", "transit/keys/ek_team_k2", "Refused", ""),
+				),
+				"xenckeys.json": items(xek("team", "k1", "transit/keys/ek_team_k1"), xek("team", "k3", "transit/keys/ek_team_k3")),
+			}, "ek_team_k1", "ek_team_k3")
+			out, err := e.run(t, sh, script, "WATCH_SECONDS=0", "POLL_SECONDS=1")
+			if err != nil {
+				t.Fatalf("reconcile run failed: %v\n%s", err, out)
+			}
+			deleted := strings.Fields(e.read("deleted.txt"))
+			if strings.Join(deleted, ",") != "team/a-crypto,team/legacy-crypto,team/c-crypto" {
+				t.Errorf("want exactly team/a-crypto, team/legacy-crypto (k1) and team/c-crypto (k3) erased; deleted %v\nlog:\n%s", deleted, out)
+			}
+			applied := e.read("applied.yaml")
+			for _, want := range []string{
+				"  name: openinfra-volume-erasure-team.erase-k1\ndata:\n  destructionState: \"openinfra-destruction-state-team.erase-k1\"\n  namespace: \"team\"\n  vaultKeyPath: \"transit/keys/ek_team_k1\"\n  erased: \"2\"\n  remaining: \"0\"\n",
+				"  name: openinfra-volume-erasure-team.erase-k3\ndata:\n  destructionState: \"openinfra-destruction-state-team.erase-k3\"\n  namespace: \"team\"\n  vaultKeyPath: \"transit/keys/ek_team_k3\"\n  erased: \"1\"\n  remaining: \"0\"\n",
+			} {
+				if !strings.Contains(applied, want) {
+					t.Errorf("receipt missing:\n%s\napplied:\n%s", want, applied)
+				}
+			}
+			if strings.Contains(applied, "erasure-team.refused") {
+				t.Errorf("a refused Destruction erased nothing and gets no receipt; applied:\n%s", applied)
+			}
+			created := e.created(t)
+			if len(created) != 1 || created[0]["metadata"].(map[string]any)["name"] != "fresh-crypto" {
+				t.Fatalf("only team/fresh (created after the destruction) is keyed; created:\n%s\nlog:\n%s", e.read("created.jsonl"), out)
+			}
+			if l, _ := created[0]["metadata"].(map[string]any)["labels"].(map[string]any); l["velero.io/exclude-from-backup"] != "true" {
+				t.Errorf("a passphrase Secret is kept out of the namespace backups; labels %v", l)
+			}
+			for _, want := range []string{"not keying team/erased", "not keying team/busy"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("log missing %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+// No Destruction records, no keying: a claim is never keyed under a key that may have been destroyed.
+func TestVolumeCrypto_DestructionListFailureKeysNothing(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, volumeCryptoPath)
+	sh := posixShells(t)[0]
+	e := newStubEnv(t, map[string]any{
+		"pvcs.json":     items(pvc("team", "data", "uid-data", "longhorn-encrypted", "k1", false)),
+		"secrets.json":  items(),
+		"pvs.json":      items(),
+		"xenckeys.json": items(xek("team", "k1", "transit/keys/ek_team_k1")),
+		"fail-dcm-list": "",
+	}, "ek_team_k1")
+	out, err := e.run(t, sh, script, "WATCH_SECONDS=0", "POLL_SECONDS=1")
+	if err == nil {
+		t.Fatalf("a run that cannot read the Destruction records must exit non-zero; log:\n%s", out)
+	}
+	if e.read("created.jsonl") != "" {
+		t.Errorf("nothing may be keyed; created %q", e.read("created.jsonl"))
+	}
+}
+
+// A key a Destruction destroyed is never re-created for the EncryptionKey that was destroyed (its
+// state says destroyed); one being destroyed is left alone; a new EncryptionKey of that name, created
+// after the destruction, gets a new key.
+func TestEncryptionKeyReconciler_NeverRecreatesADestroyedKey(t *testing.T) {
+	needJQ(t)
+	script := extractArgsScript(t, encKeyReconPath)
+	at := func(o map[string]any, ts string) map[string]any {
+		o["metadata"].(map[string]any)["creationTimestamp"] = ts
+		return o
+	}
+	for _, sh := range posixShells(t) {
+		t.Run(shellName(sh), func(t *testing.T) {
+			e := newStubEnv(t, map[string]any{
+				"xenckeys.json": items(
+					at(xek("team", "gone", "transit/keys/ek_team_gone"), "2026-11-01T00:00:00Z"),
+					at(xek("team", "again", "transit/keys/ek_team_again"), "2026-11-03T00:00:00Z"), // recreated since
+					at(xek("team", "busy", "transit/keys/ek_team_busy"), "2026-11-01T00:00:00Z"),
+					at(xek("other", "gone", "transit/keys/ek_other_gone"), "2026-11-01T00:00:00Z"), // another namespace
+				),
+				"dcms.json": items(
+					destructionState("team", "d1", "gone", "transit/keys/ek_team_gone", "Destroyed", "2026-11-02T00:00:00Z"),
+					destructionState("team", "d2", "again", "transit/keys/ek_team_again", "Destroyed", "2026-11-02T00:00:00Z"),
+					destructionState("team", "d3", "busy", "transit/keys/ek_team_busy", "InProgress", ""),
+				),
+			}, "ek_team_busy")
+			out, err := e.run(t, sh, script, "WATCH_SECONDS=0", "POLL_SECONDS=1")
+			if err != nil {
+				t.Fatalf("reconcile run failed: %v\n%s", err, out)
+			}
+			created := strings.Fields(e.read("vault-created.txt"))
+			if strings.Join(created, ",") != "ek_team_again,ek_other_gone" {
+				t.Errorf("want only ek_team_again (a new key) and ek_other_gone created; got %v\nlog:\n%s", created, out)
+			}
+			if strings.Contains(e.read("calls.log"), "ek_team_busy/rotate") {
+				t.Errorf("a key being destroyed is never rotated")
+			}
+			applied := e.read("applied.yaml")
+			if !strings.Contains(applied, "  name: openinfra-enckey-state-team.gone\ndata:\n  exists: \"false\"\n  destroyed: \"true\"\n") {
+				t.Errorf("the destroyed key's state must say so; applied:\n%s", applied)
+			}
+			if strings.Contains(applied, "openinfra-enckey-state-team.busy") {
+				t.Errorf("a key being destroyed gets no state write; applied:\n%s", applied)
+			}
+		})
 	}
 }

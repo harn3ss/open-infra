@@ -4,6 +4,15 @@
 # WORM audit store. Part of the OPT-IN `encryption` component; requires audit off-siting (the
 # certificate's tamper-evident sink).
 #
+# Encrypted volumes are erased with their key. Longhorn needs a volume's LUKS passphrase in plain text
+# in its <pvc>-crypto Secret whenever it opens the volume, so destroying the Transit key alone would
+# leave those volumes readable. Once the key is gone, the volume-crypto reconciler deletes the
+# passphrase Secret of every volume under it and writes a receipt
+# (open-infra-console/openinfra-volume-erasure-<namespace>.<name>); the certificate is issued only
+# after a receipt from after the deletion shows none left, and records how many were erased. A volume
+# attached at that moment keeps working until it detaches (the kernel holds its key), as an attached
+# EBS volume does after its KMS key is deleted; it cannot be opened again.
+#
 # This is the one identity allowed to destroy keys, and its power is fenced tightly:
 #   * Vault: Kubernetes-auth role `encryptionkey-destroyer` — read/delete a key + set its config; no
 #     export/datakey/encrypt/decrypt. No stored Vault secret (SA-token login).
@@ -12,7 +21,8 @@
 #     <name>; a key created before namespacing keeps transit/keys/<name>). Naming another namespace's
 #     key finds nothing and destroys nothing.
 #   * Kubernetes: read Destructions + EncryptionKeys, and list volume claims (to see whose data is
-#     under a key); write only the destruction state ConfigMaps; and
+#     under a key); write only the destruction state ConfigMaps (and read the volume-crypto
+#     reconciler's erasure receipts beside them); and
 #     GET exactly ONE secret (the audit off-siter's scoped put+retain MinIO identity) to write the
 #     certificate — resourceName-fenced.
 #   * Certificate: written under certificates/ in the WORM bucket with COMPLIANCE retention, so the
@@ -176,7 +186,6 @@ spec:
                   mc alias set audit "$MINIO_URL" "$AK" "$SK" >/dev/null
 
                   now=$(date -u +%s)
-                  stamp=$(date -u +%FT%TZ)
                   W="$(mktemp -d)"
 
                   # Each EncryptionKey's Transit path by the namespace + name of its claim, from the
@@ -325,12 +334,20 @@ spec:
                           writestate "InProgress" "destroying key" "$cert" "" "$obs" "" "$path"
                           vault write "transit/keys/$kname/config" deletion_allowed=true >/dev/null
                           vault delete "transit/keys/$kname" >/dev/null
+                          gone=$(date -u +%FT%TZ)
+                          writestate "InProgress" "key destroyed; erasing the passphrases of the volumes under it" "$cert" "$gone" "$obs" "" "$path"
                           echo "CRYPTO-ERASED $path ($obs versions) for $ns/$name"
                         elif [ "$prev" = "InProgress" ]; then
-                          # Key absent AND we had already started: a crash after delete. Finish certifying
-                          # with the count recorded before deleting.
+                          # Key absent AND we had already started: a crash after delete, or a run that
+                          # waited on the volumes. Finish with the count recorded before deleting, and the
+                          # time the deletion was recorded (if it was not, now: later, never earlier).
                           [ -n "$obs" ] || obs=0
-                          echo "$path absent but InProgress — resuming certification for $ns/$name"
+                          gone=$(kubectl get configmap "$st" -n "$CONSOLE_NS" -o jsonpath='{.data.destroyedAt}' 2>/dev/null || echo "")
+                          if [ -z "$gone" ]; then
+                            gone=$(date -u +%FT%TZ)
+                            writestate "InProgress" "key destroyed; erasing the passphrases of the volumes under it" "$cert" "$gone" "$obs" "" "$path"
+                          fi
+                          echo "$path absent but InProgress — resuming for $ns/$name"
                         else
                           # Key absent and we never started (e.g. its Transit key was never provisioned):
                           # do NOT certify a phantom erasure. A certificate attesting to an erase that never
@@ -340,6 +357,24 @@ spec:
                           continue
                         fi
 
+                        # The volumes. Longhorn reads a volume's LUKS passphrase from its <pvc>-crypto
+                        # Secret whenever it opens the volume, so the Secret holds it in plain text and
+                        # destroying the Transit key alone leaves every volume under it readable. The
+                        # volume-crypto reconciler (the one identity that writes those Secrets) deletes
+                        # each one under this key and writes a receipt. The erase is certified only once a
+                        # receipt from after the key was destroyed shows none left; until then it stays
+                        # InProgress and the next run resumes here.
+                        rj="$(kubectl get configmap "openinfra-volume-erasure-$ns.$name" -n "$CONSOLE_NS" -o json 2>/dev/null || true)"
+                        erased="$(printf '%s' "$rj" | jq -r --arg p "$path" --arg t "$gone" \
+                          'if (.data.vaultKeyPath // "") == $p and (.data.remaining // "") == "0" and (.data.checkedAt // "") >= $t
+                           then (.data.erased // "0") else empty end' 2>/dev/null || true)"
+                        rj=""
+                        case "$erased" in
+                          "") echo "waiting on $ns/$name: the passphrases of the volumes under $path are not confirmed erased yet"
+                              continue ;;
+                          *[!0-9]*) erased=0 ;;
+                        esac
+
                         # Write the certificate ONCE (idempotent across retries: skip if it already
                         # exists). Built with jq so a reason with quotes/newlines can't corrupt or inject.
                         if mc stat "audit/$AUDIT_BUCKET/$cert" >/dev/null 2>&1; then
@@ -347,13 +382,15 @@ spec:
                           echo "certificate $cert already present — not rewriting"
                         else
                           jq -n --arg key "$key" --arg path "$path" --argjson versions "${obs:-0}" \
-                            --arg ns "$ns" --arg name "$name" --arg reason "$reason" --arg stamp "$stamp" '{
+                            --argjson volumes "$erased" \
+                            --arg ns "$ns" --arg name "$name" --arg reason "$reason" --arg stamp "$gone" '{
                               kind: "DestructionCertificate",
                               standard: "NIST SP 800-88 (cryptographic erase)",
                               encryptionKey: $key,
                               namespace: $ns,
                               vaultKeyPath: $path,
                               keyVersionsDestroyed: $versions,
+                              volumePassphrasesErased: $volumes,
                               destruction: ($ns + "/" + $name),
                               reason: $reason,
                               destroyedAt: $stamp,
@@ -367,7 +404,7 @@ spec:
                         # Anchor the certificate by sha256 in the state ConfigMap — a different trust
                         # domain than the bucket — so the locked original can be verified even if a newer
                         # object version shadows it at "latest".
-                        writestate "Destroyed" "crypto-erased; certificate written" "$cert" "$stamp" "$obs" "$sha" "$path"
+                        writestate "Destroyed" "crypto-erased (key and $erased volume passphrase(s)); certificate written" "$cert" "$gone" "$obs" "$sha" "$path"
                         echo "destruction: $ns/$name complete — certificate $cert (sha256 ${sha:-unknown})"
                       done
               resources:

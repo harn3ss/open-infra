@@ -137,8 +137,11 @@ boot; see [virtual-machines.md](virtual-machines.md)), and an encrypted database
   key** under the EncryptionKey of that name **in the claim's own namespace** (a claim cannot be keyed
   under another namespace's key — with no key of that name beside it, it waits), and writes the claim's
   LUKS passphrase Secret `<pvc-name>-crypto` in its namespace: the data key's plaintext is the passphrase, its wrapped form is stored alongside.
-  Destroying the EncryptionKey makes the passphrase unrecoverable → the volume is crypto-erased. An
-  existing passphrase Secret is never replaced.
+  Longhorn reads the plaintext whenever it opens the volume, so destroying the key alone would not
+  erase the volume. A `kind: Destruction` of the EncryptionKey therefore also deletes the passphrase
+  Secret of every volume under it, and those volumes are never keyed again: they are crypto-erased
+  (see [`destruction.md`](destruction.md)). An existing passphrase Secret is never replaced, and
+  passphrase Secrets are excluded from the Velero backups.
 - **Ready means usable.** A claim on this class binds only once its passphrase Secret exists, and a
   `kind: Volume` reports **Ready only once its claim is Bound** — the point at which EBS reports a
   volume `available`. A CloudFormation `AWS::EC2::Volume` therefore completes when the disk can be

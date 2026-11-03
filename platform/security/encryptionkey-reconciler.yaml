@@ -12,6 +12,11 @@
 #   * Vault: an AppRole scoped to create/read/rotate transit/keys/* — NOT destroy. Key DESTRUCTION
 #     (crypto-erase) is deliberately withheld here and gated behind kind: Destruction.
 #
+# A key a Destruction destroyed stays destroyed: its Transit path is never re-created for the
+# EncryptionKey that was destroyed (as AWS never brings back a deleted KMS key). Without this, the next
+# pass re-created an empty key at the same path, so the key the certificate says is gone was back. A new
+# EncryptionKey of the same name, created after the destruction, gets a new key.
+#
 # If Vault is unreachable or sealed, or the AppRole secret is absent, the run fails and retries — no
 # key is silently skipped, none is silently destroyed.
 #
@@ -53,7 +58,8 @@ subjects:
     namespace: crossplane-system
 ---
 # Write the live-state ConfigMaps in the console namespace (single-writer; the composition owns the
-# separate spec-mirror ConfigMaps).
+# separate spec-mirror ConfigMaps), and list the destroyer's Destruction records there (the keys never
+# to re-create).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -62,7 +68,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [configmaps]
-    verbs: [get, create, update, patch]
+    verbs: [get, list, create, update, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -148,7 +154,7 @@ spec:
                   # created before namespacing keeps transit/keys/<name>) — never derived from the
                   # bare name, so two namespaces' same-named keys are two Transit keys.
                   sync_key() {
-                    kns="$1"; name="$2"; path="$3"; ktype="$4"; rotdays="$5"
+                    kns="$1"; name="$2"; path="$3"; ktype="$4"; rotdays="$5"; created="${6:-}"
                     kname="${path#transit/keys/}"
                     case "$path" in transit/keys/*) ;; *) kname="" ;; esac
                     case "$kname" in
@@ -163,6 +169,32 @@ spec:
                     # created before namespacing keeps its bare-name ConfigMap.
                     case "$kname" in ek_*) kid="$kns.$name" ;; *) kid="$name" ;; esac
                     now=$(date -u +%s)
+                    # A key a Destruction is destroying, or destroyed, is left alone: never re-created,
+                    # never rotated. Destroyed applies to the EncryptionKey that existed then (created at
+                    # or before the destruction, or of unknown age); one created since is a new key.
+                    tomb="$(LNS="$kns" LP="$path" LC="$created" awk -F '\t' '$1 == ENVIRON["LNS"] && $2 == ENVIRON["LP"] &&
+                      ($3 == "InProgress" || $4 == "" || ENVIRON["LC"] == "" || ENVIRON["LC"] <= $4) { print $3; exit }' "$W/destroyed.tsv")"
+                    if [ "$tomb" = "InProgress" ]; then
+                      echo "skipping $kns/$name: a Destruction is destroying $path"
+                      echo "$path" >> "$W/synced"
+                      return 0
+                    elif [ -n "$tomb" ]; then
+                      kubectl create configmap "openinfra-enckey-state-$kid" -n "$CONSOLE_NS" \
+                        --from-literal=exists=false \
+                        --from-literal=destroyed=true \
+                        --from-literal=namespace="$kns" \
+                        --from-literal=name="$name" \
+                        --from-literal=keyType="$ktype" \
+                        --from-literal=latestVersion=0 \
+                        --from-literal=vaultKeyPath="$path" \
+                        --from-literal=lastChecked="$(date -u +%FT%TZ)" \
+                        --dry-run=client -o yaml \
+                        | kubectl label --local -f - "openinfra.dev/enckey=$name" -o yaml \
+                        | kubectl apply -f - >/dev/null || return 1
+                      echo "$kns/$name: $path was destroyed by a Destruction — not re-created"
+                      echo "$path" >> "$W/synced"
+                      return 0
+                    fi
                     # Ensure the Transit key exists (idempotent; create-if-missing, never destroy).
                     if ! vault read "transit/keys/$kname" >/dev/null 2>&1; then
                       echo "creating transit key $kname ($ktype) for $kns/$name"
@@ -216,15 +248,27 @@ spec:
                           | select((.spec.claimRef.namespace // "") != "" and (.spec.claimRef.name // "") != "")
                           | select((.status.vaultKeyPath // "") != "")
                           | [.spec.claimRef.namespace, .spec.claimRef.name, .status.vaultKeyPath,
-                             (.spec.keyType // "aes256-gcm96"), (.spec.rotationDays // 0)] | @tsv' \
+                             (.spec.keyType // "aes256-gcm96"), (.spec.rotationDays // 0),
+                             (.metadata.creationTimestamp // "")] | @tsv' \
                       > "$W/keys.tsv"
+                    # The keys Destructions destroyed (or are destroying), by namespace + Transit path,
+                    # from the destroyer's state records. A failed list fails the pass: a destroyed key is
+                    # never re-created on a guess.
+                    dj="$(kubectl get configmap -n "$CONSOLE_NS" -l openinfra.dev/destruction -o json)" || { echo "cannot list Destruction records" >&2; return 1; }
+                    printf '%s' "$dj" | jq -r '.items[]
+                        | select(.metadata.name | startswith("openinfra-destruction-state-"))
+                        | select(.data.phase == "InProgress" or .data.phase == "Destroyed")
+                        | select((.data.namespace // "") != "" and (.data.vaultKeyPath // "") != "")
+                        | [.data.namespace, .data.vaultKeyPath, .data.phase, (.data.destroyedAt // "")] | @tsv' \
+                      > "$W/destroyed.tsv"
+                    dj=""
                   }
 
                   # Full pass: every EncryptionKey. Any failure fails the run (and it retries).
                   list_keys || exit 1
-                  while IFS="$TAB" read -r n k p t r; do
+                  while IFS="$TAB" read -r n k p t r c; do
                     [ -n "$k" ] || continue
-                    sync_key "$n" "$k" "$p" "$t" "$r" || exit 1
+                    sync_key "$n" "$k" "$p" "$t" "$r" "$c" || exit 1
                   done < "$W/keys.tsv"
 
                   # Watch: provision EncryptionKeys created since the full pass within seconds. A
@@ -232,10 +276,10 @@ spec:
                   while [ $(( $(date +%s) - start )) -lt "$WATCH_SECONDS" ]; do
                     sleep "$POLL_SECONDS"
                     list_keys || { failed=1; continue; }
-                    while IFS="$TAB" read -r n k p t r; do
+                    while IFS="$TAB" read -r n k p t r c; do
                       [ -n "$k" ] || continue
                       grep -qxF "$p" "$W/synced" && continue
-                      sync_key "$n" "$k" "$p" "$t" "$r" || failed=1
+                      sync_key "$n" "$k" "$p" "$t" "$r" "$c" || failed=1
                     done < "$W/keys.tsv"
                   done
                   [ "$failed" -eq 0 ] || exit 1

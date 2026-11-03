@@ -39,7 +39,7 @@ CONSOLE_NS="${CONSOLE_NS:-open-infra-console}"
 echo "▸ resetting prior enc-verify state (this probe is re-runnable)"
 kubectl delete encryptionkey "$KEY" destruction "$KEY" -n default --ignore-not-found >/dev/null 2>&1 || true
 kubectl -n "$CONSOLE_NS" delete configmap \
-  "openinfra-destruction-state-default.$KEY" "openinfra-enckey-state-default.$KEY" "openinfra-enckey-default.$KEY" \
+  "openinfra-destruction-state-default.$KEY" "openinfra-volume-erasure-default.$KEY" "openinfra-enckey-state-default.$KEY" "openinfra-enckey-default.$KEY" \
   "openinfra-destruction-state-$KEY" "openinfra-enckey-state-$KEY" \
   "openinfra-destruction-$KEY" "openinfra-enckey-$KEY" --ignore-not-found >/dev/null 2>&1 || true
 

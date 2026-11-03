@@ -1,7 +1,17 @@
 # Reconciler for ENCRYPTED kind: Volume — materializes each volume's LUKS passphrase Secret
 # (`<pvc>-crypto`) from a customer key (kind: EncryptionKey / Vault Transit), so encryption at rest
-# is real AND crypto-erasable: the passphrase is a Vault Transit data key wrapped by the
-# EncryptionKey, so destroying that key (kind: Destruction) makes the passphrase unrecoverable.
+# is real AND crypto-erasable: the passphrase is a Vault Transit data key drawn under the
+# EncryptionKey.
+#
+# Crypto-erase. Longhorn reads the passphrase from the Secret whenever it opens the volume (attach,
+# expand), so the Secret must hold it in plain text, beside its wrapped form; destroying the Transit
+# key alone would leave the volume readable. So when a Destruction destroys a key (its state record
+# InProgress or Destroyed), this reconciler deletes the passphrase Secret of every volume in the
+# Destruction's namespace under that key, never keys a volume under it again, and writes the receipt
+# the destroyer certifies from (open-infra-console/openinfra-volume-erasure-<namespace>.<name>). The
+# erase runs before the Vault login: it needs nothing from Vault. Keeping only the wrapped key would
+# have broken every attach, since Longhorn has no hook to unwrap it. Passphrase Secrets carry
+# velero.io/exclude-from-backup, so the namespace backups hold no copy of them.
 #
 # It watches PVCs on the `longhorn-encrypted` StorageClass carrying the annotation
 # `openinfra.dev/encryption-key: <EncryptionKey name>` (set by the Volume composition), and for any
@@ -82,6 +92,29 @@ subjects:
     name: volume-crypto
     namespace: crossplane-system
 ---
+# Read the destroyer's Destruction records and write the erasure receipts beside them. Writes are
+# confined to the receipts by the second admission policy at the end of this file.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: volume-crypto-erasure
+  namespace: open-infra-console
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: volume-crypto-erasure
+  namespace: open-infra-console
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: volume-crypto-erasure }
+subjects:
+  - kind: ServiceAccount
+    name: volume-crypto
+    namespace: crossplane-system
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -127,27 +160,101 @@ spec:
                 - { name: HOME, value: /tmp }
                 - { name: PATH, value: "/bin-shared:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }
                 - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
+                - { name: CONSOLE_NS, value: "open-infra-console" }
                 # After the first pass, keep polling for new encrypted PVCs this long (0 = one pass).
                 - { name: WATCH_SECONDS, value: "240" }  # the deadline (295s) also counts scheduling + the init container
                 - { name: POLL_SECONDS, value: "5" }
               args:
                 - |
-                  VAULT_TOKEN="$(vault write -field=token auth/kubernetes/login \
-                    role=volume-crypto \
-                    jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)")"
-                  export VAULT_TOKEN
-                  [ -n "$VAULT_TOKEN" ] || { echo "vault kubernetes login failed (has the operator run the volume-crypto Vault step?)" >&2; exit 1; }
-
                   start=$(date +%s)
                   W="$(mktemp -d)"
                   : > "$W/waiting"
                   TAB="$(printf '\t')"
                   failed=0
 
+                  # erase_destroyed <all|inprogress>: load the keys Destructions destroyed (or are
+                  # destroying) — what key_pending never keys under — and delete the passphrase Secret
+                  # of every volume under each: all of them on the first pass, the in-progress ones on
+                  # each poll after. A failed list keys nothing this pass (key_pending checks).
+                  erase_destroyed() {
+                    rm -f "$W/destroyed.ok"
+                    dj="$(kubectl get configmap -n "$CONSOLE_NS" -l openinfra.dev/destruction -o json)" \
+                      || { echo "cannot list Destruction records: nothing erased or keyed this pass" >&2; return 1; }
+                    printf '%s' "$dj" | jq -r '.items[]
+                        | select(.metadata.name | startswith("openinfra-destruction-state-"))
+                        | select(.data.phase == "InProgress" or .data.phase == "Destroyed")
+                        | select((.data.namespace // "") != "" and ((.data.vaultKeyPath // "") | startswith("transit/keys/")))
+                        | [.metadata.name, .data.namespace, .data.vaultKeyPath, .data.phase, (.data.destroyedAt // ""), (.data.encryptionKey // "")] | @tsv' \
+                      > "$W/destroyed.tsv"
+                    dj=""
+                    : > "$W/destroyed.ok"
+                    erc=0
+                    while IFS="$TAB" read -r st dns dpath dphase dat dkey; do
+                      [ -n "$st" ] || continue
+                      [ "$1" = all ] || [ "$dphase" = InProgress ] || continue
+                      rcpt="openinfra-volume-erasure-${st#openinfra-destruction-state-}"
+                      if ! sl="$(kubectl get secret -n "$dns" -l openinfra.dev/volume-crypto -o json)"; then
+                        echo "cannot list the crypto Secrets of ${dns}: erasure under ${dpath} retried next pass" >&2
+                        erc=1; continue
+                      fi
+                      # Under this key: the Secret records its path, or (written before Secrets recorded
+                      # one) names the destroyed EncryptionKey — fail closed. A Secret created after the
+                      # key was destroyed belongs to a new key of that name, and is kept.
+                      printf '%s' "$sl" | LP="$dpath" LK="$dkey" LPH="$dphase" LAT="$dat" jq -r '.items[]
+                          | select(.metadata.deletionTimestamp == null)
+                          | ((.data.OPENINFRA_VAULT_KEY_PATH // "") | @base64d) as $p
+                          | select($p == env.LP
+                              or ($p == "" and env.LK != "" and ((.data.OPENINFRA_ENCRYPTION_KEY // "") | @base64d) == env.LK))
+                          | select(env.LPH == "InProgress" or env.LAT == "" or (.metadata.creationTimestamp // "") <= env.LAT)
+                          | .metadata.name' > "$W/erase.txt"
+                      sl=""
+                      n=0; left=0
+                      while read -r s; do
+                        [ -n "$s" ] || continue
+                        if kubectl delete secret "$s" -n "$dns" --ignore-not-found >/dev/null 2>&1; then
+                          echo "erased ${dns}/${s}: the key it was under (${dpath}) was destroyed by a Destruction"
+                          n=$((n + 1))
+                        else
+                          echo "could not erase ${dns}/${s}" >&2
+                          left=$((left + 1)); erc=1
+                        fi
+                      done < "$W/erase.txt"
+                      # The receipt the destroyer certifies from: rewritten while the Destruction is in
+                      # progress, and afterwards only when something changed or there is none yet.
+                      if [ "$dphase" = InProgress ] || [ "$n" -gt 0 ] || [ "$left" -gt 0 ] \
+                          || ! kubectl get configmap "$rcpt" -n "$CONSOLE_NS" -o name >/dev/null 2>&1; then
+                        was="$(kubectl get configmap "$rcpt" -n "$CONSOLE_NS" -o jsonpath='{.data.erased}' 2>/dev/null || true)"
+                        case "$was" in "" | *[!0-9]*) was=0 ;; esac
+                        kubectl create configmap "$rcpt" -n "$CONSOLE_NS" \
+                          --from-literal=destructionState="$st" \
+                          --from-literal=namespace="$dns" \
+                          --from-literal=vaultKeyPath="$dpath" \
+                          --from-literal=erased="$((was + n))" \
+                          --from-literal=remaining="$left" \
+                          --from-literal=checkedAt="$(date -u +%FT%TZ)" \
+                          --dry-run=client -o yaml \
+                          | kubectl label --local -f - openinfra.dev/volume-erasure=true -o yaml \
+                          | kubectl apply -f - >/dev/null || { echo "cannot write the erasure receipt $rcpt" >&2; erc=1; }
+                      fi
+                    done < "$W/destroyed.tsv"
+                    return "$erc"
+                  }
+
+                  # Erasing needs nothing from Vault, so it runs before the login: a Destruction
+                  # completes even while Vault is unreachable.
+                  erase_destroyed all || failed=1
+
+                  VAULT_TOKEN="$(vault write -field=token auth/kubernetes/login \
+                    role=volume-crypto \
+                    jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)")"
+                  export VAULT_TOKEN
+                  [ -n "$VAULT_TOKEN" ] || { echo "vault kubernetes login failed (has the operator run the volume-crypto Vault step?)" >&2; exit 1; }
+
                   # One pass: key every encrypted PVC that has no crypto Secret yet. Called as
                   # `key_pending || failed=1`, so a transient API error fails this pass (and, at the
                   # end, the run) without ending the watch; errors are therefore returned explicitly.
                   key_pending() {
+                    [ -f "$W/destroyed.ok" ] || { echo "the destroyed keys are unknown this pass: nothing keyed" >&2; return 1; }
                     # Encrypted PVCs that name an EncryptionKey and are NOT being deleted (keying a
                     # claim on its way out would only leave a passphrase behind).
                     pvcs="$(kubectl get pvc -A -o json)" || { echo "cannot list PersistentVolumeClaims" >&2; return 1; }
@@ -155,7 +262,8 @@ spec:
                         | select(.spec.storageClassName=="longhorn-encrypted")
                         | select(.metadata.annotations["openinfra.dev/encryption-key"] != null)
                         | select(.metadata.deletionTimestamp == null)
-                        | [.metadata.namespace, .metadata.name, .metadata.uid, .metadata.annotations["openinfra.dev/encryption-key"]] | @tsv' \
+                        | [.metadata.namespace, .metadata.name, .metadata.uid, .metadata.annotations["openinfra.dev/encryption-key"],
+                           (.metadata.creationTimestamp // "")] | @tsv' \
                       > "$W/pvcs.tsv"
                     # Crypto Secrets that already exist (names only — no key material leaves the API).
                     # A failed list just means every PVC gets the per-name check below.
@@ -180,7 +288,7 @@ spec:
                       xek=""
                     fi
 
-                    while IFS="$TAB" read -r ns name uid key; do
+                    while IFS="$TAB" read -r ns name uid key created; do
                       [ -n "$name" ] || continue
                       # The authoritative check, by name: an existing crypto Secret (labeled or not) is
                       # NEVER regenerated — that would orphan the LUKS data.
@@ -200,6 +308,18 @@ spec:
                       if [ -z "$kname" ]; then
                         if ! grep -qxF "$ns/$name" "$W/waiting"; then
                           echo "waiting on ${ns}/${name}: no EncryptionKey '$key' in namespace ${ns} (or its composite has not recorded a Transit path yet)" >&2
+                          echo "$ns/$name" >> "$W/waiting"
+                        fi
+                        continue
+                      fi
+                      # Never under a key a Destruction is destroying, or destroyed: a claim from before
+                      # the destruction was erased with it (a new passphrase could never open it again).
+                      # A claim created since, under a new EncryptionKey of that name, is keyed.
+                      tomb="$(LNS="$ns" LP="$kpath" LC="$created" awk -F '\t' '$2 == ENVIRON["LNS"] && $3 == ENVIRON["LP"] &&
+                        ($4 == "InProgress" || $5 == "" || ENVIRON["LC"] == "" || ENVIRON["LC"] <= $5) { print $4; exit }' "$W/destroyed.tsv")"
+                      if [ -n "$tomb" ]; then
+                        if ! grep -qxF "$ns/$name" "$W/waiting"; then
+                          echo "not keying ${ns}/${name}: EncryptionKey '$key' (${kpath}) was destroyed by a Destruction" >&2
                           echo "$ns/$name" >> "$W/waiting"
                         fi
                         continue
@@ -232,6 +352,7 @@ spec:
                           --dry-run=client -o json \
                         | jq --arg pvc "$name" --arg uid "$uid" '
                             .metadata.labels["openinfra.dev/volume-crypto"] = (if ($pvc | length) <= 63 then $pvc else "true" end)
+                            | .metadata.labels["velero.io/exclude-from-backup"] = "true"
                             | .metadata.ownerReferences = [{apiVersion: "v1", kind: "PersistentVolumeClaim", name: $pvc, uid: $uid}]' \
                         | kubectl create -f - >/dev/null; then
                         echo "materialized ${name}-crypto in ${ns} from EncryptionKey ${key} (${kpath})"
@@ -266,7 +387,8 @@ spec:
                       if printf '%s' "$src" | jq --arg pvc "$name" --arg uid "$uid" --arg ns "$ns" '
                             {apiVersion: "v1", kind: "Secret", type: "Opaque", data: .data,
                              metadata: {name: ($pvc + "-crypto"), namespace: $ns,
-                               labels: {"openinfra.dev/volume-crypto": (if ($pvc | length) <= 63 then $pvc else "true" end)},
+                               labels: {"openinfra.dev/volume-crypto": (if ($pvc | length) <= 63 then $pvc else "true" end),
+                                        "velero.io/exclude-from-backup": "true"},
                                ownerReferences: [{apiVersion: "v1", kind: "PersistentVolumeClaim", name: $pvc, uid: $uid}]}}' \
                           | kubectl create -f - >/dev/null; then
                         echo "materialized ${name}-crypto in ${ns} (CDI prime of ${target}, same passphrase)"
@@ -321,6 +443,7 @@ spec:
                   sweep_orphans || failed=1
                   while [ $(( $(date +%s) - start )) -lt "$WATCH_SECONDS" ]; do
                     sleep "$POLL_SECONDS"
+                    erase_destroyed inprogress || failed=1
                     key_pending || failed=1
                   done
                   [ "$failed" -eq 0 ] || exit 1
@@ -365,4 +488,35 @@ metadata:
   name: openinfra-volume-crypto-secrets
 spec:
   policyName: openinfra-volume-crypto-secrets
+  validationActions: [Deny]
+---
+# The ConfigMap grant in the console namespace, confined to the erasure receipts: the volume-crypto
+# reconciler can never write a Destruction's own state record (it could otherwise forge a finished
+# erase) or any other ConfigMap there.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-volume-crypto-receipts
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: volume-crypto-serviceaccount
+      expression: "request.userInfo.username == 'system:serviceaccount:crossplane-system:volume-crypto'"
+  validations:
+    - expression: "request.name.startsWith('openinfra-volume-erasure-')"
+      reason: Forbidden
+      message: "the volume-crypto reconciler may only write openinfra-volume-erasure-* ConfigMaps"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-volume-crypto-receipts
+spec:
+  policyName: openinfra-volume-crypto-receipts
   validationActions: [Deny]
