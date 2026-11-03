@@ -1,9 +1,11 @@
 # The compiler: one SecurityGroup claim -> one NetworkPolicy that selects the SG's
 # members (pods labelled openinfra.dev/sg-<name>) and applies default-deny + the
-# declared allows. Enforced by Cilium.
+# declared allows. Enforced by the CNI (kube-ovn ACLs).
 #
 #   from/to:
-#     cidr          -> ipBlock          (edge/LAN IP enforcement; external sources)
+#     cidr          -> ipBlock          (edge/LAN IP enforcement; external sources), plus
+#                                        the join address of each cluster node the cidr
+#                                        names (see "Cluster nodes as sources" below)
 #     securityGroup -> podSelector      (members of another SG, same namespace)
 #     namespace     -> namespaceSelector (all pods in a namespace)
 #   protocol/ports  -> NetworkPolicyPort list (empty ports = all ports)
@@ -11,6 +13,17 @@
 #
 # Members are produced by the resource compositions: an Application/Function/VM with
 # `securityGroups: [web]` stamps openinfra.dev/sg-web="" on its pods.
+#
+# Cluster nodes as sources: a connection a node makes itself (an operator working on a
+# node, or a host-network pod on it) reaches a member from that node's join-subnet address
+# (annotation ovn.kubernetes.io/ip_address), never from its LAN address: kube-proxy
+# masquerades a node's own connection to a Service or LAN address, and the node enters the
+# pod network through its join port. So an ingress cidr that contains a node's LAN address
+# also admits that node's join address, which is what the policy sees. Other nodes, and LAN
+# hosts outside the cidr, stay refused. The nodes are read as extra resources (Crossplane
+# needs get/list/watch on nodes: platform/security/crossplane-node-read.yaml), and only by a
+# group with a narrower ingress cidr than 0.0.0.0/0 (which already covers join addresses).
+# Until they are observed (the first reconcile), only the declared cidrs render.
 #
 # Synced after the XRD (sync-wave 3).
 apiVersion: apiextensions.crossplane.io/v1
@@ -41,12 +54,60 @@ spec:
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
             {{- $defIngress := hasKey $spec "ingress" }}
             {{- $defEgress := hasKey $spec "egress" }}
+            {{- /* The cluster's nodes, as {join, joinN, lanN}: the join address a node's own
+                   connections arrive from, and its LAN addresses as integers (for cidr
+                   containment; Go templates have no CIDR functions). Only canonical dotted
+                   IPv4 is read, so a leading-zero or IPv6 value is never mis-parsed. */}}
+            {{- $v4 := "^(0|[1-9][0-9]{0,2})([.](0|[1-9][0-9]{0,2})){3}$" }}
+            {{- $nodeHosts := list }}
+            {{- $nodeReq := index (.extraResources | default dict) "nodes" }}
+            {{- $nodeItems := list }}
+            {{- if $nodeReq }}{{ $nodeItems = ($nodeReq.items | default list) }}{{ end }}
+            {{- range $n := $nodeItems }}
+              {{- $node := ($n.resource | default dict) }}
+              {{- $meta := ($node.metadata | default dict) }}
+              {{- $ann := ($meta.annotations | default dict) }}
+              {{- $status := ($node.status | default dict) }}
+              {{- $join := index (splitList "," (index $ann "ovn.kubernetes.io/ip_address" | default "")) 0 }}
+              {{- if regexMatch $v4 $join }}
+                {{- $o := splitList "." $join }}
+                {{- $joinN := add (mul (int (index $o 0)) 16777216) (mul (int (index $o 1)) 65536) (mul (int (index $o 2)) 256) (int (index $o 3)) }}
+                {{- $lanN := list }}
+                {{- range $a := ($status.addresses | default list) }}
+                  {{- if and (has $a.type (list "InternalIP" "ExternalIP")) (regexMatch $v4 ($a.address | default "")) }}
+                    {{- $o = splitList "." $a.address }}
+                    {{- $lanN = append $lanN (add (mul (int (index $o 0)) 16777216) (mul (int (index $o 1)) 65536) (mul (int (index $o 2)) 256) (int (index $o 3))) }}
+                  {{- end }}
+                {{- end }}
+                {{- $nodeHosts = append $nodeHosts (dict "join" $join "joinN" $joinN "lanN" $lanN) }}
+              {{- end }}
+            {{- end }}
+            {{- $wantNodes := false }}
             {{- /* build ingress rules */}}
             {{- $ingressRules := list }}
             {{- range $rule := ($spec.ingress | default list) }}
               {{- $peers := list }}
               {{- range $src := ($rule.from | default list) }}
                 {{- if $src.cidr }}{{ $peers = append $peers (dict "ipBlock" (dict "cidr" $src.cidr)) }}
+                  {{- /* Admit the join address of each node whose LAN address is in the cidr
+                         (and whose join address is not already in it). */}}
+                  {{- $c := splitList "/" $src.cidr }}
+                  {{- if and (eq (len $c) 2) (regexMatch $v4 (index $c 0)) (regexMatch "^[0-9]{1,2}$" (index $c 1)) }}
+                    {{- $bits := int (index $c 1) }}
+                    {{- if gt $bits 0 }}{{ $wantNodes = true }}{{ end }}
+                    {{- $size := 1 }}
+                    {{- range $i := until 32 }}{{ if ge $i $bits }}{{ $size = mul $size 2 }}{{ end }}{{ end }}
+                    {{- $o := splitList "." (index $c 0) }}
+                    {{- $netN := div (add (mul (int (index $o 0)) 16777216) (mul (int (index $o 1)) 65536) (mul (int (index $o 2)) 256) (int (index $o 3))) $size }}
+                    {{- range $h := $nodeHosts }}
+                      {{- $named := false }}
+                      {{- range $l := $h.lanN }}{{ if eq (div $l $size) $netN }}{{ $named = true }}{{ end }}{{ end }}
+                      {{- if and $named (ne (div $h.joinN $size) $netN) }}
+                        {{- $jb := dict "ipBlock" (dict "cidr" (printf "%s/32" $h.join)) }}
+                        {{- if not (has $jb $peers) }}{{ $peers = append $peers $jb }}{{ end }}
+                      {{- end }}
+                    {{- end }}
+                  {{- end }}
                 {{- else if $src.securityGroup }}{{ $peers = append $peers (dict "podSelector" (dict "matchLabels" (dict (printf "openinfra.dev/sg-%s" $src.securityGroup) ""))) }}
                 {{- else if $src.namespace }}{{ $peers = append $peers (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" $src.namespace))) }}
                 {{- end }}
@@ -63,8 +124,7 @@ spec:
                    open-infra-console) reach SG-gated workloads, so console features
                    like DB Peek can't be silently broken by a user's SG. Only when
                    ingress is restricted; mirrors the auto-DNS egress below. A user's
-                   own `0.0.0.0/0` ipBlock does NOT cover this — Cilium matches
-                   in-cluster sources by identity, not CIDR. */}}
+                   narrower cidrs don't cover the console's pod addresses. */}}
             {{- if $defIngress }}
               {{- $console := dict "from" (list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "open-infra-console")))) }}
               {{- $ingressRules = append $ingressRules $console }}
@@ -90,6 +150,18 @@ spec:
             {{- if $defEgress }}
               {{- $dns := dict "to" (list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")))) "ports" (list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53)) }}
               {{- $egressRules = append $egressRules $dns }}
+            {{- end }}
+            {{- if $wantNodes }}
+            ---
+            # Read the cluster's nodes, for the join address of each node an ingress cidr names.
+            apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+            kind: ExtraResources
+            requirements:
+              nodes:
+                apiVersion: v1
+                kind: Node
+                matchLabels:
+                  kubernetes.io/os: linux
             {{- end }}
             ---
             # --- The SecurityGroup's NetworkPolicy ---

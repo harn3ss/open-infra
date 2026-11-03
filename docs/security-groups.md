@@ -100,7 +100,7 @@ spec:
 ## Enforcement semantics (read this)
 
 Security Groups compile to Kubernetes **NetworkPolicies** enforced by kube-ovn
-(OVN ACLs). Two behaviors matter:
+(OVN ACLs). Three behaviors matter:
 
 1. **CIDR rules match by IP — edge *and* in-cluster.** kube-ovn enforces
    `ipBlock`/CIDR against the actual source IP (verified: a client inside an
@@ -116,6 +116,12 @@ Security Groups compile to Kubernetes **NetworkPolicies** enforced by kube-ovn
    LoadBalancer preserves it (the platform sets `externalTrafficPolicy: Local`).
    HTTP that arrives through the Ingress controller is proxied, so the source seen
    is Traefik — filter those by hostname/Ingress, not pod CIDR.
+3. **A cluster node as the client.** A connection a node makes itself (an operator
+   working on a node, or a host-network pod on it) reaches the workload from that
+   node's join-subnet address, not its LAN address: kube-proxy masquerades it. So
+   an ingress `cidr` that contains a node's LAN address also admits that node's
+   join address, and the rule matches the node it names. Other nodes, and LAN
+   hosts outside the `cidr`, are still refused. Egress `cidr`s are unchanged.
 
 SGs are **additive** to the platform's baseline isolation: an `Application`
 already gets a tenant NetworkPolicy allowing same-namespace + the ingress
