@@ -60,17 +60,24 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 	prog := *rec
 	prog.Status = "DELETE_IN_PROGRESS"
 	prog.UpdatedAt = now()
+	prog.Resources = append([]StackResource(nil), rec.Resources...)
 	prog.Events = append([]StackEvent(nil), rec.Events...)
 	prog.stackEvent("DELETE_IN_PROGRESS", "User Initiated")
 	if err := writeStackRecord(ctx, ap, &prog, opts); err != nil {
 		return nil, fmt.Errorf("could not persist stack record: %w", err)
+	}
+	// Each resource's delete is an event, and its own status, as on AWS (DescribeStackEvents,
+	// ListStackResources of a DELETE_FAILED stack).
+	ev := func(r StackResource, status, reason string) {
+		prog.resourceEvent(r, status, reason)
+		flushEvents(ctx, ap, &prog)
 	}
 
 	fail := func(resources, pending []StackResource, cause error) (*StackRecord, error) {
 		out := *rec
 		out.Status = "DELETE_FAILED"
 		out.Message = cause.Error()
-		out.Resources, out.Pending = resources, pending
+		out.Resources, out.Pending = withStatuses(resources, prog.Resources), pending
 		out.UpdatedAt = now()
 		out.Events = prog.Events
 		out.stackEvent("DELETE_FAILED", cause.Error())
@@ -80,11 +87,11 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 	// Pending — an interrupted operation's write-ahead, kept only on a record that recovery had to settle
 	// without the operation's authority — may never have been applied: those are deleted only where the
 	// object carries this stack's label (newest first: they come after Resources in create order).
-	pendingLeft, perr := teardown(ctx, opts, ap, rec.Pending, true, false)
+	pendingLeft, perr := teardown(ctx, opts, ap, rec.Pending, true, false, ev)
 	if perr != nil {
 		return fail(rec.Resources, pendingLeft, perr)
 	}
-	remaining, terr := teardown(ctx, opts, ap, rec.Resources, false, false)
+	remaining, terr := teardown(ctx, opts, ap, rec.Resources, false, false, ev)
 	if terr != nil {
 		return fail(remaining, pendingLeft, terr)
 	}
@@ -94,9 +101,11 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 	_ = ap.Delete(ctx, "v1", "ConfigMap", "cfn-stack-"+opts.StackName)
 	out := *rec
 	out.Status = "DELETE_COMPLETE"
-	out.Resources = append(remaining, pendingLeft...) // the retained ones, if any
+	out.Resources = withStatuses(append(remaining, pendingLeft...), prog.Resources) // the retained ones, if any
 	out.Pending = nil
 	out.UpdatedAt = now()
+	out.Events = prog.Events
+	out.stackEvent("DELETE_COMPLETE", "")
 	return &out, nil
 }
 
@@ -106,6 +115,23 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 // same-named object that is not this stack's must survive.
 type LabelReader interface {
 	GetLabels(ctx context.Context, apiVersion, kind, name string) (labels map[string]string, found bool, err error)
+}
+
+// withStatuses gives each resource of rs the status its entry in from has (by logical id) — the status
+// a teardown's events set.
+func withStatuses(rs, from []StackResource) []StackResource {
+	byID := map[string]StackResource{}
+	for _, r := range from {
+		byID[r.LogicalID] = r
+	}
+	out := make([]StackResource, len(rs))
+	for i, r := range rs {
+		if f, ok := byID[r.LogicalID]; ok && f.Status != "" {
+			r.Status, r.StatusReason, r.Timestamp = f.Status, f.StatusReason, f.Timestamp
+		}
+		out[i] = r
+	}
+	return out
 }
 
 // TerminationProtectedError is a delete refused because the stack has termination protection on.
@@ -225,9 +251,12 @@ func isOutOfBand(r StackResource) bool {
 // With opts.Wait each deleted object is waited for until it is actually gone. ownedOnly (recovery) first
 // reads each object's labels and deletes it only if it carries this stack's label; an absent object, or
 // one that is not this stack's, is simply not part of the stack. rollback (undoing an interrupted
-// create) keeps only Retain resources, not RetainExceptOnCreate ones. It returns the resources still
-// present (retained, the one that failed, and any not reached) and the first error.
-func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []StackResource, ownedOnly, rollback bool) ([]StackResource, error) {
+// create) keeps only Retain resources, not RetainExceptOnCreate ones. ev, when set, records each
+// template resource's DELETE_IN_PROGRESS / DELETE_COMPLETE / DELETE_FAILED / DELETE_SKIPPED, as AWS
+// reports them (a companion object is part of its resource and records none). It returns the resources
+// still present (retained, the one that failed, and any not reached) and the first error.
+func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []StackResource, ownedOnly, rollback bool,
+	ev func(r StackResource, status, reason string)) ([]StackResource, error) {
 	gone := make([]bool, len(resources))
 	remaining := func() []StackResource {
 		var out []StackResource
@@ -238,41 +267,28 @@ func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []S
 		}
 		return out
 	}
+	event := func(r StackResource, status, reason string) {
+		if ev != nil && !strings.Contains(r.LogicalID, "/") {
+			ev(r, status, reason)
+		}
+	}
+	failed := func(r StackResource, err error) ([]StackResource, error) {
+		event(r, "DELETE_FAILED", err.Error())
+		return remaining(), err
+	}
 	lr, canReadLabels := ap.(LabelReader)
 	for i := len(resources) - 1; i >= 0; i-- {
 		r := resources[i]
 		if (rollback && keptOnRollback(r)) || (!rollback && isRetain(r)) {
+			event(r, "DELETE_SKIPPED", "")
 			continue // left in place, intentionally unmanaged
 		}
 		if IsSignalWait(r) { // a wait condition: there is nothing to delete
+			event(r, "DELETE_COMPLETE", "")
 			gone[i] = true
 			continue
 		}
-		// A custom resource (#269) has no k8s object to delete — instead send its Function a Delete event
-		// (AWS's RequestType=Delete), best-effort: a failed custom-resource Delete must not wedge teardown
-		// (it would otherwise leave the whole stack undeletable), so it is not fatal. A refusal because the
-		// caller may not invoke the Function is: the resource stays and the teardown fails.
-		if r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind {
-			if _, err := customResourceDelete(ctx, opts, r); IsUnauthorized(err) {
-				return remaining(), fmt.Errorf("custom resource %s: %w", r.LogicalID, err)
-			}
-			gone[i] = true
-			continue
-		}
-		// A REST v1 API (#295) has no k8s object — tear it down via the apigateway hook, by the id
-		// recorded at provision time. Best-effort like a custom-resource Delete: a failed/absent
-		// deprovision (or a CLI destroy with no hook) must not wedge teardown of the rest of the stack.
-		// A refusal because the caller may not delete the API is fatal, as for a custom resource.
-		if r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind {
-			if opts.DeprovisionRestAPI != nil && r.ProvisionedID != "" {
-				if err := opts.DeprovisionRestAPI(ctx, r.ProvisionedID); IsUnauthorized(err) {
-					return remaining(), fmt.Errorf("REST API %s: %w", r.LogicalID, err)
-				}
-			}
-			gone[i] = true
-			continue
-		}
-		if ownedOnly && canReadLabels {
+		if ownedOnly && canReadLabels && !isOutOfBand(r) {
 			labels, found, err := lr.GetLabels(ctx, r.APIVersion, r.Kind, r.Name)
 			if err != nil {
 				return remaining(), fmt.Errorf("reading %s/%s: %w", r.Kind, r.Name, err)
@@ -282,11 +298,34 @@ func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []S
 				continue
 			}
 		}
-		// An S3 bucket is deleted as AWS deletes one: refused while it still holds data (BucketNotEmpty —
-		// the stack goes DELETE_FAILED and the bucket and its data stay), removed with its claim when empty.
-		if _, err := deleteStackObject(ctx, opts, ap, r, true); err != nil {
-			return remaining(), err
+		event(r, "DELETE_IN_PROGRESS", "")
+		switch {
+		// A custom resource (#269) has no k8s object to delete — instead send its Function a Delete event
+		// (AWS's RequestType=Delete), best-effort: a failed custom-resource Delete must not wedge teardown
+		// (it would otherwise leave the whole stack undeletable), so it is not fatal. A refusal because the
+		// caller may not invoke the Function is: the resource stays and the teardown fails.
+		case r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind:
+			if _, err := customResourceDelete(ctx, opts, r); IsUnauthorized(err) {
+				return failed(r, fmt.Errorf("custom resource %s: %w", r.LogicalID, err))
+			}
+		// A REST v1 API (#295) has no k8s object — tear it down via the apigateway hook, by the id
+		// recorded at provision time. Best-effort like a custom-resource Delete: a failed/absent
+		// deprovision (or a CLI destroy with no hook) must not wedge teardown of the rest of the stack.
+		// A refusal because the caller may not delete the API is fatal, as for a custom resource.
+		case r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind:
+			if opts.DeprovisionRestAPI != nil && r.ProvisionedID != "" {
+				if err := opts.DeprovisionRestAPI(ctx, r.ProvisionedID); IsUnauthorized(err) {
+					return failed(r, fmt.Errorf("REST API %s: %w", r.LogicalID, err))
+				}
+			}
+		default:
+			// An S3 bucket is deleted as AWS deletes one: refused while it still holds data (BucketNotEmpty —
+			// the stack goes DELETE_FAILED and the bucket and its data stay), removed with its claim when empty.
+			if _, err := deleteStackObject(ctx, opts, ap, r, true); err != nil {
+				return failed(r, err)
+			}
 		}
+		event(r, "DELETE_COMPLETE", "")
 		gone[i] = true
 	}
 	return remaining(), nil

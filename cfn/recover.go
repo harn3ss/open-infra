@@ -94,15 +94,20 @@ func recoverNow() string { return time.Now().UTC().Format(time.RFC3339) }
 
 func recoverCreate(ctx context.Context, opts DeployOptions, ap Applier, rec *StackRecord, reason string) (*StackRecord, error) {
 	prog := *rec
+	prog.Events = append([]StackEvent(nil), rec.Events...)
 	prog.Status = "ROLLBACK_IN_PROGRESS"
 	prog.Message = reason
 	prog.UpdatedAt = recoverNow()
 	if err := writeStackRecord(ctx, ap, &prog, opts); err != nil {
 		return rec, fmt.Errorf("could not record ROLLBACK_IN_PROGRESS: %w", err)
 	}
-	remaining, terr := teardown(ctx, opts, ap, unionResources(rec.Resources, rec.Pending), true, true)
+	remaining, terr := teardown(ctx, opts, ap, unionResources(rec.Resources, rec.Pending), true, true, func(r StackResource, status, reason string) {
+		prog.resourceEvent(r, status, reason)
+		flushEvents(ctx, ap, &prog)
+	})
 	out := *rec
 	out.Pending = nil
+	out.Events = prog.Events
 	out.Outputs, out.OutputsOmitted = nil, nil
 	out.Resources = remaining // the retained resources (and, on failure, what could not be deleted)
 	out.UpdatedAt = recoverNow()

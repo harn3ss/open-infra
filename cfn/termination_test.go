@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+// #350 Y: a delete records each resource's DELETE_IN_PROGRESS / DELETE_COMPLETE / DELETE_FAILED, so after a
+// DELETE_FAILED the resource that failed shows DELETE_FAILED and the ones deleted show DELETE_COMPLETE
+// (they kept their old CREATE_COMPLETE).
+func TestDestroy_ResourceDeleteStatuses(t *testing.T) {
+	f := &fakeApplier{}
+	tmpl := "Resources:\n  A: { Type: AWS::KMS::Key, Properties: { Description: a } }\n  B: { Type: AWS::KMS::Key, DependsOn: A, Properties: { Description: b } }\n"
+	if _, err := Deploy(context.Background(), []byte(tmpl), deployOpts(), f); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	f.failDelete = "EncryptionKey/s-a"
+	rec, err := Destroy(context.Background(), deployOpts(), f)
+	if err == nil || rec.Status != "DELETE_FAILED" {
+		t.Fatalf("want DELETE_FAILED: %v %+v", err, rec)
+	}
+	if len(rec.Resources) != 1 || rec.Resources[0].LogicalID != "A" || rec.Resources[0].Status != "DELETE_FAILED" {
+		t.Fatalf("the resource that failed must show DELETE_FAILED: %+v", rec.Resources)
+	}
+	if !hasEvent(rec, "B", "DELETE_COMPLETE") || !hasEvent(rec, "A", "DELETE_FAILED") {
+		t.Fatalf("events: %+v", rec.Events)
+	}
+}
+
 // A stack created with termination protection refuses its delete (nothing is deleted), and keeps the
 // protection across an update, as on AWS.
 func TestTerminationProtection(t *testing.T) {
