@@ -227,7 +227,7 @@ per-type registry, the exceptions to the front-door gate and the breadth gaps ar
 | `AWS::AppSync` | 5 | 0 | 0 | `appsync` |
 | `AWS::AutoScaling` | 0 | 0 | 2 | none |
 | `AWS::CertificateManager` | 1 | 0 | 0 | `acm` |
-| `AWS::CloudFormation` | 3 | 0 | 0 | `cloudformation` |
+| `AWS::CloudFormation` | 4 | 0 | 0 | `cloudformation` |
 | `AWS::CloudFront` | 6 | 0 | 0 | `cloudfront` |
 | `AWS::CloudWatch` | 1 | 0 | 0 | `monitoring` |
 | `AWS::Cognito` | 2 | 0 | 0 | `cognito-idp` |
@@ -308,17 +308,39 @@ the invoke needs the **in-cluster** deploy path (the aws-shim CloudFormation doo
 
 ### Nested stacks (`AWS::CloudFormation::Stack`)
 
-Nested stacks are **flattened** (#268): each child template is inlined into the parent as one combined
-template (`FlattenNested`), which then deploys as a single open-infra stack. The child's resources are
-prefixed with the stack's logical id, the parent-supplied `Parameters` are substituted, and the parent's
-`Fn::GetAtt <Stack>.Outputs.<Key>` resolves to the child's Output expression. The `cfn` CLI resolves a
-child `TemplateURL` as a **local file** (relative to the parent); the aws-shim front door reads it from
-**its own S3** (see [Templates in S3](#templates-in-s3-templateurl)).
+**Through the aws-shim CloudFormation front door, a nested stack is a stack of its own**, as on AWS.
+Its child template is read from its `TemplateURL` in the shim's own S3 as the caller (see [Templates in
+S3](#templates-in-s3-templateurl)); the URL may be a literal or a `Fn::Sub` / `Fn::Join` of parameters and
+pseudo parameters, as `aws cloudformation package` writes them. The child is created when the parent
+reaches it in dependency order, under the caller's authority (the caller needs `CreateStack` on it as well),
+and is named `<parent>-<logical id>-<suffix>` (lowercase, within 63 characters). It has its own record,
+events and Outputs, and `DescribeStacks` / `ListStacks` report its `ParentId` and `RootId`. In the parent,
+the resource's physical id and `Ref` are the child's `StackId`, and `Fn::GetAtt <Stack>.Outputs.<Key>`
+reads the child's Output: resources created after the child, and the parent's Outputs, get the value.
+Nested stacks may nest further.
 
-**Fail-closed** (a flattened template is never a mis-wired one): the flattener refuses what it can't
-rewrite correctly — `Fn::Sub` in a child, child `Conditions`/`Mappings`, a nested-nested stack, an
-intrinsic (non-literal) `TemplateURL`, an unmappable `Ref`/`GetAtt`, an id collision, or an unbound
-child `Parameter`.
+A child that fails is rolled back as a stack, and the parent's create rolls back with it, deleting the
+child (`Embedded stack … was not successfully created: …`). Deleting the parent deletes its nested stacks
+first, as stacks; each is then kept as a deleted stack like any other. A nested stack is deleted only with
+its parent: `DeleteStack` on it directly is refused, and so is `UpdateTerminationProtection` (its root's
+applies). `UpdateStack` on a nested stack directly runs, as AWS allows.
+
+Refused rather than approximated: `NotificationARNs` (stack notifications are not sent); a `Parameters`
+value that is not a string, number or boolean (AWS takes only those — join a list with `Fn::Join`); a
+`TemplateURL` or parameter value that has not resolved when the child is created. `Tags` are accepted as
+a caveat (stack tags are not propagated). An **update of the parent that would add, remove or change a
+nested stack** — its parameters, or its template as read from the `TemplateURL` now — is refused with
+nothing changed; an update that leaves every nested stack as it is runs, its resources reading the
+children's current Outputs.
+
+**The `cfn` CLI flattens nested stacks instead** (#268): it resolves each child `TemplateURL` as a **local
+file** (relative to the parent) and inlines the child into the parent as one combined template
+(`FlattenNested`), which then deploys as a single open-infra stack. The child's resources are prefixed
+with the stack's logical id, the parent-supplied `Parameters` are substituted, and the parent's
+`Fn::GetAtt <Stack>.Outputs.<Key>` resolves to the child's Output expression. **Fail-closed** (a flattened
+template is never a mis-wired one): the flattener refuses what it can't rewrite correctly — `Fn::Sub` in a
+child, child `Conditions`/`Mappings`, a nested-nested stack, an intrinsic (non-literal) `TemplateURL`, an
+unmappable `Ref`/`GetAtt`, an id collision, or an unbound child `Parameter`.
 
 ### Templates in S3 (`TemplateURL`)
 

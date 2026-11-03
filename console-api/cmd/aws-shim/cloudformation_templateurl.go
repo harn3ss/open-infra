@@ -5,8 +5,8 @@
 // stack (AWS::CloudFormation::Stack) names its child template the same way. This front door accepts a
 // TemplateURL that names an object in ITS OWN S3: the URL is only ever parsed into a bucket and key, never
 // fetched over the network (no SSRF), and the object is read as the CALLER is allowed to read it (the S3
-// front door's own authorization). Nested stacks are then flattened into one stack (cfn.FlattenNested)
-// with the same resolver.
+// front door's own authorization). A nested stack's child template is read the same way, when the child is
+// created as a stack of its own (cfn_nested.go).
 package main
 
 import (
@@ -18,7 +18,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/harn3ss/open-infra/cfn"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	"github.com/minio/minio-go/v7"
@@ -128,28 +127,4 @@ func (h *cfnDoorway) s3ReadDenied(r *http.Request, claims iam.Claims, bucket, ke
 	ok, reason := g.Allow(r.Context(), claims,
 		s3authz.Request{Action: "s3:GetObject", Verb: "get", Bucket: bucket, Key: key, Object: true}, requestContext(claims, r))
 	return !ok, reason
-}
-
-// templateURLResolver resolves a nested stack's child TemplateURL the same way (cfn.TemplateResolver).
-type templateURLResolver struct {
-	h *cfnDoorway
-	r *http.Request
-}
-
-func (t templateURLResolver) Resolve(u string) ([]byte, error) {
-	s, err := t.h.readTemplateURL(t.r, u)
-	return []byte(s), err
-}
-
-// withNestedFlattened inlines a template's nested stacks (AWS::CloudFormation::Stack, children from this
-// shim's S3) into one stack; a template with none is returned unchanged.
-func (h *cfnDoorway) withNestedFlattened(r *http.Request, body string) (string, error) {
-	if !strings.Contains(body, "AWS::CloudFormation::Stack") {
-		return body, nil
-	}
-	out, err := cfn.FlattenNested([]byte(body), templateURLResolver{h: h, r: r})
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
 }

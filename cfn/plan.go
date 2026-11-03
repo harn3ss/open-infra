@@ -142,6 +142,9 @@ type Capabilities struct {
 	// a KeyName it does not hold refuses, as AWS's InvalidKeyPair.NotFound. nil (the CLI, or a shim without
 	// the key-pair store): KeyName is a caveat and no key is injected.
 	KeyPairs map[string]string
+	// NestedStacks: this environment creates a nested stack (AWS::CloudFormation::Stack) as a stack of its
+	// own (nested_stacks.go). Off (the CLI, which flattens nested stacks first), the type refuses.
+	NestedStacks bool
 }
 
 // underValidatedDomain reports whether host is one of domains or a subdomain of one.
@@ -268,9 +271,12 @@ func BuildPlanForStack(data []byte, params, exports map[string]string, stackName
 	// A REST v1 stack's API Gateway resources collate from their own properties and the logical graph
 	// alone (no attribute that resolves during deploy), so their gate runs even when the rest of the stack's
 	// cannot: their refusals and caveats reach the plan and the change set.
-	gateAll := len(missing) == 0 && t.Transform == nil && !hasCustomResources(t) && !hasAPIGatewayRestV1(t)
+	// A nested stack's Outputs resolve only once it is created as well (nested_stacks.go), so such a stack
+	// gates only its AWS::CloudFormation::Stack resources, whose sentinel reads its own properties alone.
+	gateAll := len(missing) == 0 && t.Transform == nil && !hasCustomResources(t) && !hasAPIGatewayRestV1(t) && !hasNestedStacks(t)
 	gateAPIGateway := !gateAll && len(missing) == 0 && t.Transform == nil && !hasCustomResources(t) && hasAPIGatewayRestV1(t)
-	if gateAll || gateAPIGateway {
+	gateNested := !gateAll && len(missing) == 0 && t.Transform == nil && hasNestedStacks(t)
+	if gateAll || gateAPIGateway || gateNested {
 		byID := map[string]*PlannedResource{}
 		for i := range plan.Resources {
 			byID[plan.Resources[i].LogicalID] = &plan.Resources[i]
@@ -289,7 +295,7 @@ func BuildPlanForStack(data []byte, params, exports map[string]string, stackName
 			if res.Condition != "" && !tr.conds[res.Condition] {
 				continue
 			}
-			if gateAPIGateway && !strings.HasPrefix(res.Type, "AWS::ApiGateway::") {
+			if !gateAll && !(gateAPIGateway && strings.HasPrefix(res.Type, "AWS::ApiGateway::")) && !(gateNested && res.Type == StackTypeName) {
 				continue
 			}
 			tf := translatorFor(res.Type)

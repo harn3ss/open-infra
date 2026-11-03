@@ -22,9 +22,6 @@ type cfnRegistryType struct {
 	Kind       string `json:"kind,omitempty"`
 	Translator bool   `json:"translator"`
 	Deployable bool   `json:"deployable"`
-	// Flattened: a nested stack, inlined into its parent by FlattenNested before the engine plans it —
-	// its resources are what a stack creates, not the Stack itself.
-	Flattened bool `json:"flattened,omitempty"`
 }
 
 type cfnRegistry struct {
@@ -49,7 +46,7 @@ func buildCFNRegistry() cfnRegistry {
 	for _, t := range sorted {
 		e := Lookup(t)
 		reg.Types[t] = cfnRegistryType{Status: e.Status, Kind: e.Kind, Translator: hasTranslator(t),
-			Deployable: e.mappable() && hasTranslator(t), Flattened: t == StackTypeName}
+			Deployable: e.mappable() && hasTranslator(t)}
 	}
 	return reg
 }

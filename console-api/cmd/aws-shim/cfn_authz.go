@@ -164,6 +164,9 @@ func restAPIPlanOps(plan cfn.RestAPIPlan) []string {
 // shim-authority hook first checks the caller may do that step itself.
 func (h *cfnDoorway) asCaller(o cfn.DeployOptions, ap *impersonatingApplier) cfn.DeployOptions {
 	o.Owner = ap.user
+	// Nested stacks are created, read and deleted as the caller (cfn_nested.go). Creating one reads its
+	// child template as the caller, so an operation that may create one names its request (withRequest).
+	o.NestedStacks = &nestedDriver{h: h, ap: ap}
 	if inv := o.Invoke; inv != nil {
 		o.Invoke = func(ctx context.Context, ns, fn string, event []byte) (map[string]any, error) {
 			if ok, reason := h.canInvokeFunction(ctx, ap, ns, fn); !ok {
@@ -199,6 +202,13 @@ func (h *cfnDoorway) asCaller(o cfn.DeployOptions, ap *impersonatingApplier) cfn
 // each Kubernetes object (as the caller's own delete would be checked), each custom resource's Function
 // (its Delete event), each REST v1 API. Retained resources are left alone, so they need nothing.
 func (h *cfnDoorway) authorizeTeardown(ctx context.Context, ap *impersonatingApplier, rec *cfn.StackRecord) (bool, string) {
+	return h.authorizeTeardownDepth(ctx, ap, rec, 0)
+}
+
+// maxNestedDepth bounds how deep nested stacks are followed (AWS allows nesting several levels deep).
+const maxNestedDepth = 8
+
+func (h *cfnDoorway) authorizeTeardownDepth(ctx context.Context, ap *impersonatingApplier, rec *cfn.StackRecord, depth int) (bool, string) {
 	for _, r := range append(append([]cfn.StackResource{}, rec.Resources...), rec.Pending...) {
 		if cfn.IsRetained(r) || cfn.IsSignalWait(r) { // a wait condition deletes nothing
 			continue
@@ -206,6 +216,22 @@ func (h *cfnDoorway) authorizeTeardown(ctx context.Context, ap *impersonatingApp
 		var ok bool
 		var reason string
 		switch {
+		case cfn.IsNestedStack(r):
+			// A nested stack is deleted as a stack: the caller may delete it, and everything in it.
+			ok, reason = true, ""
+			if depth >= maxNestedDepth {
+				ok, reason = false, "nested stacks are nested too deeply"
+				break
+			}
+			if okDel, why := h.canDo(ctx, ap.callerClaims(), "delete", r.Name); !okDel {
+				ok, reason = false, why
+				break
+			}
+			if child, found, err := h.getRecord(ctx, r.Name); err != nil {
+				ok, reason = false, err.Error()
+			} else if found {
+				ok, reason = h.authorizeTeardownDepth(ctx, ap, child, depth+1)
+			}
 		case cfn.IsCustomResource(r):
 			fn, _ := r.Spec["function"].(string)
 			ok, reason = h.canInvokeFunction(ctx, ap, h.ns, fn)

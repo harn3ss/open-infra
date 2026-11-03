@@ -157,7 +157,9 @@ func (h *cfnDoorway) caps() cfn.Capabilities {
 		// Elastic IP allocations are holder Services the shim keeps in the stack namespace, recorded with
 		// their stack like the other service resources (cfn_addresses.go).
 		EC2AddressAPI:    h.shimDyn != nil && h.services != nil && h.services.owners != nil,
-		ValidatedDomains: fileDomains(h.validatedDomainsFile)}
+		ValidatedDomains: fileDomains(h.validatedDomainsFile),
+		// A nested stack is a stack of its own, its child template read from this shim's S3 (cfn_nested.go).
+		NestedStacks: h.s3 != nil && h.s3.mc != nil}
 	if ecr, ok := h.services.door("ecr").(*ecrHandler); ok && ecr != nil && c.ECRAPI {
 		c.ECRRepositoryHost = stripScheme(ecr.proxyEndpoint)
 	}
@@ -470,7 +472,7 @@ func (h *cfnDoorway) serveQuery(w http.ResponseWriter, r *http.Request, claims i
 
 // templateBody returns the request's template — inline (TemplateBody), or a TemplateURL object in this
 // shim's own S3, read as the caller (cloudformation_templateurl.go: parsed, never fetched over the
-// network) — with any nested stacks flattened into it.
+// network). A nested stack in it is created as a stack of its own (cfn_nested.go).
 func (h *cfnDoorway) templateBody(r *http.Request) (string, error) {
 	body := r.PostFormValue("TemplateBody")
 	if strings.TrimSpace(body) == "" {
@@ -484,7 +486,7 @@ func (h *cfnDoorway) templateBody(r *http.Request) (string, error) {
 		}
 		body = b
 	}
-	return h.withNestedFlattened(r, body)
+	return body, nil
 }
 
 // updateTemplate is an update's template (UpdateStack, CreateChangeSet): the request's own, or — with
@@ -761,7 +763,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not seed stack record: "+err.Error(), cfnXMLNamespace)
 		return
 	}
-	createOpts := h.asCaller(h.stackOpts(name, params, ex, body), ap)
+	createOpts := h.withRequest(h.asCaller(h.stackOpts(name, params, ex, body), ap), ap, r)
 	createOpts.StackID = stackID
 	createOpts.TerminationProtection = strings.EqualFold(r.PostFormValue("EnableTerminationProtection"), "true")
 	h.runStackOp(name, "CreateStack", "ROLLBACK_COMPLETE", ap, func(bctx context.Context) error {
@@ -826,7 +828,7 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		h.claimRefusal(w, requestID, name, "update", err)
 		return
 	}
-	updateOpts := h.asCaller(h.stackOpts(name, params, ex, body), ap)
+	updateOpts := h.withRequest(h.asCaller(h.stackOpts(name, params, ex, body), ap), ap, r)
 	updateOpts.StackID = current.StackID
 	h.runStackOp(name, "UpdateStack", "UPDATE_FAILED", ap, func(bctx context.Context) error {
 		rec, derr := cfn.Update(bctx, []byte(body), updateOpts, ap)
@@ -865,6 +867,12 @@ func (h *cfnDoorway) updateTerminationProtection(w http.ResponseWriter, r *http.
 		return
 	}
 	defer h.releaseLease(context.WithoutCancel(ctx), name)
+	// As on AWS, a nested stack's termination protection is its root stack's, and is not set on it.
+	if nestedOf(rec) != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+			"Stack ["+name+"] is a nested stack: its termination protection is its root stack's ("+rec.RootID+").", cfnXMLNamespace)
+		return
+	}
 	h.auditNonOwner("UpdateTerminationProtection", rec, ap)
 	rec.TerminationProtection = enable == "true"
 	if err := ap.putRecord(ctx, rec); err != nil {
@@ -887,6 +895,13 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 	if rec.TerminationProtection {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
 			(&cfn.TerminationProtectedError{Stack: name}).Error(), cfnXMLNamespace)
+		return
+	}
+	// A nested stack is deleted with its parent (cfn_nested.go): deleting it on its own would leave its
+	// parent naming a stack that is gone.
+	if root := nestedOf(rec); root != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+			"Stack ["+name+"] is a nested stack of "+rec.ParentID+": delete its root stack ("+root+") instead.", cfnXMLNamespace)
 		return
 	}
 	if inProgress(rec.Status) {
@@ -926,16 +941,9 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 		}
 		out, derr := cfn.Destroy(bctx, h.asCaller(h.opts(name, nil), ap), ap)
 		if derr == nil {
-			// As on AWS, the deleted stack is kept (listed, and readable by its StackId) for 90 days
-			// (cfn_deleted.go) — before its events record goes below.
-			h.keepDeleted(bctx, before, out)
-			// As on AWS, deleting a stack deletes its change sets — and its stored NoEcho values, events and
-			// signals.
-			h.deleteChangeSetsOf(bctx, name)
-			h.deleteStackSide(bctx, name)
-			if err := h.noecho.deleteStack(bctx, name); err != nil {
-				h.logger.Warn("cfn: could not delete the stack's NoEcho parameters", "stack", name, "error", err.Error())
-			}
+			// As on AWS, the deleted stack is kept for 90 days, and its change sets, stored NoEcho values,
+			// events and signals are deleted (cfn_nested.go).
+			h.afterDelete(bctx, name, before, out)
 		}
 		return derr
 	})
@@ -985,6 +993,9 @@ func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {
 	b.WriteString("<StackStatus>" + xesc(rec.Status) + "</StackStatus>")
 	if rec.DeletedAt != "" {
 		b.WriteString("<DeletionTime>" + xesc(rec.DeletedAt) + "</DeletionTime>")
+	}
+	if rec.ParentID != "" { // a nested stack names its parent and root, as on AWS
+		b.WriteString("<ParentId>" + xesc(rec.ParentID) + "</ParentId><RootId>" + xesc(rec.RootID) + "</RootId>")
 	}
 	switch {
 	case rec.Message != "":
@@ -1090,6 +1101,9 @@ func (h *cfnDoorway) listStacks(w http.ResponseWriter, r *http.Request, ap *impe
 		b.WriteString("<StackStatus>" + xesc(rec.Status) + "</StackStatus>")
 		if rec.Message != "" {
 			b.WriteString("<StackStatusReason>" + xesc(rec.Message) + "</StackStatusReason>")
+		}
+		if rec.ParentID != "" {
+			b.WriteString("<ParentId>" + xesc(rec.ParentID) + "</ParentId><RootId>" + xesc(rec.RootID) + "</RootId>")
 		}
 		b.WriteString("</member>")
 	}
@@ -1233,7 +1247,7 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 	}
 
 	// BuildChangeSet computes the diff against the current stack record and APPLIES NOTHING.
-	cs, _, current, cerr := cfn.BuildChangeSet(ctx, []byte(body), h.optsFor(stack, params, ex), ap)
+	cs, _, current, cerr := cfn.BuildChangeSet(ctx, []byte(body), h.withRequest(h.optsFor(stack, params, ex), ap, r), ap)
 	if cerr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, cerr.Error(), cfnXMLNamespace)
 		return
@@ -1491,7 +1505,7 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		h.claimRefusal(w, requestID, stack, "update", err)
 		return
 	}
-	execOpts := h.asCaller(h.stackOpts(stack, params, ex, body), ap)
+	execOpts := h.withRequest(h.asCaller(h.stackOpts(stack, params, ex, body), ap), ap, r)
 	if create {
 		execOpts.StackID = cs.StackID
 	} else {

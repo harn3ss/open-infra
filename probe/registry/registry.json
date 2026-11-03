@@ -288,6 +288,7 @@
       "conditional": true,
       "deployableTypes": [
         "AWS::CloudFormation::CustomResource",
+        "AWS::CloudFormation::Stack",
         "AWS::CloudFormation::WaitCondition",
         "AWS::CloudFormation::WaitConditionHandle"
       ],
@@ -1329,12 +1330,12 @@
   },
   "summary": {
     "cfnTypes": 97,
-    "covered": 66,
-    "deployable": 74,
+    "covered": 67,
+    "deployable": 75,
     "excFrontDoor": 0,
     "excRead": 8,
     "excepted": 8,
-    "flattened": 1,
+    "flattened": 0,
     "operations": 512,
     "planOnly": 11,
     "refused": 11,
@@ -1782,12 +1783,12 @@
       "verdict": "ok"
     },
     "AWS::CloudFormation::Stack": {
-      "deployable": false,
-      "flattened": true,
+      "deployable": true,
+      "flattened": false,
       "frontDoor": [
         "cloudformation"
       ],
-      "kind": "",
+      "kind": "Stack",
       "namespace": "AWS::CloudFormation",
       "readCalls": [
         "DescribeStackDriftDetectionStatus",
@@ -1807,9 +1808,9 @@
       "stackProbes": [
         "cfn-api"
       ],
-      "status": "unsupported",
+      "status": "partial",
       "templateUses": 1,
-      "verdict": "flattened"
+      "verdict": "ok"
     },
     "AWS::CloudFormation::WaitCondition": {
       "deployable": true,

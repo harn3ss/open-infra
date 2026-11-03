@@ -66,6 +66,9 @@ func DetectDrift(ctx context.Context, opts DeployOptions, ap Applier) (*DriftRep
 		if IsSignalWait(r) { // a wait condition provisions nothing that could drift
 			continue
 		}
+		if IsNestedStack(r) { // a nested stack is a stack of its own: its drift is detected on it
+			continue
+		}
 		live, exists, err := ap.GetSpec(ctx, r.APIVersion, r.Kind, r.Name)
 		if err != nil {
 			return nil, err

@@ -593,6 +593,9 @@ func (h *cfnDoorway) recoverOrphans(ctx context.Context) {
 		if !ok || !inProgress(rec.Status) || h.ops.isLive(stack) {
 			continue
 		}
+		if rec.ParentID != "" {
+			continue // a nested stack runs within its parent's operation, and is recovered with it (cfn_nested.go)
+		}
 		why, orphaned := h.orphaned(rec, u, now)
 		if !orphaned {
 			continue

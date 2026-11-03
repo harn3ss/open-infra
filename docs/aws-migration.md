@@ -27,14 +27,16 @@ CloudFormation." The honest boundaries:
   The caveats are printed, never hidden.
 - **Breaks / refused (fail-loud, never a silent partial)** — Lambda-backed custom resources and the
   general AWS resource catalog are unsupported. Each produces a `REJECTED` verdict naming the reason.
-- **Nested stacks — flattened, not refused** — the `cfn` CLI inlines each `AWS::CloudFormation::Stack`
-  child into one combined template (child `TemplateURL`s resolved as local files), which then deploys
-  through the normal plan/deploy/update/destroy/drift path. It fails closed on anything it cannot
-  rewrite correctly — a nested-nested stack, a child's `Conditions`/`Mappings`/`Fn::Sub`, an intrinsic
-  `TemplateURL`, an unmappable `Ref`/`GetAtt`, an id collision, or an unbound parameter — refusing
-  rather than emitting a silent partial. Through the aws-shim CloudFormation doorway (inline templates
-  only, no child-URL fetch, SSRF-safe) a nested stack instead gets a `REJECTED` verdict; deploy it via
-  the CLI, or flatten it first.
+- **Nested stacks** — through the aws-shim CloudFormation front door an `AWS::CloudFormation::Stack` is
+  a stack of its own, as on AWS: its child template is read from its `TemplateURL` in the shim's own S3
+  (as the caller, never fetched over the network), and it has its own record, events and Outputs, which
+  the parent reads with `Fn::GetAtt <Stack>.Outputs.<Key>`; it is deleted with its parent. An update of
+  the parent that would add, remove or change a nested stack is refused
+  ([cloudformation.md](cloudformation.md#nested-stacks-awscloudformationstack)). The `cfn` CLI instead
+  inlines each child into one combined template (child `TemplateURL`s resolved as local files), which
+  then deploys through the normal plan/deploy/update/destroy/drift path; it fails closed on anything it
+  cannot rewrite correctly — a nested-nested stack, a child's `Conditions`/`Mappings`/`Fn::Sub`, an
+  intrinsic `TemplateURL`, an unmappable `Ref`/`GetAtt`, an id collision, or an unbound parameter.
 - **Create fidelity is narrower than the mapping** — a resource type that *maps* does not always
   *create*, because AWS resource content often has no faithful open-infra form (IAM's
   `service:Action` permission namespace vs open-infra's `kind:verb` RBAC; KMS key policies; a

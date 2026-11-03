@@ -55,6 +55,14 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 		opts.prior = current.Resources
 		owned = ownedFrom(current.Resources)
 		opts.adoptStackID(current) // AWS::StackId is the stack's own, as its create resolved it
+		// Its nested stacks' Outputs, as they are now: what its resources' Fn::GetAtt read.
+		nd, nerr := nestedOutputsOf(ctx, opts, current.Resources)
+		if nerr != nil {
+			return nil, nil, nil, nerr
+		}
+		if len(nd) > 0 {
+			opts.nestedData = nd
+		}
 	}
 	// A resource the update adds is named around anything an earlier stack of this name (or an earlier
 	// update that removed a Retain resource) left behind; what the stack recorded keeps its name.

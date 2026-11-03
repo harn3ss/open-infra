@@ -172,7 +172,9 @@ func rollbackCreate(ctx context.Context, opts DeployOptions, ap Applier, rec *St
 		}
 		rec.resourceEvent(a, "DELETE_IN_PROGRESS", "")
 		var err error
-		if IsCustomResource(a) {
+		if IsNestedStack(a) {
+			err = deleteNestedStack(ctx, opts, a) // a nested stack is deleted as a stack, as AWS rolls one back
+		} else if IsCustomResource(a) {
 			if resp, ierr := customResourceDelete(ctx, opts, a); ierr != nil {
 				err = ierr
 			} else if st, _ := resp["Status"].(string); resp != nil && !strings.EqualFold(st, "SUCCESS") {
@@ -241,7 +243,7 @@ func IsRestV1API(r StackResource) bool {
 // invoked) or a provisioned REST v1 API (#295). Neither is applied or deleted as an object.
 func isOutOfBand(r StackResource) bool {
 	return (r.APIVersion == customResourceAPIVersion && r.Kind == customResourceKind) ||
-		(r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind) || IsSignalWait(r)
+		(r.APIVersion == apigwRestV1APIVersion && r.Kind == apigwRestV1Kind) || IsSignalWait(r) || IsNestedStack(r)
 }
 
 // teardown deletes resources newest-first (the record is in create order), honoring DeletionPolicy:
@@ -299,6 +301,12 @@ func teardown(ctx context.Context, opts DeployOptions, ap Applier, resources []S
 		}
 		event(r, "DELETE_IN_PROGRESS", "")
 		switch {
+		// A nested stack is deleted as a stack (its own resources, then its record), as AWS deletes one with
+		// its parent. A failure fails the parent's delete: the nested stack stays, and so does the parent.
+		case IsNestedStack(r):
+			if err := deleteNestedStack(ctx, opts, r); err != nil {
+				return failed(r, fmt.Errorf("nested stack %s: %w", r.LogicalID, err))
+			}
 		// A custom resource (#269) has no k8s object to delete — instead send its Function a Delete event
 		// (AWS's RequestType=Delete), best-effort: a failed custom-resource Delete must not wedge teardown
 		// (it would otherwise leave the whole stack undeletable), so it is not fatal. A refusal because the

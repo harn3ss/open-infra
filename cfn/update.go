@@ -40,6 +40,15 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		return nil, fmt.Errorf("no stack %q in namespace %q to update — use deploy to create it", opts.StackName, opts.Namespace)
 	}
 	opts.adoptStackID(current) // the stack instance's own StackId, as its create resolved AWS::StackId
+	// An update runs only while it leaves every nested stack as it is (nested_stacks.go); its resources and
+	// Outputs read the nested stacks' current Outputs.
+	if msg := nestedUpdateRefusal(ctx, opts, desired, current); msg != "" {
+		return nil, fmt.Errorf("%s", msg)
+	}
+	nestedData, err := nestedOutputsOf(ctx, opts, current.Resources)
+	if err != nil {
+		return nil, err
+	}
 	// Also refuse if the EXISTING stack was created with custom resources (removing one via update would
 	// need a Delete-event invoke the diff path doesn't run) — destroy + recreate.
 	for _, r := range current.Resources {
@@ -55,7 +64,7 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		// Outputs-only change is still an update. Otherwise a true no-op: nothing is written.
 		next := *current
 		next.Resources = append([]StackResource(nil), current.Resources...)
-		setOutputs(ctx, data, opts, &next, ap, nil)
+		setOutputs(ctx, data, opts, &next, ap, nestedData)
 		if err := outputFailure(&next); err != nil {
 			return current, fmt.Errorf("update refused (nothing changed): %w", err)
 		}
@@ -196,6 +205,12 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 			verb = "CREATE"
 		}
 		event(b.res, verb+"_IN_PROGRESS", "")
+		if IsNestedStack(b.res) {
+			// Only reachable when the nested stack itself is unchanged (nestedUpdateRefusal): what changed is
+			// recorded on the parent alone (its TimeoutInMinutes), and the child stack is left as it is.
+			event(b.res, verb+"_COMPLETE", "")
+			continue
+		}
 		if IsSignalWait(b.res) {
 			if act == Add { // a wait condition waits when it is created, never on an update
 				waits.add(b)
@@ -278,6 +293,9 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		default: // unchanged: keeps its status, and a wait condition its data
 			if cur, ok := currentByID[r.LogicalID]; ok {
 				r.Status, r.StatusReason, r.Timestamp, r.SignalData = cur.Status, cur.StatusReason, cur.Timestamp, cur.SignalData
+				if IsNestedStack(r) { // a nested stack keeps the stack it is (its StackId and name)
+					r.Name, r.PhysicalID, r.ProvisionedID = cur.Name, cur.PhysicalID, cur.ProvisionedID
+				}
 			}
 		}
 		if r.Timestamp == "" || action[r.LogicalID] == Add || action[r.LogicalID] == Modify {
@@ -285,7 +303,7 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		}
 		newRec.Resources = append(newRec.Resources, r)
 	}
-	setOutputs(ctx, data, opts, newRec, ap, nil)
+	setOutputs(ctx, data, opts, newRec, ap, nestedData)
 	if err := outputFailure(newRec); err != nil {
 		return rollback(err)
 	}

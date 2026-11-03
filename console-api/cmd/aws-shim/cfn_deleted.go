@@ -186,7 +186,7 @@ func (h *cfnDoorway) keepDeleted(ctx context.Context, before, after *cfn.StackRe
 	now := time.Now().UTC().Format(time.RFC3339)
 	kept := cfn.StackRecord{
 		Name: before.Name, Namespace: before.Namespace, StackID: h.idOf(before), Status: "DELETE_COMPLETE",
-		CreatedAt: before.CreatedAt, UpdatedAt: now, Owner: before.Owner,
+		CreatedAt: before.CreatedAt, UpdatedAt: now, Owner: before.Owner, ParentID: before.ParentID, RootID: before.RootID,
 		Template: before.Template, Parameters: before.Parameters, NoEchoParameters: before.NoEchoParameters,
 		Description: before.Description, Fidelity: before.Fidelity, DeletedAt: now,
 	}

@@ -211,6 +211,8 @@ var translators = map[string]translator{
 	"AWS::CloudFront::CachePolicy":                    translateCloudFrontChild,
 	"AWS::CloudFront::OriginRequestPolicy":            translateCloudFrontChild,
 	"AWS::CertificateManager::Certificate":            translateACMCertificate,
+	// A nested stack: a stack of its own, created by the front door's NestedStacks driver (nested_stacks.go).
+	"AWS::CloudFormation::Stack": translateNestedStack,
 }
 
 // hasTranslator reports whether a type can be created (not merely planned).

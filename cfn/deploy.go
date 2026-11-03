@@ -289,7 +289,11 @@ type StackRecord struct {
 	StackID string `json:"stackId,omitempty"`
 	// DeletedAt is when a deleted stack's delete completed (its DeletionTime), set only on the record a
 	// front door keeps of a deleted stack.
-	DeletedAt string          `json:"deletedAt,omitempty"`
+	DeletedAt string `json:"deletedAt,omitempty"`
+	// ParentID and RootID are, for a nested stack (nested_stacks.go), its parent's StackId and the top-most
+	// stack's; "" for a stack that is not nested.
+	ParentID  string          `json:"parentId,omitempty"`
+	RootID    string          `json:"rootId,omitempty"`
 	Status    string          `json:"status"`
 	Message   string          `json:"message,omitempty"`
 	CreatedAt string          `json:"createdAt"`
@@ -349,6 +353,12 @@ type DeployOptions struct {
 	// the derived StackId of StackName (awsidentity StackID), which every stack created before StackIds
 	// were per instance keeps; an update, delete or recovery adopts the one its record names.
 	StackID string
+	// ParentID and RootID make the stack a nested stack: its parent's StackId and the top-most stack's,
+	// recorded with it (StackRecord.ParentID/RootID). "" for a stack that is not nested.
+	ParentID, RootID string
+	// NestedStacks creates and deletes the stack's nested stacks (AWS::CloudFormation::Stack) as stacks of
+	// their own (nested_stacks.go). Nil (the CLI, which flattens them first): a stack with one refuses.
+	NestedStacks NestedStacks
 	// Owner is the caller a create records as the stack's owner (StackRecord.Owner); "" records none.
 	Owner   string
 	Params  map[string]string
@@ -387,6 +397,9 @@ type DeployOptions struct {
 	// leftovers are names held by objects an earlier stack of this name left behind, which the resources
 	// this operation creates are named around (physNamer.leftovers; buildAvoidingLeftovers finds them).
 	leftovers []string
+	// nestedData is an existing stack's nested stacks' Outputs, by logical id ("Outputs.<Key>" -> value):
+	// what an update or change set resolves Fn::GetAtt <Stack>.Outputs.<Key> to (nested_stacks.go).
+	nestedData map[string]map[string]any
 	// Caps are deploy-environment facts translators depend on (e.g. whether MinIO has SSE-KMS on).
 	// Plan and deploy both evaluate with these, so a PROVISIONABLE* plan still means deploy won't
 	// refuse. Zero = fail-closed (the CLI); the in-cluster aws-shim doorway sets them.
@@ -467,6 +480,9 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	}
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParamsFor(opts.StackName, opts.StackID))
 	r.evalConditions()
+	if opts.nestedData != nil {
+		r.customData = opts.nestedData // an update reads its nested stacks' current Outputs
+	}
 	namer := newPhysNamer(opts.StackName, opts.prior)
 	namer.avoid(opts.leftovers)
 	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: namer, signalURL: opts.SignalURL}
@@ -625,7 +641,9 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	// deploy: a custom resource's Function is invoked, and a REST v1 sentinel is provisioned via the
 	// apigateway hook, at its point in dependency order. Stacks WITHOUT either take the exact
 	// build-all-then-apply path below, unchanged — the new path is additive and never touches the common case.
-	if pt, perr := Parse(data); perr == nil && (hasCustomResources(pt) || hasAPIGatewayRestV1(pt)) {
+	// A nested stack (nested_stacks.go) is created at its point in the order too: its Outputs feed later
+	// resources' Fn::GetAtt.
+	if pt, perr := Parse(data); perr == nil && (hasCustomResources(pt) || hasAPIGatewayRestV1(pt) || hasNestedStacks(pt)) {
 		return deployInterleaved(ctx, data, opts, ap)
 	}
 
@@ -949,6 +967,28 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			rec.resourceEvent(sr, "CREATE_COMPLETE", "")
 			continue
 		}
+		// A nested stack is created as a stack of its own (nested_stacks.go): recorded as Pending first, so a
+		// create interrupted while the child runs rolls the child back too; its Outputs then feed later
+		// dependents' Fn::GetAtt. A child that failed is still a stack the rollback deletes.
+		if m.APIVersion == nestedStackAPIVersion && m.Kind == nestedStackKind {
+			m.Name = nestedStackName(opts.StackName, id)
+			pend := StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec, Type: res.Type, ProvisionedID: m.Name}
+			if werr := intend(pend); werr != nil {
+				return rollback(werr)
+			}
+			flushEvents(ctx, ap, rec) // it shows CREATE_IN_PROGRESS while the child stack is created, as on AWS
+			sr, nerr := createNestedStack(ctx, opts, r, id, m)
+			applied = append(applied, sr) // the rollback deletes it, whether or not the child completed
+			if nerr != nil {
+				return rollback(nerr)
+			}
+			rec.Resources = append(rec.Resources, sr)
+			rec.resourceEvent(sr, "CREATE_COMPLETE", "")
+			if werr := intend(); werr != nil {
+				return rollback(werr)
+			}
+			continue
+		}
 		// A REST v1 API sentinel is provisioned via the apigateway hook (not applied); its created id is
 		// recorded for teardown/rollback — persisted at once, since the id is only known after provisioning.
 		if m.APIVersion == apigwRestV1APIVersion && m.Kind == apigwRestV1Kind {
@@ -1146,6 +1186,9 @@ func renderManifest(m *Manifest, opts DeployOptions) ([]byte, error) {
 func writeStackRecord(ctx context.Context, ap Applier, rec *StackRecord, opts DeployOptions) error {
 	if rec.StackID == "" {
 		rec.StackID = opts.StackID // a fresh record of this stack instance carries its StackId
+	}
+	if rec.ParentID == "" && opts.ParentID != "" {
+		rec.ParentID, rec.RootID = opts.ParentID, opts.RootID // and, a nested stack, its parent and root
 	}
 	blob, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {

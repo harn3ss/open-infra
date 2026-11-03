@@ -14,7 +14,12 @@
 #     DescribeStackResource (Metadata, what cfn-init reads), ValidateTemplate with a parameter that has
 #     no default (accepted, as on AWS)
 #   - TemplateURL: a template uploaded to the shim's own S3 deploys by URL, including a NESTED stack whose
-#     child template is in S3 too (Fn::GetAtt Child.Outputs.X resolves)
+#     child template is in S3 too, named by a Fn::Sub (Fn::GetAtt Child.Outputs.X resolves); the nested
+#     stack is a stack of its own (the parent's resource and Ref are its StackId; it names its ParentId
+#     and RootId; it is not deleted on its own) and is deleted with its parent
+#   - deleted stacks are kept (#350 Y): both read DELETE_COMPLETE by their StackIds and are listed with
+#     --stack-status-filter DELETE_COMPLETE; a stack re-created under the name gets a new StackId, and the
+#     deleted one's StackId never acts on it (DeleteStack with it is a no-op)
 #   - a Retain bucket a rolled-back create kept: re-creating the stack with its BucketName is refused (the
 #     name is taken), and with a new BucketName completes beside it
 #
@@ -68,6 +73,9 @@ cleanup() {
   for s in "${STACKS[@]}" "$BAD"; do
     kubectl -n "$SHIM_NS" delete secret "cfn-stack-$s" "cfn-events-$s" "cfn-signals-$s" "noecho-cfn-stack-$s" --ignore-not-found >/dev/null 2>&1 || true
   done
+  # The deleted-stack records this run's stacks left (kept 90 days otherwise), nested children included.
+  kubectl -n "$SHIM_NS" get secret -l app.kubernetes.io/managed-by=cfn-deleted -o name 2>/dev/null \
+    | grep -E "/cfn-deleted-cfnapi-[a-z]+-$SFX" | xargs -r kubectl -n "$SHIM_NS" delete >/dev/null 2>&1 || true
   # The bucket section 7's failed create retained (no stack owns it any more; the reaper removes the empty bucket).
   kubectl -n "$CFN_NS" delete buckets.openinfra.dev -l "cfn.openinfra.dev/stack=$RET" --ignore-not-found >/dev/null 2>&1 || true
   for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
@@ -263,22 +271,67 @@ cfn describe-stack-events --stack-name "$FAILST" --query 'StackEvents[?ResourceS
   | grep -q "FAILURE signal" || fail "the events must say a FAILURE signal failed it"
 log "  ✓ a FAILURE signal fails the create, and the events say why"
 
-# --- 6. TemplateURL, with a nested stack ----------------------------------------------------------------
-printf 'Resources:\n  Q: { Type: AWS::SQS::Queue, Properties: { QueueName: cfnapi-%s-child } }\nOutputs:\n  ChildQueue: { Value: !GetAtt Q.QueueName }\n' "$SFX" > "$TMP/child.yaml"
+# --- 6. TemplateURL, with a nested stack (a stack of its own) -------------------------------------------
+printf 'Parameters:\n  Name: { Type: String }\nResources:\n  Q: { Type: AWS::SQS::Queue, Properties: { QueueName: !Ref Name } }\nOutputs:\n  ChildQueue: { Value: !GetAtt Q.QueueName }\n' > "$TMP/child.yaml"
 cat > "$TMP/parent.yaml" <<YAML
+Parameters:
+  Base: { Type: String, Default: "$ENDPOINT/$BUCKET" }
 Resources:
   Child:
     Type: AWS::CloudFormation::Stack
-    Properties: { TemplateURL: $ENDPOINT/$BUCKET/child.yaml }
+    Properties:
+      TemplateURL: !Sub "\${Base}/child.yaml"
+      Parameters: { Name: cfnapi-$SFX-child }
 Outputs:
   FromChild: { Value: !GetAtt Child.Outputs.ChildQueue }
+  ChildId:   { Value: !Ref Child }
 YAML
 s3 cp "$TMP/child.yaml" "s3://$BUCKET/child.yaml" >/dev/null || fail "uploading the child template"
 s3 cp "$TMP/parent.yaml" "s3://$BUCKET/parent.yaml" >/dev/null || fail "uploading the parent template"
 cfn create-stack --stack-name "$NEST" --template-url "$ENDPOINT/$BUCKET/parent.yaml" >/dev/null || fail "create-stack --template-url"
 st="$(poll "$NEST" CREATE_COMPLETE)" || fail "$NEST (TemplateURL + nested stack) did not complete: $st"
 [ "$(output "$NEST" FromChild)" = "cfnapi-$SFX-child" ] || fail "Fn::GetAtt Child.Outputs.ChildQueue: $(output "$NEST" FromChild)"
-log "  ✓ TemplateURL from the shim's S3, with a nested stack's Outputs"
+log "  ✓ TemplateURL from the shim's S3 (a Fn::Sub), with a nested stack's Outputs"
+# The nested stack is a stack of its own: the parent's resource is its StackId, and it names its parent.
+NEST_ID="$(cfn describe-stacks --stack-name "$NEST" --query 'Stacks[0].StackId' --output text)"
+CHILD_ID="$(cfn describe-stack-resources --stack-name "$NEST" --logical-resource-id Child --query 'StackResources[0].PhysicalResourceId' --output text)"
+case "$CHILD_ID" in "arn:aws:cloudformation:"*":stack/$NEST-child-"*) ;; *) fail "the nested stack resource's physical id must be the child's StackId, got $CHILD_ID";; esac
+[ "$(output "$NEST" ChildId)" = "$CHILD_ID" ] || fail "Ref Child must be the child's StackId: $(output "$NEST" ChildId)"
+CHILD="$(printf '%s' "$CHILD_ID" | cut -d/ -f2)"
+[ "$(cfn describe-stacks --stack-name "$CHILD_ID" --query 'Stacks[0].[StackStatus,ParentId,RootId]' --output text)" = "$(printf 'CREATE_COMPLETE\t%s\t%s' "$NEST_ID" "$NEST_ID")" ] \
+  || fail "the child must be CREATE_COMPLETE naming its parent and root: $(cfn describe-stacks --stack-name "$CHILD_ID" --output json)"
+cfn list-stacks --query "StackSummaries[?StackName=='$CHILD'].ParentId" --output text | grep -qF "$NEST_ID" || fail "ListStacks must list the child with its ParentId"
+log "  ✓ the nested stack is a stack of its own ($CHILD), naming its parent and root"
+out="$(cfn delete-stack --stack-name "$CHILD" 2>&1)" && fail "a nested stack must not be deleted on its own"
+printf '%s' "$out" | grep -q "nested stack" || fail "the refusal must say it is a nested stack: $out"
+# Deleted with its parent; both are then kept as deleted stacks, readable by their StackIds (#350 Y).
+delete_parent() {
+  cfn delete-stack --stack-name "$NEST" >/dev/null || fail "delete-stack $NEST"
+  for _ in $(seq 1 100); do
+    st="$(cfn describe-stacks --stack-name "$NEST" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
+    case "$st" in "") return 0;; *DELETE_FAILED) fail "delete-stack $NEST: $st";; esac
+    sleep 3
+  done
+  fail "delete-stack $NEST did not finish"
+}
+delete_parent
+cfn describe-stacks --stack-name "$CHILD" >/dev/null 2>&1 && fail "the nested stack must be deleted with its parent"
+[ "$(cfn describe-stacks --stack-name "$NEST_ID" --query 'Stacks[0].StackStatus' --output text)" = DELETE_COMPLETE ] || fail "the deleted parent must read DELETE_COMPLETE by its StackId"
+[ "$(cfn describe-stacks --stack-name "$CHILD_ID" --query 'Stacks[0].StackStatus' --output text)" = DELETE_COMPLETE ] || fail "the deleted child must read DELETE_COMPLETE by its StackId"
+cfn describe-stack-events --stack-name "$NEST_ID" --query 'StackEvents[0].ResourceStatus' --output text | grep -qx DELETE_COMPLETE || fail "the deleted parent's events must end DELETE_COMPLETE"
+n="$(cfn list-stacks --stack-status-filter DELETE_COMPLETE --query "length(StackSummaries[?StackId=='$NEST_ID' || StackId=='$CHILD_ID'])" --output text)"
+[ "$n" = 2 ] || fail "ListStacks must list both deleted stacks, got $n"
+log "  ✓ deleted with its parent; both listed DELETE_COMPLETE and readable by their StackIds"
+# Re-created under the deleted stack's name: a new StackId; the deleted one stays known by its own.
+cfn create-stack --stack-name "$NEST" --template-url "$ENDPOINT/$BUCKET/parent.yaml" >/dev/null || fail "re-create-stack $NEST"
+st="$(poll "$NEST" CREATE_COMPLETE)" || fail "re-created $NEST did not complete: $st"
+NEW_ID="$(cfn describe-stacks --stack-name "$NEST" --query 'Stacks[0].StackId' --output text)"
+[ "$NEW_ID" != "$NEST_ID" ] || fail "a re-created stack must get a new StackId"
+[ "$(cfn describe-stacks --stack-name "$NEST_ID" --query 'Stacks[0].StackStatus' --output text)" = DELETE_COMPLETE ] || fail "the deleted stack must still read by its own StackId"
+cfn delete-stack --stack-name "$NEST_ID" >/dev/null || fail "delete-stack by a deleted stack's StackId must be a no-op"
+sleep 3
+[ "$(cfn describe-stacks --stack-name "$NEST" --query 'Stacks[0].StackStatus' --output text)" = CREATE_COMPLETE ] || fail "a deleted stack's StackId must never act on the stack now using its name"
+log "  ✓ re-created with a new StackId; the deleted stack's StackId reads it and never acts on the new one"
 
 # --- 7. a Retain bucket a failed create kept does not block re-creating the stack ----------------------
 # The create fails (a FAILURE signal) and rolls back, keeping its Retain bucket, which no stack owns any

@@ -1,11 +1,12 @@
-// Nested-stack flattening.
+// Nested-stack flattening — the cfn CLI's path.
 //
 // An AWS::CloudFormation::Stack references a CHILD template (TemplateURL) + passes it Parameters, and
-// the parent reads the child's Outputs via Fn::GetAtt <Stack>.Outputs.<Key>. open-infra has no nested
-// sub-stack runtime; instead FlattenNested INLINES each child's resources into the parent as ONE flat
-// template (the whole tree becomes one open-infra stack), which then flows through the existing
-// plan/deploy/update/destroy/drift machinery unchanged. The parent's Outputs-GetAtt resolves to the
-// child's Output expression, inlined.
+// the parent reads the child's Outputs via Fn::GetAtt <Stack>.Outputs.<Key>. Through the aws-shim front
+// door a nested stack is a stack of its own (nested_stacks.go). The cfn CLI, which reads child templates
+// from local files and runs no stack of its own beside the one it deploys, instead uses FlattenNested: it
+// INLINES each child's resources into the parent as ONE flat template (the whole tree becomes one
+// open-infra stack), which then flows through the existing plan/deploy/update/destroy/drift machinery
+// unchanged. The parent's Outputs-GetAtt resolves to the child's Output expression, inlined.
 //
 // FAIL-CLOSED is the cardinal rule: anything that cannot be rewritten CORRECTLY refuses (returns an
 // error), so a flattened template is never a MIS-WIRED one. v1 handles the common nested-stack shape —

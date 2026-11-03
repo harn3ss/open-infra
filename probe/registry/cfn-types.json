@@ -120,10 +120,10 @@
       "deployable": true
     },
     "AWS::CloudFormation::Stack": {
-      "status": "unsupported",
-      "translator": false,
-      "deployable": false,
-      "flattened": true
+      "status": "partial",
+      "kind": "Stack",
+      "translator": true,
+      "deployable": true
     },
     "AWS::CloudFormation::WaitCondition": {
       "status": "supported",

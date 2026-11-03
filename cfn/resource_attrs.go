@@ -484,6 +484,14 @@ var resourceAttrs = map[string]typeAttrs{
 		return e.arn("acm", "certificate/"+uuidShape(e.synthID("", 32)))
 	})},
 
+	// --- a nested stack: its Ref is the child stack's StackId (its Outputs resolve through Fn::GetAtt) ---
+	StackTypeName: {ref: func(e *attrEnv) (string, bool) {
+		if e.res != nil && e.res.PhysicalID != "" {
+			return e.res.PhysicalID, true
+		}
+		return "", false
+	}},
+
 	// --- API Gateway (REST v1): the API's id is the one the apigateway store assigned ---
 	"AWS::ApiGateway::RestApi": {ref: func(e *attrEnv) (string, bool) {
 		if e.res != nil && e.res.ProvisionedID != "" {
@@ -592,6 +600,10 @@ func uuidShape(h string) string {
 func attrKnown(typ, attr string) bool {
 	if isCustomResourceType(typ) {
 		return true // a custom resource's attributes are whatever its handler returns
+	}
+	if typ == StackTypeName {
+		// A nested stack's Ref is its StackId; its attributes are its Outputs (nested_stacks.go).
+		return attr == "" || strings.HasPrefix(attr, "Outputs.")
 	}
 	ta, ok := resourceAttrs[typ]
 	if !ok {
