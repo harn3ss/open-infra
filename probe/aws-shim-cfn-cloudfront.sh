@@ -396,6 +396,30 @@ ERR="$(AWS_ACCESS_KEY_ID="$RAK" AWS_SECRET_ACCESS_KEY="$RSK" AWS_REGION="$REGION
 printf '%s' "$ERR" | grep -q AccessDenied || fail "a reader's create-invalidation was not AccessDenied: $(snip "$ERR")"
 log "    ✓ Completed once the site serves the new upload (served on the next request); listed Completed; unknown distribution → NoSuchDistribution; a reader → AccessDenied"
 
+log "reads: get-distribution(-config), list-distributions, and the headers policy / OAC by the ids the distribution names"
+cf get-distribution --id "$DIST" --output json >"$TMP/dist.json" 2>&1 || fail "get-distribution: $(snip "$(cat "$TMP/dist.json")")"
+python3 - "$TMP/dist.json" "$HOST" <<'PY' || fail "get-distribution did not answer the stack's distribution: $(snip "$(cat "$TMP/dist.json")")"
+import json, sys
+d = json.load(open(sys.argv[1]))["Distribution"]
+c = d["DistributionConfig"]
+assert d["Status"] == "Deployed", d["Status"]
+assert c["Aliases"]["Items"] == [sys.argv[2]], c["Aliases"]
+assert c["DefaultCacheBehavior"]["ResponseHeadersPolicyId"], c["DefaultCacheBehavior"]
+assert ":certificate/" in c["ViewerCertificate"]["ACMCertificateArn"], c["ViewerCertificate"]
+assert c["Origins"]["Items"][0].get("OriginAccessControlId"), c["Origins"]
+PY
+HDR_ID="$(cf get-distribution-config --id "$DIST" --query 'DistributionConfig.DefaultCacheBehavior.ResponseHeadersPolicyId' --output text 2>/dev/null || true)"
+[ "$(cf get-response-headers-policy --id "$HDR_ID" --query 'ResponseHeadersPolicy.Id' --output text 2>/dev/null)" = "$HDR_ID" ] \
+  || fail "get-response-headers-policy did not answer the policy the distribution names ($HDR_ID)"
+OAC_ID="$(cf get-distribution-config --id "$DIST" --query 'DistributionConfig.Origins.Items[0].OriginAccessControlId' --output text 2>/dev/null || true)"
+[ "$(cf get-origin-access-control --id "$OAC_ID" --query 'OriginAccessControl.Id' --output text 2>/dev/null)" = "$OAC_ID" ] \
+  || fail "get-origin-access-control did not answer the OAC the distribution names ($OAC_ID)"
+cf list-distributions --query 'DistributionList.Items[].Id' --output text >"$TMP/ld.txt" 2>&1 || fail "list-distributions: $(snip "$(cat "$TMP/ld.txt")")"
+tr '\t' '\n' <"$TMP/ld.txt" | grep -qx "$DIST" || fail "list-distributions did not list $DIST"
+ERR="$(cf get-distribution --id E0000000000000 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q NoSuchDistribution || fail "get-distribution of an unknown id: $(snip "$ERR")"
+log "    ✓ the distribution, its headers policy and OAC read back by the ids the stack gave them; listed; an unknown id → NoSuchDistribution"
+
 # --- 5. delete-stack removes the StaticSite, the Bucket and everything they held ------------------------
 # As on AWS, a stack whose bucket still holds data does not delete (BucketNotEmpty): empty it first, as a
 # user would. Nothing is swept before the check: what the delete itself left is what is asserted.

@@ -57,7 +57,9 @@ const (
 )
 
 // cfOps are the operations served; anything else under the API is an honest 501.
-var cfOps = "CreateInvalidation, GetInvalidation, ListInvalidations"
+var cfOps = "CreateInvalidation, GetInvalidation, ListInvalidations, GetDistribution, GetDistributionConfig, " +
+	"ListDistributions, GetCachePolicy, GetOriginRequestPolicy, GetResponseHeadersPolicy, GetOriginAccessControl, " +
+	"GetCloudFrontOriginAccessIdentity"
 
 // cfAPIVersionRe matches the API-version path segment (/2020-05-31/...).
 var cfAPIVersionRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -119,15 +121,21 @@ func writeCFError(w http.ResponseWriter, status int, code, requestID, message st
 	writeQueryError(w, status, code, requestID, message, cloudFrontXMLNS)
 }
 
-// cfRoute is a parsed CloudFront request path: /<version>/distribution/<id>/invalidation[/<invalidation id>].
+// cfRoute is a parsed CloudFront request path: /<version>/distribution/<id>/invalidation[/<invalidation id>],
+// or a read (cloudfront_read.go); resID is the id of the policy, origin access control or identity read.
 type cfRoute struct {
-	op, distID, invID string
+	op, distID, invID, resID string
 }
 
 func parseCFRoute(method, path string) (cfRoute, bool) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) < 2 || !cfAPIVersionRe.MatchString(parts[0]) {
 		return cfRoute{}, false
+	}
+	if method == http.MethodGet {
+		if rt, ok := parseCFReadRoute(parts[1:]); ok {
+			return rt, true
+		}
 	}
 	if len(parts) < 4 || parts[1] != "distribution" || parts[3] != "invalidation" {
 		return cfRoute{op: "?"}, true
@@ -155,6 +163,10 @@ func (h *cloudFrontHandler) serve(w http.ResponseWriter, r *http.Request, claims
 	if rt.op == "?" {
 		writeCFError(w, http.StatusNotImplemented, "NotImplemented", requestID,
 			"This CloudFront operation is not fronted by the open-infra shim (served: "+cfOps+").")
+		return
+	}
+	if cfReadOp(rt.op) {
+		h.serveRead(w, r, claims, requestID, rt)
 		return
 	}
 	if !cfDistributionIDRe.MatchString(rt.distID) {

@@ -284,12 +284,13 @@ func TestCloudFront_UnknownDistributionAndInvalidation(t *testing.T) {
 	cfErr(t, f.do(cfUser, http.MethodGet, "/2020-05-31/distribution/E9999999999999/invalidation", ""), http.StatusNotFound, "NoSuchDistribution")
 }
 
-// Operations other than the invalidation calls are an honest 501 in CloudFront's own error shape.
+// Operations other than the invalidation calls and the reads are an honest 501 in CloudFront's own error
+// shape.
 func TestCloudFront_OtherOperationsAre501(t *testing.T) {
 	f := newCFFixture(t, allowAll)
 	for _, p := range []struct{ method, path string }{
-		{http.MethodGet, "/2020-05-31/distribution/" + cfTestDist},
-		{http.MethodGet, "/2020-05-31/distribution"},
+		{http.MethodPost, "/2020-05-31/distribution"},
+		{http.MethodGet, "/2020-05-31/cache-policy"},
 		{http.MethodPut, "/2020-05-31/distribution/" + cfTestDist + "/config"},
 		{http.MethodDelete, invPath + "/IABC"},
 	} {

@@ -150,8 +150,19 @@
       "handler": "cloudFrontHandler",
       "operations": [
         "CreateInvalidation",
+        "GetCachePolicy",
+        "GetCloudFrontOriginAccessIdentity",
+        "GetDistribution",
+        "GetDistributionConfig",
         "GetInvalidation",
+        "GetOriginAccessControl",
+        "GetOriginRequestPolicy",
+        "GetResponseHeadersPolicy",
+        "ListDistributions",
         "ListInvalidations"
+      ],
+      "actions": [
+        "cloudfront:ListDistributions"
       ],
       "conditional": true
     },

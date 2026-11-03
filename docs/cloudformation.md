@@ -366,7 +366,7 @@ own properties and is read by the distribution that references it.
 `CachedMethods`, TTLs, `ForwardedValues`, `Compress`, `ErrorCachingMinTTL`) — every request is served
 from the synced copy of the bucket, which re-syncs every 30 seconds (an upload goes live within about
 30s; `aws cloudfront create-invalidation` and `wait invalidation-completed` work, and the invalidation is
-Completed once the site has re-synced — see [aws-shim.md](aws-shim.md#cloudfront-invalidations-of-a-stacks-distribution-probe-proven));
+Completed once the site has re-synced — see [aws-shim.md](aws-shim.md#cloudfront-a-stacks-distribution-its-invalidations-and-reads-probe-proven));
 `ViewerProtocolPolicy` `redirect-to-https` / `allow-all` (the
 site answers on HTTPS only — a plain-HTTP request is neither served nor redirected); `PriceClass`,
 `HttpVersion`, `IPV6Enabled`, `Comment`, `Tags`; `Logging` (nginx logs to the pod's stdout); origin

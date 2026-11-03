@@ -118,12 +118,3 @@ exceptions:
       to answer GetInstanceProfile or ListInstanceProfiles from. Serving them needs the engine to record a
       stack's instance profiles first.
     issue: "untracked — raised by the coverage registry"
-  - types: [AWS::CloudFront::Distribution, AWS::CloudFront::CachePolicy, AWS::CloudFront::OriginRequestPolicy,
-            AWS::CloudFront::ResponseHeadersPolicy, AWS::CloudFront::OriginAccessControl,
-            AWS::CloudFront::CloudFrontOriginAccessIdentity]
-    check: read
-    reason: >-
-      A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door
-      serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) — no
-      GetDistribution or Get*Policy.
-    issue: "untracked — raised by the coverage registry"

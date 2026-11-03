@@ -36,7 +36,7 @@ aws --endpoint-url "$MINIO_ENDPOINT" s3 sync ./dist/ "s3://web-site/" --delete
 The server re-syncs every `spec.syncIntervalSeconds` (default 30s), so a new upload goes live
 without redeploying. Each successful sync records the time it started, served on the site's in-cluster status
 port (`8081`, reachable only by the aws-shim): for a site a CloudFormation stack created, that is what
-`aws cloudfront create-invalidation` / `wait invalidation-completed` wait on ([aws-shim.md](aws-shim.md#cloudfront-invalidations-of-a-stacks-distribution-probe-proven)). For a plain multi-file site (no client-side router), set `spec.spa: false` and
+`aws cloudfront create-invalidation` / `wait invalidation-completed` wait on ([aws-shim.md](aws-shim.md#cloudfront-a-stacks-distribution-its-invalidations-and-reads-probe-proven)). For a plain multi-file site (no client-side router), set `spec.spa: false` and
 optionally `spec.errorDocument: 404.html`.
 
 ## More hostnames and response headers
