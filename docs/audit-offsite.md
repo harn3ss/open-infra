@@ -124,6 +124,38 @@ The verifier tells disposal from tampering:
 The status reports `disposedSegments` (segments before the retained chain) and `disposalMarkers`
 (markers laid after retention) apart from `shadowVersions`; neither counts against Intact.
 
+### When the chain restarts
+
+The anchor holds the head (seq + hash) the verifier last saw. It stands for the verified prefix only
+while the bucket can contain it: its segment is listed, in the retained chain, with the anchored hash.
+Otherwise the verifier re-derives the chain from its contents and says why in `anchorNote`, and the
+anchor cross-check reports what it found:
+
+- `regressed` — the anchored head is past the bucket's newest segment. The chain lost its newest
+  segments, or it was restarted: the bucket was deleted and re-created, or its whole history was
+  disposed while shipping was stopped.
+- `rewritten` — the segment at the anchored seq has another hash.
+
+Either one keeps the run red, and the anchor stays where it was, until an operator resolves it.
+
+The shipper never starts a second chain under the first one's keys. If segment keys remain but no
+original does (every one was disposed), or the newest segments' originals are gone, it refuses and the
+ship job fails loudly. Resuming from an older segment would fork the chain. Starting at 0 would write
+over the old keys. Keep the ship interval well inside `expireDays + noncurrentExpireDays`. Once the
+leftover versions are gone (the lifecycle rule removes lone delete markers), the shipper starts a new
+chain at 0, and the verifier reports `regressed` against the old anchor.
+
+To accept a restart, first establish that it was one, and not a truncation:
+
+- when the bucket was created (`mc stat`), and when the new chain's segment 0 was written;
+- that the new chain verifies from segment 0;
+- that no key holds more than one original version.
+
+Then delete the anchor ConfigMap (`audit-offsite-anchor`) and the re-sweep cursor
+(`audit-offsite-resweep`) in the verifier's namespace. The next run re-derives the whole retained
+chain from its contents and anchors it afresh (`anchor: new`). Record the restart and its evidence:
+the old chain's head, and when and why the chain restarted. The audit trail itself does not carry it.
+
 ## Limits (stated plainly)
 
 - The ship job needs to read a `0600` root-owned file on the server node, so it runs as root,

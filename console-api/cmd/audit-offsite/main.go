@@ -180,11 +180,9 @@ func bucketHead(ctx context.Context, cl *minio.Client, bucket string) *auditchai
 		}
 		perKey[obj.Key] = append(perKey[obj.Key], obj)
 	}
-	best := ""
-	for key, vs := range perKey {
-		if oldestReal(vs) != nil && key > best {
-			best = key // keys are zero-padded, so lexicographic max == highest seq
-		}
+	best, err := chainHeadKey(perKey)
+	if err != nil {
+		fatalf("%v", err)
 	}
 	if best == "" {
 		return nil
@@ -199,6 +197,40 @@ func bucketHead(ctx context.Context, cl *minio.Client, bucket string) *auditchai
 		fatalf("parse bucket head %s: %v", best, err)
 	}
 	return &s
+}
+
+// chainHeadKey picks the segment the shipper resumes from — the highest-sequence segment whose
+// original exists — from a versioned listing; "" means the bucket holds no segment at all (a new
+// chain starts at 0). It refuses, rather than fork or silently restart the chain, when segment keys
+// exist whose originals are gone at or beyond that point: when retain-then-dispose has removed every
+// original (shipping stopped for longer than the retention plus the noncurrent expiry), or the newest
+// segments' originals (disposed out of order, or shadowed). Resuming there would write a segment under
+// a key the chain already used, or start a second chain at 0 under the first one's keys.
+func chainHeadKey(perKey map[string][]minio.ObjectInfo) (string, error) {
+	best, highest := "", ""
+	for key, vs := range perKey {
+		if _, ok := seqFromKey(key); !ok {
+			continue
+		}
+		if key > highest {
+			highest = key // keys are zero-padded, so lexicographic max == highest seq
+		}
+		if oldestReal(vs) != nil && key > best {
+			best = key
+		}
+	}
+	switch {
+	case highest == "":
+		return "", nil
+	case best == "":
+		return "", fmt.Errorf("the bucket holds segment keys up to %s but no segment's original: every one was disposed or shadowed, "+
+			"so the chain's head is unknown. Refusing to start a new chain at 0 under the old chain's keys "+
+			"(see docs/audit-offsite.md, \"When the chain restarts\")", highest)
+	case highest != best:
+		return "", fmt.Errorf("the newest segment keys (after %s, up to %s) have no original: resuming from %s would fork the chain. "+
+			"Refusing (see docs/audit-offsite.md, \"When the chain restarts\")", best, highest, best)
+	}
+	return best, nil
 }
 
 // ── ship ─────────────────────────────────────────────────────────────────────────
@@ -369,6 +401,9 @@ type statusReport struct {
 	// Anchor cross-check against a Kubernetes ConfigMap (a different trust domain than the bucket):
 	// "ok" | "new" | "regressed" | "rewritten" | "unavailable".
 	Anchor string `json:"anchor"`
+	// AnchorNote says why the anchor was not trusted for the prefix (the chain was re-derived from
+	// contents instead), e.g. an anchored head past the bucket's newest segment. "" when it was used.
+	AnchorNote string `json:"anchorNote,omitempty"`
 	// Intact = chain verifies AND nothing shadows the originals AND the anchor agrees. This — not
 	// Result.OK alone — is what the console should trust.
 	Intact     bool   `json:"intact"`
@@ -462,7 +497,12 @@ type verifyOutcome struct {
 	disposed        int
 	disposalMarkers int
 	retainedFrom    int // Seq of the oldest segment of the retained chain
-	perKey          map[string][]minio.ObjectInfo
+	maxReal         int // Seq of the newest segment whose original is listed (-1: none)
+	// anchorNote says why the anchor was not trusted for the prefix (it is past the bucket's newest
+	// segment, its segment is missing, or that segment's hash differs): the chain was then re-derived
+	// from contents, and the anchor cross-check reports what it found. "" when the anchor was used.
+	anchorNote string
+	perKey     map[string][]minio.ObjectInfo
 }
 
 type chainCheck struct {
@@ -592,15 +632,46 @@ func verifySegments(ctx context.Context, st segStore, now time.Time, retention t
 		}
 	}
 
+	out.maxReal = maxReal
+
+	// The anchor stands for the verified prefix only if the bucket's chain can contain it: its segment is
+	// listed, within the retained chain, with the anchored hash. An anchor past the bucket's newest
+	// segment (the chain lost its newest segments, or was restarted) or one whose segment differs is not
+	// trusted: seeding from it would skip every listed segment as "already verified", report the anchor's
+	// head as the chain's, and so hide the very regression the anchor exists to catch. The chain is then
+	// re-derived from contents, and checkAndUpdateAnchor compares that real head with the anchor.
+	trustAnchor := false
+	if anchor != nil && anchor.HeadSeq >= out.retainedFrom { // below it, the anchored head was disposed
+		switch key, ok := present[anchor.HeadSeq]; {
+		case anchor.HeadSeq > maxReal:
+			out.anchorNote = fmt.Sprintf("the anchored head seq=%d is past the bucket's newest segment seq=%d: "+
+				"the chain lost its newest segments or was restarted (re-derived from contents)", anchor.HeadSeq, maxReal)
+		case !ok:
+			out.anchorNote = fmt.Sprintf("the anchored head seq=%d has no original in the bucket (re-derived from contents)", anchor.HeadSeq)
+		default:
+			data, err := st.getVersion(ctx, key, oldestReal(perKey[key]).VersionID)
+			var s auditchain.Segment
+			switch {
+			case err != nil:
+				return out, fmt.Errorf("get %s (the anchored head): %w", key, err)
+			case json.Unmarshal(data, &s) != nil || s.Seq != anchor.HeadSeq || s.Hash != anchor.HeadHash:
+				out.anchorNote = fmt.Sprintf("the segment at the anchored head seq=%d does not have the anchored hash (re-derived from contents)", anchor.HeadSeq)
+			default:
+				trustAnchor = true
+			}
+		}
+	}
+
 	var sv *auditchain.StreamVerifier
 	verifiedSeq := -1
-	if anchor != nil && anchor.HeadSeq >= out.retainedFrom {
+	if trustAnchor {
 		// Seed with the trusted anchor so checkAndUpdateAnchor cross-checks the new head against it.
 		verifiedSeq = anchor.HeadSeq
 		sv = auditchain.NewStreamVerifierFrom(anchor.HeadSeq, anchor.HeadHash)
 		out.heads = append(out.heads, auditchain.Segment{Seq: anchor.HeadSeq, Hash: anchor.HeadHash})
 	} else {
-		// No anchor, or the anchored head itself has been disposed: re-derive the retained chain.
+		// No anchor, the anchored head disposed, or an anchor the bucket can't contain: re-derive the
+		// retained chain from contents.
 		sv = &auditchain.StreamVerifier{}
 	}
 	for _, key := range keys {
@@ -660,6 +731,7 @@ func verifySegments(ctx context.Context, st segStore, now time.Time, retention t
 			maxReal = seq
 		}
 	}
+	out.maxReal = maxReal
 
 	out.res = sv.Result()
 	if gap >= 0 {
@@ -706,7 +778,16 @@ func verify() bool {
 			fmt.Fprintln(os.Stderr, "audit-offsite: "+mode+" requested but no anchor yet — doing a full verify")
 		}
 	}
-	out, err := verifySegments(ctx, st, time.Now(), time.Duration(retentionDays())*24*time.Hour, anchor)
+	// Retain-then-dispose runs concurrently: an original the listing held can be removed (its lock lapsed)
+	// before it is read. A fresh listing then sees it disposed, so a failed read is retried on one.
+	var out verifyOutcome
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if out, err = verifySegments(ctx, st, time.Now(), time.Duration(retentionDays())*24*time.Hour, anchor); err == nil {
+			break
+		}
+		fmt.Fprintf(os.Stderr, "audit-offsite: verify pass %d: %v (re-listing)\n", attempt+1, err)
+	}
 	if err != nil {
 		fatalf("%v", err)
 	}
@@ -719,7 +800,13 @@ func verify() bool {
 	// cost. A tamper found in the swept window makes the run NOT Intact (same weight as the main chain).
 	resweep, resweepOK := "", true
 	if mode == "rotating" {
-		resweep, resweepOK = resweepPrefix(ctx, st, out.perKey, out.retainedFrom, res.HeadSeq)
+		// Bounded by the newest segment actually listed: res.HeadSeq would be the anchor's when it is
+		// seeded from one, and an anchor past the bucket's head walks the window off the chain's end.
+		c := chainCheck{ctx: ctx, st: st, now: time.Now(), retention: time.Duration(retentionDays()) * 24 * time.Hour}
+		resweep, resweepOK = resweepPrefix(c, out.perKey, out.retainedFrom, out.maxReal)
+	}
+	if out.anchorNote != "" {
+		fmt.Fprintln(os.Stderr, "audit-offsite: "+out.anchorNote)
 	}
 
 	report := statusReport{
@@ -728,6 +815,7 @@ func verify() bool {
 		DisposedSegments: out.disposed,
 		DisposalMarkers:  out.disposalMarkers,
 		Anchor:           anchorStatus,
+		AnchorNote:       out.anchorNote,
 		Intact:           res.OK && out.shadow == 0 && (anchorStatus == "ok" || anchorStatus == "new") && resweepOK,
 		HeadSeq:          res.HeadSeq,
 		HeadHash:         res.HeadHash,
@@ -777,15 +865,6 @@ func k8sClient() (kubernetes.Interface, string) {
 //   - "ok"/"new": consistent; the anchor is advanced to the current head.
 func checkAndUpdateAnchor(ctx context.Context, segs []auditchain.Segment, res auditchain.VerifyResult) string {
 	cs, ns := k8sClient()
-	hashBySeq := map[int]string{}
-	baseSeq := 1 << 30
-	for _, s := range segs {
-		hashBySeq[s.Seq] = s.Hash
-		if s.Seq < baseSeq {
-			baseSeq = s.Seq
-		}
-	}
-
 	cm, err := cs.CoreV1().ConfigMaps(ns).Get(ctx, anchorConfigMap, metav1.GetOptions{})
 	prior := anchorState{}
 	have := false
@@ -798,19 +877,7 @@ func checkAndUpdateAnchor(ctx context.Context, segs []auditchain.Segment, res au
 		return "unavailable"
 	}
 
-	status := "new"
-	if have {
-		switch {
-		case res.HeadSeq < prior.HeadSeq:
-			status = "regressed"
-		case prior.HeadSeq < baseSeq:
-			status = "ok" // the previously anchored head aged out past retention — legitimate
-		case hashBySeq[prior.HeadSeq] != "" && hashBySeq[prior.HeadSeq] != prior.HeadHash:
-			status = "rewritten"
-		default:
-			status = "ok"
-		}
-	}
+	status := anchorVerdict(prior, have, segs, res)
 
 	// Advance the anchor to the current head only when nothing looks wrong; on regressed/rewritten,
 	// leave the prior anchor in place so the alarm persists until an operator resolves it.
@@ -830,6 +897,33 @@ func checkAndUpdateAnchor(ctx context.Context, segs []auditchain.Segment, res au
 		}
 	}
 	return status
+}
+
+// anchorVerdict compares the verified head (res, and the Seq+Hash of the segments verified) with the
+// prior anchor: "new" without one, "regressed" when the head went backward (the chain lost its newest
+// segments, or was restarted), "rewritten" when the segment at the anchored Seq no longer has the
+// anchored hash, "ok" otherwise — including when the anchored head aged out past retention.
+func anchorVerdict(prior anchorState, have bool, segs []auditchain.Segment, res auditchain.VerifyResult) string {
+	if !have {
+		return "new"
+	}
+	hashBySeq := map[int]string{}
+	baseSeq := 1 << 30
+	for _, s := range segs {
+		hashBySeq[s.Seq] = s.Hash
+		if s.Seq < baseSeq {
+			baseSeq = s.Seq
+		}
+	}
+	switch {
+	case res.HeadSeq < prior.HeadSeq:
+		return "regressed"
+	case prior.HeadSeq < baseSeq:
+		return "ok" // the previously anchored head aged out past retention — legitimate
+	case hashBySeq[prior.HeadSeq] != "" && hashBySeq[prior.HeadSeq] != prior.HeadHash:
+		return "rewritten"
+	}
+	return "ok"
 }
 
 // ── the rotating prefix re-sweep (#294): bounded trust-nothing re-derivation ──────
@@ -876,16 +970,38 @@ func writeResweepCursor(ctx context.Context, nextSeq int) {
 // runs the whole chain's contents are re-verified at FIXED per-run cost (the #294 anti-treadmill). The
 // window overlaps the previous one by one segment so every chain LINK is re-checked across windows too.
 // A content-tamper or lock-shadow in the swept window returns ok=false (making the run not Intact).
-// base is the oldest segment of the retained chain: those before it have been disposed.
-func resweepPrefix(ctx context.Context, st segStore, perKey map[string][]minio.ObjectInfo, base, head int) (string, bool) {
+// base is the oldest segment of the retained chain (those before it have been disposed) and head the
+// newest segment the listing holds.
+func resweepPrefix(c chainCheck, perKey map[string][]minio.ObjectInfo, base, head int) (string, bool) {
 	window := 2000
 	if w, err := strconv.Atoi(getenv("AUDIT_RESWEEP_WINDOW", "2000")); err == nil && w > 0 {
 		window = w
 	}
-	if len(perKey) == 0 || head < base {
-		return "rotating: empty chain, nothing to re-sweep", true
+	msg, ok, next := resweepWindow(c, perKey, base, head, readResweepCursor(c.ctx), window)
+	if ok && next >= 0 {
+		writeResweepCursor(c.ctx, next)
 	}
-	cursor := readResweepCursor(ctx)
+	return msg, ok
+}
+
+// resweepWindow re-derives the window [cursor-1 .. cursor+window-1] of the retained chain [base..head],
+// bounded by the newest segment actually listed, and returns the next cursor (-1: leave it). A segment
+// the listing held but whose original is gone by the time it is read was disposed during the sweep when
+// its lock had lapsed (retain-then-dispose runs concurrently): the window ends before it and the next one
+// starts after it. Removed while still locked, it is a gap.
+func resweepWindow(c chainCheck, perKey map[string][]minio.ObjectInfo, base, head, cursor, window int) (string, bool, int) {
+	listed := -1
+	for k, vs := range perKey {
+		if seq, ok := seqFromKey(k); ok && seq > listed && oldestReal(vs) != nil {
+			listed = seq
+		}
+	}
+	if head > listed {
+		head = listed // never sweep past the chain's newest listed segment
+	}
+	if len(perKey) == 0 || head < base {
+		return "rotating: empty chain, nothing to re-sweep", true, -1
+	}
 	if cursor < base || cursor > head {
 		cursor = base // first run, or wrapped past the head / below retention
 	}
@@ -899,33 +1015,39 @@ func resweepPrefix(ctx context.Context, st segStore, perKey map[string][]minio.O
 	}
 	// Re-derive [lo..end] from their LOCKED ORIGINALS as a front-truncated sub-chain (trust-nothing).
 	var sv auditchain.StreamVerifier
+	next := -2
 	for seq := lo; seq <= end; seq++ {
 		key := segmentKey(seq)
 		versions, ok := perKey[key]
 		if !ok {
-			return fmt.Sprintf("rotating: segment seq=%d missing in [%d..%d] (gap — chain truncated/tampered)", seq, lo, end), false
+			return fmt.Sprintf("rotating: segment seq=%d missing in [%d..%d] (gap — chain truncated/tampered)", seq, lo, end), false, -1
 		}
 		orig := oldestReal(versions)
 		if orig == nil {
-			return fmt.Sprintf("rotating: segment seq=%d is fully shadowed (no locked original)", seq), false
+			return fmt.Sprintf("rotating: segment seq=%d is fully shadowed (no locked original)", seq), false, -1
 		}
-		data, err := st.getVersion(ctx, key, orig.VersionID)
+		data, err := c.st.getVersion(c.ctx, key, orig.VersionID)
 		if err != nil {
-			return fmt.Sprintf("rotating: get seq=%d failed: %v", seq, err), false
+			if c.lapsedBy(key, *orig, c.now) {
+				end, next = seq-1, seq+1 // disposed while sweeping: the window ends before it
+				break
+			}
+			return fmt.Sprintf("rotating: get seq=%d failed: %v", seq, err), false, -1
 		}
 		var s auditchain.Segment
 		if json.Unmarshal(data, &s) != nil {
-			return fmt.Sprintf("rotating: parse seq=%d failed", seq), false
+			return fmt.Sprintf("rotating: parse seq=%d failed", seq), false, -1
 		}
 		sv.Push(s)
 	}
 	if r := sv.Result(); !r.OK {
-		return fmt.Sprintf("rotating: prefix re-sweep [%d..%d] FAILED: %s", lo, end, r.Reason), false
+		return fmt.Sprintf("rotating: prefix re-sweep [%d..%d] FAILED: %s", lo, end, r.Reason), false, -1
 	}
-	next := end + 1
+	if next == -2 {
+		next = end + 1
+	}
 	if next > head {
 		next = base // wrap: one full rotation complete, start the prefix over
 	}
-	writeResweepCursor(ctx, next)
-	return fmt.Sprintf("rotating: re-derived seq %d..%d (next cursor %d, window %d)", lo, end, next, window), true
+	return fmt.Sprintf("rotating: re-derived seq %d..%d (next cursor %d, window %d)", lo, end, next, window), true, next
 }
