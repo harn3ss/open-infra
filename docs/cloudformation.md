@@ -545,8 +545,10 @@ namespace. Use `-no-wait` to skip the readiness gate, `-timeout SECS` to bound i
 
 Each resource is named after its stack, `<stack>-<logical id>` in lowercase, as CloudFormation names a
 resource the template leaves unnamed. Past 40 characters the name keeps its first 31 and ends in a
-hash of the stack and logical id, so it stays unique and within Kubernetes and S3 limits. A bucket
-with no `BucketName` takes this name. One template can therefore be deployed as several stacks
+hash of the stack and logical id, so it stays unique and within Kubernetes limits. A bucket with no
+`BucketName` gets the S3 name AWS gives it, `<stack>-<logical id>-<suffix>`: lowercase, shortened to fit
+63 characters, ending in a 12-character suffix that differs for a later stack of the same name; `Ref`
+returns it. One template can therefore be deployed as several stacks
 (`dev`, `prod`) in one namespace. Logical ids that differ only in case (`MyDB`, `Mydb`) are two
 resources, as on AWS: each gets a name ending in a hash of its exact id. Explicit names are used as
 given: a Lambda's `FunctionName` names its Function (and `Ref` returns it), and a `BucketName`,
@@ -571,15 +573,16 @@ another name, or delete the retained one. A name that cannot change (an explicit
 refused the same way. The shared namespace default `EncryptionKey` of stacks created before per-stack
 default keys is applied by every stack that uses it, retained or not.
 
-A stack's data never carries over to a new stack of the same name. On AWS a generated bucket name ends
-in a random suffix, so a re-created stack gets a new, empty bucket. Here generated names stay
-deterministic, and a bucket's owner record names the claim instance that created it (its composite's
-creation time). A re-created stack's claim of the same name is a new instance: it takes over the bucket
-only when it is empty, and is refused while the earlier instance's data is still in it.
+A stack's data never carries over to a new stack of the same name. As on AWS, a generated bucket name
+ends in a suffix of its own stack instance, so a re-created stack gets a new, empty bucket. A bucket's owner
+record also names the claim instance that created it (its composite's creation time): a claim that is a new
+instance takes over a bucket only when it is empty, and is refused while the earlier instance's data is
+still in it.
 
 A stack created before stack-qualified names keeps the names it recorded: an update never renames a
 resource, which would create a second object and orphan the first. Resources an update adds to such
-a stack are stack-qualified.
+a stack are stack-qualified. Likewise a bucket created before generated bucket names keeps its S3 name (its
+claim's name); a bucket an update adds gets a generated one.
 
 ### Stack outputs
 

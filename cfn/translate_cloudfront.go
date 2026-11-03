@@ -1265,13 +1265,9 @@ func (c *stackCtx) includedID(id string) bool {
 }
 
 // s3BucketMinIOName is the MinIO bucket an in-stack AWS::S3::Bucket becomes — its concrete BucketName,
-// else the k8s-safe logical id (exactly what translateS3Bucket + the Bucket composition produce).
+// else its generated or recorded name (exactly what translateS3Bucket + the Bucket composition produce).
 func s3BucketMinIOName(bucketID string, c *stackCtx) string {
-	p, _ := c.resolveProps(bucketID)
-	if n, ok := concrete(p["BucketName"]); ok && n != "" {
-		return n
-	}
-	return c.name(bucketID)
+	return c.bucketName(bucketID)
 }
 
 // ---- Fn::GetAtt <Distribution>.DomainName ----

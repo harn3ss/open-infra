@@ -39,9 +39,29 @@ Resources:
     Properties: { BucketName: my-named-bucket }
 `
 
+// stackBucketName is the S3 name the stack recorded for bucket id (bucketNameOf: its spec.bucketName — for
+// an unnamed bucket the generated <stack>-<logical id>-<suffix>).
+func stackBucketName(t *testing.T, f *fakeApplier, id string) string {
+	t.Helper()
+	rec, _, _ := f.GetStack(context.Background(), "s")
+	if rec != nil {
+		for _, r := range rec.Resources {
+			if r.LogicalID == id {
+				return bucketNameOf(r)
+			}
+		}
+	}
+	t.Fatalf("no recorded bucket %s", id)
+	return ""
+}
+
 func TestDestroy_EmptyBucketsAreRemoved(t *testing.T) {
 	f := deployTemplate(t, []byte(bucketStack))
-	b := &fakeBuckets{data: map[string]bool{"s-data": false, "my-named-bucket": false}}
+	gen := stackBucketName(t, f, "Data")
+	if !strings.HasPrefix(gen, "s-data-") || len(gen) != len("s-data-")+bucketSuffixLen {
+		t.Fatalf("an unnamed bucket's S3 name = %q, want AWS's form s-data-<12-character suffix>", gen)
+	}
+	b := &fakeBuckets{data: map[string]bool{gen: false, "my-named-bucket": false}}
 	rec, err := Destroy(context.Background(), b.opts(deployOpts()), f)
 	if err != nil || rec.Status != "DELETE_COMPLETE" {
 		t.Fatalf("destroy = %v, %v; want DELETE_COMPLETE", rec, err)
@@ -50,7 +70,7 @@ func TestDestroy_EmptyBucketsAreRemoved(t *testing.T) {
 		t.Errorf("bucket claims not deleted: %v", f.deleted)
 	}
 	sort.Strings(b.removed) // no dependency between them: either may go first
-	if strings.Join(b.removed, ",") != "my-named-bucket,s-data" {
+	if strings.Join(b.removed, ",") != "my-named-bucket,"+gen {
 		t.Errorf("removed buckets = %v, want the explicit name and the generated one", b.removed)
 	}
 }
@@ -58,7 +78,7 @@ func TestDestroy_EmptyBucketsAreRemoved(t *testing.T) {
 // AWS: DeleteStack fails with BucketNotEmpty and keeps the bucket and its data.
 func TestDestroy_NonEmptyBucketFailsTheDelete(t *testing.T) {
 	f := deployTemplate(t, []byte(bucketStack))
-	b := &fakeBuckets{data: map[string]bool{"s-data": false, "my-named-bucket": true}}
+	b := &fakeBuckets{data: map[string]bool{stackBucketName(t, f, "Data"): false, "my-named-bucket": true}}
 	rec, err := Destroy(context.Background(), b.opts(deployOpts()), f)
 	if err == nil || !IsBucketNotEmpty(err) {
 		t.Fatalf("destroy err = %v, want BucketNotEmpty", err)
@@ -88,7 +108,7 @@ Resources:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
 `))
-	b := &fakeBuckets{data: map[string]bool{"s-data": true}}
+	b := &fakeBuckets{data: map[string]bool{stackBucketName(t, f, "Data"): true}}
 	rec, err := Destroy(context.Background(), b.opts(deployOpts()), f)
 	if err != nil || rec.Status != "DELETE_COMPLETE" {
 		t.Fatalf("destroy = %v, %v", rec, err)
@@ -114,7 +134,8 @@ func TestUpdate_DroppedBucket(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.deleted = nil
-		b := &fakeBuckets{data: map[string]bool{"s-data": full, "my-named-bucket": false}}
+		gen := stackBucketName(t, f, "Data")
+		b := &fakeBuckets{data: map[string]bool{gen: full, "my-named-bucket": false}}
 		rec, err := Update(context.Background(), []byte(`
 Resources:
   Named:
@@ -133,7 +154,7 @@ Resources:
 		if full == contains(f.deleted, "Bucket/s-data") {
 			t.Errorf("full=%v: claim deleted = %v", full, contains(f.deleted, "Bucket/s-data"))
 		}
-		if full == contains(b.removed, "s-data") {
+		if full == contains(b.removed, gen) {
 			t.Errorf("full=%v: bucket removed = %v", full, b.removed)
 		}
 		// The dropped bucket's cleanup event: DELETE_COMPLETE, or (kept with its data) DELETE_FAILED
@@ -163,7 +184,7 @@ Resources:
 // A stack delete a non-empty bucket refuses ends with the stack's DELETE_FAILED event naming it.
 func TestDestroy_NonEmptyBucketEvent(t *testing.T) {
 	f := deployTemplate(t, []byte(bucketStack))
-	b := &fakeBuckets{data: map[string]bool{"s-data": false, "my-named-bucket": true}}
+	b := &fakeBuckets{data: map[string]bool{stackBucketName(t, f, "Data"): false, "my-named-bucket": true}}
 	rec, _ := Destroy(context.Background(), b.opts(deployOpts()), f)
 	n := len(rec.Events)
 	if n == 0 || rec.Events[n-1].Status != "DELETE_FAILED" || !strings.Contains(rec.Events[n-1].Reason, "BucketNotEmpty") {

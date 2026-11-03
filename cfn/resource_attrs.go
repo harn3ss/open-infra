@@ -219,7 +219,25 @@ func svcStaticAttr(attr string) attrFunc {
 }
 
 // bucketName is an S3 bucket's name.
-func s3BucketName(e *attrEnv) string { return e.awsName("BucketName") }
+// s3BucketName is a bucket's S3 name: its BucketName, else the name its deployed spec recorded (a
+// generated <stack>-<logical id>-<suffix>), else the name this operation gives it.
+func s3BucketName(e *attrEnv) string {
+	if v := e.prop("BucketName"); v != "" {
+		return v
+	}
+	if e.res != nil {
+		if v, _ := e.res.Spec["bucketName"].(string); v != "" {
+			return v
+		}
+		if e.res.Name != "" {
+			return e.res.Name // a bucket created before generated names: the claim's name is its bucket name
+		}
+	}
+	if e.sctx != nil {
+		return e.sctx.bucketName(e.id)
+	}
+	return e.name()
+}
 
 // iamPath is an IAM resource's Path ("/" by default), with a trailing slash.
 func iamPath(e *attrEnv) string {

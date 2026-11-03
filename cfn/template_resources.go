@@ -26,12 +26,23 @@ type TemplateResource struct {
 // into another kind, so the stack record keeps no entry for it), such as a CloudFront policy or an ACM
 // certificate. A NoEcho parameter's value is not in params, so a property fed by one stays unresolved.
 func TemplateResources(data []byte, params, exports map[string]string, stackName string, types ...string) ([]TemplateResource, error) {
-	return TemplateResourcesForStack(data, params, exports, stackName, "", types...)
+	return templateResources(data, params, exports, stackName, "", nil, "", types)
 }
 
 // TemplateResourcesForStack is TemplateResources for one stack instance: AWS::StackId resolves to stackID
 // ("" = the derived StackId of stackName).
 func TemplateResourcesForStack(data []byte, params, exports map[string]string, stackName, stackID string, types ...string) ([]TemplateResource, error) {
+	return templateResources(data, params, exports, stackName, stackID, nil, "", types)
+}
+
+// TemplateResourcesOf is TemplateResources for a deployed stack, from its record: the in-stack names it
+// resolves are the ones the stack recorded (a resource keeps the name it was created with, and a bucket its
+// generated name), not the ones a new stack would give, and AWS::StackId is the one the record names.
+func TemplateResourcesOf(rec *StackRecord, exports map[string]string, types ...string) ([]TemplateResource, error) {
+	return templateResources([]byte(rec.Template), rec.Parameters, exports, rec.Name, rec.StackID, rec.Resources, rec.CreatedAt, types)
+}
+
+func templateResources(data []byte, params, exports map[string]string, stackName, stackID string, prior []StackResource, instance string, types []string) ([]TemplateResource, error) {
 	t, err := Parse(data)
 	if err != nil {
 		return nil, err
@@ -42,11 +53,16 @@ func TemplateResourcesForStack(data []byte, params, exports map[string]string, s
 	}
 	r := newResolver(t, resolveParams(t, params), strMapToAny(exports), pseudoParamsFor(stackName, stackID))
 	r.evalConditions()
-	sctx := &stackCtx{template: t, resolver: r, namer: newPhysNamer(stackName, nil)}
+	namer := newPhysNamer(stackName, prior)
+	namer.instance = instance
+	sctx := &stackCtx{template: t, resolver: r, namer: namer}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
 	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, sctx) }
 	d := &deployedAttrs{ctx: context.Background(), sctx: sctx,
 		byID: map[string]StackResource{}, status: map[string]map[string]any{}, missed: map[string]bool{}}
+	for _, res := range prior {
+		d.byID[res.LogicalID] = res
+	}
 	r.deployed = d.lookup
 	ids := make([]string, 0, len(t.Resources))
 	for id := range t.Resources {

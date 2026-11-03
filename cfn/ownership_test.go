@@ -94,10 +94,12 @@ Resources:
 	if f.liveLabels["Bucket/s-data"]["cfn.openinfra.dev/stack"] != retainedLabels["cfn.openinfra.dev/stack"] {
 		t.Fatal("the retained bucket's labels changed")
 	}
-	// Its Ref (the bucket name) is the new bucket's, and deleting the new stack leaves the retained one.
+	// Its Ref (the bucket name) is the new bucket's — a generated S3 name for this stack instance, not the
+	// retained bucket's — and deleting the new stack leaves the retained one.
+	retained, _ := f.liveSpecs["Bucket/s-data"]["bucketName"].(string)
 	for _, r := range rec.Resources {
-		if r.LogicalID == "Data" && r.PhysicalID != name {
-			t.Fatalf("the re-created bucket's physical id = %q, want %q", r.PhysicalID, name)
+		if r.LogicalID == "Data" && (r.PhysicalID != bucketNameOf(r) || r.PhysicalID == retained || !strings.HasPrefix(r.PhysicalID, "s-data-")) {
+			t.Fatalf("the re-created bucket's physical id = %q, want its own S3 name %q (the retained bucket is %q)", r.PhysicalID, bucketNameOf(r), retained)
 		}
 	}
 	f.deleted = nil

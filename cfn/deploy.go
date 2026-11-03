@@ -400,6 +400,11 @@ type DeployOptions struct {
 	// nestedData is an existing stack's nested stacks' Outputs, by logical id ("Outputs.<Key>" -> value):
 	// what an update or change set resolves Fn::GetAtt <Stack>.Outputs.<Key> to (nested_stacks.go).
 	nestedData map[string]map[string]any
+	// instance identifies the stack instance an operation builds for — its creation time: the existing
+	// stack's CreatedAt for an update or change set, the create's own for a create — so the names generated
+	// for unnamed buckets are stable across an operation's passes and differ for a later stack of the same
+	// name (physNamer.instance).
+	instance string
 	// Caps are deploy-environment facts translators depend on (e.g. whether MinIO has SSE-KMS on).
 	// Plan and deploy both evaluate with these, so a PROVISIONABLE* plan still means deploy won't
 	// refuse. Zero = fail-closed (the CLI); the in-cluster aws-shim doorway sets them.
@@ -485,6 +490,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	}
 	namer := newPhysNamer(opts.StackName, opts.prior)
 	namer.avoid(opts.leftovers)
+	namer.instance = opts.instance
 	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: namer, signalURL: opts.SignalURL}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, ctx) }
 	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, ctx) }
@@ -635,6 +641,10 @@ func (s objectSet) add(b builtResource) []Finding {
 func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*StackRecord, error) {
 	if opts.Namespace == "" {
 		return nil, fmt.Errorf("a target namespace is required (deploy never guesses one)")
+	}
+	created := time.Now().UTC()
+	if opts.instance == "" {
+		opts.instance = created.Format(time.RFC3339Nano) // this stack instance (generated bucket names)
 	}
 
 	// A stack with Lambda-backed custom resources (#269) OR a REST v1 API (#295) needs the interleaved
@@ -844,7 +854,9 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParamsFor(opts.StackName, opts.StackID))
 	r.evalConditions()
 	r.customData = map[string]map[string]any{}
-	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, nil), signalURL: opts.SignalURL}
+	namer := newPhysNamer(opts.StackName, nil)
+	namer.instance = opts.instance
+	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: namer, signalURL: opts.SignalURL}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }
 	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, sctx) }
 	if needsSignals(t) && opts.Signals == nil {

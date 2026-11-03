@@ -53,6 +53,7 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 	var owned ownedObjects
 	if found {
 		opts.prior = current.Resources
+		opts.instance = current.CreatedAt // a bucket the update adds is named for this stack instance
 		owned = ownedFrom(current.Resources)
 		opts.adoptStackID(current) // AWS::StackId is the stack's own, as its create resolved it
 		// Its nested stacks' Outputs, as they are now: what its resources' Fn::GetAtt read.

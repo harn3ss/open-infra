@@ -2586,7 +2586,7 @@ func inStackRef(id string, ctx *stackCtx) (string, bool) {
 	}
 	switch res.Type {
 	case "AWS::S3::Bucket":
-		return inStackName(id, "BucketName", ctx), true
+		return ctx.bucketName(id), true
 	case "AWS::DynamoDB::Table":
 		return inStackName(id, "TableName", ctx), true
 	case "AWS::Lambda::Function":
@@ -2634,7 +2634,7 @@ func inStackARN(id string, ctx *stackCtx) (string, bool) {
 	ident := awsidentity.Current()
 	switch res.Type {
 	case "AWS::S3::Bucket":
-		return awsidentity.S3BucketARN(name("BucketName")), true
+		return awsidentity.S3BucketARN(ctx.bucketName(id)), true
 	case "AWS::SQS::Queue":
 		return ident.RegionalARN("sqs", name("QueueName")), true
 	case "AWS::SNS::Topic":
@@ -3980,6 +3980,12 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	spec := map[string]any{}
 	if bn, ok := concrete(props["BucketName"]); ok && bn != "" {
 		spec["bucketName"] = bn
+	} else if ctx != nil && ctx.namer != nil {
+		// No BucketName: the name AWS gives an unnamed stack bucket, <stack>-<logical id>-<suffix>, unless
+		// the stack recorded this bucket before (it keeps its name; naming.go).
+		if n, set := ctx.namer.bucketName(id); set {
+			spec["bucketName"] = n
+		}
 	}
 	if vc, ok := props["VersioningConfiguration"].(map[string]any); ok {
 		if st, _ := concrete(vc["Status"]); st == "Enabled" {

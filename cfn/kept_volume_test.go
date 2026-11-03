@@ -49,8 +49,15 @@ Resources:
 	if name == "s-data" || !strings.HasPrefix(name, "s-data-") {
 		t.Fatalf("the re-created bucket must be named around the retained one, got %q", name)
 	}
-	if gotBucket != name {
-		t.Fatalf("the custom resource got Bucket %v, want the new bucket %q", gotBucket, name)
+	bucket := ""
+	for _, r := range rec.Resources {
+		if r.LogicalID == "Data" {
+			bucket = bucketNameOf(r)
+		}
+	}
+	retained, _ := f.liveSpecs["Bucket/s-data"]["bucketName"].(string)
+	if gotBucket != bucket || bucket == "" || bucket == retained {
+		t.Fatalf("the custom resource got Bucket %v, want the new bucket's S3 name %q (not the retained bucket's %q)", gotBucket, bucket, retained)
 	}
 }
 

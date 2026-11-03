@@ -558,15 +558,21 @@ func TestCloudFront_ManagedHeadersAndErrorDocument(t *testing.T) {
 }
 
 // The origin may name the bucket by ${Bucket}.s3.<region>.amazonaws.com, and a bucket without a
-// BucketName serves under its k8s-safe logical id (the Bucket composition's default).
+// BucketName serves under the name the stack generates for it (<stack>-<logical id>-<suffix>, as on AWS) —
+// the same name the bucket itself is created with.
 func TestCloudFront_SubOriginAndGeneratedBucketName(t *testing.T) {
 	tmpl := cfSiteTemplate()
 	delete(cfProps(tmpl, "SiteBucket"), "BucketName")
 	cfOrigin0(tmpl)["DomainName"] = map[string]any{"Fn::Sub": "${SiteBucket}.s3.${AWS::Region}.amazonaws.com"}
 	// The policy's Resource is an unresolvable !Sub, but it rides the CloudFront grant, which isn't stored.
-	site := cfBuilt(t, cfJSON(t, tmpl))["SiteDistribution"]
-	if site.res.Spec["bucket"] != "site-sitebucket" {
-		t.Fatalf("bucket = %v, want sitebucket (the k8s-safe logical id)", site.res.Spec["bucket"])
+	built := cfBuilt(t, cfJSON(t, tmpl))
+	site, bucket := built["SiteDistribution"], built["SiteBucket"]
+	name, _ := bucket.res.Spec["bucketName"].(string)
+	if !strings.HasPrefix(name, "site-sitebucket-") || len(name) != len("site-sitebucket-")+bucketSuffixLen {
+		t.Fatalf("the unnamed bucket's S3 name = %q, want site-sitebucket-<12-character suffix>", name)
+	}
+	if site.res.Spec["bucket"] != name {
+		t.Fatalf("the distribution serves bucket %v, want the bucket's own S3 name %q", site.res.Spec["bucket"], name)
 	}
 }
 

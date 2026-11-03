@@ -45,6 +45,9 @@ type physNamer struct {
 	// new stack's resource is a new resource, never the retained one. Found by the operation
 	// (leftoverHits), so it is empty for an offline plan.
 	leftovers map[string]bool
+	// instance identifies this stack instance — its creation time (StackRecord.CreatedAt) — so a bucket's
+	// generated name differs between a stack and a later stack of the same name, as on AWS (bucketName).
+	instance string
 }
 
 // newPhysNamer builds the namer for a stack. prior is the stack's recorded resources (nil for a new
@@ -137,6 +140,113 @@ func leftoverAltName(stack, key, base string, gen, max int) string {
 func (n *physNamer) recorded(id string) (string, bool) {
 	v, ok := n.prior[id]
 	return v, ok
+}
+
+// maxBucketNameLen is S3's limit on a bucket name.
+const maxBucketNameLen = 63
+
+// bucketSuffixLen is the length of the random-looking part AWS ends a generated bucket name with.
+const bucketSuffixLen = 12
+
+// bucketName is the S3 name of in-stack AWS::S3::Bucket id when its template sets no BucketName, and
+// whether this operation sets it (spec.bucketName). A bucket this operation creates gets the name AWS
+// gives such a bucket, <stack>-<logical id>-<suffix> (generatedBucketName): globally unique like any S3
+// name, and different for a later stack of the same name. A bucket the stack already recorded keeps the
+// name it was created with — its recorded spec.bucketName, or for a bucket created before generated names
+// none at all (set=false: the claim's name is its bucket name, as before), so an update never renames or
+// replaces one (spec.bucketName is immutable on kind: Bucket).
+func (n *physNamer) bucketName(id string) (name string, set bool) {
+	if n == nil {
+		return "", false
+	}
+	for _, r := range n.priorRes {
+		if r.LogicalID == id {
+			v, _ := r.Spec["bucketName"].(string)
+			return v, v != ""
+		}
+	}
+	return generatedBucketName(n.stack, id, n.instance), true
+}
+
+// generatedBucketName is AWS's form for an unnamed stack bucket: the stack name and logical id, lowercased
+// and shortened to fit, then a 12-character suffix derived from the stack, logical id and stack instance.
+// It is a valid S3 bucket name (3-63 lowercase letters, digits and single hyphens, starting and ending with
+// a letter or digit, never xn--… or sthree-…).
+func generatedBucketName(stack, id, instance string) string {
+	sum := sha256.Sum256([]byte(stack + "\x00" + id + "\x00bucket\x00" + instance))
+	suffix := base36(sum[:])[:bucketSuffixLen]
+	s, l := collapseHyphens(k8sName(stack)), collapseHyphens(k8sName(id))
+	room := maxBucketNameLen - 1 - bucketSuffixLen // for "<stack>-<id>"
+	if s != "" && len(s)+1+len(l) > room {
+		// Shorten the longer part first, as AWS does, keeping some of each.
+		half := (room - 1) / 2
+		switch {
+		case len(l) <= half:
+			s = s[:room-1-len(l)]
+		case len(s) <= half:
+			l = l[:room-1-len(s)]
+		default:
+			s, l = s[:half], l[:room-1-half]
+		}
+	} else if s == "" && len(l) > room {
+		l = l[:room]
+	}
+	head := strings.Trim(l, "-")
+	if s = strings.Trim(s, "-"); s != "" {
+		head = strings.Trim(s+"-"+head, "-")
+	}
+	head = strings.TrimPrefix(strings.TrimPrefix(head, "xn--"), "sthree-")
+	if head == "" {
+		return "b-" + suffix
+	}
+	return head + "-" + suffix
+}
+
+// base36 renders b in lowercase base 36 (digits and letters), most significant first.
+func base36(b []byte) string {
+	const digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+	n := make([]byte, len(b))
+	copy(n, b)
+	var out []byte
+	for {
+		zero := true
+		rem := 0
+		for i := range n {
+			v := rem*256 + int(n[i])
+			n[i] = byte(v / 36)
+			rem = v % 36
+			if n[i] != 0 {
+				zero = false
+			}
+		}
+		out = append(out, digits[rem])
+		if zero {
+			break
+		}
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return string(out)
+}
+
+// bucketName is the S3 name of in-stack bucket id: its BucketName when the template sets one, else the
+// name bucketName (physNamer) gives it, else (a bucket created before generated names, or no stack
+// context) its open-infra name.
+func (c *stackCtx) bucketName(id string) string {
+	if c != nil && c.template != nil {
+		if p, _ := c.resolveProps(id); p != nil {
+			if n, ok := concrete(p["BucketName"]); ok && n != "" {
+				return n
+			}
+		}
+	}
+	if c != nil && c.namer != nil {
+		if n, set := c.namer.bucketName(id); set {
+			return n
+		}
+	}
+	return c.name(id)
 }
 
 // name is the Kubernetes name of in-stack resource id. With no stack context (a translator called on
