@@ -114,12 +114,6 @@ exceptions:
       Provisions nothing: the role binds directly on the VM (kind: VirtualMachine spec.instanceRole).
       GetInstanceProfile and ListInstanceProfiles are not served.
     issue: "untracked — raised by the coverage registry"
-  - types: [AWS::S3::BucketPolicy]
-    check: read
-    reason: >-
-      Collated into its bucket (kind: Bucket spec.policy, applied to MinIO verbatim); the S3 front door
-      serves no GetBucketPolicy.
-    issue: "untracked — raised by the coverage registry"
   - types: [AWS::AppSync::GraphQLApi, AWS::AppSync::GraphQLSchema, AWS::AppSync::DataSource,
             AWS::AppSync::FunctionConfiguration]
     check: read

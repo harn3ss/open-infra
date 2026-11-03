@@ -105,6 +105,8 @@ func decodeTarget(method, bucket, key string, q url.Values) (s3op, bool) {
 			return s3op{kind: "get-bucket-encryption", bucket: bucket}, true
 		case sub == "ownershipControls" && method == http.MethodGet:
 			return s3op{kind: "get-bucket-ownership-controls", bucket: bucket}, true
+		case sub == "policy" && method == http.MethodGet:
+			return s3op{kind: "get-bucket-policy", bucket: bucket}, true
 		case sub == "uploads" && method == http.MethodGet:
 			return s3op{kind: "list-multipart-uploads", bucket: bucket}, true
 		case sub == "delete" && method == http.MethodPost: // DeleteObjects: the keys are in the body
@@ -175,6 +177,8 @@ func (op s3op) action() string {
 		return "s3:GetEncryptionConfiguration"
 	case "get-bucket-ownership-controls":
 		return "s3:GetBucketOwnershipControls"
+	case "get-bucket-policy":
+		return "s3:GetBucketPolicy"
 	case "get-object-tagging":
 		if op.versionID != "" {
 			return "s3:GetObjectVersionTagging"
@@ -312,6 +316,25 @@ func (h *s3Handler) listObjectVersions(w http.ResponseWriter, r *http.Request, o
 			LastModified: mod, ETag: quoteETag(obj.ETag), Size: obj.Size, StorageClass: "STANDARD"})
 	}
 	writeXML(w, http.StatusOK, requestID, res)
+}
+
+// getBucketPolicy answers the bucket's policy document as MinIO holds it — a kind: Bucket's spec.policy is
+// applied there verbatim (put-bucket-policy) — as the JSON body S3 returns; a bucket with none is
+// NoSuchBucketPolicy, as on S3.
+func (h *s3Handler) getBucketPolicy(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {
+	p, err := h.mc.GetBucketPolicy(r.Context(), op.bucket)
+	if err != nil {
+		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
+		return
+	}
+	if strings.TrimSpace(p) == "" {
+		writeS3Error(w, "NoSuchBucketPolicy", requestID, r.URL.Path)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("x-amz-request-id", requestID)
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, p)
 }
 
 func (h *s3Handler) getBucketTagging(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {

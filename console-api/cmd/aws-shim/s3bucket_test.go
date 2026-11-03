@@ -40,6 +40,7 @@ func TestS3Decode_Subresources(t *testing.T) {
 		{"PUT", "/b?tagging", true, "put-bucket-tagging", "", true},
 		{"DELETE", "/b?tagging", true, "delete-bucket-tagging", "", true},
 		{"GET", "/b?location", true, "get-bucket-location", "", false},
+		{"GET", "/b?policy", true, "get-bucket-policy", "", false},
 		{"DELETE", "/b", true, "delete-bucket", "", true},
 		{"GET", "/b?list-type=2&prefix=x", true, "list-objects", "", false},
 		{"GET", "/b/k?versionId=v1", true, "get", "v1", false},
@@ -49,7 +50,7 @@ func TestS3Decode_Subresources(t *testing.T) {
 		{"GET", "/b/k?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc&x-id=GetObject", true, "get", "", false},
 		// sub-resources the shim does not serve are refused, never mistaken for a listing or a GET
 		{"GET", "/b?acl", false, "", "", false},
-		{"GET", "/b?policy", false, "", "", false},
+		{"PUT", "/b?policy", false, "", "", false},
 		{"PUT", "/b?lifecycle", false, "", "", false},
 		// DeleteObjects is a POST ?delete on the bucket; a GET or PUT ?delete is not an operation
 		{"GET", "/b?delete", false, "", "", false},
@@ -121,13 +122,14 @@ type fakeS3 struct {
 	versioning map[string]string
 	tags       map[string]string // bucket -> raw Tagging XML ("" = none)
 	encryption map[string]string // bucket -> default SSE algorithm ("" = none)
+	policies   map[string]string // bucket -> policy JSON ("" = none)
 	removed    []string
 }
 
 type fakeVersion struct{ key, id string }
 
 func newFakeS3() *fakeS3 {
-	return &fakeS3{buckets: map[string]bool{}, objects: map[string][]fakeVersion{}, versioning: map[string]string{}, tags: map[string]string{}, encryption: map[string]string{}}
+	return &fakeS3{buckets: map[string]bool{}, objects: map[string][]fakeVersion{}, versioning: map[string]string{}, tags: map[string]string{}, encryption: map[string]string{}, policies: map[string]string{}}
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +143,7 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, hasTagging := q["tagging"]
 	_, hasLocation := q["location"]
 	_, hasEncryption := q["encryption"]
+	_, hasPolicy := q["policy"]
 	notFound := func() {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`<Error><Code>NoSuchBucket</Code><Message>no</Message></Error>`))
@@ -191,6 +194,13 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = w.Write([]byte(`<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ApplyServerSideEncryptionByDefault><SSEAlgorithm>` + f.encryption[bucket] + `</SSEAlgorithm></ApplyServerSideEncryptionByDefault></Rule></ServerSideEncryptionConfiguration>`))
+	case hasPolicy && r.Method == http.MethodGet:
+		if f.policies[bucket] == "" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`<Error><Code>NoSuchBucketPolicy</Code><Message>none</Message></Error>`))
+			return
+		}
+		_, _ = w.Write([]byte(f.policies[bucket]))
 	case hasTagging && r.Method == http.MethodGet:
 		if f.tags[bucket] == "" {
 			w.WriteHeader(http.StatusNotFound)
@@ -430,5 +440,42 @@ func TestBucketCreationDate_NeverZero(t *testing.T) {
 	when := time.Date(2026, 11, 2, 1, 2, 3, 4e6, time.UTC)
 	if got := bucketCreationDate(when); got != "2026-11-02T01:02:03.004Z" {
 		t.Fatalf("a real time -> %q", got)
+	}
+}
+
+// GetBucketPolicy answers the policy MinIO holds for the bucket (a kind: Bucket's spec.policy, applied
+// verbatim) as S3's JSON body; a bucket with none is NoSuchBucketPolicy, a missing bucket NoSuchBucket.
+// It is authorized as s3:GetBucketPolicy on the bucket, behind the coarse read gate.
+func TestS3GetBucketPolicy(t *testing.T) {
+	const doc = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::site/*"]}]}`
+	f := newFakeS3()
+	f.buckets["site"], f.buckets["plain"] = true, true
+	f.policies["site"] = doc
+	if op, ok := decodeTarget(http.MethodGet, "site", "", url.Values{"policy": {""}}); !ok || op.kind != "get-bucket-policy" || op.action() != "s3:GetBucketPolicy" {
+		t.Fatalf("GET ?policy decodes to %+v %v", op, ok)
+	}
+	h := &s3Handler{mc: fakeMinio(t, f), cs: csWithSAR(true), authzNS: "default", logger: discardLogger()}
+	get := func(h *s3Handler, bucket string, claims iam.Claims) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.serve(w, httptest.NewRequest(http.MethodGet, "http://s3/"+bucket+"?policy", nil), claims, "r")
+		return w
+	}
+	if w := get(h, "site", iam.Claims{Sub: "u"}); w.Code != http.StatusOK || w.Body.String() != doc || w.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("GetBucketPolicy = %d %q %s", w.Code, w.Header().Get("Content-Type"), w.Body)
+	}
+	if w := get(h, "plain", iam.Claims{Sub: "u"}); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "<Code>NoSuchBucketPolicy</Code>") {
+		t.Fatalf("GetBucketPolicy (none) = %d %s", w.Code, w.Body)
+	}
+	if w := get(h, "missing", iam.Claims{Sub: "u"}); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "<Code>NoSuchBucket</Code>") {
+		t.Fatalf("GetBucketPolicy (no bucket) = %d %s", w.Code, w.Body)
+	}
+	// Denied: no read on the coarse gate; a Deny of s3:GetBucketPolicy on the bucket.
+	denied := &s3Handler{mc: fakeMinio(t, f), cs: csWithSAR(false), authzNS: "default", logger: discardLogger()}
+	if w := get(denied, "site", iam.Claims{Sub: "u"}); w.Code != http.StatusForbidden {
+		t.Errorf("GetBucketPolicy without read = %d", w.Code)
+	}
+	h.authz = userPolicy(dpAllow([]string{"s3:*"}, "*"), dpDeny([]string{"s3:GetBucketPolicy"}, "Bucket::site"))
+	if w := get(h, "site", testUser); w.Code != http.StatusForbidden {
+		t.Errorf("GetBucketPolicy under a Deny = %d", w.Code)
 	}
 }

@@ -314,6 +314,16 @@ if [ "$(kubectl -n minio get configmap openinfra-object-encryption -o jsonpath='
   [ "$enc" = AES256 ] || fail "the platform encrypts new buckets, but the new bucket's default encryption is: $enc"
   log "  ✓ default encryption AES256 (the platform's object encryption is on)"
 fi
+ERR="$(awsq "$WAK" "$WSK" get-bucket-policy --bucket "$MB_BUCKET" 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q NoSuchBucketPolicy || fail "get-bucket-policy of a bucket with no policy: want NoSuchBucketPolicy, got: $ERR"
+log "  ✓ get-bucket-policy of a bucket with no policy is NoSuchBucketPolicy"
+# A bucket whose kind: Bucket carries spec.policy (PROBE_POLICY_BUCKET, optional) answers that document.
+if [ -n "${PROBE_POLICY_BUCKET:-}" ]; then
+  awsq "$WAK" "$WSK" get-bucket-policy --bucket "$PROBE_POLICY_BUCKET" --query Policy --output text >"$WORK/pol.json" 2>&1 \
+    || fail "get-bucket-policy ${PROBE_POLICY_BUCKET}: $(cat "$WORK/pol.json")"
+  grep -q '"Statement"' "$WORK/pol.json" || fail "get-bucket-policy did not answer a policy document: $(head -c 300 "$WORK/pol.json")"
+  log "  ✓ get-bucket-policy answers ${PROBE_POLICY_BUCKET}'s policy document"
+fi
 kubectl -n "$BUCKET_NS" get buckets.openinfra.dev "$MB_BUCKET" >/dev/null 2>&1 \
   || fail "no kind: Bucket claim ${BUCKET_NS}/${MB_BUCKET} behind the new bucket"
 awsq "$WAK" "$WSK" create-bucket --bucket "$MB_BUCKET" >/dev/null 2>"$WORK/again.err" \

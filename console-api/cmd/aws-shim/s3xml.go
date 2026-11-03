@@ -44,6 +44,7 @@ var s3Errors = map[string]s3ErrorInfo{
 	"MalformedXML":          {http.StatusBadRequest, "The XML you provided was not well-formed or did not validate against our published schema."},
 	"InvalidTag":            {http.StatusBadRequest, "The tag provided was not a valid tag."},
 	"NoSuchTagSet":          {http.StatusNotFound, "The TagSet does not exist."},
+	"NoSuchBucketPolicy":    {http.StatusNotFound, "The bucket policy does not exist"},
 	"ServerSideEncryptionConfigurationNotFoundError": {http.StatusNotFound, "The server side encryption configuration was not found"},
 	"BucketNotEmpty":          {http.StatusConflict, "The bucket you tried to delete is not empty."},
 	"BucketAlreadyExists":     {http.StatusConflict, "The requested bucket name is not available. The bucket namespace is shared by all users of the system. Please select a different name and try again."},
