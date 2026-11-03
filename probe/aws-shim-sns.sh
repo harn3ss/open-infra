@@ -11,10 +11,12 @@
 #     one whose attributes do not is not delivered to it (and still reaches the unfiltered subscription);
 #     a policy with an operator the shim does not apply is REFUSED; an http/https subscription is REFUSED
 #     (not accepted-and-never-delivered)
-# and the two NEGATIVES:
+# and the NEGATIVES:
 #   - a valid key ID with a WRONG secret is rejected (SignatureDoesNotMatch)
 #   - a PUBLISH-ONLY principal (granted sns:Publish via Cedar) is DENIED sns:Subscribe while still able
 #     to Publish — Subscribe is independently authorizable (it points outbound delivery at a destination)
+#   - a principal holding sns:* but not sqs:SendMessage on a queue is DENIED subscribing that queue (a
+#     subscription cannot send where its creator cannot)
 #
 # On-demand (needs a deployed shim + its SQS/SNS Postgres + the platform IAM). Exit 0 = pass, 1 = a real
 # failure, 42 = INCONCLUSIVE. By policy, a probe failure is presumed a shim defect; 42
@@ -39,12 +41,12 @@ command -v kubectl >/dev/null || inconclusive "kubectl is required"
 command -v python3 >/dev/null || inconclusive "python3 is required (to parse the SNS envelope)"
 curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not reachable at ${ENDPOINT}"
 
-CREATED_KEYS=(); CREATED_USERS=(); CREATED_QUEUES=(); TOPIC=""; POLICY=""
+CREATED_KEYS=(); CREATED_USERS=(); CREATED_QUEUES=(); CREATED_POLICIES=(); TOPIC=""
 WAK=""; WSK=""
 cleanup() {
   [ -n "$TOPIC" ] && AWS_ACCESS_KEY_ID="$WAK" AWS_SECRET_ACCESS_KEY="$WSK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager sns delete-topic --topic-arn "$TOPIC" >/dev/null 2>&1 || true
   for q in "${CREATED_QUEUES[@]:-}"; do [ -n "$q" ] && AWS_ACCESS_KEY_ID="$WAK" AWS_SECRET_ACCESS_KEY="$WSK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager sqs delete-queue --queue-url "$q" >/dev/null 2>&1 || true; done
-  [ -n "$POLICY" ] && kubectl -n "$USERS_NS" delete policy.iam.openinfra.dev "$POLICY" --ignore-not-found >/dev/null 2>&1 || true
+  for p in "${CREATED_POLICIES[@]:-}"; do [ -n "$p" ] && kubectl -n "$USERS_NS" delete policy.iam.openinfra.dev "$p" --ignore-not-found >/dev/null 2>&1 || true; done
   for s in "${CREATED_KEYS[@]:-}";  do [ -n "$s" ] && kubectl -n "$SHIM_NS" delete secret "$s" --ignore-not-found >/dev/null 2>&1 || true; done
   for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
 }
@@ -161,6 +163,21 @@ spec:
     statements:
       - { effect: Allow, actions: ["sns:Publish"], resources: ["*"] }
 YAML
+CREATED_POLICIES+=("$POLICY")
+# A second principal for the mismatched pair below: every SNS action, but no sqs:SendMessage on the queue.
+mint_key "sns-probe-nosend-$SFX" "powerusers"; NAK="$MK_AK"; NSK="$MK_SK"
+POLICY2="sns-nosend-$SFX"
+cat <<YAML | kubectl apply -f - >/dev/null
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata: { name: "${POLICY2}", namespace: "${USERS_NS}" }
+spec:
+  dataPlane:
+    appliesTo: ["User::sns-probe-nosend-$SFX"]
+    statements:
+      - { effect: Allow, actions: ["sns:*", "sqs:ReceiveMessage"], resources: ["*"] }
+YAML
+CREATED_POLICIES+=("$POLICY2")
 log "  waiting ~35s for the data-plane policy loader to pick it up..."
 sleep 35
 # Publish must be ALLOWED for the publish-only principal.
@@ -174,5 +191,13 @@ if aws_ "$PAK" "$PSK" sns subscribe --topic-arn "$TOPIC" --protocol sqs --notifi
 fi
 grep -qiE 'AuthorizationError|AccessDenied|denied' "$PWD/.sns_sub" || fail "Subscribe denial had the wrong error: $(cat "$PWD/.sns_sub")"; rm -f "$PWD/.sns_sub"
 log "  ✓ publish-only principal DENIED Subscribe"
+
+# --- mismatched pair: sns:Subscribe on the topic, but no sqs:SendMessage on the queue -----------------
+log "a principal holding sns:* but not sqs:SendMessage on queue A must be DENIED subscribing queue A"
+if aws_ "$NAK" "$NSK" sns subscribe --topic-arn "$TOPIC" --protocol sqs --notification-endpoint "$ARNA" >/dev/null 2>"$PWD/.sns_ns"; then
+  fail "a subscription was made into a queue its creator may not send to (the queue was not authorized)"
+fi
+grep -qiE 'AuthorizationError|AccessDenied|denied' "$PWD/.sns_ns" || fail "the queue-target denial had the wrong error: $(cat "$PWD/.sns_ns")"; rm -f "$PWD/.sns_ns"
+log "  ✓ a subscription cannot send where its creator cannot"
 
 printf '\n✓ PASS — aws-shim SNS fans out durably to SQS (wrapped + raw), applies FilterPolicy, refuses https honestly, and authorizes Subscribe independently of Publish.\n'

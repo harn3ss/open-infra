@@ -102,6 +102,39 @@ func TestEventBridge_TargetOpsAuthorizeTheRule(t *testing.T) {
 	}
 }
 
+// PutEvents is authorized on every bus its entries name, and a rule on a custom bus is <bus>/<name>: a
+// grant on the default bus (or on a rule's bare name) never reaches another bus.
+func TestEventBridge_AuthorizesTheBusEachEntryAndRuleIsOn(t *testing.T) {
+	authz := userPolicy(
+		dpAllow([]string{"events:*"}, "EventBus::default", "Rule::myrule"),
+		dpDeny([]string{"events:PutEvents"}, "EventBus::payments"))
+	h := newEBHandler(csWithSAR(true), "default", "default", "open-infra", "us-east-1", nil, nil, nil, discardLogger())
+	h.authz = authz
+	for _, body := range []string{
+		`{"Entries":[{"Source":"a","DetailType":"t","Detail":"{}","EventBusName":"payments"}]}`,
+		`{"Entries":[{"Source":"a","DetailType":"t","Detail":"{}"},{"Source":"a","DetailType":"t","Detail":"{}","EventBusName":"arn:aws:events:us-east-1:000000000000:event-bus/payments"}]}`,
+		`{"Entries":[{"Source":"a","DetailType":"t","Detail":"{}","EventBusName":"orders"}]}`, // no grant on that bus at all
+	} {
+		w := serveWith(h, jsonOp("AWSEvents.PutEvents", body), testUser)
+		if !strings.Contains(w.Body.String(), "AccessDenied") {
+			t.Errorf("PutEvents %s must be denied: %d %s", body, w.Code, w.Body.String())
+		}
+	}
+	if w := serveWith(h, jsonOp("AWSEvents.PutEvents", `{"Entries":[{"Source":"a","DetailType":"t","Detail":"{}"}]}`), testUser); strings.Contains(w.Body.String(), "AccessDenied") {
+		t.Errorf("PutEvents to the default bus must pass authorization: %s", w.Body.String())
+	}
+	// A grant on Rule::myrule is the default bus's rule, not a same-named rule on another bus.
+	if w := serveWith(h, jsonOp("AWSEvents.PutRule", `{"Name":"myrule","EventBusName":"payments","EventPattern":"{}"}`), testUser); !strings.Contains(w.Body.String(), "AccessDenied") {
+		t.Errorf("PutRule myrule on another bus must be denied: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveWith(h, jsonOp("AWSEvents.PutTargets", `{"Rule":"myrule","EventBusName":"payments","Targets":[]}`), testUser); !strings.Contains(w.Body.String(), "AccessDenied") {
+		t.Errorf("PutTargets on myrule of another bus must be denied: %d %s", w.Code, w.Body.String())
+	}
+	if w := serveWith(h, jsonOp("AWSEvents.PutRule", `{"Name":"myrule","EventPattern":"{}"}`), testUser); strings.Contains(w.Body.String(), "AccessDenied") {
+		t.Errorf("PutRule myrule on the default bus must pass authorization: %s", w.Body.String())
+	}
+}
+
 // DynamoDB Streams GetRecords reads the table inside its iterator (which a caller can write by hand), so
 // it is authorized on that table — not on a TableName or StreamArn sent alongside.
 func TestDDBStreams_GetRecordsAuthorizesTheIteratorsTable(t *testing.T) {

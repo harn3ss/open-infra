@@ -296,11 +296,20 @@ func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *ht
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "sqs delivery is not configured", snsXMLNamespace)
 		return
 	}
-	if _, ok, err := h.sqs.queueURLByName(ctx, nameFromArn(endpoint)); err != nil {
+	queueURL, ok, err := h.sqs.queueURLByName(ctx, nameFromArn(endpoint))
+	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	} else if !ok {
 		writeQueryError(w, http.StatusNotFound, "NotFound", requestID, "the sqs endpoint queue does not exist: "+endpoint, snsXMLNamespace)
+		return
+	}
+	if reason, ok, err := h.mayDeliverToQueue(ctx, r, claims, topicArn, queueURL); err != nil {
+		h.internal(w, requestID, err)
+		return
+	} else if !ok {
+		writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID,
+			"not authorized to subscribe the queue "+endpoint+" (a subscription cannot send where its creator cannot): "+reason, snsXMLNamespace)
 		return
 	}
 	if strings.HasSuffix(nameFromArn(endpoint), ".fifo") {
@@ -315,6 +324,38 @@ func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *ht
 		return
 	}
 	h.writeResult(w, requestID, "Subscribe", map[string]string{"SubscriptionArn": subArn})
+}
+
+// mayDeliverToQueue reports whether a subscription the caller makes may deliver into the queue at
+// queueURL: the caller may send to that queue itself (sqs:SendMessage, as the SQS front door checks
+// it), or the queue's own policy lets this topic send to it — the queue owner's grant, as on AWS. The
+// shim delivers to a queue with no policy, so without this a subscription could write into any queue.
+func (h *snsHandler) mayDeliverToQueue(ctx context.Context, r *http.Request, claims iam.Claims, topicArn, queueURL string) (string, bool, error) {
+	queue := queueNameFromURL(queueURL)
+	verb, _ := verbForSQSOp("SendMessage")
+	allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, queue)
+	if allowed {
+		denied, why := dataPlaneDenied(ctx, h.authz, claims, "sqs:SendMessage", "Queue", queue, r)
+		if !denied {
+			return "", true, nil
+		}
+		reason = why
+	}
+	granted, err := h.queueGrantsTopic(ctx, topicArn, queueURL)
+	return reason, granted, err
+}
+
+// queueGrantsTopic reports whether the queue's own policy (one is set) lets the topic send to it.
+func (h *snsHandler) queueGrantsTopic(ctx context.Context, topicArn, queueURL string) (bool, error) {
+	if h.sqs == nil {
+		return false, nil
+	}
+	attrs, _, found, err := h.sqs.queueAttrs(ctx, queueURL)
+	if err != nil || !found || strings.TrimSpace(attrs[policyAttr]) == "" {
+		return false, err
+	}
+	return queueAccepts(ctx, h.sqs, h.region, h.account, queueURL, resourcepolicy.Request{
+		Service: "sns.amazonaws.com", Action: "sqs:SendMessage", SourceArn: topicArn, SourceAccount: h.account}, h.logger)
 }
 
 func (h *snsHandler) unsubscribe(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {

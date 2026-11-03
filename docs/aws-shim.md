@@ -611,7 +611,9 @@ Faithful semantics: `MD5OfMessageBody` and `MD5OfMessageAttributes` are computed
 them (SDKs verify both); long polling (`WaitTimeSeconds`) returns an **empty success**, not an error;
 `ReceiveMessage`'s `VisibilityTimeout`/`MaxNumberOfMessages` overrides and the queue defaults are both
 honored; a `RedrivePolicy` genuinely moves a message to its DLQ after `maxReceiveCount` receives, with
-`ApproximateReceiveCount` observable. Authorized through the one policy world — coarse SAR plus Cedar
+`ApproximateReceiveCount` observable. Setting one (`CreateQueue`, `SetQueueAttributes`, or a stack's
+queue) needs the caller's `sqs:SendMessage` on the dead-letter queue, so a queue cannot deliver into one
+its owner may not write to. Authorized through the one policy world — coarse SAR plus Cedar
 `dataPlane` at **queue** granularity, with `sqs:ReceiveMessage` separable from `sqs:DeleteMessage` (a
 receive-but-not-delete consumer is a real configuration).
 
@@ -680,7 +682,10 @@ current subscription. It is never the fire-and-forget publish SNS makes easy. De
 **wrapped envelope** (`Type`, `MessageId`, `TopicArn`, `Message`, `Timestamp`, `UnsubscribeURL`), or the
 bare payload when a subscription sets `RawMessageDelivery=true`. Authorized through the one policy world;
 `sns:Subscribe` is **separable from `sns:Publish`** — Subscribe points the platform's outbound delivery
-at a destination and is independently grantable.
+at a destination and is independently grantable. An `sqs` subscription also needs the caller's
+`sqs:SendMessage` on its queue, or the queue's own policy granting the topic (the queue owner's grant, as
+on AWS) — the shim delivers to a queue that has no policy, so a subscription cannot write into a queue its
+creator could not.
 
 **`lambda` subscriptions** are delivered too: each `Publish` invokes the subscribed `kind: Function` with
 the SNS event (`{"Records":[{"EventSource":"aws:sns","Sns":{…}}]}`), asynchronously as SNS does, retried
@@ -903,7 +908,10 @@ The delivered event carries the AWS envelope (`version`, `id`, `detail-type`, `s
 Event`. The `default` bus always exists; custom buses are a tenancy boundary.
 
 Authorized through the one policy world at rule/bus granularity (`events:PutRule`, `events:PutTargets`,
-`events:PutEvents`, `events:DescribeRule`, …); `DisableRule` genuinely stops the rule and `DescribeRule`
+`events:PutEvents`, `events:DescribeRule`, …). `PutEvents` is authorized on **every bus its entries name**
+(`EventBus::<name>`), and a rule on a custom bus is `Rule::<bus>/<name>` (its AWS ARN is
+`rule/<bus>/<name>`; a default-bus rule is `Rule::<name>`), so a grant on one bus never reaches another.
+`DisableRule` genuinely stops the rule and `DescribeRule`
 reports the true state. Structured `eventbridge audit` records (principal, op, rule, target, decision) →
 Loki, including a `TargetDeliveryFailed` record for a missed delivery.
 

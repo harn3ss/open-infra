@@ -536,8 +536,9 @@ func (ruleKind) live(ctx context.Context, c svcCtx, name string, recorded map[st
 	return l, nil
 }
 
-func (ruleKind) deleteCheck(name string, _ map[string]any) (string, string, string, string, string) {
-	return "applications", name, "events:DeleteRule", "Rule", name
+func (ruleKind) deleteCheck(name string, spec map[string]any) (string, string, string, string, string) {
+	id := ruleResourceID(busOfSpec(spec), name) // as the EventBridge front door authorizes DeleteRule
+	return "applications", id, "events:DeleteRule", "Rule", id
 }
 
 // --- EventBridge event bus ---

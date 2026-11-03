@@ -160,7 +160,12 @@ func svcSteps(kind, op, name string, spec map[string]any) []svcStep {
 	switch kind {
 	case cfn.KindSQSQueue:
 		svcOp := pick(map[string]string{"create": "CreateQueue", "update": "SetQueueAttributes", "delete": "DeleteQueue", "get": "GetQueueAttributes"})
-		return []svcStep{step(verbForSQSOp, "sqs", svcOp, "Queue", name)}
+		steps := []svcStep{step(verbForSQSOp, "sqs", svcOp, "Queue", name)}
+		// A RedrivePolicy delivers into its dead-letter queue: checked as the SQS front door checks it.
+		if dlq := redriveTarget(specStrings(spec["attributes"])); dlq != "" && (op == "create" || op == "update") {
+			steps = append(steps, step(verbForSQSOp, "sqs", "SendMessage", "Queue", dlq))
+		}
+		return steps
 	case cfn.KindSNSTopic:
 		svcOp := pick(map[string]string{"create": "CreateTopic", "update": "SetTopicAttributes", "delete": "DeleteTopic", "get": "GetTopicAttributes"})
 		return []svcStep{step(verbForSNSOp, "sns", svcOp, "Topic", name)}
@@ -253,6 +258,32 @@ func (a *impersonatingApplier) svcAuthorize(ctx context.Context, kind, op, name 
 			}
 			if ok, reason := a.door.callerPolicyAllows(ctx, a, "lambda:InvokeFunction", "Function", fn); !ok {
 				return cfn.Unauthorized(fmt.Sprintf("subscription %s not created: not authorized to deliver to function %s: %s", name, fn, reason))
+			}
+		}
+		// An sqs subscription delivers into its queue: checked as the SNS front door checks a Subscribe.
+		if p, _ := spec["protocol"].(string); p == "sqs" && a.svc.snsOK() && a.svc.sqsOK() {
+			endpoint, _ := spec["endpoint"].(string)
+			topicArn, _ := spec["topicArn"].(string)
+			url, found, err := a.svc.sqs.store.queueURLByName(ctx, nameFromArn(endpoint))
+			if err != nil {
+				return err
+			}
+			if found {
+				queue := queueNameFromURL(url)
+				verb, _ := verbForSQSOp("SendMessage")
+				ok, reason := a.door.callerCan(ctx, a, verb, "openinfra.dev", "applications", a.door.authzNS, queue)
+				if ok {
+					ok, reason = a.door.callerPolicyAllows(ctx, a, "sqs:SendMessage", "Queue", queue)
+				}
+				if !ok {
+					granted, err := a.svc.sns.queueGrantsTopic(ctx, topicArn, url)
+					if err != nil {
+						return err
+					}
+					if !granted {
+						return cfn.Unauthorized(fmt.Sprintf("subscription %s not created: not authorized to deliver to queue %s: %s", name, endpoint, reason))
+					}
+				}
 			}
 		}
 	}

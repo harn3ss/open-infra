@@ -107,33 +107,21 @@ func (h *ebHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 	}
 	body := readJSONBody(r)
 
-	// The resource this op scopes to (Cedar + coarse gate): a Rule name for rule/target ops, an EventBus
-	// name for bus/PutEvents ops.
-	resType, resID := "Rule", ""
-	switch op {
-	case "CreateEventBus", "DeleteEventBus":
-		resType, resID = "EventBus", strFromBody(body, "Name")
-	case "PutEvents", "ListEventBuses", "TestEventPattern":
-		resType, resID = "EventBus", "default"
-	case "PutTargets", "RemoveTargets", "ListTargetsByRule":
-		// The target ops act on Rule; a Name sent alongside must not redirect the check.
-		resID = strFromBody(body, "Rule")
-	default:
-		resID = strFromBody(body, "Name") // PutRule/DescribeRule/etc act on Name
-	}
-
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, resID); !allowed {
-		h.auditDeny(ctx, op, resID, reason)
-		writeEBError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained, per rule/bus; an assumed role is checked on every op (ListRules on Rule::*).
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "events:"+op, resType, resID, r); denied {
-		h.auditDeny(ctx, op, resID, reason)
-		writeEBError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
+	// Coarse gate, then the fine-grained check per rule/bus the op acts on; an assumed role is checked on
+	// every op (ListRules on Rule::*).
+	for _, res := range ebAuthzResources(op, body) {
+		if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, res.id); !allowed {
+			h.auditDeny(ctx, op, res.id, reason)
+			writeEBError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+			return
+		}
+		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "events:"+op, res.typ, res.id, r); denied {
+			h.auditDeny(ctx, op, res.id, reason)
+			writeEBError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+			return
+		}
 	}
 	if h.store == nil {
 		writeEBError(w, http.StatusNotImplemented, "InternalException", requestID,
@@ -174,6 +162,62 @@ func (h *ebHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		writeEBError(w, http.StatusBadRequest, "InvalidParameterException", requestID,
 			"EventBridge "+op+" is recognized but not implemented by the open-infra shim.")
 	}
+}
+
+type ebResource struct{ typ, id string }
+
+// ebAuthzResources are the resources an op is authorized on. A rule is its name on the default bus and
+// <bus>/<name> on another — the resource part of its AWS ARN (rule/<bus>/<name>) — so a grant on one
+// bus's rule never reaches a same-named rule on another bus. PutEvents is authorized on every bus its
+// entries name (an entry names its own EventBusName), as on AWS, not on the default bus alone. The target
+// ops act on Rule; a Name sent alongside must not redirect the check.
+func ebAuthzResources(op string, body map[string]any) []ebResource {
+	switch op {
+	case "CreateEventBus", "DeleteEventBus":
+		return []ebResource{{"EventBus", strFromBody(body, "Name")}}
+	case "ListEventBuses", "TestEventPattern":
+		return []ebResource{{"EventBus", "default"}}
+	case "PutEvents":
+		var out []ebResource
+		seen := map[string]bool{}
+		for _, ev := range sliceOf(body["Entries"]) {
+			em, _ := ev.(map[string]any)
+			bus := "default"
+			if b, _ := em["EventBusName"].(string); b != "" {
+				bus = eventBusName(b)
+			}
+			if !seen[bus] {
+				seen[bus] = true
+				out = append(out, ebResource{"EventBus", bus})
+			}
+		}
+		if len(out) == 0 {
+			out = append(out, ebResource{"EventBus", "default"})
+		}
+		return out
+	case "PutTargets", "RemoveTargets", "ListTargetsByRule":
+		return []ebResource{{"Rule", ruleResourceID(busOf(body), strFromBody(body, "Rule"))}}
+	case "ListRules":
+		return []ebResource{{"Rule", ""}}
+	}
+	return []ebResource{{"Rule", ruleResourceID(busOf(body), strFromBody(body, "Name"))}} // PutRule/DescribeRule/etc act on Name
+}
+
+// ruleResourceID is a rule's authorization id: its name on the default bus, <bus>/<name> on another.
+func ruleResourceID(bus, name string) string {
+	bus = eventBusName(bus)
+	if name == "" || bus == "" || bus == "default" {
+		return name
+	}
+	return bus + "/" + name
+}
+
+// eventBusName is a bus named by name or by ARN (arn:aws:events:<region>:<account>:event-bus/<name>).
+func eventBusName(ref string) string {
+	if i := strings.Index(ref, ":event-bus/"); i >= 0 {
+		return ref[i+len(":event-bus/"):]
+	}
+	return ref
 }
 
 func busOf(body map[string]any) string {
@@ -519,7 +563,7 @@ func (h *ebHandler) putEvents(ctx context.Context, w http.ResponseWriter, reques
 		em, _ := ev.(map[string]any)
 		bus := "default"
 		if b, _ := em["EventBusName"].(string); b != "" {
-			bus = b
+			bus = eventBusName(b) // the bus serve authorized this entry on
 		}
 		detail, _ := em["Detail"].(string)
 		if len(detail) > 256*1024 {

@@ -139,6 +139,22 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeSQSError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
 		return
 	}
+	// A RedrivePolicy moves this queue's failed messages into its dead-letter queue, so the caller must be
+	// able to send to that queue itself: without this a queue it owns could deliver into one it may not
+	// write to.
+	if op == "CreateQueue" || op == "SetQueueAttributes" {
+		if dlq := redriveTarget(stringMap(body["Attributes"])); dlq != "" {
+			sendVerb, _ := verbForSQSOp("SendMessage")
+			if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, sendVerb, "openinfra.dev", "applications", h.authzNS, dlq); !allowed {
+				writeSQSError(w, http.StatusForbidden, "AccessDenied", requestID, "RedrivePolicy dead-letter queue "+dlq+": "+reason)
+				return
+			}
+			if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "sqs:SendMessage", "Queue", dlq, r); denied {
+				writeSQSError(w, http.StatusForbidden, "AccessDenied", requestID, "RedrivePolicy dead-letter queue "+dlq+": "+reason)
+				return
+			}
+		}
+	}
 	if h.store == nil {
 		writeSQSError(w, http.StatusNotImplemented, "InternalFailure", requestID,
 			"the SQS data layer is not configured on this shim (set SQS_PG_URI)")
@@ -727,6 +743,21 @@ func (h *sqsHandler) delayFor(ctx context.Context, url string, body map[string]a
 	return 0
 }
 
+// redriveTarget is the name of the dead-letter queue a RedrivePolicy attribute names ("" when none).
+func redriveTarget(attrs map[string]string) string {
+	raw := attrs["RedrivePolicy"]
+	if raw == "" {
+		return ""
+	}
+	var rp struct {
+		DeadLetterTargetArn string `json:"deadLetterTargetArn"`
+	}
+	if json.Unmarshal([]byte(raw), &rp) != nil || rp.DeadLetterTargetArn == "" {
+		return ""
+	}
+	return rp.DeadLetterTargetArn[strings.LastIndex(rp.DeadLetterTargetArn, ":")+1:]
+}
+
 // redrive parses a queue's RedrivePolicy attribute into (maxReceiveCount, dlqURL). Returns (0,"") when
 // there is no redrive or the DLQ cannot be resolved (in which case messages are not dead-lettered).
 func (h *sqsHandler) redrive(ctx context.Context, qattrs map[string]string) (int, string) {
@@ -746,8 +777,7 @@ func (h *sqsHandler) redrive(ctx context.Context, qattrs map[string]string) (int
 		return 0, ""
 	}
 	// arn:aws:sqs:region:account:name -> name -> url
-	dlqName := rp.DeadLetterTargetArn[strings.LastIndex(rp.DeadLetterTargetArn, ":")+1:]
-	url, ok, err := h.store.queueURLByName(ctx, dlqName)
+	url, ok, err := h.store.queueURLByName(ctx, redriveTarget(qattrs))
 	if err != nil || !ok {
 		return 0, ""
 	}
