@@ -181,6 +181,36 @@ func TestRDS_SnapshotOpsAuthorizeTheSnapshot(t *testing.T) {
 	}
 }
 
+// A list op lists every resource: a name sent with it must not scope the check to one. A role granted
+// ListTables / ListStreams on one table or stream only cannot list them all by naming that one.
+func TestListOps_IgnoreANameInTheBody(t *testing.T) {
+	authz := roleChecker(dpAllow([]string{"dynamodb:ListTables", "kinesis:ListStreams"}, "Table::mine", "Stream::mine"))
+	dh := newDynamoHandler(csWithSAR(true), "default", nil, nil, "db", discardLogger())
+	dh.authz = authz
+	if w := serveWith(dh, jsonOp("DynamoDB_20120810.ListTables", `{"TableName":"mine"}`), ecrRoleClaims()); w.Code != 403 {
+		t.Errorf("ListTables scoped by a TableName in the body: %d %s, want 403", w.Code, w.Body.String())
+	}
+	kh := newKinesisHandler(csWithSAR(true), "default", "open-infra", "us-east-1", &kinesisStore{db: unreachableDB(t)}, discardLogger())
+	kh.authz = authz
+	if w := serveWith(kh, jsonOp("Kinesis_20131202.ListStreams", `{"StreamName":"mine"}`), ecrRoleClaims()); w.Code != 403 {
+		t.Errorf("ListStreams scoped by a StreamName in the body: %d %s, want 403", w.Code, w.Body.String())
+	}
+}
+
+// A User's op that names no resource is checked on <Type>::* for an explicit Deny: a Deny of ListQueues on
+// every queue holds, while a governed User with no grant on "*" is not newly refused (additive).
+func TestUserUnscopedOps_ExplicitDenyHolds(t *testing.T) {
+	h := newSQSHandler(csWithSAR(true), "default", "open-infra", "us-east-1", nil, discardLogger())
+	h.authz = userPolicy(dpAllow([]string{"sqs:*"}, "*"), dpDeny([]string{"sqs:ListQueues"}, "*"))
+	if w := serveWith(h, jsonOp("AmazonSQS.ListQueues", `{}`), testUser); w.Code != 403 {
+		t.Errorf("ListQueues explicitly denied to the User: %d %s, want 403", w.Code, w.Body.String())
+	}
+	h.authz = userPolicy(dpAllow([]string{"sqs:SendMessage"}, "Queue::a"))
+	if w := serveWith(h, jsonOp("AmazonSQS.ListQueues", `{}`), testUser); w.Code == 403 {
+		t.Errorf("a governed User with no Deny must not be newly refused ListQueues: %s", w.Body.String())
+	}
+}
+
 // DynamoDB Streams GetRecords reads the table inside its iterator (which a caller can write by hand), so
 // it is authorized on that table — not on a TableName or StreamArn sent alongside.
 func TestDDBStreams_GetRecordsAuthorizesTheIteratorsTable(t *testing.T) {

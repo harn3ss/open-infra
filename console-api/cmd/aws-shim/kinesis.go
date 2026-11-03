@@ -101,6 +101,9 @@ func (h *kinesisHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 
 	// The stream this op scopes to. Get* by ShardIterator carry the stream inside the (opaque) iterator.
 	stream, _ := body["StreamName"].(string)
+	if op == "ListStreams" {
+		stream = "" // it lists every stream: a StreamName sent with it must not scope the check to one
+	}
 	if op == "GetRecords" {
 		if it, _ := body["ShardIterator"].(string); it != "" {
 			if dec, err := decodeIterator(it); err == nil {

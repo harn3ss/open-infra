@@ -47,7 +47,8 @@ func scopeFor(claims iam.Claims, resID string) string {
 }
 
 // dataPlaneDenied is the fine-grained check for a front door whose operations may name no resource. A User
-// keeps the additive model exactly: checked where the op names a resource, not at all where it names none.
+// keeps the additive model: checked where the op names a resource, and where it names none only for an
+// explicit Deny of the action on every resource (<resType>::*).
 // An assumed role is ALWAYS checked, closed — an op that names no resource is checked on <resType>::*, so
 // a role with no policy can list nothing and create nothing (AWS evaluates those actions on Resource "*").
 func dataPlaneDenied(ctx context.Context, authz *dataplaneauthz.Checker, claims iam.Claims,
@@ -64,6 +65,14 @@ func dataPlaneVerdict(ctx context.Context, authz *dataplaneauthz.Checker, claims
 	action, resType, resID string, r *http.Request) (denied, explicit bool, reason string) {
 	resID = scopeFor(claims, resID)
 	if resID == "" {
+		// A User's op that names no resource (a List/Describe-all) is checked on <resType>::*, AWS's
+		// Resource "*", for an explicit Deny only: a Deny of the action on every resource holds, while a
+		// governed User keeps the additive model (a missing grant on "*" denies nothing it did not before).
+		d := authz.Decide(ctx, claims.PrincipalType(), claims.PrincipalID(), claims.Groups,
+			action, resType, anyResource, requestContext(claims, r))
+		if d.Governed && !d.Allowed && d.ExplicitDeny {
+			return true, true, d.Reason
+		}
 		return false, false, ""
 	}
 	d := authz.Decide(ctx, claims.PrincipalType(), claims.PrincipalID(), claims.Groups,

@@ -250,6 +250,9 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	}
 	body := readJSONBody(r)
 	table, _ := body["TableName"].(string)
+	if op == "ListTables" {
+		table = "" // it lists every table: a TableName sent with it must not scope the check to one
+	}
 
 	// Authorize with the same impersonated SubjectAccessReview every front door uses — one policy
 	// world; coarse on openinfra.dev/applications in v1.
