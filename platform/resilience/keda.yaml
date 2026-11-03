@@ -21,6 +21,14 @@ spec:
         resources:
           operator:
             requests: { cpu: 100m, memory: 128Mi }
+        # The operator reads no Secret but its own webhook certificate. By default it lists and watches
+        # every Secret in the cluster (the root CA's key among them) so a TriggerAuthentication anywhere
+        # can name one; the platform's ScaledObjects use the cpu trigger, which takes no credentials. A
+        # future trigger that needs credentials needs a Role granting get on its named Secret.
+        permissions:
+          operator:
+            restrict:
+              secret: true
   destination:
     server: https://kubernetes.default.svc
     namespace: keda
