@@ -172,6 +172,11 @@ rules:
   - apiGroups: [openinfra.dev]
     resources: [xbuckets]
     verbs: [get, list]
+  # A VM's EC2 instance id for one whose composite was rendered before it carried status.instanceId: the
+  # id is derived from the composite's uid (ec2_ids.go). Read-only, one object by name.
+  - apiGroups: [openinfra.dev]
+    resources: [xvirtualmachines]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
