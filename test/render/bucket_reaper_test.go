@@ -20,11 +20,14 @@ case "$*" in
     [ -f "$STUB/fail-get" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
     [ -f "$STUB/xrs/$3" ] && { cat "$STUB/xrs/$3"; exit 0; }
     echo "Error from server (NotFound): $2 \"$3\" not found" >&2; exit 1 ;;
-  "get "*".openinfra.dev "*" -n "*" -o jsonpath={.spec.resourceRef.name}")
+  "get --raw /apis/openinfra.dev/v1/namespaces/"*)
+    echo "$*" >> "$STUB/claim-reads.log"
     [ -f "$STUB/fail-get" ] && { echo "stub: apiserver unavailable" >&2; exit 1; }
-    pl=${2%.openinfra.dev}
-    [ -f "$STUB/claims/$pl/$5/$3" ] && { cat "$STUB/claims/$pl/$5/$3"; exit 0; }
-    echo "Error from server (NotFound): $2 \"$3\" not found" >&2; exit 1 ;;
+    p=${3#/apis/openinfra.dev/v1/namespaces/}; ns=${p%%/*}; p=${p#*/}; pl=${p%%/*}; n=${p#*/}
+    [ -f "$STUB/claims/$pl/$ns/$n" ] && { jq -n --arg r "$(cat "$STUB/claims/$pl/$ns/$n")" '{spec: {resourceRef: {name: $r}}}'; exit 0; }
+    echo "Error from server (NotFound): the server could not find the requested resource" >&2; exit 1 ;;
+  # kubectl get <kind> <name> -n <ns> would GET the namespace after a NotFound: never made.
+  "get "*".openinfra.dev "*" -n "*) echo "$*" >> "$STUB/namespaced-gets.log"; exit 98 ;;
   # The setup-pod sweep: $STUB/pods.tsv (pod, job, controller-uid, owner uids); $STUB/jobs/<job> holds a
   # live Job's uid; $STUB/fail-pods fails the listing, $STUB/fail-job/<job> a Job read.
   "get pods -n minio --field-selector spec.serviceAccountName=openinfra-bucket-setup -o jsonpath="*)
@@ -265,6 +268,30 @@ func TestBucketReaper_PodSweepGrant(t *testing.T) {
 	} {
 		if !strings.Contains(y, want) {
 			t.Errorf("bucket-reaper.yaml lacks %q", want)
+		}
+	}
+}
+
+// #348: the reaper reads a claim with a raw GET of exactly that claim. kubectl get <kind> <name> -n <ns>
+// follows a NotFound with a GET of the namespace (to word its error), which this identity is not granted:
+// every deleted claim it checked left a control-plane denial. A deleted claim is still found gone.
+func TestBucketReaper_ClaimReadsNeverReadTheNamespace(t *testing.T) {
+	for _, sh := range posixShells(t) {
+		e := newReaperEnv(t)
+		e.claim(t, "buckets", "team-a", "live", "live-x1", live)
+		e.creds = []string{"app-dead\tBucket/team-a/dead\t" + live, "app-live\tBucket/team-a/live\t" + live}
+		_, acts := e.run(t, sh)
+		if !strings.Contains(acts, "user-rm app-dead\n") || strings.Contains(acts, "app-live\n") {
+			t.Fatalf("%s: the deleted claim's credentials must go and the live one's stay; actions:\n%s", shellName(sh), acts)
+		}
+		if b, _ := os.ReadFile(filepath.Join(e.dir, "namespaced-gets.log")); len(b) > 0 {
+			t.Fatalf("%s: a claim was read with kubectl get -n (which reads the namespace after a NotFound):\n%s", shellName(sh), b)
+		}
+		reads, _ := os.ReadFile(filepath.Join(e.dir, "claim-reads.log"))
+		for _, want := range []string{"/apis/openinfra.dev/v1/namespaces/team-a/buckets/dead", "/apis/openinfra.dev/v1/namespaces/team-a/buckets/live"} {
+			if !strings.Contains(string(reads), want) {
+				t.Errorf("%s: no raw read of %s; reads:\n%s", shellName(sh), want, reads)
+			}
 		}
 	}
 }
