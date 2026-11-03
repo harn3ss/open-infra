@@ -95,6 +95,7 @@ Resources:
 `
 	var mu sync.Mutex
 	reads := 0
+	running := false // the fake has reported Running (later reads, e.g. the instance's Ref, are fine)
 	var f *fakeApplier
 	f = &fakeApplier{statusFn: func(key string) (map[string]any, bool) {
 		if key != "VirtualMachine/s-web" {
@@ -103,9 +104,11 @@ Resources:
 		mu.Lock()
 		defer mu.Unlock()
 		reads++
-		for _, a := range f.applied {
-			if strings.Contains(a, "s-after") {
-				t.Errorf("a resource depending on the instance was created before its VM ran: %v", f.applied)
+		if !running {
+			for _, a := range f.applied {
+				if strings.Contains(a, "s-after") {
+					t.Errorf("a resource depending on the instance was created before its VM ran: %v", f.applied)
+				}
 			}
 		}
 		switch {
@@ -114,7 +117,8 @@ Resources:
 		case reads < 6:
 			return map[string]any{"powerState": "Starting"}, true
 		}
-		return map[string]any{"powerState": "Running"}, true
+		running = true
+		return map[string]any{"powerState": "Running", "instanceId": "i-0123456789abcdef0"}, true
 	}}
 	rec, err := Deploy(context.Background(), []byte(tmpl), deployOpts(), f)
 	if err != nil {
