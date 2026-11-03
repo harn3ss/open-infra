@@ -125,6 +125,11 @@ func (h *apigwV1Handler) provisionRestAPIPlan(ctx context.Context, plan cfn.Rest
 		}
 		if mp.Integration != nil {
 			ig := mp.Integration
+			if ig.Type == "HTTP" || ig.Type == "HTTP_PROXY" {
+				if err := h.origins.checkURI(ig.URI); err != nil {
+					return fail(fmt.Errorf("integration on %s %s: %w", mp.HTTPMethod, mp.Resource, err))
+				}
+			}
 			if err := h.store.putIntegration(ctx, apiID, restIntegration{
 				ResourceID: rid, HTTPMethod: mp.HTTPMethod, Type: ig.Type, URI: ig.URI,
 				IntegrationHTTPMethod: ig.IntegrationHTTPMethod, PayloadFormatVersion: "1.0", RequestTemplates: ig.RequestTemplates,

@@ -38,7 +38,11 @@ type apigwV1Handler struct {
 	authz             *dataplaneauthz.Checker
 	logger            *slog.Logger
 	client            *http.Client
-	fns               *fnLocator // where an integration's Function lives (fn_locate.go); nil = fnNS
+	// origins guards what an HTTP / HTTP_PROXY integration may reach (apigateway_origin.go); originClient is
+	// the client those integrations use (every connection checked). Lambda integrations use client.
+	origins      *originGuard
+	originClient *http.Client
+	fns          *fnLocator // where an integration's Function lives (fn_locate.go); nil = fnNS
 
 	oidcMu    sync.Mutex
 	providers map[string]*oidc.Provider // issuer -> provider (JWKS discovery is network; cache). Reused by the COGNITO_USER_POOLS authorizer, the SAME coreos/go-oidc path the v2 handler uses.
@@ -50,12 +54,15 @@ func (h *apigwV1Handler) fnNamespace(ctx context.Context, fn string) string {
 }
 
 func newAPIGWV1Handler(cs kubernetes.Interface, authzNS, fnNS, svcSuffix, cognitoIssuerBase string, store *apigwV1Store, authz *dataplaneauthz.Checker, logger *slog.Logger) *apigwV1Handler {
-	return &apigwV1Handler{
+	h := &apigwV1Handler{
 		cs: cs, authzNS: authzNS, fnNS: fnNS, svcSuffix: svcSuffix, cognitoIssuerBase: cognitoIssuerBase,
 		store: store, authz: authz, logger: logger,
 		client:    &http.Client{Timeout: 30 * time.Second},
 		providers: map[string]*oidc.Provider{},
 	}
+	h.origins = newOriginGuard()
+	h.originClient = h.origins.client(30 * time.Second)
+	return h
 }
 
 func restVerb(op string) string {
@@ -361,8 +368,8 @@ func (h *apigwV1Handler) putIntegration(ctx context.Context, w http.ResponseWrit
 			return
 		}
 	case "HTTP", "HTTP_PROXY":
-		if !strings.HasPrefix(uri, "http://") && !strings.HasPrefix(uri, "https://") {
-			writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, itype+" integration requires an http(s) uri.")
+		if err := h.origins.checkURI(uri); err != nil {
+			writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, itype+" integration: "+err.Error()+".")
 			return
 		}
 	case "MOCK":
@@ -1083,14 +1090,14 @@ func (h *apigwV1Handler) invokeHTTPIntegration(w http.ResponseWriter, r *http.Re
 	}
 	upReq.Header.Set("Content-Type", "application/json")
 	for k, vs := range r.Header {
-		if strings.EqualFold(k, "Host") || strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "Content-Type") || strings.EqualFold(k, "Content-Length") {
+		if strings.EqualFold(k, "Host") || strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "Content-Type") || strings.EqualFold(k, "Content-Length") || platformIdentityHeader(k) {
 			continue
 		}
 		for _, v := range vs {
 			upReq.Header.Add(k, v)
 		}
 	}
-	resp, err := h.client.Do(upReq)
+	resp, err := h.originClient.Do(upReq)
 	if err != nil {
 		h.logger.Warn("apigw v1 http upstream unreachable", "uri", integ.URI, "error", err.Error())
 		writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")
@@ -1289,14 +1296,14 @@ func (h *apigwV1Handler) proxyHTTP(w http.ResponseWriter, r *http.Request, integ
 		return
 	}
 	for k, vs := range r.Header {
-		if strings.EqualFold(k, "Host") || strings.EqualFold(k, "Authorization") {
+		if strings.EqualFold(k, "Host") || strings.EqualFold(k, "Authorization") || platformIdentityHeader(k) {
 			continue
 		}
 		for _, v := range vs {
 			upReq.Header.Add(k, v)
 		}
 	}
-	resp, err := h.client.Do(upReq)
+	resp, err := h.originClient.Do(upReq)
 	if err != nil {
 		h.logger.Warn("apigw v1 http upstream unreachable", "uri", integ.URI, "error", err.Error())
 		writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")

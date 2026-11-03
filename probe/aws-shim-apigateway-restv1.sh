@@ -7,7 +7,7 @@
 #   - a REAL HTTP POST to /_apigw/<id>/<stage>/items/123 reaches the Lambda with a faithful **1.0 proxy
 #     event** (httpMethod, path, pathParameters.id, query, body), and the Lambda's STRUCTURED
 #     {statusCode,body} becomes the real HTTP response
-#   - an **HTTP_PROXY** integration reverse-proxies to an http origin (the shim's REST v1 non-Lambda path)
+#   - an **HTTP_PROXY** integration reverse-proxies to a public origin, and one to a cluster origin is refused
 #   - **request validation** (CreateModel + CreateRequestValidator + per-method requestModels/parameters):
 #     a missing required parameter and a body failing the Model each get AWS's exact 400 BEFORE the
 #     integration, and a well-formed request is admitted
@@ -141,17 +141,33 @@ assert rc.get("stage") == "prod", f'stage={rc.get("stage")}'
 print("  ✓ 1.0 event faithful: path=/items/123, pathParameters.id=123, method=POST, stage=prod, body populated; structured response became the body")
 PY
 
-# --- 4. HTTP_PROXY integration: reverse-proxy to an http origin (the Function's cluster URL) ---
-log "HTTP_PROXY integration reverse-proxies to an http origin"
+# --- 4. HTTP_PROXY integration: public and LAN origins only, never the platform ---
+# An HTTP integration forwards a caller's request from the shim; an origin inside the cluster (a Service
+# that trusts identity headers the platform sets, or one with no authentication) must be refused, as an
+# AWS API's HTTP integration reaches a VPC's private addresses only through a VPC link.
+log "HTTP_PROXY integration: a cluster origin is refused; a public origin is proxied"
 PROXYRES="$(agw "$WAK" "$WSK" create-resource --rest-api-id "$API" --parent-id "$ROOT" --path-part ext --query id 2>/dev/null)" || fail "create-resource ext failed"
 agw "$WAK" "$WSK" put-method --rest-api-id "$API" --resource-id "$PROXYRES" --http-method GET --authorization-type NONE >/dev/null 2>&1 || fail "put-method ext failed"
+if agw "$WAK" "$WSK" put-integration --rest-api-id "$API" --resource-id "$PROXYRES" --http-method GET \
+     --type HTTP_PROXY --integration-http-method GET \
+     --uri "http://${FN}.${FN_NS}.svc.cluster.local/" >/dev/null 2>"$WORK/pie-cluster"; then
+  fail "an HTTP_PROXY integration to a cluster Service was accepted (it must be refused)"
+fi
+grep -q BadRequestException "$WORK/pie-cluster" || fail "a cluster origin was refused, but not with BadRequestException: $(cat "$WORK/pie-cluster")"
+log "  ✓ a cluster origin is refused (BadRequestException)"
+HTTP_ORIGIN="${HTTP_ORIGIN:-https://example.com/}"
 agw "$WAK" "$WSK" put-integration --rest-api-id "$API" --resource-id "$PROXYRES" --http-method GET \
   --type HTTP_PROXY --integration-http-method GET \
-  --uri "http://${FN}.${FN_NS}.svc.cluster.local/" >/dev/null 2>&1 || fail "put-integration (HTTP_PROXY) failed"
+  --uri "$HTTP_ORIGIN" >/dev/null 2>&1 || fail "put-integration (HTTP_PROXY, $HTTP_ORIGIN) failed"
 agw "$WAK" "$WSK" create-deployment --rest-api-id "$API" --stage-name prod >/dev/null 2>&1 || fail "redeploy failed"
-EXTCODE="$(curl -sS -o "$WORK/ext" -w '%{http_code}' "${ENDPOINT}/_apigw/${API}/prod/ext" 2>/dev/null || true)"
-[ "$EXTCODE" = "200" ] || fail "HTTP_PROXY invoke status '$EXTCODE' want 200 (origin not reached). body: $(head -c 300 "$WORK/ext")"
-log "  ✓ HTTP_PROXY reached the origin (200)"
+EXTCODE="$(curl -sS -o "$WORK/ext" -w '%{http_code}' -H 'X-OpenInfra-User: admin' "${ENDPOINT}/_apigw/${API}/prod/ext" 2>/dev/null || true)"
+if [ "$EXTCODE" = "200" ]; then
+  log "  ✓ HTTP_PROXY reached the public origin $HTTP_ORIGIN (200)"
+elif [ "$EXTCODE" = "502" ]; then
+  log "  (the public origin $HTTP_ORIGIN is unreachable from the shim — no egress? — set HTTP_ORIGIN to a reachable LAN or public origin; the refusal above is the check that matters)"
+else
+  fail "HTTP_PROXY invoke status '$EXTCODE' want 200 (or 502 without egress). body: $(head -c 300 "$WORK/ext")"
+fi
 
 # --- 4b. non-proxy AWS (Lambda) integration with VTL request + response mapping (increment 2) ---
 # requestTemplates wrap the body and lift $.name; the echo Lambda returns json.dumps(event); then the
