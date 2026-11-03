@@ -23,9 +23,16 @@ var SupportedServices = map[string]bool{
 
 // SupportedActions are the actions of a service the aws-shim enforces only in part: just these import
 // (named exactly — a wildcard such as ec2:* would also cover actions it does not enforce, so it is
-// refused like any unsupported action). ec2: a CloudFormation stack's Elastic IP allocations.
+// refused like any unsupported action). ec2: a CloudFormation stack's Elastic IP allocations and the EC2
+// front door's operations. ec2messages: the SSM agent's command channel (an instance role's
+// AmazonSSMManagedInstanceCore), which the aws-shim checks when a VM's metadata agent fetches and reports
+// Run Command invocations.
 var SupportedActions = map[string]map[string]bool{
-	"ec2": {"AllocateAddress": true, "ReleaseAddress": true, "DescribeAddresses": true, "AssociateAddress": true, "DisassociateAddress": true},
+	"ec2": {"AllocateAddress": true, "ReleaseAddress": true, "DescribeAddresses": true, "AssociateAddress": true, "DisassociateAddress": true,
+		"DescribeInstances": true, "DescribeVolumes": true, "DescribeSecurityGroups": true, "DescribeVpcs": true, "DescribeSubnets": true,
+		"DescribeImages": true, "DescribeRegions": true, "DescribeAvailabilityZones": true, "DescribeKeyPairs": true,
+		"ImportKeyPair": true, "CreateKeyPair": true, "DeleteKeyPair": true, "DeleteVolume": true},
+	"ec2messages": {"GetMessages": true, "SendReply": true, "AcknowledgeMessage": true, "DeleteMessage": true, "FailMessage": true, "GetEndpoint": true},
 }
 
 // condType classifies a populated request-context attribute by value type, which fixes the AWS
@@ -426,7 +433,10 @@ func arnToResource(arn string) (string, bool) {
 			return r, true
 		}
 		return cut("alias/", "Key")
-	case "ssm":
+	case "ssm": // parameter/<name>; document/<name> (arn:aws:ssm:<r>::document/AWS-RunShellScript)
+		if r, ok := cut("document/", "Document"); ok {
+			return r, true
+		}
 		return cut("parameter/", "Parameter")
 	case "secretsmanager": // secret:<name>-<6 random> -> strip the AWS suffix
 		if n, ok := strings.CutPrefix(tail, "secret:"); ok && n != "" {
@@ -459,8 +469,15 @@ func arnToResource(arn string) (string, bool) {
 		return cut("identity/", "Identity")
 	case "cloudfront": // arn:aws:cloudfront::<acct>:distribution/<id> (the invalidation calls)
 		return cut("distribution/", "Distribution")
-	case "ec2": // arn:aws:ec2:<r>:<acct>:elastic-ip/<eipalloc-…> (a stack's Elastic IP allocations)
-		return cut("elastic-ip/", "ElasticIp")
+	case "ec2": // arn:aws:ec2:<r>:<acct>:<type>/<id>: Elastic IP allocations, and the EC2 front door's resources
+		for _, m := range []struct{ prefix, typ string }{
+			{"elastic-ip/", "ElasticIp"}, {"instance/", "Instance"}, {"volume/", "Volume"},
+			{"key-pair/", "KeyPair"}, {"security-group/", "SecurityGroup"},
+		} {
+			if r, ok := cut(m.prefix, m.typ); ok {
+				return r, true
+			}
+		}
 	case "apigateway": // arn:aws:apigateway:r::/restapis/<id>[/...]
 		if n, ok := strings.CutPrefix(tail, "/restapis/"); ok && n != "" {
 			n, _, _ = strings.Cut(n, "/")

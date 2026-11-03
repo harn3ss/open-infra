@@ -314,7 +314,7 @@ func TestTranslate_IAMPolicy_Complement(t *testing.T) {
 		"Users": []any{"alice"},
 		"PolicyDocument": map[string]any{
 			"Statement": []any{
-				map[string]any{"Effect": "Allow", "Action": "s3:GetObject", "NotResource": "arn:aws:ec2:us-east-1:1:instance/i-abc"},
+				map[string]any{"Effect": "Allow", "Action": "s3:GetObject", "NotResource": "arn:aws:elasticloadbalancing:us-east-1:1:loadbalancer/app/web/abc"},
 			},
 		},
 	}, nil)

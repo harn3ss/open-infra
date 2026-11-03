@@ -559,7 +559,7 @@ func TestImportAWS_Complement(t *testing.T) {
 
 	// A NotResource whose exclusion can't be mapped (an unfronted service's ARN) is REFUSED, not widened:
 	// dropping the carve-out would silently grant "all resources". Reported, no statement emitted.
-	stmts, unsupported, err = ImportAWS(`{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","NotResource":"arn:aws:ec2:us-east-1:123:instance/i-abc"}]}`)
+	stmts, unsupported, err = ImportAWS(`{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","NotResource":"arn:aws:elasticloadbalancing:us-east-1:123:loadbalancer/app/web/abc"}]}`)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

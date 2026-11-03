@@ -29,8 +29,11 @@ var awsManagedPolicies = map[string]struct {
 		missing: "S3 Object Lambda (not served)",
 	},
 	"AmazonSSMManagedInstanceCore": {
-		doc:     `{"Statement":[{"Effect":"Allow","Action":["ssm:GetParameter","ssm:GetParameters"],"Resource":"*"}]}`,
-		missing: "Session Manager, Run Command, inventory, patching and the rest of the SSM agent's channel (ssm agent APIs, ssmmessages, ec2messages) — there is no SSM agent endpoint; only the policy's parameter reads are attached",
+		// The parameter reads, and Run Command's agent channel: the instance registers and fetches and
+		// reports its commands (the aws-shim's /v1/vm-commands checks these actions for the instance's role).
+		doc: `{"Statement":[{"Effect":"Allow","Action":["ssm:GetParameter","ssm:GetParameters","ssm:UpdateInstanceInformation"],"Resource":"*"},` +
+			`{"Effect":"Allow","Action":["ec2messages:AcknowledgeMessage","ec2messages:DeleteMessage","ec2messages:FailMessage","ec2messages:GetEndpoint","ec2messages:GetMessages","ec2messages:SendReply"],"Resource":"*"}]}`,
+		missing: "Session Manager (ssmmessages), State Manager associations, inventory and patching — the SSM agent's Run Command channel and the parameter reads are attached",
 	},
 	"CloudWatchAgentServerPolicy": {
 		doc:     `{"Statement":[{"Effect":"Allow","Action":["cloudwatch:PutMetricData","logs:PutLogEvents","logs:PutRetentionPolicy","logs:DescribeLogStreams","logs:DescribeLogGroups","logs:CreateLogStream","logs:CreateLogGroup"],"Resource":"*"},{"Effect":"Allow","Action":["ssm:GetParameter"],"Resource":"arn:aws:ssm:*:*:parameter/AmazonCloudWatch-*"}]}`,
