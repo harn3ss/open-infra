@@ -185,6 +185,11 @@ storage:
   # single node). true = distributed HA (4 erasure-coded drives across nodes;
   # needs >=4 drives). Not defaulted to HA — opt in deliberately.
   highAvailability: false
+  # Where backups go (Velero's cluster backups, Longhorn's volume backups). "" (default) = the main
+  # MinIO. "hdd" = a MinIO of its own on spinning disk: a longhorn-bulk volume, which needs a Longhorn
+  # disk tagged hdd (add the HDD to a node as its own Longhorn disk with that tag). Moving an install's
+  # existing backups across is a one-off copy (docs/backup.md).
+  backupStore: ""
   # NAS-backed shared/bulk volumes (RWX). Point at an SMB/NFS export.
   shared:
     enabled: false

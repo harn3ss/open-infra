@@ -1,0 +1,87 @@
+# The backup store on spinning disk (storage.backupStore: hdd; install.sh includes this file instead of
+# storage/backup-store.yaml). Backups — Velero's cluster backups and Longhorn's volume backups — are large,
+# written sequentially and rarely read: what an HDD does well. They used to share the main MinIO's NVMe,
+# where an unbounded Velero repository once filled a node's disk.
+#
+# A single-drive MinIO on a longhorn-bulk volume (a Longhorn disk tagged hdd), in the minio namespace
+# with the main MinIO's root credentials (secret/minio) and object-encryption key (secret/minio-kms), so
+# the consumers' credentials are unchanged and everything it stores is encrypted at rest as before
+# (Velero's backups hold the cluster's Secrets). The Service backup-store, which the consumers address,
+# selects it. One replica: the backups are the second copy of the data they hold.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio-backup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  serviceName: minio-backup
+  replicas: 1
+  selector:
+    matchLabels: { app: minio-backup }
+  template:
+    metadata:
+      labels: { app: minio-backup }
+    spec:
+      securityContext: { runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, fsGroupChangePolicy: OnRootMismatch }
+      containers:
+        - name: minio
+          image: docker.io/pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+          args: [server, /data, --address, ":9000", --console-address, ":9001"]
+          env:
+            - { name: MINIO_ROOT_USER, valueFrom: { secretKeyRef: { name: minio, key: rootUser } } }
+            - { name: MINIO_ROOT_PASSWORD, valueFrom: { secretKeyRef: { name: minio, key: rootPassword } } }
+            # The object-encryption key, as the main MinIO reads it (storage/minio-kms.yaml).
+            - { name: MINIO_CONFIG_ENV_FILE, value: /etc/openinfra/minio-kms/config.env }
+          ports:
+            - { name: s3, containerPort: 9000 }
+            - { name: console, containerPort: 9001 }
+          readinessProbe:
+            httpGet: { path: /minio/health/ready, port: 9000 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /minio/health/live, port: 9000 }
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 250m, memory: 1Gi }
+            limits: { cpu: "1", memory: 2Gi }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: kms, mountPath: /etc/openinfra/minio-kms, readOnly: true }
+      volumes:
+        - name: kms
+          secret: { secretName: minio-kms, optional: true }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: longhorn-bulk
+        resources: { requests: { storage: 3Ti } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-backup
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  selector: { app: minio-backup }
+  ports:
+    - { name: s3, port: 9000, targetPort: 9000, protocol: TCP }
+---
+# The name the backup consumers address (see storage/backup-store.yaml for the default).
+apiVersion: v1
+kind: Service
+metadata:
+  name: backup-store
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  selector: { app: minio-backup }
+  ports:
+    - { name: s3, port: 9000, targetPort: 9000, protocol: TCP }

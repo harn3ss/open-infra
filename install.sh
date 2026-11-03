@@ -221,6 +221,15 @@ if [ "$(yget components.minio)" != "false" ]; then
     EXCLUDES="${EXCLUDES},storage/minio-ha.yaml"
   fi
 fi
+# Backup store (storage.backupStore): where Velero and Longhorn's volume backups go, behind the Service
+# minio/backup-store. Default = the main MinIO (storage/backup-store.yaml); "hdd" = a MinIO of its own on a
+# longhorn-bulk volume, i.e. a Longhorn disk tagged hdd (storage/minio-backup.yaml). Exactly one is included.
+if [ "$(yget storage.backupStore)" = "hdd" ]; then
+  EXCLUDES="${EXCLUDES},storage/backup-store.yaml"
+  LOG "storage: backups on spinning disk (storage/minio-backup.yaml)"
+else
+  EXCLUDES="${EXCLUDES},storage/minio-backup.yaml"
+fi
 case "$EXCLUDES" in *,*) EXCLUDE_GLOB="{${EXCLUDES}}";; *) EXCLUDE_GLOB="$EXCLUDES";; esac
 
 LOG "mode=$MODE cluster=$CLUSTER_NAME k3s=$K3S_CHANNEL"

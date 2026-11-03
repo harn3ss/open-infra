@@ -23,7 +23,7 @@ func TestBackupVault_RendersBSL(t *testing.T) {
 		"kind: BackupStorageLocation", "apiVersion: velero.io/v1",
 		"name: openinfra-vault-prod", "namespace: velero",
 		"bucket: velero", "prefix: vaults/prod", // the per-vault isolation
-		"s3Url: http://minio.minio.svc.cluster.local:9000",
+		"s3Url: http://backup-store.minio.svc.cluster.local:9000", // the backup store (storage/backup-store.yaml)
 		"openinfra.dev/backupvault: prod",
 		"backupStorageLocation: openinfra-vault-prod", // status
 	} {

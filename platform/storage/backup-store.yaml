@@ -1,0 +1,15 @@
+# The platform's backup store: the S3 endpoint Velero (platform/backup/velero.yaml) and Longhorn's volume
+# backups (longhorn-backup-setup.yaml) write to. By default it IS the main MinIO (this Service selects its
+# pods), so nothing about where backups live changes. With storage.backupStore: hdd, install.sh includes
+# storage/minio-backup.yaml instead of this file: a MinIO of its own on spinning disk, behind the same name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backup-store
+  namespace: minio
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  selector: { app: minio, release: minio }
+  ports:
+    - { name: s3, port: 9000, targetPort: 9000, protocol: TCP }

@@ -36,7 +36,7 @@ spec:
               config:
                 region: minio
                 s3ForcePathStyle: "true"
-                s3Url: http://minio.minio.svc.cluster.local:9000
+                s3Url: http://backup-store.minio.svc.cluster.local:9000
           volumeSnapshotLocation: []
         snapshotsEnabled: false
         deployNodeAgent: true
