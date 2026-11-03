@@ -270,8 +270,10 @@ else
 fi
 rm -f "$PWD/.iam_na"
 
+# An exclusion in a service the importer does not map (Redshift): an EC2 instance ARN used to serve here,
+# but it maps now (the EC2 front door's Instance::<id>), so it would translate faithfully, not widen.
 log "negative: a NotResource whose exclusion cannot be mapped must still be REFUSED (never silently widened)"
-NRDOC='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","NotResource":"arn:aws:ec2:us-east-1:123:instance/i-abc"}]}'
+NRDOC='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","NotResource":"arn:aws:redshift:us-east-1:123:cluster:probe-cluster"}]}'
 if iam "$AAK" "$ASK" create-policy --policy-name "iam-probe-nr-$SFX" --policy-document "$NRDOC" >/dev/null 2>"$PWD/.iam_nr"; then
   CREATED_POLICIES+=("iam-probe-nr-$SFX")
   fail "a NotResource with an unmappable exclusion was accepted (would widen the grant to all resources)"
