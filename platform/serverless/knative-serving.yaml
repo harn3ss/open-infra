@@ -94,8 +94,12 @@ spec:
       # few times permanently holds every old revision's Services (~2 each) against a shared Services ceiling
       # (6,500). That silently exhausts the ceiling for ANY user who iterates a function in place -- a
       # general-platform problem, independent of the estate mirror (which has its own retire-the-claim step).
-      # Keep a small rollback buffer; GC the rest once aged out. An ACTIVE (routed) revision is never GC'd.
-      min-non-active-revisions: "2"        # was the implicit default 20 -- keep 2 for rollback, GC beyond
+      # Every superseded revision also keeps a PodAutoscaler that the autoscaler reconciles in turn, so with
+      # many scaled-to-zero functions a rollback buffer per function slows every PodAutoscaler's turn —
+      # including a new or cold function's scale-from-zero. A function's code is replaced in place, as on
+      # Lambda, and a revision a user pins (an alias's revisionName) is routed, so it is ACTIVE and never
+      # GC'd. So no buffer: a superseded revision GCs once it ages out.
+      min-non-active-revisions: "0"        # the implicit default is 20
       max-non-active-revisions: "10"       # hard cap regardless of age
       retain-since-create-time: "48h"      # (Knative default) a superseded revision GCs after it ages out
       retain-since-last-active-time: "15h" # (Knative default)
