@@ -57,5 +57,10 @@ uses, so a plan never tries to back up the backup store itself.
 - Recovery is via Velero restore (`velero restore create --from-backup <plan>-<rule>-<timestamp>`);
   a declarative `kind: Restore` is not yet modelled.
 - Velero backs up what it can see in the cluster (objects + PV data via filesystem backup);
-  it is not a per-AWS-service snapshot API. For database point-in-time recovery, see the
+  it is not a per-AWS-service snapshot API.
+- An encrypted volume's files are backed up as the pod reads them, decrypted, and stored under
+  Velero's own repository key; its passphrase Secret is not backed up. A restore therefore creates
+  a new encrypted volume with a new passphrase and copies the files into it. These backups are not
+  erased by a `kind: Destruction` of the volume's key: delete them, or let them expire
+  ([`destruction.md`](destruction.md)). For database point-in-time recovery, see the
   managed-database `pointInTimeRecovery` knob, which is a separate, finer mechanism.

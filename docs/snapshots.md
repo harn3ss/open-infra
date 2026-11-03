@@ -89,6 +89,12 @@ spec and starting **Halted** so you boot it when ready. Snapshot + restore live 
   root creds, kept fresh by a self-healing refresh CronJob (they had gone stale on a MinIO
   reprovision, which silently breaks all backups — see `platform/storage/longhorn-backup-setup.yaml`).
 - **VMs** (KubeVirt, Longhorn-backed) use this same `longhorn-backup` CSI path (shipped — see the **VMs** section above).
+- **An encrypted disk's snapshot goes with the disk.** A CSI snapshot of an encrypted volume
+  (`storageEncrypted`, an encrypted VM disk) is encrypted under that volume's passphrase, and the
+  passphrase lives exactly as long as the volume's claim. Once the database or VM is deleted, its
+  final snapshot can no longer be opened. This differs from AWS, where an encrypted EBS snapshot
+  stays readable for as long as its KMS key exists. A logical dump (Postgres, Mongo, MySQL) is not
+  affected: it is plain data in MinIO.
 
 ## See also
 
