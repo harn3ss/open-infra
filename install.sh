@@ -880,6 +880,26 @@ EOF
   fi
 fi
 
+# ── 4b. Function URL domain (networking.kourier.domain) ──
+# With routed ingress (lanExpose off), kourier is published by its own load balancer, so the
+# domain Functions advertise (<fn>.<ns>.<domain>) is the address of that load balancer, e.g.
+# <its IP>.sslip.io or a DNS zone pointed at it. The domain map is REPLACED, never merged: a merge
+# only adds keys, so a stale domain would stay and Functions would keep advertising it.
+KOURIER_DOMAIN="$(yget networking.kourier.domain)"
+if [ "$(yget networking.lanExpose.enabled)" != "true" ] && [ -n "$KOURIER_DOMAIN" ]; then
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  + set KnativeServing config.domain to %s (replacing the domain map)\n' "$KOURIER_DOMAIN"
+  elif ! $KUBECTL -n knative-serving get knativeserving knative-serving >/dev/null 2>&1; then
+    WARN "networking.kourier.domain set but KnativeServing not present yet — re-run install.sh once the serverless component has converged."
+  else
+    LOG "Function URLs on $KOURIER_DOMAIN"
+    $KUBECTL patch knativeserving knative-serving -n knative-serving --type merge \
+      -p "{\"spec\":{\"config\":{\"domain\":{\"${KOURIER_DOMAIN}\":\"\"}}}}" >/dev/null
+    $KUBECTL patch knativeserving knative-serving -n knative-serving --type json \
+      -p "[{\"op\":\"replace\",\"path\":\"/spec/config/domain\",\"value\":{\"${KOURIER_DOMAIN}\":\"\"}}]" >/dev/null
+  fi
+fi
+
 # ── 4c. validated certificate domains (certificates.validatedDomains) ──
 # ACM issues a trusted certificate only for a domain whose ownership it validated; the operator's
 # equivalent is this list of domains it owns (a site value, never in the repo). For them the platform

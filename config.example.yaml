@@ -80,6 +80,13 @@ networking:
     lbPool: ""                 # MetalLB IPAddressPool for traefik-lb (blank => MetalLB's default)
     lbIP: ""                   # pin traefik-lb's address (blank => MetalLB picks one)
 
+  # The domain Knative Functions advertise their URLs on (<fn>.<ns>.<domain>) when kourier is
+  # published by its own load balancer (routed ingress; ignored while lanExpose.enabled is true,
+  # which sets <kourierIP>.sslip.io itself). Use <that load balancer's IP>.sslip.io, or a DNS zone
+  # pointed at it. Blank => leave the domain alone. EXAMPLE ONLY — set your own:
+  kourier:
+    domain: ""                 # e.g. 192.0.2.3.sslip.io
+
   # Direct-LAN networking for VMs (kind: VirtualMachine, network: bridge): attach
   # VMs to the physical LAN via Multus + macvlan so they pull a real DHCP lease —
   # a first-class LAN host, no MetalLB/NAT. Set enabled: true and re-run
