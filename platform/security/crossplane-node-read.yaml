@@ -1,0 +1,40 @@
+# Read access to Nodes for the Crossplane core service account.
+#
+# Why this exists: the SecurityGroup composition (abstraction/securitygroup-composition.yaml)
+# reads the cluster's nodes as extra resources. A connection a node makes itself (an operator
+# working on a node, or a host-network pod on it) reaches a pod from the node's join-subnet
+# address, not its LAN address, so an ingress cidr that names a node's LAN address must also
+# admit that node's join address (the annotation ovn.kubernetes.io/ip_address) for the rule to
+# match it. Crossplane fetches extra resources with its own service account, which otherwise has
+# no access to nodes.
+#
+# Read-only: a Node carries the node's addresses, labels, capacity and conditions, no secrets.
+# After this is in RBAC, regenerate the Cedar control-plane corpus (console-api/cmd/rbac-to-cedar
+# --configmap) so the enforced corpus includes it. Until then, a SecurityGroup with an ingress
+# cidr narrower than 0.0.0.0/0 cannot be reconciled (the node fetch is refused); its existing
+# NetworkPolicy stays in force.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crossplane:openinfra-node-read
+  labels:
+    openinfra.dev/purpose: crossplane-securitygroup-node-addresses
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crossplane:openinfra-node-read
+  labels:
+    openinfra.dev/purpose: crossplane-securitygroup-node-addresses
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: crossplane:openinfra-node-read
+subjects:
+  - kind: ServiceAccount
+    name: crossplane
+    namespace: crossplane-system
