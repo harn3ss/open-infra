@@ -12,9 +12,9 @@ metadata:
   name: longhorn-bulk
   annotations:
     argocd.argoproj.io/sync-wave: "1"
-    # StorageClass parameters are immutable: a parameter change is applied by replacing the class
+    # StorageClass parameters are immutable: a parameter change is applied by deleting and re-creating the class
     # (existing volumes keep the parameters they were created with).
-    argocd.argoproj.io/sync-options: Replace=true
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
 provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Delete
