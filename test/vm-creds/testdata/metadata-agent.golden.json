@@ -11,6 +11,7 @@
   },
   "caBundleLink": "/etc/openinfra/ca-bundle.pem",
   "caFile": "/etc/openinfra/platform-root-ca.pem",
+  "commandsUrl": "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567/v1/vm-commands",
   "containers": {
     "caBundle": "/etc/openinfra/ca-bundle.pem",
     "env": [

@@ -9286,6 +9286,11 @@ components:
               type: string
             ready:
               type: boolean
+            instanceId:
+              type: string
+              description: 'The VM''s EC2 instance id (i- and 17 hex digits), stable for the life of the VM: the instance-id
+                its guest''s instance metadata reports, CloudFormation''s Ref of the instance, and the id the aws-shim''s
+                EC2 and SSM APIs take.'
             rootPopulated:
               type: boolean
               description: 'The root disk holds the OS image: set once the copy onto it has completed (an encrypted root,

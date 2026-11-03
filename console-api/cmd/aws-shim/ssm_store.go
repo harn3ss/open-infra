@@ -51,7 +51,10 @@ CREATE TABLE IF NOT EXISTS ssm_labels (
     PRIMARY KEY (name, label)
 );
 CREATE INDEX IF NOT EXISTS ssm_params_name ON ssm_params (name text_pattern_ops);`)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.ensureRunCommandSchema(ctx) // Run Command (ssm_runcommand_store.go)
 }
 
 func (s *ssmStore) getParam(ctx context.Context, name string) (ssmParam, bool, error) {

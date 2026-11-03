@@ -291,8 +291,12 @@ spec:
             {{- $imdsRegion := index $envCfg "awsRegion" | default "us-east-1" }}
             {{- $imdsAccount := index $envCfg "awsAccountId" | default "000000000000" }}
             {{- $userDataFile := "" }}{{- if $spec.userData }}{{- $userDataFile = "/opt/openinfra-userdata" }}{{- end }}
+            {{- /* The EC2 instance id. The guest's instance metadata reports it, and the composite's
+                   status.instanceId carries the same value, so CloudFormation's Ref and the aws-shim's EC2
+                   and SSM APIs name the instance the guest sees. */}}
+            {{- $instanceId := printf "i-%s" (printf "%s-instance" .observed.composite.resource.metadata.uid | sha256sum | trunc 17) }}
             {{- $agentCfg := dict
-                  "instanceId" (printf "i-%s" (printf "%s-instance" .observed.composite.resource.metadata.uid | sha256sum | trunc 17))
+                  "instanceId" $instanceId
                   "imageId" (printf "ami-%s" (printf "%s-image" $spec.os | sha256sum | trunc 17))
                   "region" $imdsRegion
                   "availabilityZone" (printf "%sa" $imdsRegion)
@@ -300,6 +304,7 @@ spec:
                   "launchTime" (.observed.composite.resource.metadata.creationTimestamp | default "")
                   "role" $instanceRole
                   "credentialsUrl" (printf "https://%s/v1/vm-credentials" $shimTLSHostPort)
+                  "commandsUrl" (printf "https://%s/v1/vm-commands" $shimTLSHostPort)
                   "tokenFile" "/run/openinfra-identity/token"
                   "userDataFile" $userDataFile
                   "securityGroups" ($spec.securityGroups | default list)
@@ -1267,6 +1272,7 @@ spec:
                                 "launchTime": "",
                                 "role": "",
                                 "credentialsUrl": "",
+                                "commandsUrl": "",  # SSM Run Command (CommandRunner); "" = not managed
                                 "tokenFile": "/run/openinfra-identity/token",
                                 "userDataFile": "",
                                 "securityGroups": [],
@@ -2545,6 +2551,184 @@ spec:
                                     s.close()
 
 
+                            # ---------------------------------------------------------------------------------------------
+                            # SSM Run Command: the commands `aws ssm send-command` sends this instance (AWS-RunShellScript),
+                            # fetched from the aws-shim with the VM's ServiceAccount token, run as root, and reported back.
+                            # The shim knows the instance from the token alone, so the agent fetches and reports only its own.
+                            # ---------------------------------------------------------------------------------------------
+
+                            AGENT_VERSION = "openinfra-1"
+                            OUTPUT_CAP = 24000  # characters of each stream kept, as GetCommandInvocation reports them
+
+
+                            def read_capped(path, cap=OUTPUT_CAP):
+                                try:
+                                    with open(path, "rb") as fh:
+                                        return fh.read(cap * 4).decode("utf-8", "replace")[:cap]
+                                except (IOError, OSError):
+                                    return ""
+
+
+                            class CommandRunner:
+                                """Long-polls the aws-shim's /v1/vm-commands for this instance's commands and runs each in a thread.
+
+                                A refusal (the instance role does not allow the SSM agent's actions: attach
+                                AmazonSSMManagedInstanceCore; or the instance is not managed) backs off for minutes."""
+
+                                def __init__(self, url, token_file, ca_file, work_dir="/var/lib/openinfra/commands"):
+                                    self.url = url.rstrip("/")
+                                    self.token_file = token_file
+                                    self.ca_file = ca_file
+                                    self.work_dir = work_dir
+                                    self.running = set()
+                                    self._lock = threading.Lock()
+
+                                def _call(self, method, url, body=None, timeout=40.0):
+                                    if not (url or "").lower().startswith("https://"):
+                                        raise CredentialsError("refusing to send the instance identity token to %r: the aws-shim is "
+                                                               "called over TLS only" % (url,))
+                                    ctx = shim_tls_context(self.ca_file)
+                                    try:
+                                        with open(self.token_file) as fh:
+                                            token = "".join(fh.read().split())
+                                    except (IOError, OSError) as e:
+                                        raise CredentialsError("cannot read the instance identity token %s: %s" % (self.token_file, e))
+                                    data = None if body is None else json.dumps(body).encode("utf-8")
+                                    req = urllib.request.Request(url, data=data, method=method, headers={
+                                        "Authorization": token, "Accept": "application/json", "Content-Type": "application/json"})
+                                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                                                         urllib.request.HTTPSHandler(context=ctx))
+                                    try:
+                                        resp = opener.open(req, timeout=timeout)
+                                        try:
+                                            raw = resp.read()
+                                        finally:
+                                            resp.close()
+                                    except urllib.error.HTTPError as e:
+                                        detail = e.read()[:300].decode("utf-8", "replace").strip()
+                                        raise CredentialsError("aws-shim %s answered HTTP %d: %s" % (url, e.code, detail), e.code)
+                                    except (urllib.error.URLError, socket.timeout, OSError, ssl.CertificateError) as e:
+                                        raise CredentialsError("cannot reach the aws-shim at %s: %s" % (url, getattr(e, "reason", e)))
+                                    return json.loads(raw.decode("utf-8")) if raw.strip() else {}
+
+                                def platform_info(self):
+                                    info = {"agentVersion": AGENT_VERSION, "platformType": "Linux", "computerName": socket.gethostname()}
+                                    try:
+                                        with open("/etc/os-release") as fh:
+                                            for line in fh:
+                                                k, _, v = line.strip().partition("=")
+                                                if k == "NAME":
+                                                    info["platformName"] = v.strip('"')
+                                                elif k == "VERSION_ID":
+                                                    info["platformVersion"] = v.strip('"')
+                                    except (IOError, OSError):
+                                        pass
+                                    ip = primary_ipv4()
+                                    if ip:
+                                        info["ipAddress"] = ip
+                                    return info
+
+                                def poll(self, wait=20):
+                                    q = self.platform_info()
+                                    q["wait"] = str(wait)
+                                    doc = self._call("GET", self.url + "?" + urllib.parse.urlencode(sorted(q.items())), timeout=wait + 20.0)
+                                    return [c for c in (doc.get("Commands") or []) if isinstance(c, dict) and c.get("CommandId")]
+
+                                def execute(self, cmd):
+                                    """Runs one AWS-RunShellScript command as root; returns its report."""
+                                    params = cmd.get("Parameters") or {}
+                                    lines = [str(c) for c in (params.get("commands") or [])]
+                                    workdir = str((params.get("workingDirectory") or [""])[0] or "").strip()
+                                    try:
+                                        timeout = int((params.get("executionTimeout") or ["3600"])[0])
+                                    except (TypeError, ValueError):
+                                        timeout = 3600
+                                    timeout = min(max(timeout, 1), 172800)
+                                    d = os.path.join(self.work_dir, re.sub(r"[^A-Za-z0-9-]", "", cmd["CommandId"])[:64] or "command")
+                                    os.makedirs(d, 0o700, exist_ok=True)
+                                    os.chmod(self.work_dir, 0o700)
+                                    try:
+                                        script = os.path.join(d, "_script.sh")
+                                        with open(script, "w") as fh:
+                                            fh.write("\n".join(lines) + "\n")
+                                        os.chmod(script, 0o700)
+                                        out_path, err_path = os.path.join(d, "stdout"), os.path.join(d, "stderr")
+                                        status, code, note = "Success", 0, ""
+                                        with open(out_path, "wb") as out, open(err_path, "wb") as err, open(os.devnull, "rb") as nul:
+                                            try:
+                                                p = subprocess.Popen(["/bin/sh", script], cwd=workdir or d, stdin=nul, stdout=out,
+                                                                     stderr=err, start_new_session=True)
+                                            except OSError as e:
+                                                p, status, code, note = None, "Failed", 1, "failed to run commands: %s" % e
+                                            if p is not None:
+                                                try:
+                                                    code = p.wait(timeout=timeout)
+                                                except subprocess.TimeoutExpired:
+                                                    try:
+                                                        os.killpg(p.pid, signal.SIGKILL)
+                                                    except OSError:
+                                                        pass
+                                                    p.wait()
+                                                    status, code, note = "TimedOut", -1, "failed to run commands: execution timed out after %d s" % timeout
+                                        if status == "Success" and code != 0:
+                                            status, note = "Failed", "failed to run commands: exit status %d" % code
+                                        stderr = read_capped(err_path)
+                                        if note:
+                                            stderr = (stderr + ("\n" if stderr and not stderr.endswith("\n") else "") + note)[:OUTPUT_CAP]
+                                        return {"Status": status, "ResponseCode": code, "StandardOutputContent": read_capped(out_path),
+                                                "StandardErrorContent": stderr}
+                                    finally:
+                                        shutil.rmtree(d, ignore_errors=True)
+
+                                def report(self, command_id, result):
+                                    self._call("POST", self.url + "/" + urllib.parse.quote(command_id, safe=""), body=result)
+
+                                def handle(self, cmd, retry_wait=5.0):
+                                    cid = cmd["CommandId"]
+                                    try:
+                                        try:
+                                            result = self.execute(cmd)
+                                        except Exception as e:  # report it rather than leave the command InProgress
+                                            result = {"Status": "Failed", "ResponseCode": -1, "StandardOutputContent": "",
+                                                      "StandardErrorContent": "the metadata agent could not run the command: %s" % e}
+                                        LOG.info("SSM command %s: %s (exit %s)", cid, result["Status"], result["ResponseCode"])
+                                        for attempt in range(5):
+                                            try:
+                                                self.report(cid, result)
+                                                return
+                                            except CredentialsError as e:
+                                                LOG.warning("reporting SSM command %s failed: %s", cid, e)
+                                                if e.status in (400, 404, 409):
+                                                    return  # the shim no longer expects it (cancelled, timed out)
+                                                time.sleep(retry_wait * (attempt + 1))
+                                    finally:
+                                        with self._lock:
+                                            self.running.discard(cid)
+
+                                def run_forever(self, stop):
+                                    backoff = 5.0
+                                    while not stop.is_set():
+                                        try:
+                                            cmds = self.poll()
+                                            backoff = 5.0
+                                        except CredentialsError as e:
+                                            wait = {401: 300.0, 403: 300.0, 404: 900.0}.get(e.status, backoff)
+                                            LOG.warning("SSM Run Command: %s; polling again in %d s", e, wait)
+                                            backoff = min(backoff * 2, 60.0)
+                                            stop.wait(wait)
+                                            continue
+                                        except (ValueError, TypeError, AttributeError) as e:
+                                            LOG.error("SSM Run Command: the aws-shim sent an unusable answer: %s", e)
+                                            stop.wait(backoff)
+                                            continue
+                                        for cmd in cmds:
+                                            with self._lock:
+                                                if cmd["CommandId"] in self.running:
+                                                    continue
+                                                self.running.add(cmd["CommandId"])
+                                            threading.Thread(target=self.handle, args=(cmd,), daemon=True).start()
+
+
                             class Agent:
                                 def __init__(self, cfg, fetch=None, warm_timeout=10.0):
                                     self.cfg = cfg
@@ -2554,6 +2738,9 @@ spec:
                                     if cfg.get("role"):
                                         url, token_file, ca_file = cfg.get("credentialsUrl"), cfg.get("tokenFile"), cfg.get("caFile")
                                         self.creds = CredentialCache(fetch or (lambda: fetch_from_shim(url, token_file, ca_file)))
+                                    self.commands = None  # SSM Run Command: an instance with a role (its token) is managed
+                                    if cfg.get("role") and cfg.get("commandsUrl"):
+                                        self.commands = CommandRunner(cfg["commandsUrl"], cfg.get("tokenFile"), cfg.get("caFile"))
                                     self.metadata = Metadata(cfg, self.creds)
                                     self.servers = []
                                     self.stop = threading.Event()
@@ -2677,6 +2864,8 @@ spec:
                                                           platform_ca=ca in ("installed", "unchanged"))
                                     configure_containers(self.cfg)  # before ready: UserData may install Docker and start containers
                                     configure_awscli_v1_plugin(self.cfg)  # the distro aws CLI v1 reads AWS_ENDPOINT_URL through it
+                                    if self.commands is not None and self.servers:
+                                        threading.Thread(target=self.commands.run_forever, args=(self.stop,), daemon=True).start()
 
                                 def shutdown(self):
                                     self.stop.set()
@@ -3177,10 +3366,11 @@ spec:
                   kind: VirtualMachineInstance
                   metadata: { name: {{ $name }}, namespace: {{ $ns }} }
             ---
-            # --- Composite status: the VM's LAN IP (see above) and private IP. ---
+            # --- Composite status: the VM's instance id, LAN IP (see above) and private IP. ---
             apiVersion: openinfra.dev/v1
             kind: XVirtualMachine
             status:
+              instanceId: {{ $instanceId | quote }}
               lanIp: {{ $lanIp | quote }}
               ip: {{ $privIp | quote }}
               powerState: {{ $powerState | quote }}
