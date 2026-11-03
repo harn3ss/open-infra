@@ -1338,11 +1338,12 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	// After the key that encrypts them: a kept volume is Ready only once its encrypted disk is bound.
 	m.Extra = append(m.Extra, keptVols...)
 
-	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "PrivateIpAddress", "SourceDestCheck", "DisableApiTermination", "Tags"} {
+	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "PrivateIpAddress", "SourceDestCheck", "DisableApiTermination"} {
 		if _, ok := props[p]; ok {
 			cav = append(cav, p+" dropped — no open-infra equivalent")
 		}
 	}
+	cav = append(cav, awsViewCaveats(props, "Tags")...)
 	m.Caveats = cav
 	return m, f
 }
@@ -1526,11 +1527,12 @@ func translateEC2VPC(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 	f = append(f, blockUnknownProps(id, props, known)...)
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Vpc", Name: ctx.name(id), Spec: map[string]any{}}
 	if _, ok := props["CidrBlock"]; ok {
-		m.Caveats = append(m.Caveats, "CidrBlock is informational — in kube-ovn the subnets carry the CIDRs, not the VPC; the VPC-level range does not map to a field")
+		m.Caveats = append(m.Caveats, "CidrBlock is informational — in kube-ovn the subnets carry the CIDRs, not the VPC; the VPC-level range does not map to a field (the EC2 API reports it: DescribeVpcs)")
 	}
-	for _, p := range []string{"EnableDnsSupport", "EnableDnsHostnames", "InstanceTenancy", "Tags", "CidrBlockAssociations"} {
+	m.Caveats = append(m.Caveats, awsViewCaveats(props, "Tags")...)
+	for _, p := range []string{"EnableDnsSupport", "EnableDnsHostnames", "InstanceTenancy", "CidrBlockAssociations"} {
 		if _, ok := props[p]; ok {
-			m.Caveats = append(m.Caveats, p+" dropped — no kind: Vpc equivalent (DNS is cluster-wide; tenancy/tags/extra ranges don't map)")
+			m.Caveats = append(m.Caveats, p+" dropped — no kind: Vpc equivalent (DNS is cluster-wide; tenancy and extra ranges don't map)")
 		}
 	}
 	return m, f
@@ -1572,11 +1574,12 @@ func translateEC2Subnet(id string, props map[string]any, ctx *stackCtx) (*Manife
 		spec["private"] = !pub
 	}
 	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Subnet", Name: ctx.name(id), Spec: spec}
-	for _, p := range []string{"AvailabilityZone", "Tags", "AssignIpv6AddressOnCreation", "Ipv6CidrBlock", "OutpostArn"} {
+	for _, p := range []string{"AvailabilityZone", "AssignIpv6AddressOnCreation", "Ipv6CidrBlock", "OutpostArn"} {
 		if _, ok := props[p]; ok {
-			m.Caveats = append(m.Caveats, p+" dropped — no kind: Subnet equivalent (one flat cluster, no AZ; IPv6/tags don't map)")
+			m.Caveats = append(m.Caveats, p+" dropped — no kind: Subnet equivalent (one flat cluster, no AZ; IPv6 doesn't map)")
 		}
 	}
+	m.Caveats = append(m.Caveats, awsViewCaveats(props, "Tags")...)
 	return m, f
 }
 
@@ -1704,11 +1707,7 @@ func translateEC2SecurityGroup(id string, props map[string]any, ctx *stackCtx) (
 	if _, ok := props["VpcId"]; ok {
 		m.Caveats = append(m.Caveats, "VpcId dropped — a kind: SecurityGroup is enforced cluster-wide by membership label, not scoped to a VPC")
 	}
-	for _, p := range []string{"GroupName", "GroupDescription", "Tags"} {
-		if _, ok := props[p]; ok {
-			m.Caveats = append(m.Caveats, p+" dropped — no kind: SecurityGroup equivalent (name is the resource name; tags/description don't map)")
-		}
-	}
+	m.Caveats = append(m.Caveats, awsViewCaveats(props, "GroupName", "GroupDescription", "Tags")...)
 	return m, f
 }
 

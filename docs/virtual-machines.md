@@ -234,7 +234,7 @@ or without an `instanceRole`. It answers the paths SDKs and lift-and-shift scrip
 | Path (under `/latest/`) | Value |
 |---|---|
 | `api/token` (`PUT`) | IMDSv2 session token (`X-aws-ec2-metadata-token-ttl-seconds`: 1–21600) |
-| `meta-data/instance-id`, `ami-id` | stable EC2-shaped ids (`i-…` from the VM's UID, `ami-…` from its catalog OS) |
+| `meta-data/instance-id`, `ami-id` | stable EC2-shaped ids (`i-…` from the VM's UID, `ami-…` from its catalog OS); the VM reports the same instance id as `status.instanceId`, and CloudFormation's `Ref`, the aws-shim's EC2 API and SSM Run Command name the instance by it |
 | `meta-data/placement/region`, `placement/availability-zone` | `us-east-1`, `us-east-1a` (the aws-shim's region) |
 | `meta-data/local-ipv4`, `mac`, `hostname`, `local-hostname`, `network/interfaces/macs/…` | the guest's primary interface |
 | `meta-data/security-groups` | the VM's `securityGroups` |
@@ -479,7 +479,15 @@ or `existingRootClaim`, and `rootDisk` is fixed at creation.
 ## Access
 
 - **Linux** — SSH as `openinfra`. Your `sshKey` is installed via cloud-init; a
-  generated password is also set (revealable on the VM page) as a fallback.
+  generated password is also set (revealable on the VM page) as a fallback. A CloudFormation instance's
+  `KeyName` sets `sshKey` from a key pair imported with `aws ec2 import-key-pair` (or made with
+  `create-key-pair`) on the aws-shim.
+- **Run Command** — a Linux VM whose `instanceRole` attaches `AmazonSSMManagedInstanceCore` (or allows
+  `ssm:UpdateInstanceInformation` and `ec2messages:*`) is a managed instance: `aws ssm send-command
+  --document-name AWS-RunShellScript --instance-ids <status.instanceId>` runs commands on it as root through
+  its metadata agent, and `aws ssm wait command-executed` / `get-command-invocation` report them
+  ([aws-shim.md](aws-shim.md)). Its agent polls the aws-shim's TLS port with the VM's own token; a VM created
+  before Run Command takes part after its next boot.
 - **Windows** — RDP as `Administrator` with a generated password (revealable on
   the VM page). Connect with `mstsc /v:<host>:3389`.
 - **`expose: true`** publishes a `LoadBalancer` (MetalLB) so workstations on the

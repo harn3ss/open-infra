@@ -116,6 +116,22 @@ func awsViewJSON(typ, id string, props map[string]any, ctx *stackCtx) string {
 	return string(b)
 }
 
+// awsViewCaveats is the caveat for the properties among keys a resource sets that only its AWS view keeps:
+// the EC2 API reports them (and filters and targets Run Command by tags), nothing else reads them.
+func awsViewCaveats(props map[string]any, keys ...string) []string {
+	var set []string
+	for _, k := range keys {
+		if _, ok := props[k]; ok {
+			set = append(set, k)
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return []string{strings.Join(set, ", ") + " kept only as the resource's AWS view: the aws-shim's EC2 API reports them " +
+		"(Describe*, tag: filters, Run Command targets); no open-infra kind, authorization or condition reads them"}
+}
+
 // ImageIDForOS is a catalog OS's image id: the ami-id a guest's instance metadata reports for it
 // (vm-composition.yaml: ami- and the first 17 hex digits of sha256("<os>-image")), which the aws-shim's
 // DescribeImages lists, and which an ImageId may name.

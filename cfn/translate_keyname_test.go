@@ -60,6 +60,9 @@ func TestTranslate_EC2Instance_AWSView(t *testing.T) {
 		!strings.HasPrefix(v.Tags["aws:cloudformation:stack-id"], "arn:aws:cloudformation:") {
 		t.Fatalf("view = %+v", v)
 	}
+	if cav := strings.Join(m.Caveats, " | "); strings.Contains(cav, "Tags dropped") || !strings.Contains(cav, "Tags kept only as the resource's AWS view") {
+		t.Errorf("an instance's Tags are kept for the EC2 API, and its caveat says so: %s", cav)
+	}
 	y, err := renderManifest(m, deployOpts())
 	if err != nil {
 		t.Fatal(err)
