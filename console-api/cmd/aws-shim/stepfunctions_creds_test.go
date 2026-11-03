@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,5 +79,42 @@ func TestSFN_UntrustedExecutionRoleCreatesNothing(t *testing.T) {
 	}
 	if _, err := h.cs.CoreV1().Secrets(h.ns).Get(ctx, "run2-creds", metav1.GetOptions{}); err == nil {
 		t.Fatal("no Secret may be created")
+	}
+}
+
+// An execution's role session lasts as long as its role allows (spec.maxSessionDuration), not a fixed
+// hour: a 4h role's execution keeps its authority for 4h, and a role with no maximum gets AWS's 1h default.
+func TestSFN_ExecutionSessionLastsTheRolesMaximum(t *testing.T) {
+	for _, tc := range []struct {
+		max  time.Duration
+		want time.Duration
+	}{
+		{4 * time.Hour, 4 * time.Hour},
+		{0, time.Hour},
+	} {
+		sm := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "openinfra.dev/v1", "kind": "StateMachine",
+			"metadata": map[string]any{"name": "sm1", "namespace": "open-infra-aws-shim"},
+			"spec":     map[string]any{"definition": passRoleDef, "type": "Standard", "roleArn": "runner"},
+		}}
+		h, _ := sfnPassRoleHandler(t, true, nil, sm)
+		h.roles = fakeRoles{"runner": {trust: []string{"alice"}, maxSession: tc.max}}
+		alice := iam.Claims{Sub: "alice", Groups: []string{"openinfra:powerusers"}}
+		start := time.Now()
+		if w := sfnCall(h, alice, "StartExecution", map[string]any{
+			"stateMachineArn": "arn:aws:states:us-east-1:000000000000:stateMachine:sm1", "name": "run1"}); w.Code != http.StatusOK {
+			t.Fatalf("StartExecution: %d %s", w.Code, w.Body.String())
+		}
+		sec, err := h.cs.CoreV1().Secrets(h.ns).Get(context.Background(), "run1-creds", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		exp, err := time.Parse(time.RFC3339, string(sec.Data["expiration"]))
+		if err != nil {
+			t.Fatalf("expiration %q: %v", sec.Data["expiration"], err)
+		}
+		if got := exp.Sub(start); got < tc.want-time.Minute || got > tc.want+time.Minute {
+			t.Errorf("role max %v: the execution session lasts %v, want %v", tc.max, got.Round(time.Minute), tc.want)
+		}
 	}
 }

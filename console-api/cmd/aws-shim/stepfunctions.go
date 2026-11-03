@@ -575,11 +575,23 @@ func (h *sfnHandler) mintExecutionCreds(ctx context.Context, roleName, execName 
 			who.String() + " is not authorized to run executions under role " + roleName + " (not named by its trust policy)."}
 	}
 	caller := callerName(claims)
-	akid, sk, token, exp, err := h.minter.Mint(roleName, role.groups, execName, caller, awssts.DefaultDuration)
+	akid, sk, token, exp, err := h.minter.Mint(roleName, role.groups, execName, caller, executionSessionDuration(role))
 	if err != nil {
 		return nil, &sfnErr{http.StatusInternalServerError, "InternalFailure", "could not mint execution credentials."}
 	}
 	return &executionCreds{role: roleName, akid: akid, sk: sk, token: token, exp: exp}, nil
+}
+
+// executionSessionDuration is how long an execution's role session lasts: the role's maximum session
+// (spec.maxSessionDuration, AWS's MaxSessionDuration: 1h by default, at most 12h). The session is minted
+// once, at StartExecution, so a long execution keeps its role's authority for as long as the role allows,
+// and never longer.
+func executionSessionDuration(role resolvedRole) time.Duration {
+	d := role.maxSession
+	if d <= 0 {
+		d = defaultMaxSession
+	}
+	return min(d, awssts.MaxDuration)
 }
 
 // executionCreds is a minted execution-role session, not yet stored.
