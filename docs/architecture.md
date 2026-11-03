@@ -103,8 +103,10 @@ Details: [`docs/serverless.md`](serverless.md).
   Disk class is **measured, not assumed**: a probe DaemonSet labels each node
   `openinfra.dev/disk-class` (`nvme`/`sata-ssd`/`hdd`) from real hardware, and DB + non-HA-VM-root
   placement **fails closed** onto `nvme`/`sata-ssd` — an unlabeled or HDD node is ineligible. Longhorn
-  replicas for normal volumes avoid HDD-class nodes as well; bulk/sequential data (MinIO staging,
-  backups) can opt into the `longhorn-bulk` StorageClass to use HDD deliberately.
+  replicas for normal volumes avoid HDD-class nodes and any Longhorn disk tagged `hdd` as well;
+  bulk/sequential data (MinIO staging, backups) can opt into the `longhorn-bulk` StorageClass, which
+  places its replica on an `hdd`-tagged disk deliberately. A spinning disk added to a node becomes
+  its own Longhorn disk with that tag, so the node's SSD keeps serving normal volumes.
 - **Replicated Longhorn** for `kind: Volume`, VM **golden images**, and **HA VM root disks**
   (`spec.highAvailability` → `longhorn-migratable`, RWX block, for node-loss recovery + live
   migration). Longhorn survives a node loss; local-path does not.

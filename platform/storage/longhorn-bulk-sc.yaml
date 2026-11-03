@@ -1,22 +1,26 @@
 # Bulk/sequential Longhorn StorageClass that WELCOMES spinning disk (#307 point 4).
 # Databases / VM roots fail closed onto nvme|sata-ssd, but bulk + sequential + stateless-ish data
-# (MinIO staging, backups, large append-mostly volumes) may legitimately live on HDD. `nodeSelector:
-# "hdd"` places replicas on Longhorn nodes tagged `hdd` (the disk-class-labeler sets that tag on a
-# node whose local-path disk measured hdd). Normal (empty-selector) volumes still AVOID hdd nodes via
-# the `allowEmptyNodeSelectorVolume: false` default (see longhorn.yaml), so this is opt-in: only a
-# volume created with this class lands on HDD. Dormant until an HDD node actually joins + gets tagged.
+# (MinIO staging, backups, large append-mostly volumes) may legitimately live on HDD. `diskSelector:
+# "hdd"` places replicas on Longhorn disks tagged `hdd` — a spinning disk added to a node as its own
+# Longhorn disk carries that tag, so the node keeps serving normal volumes from its untagged SSD/NVMe
+# disks. Normal (empty-selector) volumes AVOID tagged disks via `allowEmptyDiskSelectorVolume: false`
+# (see longhorn.yaml), so this is opt-in: only a volume created with this class lands on HDD.
+# One replica: bulk data here is re-creatable or backed up elsewhere, and there is one HDD.
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: longhorn-bulk
   annotations:
     argocd.argoproj.io/sync-wave: "1"
+    # StorageClass parameters are immutable: a parameter change is applied by replacing the class
+    # (existing volumes keep the parameters they were created with).
+    argocd.argoproj.io/sync-options: Replace=true
 provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Delete
 volumeBindingMode: Immediate
 parameters:
   numberOfReplicas: "1"
-  nodeSelector: "hdd"
+  diskSelector: "hdd"
   staleReplicaTimeout: "30"
   fromBackup: ""

@@ -56,6 +56,11 @@ spec:
           # chaos-node-longhorn-reconciler.yaml, so it survives a node rebuild (a re-added chaos
           # node reacquires its disk + `chaos` tag on its own).
           allowEmptyNodeSelectorVolume: false
+          # The same fence at the DISK level: a volume with an empty disk selector (every database,
+          # VM and ordinary volume) refuses any TAGGED disk. Only spinning disks are tagged (`hdd`), so
+          # normal replicas never land on one, while `longhorn-bulk` (diskSelector: hdd) places bulk
+          # data there on purpose. A node keeps serving normal volumes from its other, untagged disks.
+          allowEmptyDiskSelectorVolume: false
           # HARD anti-affinity: a volume's replicas MUST land on distinct nodes, so losing one
           # node never loses the volume — the precondition for the chaos suite's Scenario 5
           # (storage replica-loss) to be a real test rather than data deletion. Kept at 2
