@@ -45,6 +45,13 @@ USERS_NS="${USERS_NS:-open-infra-console}"
 CREATED_USERS=(); CREATED_KEYS=()
 cleanup() {
   # The stack goes first, and is waited for: its delete runs as this run's deployer, which is removed below.
+  # A stack still being created cannot be deleted (as on AWS): wait for its create to settle first
+  # (CREATE_COMPLETE, or a rollback's ROLLBACK_COMPLETE), so a timed-out run does not strand it.
+  for _ in $(seq 1 100); do
+    cst="$(aws --endpoint-url "$ENDPOINT" --region "$REGION" --no-cli-pager cloudformation describe-stacks --stack-name "$STACK" \
+            --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
+    case "$cst" in *_IN_PROGRESS) sleep 6 ;; *) break ;; esac
+  done
   if aws --endpoint-url "$ENDPOINT" --region "$REGION" --no-cli-pager cloudformation delete-stack --stack-name "$STACK" >/dev/null 2>&1; then
     for _ in $(seq 1 60); do
       aws --endpoint-url "$ENDPOINT" --region "$REGION" --no-cli-pager cloudformation describe-stacks --stack-name "$STACK" >/dev/null 2>&1 || break
@@ -142,6 +149,7 @@ AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-x}" AWS_SECRET_ACCESS_KEY="${AWS_SECRET_
 rm -f "$PWD/.cr_err"
 
 log "waiting for CREATE_COMPLETE (the custom resource is invoked mid-deploy)"
+st=""
 for i in $(seq 1 40); do
   st="$(aws --endpoint-url "$ENDPOINT" --no-cli-pager \
          cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
@@ -151,6 +159,8 @@ for i in $(seq 1 40); do
   esac
   sleep 6
 done
+# Out of time is a timeout, not a missing Data: say so, with what the stack was doing.
+[ "$st" = CREATE_COMPLETE ] || fail "timed out after 4 minutes waiting for CREATE_COMPLETE: the stack is ${st:-<not found>} ($(aws --endpoint-url "$ENDPOINT" --no-cli-pager cloudformation describe-stack-events --stack-name "$STACK" --query 'StackEvents[0].[LogicalResourceId,ResourceStatus,ResourceStatusReason]' --output text 2>/dev/null || true))"
 
 # 3. Verify the returned Data flowed into the Consumer's Fn::GetAtt (its env ENDPOINT).
 CONSUMER="$(kubectl -n "$CFN_NS" get functions.openinfra.dev -l "cfn.openinfra.dev/stack=${STACK}" -o name 2>/dev/null | grep -i consumer || true)"
