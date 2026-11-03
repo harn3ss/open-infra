@@ -122,8 +122,9 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		}
 		inProg.stackEvent("UPDATE_ROLLBACK_IN_PROGRESS", cause.Error())
 		// Delete everything this update added (honoring Retain), then re-apply the entire prior stack.
-		_ = restorePrior(ctx, opts, ap, current.Resources, added, false)
-		// An instance restarted onto the new spec is restarted onto its prior spec, as AWS's rollback does.
+		rerr := restorePrior(ctx, opts, ap, current.Resources, added, false)
+		// An instance restarted onto the new spec is restarted onto its prior spec, as AWS's rollback does
+		// (best-effort: its prior spec is restored either way, and applies at its next start).
 		for _, id := range restarted {
 			if prior, ok := currentByID[id]; ok {
 				_ = restartInstance(ctx, opts, ap, prior)
@@ -135,6 +136,16 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		rec.Message = cause.Error()
 		rec.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		rec.Events = inProg.Events
+		if rerr != nil {
+			// As on AWS, a rollback that could not restore the prior stack ends UPDATE_ROLLBACK_FAILED. What
+			// the update added stays recorded (Pending), so deleting the stack removes it too.
+			rec.Status = "UPDATE_ROLLBACK_FAILED"
+			rec.Message = cause.Error() + " Rollback failed: " + rerr.Error()
+			rec.Pending = append([]StackResource(nil), added...)
+			rec.stackEvent("UPDATE_ROLLBACK_FAILED", rerr.Error())
+			_ = writeStackRecord(ctx, ap, &rec, opts)
+			return &rec, fmt.Errorf("update failed and its rollback could not restore the prior stack (UPDATE_ROLLBACK_FAILED): %w", cause)
+		}
 		rec.stackEvent("UPDATE_ROLLBACK_COMPLETE", "")
 		_ = writeStackRecord(ctx, ap, &rec, opts)
 		return &rec, fmt.Errorf("update failed and was rolled back to the prior stack (no orphans): %w", cause)

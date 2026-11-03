@@ -28,6 +28,25 @@ func TestDestroy_ResourceDeleteStatuses(t *testing.T) {
 	}
 }
 
+// #348: an update whose rollback cannot restore the prior stack ends UPDATE_ROLLBACK_FAILED (it said
+// UPDATE_ROLLBACK_COMPLETE), keeping what it added recorded so a delete removes it.
+func TestUpdate_RollbackFailure(t *testing.T) {
+	f := &fakeApplier{}
+	v1 := "Resources:\n  A: { Type: AWS::KMS::Key, Properties: { Description: a } }\n"
+	if _, err := Deploy(context.Background(), []byte(v1), deployOpts(), f); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	v2 := v1 + "  B: { Type: AWS::KMS::Key, Properties: { Description: b } }\n  C: { Type: AWS::KMS::Key, DependsOn: B, Properties: { Description: c } }\n"
+	f.failOn, f.failDelete = "EncryptionKey/s-c", "EncryptionKey/s-b"
+	rec, err := Update(context.Background(), []byte(v2), deployOpts(), f)
+	if err == nil || rec.Status != "UPDATE_ROLLBACK_FAILED" {
+		t.Fatalf("want UPDATE_ROLLBACK_FAILED: %v %+v", err, rec)
+	}
+	if len(rec.Pending) != 1 || rec.Pending[0].LogicalID != "B" {
+		t.Fatalf("what the update added and could not delete must stay recorded: %+v", rec.Pending)
+	}
+}
+
 // A stack created with termination protection refuses its delete (nothing is deleted), and keeps the
 // protection across an update, as on AWS.
 func TestTerminationProtection(t *testing.T) {
