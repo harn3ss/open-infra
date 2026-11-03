@@ -400,6 +400,9 @@ type DeployOptions struct {
 	// nestedData is an existing stack's nested stacks' Outputs, by logical id ("Outputs.<Key>" -> value):
 	// what an update or change set resolves Fn::GetAtt <Stack>.Outputs.<Key> to (nested_stacks.go).
 	nestedData map[string]map[string]any
+	// status reads the live status of the existing stack's resources while an update or change set is
+	// built (an Elastic IP allocation's address, addressHook); nil for a create and the CLI.
+	status StatusReader
 	// instance identifies the stack instance an operation builds for — its creation time: the existing
 	// stack's CreatedAt for an update or change set, the create's own for a create — so the names generated
 	// for unnamed buckets are stable across an operation's passes and differ for a later stack of the same
@@ -491,6 +494,12 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	namer := newPhysNamer(opts.StackName, opts.prior)
 	namer.avoid(opts.leftovers)
 	namer.instance = opts.instance
+	if opts.status != nil && len(opts.prior) > 0 {
+		// An update of a stack that holds Elastic IP allocations: a resource that embeds one's address
+		// gets it (an allocation the update adds has none yet, and the resource that embeds it refuses).
+		prior := opts.prior
+		r.addressOf = addressHook(context.Background(), opts.status, func() []StackResource { return prior }, 30*time.Second)
+	}
 	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: namer, signalURL: opts.SignalURL}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, ctx) }
 	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, ctx) }
@@ -652,8 +661,9 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	// apigateway hook, at its point in dependency order. Stacks WITHOUT either take the exact
 	// build-all-then-apply path below, unchanged — the new path is additive and never touches the common case.
 	// A nested stack (nested_stacks.go) is created at its point in the order too: its Outputs feed later
-	// resources' Fn::GetAtt.
-	if pt, perr := Parse(data); perr == nil && (hasCustomResources(pt) || hasAPIGatewayRestV1(pt) || hasNestedStacks(pt)) {
+	// resources' Fn::GetAtt. So is an Elastic IP allocation whose address a resource embeds.
+	if pt, perr := Parse(data); perr == nil && (hasCustomResources(pt) || hasAPIGatewayRestV1(pt) || hasNestedStacks(pt) ||
+		(opts.Caps.EC2AddressAPI && embedsEIPAddress(pt))) {
 		return deployInterleaved(ctx, data, opts, ap)
 	}
 
@@ -834,6 +844,61 @@ func hasAPIGatewayRestV1(t *Template) bool {
 	return false
 }
 
+// embedsEIPAddress reports whether a resource of the template embeds an in-stack Elastic IP's address (an
+// instance's UserData naming Ref <EIP>) — such a stack is created interleaved, so the EIP's allocation
+// exists and has its address before the resources that embed it are translated (eipAddressAtCreate).
+func embedsEIPAddress(t *Template) bool {
+	for eip, res := range t.Resources {
+		if res.Type != "AWS::EC2::EIP" || res.Properties["InstanceId"] != nil {
+			continue
+		}
+		for rid, other := range t.Resources {
+			if rid != eip && other.Type != "AWS::EC2::EIPAssociation" && refsEIPAddress(other.Properties, eip) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// addressWaitCap bounds how long a create waits for an Elastic IP allocation's address before translating
+// a resource that embeds it (the address is usually assigned within seconds).
+const addressWaitCap = 5 * time.Minute
+
+// waitAddress polls an Elastic IP allocation's status until it holds an address, up to max.
+func waitAddress(ctx context.Context, sr StatusReader, alloc string, max time.Duration) (string, bool) {
+	deadline := time.Now().Add(max)
+	for {
+		st, found, err := sr.GetStatus(ctx, ServiceAPIVersion, KindEC2Address, alloc)
+		if err == nil && found {
+			if ip, _ := st["publicIp"].(string); ip != "" {
+				return ip, true
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return "", false
+		}
+		select {
+		case <-ctx.Done():
+			return "", false
+		case <-time.After(outputPollInterval):
+		}
+	}
+}
+
+// addressHook is a resolver's addressOf for a stack whose resources (recorded, or being created) include
+// Elastic IP allocations: the address of the allocation recorded for an EIP, waited for up to max.
+func addressHook(ctx context.Context, sr StatusReader, resources func() []StackResource, max time.Duration) func(string) (string, bool) {
+	return func(id string) (string, bool) {
+		for _, r := range resources() {
+			if r.LogicalID == id && r.Kind == KindEC2Address && r.APIVersion == ServiceAPIVersion {
+				return waitAddress(ctx, sr, r.Name, max)
+			}
+		}
+		return "", false
+	}
+}
+
 // deployInterleaved is the create path for a stack containing custom resources (#269). Unlike the
 // build-all-then-apply path, it walks resources in dependency order one at a time so a custom resource's
 // Function can be invoked at its point in the order, its returned Data recorded, and LATER dependents'
@@ -864,7 +929,13 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	rec := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now,
+	var rec *StackRecord
+	// A resource that embeds an Elastic IP's address (UserData) is translated once the EIP's allocation,
+	// created before it, holds that address (eipAddressAtCreate).
+	if sr, ok := ap.(StatusReader); ok {
+		r.addressOf = addressHook(ctx, sr, func() []StackResource { return rec.Resources }, addressWaitCap)
+	}
+	rec = &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now,
 		Template: string(data), Owner: opts.Owner, Description: t.Description, Fidelity: opts.Fidelity, TerminationProtection: opts.TerminationProtection}
 	rec.setParams(data, opts.Params)
 	rec.stackEvent("CREATE_IN_PROGRESS", startReason(opts))

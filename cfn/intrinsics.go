@@ -55,6 +55,10 @@ type resolver struct {
 	// imported, when non-nil, collects every export name Fn::ImportValue asks for (outputs.go records it
 	// on the stack, so a stack whose exports are in use is not deleted from under its importers).
 	imported map[string]bool
+	// addressOf returns an in-stack Elastic IP's address (Ref / Fn::GetAtt PublicIp) once the stack holds
+	// its allocation — set where a stack's resources are created after the allocations they embed
+	// (eipAddressAtCreate: the interleaved create, and an update of a stack that holds them). Nil elsewhere.
+	addressOf func(id string) (string, bool)
 }
 
 func newResolver(t *Template, params, exports, pseudo map[string]any) *resolver {
@@ -217,10 +221,15 @@ func (r *resolver) ref(name string) any {
 	if v, ok := r.params[name]; ok {
 		return v
 	}
-	if _, ok := r.t.Resources[name]; ok {
+	if res, ok := r.t.Resources[name]; ok {
 		r.refs[name] = true
 		if r.deployed != nil {
 			if v, ok := r.deployed(name, ""); ok {
+				return v
+			}
+		}
+		if res.Type == "AWS::EC2::EIP" && r.addressOf != nil {
+			if v, ok := r.addressOf(name); ok {
 				return v
 			}
 		}
@@ -284,6 +293,11 @@ func (r *resolver) getAtt(arg any) any {
 		r.refs[id] = true
 		if r.deployed != nil { // stack Outputs, after deploy: a documented post-deploy attribute
 			if v, ok := r.deployed(id, attr); ok {
+				return v
+			}
+		}
+		if res.Type == "AWS::EC2::EIP" && attr == "PublicIp" && r.addressOf != nil {
+			if v, ok := r.addressOf(id); ok {
 				return v
 			}
 		}

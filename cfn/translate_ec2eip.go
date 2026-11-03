@@ -26,7 +26,9 @@
 // Attributes: GetAtt <EIP>.AllocationId resolves to a stable synthetic eipalloc- id (eipAllocationID, in
 // the resolver). Ref <EIP> / GetAtt <EIP>.PublicIp are the LAN IP MetalLB assigns at apply — carried
 // only on the VM's <name>-lan Service status, not on any claim status field — so they stay unresolved
-// placeholders that a consuming property refuses or caveats, like every other deploy-time attribute.
+// placeholders that a consuming property refuses or caveats, like every other deploy-time attribute;
+// except where another resource embeds them (eipAddressAtCreate: an instance's UserData), where the EIP is
+// an allocation of its own created first and the create fills the address in (resolver.addressOf).
 package cfn
 
 import (
@@ -121,7 +123,11 @@ func (c *stackCtx) refID(rid, prop string) (string, bool) {
 		return "", false
 	}
 	prev := c.resolver.where // resolveProps relabels the resolver; restore the caller's location
+	// An Elastic IP's address stays a placeholder here, so a wrapped !Ref <EIP> is still seen as the EIP.
+	addr := c.resolver.addressOf
+	c.resolver.addressOf = nil
 	rp, _ := c.resolveProps(rid)
+	c.resolver.addressOf = addr
 	c.resolver.where = prev
 	return placeholderTarget(rp[prop])
 }
@@ -186,7 +192,11 @@ func (c *stackCtx) eipBindings() []eipBinding {
 				continue
 			}
 			if eip, ok := c.assocEIP(rid); ok {
-				out = append(out, eipBinding{eip: eip, instance: inst, via: rid})
+				b := eipBinding{eip: eip, instance: inst, via: rid}
+				if c.eipAddressAtCreate(eip) {
+					b.alloc = eipAllocationID(c.stackName(), eip) // an allocation of its own, created first
+				}
+				out = append(out, b)
 			} else if alloc, ok := c.externalAllocation(rid); ok && c.caps.EC2AddressAPI && allocationIDRe.MatchString(alloc) {
 				out = append(out, eipBinding{alloc: alloc, instance: inst, via: rid})
 			}
@@ -239,6 +249,100 @@ func (c *stackCtx) natGatewaysUsingEIP(eipID string) []string {
 	return out
 }
 
+// eipAddressAtCreate reports whether in-stack Elastic IP eipID's address must be known when the resources
+// of the stack are created: another resource's properties embed it — Ref <EIP>, Fn::GetAtt <EIP>.PublicIp,
+// or ${EIP} in an Fn::Sub (an instance's UserData, typically) — not counting the EIPAssociations that name
+// it. On AWS such an EIP is allocated first and its address is in place when the instance that embeds it
+// is created; here it is an allocation of its own (KindEC2Address), created first, and the instance
+// associates it (spec.elasticIp). Only where allocations are kept (Capabilities.EC2AddressAPI). An EIP with
+// its own InstanceId is never one: an instance embedding the EIP that names it is a circular dependency, on
+// AWS as here.
+func (c *stackCtx) eipAddressAtCreate(eipID string) bool {
+	if c == nil || c.template == nil || !c.caps.EC2AddressAPI || !c.includedType(eipID, "AWS::EC2::EIP") {
+		return false
+	}
+	if raw, _ := c.rawProps(eipID); raw != nil && raw["InstanceId"] != nil {
+		return false
+	}
+	if len(c.natGatewaysUsingEIP(eipID)) > 0 {
+		return false
+	}
+	for _, rid := range c.sortedResourceIDs() {
+		res := c.template.Resources[rid]
+		if rid == eipID || !c.included(res) || res.Type == "AWS::EC2::EIPAssociation" {
+			continue
+		}
+		if raw, _ := c.rawProps(rid); refsEIPAddress(raw, eipID) {
+			return true
+		}
+	}
+	return false
+}
+
+// refsEIPAddress reports whether raw property value v embeds Elastic IP id's address: Ref id,
+// Fn::GetAtt id.PublicIp, or ${id} / ${id.PublicIp} in an Fn::Sub that does not bind the name itself.
+func refsEIPAddress(v any, id string) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		if len(x) == 1 {
+			if r, ok := x["Ref"].(string); ok && r == id {
+				return true
+			}
+			switch g := x["Fn::GetAtt"].(type) {
+			case []any:
+				if len(g) == 2 && fmt.Sprint(g[0]) == id && fmt.Sprint(g[1]) == "PublicIp" {
+					return true
+				}
+			case string:
+				if g == id+".PublicIp" {
+					return true
+				}
+			}
+			if s, ok := x["Fn::Sub"]; ok {
+				tmpl, vars := "", map[string]any{}
+				switch sv := s.(type) {
+				case string:
+					tmpl = sv
+				case []any:
+					if len(sv) > 0 {
+						tmpl, _ = sv[0].(string)
+					}
+					if len(sv) > 1 {
+						vars, _ = sv[1].(map[string]any)
+					}
+				}
+				for rest := tmpl; ; {
+					i := strings.Index(rest, "${")
+					if i < 0 {
+						break
+					}
+					end := strings.IndexByte(rest[i:], '}')
+					if end < 0 {
+						break
+					}
+					name := rest[i+2 : i+end]
+					rest = rest[i+end:]
+					if _, bound := vars[name]; !bound && (name == id || name == id+".PublicIp") {
+						return true
+					}
+				}
+			}
+		}
+		for _, e := range x {
+			if refsEIPAddress(e, id) {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range x {
+			if refsEIPAddress(e, id) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // eipAssociationsNaming returns the included AWS::EC2::EIPAssociations that name eipID (valid or not).
 func (c *stackCtx) eipAssociationsNaming(eipID string) []string {
 	var out []string
@@ -282,6 +386,20 @@ func translateEC2EIP(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 			}
 		}
 		return refuse("InstanceId must !Ref an in-stack AWS::EC2::Instance — open-infra maps an Elastic IP onto that VM's LAN IP (spec.expose); an out-of-stack instance (a raw i- id or a parameter) has no VM in this stack to carry the address")
+	}
+	if assocs := ctx.eipAssociationsNaming(id); len(assocs) > 0 && ctx.eipAddressAtCreate(id) {
+		// The stack embeds this EIP's address (an instance's UserData, typically): it is an allocation of
+		// its own, created before the resources that embed it, so they get the address at create time, as
+		// on AWS. The associated instance's VM shares it (spec.elasticIp, eipExposeVM).
+		alloc := eipAllocationID(ctx.stackName(), id)
+		m := serviceManifest(KindEC2Address, alloc, map[string]any{"allocationId": alloc})
+		m.Caveats = append(m.Caveats, "Elastic IP "+id+" is an allocation of its own ("+alloc+"), created before the resources that embed its address, so a Ref or GetAtt PublicIp in them (UserData) is the address itself, as on AWS — a LAN address, not a public internet IP. "+strings.Join(assocs, ", ")+" associates it with its instance; the stack releases it when it is deleted")
+		for _, p := range []string{"NetworkBorderGroup", "Tags"} {
+			if _, has := props[p]; has {
+				m.Caveats = append(m.Caveats, "Elastic IP "+id+": "+p+" dropped — no open-infra equivalent (one site, one LAN address pool)")
+			}
+		}
+		return m, f
 	}
 	if len(ctx.eipAssociationsNaming(id)) == 0 {
 		if ctx.caps.EC2AddressAPI {
@@ -333,6 +451,14 @@ func translateEC2EIPAssociation(id string, props map[string]any, ctx *stackCtx) 
 	b := eipBinding{instance: inst, via: id}
 	if eip, ok := ctx.assocEIP(id); ok {
 		b.eip = eip
+		if ctx.eipAddressAtCreate(eip) {
+			// The EIP is an allocation of its own (its address is embedded at create): the VM shares the
+			// holder's address, so it must not publish the holder's port either.
+			b.alloc = eipAllocationID(ctx.stackName(), eip)
+			if why := eipHolderPortClash(inst, ctx); why != "" {
+				return refuse(why)
+			}
+		}
 	} else {
 		// An allocation another stack holds, named by its AllocationId (a parameter or an export).
 		if _, ok := props["EIP"]; ok {
@@ -350,17 +476,50 @@ func translateEC2EIPAssociation(id string, props map[string]any, ctx *stackCtx) 
 		b.alloc = alloc
 		// The allocation's holder Service and the VM's LAN Service share the address; they must not
 		// publish the same port.
-		ports, _, _ := eipPortsFromSGs(inst, 22, ctx) // the access port is TCP; only the UDP holder port matters
-		for _, p := range ports {
-			if m, _ := p.(map[string]any); m != nil && m["port"] == eipHolderPort && m["protocol"] == eipHolderProto {
-				return refuse(fmt.Sprintf("the instance's SecurityGroups publish %d/%s, which an Elastic IP allocation from another stack reserves on its address — publish the workload on another port", eipHolderPort, eipHolderProto))
-			}
+		if why := eipHolderPortClash(inst, ctx); why != "" {
+			return refuse(why)
 		}
 	}
 	if why := eipConflict(b, ctx.eipBindings()); why != "" {
 		return refuse(why)
 	}
 	return nil, f // folded into the instance's VM
+}
+
+// eipHolderPortClash is why instance instID cannot carry an allocation's address: its SecurityGroups
+// publish the port the allocation's holder Service reserves on that address ("" when they do not).
+func eipHolderPortClash(instID string, ctx *stackCtx) string {
+	ports, _, _ := eipPortsFromSGs(instID, 22, ctx) // the access port is TCP; only the UDP holder port matters
+	for _, p := range ports {
+		if m, _ := p.(map[string]any); m != nil && m["port"] == eipHolderPort && m["protocol"] == eipHolderProto {
+			return fmt.Sprintf("the instance's SecurityGroups publish %d/%s, which an Elastic IP allocation reserves on its address — publish the workload on another port", eipHolderPort, eipHolderProto)
+		}
+	}
+	return ""
+}
+
+// unknownEIPAddressIn names an in-stack Elastic IP whose address raw property value v embeds and that is
+// created as an allocation of its own (eipAddressAtCreate) — "" when there is none.
+func (c *stackCtx) unknownEIPAddressIn(v any) string {
+	for _, rid := range c.sortedResourceIDs() {
+		if c.eipAddressAtCreate(rid) && refsEIPAddress(v, rid) {
+			return rid
+		}
+	}
+	return ""
+}
+
+// inStackAllocation reports whether alloc is the AllocationId of an in-stack Elastic IP.
+func (c *stackCtx) inStackAllocation(alloc string) bool {
+	if c == nil || c.template == nil {
+		return false
+	}
+	for _, rid := range c.sortedResourceIDs() {
+		if c.includedType(rid, "AWS::EC2::EIP") && eipAllocationID(c.stackName(), rid) == alloc {
+			return true
+		}
+	}
+	return false
 }
 
 // eipExposeVM folds the in-stack Elastic IP associated with instance instID (if exactly one, cleanly
@@ -401,7 +560,11 @@ func eipExposeVM(instID string, spec map[string]any, ctx *stackCtx) []string {
 	cav := []string{
 		"Elastic IP " + eip + " maps onto this VM's LAN IP (spec.expose — a MetalLB LoadBalancer carrying the access port, " + accessName + ", plus spec.ports). It is a LAN address, NOT a public internet IP. It is stable for the life of the VM but is held by the VM's LoadBalancer Service, so it does not outlive the VM the way an AWS allocation outlives its instance: a replaced (deleted + recreated) VM may draw a different LAN IP. Ref/GetAtt " + eip + ".PublicIp are assigned at apply and do not resolve at translate time; GetAtt " + eip + ".AllocationId is a stable synthetic eipalloc- id",
 	}
-	if mine[0].alloc != "" {
+	if mine[0].alloc != "" && mine[0].eip != "" {
+		cav = []string{
+			"Elastic IP " + mine[0].eip + " is an allocation of its own, created before this instance because the stack embeds its address (Ref/GetAtt " + mine[0].eip + ".PublicIp), so that address is fixed when the instance is created, as on AWS. The VM's LAN Service shares it (spec.expose + spec.elasticIp — a MetalLB LoadBalancer carrying the access port, " + accessName + ", plus spec.ports). It is a LAN address, NOT a public internet IP; a replaced VM carries the same address, and it is released with the stack",
+		}
+	} else if mine[0].alloc != "" {
 		cav = []string{
 			"Elastic IP " + eip + " (from another stack) maps onto this VM's LAN IP: the address that allocation holds, shared by the VM's LAN Service (spec.expose + spec.elasticIp — a MetalLB LoadBalancer carrying the access port, " + accessName + ", plus spec.ports). It is a LAN address, NOT a public internet IP. It follows the instance: a replaced VM carries the same address, and deleting this stack leaves the address with its allocation. The VM's address is known once the allocation's is (the instance's PublicIp)",
 		}

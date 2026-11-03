@@ -64,6 +64,9 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 		if len(nd) > 0 {
 			opts.nestedData = nd
 		}
+		if sr, ok := ap.(StatusReader); ok {
+			opts.status = sr // the addresses of the stack's Elastic IP allocations, for what embeds them
+		}
 	}
 	// A resource the update adds is named around anything an earlier stack of this name (or an earlier
 	// update that removed a Retain resource) left behind; what the stack recorded keeps its name.

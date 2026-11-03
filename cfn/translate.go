@@ -983,7 +983,19 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 			f = append(f, Finding{"Resource " + id, "UserData is not valid base64 — CloudFormation UserData must be base64-encoded"})
 		}
 	} else if _, present := props["UserData"]; present {
-		cav = append(cav, "UserData could not be statically resolved (Fn::Sub/Fn::Base64 over references) — it was NOT applied; provide literal user data or configure the VM natively")
+		raw, _ := ctx.rawProps(id)
+		if eip := ctx.unknownEIPAddressIn(raw["UserData"]); eip != "" {
+			if ctx.resolver != nil && ctx.resolver.addressOf != nil {
+				// The create or update could not get the address: never boot the instance without the
+				// script that embeds it.
+				f = append(f, Finding{"Resource " + id, "UserData embeds Elastic IP " + eip + "'s address, which is not known when this instance is created: the address is assigned when the EIP's allocation is created, and an update can embed it only once the stack holds the allocation (add the EIP in one update, and embed it in the next)"})
+			} else {
+				// A plan or change set: the create fills the address in (the EIP's allocation is created first).
+				cav = append(cav, "UserData embeds Elastic IP "+eip+"'s address: the EIP is allocated before this instance is created, and the address is filled in then, as on AWS")
+			}
+		} else {
+			cav = append(cav, "UserData could not be statically resolved (Fn::Sub/Fn::Base64 over references) — it was NOT applied; provide literal user data or configure the VM natively")
+		}
 	}
 
 	// --- BlockDeviceMappings: root device size -> diskSize; extra EBS devices -> spec.dataDisks ---
@@ -1282,7 +1294,7 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	// (spec.expose + spec.ports derived from its SecurityGroups) — translate_ec2eip.go.
 	cav = append(cav, eipExposeVM(id, spec, ctx)...)
 	if eip, ok := spec["elasticIp"].(map[string]any); ok {
-		if alloc, _ := eip["allocationId"].(string); alloc != "" {
+		if alloc, _ := eip["allocationId"].(string); alloc != "" && !ctx.inStackAllocation(alloc) {
 			// Another stack's allocation must exist (an AWS account's allocation ids have the same shape).
 			requires = append(requires, Requirement{APIVersion: ServiceAPIVersion, Kind: KindEC2Address, Name: alloc,
 				Why: "the Elastic IP allocation this instance's EIPAssociation names (another stack's AWS::EC2::EIP)"})
