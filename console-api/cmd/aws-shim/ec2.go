@@ -343,7 +343,10 @@ func ec2Glob(p, s string) bool {
 }
 
 // ec2Page applies MaxResults/NextToken to n results: the [start,end) slice and the next token ("" at the
-// end). ok=false with a message for a bad token or MaxResults.
+// end). ok=false with a message for a bad token or a MaxResults below min. A MaxResults above max is
+// capped at max, as EC2 does ("if MaxResults is given a value larger than 500, only 500 items are
+// returned"): the AWS CLI sends MaxResults=1000 when it paginates, so refusing it broke every plain
+// `aws ec2 describe-*` whose maximum is below that.
 func ec2Page(form url.Values, n, min, max int) (start, end int, next, msg string, ok bool) {
 	end = n
 	if t := form.Get("NextToken"); t != "" {
@@ -359,8 +362,11 @@ func ec2Page(form url.Values, n, min, max int) (start, end int, next, msg string
 	}
 	if m := form.Get("MaxResults"); m != "" {
 		v, err := strconv.Atoi(m)
-		if err != nil || v < min || v > max {
+		if err != nil || v < min {
 			return 0, 0, "", "MaxResults must be between " + strconv.Itoa(min) + " and " + strconv.Itoa(max), false
+		}
+		if v > max {
+			v = max
 		}
 		if start+v < n {
 			end = start + v
