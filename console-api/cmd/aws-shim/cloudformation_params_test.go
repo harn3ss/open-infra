@@ -92,6 +92,60 @@ func TestCFN_ParameterValidation(t *testing.T) {
 	refused(cs, "Parameters: [Extra] do not exist in the template")
 }
 
+// #350 Y: a change set is found by its ARN alone (what `aws cloudformation deploy` prints); once executed
+// its ExecutionStatus is EXECUTE_COMPLETE, and it cannot be executed again; ValidateTemplate returns the
+// template's own Description.
+func TestCFN_ChangeSetBookkeeping(t *testing.T) {
+	fa := newFakeAPI()
+	h := opsDoorway(t, fa, "aws-shim-new/0103")
+	call := func(form url.Values) *httptest.ResponseRecorder {
+		t.Helper()
+		w := serveWith(h, formOp(form), testUser)
+		h.ops.drain(10 * time.Second)
+		return w
+	}
+	tmpl := "Description: the app's keys\nResources:\n  Key: { Type: AWS::KMS::Key, Properties: { Description: k } }\n"
+	w := call(url.Values{"Action": {"CreateChangeSet"}, "StackName": {"app"}, "ChangeSetName": {"cs1"}, "ChangeSetType": {"CREATE"}, "TemplateBody": {tmpl}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("create change set: %d %s", w.Code, w.Body.String())
+	}
+	arn := h.changeSetID("app", "cs1")
+	if !strings.Contains(w.Body.String(), "<Id>"+arn+"</Id>") {
+		t.Fatalf("CreateChangeSet must return the change set's ARN %s: %s", arn, w.Body.String())
+	}
+	describe := func() string {
+		t.Helper()
+		w := call(url.Values{"Action": {"DescribeChangeSet"}, "ChangeSetName": {arn}})
+		if w.Code != http.StatusOK {
+			t.Fatalf("DescribeChangeSet by ARN alone: %d %s", w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+	if b := describe(); !strings.Contains(b, "<ExecutionStatus>AVAILABLE</ExecutionStatus>") || !strings.Contains(b, "<StackName>app</StackName>") ||
+		!strings.Contains(b, "<LogicalResourceId>Key</LogicalResourceId><ResourceType>AWS::KMS::Key</ResourceType>") {
+		t.Fatalf("before execution: %s", b)
+	}
+	if w := call(url.Values{"Action": {"ExecuteChangeSet"}, "ChangeSetName": {arn}}); w.Code != http.StatusOK {
+		t.Fatalf("ExecuteChangeSet by ARN alone: %d %s", w.Code, w.Body.String())
+	}
+	if rec, _ := recordIn(t, fa, "app"); rec == nil || rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("want CREATE_COMPLETE: %+v", rec)
+	}
+	if b := describe(); !strings.Contains(b, "<ExecutionStatus>EXECUTE_COMPLETE</ExecutionStatus>") {
+		t.Fatalf("after execution: %s", b)
+	}
+	w = call(url.Values{"Action": {"ExecuteChangeSet"}, "StackName": {"app"}, "ChangeSetName": {"cs1"}})
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "InvalidChangeSetStatus") {
+		t.Fatalf("an executed change set must not run again: %d %s", w.Code, w.Body.String())
+	}
+
+	w = call(url.Values{"Action": {"ValidateTemplate"}, "TemplateBody": {tmpl}})
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<Description>the app&#39;s keys</Description>") ||
+		!strings.HasPrefix(w.Header().Get("X-Openinfra-Fidelity"), "open-infra: ") {
+		t.Fatalf("ValidateTemplate must return the template's Description: %d %s (header %q)", w.Code, w.Body.String(), w.Header().Get("X-Openinfra-Fidelity"))
+	}
+}
+
 // #350 W: while a create is under way, ListStackResources lists only the resources whose creation has
 // begun — a resource the record plans but has not started is not shown (it used to show CREATE_COMPLETE),
 // and DescribeStackResource does not answer for it; the same after a create that failed before reaching it.

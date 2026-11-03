@@ -333,6 +333,14 @@ func (h *cfnDoorway) canDo(ctx context.Context, claims iam.Claims, verb, stack s
 
 func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	_ = r.ParseForm()
+	// A change set named by its ARN alone (what `aws cloudformation deploy` prints) names its stack too:
+	// found before the ARN is reduced to a name, so the action is authorized on that stack.
+	if csArn := r.PostFormValue("ChangeSetName"); strings.HasPrefix(csArn, "arn:") && r.PostFormValue("StackName") == "" {
+		if stack, _ := h.changeSetRef(r.Context(), "", csArn); stack != "" {
+			r.PostForm.Set("StackName", stack)
+			r.Form.Set("StackName", stack)
+		}
+	}
 	normalizeStackArgs(r)
 	action := r.PostFormValue("Action")
 	if action == "" {
@@ -1004,11 +1012,28 @@ func (h *cfnDoorway) validateTemplate(w http.ResponseWriter, r *http.Request, re
 			"template refused:\n  - "+strings.Join(plan.Blockers, "\n  - "), cfnXMLNamespace)
 		return
 	}
-	desc := "open-infra: " + string(plan.Verdict)
+	// The Description is the template's, as on AWS (none when it has none); open-infra's verdict and
+	// fidelity summary go in a header of their own, so a tool reading the Description reads the template's.
+	verdict := "open-infra: " + string(plan.Verdict)
 	if fl := fidelityLine(plan); fl != "" {
-		desc += " — " + fl
+		verdict += " — " + fl
 	}
-	h.writeResult(w, requestID, "ValidateTemplate", "<Description>"+xesc(desc)+"</Description><Capabilities/>"+templateParametersXML([]byte(body), false))
+	w.Header().Set("X-Openinfra-Fidelity", headerSafe(verdict))
+	desc := ""
+	if t, terr := cfn.Parse([]byte(body)); terr == nil && t.Description != "" {
+		desc = "<Description>" + xesc(t.Description) + "</Description>"
+	}
+	h.writeResult(w, requestID, "ValidateTemplate", desc+"<Capabilities/>"+templateParametersXML([]byte(body), false))
+}
+
+// headerSafe makes s a single-line HTTP header value.
+func headerSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, s)
 }
 
 // --- change sets ---
@@ -1022,6 +1047,9 @@ type changeSet struct {
 	NoEchoParams []string          `json:"noEchoParams,omitempty"`
 	Type         string            `json:"type"` // CREATE | UPDATE
 	Changes      []cfn.Change      `json:"changes"`
+	// Execution is the change set's ExecutionStatus once ExecuteChangeSet ran it: EXECUTE_IN_PROGRESS,
+	// then EXECUTE_COMPLETE or EXECUTE_FAILED, as on AWS ("" = not executed).
+	Execution string `json:"execution,omitempty"`
 }
 
 // changeSetCMName is a change set's record name. A change-set name may not contain "." (AWS's pattern,
@@ -1143,14 +1171,21 @@ func (h *cfnDoorway) describeChangeSet(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	var b strings.Builder
-	for _, c := range cs.Changes {
-		if c.Action == cfn.Unchanged {
-			continue
-		}
+	for _, c := range changeSetResourceChanges(cs.Changes) {
 		b.WriteString("<member><Type>Resource</Type><ResourceChange>")
 		b.WriteString("<Action>" + xesc(string(c.Action)) + "</Action>")
 		b.WriteString("<LogicalResourceId>" + xesc(c.LogicalID) + "</LogicalResourceId>")
-		b.WriteString("<ResourceType>" + xesc(c.Kind) + "</ResourceType>")
+		if c.Action != cfn.Add && c.Name != "" {
+			b.WriteString("<PhysicalResourceId>" + xesc(c.Name) + "</PhysicalResourceId>")
+		}
+		typ := c.Type
+		if typ == "" {
+			typ = c.Kind // a change set recorded before the type was kept
+		}
+		b.WriteString("<ResourceType>" + xesc(typ) + "</ResourceType>")
+		if c.Action == cfn.Modify {
+			b.WriteString("<Replacement>False</Replacement>")
+		}
 		b.WriteString("</ResourceChange></member>")
 	}
 	status, exec := changeSetStatus(cs), changeSetExecutionStatus(cs)
@@ -1175,6 +1210,37 @@ func (h *cfnDoorway) describeChangeSet(w http.ResponseWriter, r *http.Request, a
 	h.writeResult(w, requestID, "DescribeChangeSet", inner)
 }
 
+// changeSetResourceChanges is a change set's changes as AWS lists them: one per template resource, by its
+// CloudFormation type. A companion object a resource carries (its "Parent/name" entry — an inline policy,
+// the default encryption key) is part of that resource: its change makes an otherwise unchanged parent a
+// Modify, and is not listed itself.
+func changeSetResourceChanges(changes []cfn.Change) []cfn.Change {
+	byID := map[string]int{}
+	var out []cfn.Change
+	for _, c := range changes {
+		if !strings.Contains(c.LogicalID, "/") {
+			byID[c.LogicalID] = len(out)
+			out = append(out, c)
+		}
+	}
+	for _, c := range changes {
+		i := strings.Index(c.LogicalID, "/")
+		if i < 0 || c.Action == cfn.Unchanged {
+			continue
+		}
+		if p, ok := byID[c.LogicalID[:i]]; ok && out[p].Action == cfn.Unchanged {
+			out[p].Action = cfn.Modify
+		}
+	}
+	kept := out[:0]
+	for _, c := range out {
+		if c.Action != cfn.Unchanged {
+			kept = append(kept, c)
+		}
+	}
+	return kept
+}
+
 // changeSetID is a change set's ARN.
 func (h *cfnDoorway) changeSetID(stack, name string) string {
 	return fmt.Sprintf("arn:aws:cloudformation:%s:%s:changeSet/%s/%s", h.region, h.account, name, shortHash(stack+"/"+name))
@@ -1195,6 +1261,9 @@ func changeSetStatus(cs *changeSet) string {
 
 // changeSetExecutionStatus is a change set's ExecutionStatus.
 func changeSetExecutionStatus(cs *changeSet) string {
+	if cs.Execution != "" {
+		return cs.Execution
+	}
 	if changeSetStatus(cs) == "FAILED" {
 		return "UNAVAILABLE"
 	}
@@ -1223,6 +1292,12 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
 			return
 		}
+	}
+	// As on AWS, only an AVAILABLE change set runs: not one with nothing to change, nor one already run.
+	if exec := changeSetExecutionStatus(cs); exec != "AVAILABLE" {
+		writeQueryError(w, http.StatusBadRequest, "InvalidChangeSetStatus", requestID,
+			"ChangeSet ["+h.changeSetID(cs.StackName, cs.Name)+"] cannot be executed in its current execution status of ["+exec+"]", cfnXMLNamespace)
+		return
 	}
 	// Re-check the export rules at execute time: another stack may have taken an export name, or started
 	// importing one this change set would drop, since the change set was created.
@@ -1276,6 +1351,15 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		return
 	}
 	execOpts := h.asCaller(h.stackOpts(stack, params, ex, body), ap)
+	// The change set's ExecutionStatus follows the operation, as on AWS: EXECUTE_IN_PROGRESS, then
+	// EXECUTE_COMPLETE or EXECUTE_FAILED (an executed change set cannot be executed again).
+	markExecution := func(ctx context.Context, status string) {
+		cs.Execution = status
+		if err := h.putChangeSet(ctx, cs); err != nil {
+			h.logger.Warn("cfn: could not record a change set's execution status", "stack", stack, "changeSet", cs.Name, "status", status, "error", err.Error())
+		}
+	}
+	markExecution(ctx, "EXECUTE_IN_PROGRESS")
 	h.runStackOp(stack, "ExecuteChangeSet", status, ap, func(bctx context.Context) error {
 		var rec *cfn.StackRecord
 		var derr error
@@ -1286,6 +1370,9 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		}
 		if derr == nil {
 			h.logOutputs("ExecuteChangeSet", stack, rec)
+			markExecution(bctx, "EXECUTE_COMPLETE")
+		} else {
+			markExecution(context.WithoutCancel(bctx), "EXECUTE_FAILED")
 		}
 		return derr
 	})
@@ -1334,6 +1421,30 @@ func (h *cfnDoorway) putChangeSet(ctx context.Context, cs *changeSet) error {
 	return h.recs().apply(ctx, changeSetCMName(cs.StackName, cs.Name),
 		map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/changeset": cs.StackName},
 		map[string]string{"changeset.json": string(data)})
+}
+
+// changeSetRef resolves a change set named by its ARN alone (AWS accepts that as ChangeSetName, with no
+// StackName — what `aws cloudformation deploy` prints) to its stack and name, by the change sets this
+// front door holds. An ARN that names none of them is returned as it is (it then is not found).
+func (h *cfnDoorway) changeSetRef(ctx context.Context, stack, csName string) (string, string) {
+	i := strings.Index(csName, ":changeSet/")
+	if !strings.HasPrefix(csName, "arn:") || i < 0 {
+		return stack, csName
+	}
+	name := strings.SplitN(csName[i+len(":changeSet/"):], "/", 2)[0]
+	st := h.recs()
+	list, err := st.client().List(ctx, metav1.ListOptions{LabelSelector: "cfn.openinfra.dev/changeset"})
+	if err != nil {
+		return stack, csName
+	}
+	for i := range list.Items {
+		var cs changeSet
+		if json.Unmarshal([]byte(st.value(&list.Items[i], "changeset.json")), &cs) == nil && cs.Name == name &&
+			h.changeSetID(cs.StackName, cs.Name) == csName {
+			return cs.StackName, cs.Name
+		}
+	}
+	return stack, csName
 }
 
 func (h *cfnDoorway) getChangeSet(ctx context.Context, stack, csName string) (*changeSet, error) {

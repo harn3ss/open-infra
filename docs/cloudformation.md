@@ -101,7 +101,7 @@ custom resource or an API Gateway REST API (their attributes resolve only during
 then says so in a line of its own, and `GateSkipped` in `-json` gives the reason.
 
 The aws-shim front door shows the same summary: in `DescribeChangeSet`'s `StatusReason` (what
-`aws cloudformation describe-change-set` and `deploy` show) and in `ValidateTemplate`'s `Description`.
+`aws cloudformation describe-change-set` and `deploy` show) and in `ValidateTemplate`'s `X-Openinfra-Fidelity` response header (its `Description` is the template's, as on AWS).
 
 Anything that would quietly grant more than the template asked for is refused rather than listed:
 a security-group port that does not resolve (it would mean every port), a security-group list that
@@ -657,7 +657,7 @@ likewise — and `DescribeStackEvents` returns them newest first, as the create 
 its `Ref` — and own status), `DescribeStackResource`, `ListChangeSets`, `ListImports` and
 `SignalResource`. `DescribeStacks` lists every template parameter (a default as such; `NoEcho` as
 `****`) and the template's `Description`. `ValidateTemplate` checks a template without parameter values,
-as AWS does: a parameter with no default is not an error there.
+as AWS does: a parameter with no default is not an error there. A change set is found by its ARN alone (what `deploy` prints), lists each change by its CloudFormation type, and once executed reports `ExecutionStatus` `EXECUTE_COMPLETE` (or `EXECUTE_FAILED`); only an `AVAILABLE` change set can be executed.
 
 ### Create fidelity is narrower than the plan mapping
 

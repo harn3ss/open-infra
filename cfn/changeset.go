@@ -28,6 +28,7 @@ const (
 type Change struct {
 	LogicalID string
 	Kind      string
+	Type      string // the resource's CloudFormation type (AWS::S3::Bucket); "" on a record from before it was kept
 	Name      string
 	Action    ChangeAction
 	Caveats   []string
@@ -72,7 +73,7 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 	desiredIDs := map[string]bool{}
 	for _, b := range desired {
 		desiredIDs[b.res.LogicalID] = true
-		ch := Change{LogicalID: b.res.LogicalID, Kind: b.res.Kind, Name: b.res.Name, Caveats: b.cav}
+		ch := Change{LogicalID: b.res.LogicalID, Kind: b.res.Kind, Type: b.res.Type, Name: b.res.Name, Caveats: b.cav}
 		cur, ok := currentByID[b.res.LogicalID]
 		switch {
 		case !ok:
@@ -98,7 +99,7 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 			r := current.Resources[i]
 			if !desiredIDs[r.LogicalID] {
 				cs.Changes = append(cs.Changes, Change{
-					LogicalID: r.LogicalID, Kind: r.Kind, Name: r.Name, Action: Remove,
+					LogicalID: r.LogicalID, Kind: r.Kind, Type: r.Type, Name: r.Name, Action: Remove,
 				})
 			}
 		}
