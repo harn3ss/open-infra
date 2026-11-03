@@ -54,7 +54,9 @@ func TestS3Decode_Subresources(t *testing.T) {
 		// DeleteObjects is a POST ?delete on the bucket; a GET or PUT ?delete is not an operation
 		{"GET", "/b?delete", false, "", "", false},
 		{"PUT", "/b?delete", false, "", "", false},
-		{"PUT", "/b/k?tagging", false, "", "", false},
+		// PutObjectTagging / DeleteObjectTagging (#350 S)
+		{"PUT", "/b/k?tagging", true, "put-object-tagging", "", true},
+		{"DELETE", "/b/k?tagging&versionId=v1", true, "delete-object-tagging", "v1", true},
 		{"PUT", "/b/k?retention", false, "", "", false},
 		{"GET", "/?acl", false, "", "", false},
 	}
@@ -82,22 +84,26 @@ func TestS3Decode_Subresources(t *testing.T) {
 
 func TestS3OpAction(t *testing.T) {
 	cases := map[s3op]string{
-		{kind: "get"}:                        "s3:GetObject",
-		{kind: "get", versionID: "v"}:        "s3:GetObjectVersion",
-		{kind: "delete", versionID: "v"}:     "s3:DeleteObjectVersion",
-		{kind: "get-bucket-versioning"}:      "s3:GetBucketVersioning",
-		{kind: "put-bucket-versioning"}:      "s3:PutBucketVersioning",
-		{kind: "list-object-versions"}:       "s3:ListBucketVersions",
-		{kind: "get-bucket-tagging"}:         "s3:GetBucketTagging",
-		{kind: "put-bucket-tagging"}:         "s3:PutBucketTagging",
-		{kind: "delete-bucket-tagging"}:      "s3:PutBucketTagging",
-		{kind: "get-bucket-location"}:        "s3:GetBucketLocation",
-		{kind: "delete-bucket", write: true}: "s3:DeleteBucket",
-		{kind: "list-objects"}:               "s3:ListBucket",
-		{kind: "put", write: true}:           "s3:PutObject",
-		{kind: "delete", write: true}:        "s3:DeleteObject",
-		{kind: "list-buckets"}:               "s3:ListAllMyBuckets",
-		{kind: "head-bucket"}:                "s3:ListBucket",
+		{kind: "get"}:                                   "s3:GetObject",
+		{kind: "get", versionID: "v"}:                   "s3:GetObjectVersion",
+		{kind: "delete", versionID: "v"}:                "s3:DeleteObjectVersion",
+		{kind: "get-bucket-versioning"}:                 "s3:GetBucketVersioning",
+		{kind: "put-bucket-versioning"}:                 "s3:PutBucketVersioning",
+		{kind: "list-object-versions"}:                  "s3:ListBucketVersions",
+		{kind: "get-bucket-tagging"}:                    "s3:GetBucketTagging",
+		{kind: "put-bucket-tagging"}:                    "s3:PutBucketTagging",
+		{kind: "delete-bucket-tagging"}:                 "s3:PutBucketTagging",
+		{kind: "get-bucket-location"}:                   "s3:GetBucketLocation",
+		{kind: "delete-bucket", write: true}:            "s3:DeleteBucket",
+		{kind: "list-objects"}:                          "s3:ListBucket",
+		{kind: "put", write: true}:                      "s3:PutObject",
+		{kind: "delete", write: true}:                   "s3:DeleteObject",
+		{kind: "list-buckets"}:                          "s3:ListAllMyBuckets",
+		{kind: "head-bucket"}:                           "s3:ListBucket",
+		{kind: "put-object-tagging"}:                    "s3:PutObjectTagging",
+		{kind: "put-object-tagging", versionID: "v"}:    "s3:PutObjectVersionTagging",
+		{kind: "delete-object-tagging"}:                 "s3:DeleteObjectTagging",
+		{kind: "delete-object-tagging", versionID: "v"}: "s3:DeleteObjectVersionTagging",
 	}
 	for op, want := range cases {
 		if got := op.action(); got != want {

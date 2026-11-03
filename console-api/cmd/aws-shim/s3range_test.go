@@ -75,6 +75,36 @@ func TestS3GetObject_Range(t *testing.T) {
 	}
 }
 
+// #350 S: PutObjectTagging sets an object's tags (at most 10, as S3) and DeleteObjectTagging removes them.
+func TestS3ObjectTagging_PutAndDelete(t *testing.T) {
+	f := newFakeMPS3()
+	f.objects["data/obj"] = []byte("x")
+	h := &s3Handler{mc: fakeMPMinio(t, f), logger: discardLogger()}
+	put := func(body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.putObjectTagging(w, httptest.NewRequest("PUT", "/data/obj?tagging", strings.NewReader(body)), s3op{bucket: "data", key: "obj"}, "r")
+		return w
+	}
+	if w := put(`<Tagging><TagSet><Tag><Key>team</Key><Value>a</Value></Tag></TagSet></Tagging>`); w.Code != 200 {
+		t.Fatalf("PutObjectTagging = %d %s", w.Code, w.Body)
+	}
+	if !strings.Contains(f.tags["data/obj"], "<Key>team</Key>") {
+		t.Fatalf("the tags must reach the store: %q", f.tags["data/obj"])
+	}
+	many := "<Tagging><TagSet>"
+	for i := 0; i < 11; i++ {
+		many += "<Tag><Key>k" + string(rune('a'+i)) + "</Key><Value>v</Value></Tag>"
+	}
+	if w := put(many + "</TagSet></Tagging>"); w.Code != 400 || !strings.Contains(w.Body.String(), "InvalidTag") {
+		t.Fatalf("11 tags must be refused: %d %s", w.Code, w.Body)
+	}
+	w := httptest.NewRecorder()
+	h.deleteObjectTagging(w, httptest.NewRequest("DELETE", "/data/obj?tagging", nil), s3op{bucket: "data", key: "obj"}, "r")
+	if w.Code != 204 || f.tags["data/obj"] != "" {
+		t.Fatalf("DeleteObjectTagging = %d %s, tags %q", w.Code, w.Body, f.tags["data/obj"])
+	}
+}
+
 // GetObjectTagging answers the object's tags (an empty TagSet when none), and a copy's tags travel on
 // CreateMultipartUpload's x-amz-tagging, as the AWS CLI sends them.
 func TestS3ObjectTagging_ReadAndCarriedOnCreate(t *testing.T) {

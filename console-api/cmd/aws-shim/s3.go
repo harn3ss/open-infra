@@ -154,6 +154,10 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		h.getBucketOwnershipControls(w, r, op, requestID)
 	case "get-object-tagging":
 		h.getObjectTagging(w, r, op, requestID)
+	case "put-object-tagging":
+		h.putObjectTagging(w, r, op, requestID)
+	case "delete-object-tagging":
+		h.deleteObjectTagging(w, r, op, requestID)
 	case "create-multipart-upload":
 		h.createMultipartUpload(w, r, op, requestID)
 	case "upload-part":

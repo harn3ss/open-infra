@@ -13,6 +13,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/s3utils"
+	"github.com/minio/minio-go/v7/pkg/tags"
 
 	"github.com/harn3ss/open-infra/console-api/internal/awssig"
 )
@@ -471,6 +472,50 @@ func (h *s3Handler) getObjectTagging(w http.ResponseWriter, r *http.Request, op 
 		w.Header().Set("x-amz-version-id", op.versionID)
 	}
 	writeXML(w, http.StatusOK, requestID, out)
+}
+
+// putObjectTagging is PutObjectTagging: the object's tags become the TagSet sent (at most 10, as S3).
+func (h *s3Handler) putObjectTagging(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {
+	var in s3Tagging
+	if err := xml.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
+		writeS3Error(w, "MalformedXML", requestID, r.URL.Path)
+		return
+	}
+	m := map[string]string{}
+	for _, t := range in.TagSet.Tag {
+		if _, dup := m[t.Key]; dup {
+			writeS3Error(w, "InvalidTag", requestID, r.URL.Path)
+			return
+		}
+		m[t.Key] = t.Value
+	}
+	ot, err := tags.NewTags(m, true)
+	if err != nil { // more than 10 tags, or a key/value S3 does not allow
+		writeS3Error(w, "InvalidTag", requestID, r.URL.Path)
+		return
+	}
+	if err := h.mc.PutObjectTagging(r.Context(), op.bucket, op.key, ot, minio.PutObjectTaggingOptions{VersionID: op.versionID}); err != nil {
+		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
+		return
+	}
+	if op.versionID != "" {
+		w.Header().Set("x-amz-version-id", op.versionID)
+	}
+	w.Header().Set("x-amz-request-id", requestID)
+	w.WriteHeader(http.StatusOK)
+}
+
+// deleteObjectTagging is DeleteObjectTagging: the object keeps no tags.
+func (h *s3Handler) deleteObjectTagging(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {
+	if err := h.mc.RemoveObjectTagging(r.Context(), op.bucket, op.key, minio.RemoveObjectTaggingOptions{VersionID: op.versionID}); err != nil {
+		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
+		return
+	}
+	if op.versionID != "" {
+		w.Header().Set("x-amz-version-id", op.versionID)
+	}
+	w.Header().Set("x-amz-request-id", requestID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- GetBucketOwnershipControls ----

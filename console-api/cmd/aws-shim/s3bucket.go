@@ -119,6 +119,13 @@ func decodeTarget(method, bucket, key string, q url.Values) (s3op, bool) {
 	if sub == "tagging" && method == http.MethodGet {
 		return s3op{kind: "get-object-tagging", bucket: bucket, key: key, versionID: q.Get("versionId")}, true
 	}
+	// PutObjectTagging / DeleteObjectTagging (#350 S).
+	if sub == "tagging" && method == http.MethodPut {
+		return s3op{kind: "put-object-tagging", bucket: bucket, key: key, versionID: q.Get("versionId"), write: true}, true
+	}
+	if sub == "tagging" && method == http.MethodDelete {
+		return s3op{kind: "delete-object-tagging", bucket: bucket, key: key, versionID: q.Get("versionId"), write: true}, true
+	}
 	if sub != "" { // object tagging, ACLs, retention… are not served
 		return s3op{}, false
 	}
@@ -173,6 +180,16 @@ func (op s3op) action() string {
 			return "s3:GetObjectVersionTagging"
 		}
 		return "s3:GetObjectTagging"
+	case "put-object-tagging":
+		if op.versionID != "" {
+			return "s3:PutObjectVersionTagging"
+		}
+		return "s3:PutObjectTagging"
+	case "delete-object-tagging":
+		if op.versionID != "" {
+			return "s3:DeleteObjectVersionTagging"
+		}
+		return "s3:DeleteObjectTagging"
 	// Multipart upload and copy, as AWS authorizes them: every step of an upload is s3:PutObject on the
 	// object (the copy's source is checked separately, as s3:GetObject), aborting and listing have their
 	// own actions.

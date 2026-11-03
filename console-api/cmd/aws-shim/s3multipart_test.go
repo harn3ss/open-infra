@@ -244,6 +244,28 @@ func (f *fakeMPS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.objects[bucket+"/"+key] = append([]byte(nil), src...)
 		f.xml(w, `<CopyObjectResult><ETag>"`+md5hex(src)+`"</ETag><LastModified>2026-11-02T00:00:00.000Z</LastModified></CopyObjectResult>`)
+	case key != "" && (r.Method == http.MethodPut || r.Method == http.MethodDelete) && q.Has("tagging"):
+		body, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		_, ok := f.objects[bucket+"/"+key]
+		if ok {
+			s := string(body)
+			if i, j := strings.Index(s, "<TagSet>"), strings.Index(s, "</TagSet>"); r.Method == http.MethodPut && i >= 0 && j > i {
+				f.tags[bucket+"/"+key] = s[i+len("<TagSet>") : j]
+			} else {
+				delete(f.tags, bucket+"/"+key)
+			}
+		}
+		f.mu.Unlock()
+		if !ok {
+			f.fail(w, 404, "NoSuchKey")
+			return
+		}
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	case key != "" && r.Method == http.MethodGet && q.Has("tagging"):
 		f.mu.Lock()
 		_, ok := f.objects[bucket+"/"+key]

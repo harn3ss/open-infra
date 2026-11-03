@@ -302,7 +302,7 @@ and a probe step that forces a chunked upload (`--checksum-algorithm CRC32`) and
 **Multipart upload and copies.** `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`,
 `AbortMultipartUpload`, `ListParts` and `ListMultipartUploads` are served, so `aws s3 cp`/`sync` of a file
 over the CLI's 8 MiB threshold (and any SDK's managed upload) works; so are `CopyObject` and
-`UploadPartCopy` (server-side copies below and above the threshold) and `GetObjectTagging`, which the CLI
+`UploadPartCopy` (server-side copies below and above the threshold) and `GetObjectTagging` (with `PutObjectTagging` and `DeleteObjectTagging`: at most 10 tags, authorized as `s3:PutObjectTagging` / `s3:DeleteObjectTagging`, their `Version` forms for a `versionId`), which the CLI
 reads before a large copy. A part streams through to MinIO without being buffered, and the completed
 object gets the bucket's default encryption like any other. Authorization is AWS's: every upload step is
 `s3:PutObject`, aborting is `s3:AbortMultipartUpload`, listing parts `s3:ListMultipartUploadParts`,
