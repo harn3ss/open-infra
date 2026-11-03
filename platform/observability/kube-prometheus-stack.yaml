@@ -17,6 +17,16 @@ spec:
       values: |
         grafana:
           defaultDashboardsEnabled: true
+          # Grafana reads its dashboards and datasources from this namespace only. The chart's default is
+          # a ClusterRole that lets the sidecars read every ConfigMap and Secret in the cluster (the root
+          # CA's key among them) because the stack searches dashboards in ALL namespaces; every dashboard
+          # here is a monitoring-namespace ConfigMap (platform/*/…-dashboard.yaml and the chart's own),
+          # so the sidecars get a Role in monitoring and search their own namespace.
+          rbac:
+            namespaced: true
+          sidecar:
+            dashboards:
+              searchNamespace: null
           # admin password via Sealed Secret in prod
           # Loki datasource so logs are queryable in Grafana (Explore) and the
           # console — Prometheus/Alertmanager are auto-provisioned by the chart.
