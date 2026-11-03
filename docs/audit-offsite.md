@@ -102,10 +102,12 @@ on the `audit-offsite-ship` CronJob:
 
 With `expireDays` set, the bucket disposes of segments once they have been retained (AU-11): the setup
 Job installs a lifecycle rule that expires each segment `expireDays` after it was written. On this
-versioned, locked bucket, expiry first lays a delete marker over the segment. The original then becomes
-a noncurrent version and is removed one day later, and the marker goes once no version is left under it.
-Object Lock refuses to remove an original before its retain-until, so disposal can never come early.
-Removing `expireDays` removes the rule.
+versioned, locked bucket, expiry first lays a delete marker over the segment, and the original becomes
+a noncurrent version: hidden from listings, still stored. To remove the originals as well, and so free
+the space, also set `noncurrentExpireDays` (for example `1`): each original is then removed that many
+days after its marker, and the marker goes once no version is left under it. That removal cannot be
+undone, so it is a separate setting. Object Lock refuses to remove an original before its retain-until,
+so disposal can never come early. Removing `expireDays` removes the rule.
 
 `expireDays` must be at least `retentionDays`. A marker laid while a segment is still locked cannot
 remove it, and the verifier counts it as a shadowing attempt, as it would one laid by hand.

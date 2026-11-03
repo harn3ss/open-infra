@@ -95,6 +95,12 @@ spec:
             - name: AUDIT_EXPIRE_DAYS
               valueFrom:
                 configMapKeyRef: { name: audit-config, key: expireDays, optional: true }
+            # Optional, and only with expireDays: remove an expired segment's original this many days
+            # after its expiry, so disposal frees space. Unset => an expired original stays as a
+            # noncurrent version (hidden, not deleted), which can never be undone once removed.
+            - name: AUDIT_NONCURRENT_EXPIRE_DAYS
+              valueFrom:
+                configMapKeyRef: { name: audit-config, key: noncurrentExpireDays, optional: true }
           args:
             - |
               set -eu
@@ -122,16 +128,26 @@ spec:
 
               # 1b) Retain-then-dispose lifecycle (optional; default off = keep forever). On this
               #     versioned bucket, expiring a segment only lays a delete marker over it; the original
-              #     becomes a noncurrent version and is removed one day later, and a marker left with no
-              #     version is cleaned up by the same Days rule. Object Lock refuses to remove an original
+              #     becomes a noncurrent version, removed AUDIT_NONCURRENT_EXPIRE_DAYS later only when that
+              #     is set (opt-in: removal is irreversible), and a marker left with no version is cleaned
+              #     up by the same Days rule. Object Lock refuses to remove an original
               #     before its retain-until, so nothing is disposed early: set AUDIT_EXPIRE_DAYS >= the
               #     exporter's retentionDays, or the markers land on still-locked segments and the verifier
               #     reports them as shadowing attempts. Idempotent: clear prior rules, then set one; with
               #     no AUDIT_EXPIRE_DAYS any earlier rule is removed, so turning disposal off turns it off.
               "$MC" ilm rule remove --all --force "m/$BUCKET" >/dev/null 2>&1 || true
               if [ -n "${AUDIT_EXPIRE_DAYS:-}" ] && [ "${AUDIT_EXPIRE_DAYS}" -gt 0 ] 2>/dev/null; then
-                if "$MC" ilm rule add --expire-days "$AUDIT_EXPIRE_DAYS" --noncurrent-expire-days 1 "m/$BUCKET" >/dev/null; then
-                  echo "  lifecycle: dispose of segments ${AUDIT_EXPIRE_DAYS}d after creation (originals removed 1d later)"
+                NC=""
+                if [ -n "${AUDIT_NONCURRENT_EXPIRE_DAYS:-}" ] && [ "${AUDIT_NONCURRENT_EXPIRE_DAYS}" -gt 0 ] 2>/dev/null; then
+                  NC="--noncurrent-expire-days ${AUDIT_NONCURRENT_EXPIRE_DAYS}"
+                fi
+                # shellcheck disable=SC2086 # NC is empty or two words
+                if "$MC" ilm rule add --expire-days "$AUDIT_EXPIRE_DAYS" $NC "m/$BUCKET" >/dev/null; then
+                  if [ -n "$NC" ]; then
+                    echo "  lifecycle: dispose of segments ${AUDIT_EXPIRE_DAYS}d after creation (originals removed ${AUDIT_NONCURRENT_EXPIRE_DAYS}d later)"
+                  else
+                    echo "  lifecycle: expire segments ${AUDIT_EXPIRE_DAYS}d after creation (originals kept as noncurrent versions; set noncurrentExpireDays to remove them)"
+                  fi
                 else
                   # Keep the sync going: without the rule the bucket only stops trimming.
                   echo "ERROR: could not set the retain-then-dispose lifecycle rule; the bucket keeps every segment" >&2
