@@ -84,6 +84,16 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rt.vmCreds.serve(w, r, requestID)
 		return
 	}
+	// SSM Run Command's agent channel, identified the same way (vmcommands.go). 404 while it is off, so an
+	// agent backs off rather than retrying a refusal.
+	if isVMCommandsPath(r.URL.Path) {
+		if rt.vmCreds != nil && rt.vmCreds.commands != nil {
+			rt.vmCreds.commands.serve(w, r, requestID)
+		} else {
+			http.NotFound(w, r)
+		}
+		return
+	}
 
 	// The platform root CA certificate: public, so unauthenticated — but matched only for an UNSIGNED
 	// GET/HEAD of its exact path, so it can never shadow a (always-signed) AWS call.

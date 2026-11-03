@@ -9,14 +9,14 @@ import (
 // front door's resources map to the types the aws-shim checks; the SSM agent's ec2messages actions import.
 func TestImportAWS_EC2AndRunCommandResources(t *testing.T) {
 	for arn, want := range map[string]string{
-		"arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0":   "Instance::i-0123456789abcdef0",
-		"arn:aws:ec2:us-east-1:123456789012:instance/*":                     "Instance::*",
-		"arn:aws:ssm:us-east-1::document/AWS-RunShellScript":                "Document::AWS-RunShellScript",
-		"arn:aws:ec2:us-east-1:123456789012:volume/vol-1":                   "Volume::vol-1",
-		"arn:aws:ec2:us-east-1:123456789012:key-pair/ops":                   "KeyPair::ops",
-		"arn:aws:ec2:us-east-1:123456789012:security-group/web":             "SecurityGroup::web",
+		"arn:aws:ec2:us-east-1:123456789012:instance/i-0123456789abcdef0":    "Instance::i-0123456789abcdef0",
+		"arn:aws:ec2:us-east-1:123456789012:instance/*":                      "Instance::*",
+		"arn:aws:ssm:us-east-1::document/AWS-RunShellScript":                 "Document::AWS-RunShellScript",
+		"arn:aws:ec2:us-east-1:123456789012:volume/vol-1":                    "Volume::vol-1",
+		"arn:aws:ec2:us-east-1:123456789012:key-pair/ops":                    "KeyPair::ops",
+		"arn:aws:ec2:us-east-1:123456789012:security-group/web":              "SecurityGroup::web",
 		"arn:aws:ec2:us-east-1:123456789012:elastic-ip/eipalloc-0123456789a": "ElasticIp::eipalloc-0123456789a",
-		"arn:aws:ssm:us-east-1:123456789012:parameter/app/db":               "Parameter::app/db",
+		"arn:aws:ssm:us-east-1:123456789012:parameter/app/db":                "Parameter::app/db",
 	} {
 		got, ok := arnToResource(arn)
 		if !ok || !strings.HasPrefix(got, strings.SplitN(want, "::", 2)[0]+"::") || strings.TrimSuffix(got, "*") != strings.TrimSuffix(want, "*") {

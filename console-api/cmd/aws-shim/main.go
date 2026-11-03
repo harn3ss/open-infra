@@ -595,6 +595,9 @@ func run(logger *slog.Logger) error {
 	// stack's blast radius is exactly the caller's RBAC + Cedar. Requires the dynamic
 	// client (shim SA client for stack-record bookkeeping) + the in-cluster rest.Config (to impersonate).
 	var cfnDoor *cfnDoorway // its recovery pass + shutdown drain are wired below, once the signal context exists
+	accountNS := ""         // the account's namespace (the stack namespace): Run Command's managed instances
+	cmdBus := &commandBus{}
+	ssmH.bus = cmdBus
 	if dyn != nil {
 		cfnNS := ident.StackNamespace // CFN_NAMESPACE: the StackId and AWS::StackId are both derived from it
 		if cfnH, cerr := newCFNDoorway(kc.Config, dyn, account, region, cfnNS, svcSuffix, logger); cerr != nil {
@@ -622,10 +625,14 @@ func run(logger *slog.Logger) error {
 			services["cloudfront"] = newCloudFrontHandler(cfnH, logger)
 			// EC2 (ec2.*): the stack namespace's instances, volumes, groups, VPCs and subnets, the catalog,
 			// and the key pairs an instance's KeyName names (ec2.go).
-			services["ec2"] = newEC2Handler(cfnH, ec2KeySt, logger)
+			ec2H := newEC2Handler(cfnH, ec2KeySt, logger)
+			services["ec2"] = ec2H
 			if ec2KeySt != nil {
 				cfnH.keyPairs = ec2KeySt.publicKeys
 			}
+			// SSM Run Command targets these instances (ssm_runcommand.go); their agents poll below.
+			ssmH.ec2 = ec2H
+			accountNS = cfnNS
 			cfnDoor = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
 		}
@@ -749,6 +756,14 @@ func run(logger *slog.Logger) error {
 			logger:   logger,
 		}
 		logger.Info("VM workload credentials enabled: VMs with spec.instanceRole get rotating credentials (in-guest instance metadata)")
+		// SSM Run Command's agent channel (vmcommands.go): the account namespace's VMs whose role allows
+		// the SSM agent's actions fetch and report their commands here.
+		if ssmSt != nil && accountNS != "" {
+			vmCredsH.commands = &vmCommandsHandler{resolver: vmCredsH.resolver, trust: vmCredsH.trust, store: ssmSt, dyn: dyn,
+				authz: authzChecker, home: rolesNS, namespaces: map[string]bool{accountNS: true}, bus: cmdBus,
+				maxWait: 20 * time.Second, recheck: 2 * time.Second, cacheTTL: time.Minute, logger: logger}
+			logger.Info("SSM Run Command agent channel enabled", slog.String("namespace", accountNS))
+		}
 	}
 	// The platform root CA certificate (public), for VM guests' trust stores: read from a Secret in the
 	// shim's OWN namespace that cert-manager fills with openinfra-ca's certificate (Certificate

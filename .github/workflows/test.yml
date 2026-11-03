@@ -275,9 +275,11 @@ jobs:
       - name: metadata agent unit tests (python3 + python 3.6)
         run: |
           python3 test/vm-creds/metadata_agent_test.py
+          python3 test/vm-creds/command_runner_test.py
           pki="$RUNNER_TEMP/vm-creds-pki"
           python3 test/vm-creds/vmcreds_common.py make-pki "$pki"
           docker run --rm -v "$PWD:/src:ro" -v "$pki:/pki:ro" -e OPENINFRA_TEST_PKI=/pki -w /src python:3.6-slim python3 test/vm-creds/metadata_agent_test.py
+          docker run --rm -v "$PWD:/src:ro" -v "$pki:/pki:ro" -e OPENINFRA_TEST_PKI=/pki -w /src python:3.6-slim python3 test/vm-creds/command_runner_test.py
       # The real network path, in a throwaway network namespace (never the runner's own network): the
       # agent's metadata namespace, port 80 left free for the workload, EC2 hop-limit semantics for a
       # "container" one forwarding hop behind the guest, and a "LAN host" routing through the guest dropped.

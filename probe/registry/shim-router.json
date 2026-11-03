@@ -688,20 +688,30 @@
         "AddTagsToResource",
         "DeleteParameter",
         "DeleteParameters",
+        "DescribeInstanceInformation",
         "DescribeParameters",
+        "GetCommandInvocation",
         "GetParameter",
         "GetParameterHistory",
         "GetParameters",
         "GetParametersByPath",
         "LabelParameterVersion",
+        "ListCommandInvocations",
+        "ListCommands",
         "ListTagsForResource",
         "PutParameter",
-        "RemoveTagsFromResource"
+        "RemoveTagsFromResource",
+        "SendCommand"
       ],
       "actions": [
         "kms:Decrypt",
         "ssm:DeleteParameters",
-        "ssm:GetParameters"
+        "ssm:DescribeInstanceInformation",
+        "ssm:GetCommandInvocation",
+        "ssm:GetParameters",
+        "ssm:ListCommandInvocations",
+        "ssm:ListCommands",
+        "ssm:SendCommand"
       ]
     },
     "states": {

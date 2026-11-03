@@ -172,10 +172,11 @@ rules:
   - apiGroups: [openinfra.dev]
     resources: [xbuckets]
     verbs: [get, list]
-  # A VM's EC2 instance id for one whose composite was rendered before it carried status.instanceId: the
-  # id is derived from the composite's uid (ec2_ids.go). Read-only, one object by name.
+  # A VM's EC2 instance id: SSM Run Command's agent channel reads the claim of the VM whose token it
+  # verified (its status.instanceId), and the composite of one rendered before it carried that (the id is
+  # derived from the composite's uid, ec2_ids.go). Read-only, one object by name.
   - apiGroups: [openinfra.dev]
-    resources: [xvirtualmachines]
+    resources: [virtualmachines, xvirtualmachines]
     verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

@@ -142,7 +142,7 @@ func (s *ssmStore) createCommand(ctx context.Context, c ssmCommand, execTimeout 
 	targets, _ := json.Marshal(c.Targets)
 	if err := tx.QueryRowContext(ctx, `INSERT INTO ssm_commands (command_id, document_name, comment, parameters, targets, timeout_seconds,
     max_concurrency, max_errors, requested_by, expires_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now() + make_interval(secs => $6)) RETURNING requested_at, expires_at`,
+VALUES ($1,$2,$3,$4,$5,$6::int,$7,$8,$9, now() + make_interval(secs => $6::int)) RETURNING requested_at, expires_at`,
 		c.ID, c.Document, c.Comment, string(params), string(targets), c.TimeoutSeconds, c.MaxConcurrency, c.MaxErrors, c.RequestedBy).
 		Scan(&c.Requested, &c.Expires); err != nil {
 		return c, err

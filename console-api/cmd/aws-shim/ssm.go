@@ -58,6 +58,11 @@ type ssmHandler struct {
 	store   *ssmStore     // nil => data layer not configured (honest 501)
 	authz   *dataplaneauthz.Checker
 	logger  *slog.Logger
+	// ec2 is the account's instances as the caller sees them (Run Command's targets, ssm_runcommand.go);
+	// bus wakes an instance's waiting agent when a command is sent to it (vmcommands.go). nil ec2 = Run
+	// Command answers that it is not configured.
+	ec2 *ec2Handler
+	bus *commandBus
 
 	keyMu    sync.Mutex
 	keyReady bool
@@ -110,6 +115,10 @@ func (h *ssmHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	if op == "" {
 		writeSSMError(w, http.StatusBadRequest, "ValidationException", requestID,
 			"No operation named in the X-Amz-Target header (expected AmazonSSM.<Op>).")
+		return
+	}
+	if ssmRunCommandOps[op] { // Run Command authorizes on instances and documents (ssm_runcommand.go)
+		h.serveRunCommand(withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID()), w, r, op, readJSONBody(r), claims, requestID)
 		return
 	}
 	verb, known := verbForSSMOp(op)

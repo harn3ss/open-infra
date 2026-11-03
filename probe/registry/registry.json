@@ -1169,7 +1169,12 @@
     "ssm": {
       "actions": [
         "ssm:DeleteParameters",
-        "ssm:GetParameters"
+        "ssm:DescribeInstanceInformation",
+        "ssm:GetCommandInvocation",
+        "ssm:GetParameters",
+        "ssm:ListCommandInvocations",
+        "ssm:ListCommands",
+        "ssm:SendCommand"
       ],
       "conditional": false,
       "deployableTypes": [
@@ -1183,15 +1188,20 @@
         "AddTagsToResource",
         "DeleteParameter",
         "DeleteParameters",
+        "DescribeInstanceInformation",
         "DescribeParameters",
+        "GetCommandInvocation",
         "GetParameter",
         "GetParameterHistory",
         "GetParameters",
         "GetParametersByPath",
         "LabelParameterVersion",
+        "ListCommandInvocations",
+        "ListCommands",
         "ListTagsForResource",
         "PutParameter",
-        "RemoveTagsFromResource"
+        "RemoveTagsFromResource",
+        "SendCommand"
       ],
       "probes": [
         "ssm"
@@ -1259,7 +1269,7 @@
     "excRead": 25,
     "excepted": 26,
     "flattened": 1,
-    "operations": 473,
+    "operations": 478,
     "planOnly": 11,
     "refused": 11,
     "services": 28,

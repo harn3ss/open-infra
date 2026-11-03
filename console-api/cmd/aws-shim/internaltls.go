@@ -128,15 +128,15 @@ func newInternalTLSServer(handler http.Handler, logger *slog.Logger) *http.Serve
 
 // plaintextVMCredsGuard answers 404 for the VM credentials endpoint on a plaintext connection, so a VM's
 // token is never accepted in clear text. allow re-enables plaintext (VM_CREDS_ALLOW_PLAINTEXT=true) for a
-// guest whose agent predates the TLS port.
+// guest whose agent predates the TLS port. The Run Command channel (/v1/vm-commands) is TLS-only whatever
+// allow says: every agent that uses it calls the TLS port.
 func plaintextVMCredsGuard(next http.Handler, allow bool) http.Handler {
-	if allow {
-		return next
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.TLS == nil && path.Clean("/"+r.URL.Path) == vmCredsPath {
-			http.NotFound(w, r)
-			return
+		if r.TLS == nil {
+			if p := path.Clean("/" + r.URL.Path); isVMCommandsPath(p) || (!allow && p == vmCredsPath) {
+				http.NotFound(w, r)
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
