@@ -18,9 +18,16 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 rules:
+  # Reads the MinIO root credential (minio/minio) and writes Longhorn's (longhorn-system/
+  # longhorn-minio-creds): those two names only, so no other Secret is readable.
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get, create, update, patch]
+    resourceNames: [minio, longhorn-minio-creds]
+    verbs: [get, update, patch]
+  - apiGroups: [""]
+    resources: [secrets]
+    # create cannot be pinned to a name (RBAC checks it before the object has one), but grants no read.
+    verbs: [create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -34,8 +34,14 @@ rules:
   - apiGroups: [""]
     resources: [secrets]
     # get + create ONLY — never update/patch, so this can never overwrite an existing
-    # root credential (the reconciled/rotated value is always preserved).
-    verbs: [get, create]
+    # root credential (the reconciled/rotated value is always preserved). get is pinned to the
+    # one Secret it checks for (minio/minio), so no other Secret is readable.
+    resourceNames: [minio]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    # create cannot be pinned to a name (RBAC checks it before the object has one), but grants no read.
+    verbs: [create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

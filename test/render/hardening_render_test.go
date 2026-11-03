@@ -57,3 +57,70 @@ func TestFaultInjection_TargetStaysInItsNamespace(t *testing.T) {
 		}
 	}
 }
+
+// secretRules returns, for the ClusterRole <role> in <path>, each rule on Secrets as (verbs, resourceNames)
+// strings exactly as written ("" when a rule names none).
+func secretRules(t *testing.T, path, role string) [][2]string {
+	t.Helper()
+	for _, doc := range strings.Split(mustRead(t, path), "\n---") {
+		if !strings.Contains(doc, "\nkind: ClusterRole\n") || !strings.Contains(doc, "\n  name: "+role+"\n") {
+			continue
+		}
+		var out [][2]string
+		for _, rule := range strings.Split(doc, "  - apiGroups:")[1:] {
+			if !strings.Contains(rule, "resources: [secrets]") {
+				continue
+			}
+			var verbs, names string
+			for _, ln := range strings.Split(rule, "\n") {
+				ln = strings.TrimSpace(ln)
+				if v, ok := strings.CutPrefix(ln, "verbs: "); ok {
+					verbs = v
+				}
+				if v, ok := strings.CutPrefix(ln, "resourceNames: "); ok {
+					names = v
+				}
+			}
+			out = append(out, [2]string{verbs, names})
+		}
+		return out
+	}
+	t.Fatalf("no ClusterRole %s in %s", role, path)
+	return nil
+}
+
+// The platform's setup jobs and the parameter reconciler hold cluster-wide Secret grants because the
+// namespaces they write may not exist yet, or are arbitrary. Reads are pinned to the Secrets they use
+// by name, so none of them can read any other Secret (the root CA's key, another tenant's credential);
+// create cannot be pinned, but grants no read.
+func TestSetupRoles_SecretReadsPinnedByName(t *testing.T) {
+	for _, c := range []struct{ path, role, names string }{
+		{"../../platform/security/parameter-reconciler.yaml", "openinfra-parameter-reconciler", "[openinfra-parameters]"},
+		{"../../platform/storage/minio-root-bootstrap.yaml", "minio-root-bootstrap", "[minio]"},
+		{"../../platform/query/manifests/lakehouse-setup.yaml", "lakehouse-setup", "[minio-creds]"},
+		{"../../platform/abstraction/query-runtime.yaml", "query-iam-setup", "[query-runner-s3]"},
+		{"../../platform/storage/longhorn-backup-setup.yaml", "longhorn-backup-setup", "[minio, longhorn-minio-creds]"},
+	} {
+		rules := secretRules(t, c.path, c.role)
+		if len(rules) == 0 {
+			t.Errorf("%s: no Secret rules found", c.role)
+		}
+		for _, r := range rules {
+			verbs, names := r[0], r[1]
+			if verbs == "[create]" {
+				if names != "" {
+					t.Errorf("%s: a create rule with resourceNames never matches (RBAC checks create before the object has a name)", c.role)
+				}
+				continue
+			}
+			if names != c.names {
+				t.Errorf("%s: Secret verbs %s must be pinned to %s, got resourceNames %q", c.role, verbs, c.names, names)
+			}
+			for _, bad := range []string{"list", "watch", "*"} {
+				if strings.Contains(verbs, bad) {
+					t.Errorf("%s: Secret verbs %s include %s, which no name pins", c.role, verbs, bad)
+				}
+			}
+		}
+	}
+}

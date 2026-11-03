@@ -28,10 +28,16 @@ rules:
     resources: [parameters]
     verbs: [get, list]
   # Materialize the per-namespace openinfra-parameters Secret. Cluster-wide because
-  # app namespaces are arbitrary; no list/watch (can't enumerate other secrets).
+  # app namespaces are arbitrary; no list/watch (can't enumerate other secrets). Reads and
+  # updates are pinned to that one name, so no other Secret (a CA key, a credential) is readable.
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get, create, update, patch]
+    resourceNames: [openinfra-parameters]
+    verbs: [get, update, patch]
+  - apiGroups: [""]
+    resources: [secrets]
+    # create cannot be pinned to a name (RBAC checks it before the object has one), but grants no read.
+    verbs: [create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

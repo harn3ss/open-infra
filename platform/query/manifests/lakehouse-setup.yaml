@@ -31,9 +31,16 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 rules:
+  # Only its own Secret (lakehouse/minio-creds) is readable or updatable; the MinIO root credential
+  # comes from the pod's env (secretKeyRef), not the API.
   - apiGroups: [""]
     resources: [secrets]
-    verbs: [get, create, update, patch]
+    resourceNames: [minio-creds]
+    verbs: [get, update, patch]
+  - apiGroups: [""]
+    resources: [secrets]
+    # create cannot be pinned to a name (RBAC checks it before the object has one), but grants no read.
+    verbs: [create]
   - apiGroups: [""]
     resources: [namespaces]
     verbs: [get, create, patch]
