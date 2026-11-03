@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+// #350 T: ListTables refuses a Limit outside 1–100 as AWS does (the listing itself is exercised by the
+// FerretDB integration test).
+func TestDynamo_ListTablesLimit(t *testing.T) {
+	h := &dynamoHandler{logger: discardLogger()}
+	for _, limit := range []float64{0, 101} {
+		w := httptest.NewRecorder()
+		h.listTables(context.Background(), w, "r", map[string]any{"Limit": limit})
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "ValidationException") {
+			t.Fatalf("Limit %v: %d %s", limit, w.Code, w.Body.String())
+		}
+	}
+}
 
 // A stack's table is deleted only once its kind: Table declaration is gone — while it is present the
 // table sync would register the table again — and a declaration that lingers fails the delete (DeleteStack

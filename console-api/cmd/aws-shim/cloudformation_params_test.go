@@ -146,6 +146,42 @@ func TestCFN_ChangeSetBookkeeping(t *testing.T) {
 	}
 }
 
+// #350 T: termination protection — set at create (EnableTerminationProtection) or by
+// UpdateTerminationProtection, shown by DescribeStacks, and refusing DeleteStack while on, as on AWS.
+func TestCFN_TerminationProtection(t *testing.T) {
+	fa := newFakeAPI()
+	h := opsDoorway(t, fa, "aws-shim-new/0104")
+	call := func(form url.Values) *httptest.ResponseRecorder {
+		t.Helper()
+		w := serveWith(h, formOp(form), testUser)
+		h.ops.drain(10 * time.Second)
+		return w
+	}
+	tmpl := "Resources:\n  Key: { Type: AWS::KMS::Key, Properties: { Description: k } }\n"
+	if w := call(url.Values{"Action": {"CreateStack"}, "StackName": {"app"}, "TemplateBody": {tmpl}, "EnableTerminationProtection": {"true"}}); w.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	if w := call(url.Values{"Action": {"DescribeStacks"}, "StackName": {"app"}}); !strings.Contains(w.Body.String(), "<EnableTerminationProtection>true</EnableTerminationProtection>") {
+		t.Fatalf("DescribeStacks: %s", w.Body.String())
+	}
+	w := call(url.Values{"Action": {"DeleteStack"}, "StackName": {"app"}})
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "cannot be deleted while TerminationProtection is enabled") {
+		t.Fatalf("a protected stack's delete must be refused: %d %s", w.Code, w.Body.String())
+	}
+	if w := call(url.Values{"Action": {"UpdateTerminationProtection"}, "StackName": {"app"}, "EnableTerminationProtection": {"false"}}); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "<StackId>") {
+		t.Fatalf("UpdateTerminationProtection: %d %s", w.Code, w.Body.String())
+	}
+	if rec, _ := recordIn(t, fa, "app"); rec == nil || rec.TerminationProtection || rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("protection must be off, the stack otherwise unchanged: %+v", rec)
+	}
+	if w := call(url.Values{"Action": {"DeleteStack"}, "StackName": {"app"}}); w.Code != http.StatusOK {
+		t.Fatalf("delete once unprotected: %d %s", w.Code, w.Body.String())
+	}
+	if rec, _ := recordIn(t, fa, "app"); rec != nil {
+		t.Fatalf("the stack must be deleted: %+v", rec)
+	}
+}
+
 // #350 W: while a create is under way, ListStackResources lists only the resources whose creation has
 // begun — a resource the record plans but has not started is not shown (it used to show CREATE_COMPLETE),
 // and DescribeStackResource does not answer for it; the same after a create that failed before reaching it.

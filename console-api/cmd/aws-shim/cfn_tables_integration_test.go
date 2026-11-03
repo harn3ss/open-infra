@@ -66,6 +66,9 @@ func TestCFNTables_StackTableDeletedWithItsData(t *testing.T) {
 	if ok, err := h.stackTableExists(ctx, "app-orders"); err != nil || !ok {
 		t.Fatalf("the declared table must exist: %v %v", ok, err)
 	}
+	if w := call("ListTables", `{}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"app-orders"`) {
+		t.Fatalf("ListTables must list the table: %d %s", w.Code, w.Body.String())
+	}
 	// The stack is deleted: its claim (and with it the declaration) goes, then the table with its data.
 	if err := cs.CoreV1().ConfigMaps(shimNS).Delete(ctx, cm.Name, metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)

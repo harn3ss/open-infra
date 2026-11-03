@@ -306,7 +306,7 @@ func cfnVerb(action string) string {
 		return "get"
 	case "CreateStack", "CreateChangeSet", "ExecuteChangeSet":
 		return "create"
-	case "UpdateStack":
+	case "UpdateStack", "UpdateTerminationProtection":
 		return "update"
 	case "DeleteStack", "DeleteChangeSet":
 		return "delete"
@@ -429,6 +429,8 @@ func (h *cfnDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.listChangeSets(w, r, ap, requestID)
 	case "ListImports":
 		h.listImports(w, r, requestID)
+	case "UpdateTerminationProtection":
+		h.updateTerminationProtection(w, r, ap, requestID)
 	default:
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
 			"CloudFormation "+action+" is not implemented by the open-infra shim.", cfnXMLNamespace)
@@ -730,6 +732,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		return
 	}
 	createOpts := h.asCaller(h.stackOpts(name, params, ex, body), ap)
+	createOpts.TerminationProtection = strings.EqualFold(r.PostFormValue("EnableTerminationProtection"), "true")
 	h.runStackOp(name, "CreateStack", "ROLLBACK_COMPLETE", ap, func(bctx context.Context) error {
 		rec, derr := cfn.Deploy(bctx, []byte(body), createOpts, ap)
 		if derr == nil {
@@ -803,6 +806,42 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 	h.writeResult(w, requestID, "UpdateStack", "<StackId>"+xesc(h.stackID(name))+"</StackId>")
 }
 
+// updateTerminationProtection — UpdateTerminationProtection: turns the stack's termination protection on
+// or off (a protected stack's delete is refused), under the stack's lease so no operation's record write
+// races it. A stack with an operation in progress is refused until it settles.
+func (h *cfnDoorway) updateTerminationProtection(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
+	name := r.PostFormValue("StackName")
+	enable := strings.ToLower(r.PostFormValue("EnableTerminationProtection"))
+	if name == "" || (enable != "true" && enable != "false") {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+			"StackName and EnableTerminationProtection (true or false) are required.", cfnXMLNamespace)
+		return
+	}
+	if err := h.ops.begin(name); err != nil {
+		h.refuseOp(w, requestID, err, "ValidationError", "Stack ["+name+"] is being changed by another operation; retry once it settles.")
+		return
+	}
+	defer h.ops.end(name)
+	ctx := r.Context()
+	rec, err := h.claimRecord(ctx, name, "UpdateTerminationProtection", ap.identity())
+	if err == nil && rec == nil {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist", cfnXMLNamespace)
+		return
+	}
+	if err != nil {
+		h.claimRefusal(w, requestID, name, "update", err)
+		return
+	}
+	defer h.releaseLease(context.WithoutCancel(ctx), name)
+	h.auditNonOwner("UpdateTerminationProtection", rec, ap)
+	rec.TerminationProtection = enable == "true"
+	if err := ap.putRecord(ctx, rec); err != nil {
+		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not record the stack's termination protection: "+err.Error(), cfnXMLNamespace)
+		return
+	}
+	h.writeResult(w, requestID, "UpdateTerminationProtection", "<StackId>"+xesc(h.stackID(name))+"</StackId>")
+}
+
 func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
 	name := r.PostFormValue("StackName")
 	ctx := r.Context()
@@ -811,6 +850,11 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 		// AWS treats deleting an absent stack — or one already being deleted — as a successful no-op. (An
 		// orphaned DELETE_IN_PROGRESS is resumed by the recovery pass.)
 		h.writeResult(w, requestID, "DeleteStack", "")
+		return
+	}
+	if rec.TerminationProtection {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+			(&cfn.TerminationProtectedError{Stack: name}).Error(), cfnXMLNamespace)
 		return
 	}
 	if inProgress(rec.Status) {
@@ -910,6 +954,7 @@ func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {
 	if rec.Description != "" {
 		b.WriteString("<Description>" + xesc(rec.Description) + "</Description>")
 	}
+	b.WriteString("<EnableTerminationProtection>" + strconv.FormatBool(rec.TerminationProtection) + "</EnableTerminationProtection>")
 	if rec.CreatedAt != "" {
 		b.WriteString("<CreationTime>" + xesc(rec.CreatedAt) + "</CreationTime>")
 	}

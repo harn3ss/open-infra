@@ -301,10 +301,13 @@ type StackRecord struct {
 	// to the Applier's NoEchoStore (if it has one) instead of the record.
 	// Owner is the caller that created the stack (kept across updates); "" on a record from before it
 	// was kept.
-	Owner            string            `json:"owner,omitempty"`
-	Template         string            `json:"template,omitempty"`
-	Parameters       map[string]string `json:"parameters,omitempty"`
-	NoEchoParameters []string          `json:"noEchoParameters,omitempty"`
+	Owner string `json:"owner,omitempty"`
+	// TerminationProtection refuses the stack's delete while it is on (EnableTerminationProtection, as on
+	// AWS); kept across updates.
+	TerminationProtection bool              `json:"terminationProtection,omitempty"`
+	Template              string            `json:"template,omitempty"`
+	Parameters            map[string]string `json:"parameters,omitempty"`
+	NoEchoParameters      []string          `json:"noEchoParameters,omitempty"`
 	// noEcho is the NoEcho values to store with this write; nil on a record read back (the store is left
 	// as it is), non-nil when a create/update sets the stack's parameters.
 	noEcho map[string]string
@@ -386,6 +389,9 @@ type DeployOptions struct {
 	SignalURL func(stackName, handleID string) string
 	// Fidelity is the operation's one-line fidelity summary, recorded on the stack (DescribeStacks).
 	Fidelity string
+	// TerminationProtection is a create's EnableTerminationProtection: the stack's delete is refused while
+	// it is on (StackRecord.TerminationProtection).
+	TerminationProtection bool
 }
 
 // ProvisionRestAPIFunc provisions a collated REST v1 plan (the sentinel's Spec) and returns the created
@@ -628,7 +634,7 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	rec := &StackRecord{
 		Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS",
 		CreatedAt: now, UpdatedAt: now, Template: string(data), Owner: opts.Owner,
-		Description: templateDescription(data), Fidelity: opts.Fidelity,
+		Description: templateDescription(data), Fidelity: opts.Fidelity, TerminationProtection: opts.TerminationProtection,
 	}
 	rec.setParams(data, opts.Params)
 	for _, b := range order {
@@ -819,7 +825,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now,
-		Template: string(data), Owner: opts.Owner, Description: t.Description, Fidelity: opts.Fidelity}
+		Template: string(data), Owner: opts.Owner, Description: t.Description, Fidelity: opts.Fidelity, TerminationProtection: opts.TerminationProtection}
 	rec.setParams(data, opts.Params)
 	rec.stackEvent("CREATE_IN_PROGRESS", startReason(opts))
 	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {

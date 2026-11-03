@@ -583,7 +583,7 @@ launches a Job that bootstraps a recovery Postgres cluster from the WAL archive,
 table's collection + indexes into the new table, and flips it `CREATING`→`ACTIVE` (or `CREATE_FAILED`,
 never a false success), observable via `DescribeTable`. `UseLatestRestorableTime` is supported; a
 specific past `RestoreDateTime` is refused loudly (a CNPG/PostgreSQL `recovery_target_time` limitation,
-tracked). Refused loudly, not faked (`501`): `ProjectionExpression`, `ListTables`.
+tracked). `ListTables` lists the tables (`Limit`, `ExclusiveStartTableName`, `LastEvaluatedTableName`, as on AWS). Refused loudly, not faked (`501`): `ProjectionExpression`.
 Needs `MONGO_URI` (+ `MONGO_PG_URI` for transactions and streams).
 
 **Billing mode + capacity — accepted and round-tripped, honestly not metered.** The backend is an
@@ -1407,7 +1407,7 @@ engine (`github.com/harn3ss/open-infra/cfn` — the same engine behind the `cfn`
 importable package). Implemented: `CreateStack`/`UpdateStack`/`DeleteStack`, `CreateChangeSet`/
 `DescribeChangeSet`/`ExecuteChangeSet`/`DeleteChangeSet`/`ListChangeSets`, `DescribeStacks`/
 `DescribeStackEvents`/`DescribeStackResources`/`DescribeStackResource`/`ListStackResources`/`ListStacks`,
-`ListExports`/`ListImports`, `GetTemplate`/`GetTemplateSummary`/`ValidateTemplate`, `SignalResource`, and
+`ListExports`/`ListImports`, `GetTemplate`/`GetTemplateSummary`/`ValidateTemplate`, `SignalResource`, `UpdateTerminationProtection` (with `CreateStack`'s `EnableTerminationProtection`; a protected stack's delete is refused), and
 `DetectStackDrift`/`DescribeStackDriftDetectionStatus`/`DescribeStackResourceDrifts`. Long operations are
 asynchronous like AWS (validate synchronously, run the engine in the background, poll `DescribeStacks` or
 `DescribeStackEvents`); the ~50-entry resource-type→kind mapping table (its plan contract) lives in

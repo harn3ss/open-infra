@@ -36,6 +36,10 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 		return nil, fmt.Errorf("no stack %q in namespace %q to destroy", opts.StackName, opts.Namespace)
 	}
 
+	// Termination protection refuses the delete, as on AWS.
+	if rec.TerminationProtection {
+		return rec, &TerminationProtectedError{Stack: opts.StackName}
+	}
 	// Fail-closed on DeletionPolicy: Snapshot — we cannot honor the snapshot it asked for.
 	var snapshot []string
 	for _, r := range append(append([]StackResource{}, rec.Resources...), rec.Pending...) {
@@ -102,6 +106,13 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 // same-named object that is not this stack's must survive.
 type LabelReader interface {
 	GetLabels(ctx context.Context, apiVersion, kind, name string) (labels map[string]string, found bool, err error)
+}
+
+// TerminationProtectedError is a delete refused because the stack has termination protection on.
+type TerminationProtectedError struct{ Stack string }
+
+func (e *TerminationProtectedError) Error() string {
+	return "Stack [" + e.Stack + "] cannot be deleted while TerminationProtection is enabled"
 }
 
 // customResourceDelete sends a custom resource's Function AWS's Delete event (RequestType=Delete), as a

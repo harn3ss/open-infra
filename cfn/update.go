@@ -253,7 +253,7 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	newRec := &StackRecord{
 		Name: opts.StackName, Namespace: opts.Namespace, Status: "UPDATE_COMPLETE",
 		CreatedAt: current.CreatedAt, UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		Template: string(data), Owner: current.Owner, Description: templateDescription(data), Fidelity: opts.Fidelity,
+		Template: string(data), Owner: current.Owner, Description: templateDescription(data), Fidelity: opts.Fidelity, TerminationProtection: current.TerminationProtection,
 	}
 	newRec.setParams(data, opts.Params)
 	for _, b := range desired {

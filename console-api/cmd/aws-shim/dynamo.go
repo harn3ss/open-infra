@@ -291,6 +291,8 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 
 	ctx := r.Context()
 	switch op {
+	case "ListTables":
+		h.listTables(ctx, w, requestID, body)
 	case "CreateTable":
 		h.createTable(ctx, w, requestID, table, body)
 	case "DescribeTable":
@@ -445,6 +447,52 @@ func (h *dynamoHandler) deleteTable(ctx context.Context, w http.ResponseWriter, 
 		"TableName": table, "TableStatus": "DELETING", "KeySchema": keySchemaFromAttrs(doc.KeyAttrs),
 		"ItemCount": float64(0),
 	}})
+}
+
+// listTables — DynamoDB_20120810.ListTables: the tables' names in order, Limit at a time (1–100, default
+// 100), from after ExclusiveStartTableName; LastEvaluatedTableName is set when more remain, as on AWS. A
+// table still being created (a restore in progress) is listed, as AWS lists a CREATING table.
+func (h *dynamoHandler) listTables(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+	limit := 100
+	if v, ok := body["Limit"].(float64); ok {
+		if v < 1 || v > 100 {
+			writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID,
+				"1 validation error detected: Value at 'limit' failed to satisfy constraint: Member must have value between 1 and 100")
+			return
+		}
+		limit = int(v)
+	}
+	filter := bson.M{}
+	if start, _ := body["ExclusiveStartTableName"].(string); start != "" {
+		filter["_id"] = bson.M{"$gt": start}
+	}
+	cur, err := h.registry().Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}).
+		SetLimit(int64(limit+1)).SetProjection(bson.M{"_id": 1}))
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	defer cur.Close(ctx)
+	names := []string{}
+	for cur.Next(ctx) {
+		var doc struct {
+			ID string `bson:"_id"`
+		}
+		if cur.Decode(&doc) == nil && doc.ID != "" {
+			names = append(names, doc.ID)
+		}
+	}
+	if err := cur.Err(); err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	out := map[string]any{}
+	if len(names) > limit {
+		names = names[:limit]
+		out["LastEvaluatedTableName"] = names[limit-1]
+	}
+	out["TableNames"] = names
+	writeDynamoJSON(w, requestID, out)
 }
 
 // dropTable removes a table and its data: all its items, then its stream log (best-effort), then its
