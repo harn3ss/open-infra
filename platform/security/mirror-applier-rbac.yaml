@@ -1,0 +1,39 @@
+# The role an estate import applies its translated claims with.
+#
+# An import tool (kubectl apply of the claims it renders from a discovered estate) runs as a
+# ServiceAccount the site creates in the import's target namespace, and binds this ClusterRole there with
+# a RoleBinding — so every grant below holds in that one namespace only. The binding is site-specific
+# and not in git; the role is, so what an import may do is reviewed here.
+#
+# It names exactly the kinds an import emits: the network shells (VPCs, subnets, NAT gateways, Elastic
+# IPs, security groups), queues, tables, buckets, volumes, user pools, functions and applications, the
+# IAM roles and policies they run as, and the Secrets and ConfigMaps that carry their configuration.
+# Nothing else: no Destructions or EncryptionKeys (crypto-erase and key material), no IAM users,
+# groups or access keys, no fault injection, no VMs or databases. delete stays on the emitted kinds so a
+# re-import can retire what it no longer renders.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-mirror-applier
+rules:
+  - apiGroups: [openinfra.dev]
+    resources:
+      - applications
+      - buckets
+      - elasticips
+      - functions
+      - natgateways
+      - queues
+      - securitygroups
+      - subnets
+      - tables
+      - userpools
+      - volumes
+      - vpcs
+    verbs: [create, get, list, watch, update, patch, delete]
+  - apiGroups: [iam.openinfra.dev]
+    resources: [policies, roles]
+    verbs: [create, get, list, watch, update, patch, delete]
+  - apiGroups: [""]
+    resources: [secrets, configmaps]
+    verbs: [create, get, list, watch, update, patch, delete]
