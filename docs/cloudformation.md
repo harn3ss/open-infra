@@ -705,7 +705,13 @@ resource's `CREATE_FAILED` with its reason, the rollback, the stack's final stat
 likewise — and `DescribeStackEvents` returns them newest first, as the create progresses. Also served:
 `ListStackResources` and `DescribeStackResources` (each resource's CloudFormation type, physical id —
 its `Ref` — and own status), `DescribeStackResource`, `ListChangeSets`, `ListImports` and
-`SignalResource`. `DescribeStacks` lists every template parameter (a default as such; `NoEcho` as
+`SignalResource`. A resource that provisions nothing of its own — an internet gateway and its
+attachment, a route table, a route and their associations, an Elastic IP folded onto its instance, a
+volume attachment, a wait condition handle, a bucket policy — is listed too, with its `Ref` as its
+physical id (`igw-…`, `rtb-…|0.0.0.0/0`, the address, the handle's URL; one with no `Ref` of its own gets
+the `<stack>-<LogicalId>-<suffix>` id AWS generates), and with the status of the resources it is part of
+(a route its VPC's, an attachment its instance's and volume's); its events follow theirs. A wait
+condition handle exists from the moment the create begins, as on AWS. Change sets do not list these yet. `DescribeStacks` lists every template parameter (a default as such; `NoEcho` as
 `****`) and the template's `Description`. `ValidateTemplate` checks a template without parameter values,
 as AWS does: a parameter with no default is not an error there. A change set is found by its ARN alone (what `deploy` prints), lists each change by its CloudFormation type, and once executed reports `ExecutionStatus` `EXECUTE_COMPLETE` (or `EXECUTE_FAILED`); only an `AVAILABLE` change set can be executed.
 

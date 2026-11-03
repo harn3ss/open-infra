@@ -80,7 +80,8 @@ func (h *cfnDoorway) describeStackEvents(w http.ResponseWriter, r *http.Request,
 	}
 	stackID := h.idOf(rec)
 	var b strings.Builder
-	for _, e := range h.stackEvents(r.Context(), rec) {
+	evs := withFoldedEvents(h.stackEvents(r.Context(), rec), h.foldedResources(r.Context(), rec, ap), rec.Name)
+	for _, e := range evs {
 		phys := e.PhysicalID
 		if e.Type == cfn.StackTypeName {
 			phys = stackID
@@ -109,10 +110,155 @@ type resourceRow struct {
 	logicalID, physicalID, typ, status, reason, timestamp string
 }
 
+// foldedResources is the stack's resources that provision nothing of their own (cfn.FoldedResources),
+// with the Ref values its deploy computed: its parameters, the exports it imports, its signal URLs. sr
+// reads the live status a Ref needs (an Elastic IP's address); nil leaves such a Ref unresolved.
+func (h *cfnDoorway) foldedResources(ctx context.Context, rec *cfn.StackRecord, sr cfn.StatusReader) []cfn.FoldedResource {
+	ex := stackExports{}
+	if strings.Contains(rec.Template, "ImportValue") {
+		ex = h.exportsFor(ctx, rec.Name)
+	}
+	return cfn.FoldedResources(ctx, rec, h.optsFor(rec.Name, rec.Parameters, ex), sr)
+}
+
 // stackResourceRows lists a stack's resources (companion objects folded into their parent), each with its
 // CloudFormation type, physical id and own last status — from its latest event when the record predates
-// per-resource status.
-func (h *cfnDoorway) stackResourceRows(ctx context.Context, rec *cfn.StackRecord) []resourceRow {
+// per-resource status. A resource that provisions nothing of its own (an InternetGateway, a route, a
+// WaitConditionHandle) is listed too, as AWS lists it: with its Ref as its physical id, and the status of
+// the resources it is part of.
+func (h *cfnDoorway) stackResourceRows(ctx context.Context, rec *cfn.StackRecord, sr cfn.StatusReader) []resourceRow {
+	rows := h.provisionedResourceRows(ctx, rec)
+	return append(rows, foldedRows(rec, rows, h.foldedResources(ctx, rec, sr))...)
+}
+
+// foldedRows are the rows of a stack's folded resources, each following its carriers' rows; one whose
+// carriers have not started is not listed (on AWS a resource is listed once its creation begins).
+func foldedRows(rec *cfn.StackRecord, rows []resourceRow, folded []cfn.FoldedResource) []resourceRow {
+	byID := map[string]resourceRow{}
+	for _, r := range rows {
+		byID[r.logicalID] = r
+	}
+	var out []resourceRow
+	for _, f := range folded {
+		if _, own := byID[f.LogicalID]; own {
+			continue // it has a row of its own (its events, or the record, list it)
+		}
+		row := resourceRow{logicalID: f.LogicalID, physicalID: f.PhysicalID, typ: f.Type}
+		if len(f.Carriers) == 0 {
+			if createNotStarted(rec) {
+				continue
+			}
+			row.status, row.timestamp = cfn.FoldedStatusWithoutCarrier(rec.Status), recTime(rec)
+		} else {
+			var sts []string
+			var latest resourceRow
+			for _, c := range f.Carriers {
+				cr, ok := byID[c]
+				sts = append(sts, cr.status) // "" for a carrier not started (or not listed)
+				if ok && cr.timestamp > latest.timestamp {
+					latest = cr
+				}
+				if ok && strings.HasSuffix(cr.status, "_FAILED") && row.reason == "" {
+					row.reason = "part of " + c + ": " + cr.reason
+				}
+			}
+			st, listed := cfn.FoldedStatus(sts)
+			if !listed {
+				continue
+			}
+			if !strings.HasSuffix(st, "_FAILED") {
+				row.reason = ""
+			}
+			row.status, row.timestamp = st, latest.timestamp
+			if row.timestamp == "" {
+				row.timestamp = recTime(rec)
+			}
+		}
+		if row.physicalID == "" {
+			row.physicalID = f.LogicalID // its Ref is not known yet (an Elastic IP's address is pending)
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// createNotStarted reports whether a stack's create has not begun: no event of it is recorded.
+func createNotStarted(rec *cfn.StackRecord) bool {
+	return len(rec.Events) == 0 && rec.Status == "CREATE_IN_PROGRESS"
+}
+
+// withFoldedEvents adds, to a stack's events (newest first), the events of its folded resources: each
+// one's status changes as its carriers' events move it (cfn.FoldedStatus), stamped like the carrier event
+// that moved it; one with no carrier is created with the stack's create and deleted with its delete.
+func withFoldedEvents(evs []cfn.StackEvent, folded []cfn.FoldedResource, stackName string) []cfn.StackEvent {
+	if len(folded) == 0 {
+		return evs
+	}
+	own := map[string]bool{}
+	for _, e := range evs {
+		own[e.LogicalID] = true
+	}
+	carriedBy := map[string][]int{} // carrier logical id -> indexes into folded
+	for i, f := range folded {
+		for _, c := range f.Carriers {
+			carriedBy[c] = append(carriedBy[c], i)
+		}
+	}
+	carrierStatus := make([]map[string]string, len(folded))
+	last := make([]string, len(folded))
+	for i := range folded {
+		carrierStatus[i] = map[string]string{}
+	}
+	emit := func(out []cfn.StackEvent, i int, trigger cfn.StackEvent, status, suffix string) []cfn.StackEvent {
+		f := folded[i]
+		last[i] = status
+		return append(out, cfn.StackEvent{EventID: f.LogicalID + "-" + status + "-" + trigger.EventID + suffix, LogicalID: f.LogicalID,
+			PhysicalID: f.PhysicalID, Type: f.Type, Status: status, Timestamp: trigger.Timestamp})
+	}
+	var chrono []cfn.StackEvent // oldest first, with the folded events after the event that moved them
+	for k := len(evs) - 1; k >= 0; k-- {
+		e := evs[k]
+		chrono = append(chrono, e)
+		if e.Type == cfn.StackTypeName && e.LogicalID == stackName {
+			for i, f := range folded {
+				if len(f.Carriers) > 0 || own[f.LogicalID] {
+					continue
+				}
+				switch {
+				case e.Status == "CREATE_IN_PROGRESS" && last[i] == "":
+					chrono = emit(chrono, i, e, "CREATE_IN_PROGRESS", "")
+					chrono = emit(chrono, i, e, "CREATE_COMPLETE", "-done")
+				case (e.Status == "DELETE_IN_PROGRESS" || e.Status == "ROLLBACK_IN_PROGRESS") && last[i] == "CREATE_COMPLETE":
+					chrono = emit(chrono, i, e, "DELETE_IN_PROGRESS", "")
+				case (e.Status == "DELETE_COMPLETE" || e.Status == "ROLLBACK_COMPLETE") && last[i] == "DELETE_IN_PROGRESS":
+					chrono = emit(chrono, i, e, "DELETE_COMPLETE", "")
+				}
+			}
+			continue
+		}
+		for _, i := range carriedBy[e.LogicalID] {
+			if own[folded[i].LogicalID] {
+				continue
+			}
+			carrierStatus[i][e.LogicalID] = e.Status
+			sts := make([]string, 0, len(folded[i].Carriers))
+			for _, c := range folded[i].Carriers {
+				sts = append(sts, carrierStatus[i][c])
+			}
+			if st, listed := cfn.FoldedStatus(sts); listed && st != last[i] {
+				chrono = emit(chrono, i, e, st, "")
+			}
+		}
+	}
+	out := make([]cfn.StackEvent, 0, len(chrono))
+	for k := len(chrono) - 1; k >= 0; k-- {
+		out = append(out, chrono[k])
+	}
+	return out
+}
+
+// provisionedResourceRows lists the resources the stack's record and events know.
+func (h *cfnDoorway) provisionedResourceRows(ctx context.Context, rec *cfn.StackRecord) []resourceRow {
 	latest := map[string]cfn.StackEvent{}
 	for _, e := range h.stackEvents(ctx, rec) { // newest first
 		if _, seen := latest[e.LogicalID]; !seen {
@@ -194,7 +340,7 @@ func (h *cfnDoorway) listStackResources(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	var b strings.Builder
-	for _, row := range h.stackResourceRows(r.Context(), rec) {
+	for _, row := range h.stackResourceRows(r.Context(), rec, ap) {
 		b.WriteString("<member>")
 		b.WriteString("<LogicalResourceId>" + xesc(row.logicalID) + "</LogicalResourceId>")
 		b.WriteString("<PhysicalResourceId>" + xesc(row.physicalID) + "</PhysicalResourceId>")
@@ -218,31 +364,22 @@ func (h *cfnDoorway) describeStackResource(w http.ResponseWriter, r *http.Reques
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+stackRef(r)+" does not exist", cfnXMLNamespace)
 		return
 	}
-	h.describeStackResourceOf(w, r, rec, requestID)
+	h.describeStackResourceOf(w, r, rec, ap, requestID)
 }
 
 // describeStackResourceOf answers DescribeStackResource for a stack record already read (and authorized).
-func (h *cfnDoorway) describeStackResourceOf(w http.ResponseWriter, r *http.Request, rec *cfn.StackRecord, requestID string) {
+// sr reads the live status a folded resource's Ref needs (an Elastic IP's address); nil leaves it unresolved.
+func (h *cfnDoorway) describeStackResourceOf(w http.ResponseWriter, r *http.Request, rec *cfn.StackRecord, sr cfn.StatusReader, requestID string) {
 	name, lid := r.PostFormValue("StackName"), r.PostFormValue("LogicalResourceId")
+	// A resource that provisions nothing of its own (a WaitConditionHandle, an InternetGateway) is listed
+	// like any other, with its Ref as its physical id; one not started yet — or gated off by its
+	// Condition — does not exist, as on AWS.
 	var row *resourceRow
-	for _, rr := range h.stackResourceRows(r.Context(), rec) {
+	for _, rr := range h.stackResourceRows(r.Context(), rec, sr) {
 		if rr.logicalID == lid {
 			rr := rr
 			row = &rr
 			break
-		}
-	}
-	planned := false // a resource of the record that is not listed has not been started yet
-	for _, res := range rec.Resources {
-		planned = planned || res.LogicalID == lid
-	}
-	if row == nil && !planned {
-		// A resource that provisions nothing of its own (a WaitConditionHandle, an InternetGateway) is still
-		// a resource of the stack.
-		if t, perr := cfn.Parse([]byte(rec.Template)); perr == nil {
-			if res, ok := t.Resources[lid]; ok {
-				row = &resourceRow{logicalID: lid, physicalID: lid, typ: res.Type, status: completeStatusOf(rec.Status), timestamp: recTime(rec)}
-			}
 		}
 	}
 	if row == nil {

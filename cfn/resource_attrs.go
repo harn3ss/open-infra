@@ -144,6 +144,21 @@ func static(f func(e *attrEnv) string) attrFunc {
 
 func nameAttr(e *attrEnv) string { return e.name() }
 
+// routeRef is a route's Ref as AWS gives it: its route table's id and its destination, "rtb-…|0.0.0.0/0"
+// (the table's own Ref, so the two match). A table id that does not resolve falls back to a stable
+// synthetic one.
+func routeRef(e *attrEnv) string {
+	rt := e.prop("RouteTableId")
+	if len(rt) < 5 || rt[:4] != "rtb-" {
+		rt = e.synthID("rtb-", 17)
+	}
+	dest := e.prop("DestinationCidrBlock")
+	if dest == "" {
+		dest = e.prop("DestinationIpv6CidrBlock")
+	}
+	return rt + "|" + dest
+}
+
 // ---- extension points: values a service backend owns ----
 
 // sqsQueueName is a queue's name: QueueName when set, else the stack's name for it (svcQueueName — the
@@ -436,7 +451,7 @@ var resourceAttrs = map[string]typeAttrs{
 	"AWS::EC2::RouteTable": {ref: static(func(e *attrEnv) string { return e.synthID("rtb-", 17) }), attrs: map[string]attrFunc{
 		"RouteTableId": static(func(e *attrEnv) string { return e.synthID("rtb-", 17) }),
 	}},
-	"AWS::EC2::Route": {ref: static(func(e *attrEnv) string { return e.synthID("rtb-", 17) + "|" + e.prop("DestinationCidrBlock") })},
+	"AWS::EC2::Route": {ref: static(routeRef)},
 	"AWS::EC2::SubnetRouteTableAssociation": {ref: static(func(e *attrEnv) string { return e.synthID("rtbassoc-", 17) }), attrs: map[string]attrFunc{
 		"Id": static(func(e *attrEnv) string { return e.synthID("rtbassoc-", 17) }),
 	}},

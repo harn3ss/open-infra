@@ -253,9 +253,9 @@ func (h *cfnDoorway) serveInstanceCall(w http.ResponseWriter, r *http.Request, r
 	case "SignalResource":
 		h.recordSignal(w, r, rec, requestID)
 	case "DescribeStackResource":
-		h.describeStackResourceOf(w, r, rec, requestID)
+		h.describeStackResourceOf(w, r, rec, nil, requestID)
 	case "DescribeStackResources":
-		h.describeStackResourcesOf(w, r, rec, requestID)
+		h.describeStackResourcesOf(w, r, rec, nil, requestID)
 	}
 }
 

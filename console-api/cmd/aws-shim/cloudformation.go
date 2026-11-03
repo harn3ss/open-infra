@@ -1038,14 +1038,15 @@ func (h *cfnDoorway) describeStackResources(w http.ResponseWriter, r *http.Reque
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+stackRef(r)+"] does not exist.", cfnXMLNamespace)
 		return
 	}
-	h.describeStackResourcesOf(w, r, rec, requestID)
+	h.describeStackResourcesOf(w, r, rec, ap, requestID)
 }
 
 // describeStackResourcesOf answers DescribeStackResources for a stack record already read (and authorized).
-func (h *cfnDoorway) describeStackResourcesOf(w http.ResponseWriter, r *http.Request, rec *cfn.StackRecord, requestID string) {
+// sr reads the live status a folded resource's Ref needs (an Elastic IP's address); nil leaves it unresolved.
+func (h *cfnDoorway) describeStackResourcesOf(w http.ResponseWriter, r *http.Request, rec *cfn.StackRecord, sr cfn.StatusReader, requestID string) {
 	var b strings.Builder
 	only := r.PostFormValue("LogicalResourceId")
-	for _, row := range h.stackResourceRows(r.Context(), rec) {
+	for _, row := range h.stackResourceRows(r.Context(), rec, sr) {
 		if only != "" && row.logicalID != only {
 			continue
 		}
