@@ -249,53 +249,95 @@ func ship() {
 		resumeOffset = 0
 	}
 
-	if _, err := f.Seek(resumeOffset, io.SeekStart); err != nil {
-		fatalf("seek: %v", err)
-	}
-	raw, err := io.ReadAll(f)
-	if err != nil {
-		fatalf("read: %v", err)
-	}
+	// Ship in bounded segments: a segment's bytes are held a few times over (the raw lines, their strings,
+	// the segment's JSON), so reading the whole unshipped log at once — a large log after a rotation
+	// restarts it at 0 — got the job OOM-killed and it never caught up. A run ships as many bounded
+	// segments as it takes, each chained to the one before.
+	maxBytes, hardMax := segmentBytes(), int64(256<<20)
+	shipped := 0
+	ocl, obucket := offsiteClient()
+	for {
+		// Only COMPLETE lines: up to and including the last newline. A trailing partial line waits until
+		// it is finished, so a segment never contains half a record.
+		lines, consumed, err := readSegment(f, resumeOffset, maxBytes, hardMax)
+		if err != nil {
+			fatalf("read: %v", err)
+		}
+		if consumed == 0 {
+			break
+		}
+		if len(lines) == 0 { // only blank lines: carried into the next segment's EndOffset
+			resumeOffset += consumed
+			continue
+		}
+		seg := auditchain.BuildSegment(prev, lines, tsOf(lines[0]), tsOf(lines[len(lines)-1]))
+		seg.EndOffset = resumeOffset + consumed
+		seg.SourceInode = curInode
+		blob, err := json.Marshal(seg)
+		if err != nil {
+			fatalf("marshal segment: %v", err)
+		}
+		key := segmentKey(seg.Seq)
 
-	// Ship only COMPLETE lines: up to and including the last newline. A trailing partial line waits
-	// until it is finished, so a segment never contains half a record.
-	nl := bytes.LastIndexByte(raw, '\n')
-	if nl < 0 {
+		// Write to every configured sink. Because resume is derived from the bucket head, a crash after
+		// this PUT (before the off-site copy, or before the process exits) simply re-derives the SAME
+		// next segment next run — no fork.
+		if err := putSegment(ctx, pcl, pbucket, key, blob); err != nil {
+			fatalf("put segment to primary: %v", err)
+		}
+		if ocl != nil {
+			if err := putSegment(ctx, ocl, obucket, key, blob); err != nil {
+				fatalf("put segment to off-site: %v", err)
+			}
+		}
+		fmt.Printf("shipped segment seq=%d records=%d endOffset=%d head=%s\n", seg.Seq, seg.Count, seg.EndOffset, seg.Hash[:12])
+		prev, resumeOffset = &seg, seg.EndOffset
+		shipped++
+	}
+	if shipped == 0 {
 		fmt.Fprintln(os.Stderr, "audit-offsite: no complete new line to ship")
-		return
 	}
-	consumed := int64(nl + 1)
-	var lines []string
-	for _, l := range bytes.Split(raw[:consumed], []byte{'\n'}) {
-		if len(bytes.TrimSpace(l)) > 0 {
-			lines = append(lines, string(l))
+}
+
+// segmentBytes is how much of the log one segment carries at most (SEGMENT_MAX_BYTES, default 16 MiB).
+func segmentBytes() int64 {
+	if v, err := strconv.ParseInt(getenv("SEGMENT_MAX_BYTES", ""), 10, 64); err == nil && v > 0 {
+		return v
+	}
+	return 16 << 20
+}
+
+// readSegment reads at most max bytes of r from off and returns the complete lines in them (up to and
+// including the last newline; blank lines dropped) and how many bytes those span. A line longer than
+// max is read through to its end, up to hardMax (beyond that it is an error, not a silent skip). consumed
+// is 0 when no complete line follows off yet.
+func readSegment(r io.ReaderAt, off, max, hardMax int64) ([]string, int64, error) {
+	for want := max; ; want *= 2 {
+		if want > hardMax {
+			want = hardMax
+		}
+		b := make([]byte, want)
+		n, err := r.ReadAt(b, off)
+		if err != nil && err != io.EOF {
+			return nil, 0, err
+		}
+		b = b[:n]
+		if nl := bytes.LastIndexByte(b, '\n'); nl >= 0 {
+			var lines []string
+			for _, l := range bytes.Split(b[:nl+1], []byte{'\n'}) {
+				if len(bytes.TrimSpace(l)) > 0 {
+					lines = append(lines, string(l))
+				}
+			}
+			return lines, int64(nl + 1), nil
+		}
+		if int64(n) < want { // the end of the file, inside an unfinished line
+			return nil, 0, nil
+		}
+		if want == hardMax {
+			return nil, 0, fmt.Errorf("an audit record longer than %d bytes at offset %d", hardMax, off)
 		}
 	}
-	if len(lines) == 0 {
-		return
-	}
-
-	seg := auditchain.BuildSegment(prev, lines, tsOf(lines[0]), tsOf(lines[len(lines)-1]))
-	seg.EndOffset = resumeOffset + consumed
-	seg.SourceInode = curInode
-	blob, err := json.Marshal(seg)
-	if err != nil {
-		fatalf("marshal segment: %v", err)
-	}
-	key := segmentKey(seg.Seq)
-
-	// Write to every configured sink. Because resume is derived from the bucket head, a crash after
-	// this PUT (before the off-site copy, or before the process exits) simply re-derives the SAME
-	// next segment next run — no fork.
-	if err := putSegment(ctx, pcl, pbucket, key, blob); err != nil {
-		fatalf("put segment to primary: %v", err)
-	}
-	if ocl, obucket := offsiteClient(); ocl != nil {
-		if err := putSegment(ctx, ocl, obucket, key, blob); err != nil {
-			fatalf("put segment to off-site: %v", err)
-		}
-	}
-	fmt.Printf("shipped segment seq=%d records=%d endOffset=%d head=%s\n", seg.Seq, seg.Count, seg.EndOffset, seg.Hash[:12])
 }
 
 // tsOf best-effort extracts an audit line's requestReceivedTimestamp for the segment's

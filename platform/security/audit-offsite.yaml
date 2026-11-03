@@ -250,6 +250,11 @@ spec:
                 # The audit log is mounted at a FIXED internal path (/audit) so this container
                 # is substrate-agnostic; only the hostPath below is distribution-specific.
                 - { name: AUDIT_LOG_PATH, value: "/audit/audit.log" }
+                # Each segment carries at most this much of the log, and a run ships as many as it takes, so
+                # a large backlog (a rotation restarts the new file at 0) never has to fit in memory at once.
+                - { name: SEGMENT_MAX_BYTES, value: "16777216" }
+                # The Go runtime collects before the container limit, not after it.
+                - { name: GOMEMLIMIT, value: "200MiB" }
                 # Lock duration (AU-11 default ~7y; segments are undeletable until then). Operator-tunable
                 # WITHOUT forking the shipped default: create a ConfigMap `audit-config` (this namespace)
                 # with key `retentionDays` to override. Absent => the exporter's built-in 2555 default, so
