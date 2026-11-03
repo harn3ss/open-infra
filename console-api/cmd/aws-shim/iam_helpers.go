@@ -209,19 +209,16 @@ func principalFromArn(arn string) (string, string) {
 }
 
 // arnToResourceShim maps an AWS resource ARN to the shim's (resType, resID) for a SimulatePrincipalPolicy
-// query. Mirrors policyengine's S3/DynamoDB/Lambda mapping; "*" → ("*",""). A bucket key suffix is dropped
-// (authz is at the bucket).
+// query. Mirrors policyengine's S3/DynamoDB/Lambda mapping; "*" → ("*",""). An S3 object ARN keeps its key
+// (arn:aws:s3:::b/k → Bucket b/k), the resource the S3 front door checks an object action on, so a
+// simulation answers what a real request would get.
 func arnToResourceShim(arn string) (string, string) {
 	if arn == "*" || arn == "" {
 		return "*", "*"
 	}
 	switch {
 	case strings.HasPrefix(arn, "arn:aws:s3:::"):
-		rest := strings.TrimPrefix(arn, "arn:aws:s3:::")
-		if i := strings.IndexByte(rest, '/'); i >= 0 {
-			rest = rest[:i]
-		}
-		return "Bucket", rest
+		return "Bucket", strings.TrimPrefix(arn, "arn:aws:s3:::")
 	case strings.Contains(arn, ":table/"):
 		return "Table", arn[strings.Index(arn, ":table/")+len(":table/"):]
 	case strings.Contains(arn, ":function:"):

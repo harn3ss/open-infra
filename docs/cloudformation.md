@@ -107,7 +107,7 @@ Anything that would quietly grant more than the template asked for is refused ra
 a security-group port that does not resolve (it would mean every port), a security-group list that
 does not resolve to groups, an instance published on the LAN with no security group, a security group
 named from outside the stack that does not exist, an encrypted root volume (VM root disks are not
-encrypted), an S3 grant on part of a bucket (access is per bucket), a disabled KMS key, an AppSync root
+encrypted), a disabled KMS key, an AppSync root
 field with no `@aws_*` auth directive (open-appsync would serve it unauthenticated), a `PRIVATE` AppSync
 API, and an SNS subscription's `FilterPolicy` (unless the SNS front door applies it) or other delivery settings.
 

@@ -30,10 +30,10 @@ func TestImportAWS_DataPlane(t *testing.T) {
 		t.Fatalf("compile imported: %v", err)
 	}
 	p := Principal{Type: "User", ID: "a"}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "reports"}, nil}); !d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "reports/r.csv"}, nil}); !d.Allowed {
 		t.Errorf("get reports should be allowed")
 	}
-	if d := eng.Authorize(Request{p, "s3:DeleteObject", Resource{"Bucket", "reports"}, nil}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:DeleteObject", Resource{"Bucket", "reports/r.csv"}, nil}); d.Allowed {
 		t.Errorf("delete must be denied (forbid)")
 	}
 	if d := eng.Authorize(Request{p, "dynamodb:Query", Resource{"Table", "metrics"}, nil}); !d.Allowed {
@@ -176,10 +176,10 @@ func TestImportAWS_IPCondition(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	p := Principal{Type: "User", ID: "a"}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "reports"}, map[string]any{"sourceIp": "10.1.2.3"}}); !d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "reports/r.csv"}, map[string]any{"sourceIp": "10.1.2.3"}}); !d.Allowed {
 		t.Error("10.1.2.3 is in range → allowed")
 	}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "reports"}, map[string]any{"sourceIp": "8.8.8.8"}}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "reports/r.csv"}, map[string]any{"sourceIp": "8.8.8.8"}}); d.Allowed {
 		t.Error("8.8.8.8 is out of range → denied")
 	}
 }
@@ -254,35 +254,53 @@ func TestImportAWS_RefusesMalformedCIDR(t *testing.T) {
 	}
 }
 
-// A bucket ARN and its object ARN both scope to the same Bucket resource — the result must dedupe.
+// The same ARN listed twice maps to one resource; a bucket ARN and its objects' ARN stay two (the bucket,
+// for ListBucket, and its objects, for GetObject), as on AWS.
 func TestImportAWS_DeduplicatesResources(t *testing.T) {
-	doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":["arn:aws:s3:::reports","arn:aws:s3:::reports/*"]}]}`
+	doc := `{"Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:ListBucket"],"Resource":["arn:aws:s3:::reports","arn:aws:s3:::reports/*","arn:aws:s3:::reports"]}]}`
 	stmts, unsupported, err := ImportAWS(doc)
 	if err != nil || len(unsupported) != 0 {
 		t.Fatalf("import: err=%v unsupported=%v", err, unsupported)
 	}
-	if len(stmts) != 1 || len(stmts[0].Resources) != 1 || stmts[0].Resources[0] != "Bucket::reports" {
-		t.Fatalf("want a single deduped Bucket::reports, got %#v", stmts[0].Resources)
+	if len(stmts) != 1 || strings.Join(stmts[0].Resources, ",") != "Bucket::reports,Bucket::reports/*" {
+		t.Fatalf("want Bucket::reports and Bucket::reports/*, got %#v", stmts[0].Resources)
 	}
 }
 
-// An S3 ARN narrower than its bucket (a key prefix or one object) is refused: the shim authorizes S3
-// per bucket, so mapping it to Bucket::<name> would widen the grant to the whole bucket.
-func TestImportAWS_S3ObjectPrefixIsRefusedNotWidened(t *testing.T) {
-	for _, arn := range []string{"arn:aws:s3:::b/uploads/*", "arn:aws:s3:::b/report.csv", "arn:aws:s3:::b/a*"} {
-		doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"` + arn + `"}]}`
+// An S3 object ARN keeps its key, so it grants exactly the objects it names: a key prefix grants the keys
+// under it, one key grants that object, and none of them grants the bucket or its other objects.
+func TestImportAWS_S3ObjectARNsScopeToTheirObjects(t *testing.T) {
+	for _, c := range []struct {
+		arn, res string
+		allowed  []string // object ids (bucket/key) the import grants GetObject on
+		denied   []string
+	}{
+		{"arn:aws:s3:::b/uploads/*", "Bucket::b/uploads/*", []string{"b/uploads/x.png"}, []string{"b/other.png", "b", "b2/uploads/x.png"}},
+		{"arn:aws:s3:::b/report.csv", "Bucket::b/report.csv", []string{"b/report.csv"}, []string{"b/report.csv.bak", "b/x", "b"}},
+		{"arn:aws:s3:::b/a*", "Bucket::b/a*", []string{"b/a1", "b/abc/d"}, []string{"b/x", "b"}},
+		{"arn:aws:s3:::b/*", "Bucket::b/*", []string{"b/any/key"}, []string{"b", "c/key"}},
+	} {
+		doc := `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"` + c.arn + `"}]}`
 		stmts, unsupported, err := ImportAWS(doc)
+		if err != nil || len(unsupported) != 0 || len(stmts) != 1 {
+			t.Fatalf("%s: err=%v unsupported=%v stmts=%#v", c.arn, err, unsupported, stmts)
+		}
+		if strings.Join(stmts[0].Resources, ",") != c.res {
+			t.Fatalf("%s: resources %v, want %s", c.arn, stmts[0].Resources, c.res)
+		}
+		eng, err := NewEngine(stmts)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(unsupported) == 0 || !strings.Contains(strings.Join(unsupported, " "), "scopes to part of a bucket") {
-			t.Errorf("%s: want a refusal, got statements %#v unsupported %v", arn, stmts, unsupported)
+		alice := Principal{Type: "User", ID: "alice"}
+		for _, id := range c.allowed {
+			if d := eng.Authorize(Request{alice, "s3:GetObject", Resource{Type: "Bucket", ID: id}, nil}); !d.Allowed {
+				t.Errorf("%s: GetObject %s denied, want allowed", c.arn, id)
+			}
 		}
-		for _, s := range stmts {
-			for _, r := range s.Resources {
-				if r == "Bucket::b" {
-					t.Errorf("%s widened to Bucket::b", arn)
-				}
+		for _, id := range c.denied {
+			if d := eng.Authorize(Request{alice, "s3:GetObject", Resource{Type: "Bucket", ID: id}, nil}); d.Allowed {
+				t.Errorf("%s: GetObject %s allowed, want denied (the grant widened)", c.arn, id)
 			}
 		}
 	}
@@ -303,13 +321,13 @@ func TestImportAWS_UsernameStringEquals(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	p := Principal{Type: "User", ID: "x"}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "alice"}}); !d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, map[string]any{"username": "alice"}}); !d.Allowed {
 		t.Error("alice should be allowed")
 	}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "bob"}}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, map[string]any{"username": "bob"}}); d.Allowed {
 		t.Error("bob should be denied")
 	}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, nil}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, nil}); d.Allowed {
 		t.Error("absent username should be denied (allow condition unsatisfied)")
 	}
 }
@@ -329,10 +347,10 @@ func TestImportAWS_UsernameStringLike(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	p := Principal{Type: "User", ID: "x"}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "admin-ops"}}); !d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, map[string]any{"username": "admin-ops"}}); !d.Allowed {
 		t.Error("admin-ops should match admin-* → allowed")
 	}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "dev-x"}}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, map[string]any{"username": "dev-x"}}); d.Allowed {
 		t.Error("dev-x should not match admin-* → denied")
 	}
 }
@@ -353,13 +371,13 @@ func TestImportAWS_UsernameDenyFailsClosedOnAbsent(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	p := Principal{Type: "User", ID: "x"}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "admin-ops"}}); !d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, map[string]any{"username": "admin-ops"}}); !d.Allowed {
 		t.Error("admin-ops matches → NotLike false → deny does not fire → allowed")
 	}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"username": "intruder"}}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, map[string]any{"username": "intruder"}}); d.Allowed {
 		t.Error("intruder → NotLike true → deny fires → denied")
 	}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, nil}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, nil}); d.Allowed {
 		t.Error("FAIL-OPEN: absent username must DENY (the forbid absent-key guard)")
 	}
 }
@@ -396,18 +414,18 @@ func TestImportAWS_CurrentTimeWindow(t *testing.T) {
 	}
 	p := Principal{Type: "User", ID: "x"}
 	in := map[string]any{"currentTime": "2025-06-15T12:00:00Z"}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, in}); !d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, in}); !d.Allowed {
 		t.Error("in-window request should be allowed")
 	}
 	before := map[string]any{"currentTime": "2024-12-31T23:59:59Z"}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, before}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, before}); d.Allowed {
 		t.Error("before-window request should be denied")
 	}
 	after := map[string]any{"currentTime": "2026-02-01T00:00:00Z"}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, after}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, after}); d.Allowed {
 		t.Error("after-window request should be denied")
 	}
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, nil}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, nil}); d.Allowed {
 		t.Error("absent currentTime should be denied (allow condition unsatisfied)")
 	}
 }
@@ -430,19 +448,19 @@ func TestImportAWS_CurrentTimeDenyFailsClosed(t *testing.T) {
 	}
 	p := Principal{Type: "User", ID: "x"}
 	// Before the cutoff: allowed (deny's DateGreaterThan not satisfied).
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"currentTime": "2024-06-01T00:00:00Z"}}); !d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, map[string]any{"currentTime": "2024-06-01T00:00:00Z"}}); !d.Allowed {
 		t.Error("before-cutoff request should be allowed")
 	}
 	// After the cutoff: denied.
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"currentTime": "2025-06-01T00:00:00Z"}}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, map[string]any{"currentTime": "2025-06-01T00:00:00Z"}}); d.Allowed {
 		t.Error("after-cutoff request should be denied")
 	}
 	// Absent currentTime: the Deny's forbid absent-key guard must fire → DENY (fail closed).
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, nil}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, nil}); d.Allowed {
 		t.Error("FAIL-OPEN: absent currentTime must DENY (the forbid absent-key guard)")
 	}
 	// Malformed currentTime: sanitised to absent → same forbid guard denies (fail closed).
-	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b"}, map[string]any{"currentTime": "not-a-date"}}); d.Allowed {
+	if d := eng.Authorize(Request{p, "s3:GetObject", Resource{"Bucket", "b/k"}, map[string]any{"currentTime": "not-a-date"}}); d.Allowed {
 		t.Error("FAIL-OPEN: malformed currentTime must DENY (sanitised to absent)")
 	}
 }

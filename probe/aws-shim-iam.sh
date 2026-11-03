@@ -134,8 +134,10 @@ sleep 35
 log "simulate-principal-policy: GetObject X=allowed, GetObject Y=implicitDeny (resource), ListBucket X=implicitDeny (action)"
 sim() { iam "$AAK" "$ASK" simulate-principal-policy --policy-source-arn "arn:aws:iam::${ACCOUNT}:role/${ROLE}" \
   --action-names "$1" --resource-arns "$2" --query 'EvaluationResults[0].EvalDecision' 2>/dev/null; }
-[ "$(sim s3:GetObject "arn:aws:s3:::$BUCKET_X")" = "allowed" ]      || fail "Simulate GetObject X should be allowed (allow direction / translation broken)"
-[ "$(sim s3:GetObject "arn:aws:s3:::$BUCKET_Y")" = "implicitDeny" ] || fail "Simulate GetObject Y should be implicitDeny (resource fidelity)"
+# GetObject is simulated on an object ARN, the resource AWS (and the shim) authorizes it on: the policy
+# grants arn:aws:s3:::X/*, the objects, not the bucket itself.
+[ "$(sim s3:GetObject "arn:aws:s3:::$BUCKET_X/k.txt")" = "allowed" ]      || fail "Simulate GetObject X/k.txt should be allowed (allow direction / translation broken)"
+[ "$(sim s3:GetObject "arn:aws:s3:::$BUCKET_Y/k.txt")" = "implicitDeny" ] || fail "Simulate GetObject Y/k.txt should be implicitDeny (resource fidelity)"
 [ "$(sim s3:ListBucket "arn:aws:s3:::$BUCKET_X")" = "implicitDeny" ]|| fail "Simulate ListBucket X should be implicitDeny (action fidelity)"
 log "    ✓ translation faithful both directions (allow + resource-deny + action-deny)"
 
@@ -211,7 +213,7 @@ if [ -n "$DENY_ARN" ]; then
   log "forbid fidelity: attach the explicit-Deny policy → Simulate reports explicitDeny"
   iam "$AAK" "$ASK" attach-role-policy --role-name "$ROLE" --policy-arn "$DENY_ARN" >/dev/null 2>&1 || true
   sleep 35
-  DEC="$(sim s3:GetObject "arn:aws:s3:::$BUCKET_X")"
+  DEC="$(sim s3:GetObject "arn:aws:s3:::$BUCKET_X/k.txt")"
   [ "$DEC" = "explicitDeny" ] || fail "an explicit Deny statement should translate to a forbid (Simulate=$DEC, want explicitDeny)"
   log "    ✓ explicit Deny → explicitDeny (forbid overrides permit)"
 fi

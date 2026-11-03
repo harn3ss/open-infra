@@ -311,9 +311,9 @@ Resources:
 `
 	st := roleStatements(t, ecsCtx(t, tmpl))
 	want := [][]string{
-		{"Bucket::assets"},
-		{"Bucket::app-config"},
-		{"Bucket::app-config"},
+		{"Bucket::assets/*"}, // the bucket's objects, as the ARN names them
+		{"Bucket::app-config/*"},
+		{"Bucket::app-config/*"},
 		{"Table::orders"},
 		{"Topic::alerts"},
 	}
@@ -327,9 +327,9 @@ Resources:
 	}
 }
 
-// A grant on part of a bucket (a key prefix) is refused: open-infra authorizes S3 per bucket, so it would
-// otherwise widen to the whole bucket.
-func TestTranslate_IAMRole_S3PrefixIsRefused(t *testing.T) {
+// A grant on part of a bucket (a key prefix) translates to that prefix's objects: the S3 front door checks
+// an object operation on its object, so the grant reaches the keys under uploads/ and nothing else.
+func TestTranslate_IAMRole_S3PrefixScopesToItsKeys(t *testing.T) {
 	tmpl := `
 Resources:
   Config:
@@ -349,10 +349,9 @@ Resources:
             Statement:
               - { Effect: Allow, Action: s3:PutObject, Resource: !Sub "arn:aws:s3:::${Config}/uploads/*" }
 `
-	ctx := ecsCtx(t, tmpl)
-	props, _ := ctx.resolveProps("AppRole")
-	if _, fs := translateIAMRole("AppRole", props, ctx); !strings.Contains(findingsText(fs), "scopes to part of a bucket") {
-		t.Fatalf("want a refusal, got %q", findingsText(fs))
+	st := roleStatements(t, ecsCtx(t, tmpl))
+	if len(st) != 1 || !sameStrs(strs(st[0]["resources"]), []string{"Bucket::app-config/uploads/*"}) {
+		t.Fatalf("want one statement on Bucket::app-config/uploads/*, got %#v", st)
 	}
 }
 

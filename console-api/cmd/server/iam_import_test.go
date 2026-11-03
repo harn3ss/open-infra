@@ -22,7 +22,7 @@ func TestBuildImportResp(t *testing.T) {
 		t.Fatalf("clean import: got %+v", r.Summary)
 	}
 	if len(r.Translated) != 1 || r.Translated[0].Effect != "Allow" ||
-		len(r.Translated[0].Resources) != 1 || r.Translated[0].Resources[0] != "Bucket::assets" {
+		len(r.Translated[0].Resources) != 1 || r.Translated[0].Resources[0] != "Bucket::assets/*" {
 		t.Fatalf("clean import translated wrong: %+v", r.Translated)
 	}
 	if r.Translated[0].Broad {

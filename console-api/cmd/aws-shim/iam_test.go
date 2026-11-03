@@ -97,7 +97,7 @@ func TestPolicyAndPrincipalArns(t *testing.T) {
 func TestArnToResourceShim(t *testing.T) {
 	cases := []struct{ arn, rt, rid string }{
 		{"arn:aws:s3:::reports", "Bucket", "reports"},
-		{"arn:aws:s3:::reports/data/x", "Bucket", "reports"},
+		{"arn:aws:s3:::reports/data/x", "Bucket", "reports/data/x"}, // an object: checked as the object
 		{"arn:aws:dynamodb:us-east-1:a:table/orders", "Table", "orders"},
 		{"arn:aws:lambda:us-east-1:a:function:worker", "Function", "worker"},
 		{"*", "*", "*"},

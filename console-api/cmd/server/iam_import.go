@@ -123,7 +123,7 @@ func buildImportResp(stmts []policyengine.Statement, refused []string) importRes
 		// A NotAction/NotResource statement grants "everything except …" — inherently broad, so it is
 		// always flagged for review alongside the usual "*" wildcard grants.
 		complement := len(s.NotActions) > 0 || len(s.NotResources) > 0
-		broad := hasWildcard(s.Actions) || hasWildcard(s.Resources) || complement
+		broad := hasWildcard(s.Actions) || broadResources(s.Resources) || complement
 		var ipc []importedIPCondition
 		for _, c := range s.IPConditions {
 			ipc = append(ipc, importedIPCondition{Key: c.Key, CIDR: c.CIDR, Negate: c.Negate})
@@ -190,6 +190,25 @@ func resourceAxis(resources, notResources []string) string {
 		return fmt.Sprintf("NotResource %v", notResources)
 	}
 	return fmt.Sprintf("%v", resources)
+}
+
+// broadResources reports whether a resource entry reaches beyond one named resource: "*", or a wildcard in
+// the resource's name ("Bucket::log-*", "Table::*"). A wildcard in an S3 object key stays inside one bucket
+// ("Bucket::assets/*", AWS's arn:aws:s3:::assets/* for the bucket's objects), so it is not broad.
+func broadResources(xs []string) bool {
+	for _, x := range xs {
+		if typ, id, ok := strings.Cut(x, "::"); ok && typ == "Bucket" {
+			bucket, _, _ := strings.Cut(id, "/")
+			if strings.Contains(bucket, "*") {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(x, "*") {
+			return true
+		}
+	}
+	return false
 }
 
 // hasWildcard reports whether any entry is "*" or contains a "*" (e.g. "s3:*", "Bucket::log-*").

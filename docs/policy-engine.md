@@ -86,7 +86,11 @@ that principal is unaffected there.
 
 `policyengine.ImportAWS` maps an AWS IAM policy document onto the model for the actions the shim
 fronts (the services in `policyengine.SupportedServices`) — `Effect` → `permit`/`forbid`, ARNs → typed
-resources (`arn:aws:s3:::reports/*` → `Bucket::reports`, a table ARN → `Table::metrics`). `NotAction`/
+resources (`arn:aws:s3:::reports` → `Bucket::reports`, `arn:aws:s3:::reports/*` → `Bucket::reports/*`, a
+table ARN → `Table::metrics`). An S3 object ARN keeps its key, because the shim checks an object operation
+on the object (`Bucket::<bucket>/<key>`) and a bucket operation such as `ListBucket` on the bucket, as AWS
+does. So `arn:aws:s3:::reports/2026/*` grants the keys under `2026/` and nothing else. A native whole-bucket
+entry, `Bucket::reports`, covers the bucket and every object in it. `NotAction`/
 `NotResource` map to the **complement** axes (`notActions`/`notResources` — "any action/resource except
 these"), themselves fail-closed: a statement cannot set both a positive and its `Not` sibling, and a
 `NotResource` whose exclusion can't be mapped is refused rather than silently widened to all resources.

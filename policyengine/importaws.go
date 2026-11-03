@@ -353,8 +353,8 @@ func importActions(actions []string) (kept, unsupported []string) {
 }
 
 // importResources maps AWS ARNs to open-infra typed resources, reporting ARNs it can't map.
-// Distinct ARNs can collapse to the same typed resource (a bucket ARN and its `/*` object ARN both
-// map to Bucket::<name>, since open-infra scopes to the bucket), so the result is de-duplicated.
+// Distinct ARNs can collapse to the same typed resource (a KMS key's ARN and its alias, an SNS topic and
+// one of its subscriptions), so the result is de-duplicated.
 func importResources(arns []string) (kept, unsupported []string) {
 	seen := map[string]bool{}
 	add := func(res string) {
@@ -370,23 +370,11 @@ func importResources(arns []string) (kept, unsupported []string) {
 		}
 		if res, ok := arnToResource(r); ok {
 			add(res)
-		} else if s3ObjectPrefix(r) {
-			unsupported = append(unsupported, "resource "+r+" scopes to part of a bucket — open-infra authorizes S3 per bucket, so honoring it would widen the grant to the whole bucket (only bucket and bucket/* ARNs map)")
 		} else {
 			unsupported = append(unsupported, "resource "+r+" is not a recognizable ARN for a shim-fronted service")
 		}
 	}
 	return kept, unsupported
-}
-
-// s3ObjectPrefix reports whether arn is an S3 object ARN narrower than its whole bucket.
-func s3ObjectPrefix(arn string) bool {
-	tail, ok := strings.CutPrefix(arn, "arn:aws:s3:::")
-	if !ok {
-		return false
-	}
-	bucket, key, hasKey := strings.Cut(tail, "/")
-	return bucket != "" && hasKey && key != "*"
 }
 
 // arnToResource maps an AWS ARN to the open-infra "Type::id" the aws-shim data-plane check uses for
@@ -407,12 +395,13 @@ func arnToResource(arn string) (string, bool) {
 	}
 	switch svc {
 	case "s3":
-		// arn:aws:s3:::bucket and arn:aws:s3:::bucket/* -> Bucket::bucket. The shim authorizes S3 per
-		// bucket, so a narrower object ARN (bucket/uploads/*, bucket/key) has no faithful form: mapping it
-		// to the bucket would widen the grant, so it is not mapped (s3ObjectPrefix reports why).
-		bucket, key, hasKey := strings.Cut(tail, "/")
-		if bucket != "" && (!hasKey || key == "*") {
-			return "Bucket::" + bucket, true
+		// arn:aws:s3:::bucket -> Bucket::bucket; an object ARN keeps its key: arn:aws:s3:::bucket/* ->
+		// Bucket::bucket/* (every object, not the bucket), arn:aws:s3:::bucket/uploads/* ->
+		// Bucket::bucket/uploads/*, arn:aws:s3:::bucket/report.csv -> Bucket::bucket/report.csv. The shim
+		// authorizes an object operation on its object (Bucket::<bucket>/<key>) and a bucket operation
+		// (ListBucket …) on the bucket, as AWS does, so each ARN grants exactly what it grants on AWS.
+		if bucket, _, _ := strings.Cut(tail, "/"); bucket != "" {
+			return "Bucket::" + tail, true
 		}
 	case "dynamodb":
 		return cut("table/", "Table")
