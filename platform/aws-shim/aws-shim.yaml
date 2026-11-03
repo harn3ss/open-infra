@@ -385,7 +385,8 @@ subjects:
 # and the stack namespace (CFN_NAMESPACE), so a function a stack creates is invoked by the name its stack
 # reports. Read one claim by name — get only, bound in just those two namespaces; the caller's right to
 # invoke is still checked where the function is found. Without it every invoke looks in
-# FUNCTIONS_NAMESPACE only.
+# FUNCTIONS_NAMESPACE only. list serves Lambda ListFunctions, a page at a time, over the same two
+# namespaces (the caller's own list right is checked in each).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -393,7 +394,7 @@ metadata:
 rules:
   - apiGroups: [openinfra.dev]
     resources: [functions]
-    verbs: [get]
+    verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -108,18 +108,6 @@ exceptions:
       front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no
       DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints.
     issue: "untracked — raised by the coverage registry"
-  - types: [AWS::Lambda::Function]
-    check: read
-    reason: >-
-      The Lambda front door serves Invoke only (lambda:InvokeFunction): a stack's function is invocable by
-      the name and ARN the stack reports, but GetFunction and ListFunctions are not served.
-    issue: "untracked — raised by the coverage registry"
-  - types: [AWS::Lambda::Permission]
-    check: read
-    reason: >-
-      Provisions nothing: the integration that invokes the function is authorized when it is created,
-      against its creator's authority, not by a resource policy. GetPolicy is not served.
-    issue: "untracked — raised by the coverage registry"
   - types: [AWS::IAM::InstanceProfile]
     check: read
     reason: >-

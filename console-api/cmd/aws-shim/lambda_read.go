@@ -1,0 +1,452 @@
+// Lambda's read operations over kind: Function: GetFunction, GetFunctionConfiguration, ListFunctions and
+// GetPolicy, in the Lambda REST-JSON shapes the AWS CLI and SDKs parse.
+//
+// A function is found where it lives (the Lambda API's namespace or a CloudFormation stack's, fn_locate.go)
+// and read with the shim's `get`/`list` on functions there. The caller's authority is checked the way Invoke
+// checks it: the coarse RBAC verb on functions in the function's namespace (get to read one, list to list
+// a namespace), and the data-plane action AWS names (lambda:GetFunction, lambda:GetFunctionConfiguration,
+// lambda:GetPolicy on Function::<name>; lambda:ListFunctions on Resource "*").
+//
+// ListFunctions pages through the claims with the API server's own limit/continue, so a page reads at most
+// 50 claims (AWS's per-page maximum) and nothing holds every function in memory. Its Marker names the
+// namespace it stopped in and that namespace's continue token; a namespace the caller may not list is
+// skipped, so the listing holds only functions the caller may read.
+//
+// What a Function does not have, the answer leaves out rather than invents: there is no execution role
+// (a stack's Role is dropped: functions get their access through injected secrets), no code size or hash,
+// and no download location for a zip's code. A function has no resource policy (a stack's
+// AWS::Lambda::Permission provisions nothing: the integration that invokes the function is authorized
+// against its creator's authority when it is created), so GetPolicy answers as AWS does for a function with
+// no policy: ResourceNotFoundException.
+package main
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+)
+
+// lambdaListMax is the most functions one ListFunctions page holds (AWS returns at most 50 whatever
+// MaxItems asks for) — and so the most claims one page reads.
+const lambdaListMax = 50
+
+// parseLambdaReadPath matches the read operations' routes and returns the operation, the function name and
+// its qualifier (from the name's :qualifier or ?Qualifier=):
+//
+//	GET /2015-03-31/functions/                         ListFunctions
+//	GET /2015-03-31/functions/{name}                   GetFunction
+//	GET /2015-03-31/functions/{name}/configuration     GetFunctionConfiguration
+//	GET /2015-03-31/functions/{name}/policy            GetPolicy
+//
+// ok is false for any other request (Invoke is matched by parseInvokePath); bad is true when the route is
+// a read but its function name is not one a Function can have.
+func parseLambdaReadPath(r *http.Request) (op, name, qualifier string, ok, bad bool) {
+	if r.Method != http.MethodGet {
+		return "", "", "", false, false
+	}
+	p := strings.TrimPrefix(r.URL.Path, "/2015-03-31/functions")
+	if p == r.URL.Path {
+		return "", "", "", false, false
+	}
+	if p == "" || p == "/" {
+		return "ListFunctions", "", "", true, false
+	}
+	if !strings.HasPrefix(p, "/") {
+		return "", "", "", false, false
+	}
+	fn, rest, _ := strings.Cut(p[1:], "/")
+	switch rest {
+	case "":
+		op = "GetFunction"
+	case "configuration":
+		op = "GetFunctionConfiguration"
+	case "policy":
+		op = "GetPolicy"
+	default:
+		return "", "", "", false, false
+	}
+	name, qualifier, valid := parseFunctionRef(fn, r.URL.Query().Get("Qualifier"))
+	if !valid {
+		return op, "", "", true, true
+	}
+	return op, name, qualifier, true, false
+}
+
+// parseFunctionRef reads a FunctionName as a request carries it — a name, an ARN or partial ARN
+// (arn:aws:lambda:<region>:<acct>:function:<name>[:<qualifier>], <acct>:function:<name>), optionally
+// with :<qualifier> — plus a ?Qualifier=, which must agree with the name's. The name and a non-$LATEST
+// qualifier must be RFC-1123 labels whose joined <qualifier>-<name> fits a DNS label, as Invoke's do.
+func parseFunctionRef(fn, queryQualifier string) (name, qualifier string, ok bool) {
+	if i := strings.Index(fn, ":function:"); i >= 0 {
+		fn = fn[i+len(":function:"):]
+	}
+	name, qualifier, _ = strings.Cut(fn, ":")
+	if queryQualifier != "" {
+		if qualifier != "" && qualifier != queryQualifier {
+			return "", "", false
+		}
+		qualifier = queryQualifier
+	}
+	if !fnNameRE.MatchString(name) {
+		return "", "", false
+	}
+	if qualifier != "" && qualifier != "$LATEST" {
+		if !fnNameRE.MatchString(qualifier) || len(qualifier)+1+len(name) > 63 {
+			return "", "", false
+		}
+	}
+	return name, qualifier, true
+}
+
+// lambdaReadAction is the IAM action AWS authorizes each read operation with.
+func lambdaReadAction(op string) string {
+	switch op {
+	case "GetFunction":
+		return "lambda:GetFunction"
+	case "GetFunctionConfiguration":
+		return "lambda:GetFunctionConfiguration"
+	case "GetPolicy":
+		return "lambda:GetPolicy"
+	case "ListFunctions":
+		return "lambda:ListFunctions"
+	}
+	return ""
+}
+
+func (h *lambdaHandler) serveRead(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID, op, name, qualifier string) {
+	if h.fns == nil || h.fns.dyn == nil || len(h.fns.namespaces) == 0 {
+		writeLambdaError(w, http.StatusNotImplemented, "ServiceException", requestID,
+			"reading functions needs the shim's cluster access, which this shim does not have")
+		return
+	}
+	if op == "ListFunctions" {
+		h.listFunctions(w, r, claims, requestID)
+		return
+	}
+	ctx := r.Context()
+	action := lambdaReadAction(op)
+	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, action, "Function", name, r); denied {
+		h.logger.Warn("lambda read denied by data-plane policy", "user", claims.Sub, "function", name, "op", op, "reason", reason)
+		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
+	}
+	ns := h.fns.namespaceOf(ctx, name, h.fnNS)
+	if allowed, reason := iam.CanDo(ctx, h.cs, claims, "get", "openinfra.dev", "functions", ns, name); !allowed {
+		h.logger.Warn("lambda read denied", "user", claims.Sub, "function", name, "op", op, "reason", reason)
+		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID,
+			"User: "+claims.Sub+" is not authorized to perform: "+action+" on resource: "+h.functionARN(name))
+		return
+	}
+	obj, err := h.fns.dyn.Resource(functionClaimGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		writeLambdaError(w, http.StatusNotFound, "ResourceNotFoundException", requestID,
+			"Function not found: "+h.functionARN(name))
+		return
+	} else if err != nil {
+		h.logger.Warn("lambda read failed", "function", name, "namespace", ns, "error", err.Error())
+		writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID, "could not read the function")
+		return
+	}
+	if qualifier != "" && qualifier != "$LATEST" && !hasAlias(obj, qualifier) {
+		writeLambdaError(w, http.StatusNotFound, "ResourceNotFoundException", requestID,
+			"Function not found: "+h.functionARN(name)+":"+qualifier)
+		return
+	}
+	switch op {
+	case "GetFunctionConfiguration":
+		writeLambdaJSON(w, requestID, h.functionConfiguration(obj, qualifier))
+	case "GetFunction":
+		out := map[string]any{"Configuration": h.functionConfiguration(obj, qualifier)}
+		if code := functionCode(obj); code != nil {
+			out["Code"] = code
+		}
+		if n, found, _ := unstructured.NestedInt64(obj.Object, "spec", "reservedConcurrency"); found {
+			out["Concurrency"] = map[string]any{"ReservedConcurrentExecutions": n}
+		}
+		writeLambdaJSON(w, requestID, out)
+	case "GetPolicy":
+		// A function has no resource policy (see the file comment): AWS's answer for one with none.
+		writeLambdaError(w, http.StatusNotFound, "ResourceNotFoundException", requestID,
+			"The resource you requested does not exist.")
+	}
+}
+
+// lambdaMarker is a ListFunctions Marker: the index of the namespace the previous page stopped in and that
+// namespace's continue token ("" = start it from the top).
+type lambdaMarker struct {
+	NS       int    `json:"n"`
+	Continue string `json:"c,omitempty"`
+}
+
+func encodeLambdaMarker(m lambdaMarker) string {
+	b, _ := json.Marshal(m)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func decodeLambdaMarker(s string) (lambdaMarker, bool) {
+	var m lambdaMarker
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil || json.Unmarshal(b, &m) != nil || m.NS < 0 {
+		return lambdaMarker{}, false
+	}
+	return m, true
+}
+
+func (h *lambdaHandler) listFunctions(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
+	ctx := r.Context()
+	// AWS evaluates lambda:ListFunctions on Resource "*" (an assumed role needs a grant on Function::*).
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "lambda:ListFunctions", "Function", "", r); denied {
+		h.logger.Warn("lambda ListFunctions denied by data-plane policy", "user", claims.Sub, "reason", reason)
+		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
+	}
+	q := r.URL.Query()
+	limit := lambdaListMax
+	if s := q.Get("MaxItems"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > 10000 {
+			writeLambdaError(w, http.StatusBadRequest, "InvalidParameterValueException", requestID,
+				"MaxItems must be between 1 and 10000")
+			return
+		}
+		if n < limit {
+			limit = n
+		}
+	}
+	start := lambdaMarker{}
+	if s := q.Get("Marker"); s != "" {
+		m, ok := decodeLambdaMarker(s)
+		if !ok || m.NS >= len(h.fns.namespaces) {
+			writeLambdaError(w, http.StatusBadRequest, "InvalidParameterValueException", requestID, "Invalid Marker")
+			return
+		}
+		start = m
+	}
+	// The namespaces the caller may list functions in; one it may not is not listed (its functions are not
+	// the caller's to see). A caller who may list none is refused, as AWS refuses ListFunctions.
+	readable := make([]bool, len(h.fns.namespaces))
+	anyReadable := false
+	for i, ns := range h.fns.namespaces {
+		if ok, _ := iam.CanDo(ctx, h.cs, claims, "list", "openinfra.dev", "functions", ns, ""); ok {
+			readable[i], anyReadable = true, true
+		}
+	}
+	if !anyReadable {
+		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID,
+			"User: "+claims.Sub+" is not authorized to perform: lambda:ListFunctions on resource: *")
+		return
+	}
+	fns := []any{}
+	next := ""
+	for i := start.NS; i < len(h.fns.namespaces); i++ {
+		if !readable[i] {
+			continue
+		}
+		cont := ""
+		if i == start.NS {
+			cont = start.Continue
+		}
+		for len(fns) < limit {
+			list, err := h.fns.dyn.Resource(functionClaimGVR).Namespace(h.fns.namespaces[i]).List(ctx,
+				metav1.ListOptions{Limit: int64(limit - len(fns)), Continue: cont})
+			if apierrors.IsResourceExpired(err) {
+				writeLambdaError(w, http.StatusBadRequest, "InvalidParameterValueException", requestID,
+					"The Marker has expired: list the functions again from the start")
+				return
+			} else if err != nil {
+				h.logger.Warn("lambda ListFunctions failed", "namespace", h.fns.namespaces[i], "error", err.Error())
+				writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID, "could not list the functions")
+				return
+			}
+			for j := range list.Items {
+				if len(fns) == limit {
+					break // a server that ignores Limit still yields a page of at most limit
+				}
+				fns = append(fns, h.functionConfiguration(&list.Items[j], ""))
+			}
+			cont = list.GetContinue()
+			if cont == "" {
+				break
+			}
+		}
+		if len(fns) == limit {
+			if cont != "" {
+				next = encodeLambdaMarker(lambdaMarker{NS: i, Continue: cont})
+			} else if h.moreReadable(readable, i+1) {
+				next = encodeLambdaMarker(lambdaMarker{NS: i + 1})
+			}
+			break
+		}
+	}
+	out := map[string]any{"Functions": fns}
+	if next != "" {
+		out["NextMarker"] = next
+	}
+	writeLambdaJSON(w, requestID, out)
+}
+
+// moreReadable reports whether a namespace from index from on is one the caller may list.
+func (h *lambdaHandler) moreReadable(readable []bool, from int) bool {
+	for i := from; i < len(readable); i++ {
+		if readable[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// functionARN is the function's ARN in this install's region and account, as a stack reports it.
+func (h *lambdaHandler) functionARN(name string) string {
+	return "arn:aws:lambda:" + h.region + ":" + h.account + ":function:" + name
+}
+
+// functionConfiguration is a kind: Function in Lambda's FunctionConfiguration shape. qualifier is ""
+// (the unqualified function) or an alias it has.
+func (h *lambdaHandler) functionConfiguration(obj *unstructured.Unstructured, qualifier string) map[string]any {
+	name := obj.GetName()
+	spec, _ := obj.Object["spec"].(map[string]any)
+	arn := h.functionARN(name)
+	if qualifier != "" {
+		arn += ":" + qualifier
+	}
+	c := map[string]any{
+		"FunctionName": name,
+		"FunctionArn":  arn,
+		"Version":      "$LATEST",
+		"LastModified": lambdaTime(fnLastModified(obj)),
+	}
+	if img, _ := spec["image"].(string); img != "" {
+		c["PackageType"] = "Image"
+	} else {
+		c["PackageType"] = "Zip"
+		code, _ := spec["code"].(map[string]any)
+		if rt := lambdaRuntime(fnStr(code["runtime"])); rt != "" {
+			c["Runtime"] = rt
+		}
+		if hd := fnStr(code["handler"]); hd != "" {
+			c["Handler"] = hd
+		}
+	}
+	if m := fnStr(spec["memory"]); m != "" {
+		if q, err := resource.ParseQuantity(m); err == nil {
+			c["MemorySize"] = q.Value() / (1 << 20)
+		}
+	}
+	// Unset, a function's requests run for Knative's default of 300 seconds.
+	timeout := int64(300)
+	if t, found, _ := unstructured.NestedInt64(obj.Object, "spec", "timeout"); found {
+		timeout = t
+	}
+	c["Timeout"] = timeout
+	if env, _ := spec["env"].([]any); len(env) > 0 {
+		vars := map[string]string{}
+		for _, e := range env {
+			if m, ok := e.(map[string]any); ok && fnStr(m["name"]) != "" {
+				vars[fnStr(m["name"])] = fnStr(m["value"])
+			}
+		}
+		if len(vars) > 0 {
+			c["Environment"] = map[string]any{"Variables": vars}
+		}
+	}
+	state, update, reason := functionState(obj)
+	c["State"], c["LastUpdateStatus"] = state, update
+	if reason != "" {
+		c["StateReason"] = reason
+	}
+	return c
+}
+
+// functionCode is GetFunction's Code: the image of an image function; a zip function's code is in a
+// bucket this answer does not hand out a location for. nil when the function names neither.
+func functionCode(obj *unstructured.Unstructured) map[string]any {
+	spec, _ := obj.Object["spec"].(map[string]any)
+	if img, _ := spec["image"].(string); img != "" {
+		return map[string]any{"RepositoryType": "ECR", "ImageUri": img}
+	}
+	if b, _, _ := unstructured.NestedString(obj.Object, "spec", "code", "source", "bucket"); b != "" {
+		return map[string]any{"RepositoryType": "S3"}
+	}
+	return nil
+}
+
+// lambdaRuntime maps a Function's spec.code.runtime onto the Lambda runtime identifier ("" when unset or
+// a runtime image of the caller's own).
+func lambdaRuntime(rt string) string {
+	switch {
+	case rt == "":
+		return ""
+	case strings.HasPrefix(rt, "nodejs"):
+		return rt + ".x"
+	}
+	return rt
+}
+
+// functionState maps the claim's Synced/Ready conditions onto Lambda's State and LastUpdateStatus.
+func functionState(obj *unstructured.Unstructured) (state, update, reason string) {
+	conds, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	var ready, synced map[string]any
+	for _, c := range conds {
+		m, _ := c.(map[string]any)
+		switch fnStr(m["type"]) {
+		case "Ready":
+			ready = m
+		case "Synced":
+			synced = m
+		}
+	}
+	if synced != nil && fnStr(synced["status"]) == "False" {
+		return "Failed", "Failed", fnStr(synced["message"])
+	}
+	if ready != nil && fnStr(ready["status"]) == "True" {
+		return "Active", "Successful", ""
+	}
+	if ready != nil {
+		return "Pending", "InProgress", fnStr(ready["message"])
+	}
+	return "Pending", "InProgress", ""
+}
+
+// fnLastModified is when the claim was last written (its newest managed-fields entry), else its creation.
+func fnLastModified(obj *unstructured.Unstructured) time.Time {
+	t := obj.GetCreationTimestamp().Time
+	for _, mf := range obj.GetManagedFields() {
+		if mf.Time != nil && mf.Time.After(t) {
+			t = mf.Time.Time
+		}
+	}
+	return t
+}
+
+// lambdaTime is Lambda's LastModified form: 2026-11-03T10:15:30.000+0000.
+func lambdaTime(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000-0700")
+}
+
+func hasAlias(obj *unstructured.Unstructured, alias string) bool {
+	al, _, _ := unstructured.NestedSlice(obj.Object, "spec", "aliases")
+	for _, a := range al {
+		if m, ok := a.(map[string]any); ok && fnStr(m["name"]) == alias {
+			return true
+		}
+	}
+	return false
+}
+
+func writeLambdaJSON(w http.ResponseWriter, requestID string, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("x-amzn-RequestId", requestID)
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func fnStr(v any) string { s, _ := v.(string); return s }

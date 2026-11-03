@@ -482,9 +482,18 @@
     },
     "lambda": {
       "handler": "lambdaHandler",
-      "operations": [],
+      "operations": [
+        "GetFunction",
+        "GetFunctionConfiguration",
+        "GetPolicy",
+        "ListFunctions"
+      ],
       "actions": [
-        "lambda:InvokeFunction"
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration",
+        "lambda:GetPolicy",
+        "lambda:InvokeFunction",
+        "lambda:ListFunctions"
       ]
     },
     "logs": {

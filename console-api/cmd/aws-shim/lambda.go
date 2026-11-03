@@ -50,6 +50,8 @@ type lambdaHandler struct {
 	async     *asyncInvoker           // durable async (Event) delivery; nil = async unavailable (no NATS)
 	authz     *dataplaneauthz.Checker // fine-grained kind: Policy data-plane check (additive; may be nil)
 	logger    *slog.Logger
+	// account and region make a function's ARN in the read operations' answers (lambda_read.go).
+	account, region string
 	// fns finds which namespace a function lives in (the Lambda API's or a CloudFormation stack's,
 	// fn_locate.go); nil = always fnNS.
 	fns *fnLocator
@@ -72,10 +74,20 @@ func (h *lambdaHandler) authFailure(w http.ResponseWriter, _ *http.Request, requ
 }
 
 func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
+	// The read operations (GetFunction, GetFunctionConfiguration, ListFunctions, GetPolicy): lambda_read.go.
+	if op, fn, q, read, bad := parseLambdaReadPath(r); read {
+		if bad {
+			writeLambdaError(w, http.StatusBadRequest, "InvalidParameterValueException", requestID,
+				"FunctionName is not a valid function name or ARN")
+			return
+		}
+		h.serveRead(w, r, claims, requestID, op, fn, q)
+		return
+	}
 	name, qualifier, ok := parseInvokePath(r)
 	if !ok {
 		writeLambdaError(w, http.StatusNotImplemented, "InvalidAction", requestID,
-			"only POST /2015-03-31/functions/{name}[:{qualifier}]/invocations is implemented")
+			"only Invoke (POST /2015-03-31/functions/{name}[:{qualifier}]/invocations), GetFunction, GetFunctionConfiguration, ListFunctions and GetPolicy are implemented")
 		return
 	}
 	// A non-default qualifier (a Lambda alias) routes to the Knative traffic tag the Function
@@ -246,25 +258,7 @@ func parseInvokePath(r *http.Request) (name, qualifier string, ok bool) {
 	}
 	// A function ARN or partial ARN (arn:aws:lambda:<region>:<acct>:function:<name>[:<qualifier>],
 	// <acct>:function:<name>) names the function as its name does — the form a stack's Arn output gives.
-	if i := strings.Index(fn, ":function:"); i >= 0 {
-		fn = fn[i+len(":function:"):]
-	}
-	name, qualifier, _ = strings.Cut(fn, ":") // "name" or "name:qualifier"
-	if q := r.URL.Query().Get("Qualifier"); q != "" {
-		if qualifier != "" && qualifier != q { // conflicting path vs query qualifier
-			return "", "", false
-		}
-		qualifier = q
-	}
-	if !fnNameRE.MatchString(name) {
-		return "", "", false
-	}
-	if qualifier != "" && qualifier != "$LATEST" {
-		if !fnNameRE.MatchString(qualifier) || len(qualifier)+1+len(name) > 63 {
-			return "", "", false
-		}
-	}
-	return name, qualifier, true
+	return parseFunctionRef(fn, r.URL.Query().Get("Qualifier"))
 }
 
 // writeLambdaError writes Lambda's JSON error dialect: the error class in the x-amzn-errortype

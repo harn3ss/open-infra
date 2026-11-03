@@ -6,16 +6,17 @@ import (
 	"testing"
 )
 
-// The shim finds a function by name in the Lambda API's namespace and the stack namespace (fn_locate.go).
-// That needs exactly `get` on kind: Function, bound in just those two namespaces: a ClusterRoleBinding,
-// another verb (list/watch, or a write) or another resource widens what the shim's own identity may do.
-func TestAWSShim_FunctionLookupGrantIsGetOnlyInTwoNamespaces(t *testing.T) {
+// The shim finds a function by name in the Lambda API's namespace and the stack namespace (fn_locate.go),
+// and lists them a page at a time for Lambda ListFunctions (lambda_read.go). That needs exactly `get` and
+// `list` on kind: Function, bound in just those two namespaces: a ClusterRoleBinding, another verb (watch,
+// or a write) or another resource widens what the shim's own identity may do.
+func TestAWSShim_FunctionLookupGrantIsReadOnlyInTwoNamespaces(t *testing.T) {
 	const path = "../../platform/aws-shim/aws-shim.yaml"
 	cr := yamlDoc(t, path, "ClusterRole", "open-infra-aws-shim-functions")
 	mustContain(t, "open-infra-aws-shim-functions", cr,
-		"rules:\n  - apiGroups: [openinfra.dev]\n    resources: [functions]\n    verbs: [get]")
-	if strings.Contains(cr, "verbs: [get,") {
-		t.Errorf("open-infra-aws-shim-functions must grant get only, got:\n%s", cr)
+		"rules:\n  - apiGroups: [openinfra.dev]\n    resources: [functions]\n    verbs: [get, list]")
+	if strings.Count(cr, "verbs:") != 1 || strings.Contains(cr, "verbs: [get, list,") {
+		t.Errorf("open-infra-aws-shim-functions must grant get and list only, got:\n%s", cr)
 	}
 	if strings.Count(cr, "apiGroups:") != 1 {
 		t.Errorf("open-infra-aws-shim-functions must hold one rule, got:\n%s", cr)

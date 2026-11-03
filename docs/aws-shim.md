@@ -276,7 +276,7 @@ create on its own API's front door):
 | IAM | `iam` | 28: AttachRolePolicy, CreateAccessKey, CreatePolicy, CreatePolicyVersion, CreateRole, CreateUser, DeleteAccessKey, DeletePolicy, DeleteRole, DeleteRolePolicy, DeleteUser, DetachRolePolicy, GetPolicy, GetPolicyVersion, GetRole, GetRolePolicy, GetUser, ListAccessKeys, ListAttachedRolePolicies, ListPolicies, ListPolicyVersions, ListRolePolicies, ListRoles, ListUsers, PutRolePolicy, SimulatePrincipalPolicy, TagUser, UpdateAccessKey | 5 |
 | Kinesis Data Streams | `kinesis` | 12: CreateStream, DecreaseStreamRetentionPeriod, DeleteStream, DescribeStream, DescribeStreamSummary, GetRecords, GetShardIterator, IncreaseStreamRetentionPeriod, ListShards, ListStreams, PutRecord, PutRecords | 0 |
 | KMS | `kms` | 23: CancelKeyDeletion, CreateAlias, CreateKey, Decrypt, DeleteAlias, DescribeKey, DisableKey, DisableKeyRotation, EnableKey, EnableKeyRotation, Encrypt, GenerateDataKey, GenerateDataKeyWithoutPlaintext, GenerateRandom, GetKeyPolicy, GetKeyRotationStatus, ListAliases, ListKeyPolicies, ListKeys, PutKeyPolicy, ReEncrypt, ScheduleKeyDeletion, UpdateAlias; authorizes `kms:ReEncryptFrom`, `kms:ReEncryptTo` | 2 |
-| Lambda | `lambda` | no named operations; authorizes `lambda:InvokeFunction` | 2 |
+| Lambda | `lambda` | 4: GetFunction, GetFunctionConfiguration, GetPolicy, ListFunctions; authorizes `lambda:InvokeFunction` | 2 |
 | CloudWatch Logs | `logs` | 16: CreateLogGroup, CreateLogStream, DeleteLogGroup, DeleteLogStream, DeleteRetentionPolicy, DescribeLogGroups, DescribeLogStreams, DescribeQueries, FilterLogEvents, GetLogEvents, GetQueryResults, PutLogEvents, PutRetentionPolicy, StartQuery, StopQuery, TagLogGroup | 1 |
 | CloudWatch | `monitoring` | 8: DeleteAlarms, DescribeAlarms, GetMetricData, GetMetricStatistics, ListMetrics, PutMetricAlarm, PutMetricData, SetAlarmState | 1 |
 | RDS | `rds` | 12: AddTagsToResource, CreateDBInstance, CreateDBInstanceReadReplica, CreateDBSnapshot, DeleteDBInstance, DeleteDBSnapshot, DescribeDBInstances, DescribeDBSnapshots, ListTagsForResource, ModifyDBInstance, RestoreDBInstanceFromDBSnapshot, RestoreDBInstanceToPointInTime | 1 |
@@ -487,6 +487,24 @@ account, as on AWS. A function created outside a stack (with `kubectl` or GitOps
 name takes precedence, because the Lambda API's namespace is searched first. Lookups use the shim's `get`
 on `functions` in those two namespaces (`open-infra-aws-shim-functions`); without it, a function is looked
 for in `FUNCTIONS_NAMESPACE` only.
+
+**Reading functions.** `GetFunction`, `GetFunctionConfiguration`, `ListFunctions` and `GetPolicy` answer in
+Lambda's shapes from the `kind: Function` itself. Reading one needs `get` on `functions` where it lives plus
+`lambda:GetFunction` / `lambda:GetFunctionConfiguration` / `lambda:GetPolicy` on `Function::<name>`; a
+qualifier must be `$LATEST` or one of the function's `spec.aliases`. `ListFunctions` lists the two
+namespaces above, skipping one where the caller has no `list` on `functions`, and needs
+`lambda:ListFunctions` on `*` (an assumed role needs that grant); it pages with `Marker`/`MaxItems` (at most
+50 a page, as on AWS) through the API server's own list paging, so a page reads at most 50 claims. The
+configuration carries the name, ARN, package type (`Image` for `spec.image`, else `Zip` with the managed
+runtime and handler), memory, timeout (300 s when unset — the platform default), environment variables
+(`spec.env`; injected `spec.secrets` are not read), and a state from the claim's conditions. What a Function
+has no counterpart for is left out rather than invented: an execution role (a stack's `Role` is dropped),
+a code size or hash, and a download location for a zip's code (`GetFunction`'s `Code` names the image of an
+image function, or `RepositoryType: S3` alone). A function has no resource policy — a stack's
+`AWS::Lambda::Permission` provisions nothing, because the integration that invokes the function is
+authorized against its creator's authority when it is created — so `GetPolicy` answers
+`ResourceNotFoundException`, as AWS does for a function with no policy. Listing uses the shim's `list` on
+`functions` in the same two namespaces.
 
 ### AppSync (GraphQL; over open-appsync — slice 1 runs live, experimental)
 

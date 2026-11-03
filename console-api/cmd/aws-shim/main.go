@@ -457,6 +457,7 @@ func run(logger *slog.Logger) error {
 	lambdaH := newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger)
 	lambdaH.authz = authzChecker
 	lambdaH.fns = fns
+	lambdaH.account, lambdaH.region = account, ident.Region // a function's ARN in GetFunction/ListFunctions
 	region := ident.Region
 	// DynamoDB Streams front door (reads the change-record logs the dynamodb write path emits).
 	ddbStreamsH := newDDBStreamsHandler(cs, authzNS, account, region, ddbStreamSt, dynamoH, logger)

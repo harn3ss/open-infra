@@ -3,7 +3,9 @@
 #
 # Deploys a throwaway kind: Function (an HTTP echo), then fires a REAL AWS SDK call
 # (`aws lambda invoke`) at the shim and asserts the function's response comes back — proving the
-# Lambda Invoke → Knative Function path end to end — plus the negative: a wrong secret is rejected.
+# Lambda Invoke → Knative Function path end to end — then reads it back (get-function,
+# get-function-configuration, a paged list-functions, get-policy's no-policy answer) — plus the
+# negatives: a missing function is not found and a wrong secret is rejected.
 #
 # On-demand (needs the shim + Knative Serving). Exit 0 = pass, 1 = a real failure, 42 = INCONCLUSIVE.
 #
@@ -93,6 +95,35 @@ awsq "$AK" "$SK" lambda invoke --function-name "$FN_NAME" \
   "$WORK/out.json" >/tmp/lambda-inv 2>&1 || fail "lambda invoke failed: $(cat /tmp/lambda-inv)"
 grep -q "$MARKER" "$WORK/out.json" || fail "invoke response did not echo the payload marker; got: $(head -c 300 "$WORK/out.json")"
 log "  ✓ function invoked; response returned through the shim"
+
+log "aws lambda get-function / get-function-configuration ${FN_NAME} (the Function's own configuration)"
+awsq "$AK" "$SK" lambda get-function --function-name "$FN_NAME" >"$WORK/getfn.json" 2>&1 \
+  || fail "lambda get-function failed: $(cat "$WORK/getfn.json")"
+grep -q "\"FunctionName\": \"${FN_NAME}\"" "$WORK/getfn.json" || fail "get-function did not name the function: $(head -c 300 "$WORK/getfn.json")"
+grep -q '"PackageType": "Image"' "$WORK/getfn.json" || fail "get-function did not report the image package type: $(head -c 300 "$WORK/getfn.json")"
+grep -q '"ImageUri": "mendhak/http-https-echo:37"' "$WORK/getfn.json" || fail "get-function did not report the image: $(head -c 300 "$WORK/getfn.json")"
+awsq "$AK" "$SK" lambda get-function-configuration --function-name "$FN_NAME" --query FunctionArn --output text \
+  >"$WORK/getcfg.txt" 2>&1 || fail "lambda get-function-configuration failed: $(cat "$WORK/getcfg.txt")"
+grep -q ":function:${FN_NAME}\$" "$WORK/getcfg.txt" || fail "get-function-configuration FunctionArn: $(cat "$WORK/getcfg.txt")"
+log "  ✓ the function's configuration read back"
+
+log "aws lambda list-functions (paged one at a time: the CLI follows NextMarker) includes ${FN_NAME}"
+awsq "$AK" "$SK" lambda list-functions --page-size 1 --query 'Functions[].FunctionName' --output text \
+  >"$WORK/list.txt" 2>&1 || fail "lambda list-functions failed: $(cat "$WORK/list.txt")"
+tr '\t' '\n' <"$WORK/list.txt" | grep -qx "$FN_NAME" || fail "list-functions did not include ${FN_NAME}: $(head -c 300 "$WORK/list.txt")"
+log "  ✓ listed"
+
+log "aws lambda get-policy ${FN_NAME}: a function has no resource policy — ResourceNotFoundException"
+if awsq "$AK" "$SK" lambda get-policy --function-name "$FN_NAME" >"$WORK/pol.txt" 2>&1; then
+  fail "get-policy answered a policy for a function that has none: $(cat "$WORK/pol.txt")"
+fi
+grep -q 'ResourceNotFoundException' "$WORK/pol.txt" || fail "get-policy: $(cat "$WORK/pol.txt")"
+log "negative: get-function of a function that does not exist is ResourceNotFoundException"
+if awsq "$AK" "$SK" lambda get-function --function-name "probe-missing-$RANDOM" >"$WORK/miss.txt" 2>&1; then
+  fail "get-function of a missing function succeeded: $(cat "$WORK/miss.txt")"
+fi
+grep -q 'ResourceNotFoundException' "$WORK/miss.txt" || fail "missing function: $(cat "$WORK/miss.txt")"
+log "  ✓ no policy, and a missing function is not found"
 
 log "negative: a valid key ID with a WRONG secret must be rejected"
 if awsq "$AK" "wrong-secret" lambda invoke --function-name "$FN_NAME" --payload '{}' \
