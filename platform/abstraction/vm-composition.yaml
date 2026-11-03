@@ -925,7 +925,7 @@ spec:
                               n=$(( (csz + mib - 1) / mib ))
                               dd if="$img" of=/dst/disk.img.part bs=1M count=$n iflag=fullblock oflag=direct conv=notrunc,fsync
                               truncate -s "$want" /dst/disk.img.part
-                              chown 107:107 /dst/disk.img.part && chmod 0660 /dst/disk.img.part
+                              chmod 0660 /dst/disk.img.part && chown 107:107 /dst/disk.img.part
                               sync; mv /dst/disk.img.part /dst/disk.img; sync
                               echo "copied the OS image ($csz bytes) onto the root's disk.img ($want bytes)"
                               exit 0

@@ -98,7 +98,7 @@ func TestVMBases_DefaultRootIsALocalCopy(t *testing.T) {
 	pop := docNamed(render(t, tmpl, withObserved(vmBaseCtx("ubuntu-24.04", nil), bound)), "root-populate")
 	for _, want := range []string{
 		"devicePath: /dev/openinfra-image", "mountPath: /dst", "kubevirt.io/schedulable", "openinfra.dev/disk-class",
-		`memory: "4Gi"`, "CHOWN", "chown 107:107", `value: "20Gi"`,
+		`memory: "4Gi"`, "CHOWN", "chmod 0660 /dst/disk.img.part && chown 107:107", `value: "20Gi"`,
 	} {
 		if !strings.Contains(pop, want) {
 			t.Errorf("the copy pod must have %q:\n%s", want, pop)
