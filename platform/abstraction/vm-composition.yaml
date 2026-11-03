@@ -227,8 +227,12 @@ spec:
             {{- $httpTokens := $mdo.httpTokens | default "optional" }}
             {{- $hopLimit := $mdo.httpPutResponseHopLimit | default 1 }}
             {{- $metadataAgent := not $isWin }}
-            {{- /* The identity token reaches the guest only when the metadata service can use it. */}}
-            {{- $guestIdentity := and $instanceRole $metadataAgent $imdsEnabled }}
+            {{- /* The identity token reaches the guest whenever the metadata service runs, role or not: as on EC2
+                   every instance has a signed instance identity document (latest/dynamic/instance-identity/,
+                   what cfn-init and cfn-signal with no credentials sign their calls with), and the agent fetches
+                   it from the shim's /v1/vm-identity with this token. The token alone grants nothing: the shim
+                   mints credentials only for a VM whose ServiceAccount names an instance role. */}}
+            {{- $guestIdentity := and $metadataAgent $imdsEnabled }}
             {{- $credsRelay := false }}
             {{- if and $metadataAgent $imdsEnabled $instanceRole (eq $httpTokens "optional") }}{{- $credsRelay = true }}{{- end }}
             {{- $credsPort := "16349" }}
@@ -305,6 +309,7 @@ spec:
                   "role" $instanceRole
                   "credentialsUrl" (printf "https://%s/v1/vm-credentials" $shimTLSHostPort)
                   "commandsUrl" (printf "https://%s/v1/vm-commands" $shimTLSHostPort)
+                  "identityUrl" (ternary (printf "https://%s/v1/vm-identity" $shimTLSHostPort) "" $guestIdentity)
                   "tokenFile" "/run/openinfra-identity/token"
                   "userDataFile" $userDataFile
                   "securityGroups" ($spec.securityGroups | default list)
@@ -589,7 +594,7 @@ spec:
                                 disk:
                                   bus: virtio
                               {{- end }}
-                              {{- /* Workload-identity token disk (spec.instanceRole): KubeVirt projects
+                              {{- /* Workload-identity token disk (every VM with instance metadata): KubeVirt projects
                                      the per-VM ServiceAccount token as an iso9660 disk. The serial lets
                                      cloud-init find it deterministically (/dev/disk/by-id/virtio-SATOKEN). */}}
                               {{- if $guestIdentity }}
@@ -637,7 +642,7 @@ spec:
                             dataVolume:
                               name: {{ $name }}-root
                             {{- end }}
-                          {{- /* Workload identity (spec.instanceRole): project the per-VM SA token. */}}
+                          {{- /* Workload identity (every VM with instance metadata): project the per-VM SA token. */}}
                           {{- if $guestIdentity }}
                           - name: identity
                             serviceAccount:
@@ -1273,6 +1278,7 @@ spec:
                                 "role": "",
                                 "credentialsUrl": "",
                                 "commandsUrl": "",  # SSM Run Command (CommandRunner); "" = not managed
+                                "identityUrl": "",  # the platform-signed identity document (IdentityCache); "" = unsigned, built here
                                 "tokenFile": "/run/openinfra-identity/token",
                                 "userDataFile": "",
                                 "securityGroups": [],
@@ -1427,7 +1433,16 @@ spec:
                                 return ctx
 
 
-                            def fetch_from_shim(url, token_file, ca_file, timeout=5.0):
+                            CREDS_HINTS = {
+                                401: " - the shim did not accept this VM's ServiceAccount token (TokenReview failed, or the"
+                                     " ServiceAccount carries no openinfra.dev/instance-role annotation)",
+                                403: " - the instance role does not trust the vm principal (its spec.trust must include \"vm\")",
+                            }
+
+
+                            def shim_get(url, token_file, ca_file, timeout=5.0, hints=None):
+                                """GET url on the aws-shim with this VM's identity token; the response body. CredentialsError on
+                                any failure. The token is sent over TLS only, to a server the platform root CA vouches for."""
                                 if not (url or "").lower().startswith("https://"):
                                     raise CredentialsError("refusing to send the instance identity token to %r: the aws-shim is "
                                                            "called over TLS only" % (url,))
@@ -1452,11 +1467,7 @@ spec:
                                         resp.close()
                                 except urllib.error.HTTPError as e:
                                     detail = e.read()[:300].decode("utf-8", "replace").strip()
-                                    hint = {
-                                        401: " - the shim did not accept this VM's ServiceAccount token (TokenReview failed, or the"
-                                             " ServiceAccount carries no openinfra.dev/instance-role annotation)",
-                                        403: " - the instance role does not trust the vm principal (its spec.trust must include \"vm\")",
-                                    }.get(e.code, "")
+                                    hint = (hints or {}).get(e.code, "")
                                     raise CredentialsError("aws-shim %s answered HTTP %d: %s%s" % (url, e.code, detail, hint), e.code)
                                 except (urllib.error.URLError, socket.timeout, OSError, ssl.CertificateError) as e:
                                     # Python 3.6 raises a host-name mismatch as ssl.CertificateError (a ValueError) unwrapped.
@@ -1465,6 +1476,11 @@ spec:
                                         raise CredentialsError("the server at %s is not the aws-shim (TLS verification against the "
                                                                "platform root CA failed: %s); the token was not sent" % (url, reason))
                                     raise CredentialsError("cannot reach the aws-shim at %s: %s" % (url, reason))
+                                return body
+
+
+                            def fetch_from_shim(url, token_file, ca_file, timeout=5.0):
+                                body = shim_get(url, token_file, ca_file, timeout, CREDS_HINTS)
                                 try:
                                     data = json.loads(body.decode("utf-8"))
                                     creds = dict((k, str(data[k])) for k in ("AccessKeyId", "SecretAccessKey", "Token", "Expiration"))
@@ -1472,6 +1488,86 @@ spec:
                                 except (ValueError, KeyError, TypeError, AttributeError) as e:
                                     raise CredentialsError("aws-shim returned an unusable credentials document: %s" % e)
                                 return creds
+
+
+                            def fetch_identity_from_shim(url, token_file, ca_file, timeout=5.0):
+                                """This instance's identity document and the platform's signatures of it (the aws-shim builds the
+                                document from the cluster's view of this VM, so it is served exactly as received)."""
+                                body = shim_get(url, token_file, ca_file, timeout,
+                                                {401: " - the shim did not accept this VM's ServiceAccount token (TokenReview failed)"})
+                                try:
+                                    data = json.loads(body.decode("utf-8"))
+                                    out = dict((k, str(data[k])) for k in ("document", "signature", "pkcs7", "rsa2048"))
+                                    out["expiresInSeconds"] = int(data["expiresInSeconds"])
+                                    if not json.loads(out["document"]).get("instanceId"):
+                                        raise ValueError("the document names no instance")
+                                except (ValueError, KeyError, TypeError, AttributeError) as e:
+                                    raise CredentialsError("aws-shim returned an unusable identity document: %s" % e)
+                                return out
+
+
+                            class IdentityCache:
+                                """The platform-signed instance identity document, refreshed at half its lifetime (the shim issues
+                                documents valid for an hour). Its lifetime is counted on this guest's monotonic clock from the
+                                fetch, so a skewed guest clock changes nothing. Until a document arrives, or once it has expired,
+                                instance metadata serves the agent's own unsigned document and no signatures."""
+
+                                def __init__(self, fetch, clock=time.monotonic):
+                                    self._fetch = fetch
+                                    self._clock = clock
+                                    self._lock = threading.Lock()
+                                    self._wake = threading.Event()
+                                    self._signed = None
+                                    self._expires = 0.0
+                                    self._refresh_at = 0.0
+                                    self.last_error = None
+
+                                def current(self):
+                                    with self._lock:
+                                        if self._signed is not None and self._clock() < self._expires:
+                                            return self._signed
+                                    return None
+
+                                def refresh(self):
+                                    try:
+                                        signed = self._fetch()
+                                    except CredentialsError as e:
+                                        with self._lock:
+                                            self.last_error = e
+                                        LOG.error("instance identity document refresh failed: %s", e)
+                                        raise
+                                    ttl = max(60.0, float(signed.get("expiresInSeconds") or 0))
+                                    now = self._clock()
+                                    with self._lock:
+                                        self._signed, self._expires, self._refresh_at = signed, now + ttl - 30.0, now + ttl / 2.0
+                                        self.last_error = None
+                                    return signed
+
+                                def next_wait(self):
+                                    with self._lock:
+                                        if self._signed is None:
+                                            return 5.0
+                                        return max(1.0, min(self._refresh_at - self._clock(), 300.0))
+
+                                def run_refresher(self, stop):
+                                    backoff = 5.0
+                                    while not stop.is_set():
+                                        self._wake.wait(self.next_wait())
+                                        self._wake.clear()
+                                        if stop.is_set():
+                                            return
+                                        with self._lock:
+                                            due = self._signed is None or self._clock() >= self._refresh_at
+                                        if not due:
+                                            continue
+                                        try:
+                                            self.refresh()
+                                            backoff = 5.0
+                                            continue
+                                        except CredentialsError as e:
+                                            wait = 900.0 if e.status == 404 else backoff  # 404: a shim without the endpoint
+                                        stop.wait(wait)
+                                        backoff = min(backoff * 2, 60.0)
 
 
                             class CredentialCache:
@@ -1665,9 +1761,10 @@ spec:
                             # ---------------------------------------------------------------------------------------------
 
                             class Metadata:
-                                def __init__(self, cfg, creds):
+                                def __init__(self, cfg, creds, identity=None):
                                     self.cfg = cfg
                                     self.creds = creds  # CredentialCache, or None when the VM has no instance role
+                                    self.identity = identity  # IdentityCache, or None: the unsigned document only
                                     self.role = cfg.get("role") or ""
 
                                 def _creds_doc(self):
@@ -1745,7 +1842,14 @@ spec:
                                         md["network"] = {"interfaces": dict(macs=dict([(mac, nic)]))}
                                     if self.role and self.creds is not None:
                                         md["iam"] = {"info": self._iam_info, "security-credentials": dict([(self.role, self._creds_doc)])}
-                                    identity = {"document": self.identity_document}
+                                    # The platform-signed document and its signatures (what cfn-init / cfn-signal with no
+                                    # credentials sign their calls with), served exactly as the aws-shim issued them; this
+                                    # agent's own unsigned document while there is none.
+                                    signed = self.identity.current() if self.identity is not None else None
+                                    if signed:
+                                        identity = dict((k, signed[k]) for k in ("document", "signature", "pkcs7", "rsa2048"))
+                                    else:
+                                        identity = {"document": self.identity_document}
                                     latest = {"dynamic": {"instance-identity": identity}, "meta-data": md}
                                     if self._user_data() is not None:
                                         latest["user-data"] = self._user_data
@@ -2730,7 +2834,7 @@ spec:
 
 
                             class Agent:
-                                def __init__(self, cfg, fetch=None, warm_timeout=10.0):
+                                def __init__(self, cfg, fetch=None, warm_timeout=10.0, identity_fetch=None):
                                     self.cfg = cfg
                                     self.warm_timeout = warm_timeout
                                     self.tokens = TokenIssuer()
@@ -2741,7 +2845,11 @@ spec:
                                     self.commands = None  # SSM Run Command: an instance with a role (its token) is managed
                                     if cfg.get("role") and cfg.get("commandsUrl"):
                                         self.commands = CommandRunner(cfg["commandsUrl"], cfg.get("tokenFile"), cfg.get("caFile"))
-                                    self.metadata = Metadata(cfg, self.creds)
+                                    self.identity = None  # the signed identity document: every instance has one, role or not
+                                    if cfg.get("identityUrl"):
+                                        iurl, itoken, ica = cfg["identityUrl"], cfg.get("tokenFile"), cfg.get("caFile")
+                                        self.identity = IdentityCache(identity_fetch or (lambda: fetch_identity_from_shim(iurl, itoken, ica)))
+                                    self.metadata = Metadata(cfg, self.creds, self.identity)
                                     self.servers = []
                                     self.stop = threading.Event()
                                     self.netns = ""
@@ -2854,6 +2962,13 @@ spec:
                                         threading.Thread(target=self.creds.run_refresher, args=(self.stop,), daemon=True).start()
                                     else:
                                         LOG.info("no instance role: iam/ metadata is not served")
+                                    if self.identity is not None and self.servers:
+                                        try:  # one try now (cfn-init in UserData reads it soon), then in the background
+                                            self.identity.refresh()
+                                            LOG.info("signed instance identity document from %s", self.cfg.get("identityUrl"))
+                                        except CredentialsError:
+                                            LOG.warning("serving the unsigned identity document until the signed one arrives")
+                                        threading.Thread(target=self.identity.run_refresher, args=(self.stop,), daemon=True).start()
                                     ca = None
                                     if self.cfg.get("trustPlatformCA"):
                                         ca = trust_platform_ca(self.cfg.get("caFile"))
@@ -2871,6 +2986,8 @@ spec:
                                     self.stop.set()
                                     if self.creds is not None:
                                         self.creds._wake.set()
+                                    if self.identity is not None:
+                                        self.identity._wake.set()
                                     for srv in self.servers:
                                         srv.shutdown()
                                         srv.server_close()
@@ -3231,15 +3348,16 @@ spec:
                         - [ bash, -c, "set -a; [ -f /etc/openinfra-aws.env ] && . /etc/openinfra-aws.env; set +a; exec /opt/openinfra-userdata" ]
                         {{- end }}
             {{- end }}
-            {{- if $instanceRole }}
+            {{- if or $instanceRole $guestIdentity }}
             ---
-            # --- Per-VM workload identity (spec.instanceRole): a dedicated ServiceAccount whose token
-            #     KubeVirt projects into the guest (serviceAccount volume below). The in-guest metadata
-            #     agent presents that token to the aws-shim's /v1/vm-credentials endpoint and serves the
-            #     rotating credentials it receives for the Role named here over EC2 IMDS (and the loopback
+            # --- Per-VM workload identity: a dedicated ServiceAccount whose token KubeVirt projects into
+            #     the guest (serviceAccount volume below). The in-guest metadata agent presents that token
+            #     to the aws-shim: /v1/vm-identity for the VM's signed instance identity document (every
+            #     VM with instance metadata), and, with spec.instanceRole, /v1/vm-credentials for the
+            #     rotating credentials of the Role named here, served over EC2 IMDS (and the loopback
             #     container-credentials endpoint) — so no static keys ever touch the disk. The shim
             #     verifies the token (TokenReview) and reads this instance-role annotation to decide which
-            #     Role to mint (that Role must trust "vm").
+            #     Role to mint (that Role must trust "vm"); no annotation, no credentials.
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -3257,7 +3375,9 @@ spec:
                       app.kubernetes.io/name: {{ $name }}
                       openinfra.dev/vm: "true"
                     annotations:
+                      {{- if $instanceRole }}
                       openinfra.dev/instance-role: {{ $instanceRole | toJson }}
+                      {{- end }}
                       openinfra.dev/vm: {{ $name }}
             {{- end }}
             {{- if $eipAlloc }}

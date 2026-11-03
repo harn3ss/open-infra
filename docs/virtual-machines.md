@@ -239,7 +239,8 @@ or without an `instanceRole`. It answers the paths SDKs and lift-and-shift scrip
 | `meta-data/local-ipv4`, `mac`, `hostname`, `local-hostname`, `network/interfaces/macs/…` | the guest's primary interface |
 | `meta-data/security-groups` | the VM's `securityGroups` |
 | `meta-data/iam/info`, `iam/security-credentials/<role>` | the instance profile and the role's credentials (only with `instanceRole`) |
-| `dynamic/instance-identity/document` | JSON: `accountId` and `region` (the install's AWS identity, [`aws-identity.yaml`](aws-shim.md#the-account-region-and-partition)), `availabilityZone`, `instanceId`, `imageId`, `privateIp`, `architecture`, `pendingTime` |
+| `dynamic/instance-identity/document` | JSON: `accountId` and `region` (the install's AWS identity, [`aws-identity.yaml`](aws-shim.md#the-account-region-and-partition)), `availabilityZone`, `instanceId`, `imageId`, `instanceType`, `privateIp`, `architecture`, `pendingTime`, and `openinfraNotAfter` (below) |
+| `dynamic/instance-identity/signature`, `rsa2048`, `pkcs7` | the platform's signatures of the document ([Signed identity document](#signed-instance-identity-document)) |
 | `user-data` | the VM's `userData` (404 when there is none) |
 
 The listener runs in its own network namespace, joined to the guest by a veth pair and routed one hop
@@ -269,7 +270,7 @@ spec:
   hop-limited.
 - **`httpEndpoint: disabled`** — no metadata service at all: nothing on `169.254.169.254`, no
   container-credentials endpoint and no identity token in the guest, so (as on EC2) the guest gets no
-  `instanceRole` credentials. The guest still trusts the platform root CA (below).
+  `instanceRole` credentials and no identity document. The guest still trusts the platform root CA (below).
 
 Only the guest and its own containers reach `169.254.169.254`. A packet for it that the guest would
 forward for another host is dropped, whatever it arrived on: a NIC, a VLAN, a bond, a tunnel (WireGuard,
@@ -293,9 +294,48 @@ after it. A guest whose cloud-init caches its configuration (`manual_cache_clean
 PyYAML (cloud-init's own dependency) keeps its files; reinstall the agent there by recreating the VM.
 
 `cfn` maps an `AWS::EC2::Instance`'s `MetadataOptions` onto this block one-to-one. Not served: the IPv6
-endpoint `fd00:ec2::254` (`HttpProtocolIpv6`), instance tags in metadata (`InstanceMetadataTags`),
-`meta-data/instance-type` (a VM is sized by `cpu`/`memory`; the identity document's `instanceType` is
-`null`), and the signed identity document (`dynamic/instance-identity/pkcs7`, `signature`).
+endpoint `fd00:ec2::254` (`HttpProtocolIpv6`), instance tags in metadata (`InstanceMetadataTags`) and
+`meta-data/instance-type` (a VM is sized by `cpu`/`memory`; the identity document carries the instance
+type the EC2 API reports).
+
+### Signed instance identity document
+
+As on EC2, every Linux VM with instance metadata, role or not, has a signed identity document. The
+metadata agent fetches it from the aws-shim's `/v1/vm-identity` on its in-cluster TLS port. It presents
+the VM's ServiceAccount token, the same one the credentials endpoint takes, so every such VM carries the
+token. A token whose ServiceAccount names no `instanceRole` gets no credentials. The shim builds the
+document from the cluster's view of the VM:
+- its instance id is derived from the VM's composite, as the EC2 API's is;
+- its image, instance type, private address and launch time are what the EC2 API reports.
+
+The agent serves the document exactly as it was issued, with:
+
+| Path | Value |
+|---|---|
+| `signature` | base64 RSA-SHA256 (PKCS#1 v1.5) over the document's bytes, as EC2's `signature` |
+| `rsa2048`, `pkcs7` | a PKCS#7 (CMS) SignedData holding the document, RSA-SHA256, with the signing certificate. On EC2 `pkcs7` is DSA-signed; here both are RSA |
+
+The signing certificate is published at `/v1/vm-identity/certificate` (in-cluster), the way AWS publishes
+its own, so a verifier in the cluster can check a document.
+
+Unlike EC2's, the document expires. `openinfraNotAfter` is an hour after it was issued, and the agent
+fetches a new one at half that, so a document copied out of a guest stops working. Until the first one
+arrives, the agent serves its own unsigned document and no signatures.
+
+What the document is for is `cfn-init`, `cfn-signal` and `cfn-hup` run with no credentials
+([CloudFormation](cloudformation.md#resource-signals-and-wait-conditions)).
+
+The key is an RSA-2048 key in the Secret `instance-identity-signing-key`, in the aws-shim's namespace. The
+shim creates it on first use, and only the shim and cluster admins can read it. It is excluded from Velero
+backups: a lost key is replaced and every document is refreshed within the hour.
+
+To rotate the key:
+1. Put a new `key.pem` and `cert.pem` in the Secret.
+2. Append the old `cert.pem` to `retired.pem`. The shim re-reads the Secret every minute and signs with the
+   new key at once, and documents signed with the old key still verify.
+3. After an hour, every such document has expired: remove the old certificate from `retired.pem`.
+
+The lifetime is `INSTANCE_IDENTITY_TTL` on the shim (default `1h`, from `5m` to `24h`).
 
 The agent is a single Python 3 script (standard library only, Python 3.6+ — every cloud image ships
 Python because cloud-init is Python; on the RHEL 8 family it uses `/usr/libexec/platform-python`) run by

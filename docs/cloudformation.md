@@ -644,7 +644,35 @@ calls). An instance of the stack may signal it with nothing more than its instan
 update rights on the stack (a User) or a policy allowing `cloudformation:SignalResource` on it (a role).
 `DescribeStackResource` returns a resource's `Metadata`, which is what `cfn-init` reads for
 `AWS::CloudFormation::Init`; the guest runs `cfn-init` itself against the shim's endpoint, as it would
-against AWS's. Only the aws-shim front door receives signals: a `cfn deploy` of a stack that waits for
+against AWS's. Guests resolve `cloudformation.<region>.amazonaws.com` to the shim, so
+`cfn-init --stack … --resource … --region …` needs no `--url`.
+
+`cfn-init`, `cfn-signal` and `cfn-hup` run with no credentials (no `--role`, no keys) work too, as on
+AWS. They sign their calls `Authorization: CFN_V1 <document>:<signature>` with the instance's signed
+identity document ([virtual machines](virtual-machines.md#signed-instance-identity-document)). The shim
+first checks the document:
+- the signature is the platform's;
+- the document has not expired;
+- the account and region are this shim's.
+
+The call is then the instance's, with the authority CFN_V1 has on AWS:
+- **Actions:** `SignalResource`, `DescribeStackResource` and `DescribeStackResources` only.
+- **Stacks:** only the stack that launched the instance. Its record must list the VM, the VM's composite
+  must be bound to it with the document's instance id, and the instance must be running.
+
+These are all refused, with the same answer for a stack that does not exist and a stack that is not the
+instance's:
+- another instance's document;
+- another stack;
+- a VM deleted and re-created under the same name, which has a new instance id;
+- a stopped VM;
+- a call through the LAN Ingress.
+
+aws-cfn-bootstrap's calls are `GET` requests with their parameters in the query string and
+`ContentType=JSON`. Those three actions answer in JSON for them, as AWS does, whether the call is signed
+CFN_V1 or with SigV4 (`--role`). The bootstrap's `requests` checks TLS against the guest's system trust
+store, which holds the platform's AWS endpoints CA. On cloud images that is the distro's
+`python3-requests`, which cloud-init itself uses. Only the aws-shim front door receives signals: a `cfn deploy` of a stack that waits for
 them is refused rather than waiting for something that cannot arrive.
 
 ### Stack events and the rest of the API

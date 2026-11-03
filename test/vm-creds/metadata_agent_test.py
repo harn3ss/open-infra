@@ -65,14 +65,17 @@ def make_config(**over):
 class Running(object):
     """An Agent with in-process listeners on ephemeral loopback ports."""
 
-    def __init__(self, cfg, fetch=None):
+    def __init__(self, cfg, fetch=None, identity_fetch=None):
         self.fetches = []
 
         def default_fetch():
             self.fetches.append(1)
             return dict(CREDS)
 
-        self.agent = agent.Agent(cfg, fetch=fetch or default_fetch, warm_timeout=0)
+        def no_identity():  # no shim here: the agent serves its own unsigned document
+            raise agent.CredentialsError("no aws-shim in this test")
+
+        self.agent = agent.Agent(cfg, fetch=fetch or default_fetch, warm_timeout=0, identity_fetch=identity_fetch or no_identity)
 
     def __enter__(self):
         self.agent.start()
@@ -302,6 +305,72 @@ class FetchFromShimTest(unittest.TestCase):
         with self.assertRaises(agent.CredentialsError):
             agent.fetch_from_shim(self.url, os.path.join(TMP, "no-such-token"), self.ca)
 
+    def test_identity_document_comes_the_same_way(self):
+        """The signed identity document is fetched as credentials are: the token, over TLS the platform root
+        verifies, never plaintext, never to an impostor."""
+        StubShim.body = json.dumps(SIGNED)
+        got = agent.fetch_identity_from_shim(self.url, self.tok, self.ca)
+        self.assertEqual(got["document"], SIGNED["document"])
+        self.assertEqual(got["expiresInSeconds"], 3600)
+        self.assertEqual(StubShim.seen_auth, ["header.payload.sig"])
+        StubShim.seen_auth = []
+        for url, ca in ((self.url.replace("https://", "http://"), self.ca), (self.rogue_url, self.ca), (self.url, PKI["rogue-root"])):
+            with self.assertRaises(agent.CredentialsError):
+                agent.fetch_identity_from_shim(url, self.tok, ca)
+        self.assertEqual(StubShim.seen_auth, [], "the token reaches only the verified shim")
+        StubShim.body = json.dumps(dict(SIGNED, document='{"instanceId" : ""}'))
+        with self.assertRaises(agent.CredentialsError):
+            agent.fetch_identity_from_shim(self.url, self.tok, self.ca)
+
+
+SIGNED = {
+    "document": '{\n  "accountId" : "000000000000",\n  "instanceId" : "i-0123456789abcdef0",\n  "openinfraNotAfter" : "2099-01-01T00:00:00Z"\n}',
+    "signature": "c2lnbmF0dXJl\nbGluZTI=",
+    "pkcs7": "cGtjczc=",
+    "rsa2048": "cGtjczc=",
+    "expiresInSeconds": 3600,
+}
+
+
+class IdentityCacheTest(unittest.TestCase):
+    def test_refreshes_at_half_life_and_expires_on_the_monotonic_clock(self):
+        clock = FakeClock()
+        calls = []
+
+        def fetch():
+            calls.append(1)
+            return dict(SIGNED)
+
+        c = agent.IdentityCache(fetch, clock=clock)
+        self.assertIsNone(c.current(), "nothing until the first fetch")
+        c.refresh()
+        self.assertEqual(c.current()["document"], SIGNED["document"])
+        self.assertAlmostEqual(c.next_wait(), 300.0)  # capped; half-life is 1800 s
+        clock.t += 1800
+        self.assertEqual(c.next_wait(), 1.0, "due at half its lifetime")
+        clock.t += 1800 - 31
+        self.assertIsNotNone(c.current(), "still served until 30 s before it expires")
+        clock.t += 2
+        self.assertIsNone(c.current(), "an expired document is never served")
+
+    def test_failed_refresh_keeps_the_document_until_it_expires(self):
+        clock = FakeClock()
+        state = {"ok": True}
+
+        def fetch():
+            if not state["ok"]:
+                raise agent.CredentialsError("shim down", 503)
+            return dict(SIGNED)
+
+        c = agent.IdentityCache(fetch, clock=clock)
+        c.refresh()
+        state["ok"] = False
+        clock.t += 1900
+        with self.assertRaises(agent.CredentialsError):
+            c.refresh()
+        self.assertIsNotNone(c.current())
+        self.assertEqual(c.last_error.status, 503)
+
 
 class IMDSTest(unittest.TestCase):
     def test_imdsv2_token_handshake(self):
@@ -420,6 +489,27 @@ class IMDSTest(unittest.TestCase):
         with Running(make_config(userDataFile="")) as r:
             self.assertEqual(r.get("/latest/user-data")[0], 404, "no user-data -> 404, as on EC2")
             self.assertNotIn("user-data", r.get("/latest/")[1].split("\n"))
+
+    def test_signed_identity_document_is_served_as_issued(self):
+        """With the platform-signed document, IMDS serves it and its signatures byte for byte (what
+        aws-cfn-bootstrap's CFN_V1 signer reads); a VM with no role gets one too."""
+        with Running(make_config(role="", relay={"enabled": False}), identity_fetch=lambda: dict(SIGNED)) as r:
+            self.assertEqual(r.get("/latest/dynamic/instance-identity/document")[1], SIGNED["document"])
+            self.assertEqual(r.get("/latest/dynamic/instance-identity/signature")[1], SIGNED["signature"])
+            self.assertEqual(r.get("/latest/dynamic/instance-identity/rsa2048")[1], SIGNED["rsa2048"])
+            self.assertEqual(r.get("/latest/dynamic/instance-identity/pkcs7")[1], SIGNED["pkcs7"])
+            self.assertEqual(sorted(r.get("/latest/dynamic/instance-identity/")[1].split("\n")),
+                             ["document", "pkcs7", "rsa2048", "signature"])
+            st, tok, _ = r.put_token()
+            self.assertEqual(r.get("/latest/dynamic/instance-identity/signature", {agent.TOKEN_HEADER: tok})[1], SIGNED["signature"])
+        # Without one (no shim, or not yet): the agent's own unsigned document, and no signature at all.
+        with Running(make_config()) as r:
+            self.assertEqual(r.get("/latest/dynamic/instance-identity/signature")[0], 404)
+            self.assertEqual(r.get("/latest/dynamic/instance-identity/")[1], "document")
+            self.assertIn("instanceId", r.get("/latest/dynamic/instance-identity/document")[1])
+        # No identityUrl (instance metadata disabled has none): no fetch is ever tried.
+        cfg = make_config(identityUrl="")
+        self.assertIsNone(agent.Agent(cfg).identity)
 
     def test_no_role_serves_no_iam(self):
         with Running(make_config(role="", relay={"enabled": False})) as r:

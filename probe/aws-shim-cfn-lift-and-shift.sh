@@ -65,6 +65,8 @@
 #                   `nsenter -t 1 -n --` when the probe runs in its own network namespace); else an
 #                   in-cluster pod is used when KUBECONFIG is set
 #   ADDRESS_STACK=1 (optional) keep the instance's Elastic IP in its own stack (eip.yaml), see above
+#   CFN_V1=1        (optional) step 4b: aws-cfn-bootstrap in the instance, run with no credentials (CFN_V1)
+#   CFN_BOOTSTRAP_URL (optional) where this host downloads aws-cfn-bootstrap for 4b (default: AWS's py3 tarball)
 # Needs: aws (v2), curl, python3, and crane or docker to push the app image.
 # Exit 0 = pass, 1 = a real failure, 42 = inconclusive.
 #
@@ -374,6 +376,45 @@ RC_OUT="$("${A[@]}" ssm get-command-invocation --command-id "$CMD" --instance-id
 [ "$(printf '%s\n' "$RC_OUT" | sed -n 2p)" = root ] || fail "the command did not run as root (ran as '$(printf '%s\n' "$RC_OUT" | sed -n 2p)')"
 [ "$(curl -s -m 5 "http://$ADDR/deployed.txt")" = "deployed-$SFX" ] || fail "the command ran, but the instance does not serve what it wrote"
 log "  ✓ send-command $CMD → wait command-executed → Success: ran as root, IMDS instance-id = the InstanceId output ($IID)"
+
+# --- 4b. cfn-init / cfn-signal with no credentials (CFN_V1, #350 W; with CFN_V1=1) --------------------------
+#     aws-cfn-bootstrap's tools run without --role sign their calls with the instance's identity document.
+#     The tarball is fetched here (CFN_BOOTSTRAP_URL) and handed to the instance through the app bucket — the
+#     guest resolves s3.amazonaws.com to the platform — and installed with pip (the guest reaches PyPI for
+#     its dependencies). Then, signing with its document alone: cfn-get-metadata reads its own resource
+#     (the fixture's instance has no Metadata, so "does not specify any metadata" is the answer that it was
+#     served); another stack's (the address stack with ADDRESS_STACK=1, else a stack that does not exist)
+#     is AccessDenied; cfn-signal reaches its stack (a complete stack refuses the signal as such, not as
+#     unauthorized).
+if [ "${CFN_V1:-}" = 1 ]; then
+  BOOT_URL="${CFN_BOOTSTRAP_URL:-https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz}"
+  env -u AWS_ENDPOINT_URL curl -sSfL -m 120 -o "$TMP/cfn-bootstrap.tar.gz" "$BOOT_URL" \
+    || inconclusive "cannot download aws-cfn-bootstrap from $BOOT_URL (set CFN_BOOTSTRAP_URL)"
+  "${A[@]}" s3 cp "$TMP/cfn-bootstrap.tar.gz" "s3://$APPB/aws-cfn-bootstrap.tar.gz" >/dev/null \
+    || fail "uploading aws-cfn-bootstrap to $APPB failed"
+  OTHER="nope-$SFX"
+  [ "${ADDRESS_STACK:-}" = 1 ] && OTHER="$ADDR_STACK"
+  cat > "$TMP/v1-params.json" <<JSON
+{"commands": [
+  "set -u",
+  "if ! command -v cfn-get-metadata >/dev/null; then aws --region $REGION s3 cp s3://$APPB/aws-cfn-bootstrap.tar.gz /tmp/cfn-bootstrap.tar.gz >/dev/null && { pip3 install -q /tmp/cfn-bootstrap.tar.gz >/dev/null 2>&1 || pip3 install -q --break-system-packages /tmp/cfn-bootstrap.tar.gz >/dev/null 2>&1; }; fi",
+  "command -v cfn-get-metadata >/dev/null || { echo NO-BOOTSTRAP; exit 0; }",
+  "if cfn-get-metadata --stack $STACK --resource AppInstance --region $REGION >/tmp/v1-own.out 2>&1 || grep -q 'does not specify any metadata' /tmp/v1-own.out; then echo OWN-OK; else echo OWN-FAIL \$(tr '\\\\n' ' ' < /tmp/v1-own.out | cut -c1-300); fi",
+  "if cfn-get-metadata --stack $OTHER --resource AppInstance --region $REGION >/tmp/v1-other.out 2>&1; then echo OTHER-ALLOWED; else grep -q AccessDenied /tmp/v1-other.out && echo OTHER-DENIED || echo OTHER-FAIL \$(tr '\\\\n' ' ' < /tmp/v1-other.out | cut -c1-300); fi",
+  "cfn-signal --success true --stack $STACK --resource AppInstance --region $REGION >/tmp/v1-sig.out 2>&1; if grep -q 'cannot be signaled' /tmp/v1-sig.out; then echo SIGNAL-REACHED; elif grep -q AccessDenied /tmp/v1-sig.out; then echo SIGNAL-DENIED; else echo SIGNAL-OTHER \$(tr '\\\\n' ' ' < /tmp/v1-sig.out | cut -c1-300); fi"
+]}
+JSON
+  V1CMD="$("${A[@]}" ssm send-command --document-name AWS-RunShellScript --instance-ids "$IID" --comment "cfn-bootstrap CFN_V1" \
+    --parameters "file://$TMP/v1-params.json" --query Command.CommandId --output text 2>"$TMP/rc.err")" \
+    || fail "aws ssm send-command (CFN_V1) failed: $(tr '\n' ' ' < "$TMP/rc.err")"
+  "${A[@]}" ssm wait command-executed --command-id "$V1CMD" --instance-id "$IID" 2>/dev/null || true
+  V1_OUT="$("${A[@]}" ssm get-command-invocation --command-id "$V1CMD" --instance-id "$IID" --query StandardOutputContent --output text)"
+  case "$V1_OUT" in *NO-BOOTSTRAP*) inconclusive "aws-cfn-bootstrap did not install in the instance (pip, or its dependencies from PyPI)";; esac
+  grep -q '^OWN-OK' <<<"$V1_OUT" || fail "cfn-get-metadata with no credentials (CFN_V1) on its own stack: $(grep '^OWN' <<<"$V1_OUT")"
+  grep -q '^OTHER-DENIED' <<<"$V1_OUT" || fail "cfn-get-metadata (CFN_V1) on another stack must be AccessDenied: $(grep '^OTHER' <<<"$V1_OUT")"
+  grep -q '^SIGNAL-REACHED' <<<"$V1_OUT" || fail "cfn-signal with no credentials (CFN_V1): $(grep '^SIGNAL' <<<"$V1_OUT")"
+  log "  ✓ CFN_V1: cfn-get-metadata with no credentials reads its own stack's metadata, another stack's ($OTHER) is AccessDenied, cfn-signal reaches its stack"
+fi
 
 # --- 4c. the shell route: the imported key logs in over SSH from the one address the rule names, and a
 #     client outside it is refused while it still reaches the instance's open port (#347 item 24) --------

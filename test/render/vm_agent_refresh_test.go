@@ -165,7 +165,13 @@ func TestVM_AgentFilesRefreshEveryBoot(t *testing.T) {
 	if strings.Count(plain, "\nbootcmd:\n") != 1 || vmRefreshProgram(t, plain) != prog {
 		t.Errorf("a VM without an instance role must run the same refresh at boot:\n%s", grepCtx(plain, "bootcmd"))
 	}
-	if strings.Contains(plain, "openinfra-identity/token.tmp") {
-		t.Errorf("no instance role, no identity token copy")
+	// The identity token is copied with or without a role (the signed identity document needs it).
+	if !strings.Contains(plain, "openinfra-identity/token.tmp") {
+		t.Errorf("a VM without an instance role still copies its identity token (for its signed identity document)")
+	}
+	// No metadata service, no token.
+	off := vmUserData(t, render(t, tmpl, vmCtxFW("debian-12", map[string]any{"metadataOptions": map[string]any{"httpEndpoint": "disabled"}})))
+	if strings.Count(off, "\nbootcmd:\n") != 1 || vmRefreshProgram(t, off) != prog || strings.Contains(off, "openinfra-identity/token.tmp") {
+		t.Errorf("httpEndpoint: disabled runs the refresh but copies no identity token:\n%s", grepCtx(off, "bootcmd"))
 	}
 }

@@ -189,13 +189,21 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 		}
 	}
 	// A VM with no instanceRole still uses the cloud-init Secret (Linux) and still runs the metadata
-	// agent (IMDS serves instance identity and user-data without a role, as on EC2), but carries none
-	// of the workload-identity wiring and no credentials endpoint.
+	// agent (IMDS serves instance identity and user-data without a role, as on EC2). It carries the
+	// identity token — its signed instance identity document is fetched with it (#350 W) — but its
+	// ServiceAccount names no role, so the shim mints it no credentials, and it has no credentials
+	// endpoint.
 	without := render(t, tmpl, vmCtx("ubuntu-24.04", ""))
 	if !strings.Contains(without, "name: myvm-cloudinit") {
 		t.Errorf("every Linux VM should render a cloud-init Secret; got:\n%s", grepCtx(without, "cloudinit"))
 	}
-	for _, absent := range []string{"vm-myvm", "SATOKEN", "AWS_CONTAINER_CREDENTIALS_FULL_URI=", "openinfra.dev/instance-role:", "openinfra-identity/token.tmp"} {
+	for _, want := range []string{"kind: ServiceAccount", "name: vm-myvm", "openinfra.dev/vm: myvm\n", "serviceAccountName: vm-myvm",
+		"serial: SATOKEN", "openinfra-identity/token.tmp"} {
+		if !strings.Contains(without, want) {
+			t.Errorf("a VM with instance metadata carries its identity token (missing %q); got:\n%s", want, grepCtx(without, "identity"))
+		}
+	}
+	for _, absent := range []string{"AWS_CONTAINER_CREDENTIALS_FULL_URI=", "openinfra.dev/instance-role:"} {
 		if strings.Contains(without, absent) {
 			t.Errorf("a VM with no instanceRole must not render %q; got:\n%s", absent, grepCtx(without, absent))
 		}
@@ -206,6 +214,13 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 	}
 	if relay, _ := cfg["relay"].(map[string]any); relay["enabled"] != false {
 		t.Errorf("no instanceRole → the credentials endpoint must be off, got %#v", relay)
+	}
+	if cfg["identityUrl"] != "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567/v1/vm-identity" {
+		t.Errorf("every VM with instance metadata fetches its signed identity document, got %#v", cfg["identityUrl"])
+	}
+	off := vmAgentConfig(t, render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"metadataOptions": map[string]any{"httpEndpoint": "disabled"}})))
+	if off["identityUrl"] != "" {
+		t.Errorf("httpEndpoint: disabled → no identity document, got %#v", off["identityUrl"])
 	}
 }
 

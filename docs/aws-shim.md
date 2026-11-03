@@ -139,7 +139,7 @@ grant is `create subjectaccessreviews` — which asks the API server a question 
 
 ### Platform endpoints for VM guests (no SigV4)
 
-Three paths are platform endpoints rather than AWS APIs, and none can shadow one: every AWS call is
+These paths are platform endpoints rather than AWS APIs, and none can shadow one: every AWS call is
 SigV4-signed, and these match only their exact paths.
 
 - **`GET /v1/vm-credentials`** — a VM's role credentials (container-credentials JSON), for the
@@ -163,6 +163,20 @@ SigV4-signed, and these match only their exact paths.
   `ec2messages:SendReply` (`AmazonSSMManagedInstanceCore` attaches them) and it is in the account's
   namespace (the CloudFormation stack namespace); otherwise `403`/`404`. TLS only, on port `4567`,
   whatever `VM_CREDS_ALLOW_PLAINTEXT` says.
+- **`GET /v1/vm-identity`** — a VM's signed EC2 instance identity document: the document, `signature`,
+  `rsa2048`/`pkcs7` and its lifetime, as JSON
+  ([virtual-machines.md](virtual-machines.md#signed-instance-identity-document)).
+  - **Who:** the metadata agent of every VM with instance metadata, role or not, identified exactly as
+    for `/v1/vm-credentials`.
+  - **What it holds:** the shim builds the document from the VM's claim and its bound composite (the
+    instance id the EC2 API uses). Nothing in the request shapes it. A claim bound to another VM's
+    composite gets nothing.
+  - **Transport:** TLS only, on port `4567`, and never through the LAN Ingress.
+  - **The certificate:** `GET /v1/vm-identity/certificate` publishes it, current then retired (PEM).
+  - **What a document is for:** the CloudFormation front door accepts calls signed with it
+    (`Authorization: CFN_V1 …`, what `cfn-init` / `cfn-signal` send with no credentials), for the
+    instance's own stack only
+    ([cloudformation.md](cloudformation.md#resource-signals-and-wait-conditions)).
 - **`GET /v1/ca-bundle`** — the platform root CA certificate (PEM, `application/x-pem-file`), the
   root of the `openinfra-ca` ClusterIssuer that signs the platform's TLS endpoints (the registry, S3).
   It is a public certificate, so the endpoint is unauthenticated, and it matches only an **unsigned**
