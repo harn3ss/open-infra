@@ -160,10 +160,12 @@
         "CreateUserPoolClient",
         "DeleteUserPool",
         "DescribeUserPool",
+        "DescribeUserPoolClient",
         "ForgotPassword",
         "GetUser",
         "GlobalSignOut",
         "InitiateAuth",
+        "ListUserPoolClients",
         "ResendConfirmationCode",
         "RespondToAuthChallenge",
         "SignUp"

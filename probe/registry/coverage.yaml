@@ -120,12 +120,6 @@ exceptions:
       Collated into its bucket (kind: Bucket spec.policy, applied to MinIO verbatim); the S3 front door
       serves no GetBucketPolicy.
     issue: "untracked — raised by the coverage registry"
-  - types: [AWS::Cognito::UserPoolClient]
-    check: read
-    reason: >-
-      Collated into its pool (kind: UserPool provisions one app client); DescribeUserPool is served,
-      DescribeUserPoolClient and ListUserPoolClients are not.
-    issue: "untracked — raised by the coverage registry"
   - types: [AWS::AppSync::GraphQLApi, AWS::AppSync::GraphQLSchema, AWS::AppSync::DataSource,
             AWS::AppSync::FunctionConfiguration]
     check: read

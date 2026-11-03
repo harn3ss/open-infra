@@ -88,6 +88,16 @@ CREATED_POOLS+=("$POOL"); rm -f "$PWD/.cog_cp"
 CLIENT="$(cog_admin create-user-pool-client --user-pool-id "$POOL" --client-name app --explicit-auth-flows USER_PASSWORD_AUTH --query 'UserPoolClient.ClientId' 2>/dev/null)"
 [ -n "$CLIENT" ] && [ "$CLIENT" != "None" ] || fail "create-user-pool-client returned no ClientId"
 log "  ✓ pool $POOL, client $CLIENT"
+[ "$(cog_admin describe-user-pool-client --user-pool-id "$POOL" --client-id "$CLIENT" --query 'UserPoolClient.ClientName' 2>/dev/null)" = "app" ] \
+  || fail "describe-user-pool-client did not answer the client's name"
+cog_admin list-user-pool-clients --user-pool-id "$POOL" --query 'UserPoolClients[].ClientId' 2>/dev/null | tr '\t' '\n' | grep -qx "$CLIENT" \
+  || fail "list-user-pool-clients did not list the client"
+if cog_admin describe-user-pool-client --user-pool-id "$POOL" --client-id "nope$SFX" >/dev/null 2>"$PWD/.cog_nc"; then
+  fail "describe-user-pool-client of a client that does not exist succeeded"
+fi
+grep -q ResourceNotFoundException "$PWD/.cog_nc" || fail "missing client: $(cat "$PWD/.cog_nc")"
+rm -f "$PWD/.cog_nc"
+log "  ✓ the client reads back (describe-user-pool-client, list-user-pool-clients); a missing one is not found"
 
 # --- 3. Password policy genuinely enforced at SignUp -------------------------------------------
 log "negative: a weak password must be REFUSED at sign-up (password policy enforced)"

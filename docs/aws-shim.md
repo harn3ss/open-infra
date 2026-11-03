@@ -263,7 +263,7 @@ create on its own API's front door):
 | Athena | `athena` | 28: BatchGetNamedQuery, BatchGetQueryExecution, CreateDataCatalog, CreateNamedQuery, CreatePreparedStatement, CreateWorkGroup, DeleteDataCatalog, DeleteNamedQuery, DeletePreparedStatement, DeleteWorkGroup, GetDataCatalog, GetDatabase, GetNamedQuery, GetPreparedStatement, GetQueryExecution, GetQueryResults, GetTableMetadata, GetWorkGroup, ListDataCatalogs, ListDatabases, ListNamedQueries, ListPreparedStatements, ListTableMetadata, ListWorkGroups, StartQueryExecution, StopQueryExecution, UpdateDataCatalog, UpdateWorkGroup | 0 |
 | CloudFormation | `cloudformation` | 23: CreateChangeSet, CreateStack, DeleteChangeSet, DeleteStack, DescribeChangeSet, DescribeStackDriftDetectionStatus, DescribeStackEvents, DescribeStackResource, DescribeStackResourceDrifts, DescribeStackResources, DescribeStacks, DetectStackDrift, ExecuteChangeSet, GetTemplate, GetTemplateSummary, ListChangeSets, ListExports, ListImports, ListStackResources, ListStacks, UpdateStack, UpdateTerminationProtection, ValidateTemplate; authorizes `cloudformation:SignalResource` | 3 |
 | CloudFront | `cloudfront` | 3: CreateInvalidation, GetInvalidation, ListInvalidations | 6 |
-| Cognito | `cognito-idp` | 18: AdminConfirmSignUp, AdminCreateUser, AdminGetUser, AdminInitiateAuth, AdminSetUserPassword, ConfirmForgotPassword, ConfirmSignUp, CreateUserPool, CreateUserPoolClient, DeleteUserPool, DescribeUserPool, ForgotPassword, GetUser, GlobalSignOut, InitiateAuth, ResendConfirmationCode, RespondToAuthChallenge, SignUp | 2 |
+| Cognito | `cognito-idp` | 20: AdminConfirmSignUp, AdminCreateUser, AdminGetUser, AdminInitiateAuth, AdminSetUserPassword, ConfirmForgotPassword, ConfirmSignUp, CreateUserPool, CreateUserPoolClient, DeleteUserPool, DescribeUserPool, DescribeUserPoolClient, ForgotPassword, GetUser, GlobalSignOut, InitiateAuth, ListUserPoolClients, ResendConfirmationCode, RespondToAuthChallenge, SignUp | 2 |
 | DynamoDB | `dynamodb` | 19: BatchGetItem, BatchWriteItem, CreateTable, DeleteItem, DeleteTable, DescribeContinuousBackups, DescribeTable, DescribeTimeToLive, GetItem, ListTables, PutItem, Query, RestoreTableToPointInTime, Scan, TransactGetItems, TransactWriteItems, UpdateContinuousBackups, UpdateItem, UpdateTimeToLive | 1 |
 | DynamoDB | `dynamodbstreams` | 4: DescribeStream, GetRecords, GetShardIterator, ListStreams | 0 |
 | EC2 | `ec2` | 13: CreateKeyPair, DeleteKeyPair, DeleteVolume, DescribeAddresses, DescribeAvailabilityZones, DescribeImages, DescribeInstances, DescribeKeyPairs, DescribeRegions, DescribeSecurityGroups, DescribeSubnets, DescribeVolumes, DescribeVpcs | 17 |
@@ -1307,9 +1307,13 @@ to read.
 
 User-pool authentication for applications whose end users sign in with Cognito. Speaks AWS JSON 1.1
 (`X-Amz-Target: AWSCognitoIdentityProviderService.<Op>`). Implemented: `CreateUserPool`/`DescribeUserPool`/
-`DeleteUserPool`, `CreateUserPoolClient`, `SignUp`/`ConfirmSignUp`, `AdminCreateUser`/`AdminConfirmSignUp`/
-`AdminSetUserPassword`, `InitiateAuth`/`AdminInitiateAuth` (`USER_PASSWORD_AUTH` + `REFRESH_TOKEN_AUTH`),
-`GetUser`/`AdminGetUser`, `GlobalSignOut`, plus each pool's **JWKS** and OIDC discovery endpoints.
+`DeleteUserPool`, `CreateUserPoolClient`/`DescribeUserPoolClient`/`ListUserPoolClients` (paged with
+`MaxResults`/`NextToken`; a client has no secret here, so none is answered), `SignUp`/`ConfirmSignUp`,
+`AdminCreateUser`/`AdminConfirmSignUp`/`AdminSetUserPassword`, `InitiateAuth`/`AdminInitiateAuth`
+(`USER_PASSWORD_AUTH` + `REFRESH_TOKEN_AUTH`), `GetUser`/`AdminGetUser`, `GlobalSignOut`, plus each pool's
+**JWKS** and OIDC discovery endpoints. These pools and clients are the shim's own; a CloudFormation stack's
+`AWS::Cognito::UserPool` (with its one collated client) is a `kind: UserPool` realm, which `DescribeUserPool`
+and `DescribeUserPoolClient` do not read.
 
 **Two trust domains, not conflated.** The **control plane** (`CreateUserPool`, `CreateUserPoolClient`, the
 `Admin*` ops) is privileged, SigV4-signed by an open-infra principal, authorized by the one policy world

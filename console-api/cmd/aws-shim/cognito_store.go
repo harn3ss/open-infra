@@ -24,6 +24,7 @@ type cognitoClient struct {
 	PoolID    string
 	Name      string
 	AuthFlows []string
+	Created   time.Time
 }
 
 type cognitoUser struct {
@@ -117,8 +118,8 @@ func (s *cognitoStore) createClient(ctx context.Context, c cognitoClient) error 
 func (s *cognitoStore) getClient(ctx context.Context, id string) (cognitoClient, bool, error) {
 	var c cognitoClient
 	var af []byte
-	err := s.db.QueryRowContext(ctx, `SELECT client_id, pool_id, name, auth_flows FROM cognito_clients WHERE client_id=$1`, id).
-		Scan(&c.ID, &c.PoolID, &c.Name, &af)
+	err := s.db.QueryRowContext(ctx, `SELECT client_id, pool_id, name, auth_flows, created FROM cognito_clients WHERE client_id=$1`, id).
+		Scan(&c.ID, &c.PoolID, &c.Name, &af, &c.Created)
 	if err == sql.ErrNoRows {
 		return cognitoClient{}, false, nil
 	}

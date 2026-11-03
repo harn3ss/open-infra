@@ -151,6 +151,10 @@ func (h *cognitoHandler) dispatch(w http.ResponseWriter, r *http.Request, reques
 		h.deleteUserPool(r.Context(), w, requestID, body)
 	case "CreateUserPoolClient":
 		h.createUserPoolClient(r.Context(), w, requestID, body)
+	case "DescribeUserPoolClient":
+		h.describeUserPoolClient(r.Context(), w, requestID, body)
+	case "ListUserPoolClients":
+		h.listUserPoolClients(r.Context(), w, requestID, body)
 	case "SignUp":
 		h.signUp(r.Context(), w, requestID, body, false)
 	case "AdminCreateUser":
