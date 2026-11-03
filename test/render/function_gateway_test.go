@@ -118,12 +118,16 @@ func TestFunctionGateway_InternalListenerAdmitsOnlyInvokers(t *testing.T) {
 	}
 }
 
-func TestFunctionGateway_ActivatorAdmitsOnlyTheGateway(t *testing.T) {
+// The activator's data ports admit the gateway, which forwards requests, and Knative's own autoscaler,
+// which probes each revision's public Service before scale-to-zero (blocking it stalls every
+// PodAutoscaler). Both are pods in knative-serving itself; no other peer.
+func TestFunctionGateway_ActivatorAdmitsOnlyTheGatewayAndAutoscaler(t *testing.T) {
 	act := gatewayPolicies(t)["activator-isolation"]
 	if act == nil {
 		t.Fatal("no activator-isolation policy")
 	}
 	rules, _ := mget(act, "spec", "ingress").([]any)
+	autoscalerProbes := false
 	for _, r := range rules {
 		from, _ := mget(r, "from").([]any)
 		if len(from) == 0 {
@@ -135,10 +139,20 @@ func TestFunctionGateway_ActivatorAdmitsOnlyTheGateway(t *testing.T) {
 		}
 		for _, peer := range from {
 			pm, _ := peer.(map[string]any)
-			if _, hasNS := pm["namespaceSelector"]; hasNS || mstr(pm, "podSelector", "matchLabels", "app") != "3scale-kourier-gateway" {
-				t.Errorf("the activator's data ports admit a peer other than the gateway: %v", pm)
+			app := mstr(pm, "podSelector", "matchLabels", "app")
+			if _, hasNS := pm["namespaceSelector"]; hasNS || (app != "3scale-kourier-gateway" && app != "autoscaler") {
+				t.Errorf("the activator's data ports admit a peer other than the gateway or the autoscaler: %v", pm)
+			}
+			if app == "autoscaler" {
+				if ports["8013"] || ports["8112"] {
+					t.Errorf("the autoscaler needs only the probe port 8012: %v", ports)
+				}
+				autoscalerProbes = ports["8012"]
 			}
 		}
+	}
+	if !autoscalerProbes {
+		t.Error("the autoscaler cannot probe the activator on 8012: every PodAutoscaler reconcile would time out")
 	}
 }
 

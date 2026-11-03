@@ -143,5 +143,5 @@ the request's `Host`, so it is where calls are fenced
   aws-shim), as on AWS: it is authorized there, against the function's policy. A pod
   calling the in-cluster URL directly, even from the function's own namespace, is refused.
 
-The activator, which buffers requests for scaled-to-zero revisions, admits only the
-gateway, so it is no way around this either.
+The activator, which buffers requests for scaled-to-zero revisions, admits requests only from the
+gateway (and health probes from Knative's own autoscaler), so it is no way around this either.

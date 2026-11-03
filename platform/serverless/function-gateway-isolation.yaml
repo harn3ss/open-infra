@@ -20,7 +20,8 @@
 #         pump          a Function's trigger pump (it calls only its own Function)
 #         graphqlapi    a GraphQLApi engine's lambda data sources
 #     A tenant's own pods call a Function through Invoke (the AWS SDK against the aws-shim), as on AWS.
-# The activator buffers requests for scaled-to-zero revisions; only the gateway sends it traffic.
+# The activator buffers requests for scaled-to-zero revisions; only the gateway sends it traffic, and
+# only Knative's autoscaler probes it.
 #
 # Kubelet probes come from the pod's own node, which kube-ovn always admits.
 apiVersion: networking.k8s.io/v1
@@ -86,6 +87,14 @@ spec:
         - { protocol: TCP, port: 8012 }
         - { protocol: TCP, port: 8013 }
         - { protocol: TCP, port: 8112 }
+    # Knative's autoscaler, probing each revision's public Service (which the activator fronts) before it
+    # lets the revision scale to zero. It sends a K-Network-Probe health check, never a request; without
+    # this the probe times out (~20 s) on every PodAutoscaler reconcile, so the autoscaler falls hours
+    # behind and a scaled-to-zero Function never wakes.
+    - from:
+        - podSelector: { matchLabels: { app: autoscaler } }
+      ports:
+        - { protocol: TCP, port: 8012 }
     # Prometheus, scraping the activator's metrics
     - from:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
