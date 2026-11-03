@@ -134,6 +134,17 @@ spec:
   # (autoscaler 43m/71Mi, controller 9m/104Mi at 368 KPAs → headroom for ~2,000). Reversible: set replicas 1.
   high-availability:
     replicas: 2
+  # Node drains. The operator ships these three PDBs with minAvailable: 80%, which at two replicas allows
+  # ZERO disruptions, so `kubectl drain` of a node running any of them blocks until it times out.
+  # maxUnavailable: 1 lets a drain move one replica at a time while the other keeps serving (the HPAs
+  # keep at least two). The operator replaces minAvailable with this on each PDB it renders.
+  podDisruptionBudgets:
+    - name: activator-pdb
+      maxUnavailable: 1
+    - name: webhook-pdb
+      maxUnavailable: 1
+    - name: 3scale-kourier-gateway-pdb
+      maxUnavailable: 1
   # Full-estate re-sizing (2026-10-24): at the real full-estate load (~2,030 ksvc / ~6,000 Services /
   # ~2,000 revisions+routes) the #313-baseline limits were undersized. The activator OOMKilled on
   # recovery-storm spikes (512Mi), net-kourier-controller OOM-crashlooped programming ~2,000 routes
