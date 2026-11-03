@@ -34,11 +34,24 @@ spec:
       - pg_documentdb
     parameters:
       cron.database_name: postgres
+      # pg_cron runs its jobs (DocumentDB's expired-row sweep) in background workers rather than over a
+      # libpq connection to localhost, which CNPG's pg_hba refuses without a password the job does not
+      # have ("cron job 1 connection failed" every minute). Changing it restarts the instance.
+      cron.use_background_workers: "on"
       # Force a WAL segment to archive at least this often, even under light writes. Without it a
       # low-traffic table's most recent writes can sit in an unarchived segment indefinitely, so
       # "latest restorable time" would silently exclude them — point-in-time recovery must actually
       # be able to reach recent writes (bounds the RPO at ~60s).
       archive_timeout: 60s
+    pg_hba:
+      # DocumentDB builds an index (a DynamoDB GSI: createIndexes, CREATE INDEX CONCURRENTLY) over a libpq
+      # connection from the server to itself (documentdb.localhost_connection_string = host=localhost), as
+      # the calling role and with no password. CNPG's rules ask every TCP connection for one, so every
+      # index build failed ("fe_sendauth: no password supplied") and queries fell back to scan+filter.
+      # Trusted: exactly that role, from the pod's own loopback, which only the pod's own processes can
+      # originate (the shim connects through the -rw Service and keeps scram-sha-256).
+      - host all app 127.0.0.1/32 trust
+      - host all app ::1/128 trust
   bootstrap:
     initdb:
       database: postgres
