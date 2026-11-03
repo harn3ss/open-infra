@@ -190,7 +190,7 @@ func TestVM_InstanceRole_WorkloadIdentityWiring(t *testing.T) {
 	}
 	// A VM with no instanceRole still uses the cloud-init Secret (Linux) and still runs the metadata
 	// agent (IMDS serves instance identity and user-data without a role, as on EC2). It carries the
-	// identity token — its signed instance identity document is fetched with it (#350 W) — but its
+	// identity token — its signed instance identity document is fetched with it — but its
 	// ServiceAccount names no role, so the shim mints it no credentials, and it has no credentials
 	// endpoint.
 	without := render(t, tmpl, vmCtx("ubuntu-24.04", ""))

@@ -1,4 +1,4 @@
-// EC2 instance identity documents, signed (#350 W).
+// EC2 instance identity documents, signed.
 //
 // On EC2 every instance can read a JSON identity document and AWS's signatures of it from its instance
 // metadata (latest/dynamic/instance-identity/document, signature, pkcs7, rsa2048). aws-cfn-bootstrap's

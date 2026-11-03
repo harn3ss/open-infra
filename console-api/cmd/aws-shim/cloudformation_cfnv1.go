@@ -1,4 +1,4 @@
-// CloudFormation calls signed with an instance identity (CFN_V1, #350 W), and the GET + JSON form of the
+// CloudFormation calls signed with an instance identity (CFN_V1), and the GET + JSON form of the
 // query API that aws-cfn-bootstrap uses.
 //
 // cfn-init, cfn-signal and cfn-hup run without credentials sign their calls `Authorization: CFN_V1

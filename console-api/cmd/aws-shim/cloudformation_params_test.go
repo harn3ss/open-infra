@@ -182,7 +182,7 @@ func TestCFN_TerminationProtection(t *testing.T) {
 	}
 }
 
-// #350 W: while a create is under way, ListStackResources lists only the resources whose creation has
+// While a create is under way, ListStackResources lists only the resources whose creation has
 // begun — a resource the record plans but has not started is not shown (it used to show CREATE_COMPLETE),
 // and DescribeStackResource does not answer for it; the same after a create that failed before reaching it.
 func TestCFN_ListStackResourcesOmitsUnstarted(t *testing.T) {

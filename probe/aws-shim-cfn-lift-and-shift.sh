@@ -377,7 +377,7 @@ RC_OUT="$("${A[@]}" ssm get-command-invocation --command-id "$CMD" --instance-id
 [ "$(curl -s -m 5 "http://$ADDR/deployed.txt")" = "deployed-$SFX" ] || fail "the command ran, but the instance does not serve what it wrote"
 log "  ✓ send-command $CMD → wait command-executed → Success: ran as root, IMDS instance-id = the InstanceId output ($IID)"
 
-# --- 4b. cfn-init / cfn-signal with no credentials (CFN_V1, #350 W; with CFN_V1=1) --------------------------
+# --- 4b. cfn-init / cfn-signal with no credentials (CFN_V1; with CFN_V1=1) --------------------------
 #     aws-cfn-bootstrap's tools run without --role sign their calls with the instance's identity document.
 #     The tarball is fetched here (CFN_BOOTSTRAP_URL) and handed to the instance through the app bucket — the
 #     guest resolves s3.amazonaws.com to the platform — and installed with pip (the guest reaches PyPI for

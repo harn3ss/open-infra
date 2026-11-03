@@ -26,7 +26,7 @@ func eventIndex(rec *StackRecord, logicalID, status string) int {
 	return -1
 }
 
-// #350 W: a WaitCondition with no DependsOn, ahead of the instance whose UserData signals it, waits while
+// A WaitCondition with no DependsOn, ahead of the instance whose UserData signals it, waits while
 // the instance is created (as AWS creates them in parallel) instead of blocking it until its timeout.
 func TestReadiness_WaitConditionWithoutDependsOnDoesNotBlockTheInstance(t *testing.T) {
 	fastSignals(t)
