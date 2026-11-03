@@ -50,38 +50,9 @@ var reportedElsewhere = map[string]string{
 	"AWS::Lambda::Permission.SourceAccount": "one account; the invoking integration is authorized against its creator when it is created",
 }
 
-// guardDeferred are silent losses the guard found and that are not fixed yet, keyed like reportedElsewhere.
-// Each is a property read leniently — a value of the wrong shape, outside the AWS enum, or alongside a
-// property that already decides the outcome is ignored rather than refused. They are listed so that a NEW
-// silent loss still fails; fixing one means deleting its line (the guard then holds it).
-var guardDeferred = map[string]string{}
-
-func init() {
-	lenient := "a value of the wrong shape (or outside the AWS enum) is ignored rather than refused"
-	for _, k := range []string{
-		"AWS::S3::Bucket.ObjectLockConfiguration", "AWS::S3::Bucket.LifecycleConfiguration.Rules[0].Filter",
-		"AWS::S3::Bucket.LifecycleConfiguration.Rules[0].NoncurrentVersionExpiration",
-		"AWS::SNS::Topic.Subscription", "AWS::SSM::Parameter.Policies",
-	} {
-		guardDeferred[k] = lenient
-	}
-	for _, p := range []string{"MetricsConfig", "ServiceRoleArn"} {
-		guardDeferred["AWS::AppSync::DataSource."+p] = "accepted and neither mapped nor reported (the engine reaches a source with its own credentials and emits no per-source metrics)"
-	}
-	for _, p := range []string{"CachingConfig", "Code", "Kind", "MaxBatchSize", "MetricsConfig", "PipelineConfig", "Runtime", "SyncConfig"} {
-		guardDeferred["AWS::AppSync::Resolver."+p] = lenient
-	}
-	for _, p := range []string{"Code", "CodeS3Location", "MaxBatchSize", "RequestMappingTemplateS3Location", "ResponseMappingTemplateS3Location", "Runtime", "SyncConfig"} {
-		guardDeferred["AWS::AppSync::FunctionConfiguration."+p] = lenient
-	}
-}
-
-// guardUnreported are collated types whose properties another translator reads without reporting the
-// accepted set — not yet checked property by property (deferred, like guardDeferred).
-var guardUnreported = map[string]string{
-	"AWS::AppSync::GraphQLSchema": "its Definition is read by the GraphQLApi; its own property set is not reported",
-	"AWS::S3::BucketPolicy":       "its PolicyDocument is read by the bucket; its own property set is not reported",
-}
+// There is no deferred list: every property a translator accepts is used, reported (a caveat, or
+// reportedElsewhere), inert (inertProps), or refused for every value of the wrong shape, and every
+// collated type reports its accepted set. A new silent loss fails the guard.
 
 // guardBaseline is a minimal valid stack for one type: target is the logical id whose properties the guard
 // varies (and whose translator, or the translator it collates into, must react). tmpl is the whole stack.
@@ -384,9 +355,7 @@ func guardCheck(t *testing.T, baselines []guardBaseline) {
 			continue
 		}
 		if known[""] == nil {
-			if guardUnreported[b.typ] == "" {
-				t.Errorf("%s: translator did not report its accepted properties", b.typ)
-			}
+			t.Errorf("%s: translator did not report its accepted properties", b.typ)
 			continue
 		}
 		var silent, panics []string
@@ -397,7 +366,7 @@ func guardCheck(t *testing.T, baselines []guardBaseline) {
 			}
 			for _, p := range sortedBoolKeys(known[path]) {
 				full := strings.TrimPrefix(path+"."+p, ".")
-				if _, set := container[p]; set || inertProps[p] != "" || reportedElsewhere[b.typ+"."+full] != "" || guardDeferred[b.typ+"."+full] != "" {
+				if _, set := container[p]; set || inertProps[p] != "" || reportedElsewhere[b.typ+"."+full] != "" {
 					continue
 				}
 				// A sample is used (the output changed with nothing new refused), refused, or silent. One

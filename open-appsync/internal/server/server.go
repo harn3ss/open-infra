@@ -507,7 +507,13 @@ func buildResolver(dir string, engine *vtl.Engine, stores map[string]datasource.
 	}
 	if rc.After != "" {
 		// after is a single-template step: its response phase shapes the final value, no request phase.
-		rt, err := loadStep(dir, engine, rc.Runtime, "", rc.After)
+		// A JS step is one module (request + response) carried as its source, so after loads the module
+		// itself and runs its response(ctx); a VTL after is a response template.
+		reqFile, respFile := "", rc.After
+		if rc.Runtime == runtimeAppsyncJS {
+			reqFile, respFile = rc.After, ""
+		}
+		rt, err := loadStep(dir, engine, rc.Runtime, reqFile, respFile)
 		if err != nil {
 			return resolver.Resolver{}, fmt.Errorf("after: %w", err)
 		}

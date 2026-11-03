@@ -153,7 +153,7 @@ spec:
                         description: "Unit resolver: the response mapping template source."
                       before:
                         type: string
-                        description: "Pipeline resolver: the before mapping template (sets $ctx.stash / may abort; touches no data source)."
+                        description: "Pipeline resolver: the before mapping template (sets $ctx.stash / may abort; touches no data source). With runtime appsync-js, the resolver's JavaScript module, whose request(ctx) runs here."
                       auth:
                         type: object
                         description: "Field-level authorization: the k8s RBAC permission the caller must have (checked via a SubjectAccessReview — the same boundary as every other front door). Omit for a public field."
@@ -165,7 +165,7 @@ spec:
                           name: { type: string, description: "Optional specific object name." }
                       after:
                         type: string
-                        description: "Pipeline resolver: the after mapping template (shapes the final value from $ctx.prev.result)."
+                        description: "Pipeline resolver: the after mapping template (shapes the final value from $ctx.prev.result). With runtime appsync-js, the same JavaScript module as before, whose response(ctx) runs here."
                       functions:
                         type: array
                         description: "Pipeline resolver: ordered functions; each function's response becomes $ctx.prev.result for the next."

@@ -60,6 +60,10 @@ drift). A resolver reaching for ambient capability fails closed (proven by a neg
 **behavior-faithful**: `probe/goldens-js/` diffs the same modules against real AWS `evaluate-code`.
 Sandboxing untrusted user code matters *most* for the least-resourced operator this project serves.
 
+A JavaScript **pipeline** resolver is one module too, as on AWS: its `request(ctx)` runs before the
+functions and its `response(ctx)` after them. Give the resolver `runtime: appsync-js` and the same module
+as both `before` and `after`; each pipeline function declares its own `runtime`.
+
 ### Step vs lifecycle
 
 `runtime.Runtime` is the **step** contract, not "the resolver contract." A step transforms `$ctx`

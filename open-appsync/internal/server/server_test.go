@@ -252,6 +252,45 @@ func TestServer_JSResolver(t *testing.T) {
 	}
 }
 
+// A JS pipeline resolver (an APPSYNC_JS resolver of Kind PIPELINE) is one module: request(ctx) runs
+// before the functions and response(ctx) after them, with ctx.prev.result — both from the same source,
+// carried as before and after. A JS function runs its own module.
+func TestServer_JSPipelineResolver(t *testing.T) {
+	dir := t.TempDir()
+	w := func(n, c string) { _ = os.WriteFile(filepath.Join(dir, n), []byte(c), 0o644) }
+	w("config.json", `{
+	  "dataSources":[{"name":"t","type":"memory"}],
+	  "resolvers":[{"type":"Mutation","field":"createTodo","runtime":"appsync-js","before":"pipe.js","after":"pipe.js",
+	    "functions":[{"dataSource":"t","runtime":"appsync-js","request":"put.js","response":"put.js"}]}]
+	}`)
+	w("pipe.js", `
+	  export function request(ctx){ ctx.stash.tag = 'from-before'; return {}; }
+	  export function response(ctx){ return Object.assign({}, ctx.prev.result, { tag: ctx.stash.tag }); }`)
+	w("put.js", `
+	  import { util } from '@aws-appsync/utils';
+	  export function request(ctx){ return { operation:'PutItem',
+	    key:{ id: util.dynamodb.toDynamoDB(util.autoId()) },
+	    attributeValues: util.dynamodb.toMapValues({ name: ctx.args.name }) }; }
+	  export function response(ctx){ return ctx.result; }`)
+
+	engine, err := Load(dir, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	body, _ := json.Marshal(map[string]any{"query": `mutation { createTodo(name:"Ada") { id name tag } }`})
+	rec := httptest.NewRecorder()
+	Handler(engine)(rec, httptest.NewRequest(http.MethodPost, "/graphql", strings.NewReader(string(body))))
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if errs, ok := out["errors"]; ok && errs != nil {
+		t.Fatalf("js pipeline errors: %v", errs)
+	}
+	got, _ := out["data"].(map[string]any)["createTodo"].(map[string]any)
+	if got["name"] != "Ada" || got["tag"] != "from-before" || got["id"] == "" {
+		t.Fatalf("js pipeline not faithful (before stash, function, after response): %v", got)
+	}
+}
+
 // A malformed JS module fails closed at load (syntax error), like a malformed VTL template.
 func TestServer_JSFailsClosedOnSyntaxError(t *testing.T) {
 	dir := t.TempDir()

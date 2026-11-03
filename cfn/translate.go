@@ -16,9 +16,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/policyengine"
@@ -3098,21 +3100,43 @@ func ssmExpiration(pol any) (expiresAt string, hasNotify bool, err error) {
 	if strings.TrimSpace(s) == "" {
 		return "", false, nil
 	}
-	var policies []struct {
-		Type       string         `json:"Type"`
-		Attributes map[string]any `json:"Attributes"`
-	}
+	var policies []map[string]any
 	if e := json.Unmarshal([]byte(s), &policies); e != nil {
 		return "", false, fmt.Errorf("expected a JSON array of policy objects: %w", e)
 	}
-	for _, p := range policies {
-		switch p.Type {
-		case "Expiration":
-			if ts, _ := p.Attributes["Timestamp"].(string); ts != "" {
-				expiresAt = ts
+	// Every policy is checked against AWS's shape — {Type, Version "1.0", Attributes} — so a policy of an
+	// unknown type, or an Expiration without a usable Timestamp, refuses instead of being skipped (a
+	// value the template meant to expire would otherwise be kept).
+	for i, p := range policies {
+		if p == nil {
+			return "", false, fmt.Errorf("policy %d is not an object", i)
+		}
+		for k := range p {
+			if k != "Type" && k != "Version" && k != "Attributes" {
+				return "", false, fmt.Errorf("policy %d has %s, which SSM does not define (Type, Version, Attributes)", i, k)
 			}
+		}
+		if v, set := p["Version"]; set && v != "1.0" {
+			return "", false, fmt.Errorf("policy %d Version must be \"1.0\" (got %v)", i, v)
+		}
+		attrs, _ := p["Attributes"].(map[string]any)
+		if a, set := p["Attributes"]; set && attrs == nil {
+			return "", false, fmt.Errorf("policy %d Attributes must be an object (got %v)", i, a)
+		}
+		switch typ, _ := p["Type"].(string); typ {
+		case "Expiration":
+			if expiresAt != "" {
+				return "", false, fmt.Errorf("more than one Expiration policy")
+			}
+			ts, _ := attrs["Timestamp"].(string)
+			if _, e := time.Parse(time.RFC3339Nano, ts); e != nil {
+				return "", false, fmt.Errorf("the Expiration policy needs an ISO 8601 Attributes.Timestamp, such as 2030-01-01T00:00:00.000Z (got %v)", attrs["Timestamp"])
+			}
+			expiresAt = ts
 		case "ExpirationNotification", "NoChangeNotification":
 			hasNotify = true
+		default:
+			return "", false, fmt.Errorf("policy %d Type %v is not an SSM parameter policy (Expiration, ExpirationNotification, NoChangeNotification)", i, p["Type"])
 		}
 	}
 	return expiresAt, hasNotify, nil
@@ -3970,22 +3994,11 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	// audit store already proves in-house). A lock-enabled bucket with only per-object retention (no
 	// default) refuses loudly rather than being created without the retention the user expects.
 	_, lockEnabled := props["ObjectLockEnabled"]
-	if olc, ok := props["ObjectLockConfiguration"].(map[string]any); ok {
+	if olcv, set := props["ObjectLockConfiguration"]; set && olcv != nil {
 		lockEnabled = true
-		rule, _ := olc["Rule"].(map[string]any)
-		dr, _ := rule["DefaultRetention"].(map[string]any)
-		mode, _ := concrete(dr["Mode"])
-		if mode != "GOVERNANCE" && mode != "COMPLIANCE" {
-			f = append(f, Finding{"Resource " + id, "ObjectLockConfiguration needs a Rule.DefaultRetention with Mode GOVERNANCE or COMPLIANCE"})
+		if ol, fs := s3ObjectLock(id, olcv); len(fs) > 0 {
+			f = append(f, fs...)
 		} else {
-			ol := map[string]any{"mode": mode}
-			if d, ok := dr["Days"]; ok {
-				ol["days"] = d
-			} else if y, ok := dr["Years"]; ok {
-				ol["years"] = y
-			} else {
-				f = append(f, Finding{"Resource " + id, "ObjectLock DefaultRetention needs a Days or Years period"})
-			}
 			spec["objectLock"] = ol
 		}
 	} else if lockEnabled {
@@ -4001,7 +4014,18 @@ func translateS3Bucket(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	if ctx != nil {
 		if pid, ok := ctx.s3BucketPolicyFor(id); ok {
 			sp, _ := ctx.resolveProps(pid)
+			f = append(f, blockUnknownProps(pid, sp, map[string]bool{"Bucket": true, "PolicyDocument": true})...)
 			doc, hasDoc := sp["PolicyDocument"]
+			if s, isStr := doc.(string); isStr {
+				// A Json property may be given as a JSON string; read the document it holds.
+				var parsed map[string]any
+				if err := json.Unmarshal([]byte(s), &parsed); err != nil || parsed == nil {
+					f = append(f, Finding{"Resource " + pid, "BucketPolicy PolicyDocument is a string that is not a JSON policy document"})
+				}
+				doc = parsed
+			} else if _, isMap := doc.(map[string]any); hasDoc && !isMap {
+				f = append(f, Finding{"Resource " + pid, fmt.Sprintf("BucketPolicy PolicyDocument must be a policy document (got %v)", doc)})
+			}
 			// CloudFront read grants (OAC/OAI) are realized by the kind: StaticSite serving this bucket, not
 			// stored as a MinIO policy (translate_cloudfront.go); doc is nil when nothing else remains.
 			doc, cfNotes, cfFindings := ctx.cloudFrontBucketGrants(id, pid, doc)
@@ -4130,6 +4154,9 @@ func translateS3BucketPolicy(id string, props map[string]any, ctx *stackCtx) (*M
 			return nil, nil // collated into its in-stack AWS::S3::Bucket (spec.policy)
 		}
 		if name, ok := concrete(props["Bucket"]); ok && name != "" {
+			if f := blockUnknownProps(id, props, map[string]bool{"Bucket": true, "PolicyDocument": true}); len(f) > 0 {
+				return nil, f
+			}
 			return nil, ctx.externalBucketPolicy(id, name, props["PolicyDocument"])
 		}
 	}
@@ -4277,21 +4304,104 @@ func isPublicPrincipal(p any) bool {
 	return false
 }
 
+// s3ObjectLock maps an ObjectLockConfiguration to kind: Bucket objectLock: its Rule.DefaultRetention's
+// Mode (GOVERNANCE or COMPLIANCE) and exactly one of Days or Years, a positive whole number, as AWS
+// requires. Every other shape refuses — a configuration that is not an object, an ObjectLockEnabled
+// other than Enabled, a key AWS does not define, a period of the wrong shape — because a bucket created
+// without the retention the template asked for cannot get it back for objects already written.
+func s3ObjectLock(id string, v any) (map[string]any, []Finding) {
+	where := "Resource " + id
+	olc, ok := v.(map[string]any)
+	if !ok {
+		return nil, []Finding{{where, fmt.Sprintf("ObjectLockConfiguration must be an object (got %v)", v)}}
+	}
+	f := blockUnknownProps(id+".ObjectLockConfiguration", olc, map[string]bool{"ObjectLockEnabled": true, "Rule": true})
+	if e, set := olc["ObjectLockEnabled"]; set {
+		if s, _ := concrete(e); s != "Enabled" {
+			f = append(f, Finding{where, fmt.Sprintf("ObjectLockConfiguration.ObjectLockEnabled must be Enabled (got %v)", e)})
+		}
+	}
+	rule, ok := olc["Rule"].(map[string]any)
+	if !ok {
+		return nil, append(f, Finding{where, "ObjectLockConfiguration needs a Rule.DefaultRetention with Mode GOVERNANCE or COMPLIANCE — kind: Bucket objectLock sets a default retention; manage per-object retention out of band"})
+	}
+	f = append(f, blockUnknownProps(id+".ObjectLockConfiguration.Rule", rule, map[string]bool{"DefaultRetention": true})...)
+	dr, ok := rule["DefaultRetention"].(map[string]any)
+	if !ok {
+		return nil, append(f, Finding{where, "ObjectLockConfiguration needs a Rule.DefaultRetention with Mode GOVERNANCE or COMPLIANCE"})
+	}
+	f = append(f, blockUnknownProps(id+".ObjectLockConfiguration.Rule.DefaultRetention", dr, map[string]bool{"Mode": true, "Days": true, "Years": true})...)
+	mode, _ := concrete(dr["Mode"])
+	if mode != "GOVERNANCE" && mode != "COMPLIANCE" {
+		f = append(f, Finding{where, "ObjectLockConfiguration needs a Rule.DefaultRetention with Mode GOVERNANCE or COMPLIANCE"})
+	}
+	ol := map[string]any{"mode": mode}
+	_, hasDays := dr["Days"]
+	_, hasYears := dr["Years"]
+	switch {
+	case hasDays && hasYears:
+		f = append(f, Finding{where, "ObjectLock DefaultRetention takes Days or Years, not both"})
+	case hasDays || hasYears:
+		k, out := "Days", "days"
+		if hasYears {
+			k, out = "Years", "years"
+		}
+		if n, ok := positiveWhole(dr[k]); ok {
+			ol[out] = n
+		} else {
+			f = append(f, Finding{where, fmt.Sprintf("ObjectLock DefaultRetention.%s must be a positive whole number (got %v)", k, dr[k])})
+		}
+	default:
+		f = append(f, Finding{where, "ObjectLock DefaultRetention needs a Days or Years period"})
+	}
+	if len(f) > 0 {
+		return nil, f
+	}
+	return ol, nil
+}
+
+// positiveWhole reads a resolved number — a YAML/JSON number, or a numeric string as a parameter gives
+// one — that must be a whole number above zero.
+func positiveWhole(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, n > 0
+	case float64:
+		if n > 0 && n == math.Trunc(n) && n < 1<<31 {
+			return int(n), true
+		}
+		return 0, false
+	}
+	s, ok := concrete(v)
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
 // s3LifecycleRules maps an S3 LifecycleConfiguration to kind: Bucket lifecycleRules. Supported per
 // rule: Id, Status (Enabled), a Prefix (top-level or Filter.Prefix), ExpirationInDays, and
 // NoncurrentVersionExpiration.NoncurrentDays. Anything else on a rule (Transitions, an absolute
 // ExpirationDate, tag/size filters, abort-multipart) blocks — a lifecycle rule that silently
 // dropped its transition or kept objects past their expiry is the worst shape.
 func s3LifecycleRules(id string, lc map[string]any, f *[]Finding) []any {
+	*f = append(*f, shapeFindings(id+".LifecycleConfiguration", lc, []string{"Rules"}, nil, nil)...)
 	rules, _ := lc["Rules"].([]any)
 	var out []any
 	for i, r := range rules {
+		where := fmt.Sprintf("%s.LifecycleConfiguration.Rules[%d]", id, i)
 		rm, ok := r.(map[string]any)
 		if !ok {
+			*f = append(*f, Finding{"Resource " + where, fmt.Sprintf("a lifecycle rule must be an object (got %v)", r)})
 			continue
 		}
 		rknown := map[string]bool{"Id": true, "Status": true, "Prefix": true, "Filter": true, "ExpirationInDays": true, "NoncurrentVersionExpiration": true}
-		*f = append(*f, blockUnknownProps(fmt.Sprintf("%s.LifecycleConfiguration.Rules[%d]", id, i), rm, rknown)...)
+		*f = append(*f, blockUnknownProps(where, rm, rknown)...)
+		*f = append(*f, shapeFindings(where, rm, nil, []string{"Filter", "NoncurrentVersionExpiration"}, []string{"Id", "Status", "Prefix"})...)
 
 		rule := map[string]any{}
 		if rid, ok := concrete(rm["Id"]); ok && rid != "" {
@@ -4302,24 +4412,38 @@ func s3LifecycleRules(id string, lc map[string]any, f *[]Finding) []any {
 		if st, _ := concrete(rm["Status"]); st != "" && st != "Enabled" {
 			*f = append(*f, Finding{"Resource " + id, "lifecycle rule " + fmt.Sprint(rule["id"]) + " Status " + st + " is not applied — only Enabled rules map"})
 		}
+		_, hasPrefix := rm["Prefix"]
+		fl, hasFilter := rm["Filter"].(map[string]any)
+		if hasPrefix && hasFilter {
+			// AWS refuses a rule with both: the top-level Prefix is the legacy form of Filter.Prefix.
+			*f = append(*f, Finding{"Resource " + id, "lifecycle rule " + fmt.Sprint(rule["id"]) + " sets both Prefix and Filter — use one (Filter.Prefix)"})
+		}
 		if p, ok := concrete(rm["Prefix"]); ok && p != "" {
 			rule["prefix"] = p
-		} else if fl, ok := rm["Filter"].(map[string]any); ok {
-			for k := range fl {
+		} else if hasFilter {
+			for _, k := range sortedKeys(fl) {
 				if k != "Prefix" {
 					*f = append(*f, Finding{"Resource " + id, "lifecycle rule " + fmt.Sprint(rule["id"]) + " Filter." + k + " is not supported — only a Prefix filter maps"})
 				}
 			}
+			*f = append(*f, shapeFindings(where+".Filter", fl, nil, nil, []string{"Prefix"})...)
 			if p, ok := concrete(fl["Prefix"]); ok && p != "" {
 				rule["prefix"] = p
 			}
 		}
 		if ed, ok := rm["ExpirationInDays"]; ok {
-			rule["expireDays"] = toInt(ed)
+			if n, ok := positiveWhole(ed); ok {
+				rule["expireDays"] = n
+			} else {
+				*f = append(*f, Finding{"Resource " + id, fmt.Sprintf("lifecycle rule %v ExpirationInDays must be a positive whole number (got %v)", rule["id"], ed)})
+			}
 		}
 		if nve, ok := rm["NoncurrentVersionExpiration"].(map[string]any); ok {
-			if nd, ok := nve["NoncurrentDays"]; ok {
-				rule["noncurrentExpireDays"] = toInt(nd)
+			*f = append(*f, blockUnknownProps(where+".NoncurrentVersionExpiration", nve, map[string]bool{"NoncurrentDays": true})...)
+			if n, ok := positiveWhole(nve["NoncurrentDays"]); ok {
+				rule["noncurrentExpireDays"] = n
+			} else {
+				*f = append(*f, Finding{"Resource " + id, fmt.Sprintf("lifecycle rule %v NoncurrentVersionExpiration.NoncurrentDays must be a positive whole number (got %v)", rule["id"], nve["NoncurrentDays"])})
 			}
 		}
 		if rule["expireDays"] == nil && rule["noncurrentExpireDays"] == nil {
@@ -4435,6 +4559,7 @@ func translateSNSTopic(id string, props map[string]any, ctx *stackCtx) (*Manifes
 	}
 	// Classify each inline Subscription. Read the raw property list (when we have a stack context) so a
 	// lambda Endpoint's {Fn::GetAtt}/{Ref} is still followable to an in-stack Function logical id.
+	f = append(f, snsInlineSubscriptionShape(id, props)...)
 	subsRaw := props["Subscription"]
 	if ctx != nil {
 		if raw, ok := ctx.rawProps(id); ok {
@@ -4445,7 +4570,7 @@ func translateSNSTopic(id string, props map[string]any, ctx *stackCtx) (*Manifes
 		for _, s := range subs {
 			sm, ok := s.(map[string]any)
 			if !ok {
-				continue
+				continue // refused by snsInlineSubscriptionShape
 			}
 			proto, _ := concrete(sm["Protocol"])
 			if msg, _ := ctx.classifySNSSub(proto, sm["Endpoint"]); msg != "" {
@@ -4464,6 +4589,38 @@ func translateSNSTopic(id string, props map[string]any, ctx *stackCtx) (*Manifes
 		}
 	}
 	return m, f
+}
+
+// snsInlineSubscriptionShape refuses an AWS::SNS::Topic Subscription of the wrong shape: AWS defines it
+// as a list of {Endpoint, Protocol} objects, both required. A value that is not a list, an entry that
+// is not an object, an entry missing either key or carrying another (a FilterPolicy belongs on an
+// AWS::SNS::Subscription resource) would otherwise be skipped — a subscriber the template declared
+// would silently never receive the topic's messages.
+func snsInlineSubscriptionShape(id string, props map[string]any) []Finding {
+	v, set := props["Subscription"]
+	if !set || v == nil {
+		return nil
+	}
+	list, ok := v.([]any)
+	if !ok {
+		return []Finding{{"Resource " + id, fmt.Sprintf("Subscription must be a list of {Endpoint, Protocol} (got %v)", v)}}
+	}
+	var f []Finding
+	for i, s := range list {
+		where := fmt.Sprintf("%s.Subscription[%d]", id, i)
+		sm, ok := s.(map[string]any)
+		if !ok {
+			f = append(f, Finding{"Resource " + where, fmt.Sprintf("each Subscription must be an object with Protocol and Endpoint (got %v)", s)})
+			continue
+		}
+		f = append(f, blockUnknownProps(where, sm, map[string]bool{"Endpoint": true, "Protocol": true})...)
+		for _, k := range []string{"Endpoint", "Protocol"} {
+			if _, has := sm[k]; !has {
+				f = append(f, Finding{"Resource " + where, "a Subscription needs both Protocol and Endpoint (missing " + k + ")"})
+			}
+		}
+	}
+	return f
 }
 
 // ---- AWS::SNS::Subscription -> collated into the subscriber's kind: Function (spec.queues) ----
@@ -4640,6 +4797,8 @@ func translateAppSyncGraphQLApi(id string, props map[string]any, ctx *stackCtx) 
 	// schema: the in-stack GraphQLSchema whose ApiId -> this API.
 	for _, cid := range ctx.appsyncChildren("AWS::AppSync::GraphQLSchema", id) {
 		sp, _ := ctx.resolveProps(cid)
+		f = append(f, blockUnknownProps(cid, sp, map[string]bool{"ApiId": true, "Definition": true, "DefinitionS3Location": true})...)
+		f = append(f, shapeFindings(cid, sp, nil, nil, []string{"Definition"})...)
 		if _, ok := sp["DefinitionS3Location"]; ok {
 			f = append(f, Finding{"Resource " + cid, "GraphQLSchema DefinitionS3Location is not translatable — the SDL must be inline (Definition)"})
 		}
@@ -4650,10 +4809,11 @@ func translateAppSyncGraphQLApi(id string, props map[string]any, ctx *stackCtx) 
 
 	// data sources.
 	var dataSources []any
+	var childCaveats []string // what a data source / resolver / function asks for that does not apply here
 	hasDynamo := false
 	for _, cid := range ctx.appsyncChildren("AWS::AppSync::DataSource", id) {
 		sp, _ := ctx.resolveProps(cid)
-		ds, isDynamo := appsyncDataSource(cid, sp, &f)
+		ds, isDynamo := appsyncDataSource(cid, sp, &f, &childCaveats)
 		hasDynamo = hasDynamo || isDynamo
 		dataSources = append(dataSources, ds)
 	}
@@ -4664,7 +4824,7 @@ func translateAppSyncGraphQLApi(id string, props map[string]any, ctx *stackCtx) 
 	// resolvers (required — a GraphQLApi with no resolver can't be created).
 	var resolvers []any
 	for _, cid := range ctx.appsyncChildren("AWS::AppSync::Resolver", id) {
-		resolvers = append(resolvers, ctx.appsyncResolver(cid, &f))
+		resolvers = append(resolvers, ctx.appsyncResolver(cid, &f, &childCaveats))
 	}
 	if len(resolvers) == 0 {
 		f = append(f, Finding{"Resource " + id, "a GraphQLApi requires at least one AWS::AppSync::Resolver in the stack (open-infra's GraphQLApi resolves fields from its resolver list)"})
@@ -4722,19 +4882,24 @@ func translateAppSyncGraphQLApi(id string, props map[string]any, ctx *stackCtx) 
 			m.Caveats = append(m.Caveats, p+" dropped — no open-appsync equivalent")
 		}
 	}
-	if q, ok := props["QueryDepthLimit"]; ok {
-		if n := toInt(q); n > 0 {
+	if q, ok := props["QueryDepthLimit"]; ok && q != nil {
+		// AWS takes 0 (no limit) through 75; anything else is refused there, so it is refused here too
+		// rather than serving the API with no depth limit.
+		if n, isNum := positiveWhole(q); isNum && n <= 75 {
 			lim, _ := spec["limits"].(map[string]any)
 			if lim == nil {
 				lim = map[string]any{}
 				spec["limits"] = lim
 			}
 			lim["maxDepth"] = n
+		} else if s, _ := concrete(q); s != "0" {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("QueryDepthLimit must be a whole number from 0 to 75 (got %v)", q)})
 		}
 	}
 	if hasDynamo {
 		m.Caveats = append(m.Caveats, "a dynamodb data source needs spec.mongoURI (the FerretDB endpoint) set at deploy time — it is not derivable from the template, and the source fails closed at load until set")
 	}
+	m.Caveats = append(m.Caveats, childCaveats...)
 	return m, f
 }
 
@@ -4761,7 +4926,7 @@ func (c *stackCtx) appsyncChildren(cfnType, apiID string) []string {
 
 // appsyncDataSource maps one AWS::AppSync::DataSource to an open-appsync data source; the bool
 // reports whether it is a dynamodb source (so the caller can surface the mongoURI caveat).
-func appsyncDataSource(cid string, sp map[string]any, f *[]Finding) (map[string]any, bool) {
+func appsyncDataSource(cid string, sp map[string]any, f *[]Finding, cav *[]string) (map[string]any, bool) {
 	known := map[string]bool{
 		"ApiId": true, "Name": true, "Type": true, "Description": true, "ServiceRoleArn": true,
 		"DynamoDBConfig": true, "LambdaConfig": true, "HttpConfig": true, "MetricsConfig": true,
@@ -4769,6 +4934,17 @@ func appsyncDataSource(cid string, sp map[string]any, f *[]Finding) (map[string]
 		"EventBridgeConfig": true,
 	}
 	*f = append(*f, blockUnknownProps(cid, sp, known)...)
+	appsyncMetricsConfig(cid, "data source", sp, f, cav)
+	// ServiceRoleArn names the role AppSync assumes to reach the source, and that role's policy bounds
+	// what the source's resolvers may do. open-appsync reaches each source with the engine's own
+	// connection instead, so the role does not narrow anything: reported, never silently dropped.
+	if v, set := sp["ServiceRoleArn"]; set && v != nil {
+		if s, ok := v.(string); !ok || s == "" {
+			*f = append(*f, Finding{"Resource " + cid, fmt.Sprintf("ServiceRoleArn must be a role ARN (got %v)", v)})
+		} else {
+			*cav = append(*cav, "data source "+cid+": its ServiceRoleArn is not assumed — open-appsync reaches the source with the engine's own connection, so that role's policy does not limit what the resolvers using it can read or write")
+		}
+	}
 	name, _ := concrete(sp["Name"])
 	ds := map[string]any{"name": name}
 	dynamo := false
@@ -4832,8 +5008,10 @@ func appsyncDataSource(cid string, sp map[string]any, f *[]Finding) (map[string]
 	return ds, dynamo
 }
 
-// appsyncResolver maps one AWS::AppSync::Resolver to an open-appsync resolver (unit or pipeline).
-func (c *stackCtx) appsyncResolver(cid string, f *[]Finding) map[string]any {
+// appsyncResolver maps one AWS::AppSync::Resolver to an open-appsync resolver (unit or pipeline, VTL
+// or APPSYNC_JS). Every property is read in its AWS shape; a value of another shape refuses rather than
+// being skipped (a resolver that silently ran the wrong code, or no code, is the worst outcome).
+func (c *stackCtx) appsyncResolver(cid string, f *[]Finding, cav *[]string) map[string]any {
 	sp, _ := c.resolveProps(cid)
 	known := map[string]bool{
 		"ApiId": true, "TypeName": true, "FieldName": true, "DataSourceName": true, "Kind": true,
@@ -4843,11 +5021,9 @@ func (c *stackCtx) appsyncResolver(cid string, f *[]Finding) map[string]any {
 		"CachingConfig": true, "SyncConfig": true, "MetricsConfig": true,
 	}
 	*f = append(*f, blockUnknownProps(cid, sp, known)...)
-	for _, k := range []string{"RequestMappingTemplateS3Location", "ResponseMappingTemplateS3Location", "CodeS3Location"} {
-		if _, ok := sp[k]; ok {
-			*f = append(*f, Finding{"Resource " + cid, k + " is not translatable — mapping templates / code must be inline, not fetched from S3"})
-		}
-	}
+	appsyncS3Locations(cid, sp, f)
+	appsyncBatchAndSync(cid, sp, f)
+	appsyncMetricsConfig(cid, "resolver", sp, f, cav)
 
 	r := map[string]any{}
 	if t, ok := concrete(sp["TypeName"]); ok {
@@ -4856,33 +5032,42 @@ func (c *stackCtx) appsyncResolver(cid string, f *[]Finding) map[string]any {
 	if fld, ok := concrete(sp["FieldName"]); ok {
 		r["field"] = fld
 	}
-	isJS := false
-	if rt, ok := sp["Runtime"].(map[string]any); ok {
-		if n, _ := concrete(rt["Name"]); n == "APPSYNC_JS" {
-			isJS = true
-			r["runtime"] = "appsync-js"
-		}
+	isJS, code := appsyncCode(cid, sp, f)
+	r["runtime"] = "appsync-vtl"
+	if isJS {
+		r["runtime"] = "appsync-js"
 	}
-	if !isJS {
-		r["runtime"] = "appsync-vtl"
-	}
+	appsyncCachingConfig(cid, sp, f, cav)
 
-	if kind, _ := concrete(sp["Kind"]); kind == "PIPELINE" {
-		// A pipeline resolver: its Request/Response templates are before/after, and PipelineConfig
-		// names the FunctionConfigurations to run in order.
-		if req, ok := concrete(sp["RequestMappingTemplate"]); ok && req != "" {
-			r["before"] = req
+	kind := "UNIT"
+	if v, set := sp["Kind"]; set && v != nil {
+		kind, _ = concrete(v)
+		if kind != "UNIT" && kind != "PIPELINE" {
+			*f = append(*f, Finding{"Resource " + cid, fmt.Sprintf("Kind must be UNIT or PIPELINE (got %v)", v)})
 		}
-		if resp, ok := concrete(sp["ResponseMappingTemplate"]); ok && resp != "" {
-			r["after"] = resp
+	}
+	if kind == "PIPELINE" {
+		// A pipeline resolver: a VTL one's Request/Response templates are its before/after steps; a
+		// JavaScript one's Code is one module whose request(ctx) runs before the functions and whose
+		// response(ctx) runs after them. PipelineConfig names the FunctionConfigurations, in order.
+		if isJS {
+			r["before"], r["after"] = code, code
+		} else {
+			if req, ok := concrete(sp["RequestMappingTemplate"]); ok && req != "" {
+				r["before"] = req
+			}
+			if resp, ok := concrete(sp["ResponseMappingTemplate"]); ok && resp != "" {
+				r["after"] = resp
+			}
 		}
-		r["functions"] = c.appsyncPipelineFunctions(cid, f)
+		r["functions"] = c.appsyncPipelineFunctions(cid, f, cav)
 	} else {
+		if _, set := sp["PipelineConfig"]; set {
+			*f = append(*f, Finding{"Resource " + cid, "PipelineConfig belongs to a PIPELINE resolver — this one's Kind is UNIT, so its functions would not run"})
+		}
 		// A unit resolver binds one data source with a request/response template (or JS code).
 		if isJS {
-			if code, ok := concrete(sp["Code"]); ok && code != "" {
-				r["request"] = code
-			}
+			r["request"] = code
 		} else {
 			if req, ok := concrete(sp["RequestMappingTemplate"]); ok && req != "" {
 				r["request"] = req
@@ -4902,10 +5087,20 @@ func (c *stackCtx) appsyncResolver(cid string, f *[]Finding) map[string]any {
 
 // appsyncPipelineFunctions maps a pipeline resolver's PipelineConfig.Functions (references to
 // AWS::AppSync::FunctionConfiguration) to open-appsync pipeline functions.
-func (c *stackCtx) appsyncPipelineFunctions(cid string, f *[]Finding) []any {
+func (c *stackCtx) appsyncPipelineFunctions(cid string, f *[]Finding, cav *[]string) []any {
 	raw, _ := c.rawProps(cid)
-	pc, _ := raw["PipelineConfig"].(map[string]any)
-	fnRefs, _ := pc["Functions"].([]any)
+	pcv, set := raw["PipelineConfig"]
+	pc, ok := pcv.(map[string]any)
+	if !set || !ok {
+		*f = append(*f, Finding{"Resource " + cid, fmt.Sprintf("a PIPELINE resolver needs a PipelineConfig with its Functions (got %v)", pcv)})
+		return nil
+	}
+	*f = append(*f, blockUnknownProps(cid+".PipelineConfig", pc, map[string]bool{"Functions": true})...)
+	fnRefs, ok := pc["Functions"].([]any)
+	if !ok || len(fnRefs) == 0 {
+		*f = append(*f, Finding{"Resource " + cid, fmt.Sprintf("PipelineConfig.Functions must list the resolver's FunctionConfigurations (got %v)", pc["Functions"])})
+		return nil
+	}
 	var out []any
 	for _, ref := range fnRefs {
 		fid, ok := getAttTarget(ref)
@@ -4926,21 +5121,161 @@ func (c *stackCtx) appsyncPipelineFunctions(cid string, f *[]Finding) []any {
 			"Runtime": true, "Code": true, "CodeS3Location": true, "MaxBatchSize": true, "SyncConfig": true,
 		}
 		*f = append(*f, blockUnknownProps(fid, fp, fnknown)...)
+		appsyncS3Locations(fid, fp, f)
+		appsyncBatchAndSync(fid, fp, f)
 		fn := map[string]any{"runtime": "appsync-vtl"}
 		if dsn := c.resolveDSName(fid, "DataSourceName"); dsn != "" {
 			fn["dataSource"] = dsn
 		} else {
 			*f = append(*f, Finding{"Resource " + fid, "a FunctionConfiguration requires a DataSourceName naming an in-stack AWS::AppSync::DataSource"})
 		}
-		if req, ok := concrete(fp["RequestMappingTemplate"]); ok {
-			fn["request"] = req
-		}
-		if resp, ok := concrete(fp["ResponseMappingTemplate"]); ok {
-			fn["response"] = resp
+		if isJS, code := appsyncCode(fid, fp, f); isJS {
+			// A JavaScript function is one module (request + response); the engine reads it as the
+			// function's source, and the response field (required by the kind) carries the same module.
+			fn["runtime"], fn["request"], fn["response"] = "appsync-js", code, code
+		} else {
+			if req, ok := concrete(fp["RequestMappingTemplate"]); ok {
+				fn["request"] = req
+			}
+			if resp, ok := concrete(fp["ResponseMappingTemplate"]); ok {
+				fn["response"] = resp
+			}
 		}
 		out = append(out, fn)
 	}
 	return out
+}
+
+// appsyncS3Locations refuses a template or code fetched from S3: the engine serves inline sources only.
+func appsyncS3Locations(cid string, sp map[string]any, f *[]Finding) {
+	for _, k := range []string{"RequestMappingTemplateS3Location", "ResponseMappingTemplateS3Location", "CodeS3Location"} {
+		if _, ok := sp[k]; ok {
+			*f = append(*f, Finding{"Resource " + cid, k + " is not translatable — mapping templates / code must be inline, not fetched from S3"})
+		}
+	}
+}
+
+// appsyncCode reads a resolver or function's Runtime and Code: Runtime, when set, must be AWS's only
+// JavaScript runtime ({Name: APPSYNC_JS, RuntimeVersion: 1.0.0}) and then takes inline Code and no
+// mapping templates; Code without that Runtime refuses, since AWS runs no code for a VTL resolver.
+func appsyncCode(cid string, sp map[string]any, f *[]Finding) (isJS bool, code string) {
+	where := "Resource " + cid
+	if v, set := sp["Runtime"]; set && v != nil {
+		rt, ok := v.(map[string]any)
+		if !ok {
+			*f = append(*f, Finding{where, fmt.Sprintf("Runtime must be {Name: APPSYNC_JS, RuntimeVersion: 1.0.0} (got %v)", v)})
+		} else {
+			*f = append(*f, blockUnknownProps(cid+".Runtime", rt, map[string]bool{"Name": true, "RuntimeVersion": true})...)
+			name, _ := concrete(rt["Name"])
+			ver, _ := concrete(rt["RuntimeVersion"])
+			if name != "APPSYNC_JS" || ver != "1.0.0" {
+				*f = append(*f, Finding{where, fmt.Sprintf("Runtime %v %v is not served — the JavaScript runtime is APPSYNC_JS 1.0.0", rt["Name"], rt["RuntimeVersion"])})
+			} else {
+				isJS = true
+			}
+		}
+	}
+	cv, hasCode := sp["Code"]
+	switch {
+	case isJS && !hasCode:
+		if _, s3 := sp["CodeS3Location"]; !s3 {
+			*f = append(*f, Finding{where, "an APPSYNC_JS resolver or function needs its Code inline"})
+		}
+	case isJS:
+		s, ok := cv.(string)
+		if !ok || strings.TrimSpace(s) == "" {
+			*f = append(*f, Finding{where, fmt.Sprintf("Code must be the JavaScript module's source (got %v)", cv)})
+		}
+		code = s
+		for _, k := range []string{"RequestMappingTemplate", "ResponseMappingTemplate"} {
+			if _, set := sp[k]; set {
+				*f = append(*f, Finding{where, k + " does not go with an APPSYNC_JS Runtime — a JavaScript resolver's request and response are in its Code"})
+			}
+		}
+	case hasCode:
+		*f = append(*f, Finding{where, "Code needs Runtime {Name: APPSYNC_JS, RuntimeVersion: 1.0.0} — without it the resolver is VTL and the code would never run"})
+	}
+	return isJS, code
+}
+
+// appsyncBatchAndSync reads MaxBatchSize and SyncConfig. Batching (BatchInvoke to a Lambda source) and
+// conflict detection (versioned data sources) have no open-appsync form, so a value that turns either
+// on refuses; MaxBatchSize 0 and ConflictDetection NONE are their off settings and change nothing.
+func appsyncBatchAndSync(cid string, sp map[string]any, f *[]Finding) {
+	where := "Resource " + cid
+	if v, set := sp["MaxBatchSize"]; set && v != nil {
+		if s, _ := concrete(v); s != "0" {
+			if _, ok := positiveWhole(v); ok {
+				*f = append(*f, Finding{where, "MaxBatchSize turns on BatchInvoke batching, which open-appsync does not do — each item would be resolved one call at a time"})
+			} else {
+				*f = append(*f, Finding{where, fmt.Sprintf("MaxBatchSize must be a whole number from 0 to 2000 (got %v)", v)})
+			}
+		}
+	}
+	if v, set := sp["SyncConfig"]; set && v != nil {
+		sc, ok := v.(map[string]any)
+		if !ok {
+			*f = append(*f, Finding{where, fmt.Sprintf("SyncConfig must be an object (got %v)", v)})
+			return
+		}
+		*f = append(*f, blockUnknownProps(cid+".SyncConfig", sc, map[string]bool{"ConflictDetection": true, "ConflictHandler": true, "LambdaConflictHandlerConfig": true})...)
+		switch d, _ := concrete(sc["ConflictDetection"]); d {
+		case "NONE":
+		case "VERSION":
+			*f = append(*f, Finding{where, "SyncConfig ConflictDetection VERSION (versioned data sources, as Amplify DataStore uses) is not supported by open-appsync — writes would not be version-checked"})
+		default:
+			*f = append(*f, Finding{where, fmt.Sprintf("SyncConfig.ConflictDetection must be VERSION or NONE (got %v)", sc["ConflictDetection"])})
+		}
+	}
+}
+
+// appsyncMetricsConfig reads a resolver or data source's MetricsConfig: DISABLED changes nothing; ENABLED
+// asks for enhanced CloudWatch metrics, which the engine does not emit — reported, not dropped.
+func appsyncMetricsConfig(cid, what string, sp map[string]any, f *[]Finding, cav *[]string) {
+	v, set := sp["MetricsConfig"]
+	if !set || v == nil {
+		return
+	}
+	switch s, _ := concrete(v); s {
+	case "DISABLED":
+	case "ENABLED":
+		*cav = append(*cav, what+" "+cid+": MetricsConfig ENABLED asks for enhanced metrics, which open-appsync does not emit")
+	default:
+		*f = append(*f, Finding{"Resource " + cid, fmt.Sprintf("MetricsConfig must be ENABLED or DISABLED (got %v)", v)})
+	}
+}
+
+// appsyncCachingConfig reads a resolver's CachingConfig ({Ttl 1-3600, CachingKeys of $context paths}).
+// On AWS it takes effect only with an API cache (AWS::AppSync::ApiCache, per-resolver caching), and an
+// API cache has no open-infra form, so a stack that deploys here has none: as on AWS, nothing is cached.
+// It is reported, so a reader does not take the resolver for cached.
+func appsyncCachingConfig(cid string, sp map[string]any, f *[]Finding, cav *[]string) {
+	v, set := sp["CachingConfig"]
+	if !set || v == nil {
+		return
+	}
+	where := "Resource " + cid
+	cc, ok := v.(map[string]any)
+	if !ok {
+		*f = append(*f, Finding{where, fmt.Sprintf("CachingConfig must be an object (got %v)", v)})
+		return
+	}
+	*f = append(*f, blockUnknownProps(cid+".CachingConfig", cc, map[string]bool{"Ttl": true, "CachingKeys": true})...)
+	if n, ok := positiveWhole(cc["Ttl"]); !ok || n > 3600 {
+		*f = append(*f, Finding{where, fmt.Sprintf("CachingConfig.Ttl must be a whole number of seconds from 1 to 3600 (got %v)", cc["Ttl"])})
+	}
+	if kv, set := cc["CachingKeys"]; set {
+		keys, ok := kv.([]any)
+		if !ok {
+			*f = append(*f, Finding{where, fmt.Sprintf("CachingConfig.CachingKeys must be a list of $context paths (got %v)", kv)})
+		}
+		for _, k := range keys {
+			if s, ok := k.(string); !ok || !(strings.HasPrefix(s, "$context.") || strings.HasPrefix(s, "$ctx.")) {
+				*f = append(*f, Finding{where, fmt.Sprintf("each CachingConfig.CachingKeys entry must be a $context path, such as $context.arguments.id (got %v)", k)})
+			}
+		}
+	}
+	*cav = append(*cav, "resolver "+cid+": CachingConfig takes effect only with an API cache (AWS::AppSync::ApiCache with per-resolver caching), which this stack does not have — as on AWS, its responses are not cached")
 }
 
 // resolveDSName reads a resolver/function's DataSourceName (field) — a literal name, or a

@@ -494,6 +494,7 @@ func translateSNSTopicAPI(id string, props map[string]any, ctx *stackCtx) (*Mani
 	topicARN := svcTopicARN(name, ctx)
 	var subs []*Manifest
 	raw, _ := ctx.rawProps(id)
+	f = append(f, snsInlineSubscriptionShape(id, props)...)
 	if list, ok := props["Subscription"].([]any); ok {
 		rawList, _ := raw["Subscription"].([]any)
 		for i, s := range list {

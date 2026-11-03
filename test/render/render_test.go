@@ -1080,6 +1080,33 @@ func TestGraphQLApi_PipelineAndLimits(t *testing.T) {
 			t.Errorf("GraphQLApi pipeline render missing %q; got:\n%s", want, grepCtx(out, "functions"))
 		}
 	}
+	// A VTL pipeline resolver renders no runtime key of its own (its config is as it always was).
+	if strings.Contains(out, `"field": "createAndFetch", "runtime"`) {
+		t.Errorf("a VTL pipeline resolver must render as before, with no runtime key; got:\n%s", grepCtx(out, "createAndFetch"))
+	}
+}
+
+// A JavaScript pipeline resolver carries its runtime, so the engine runs its before/after steps (one
+// module: request then response) as JavaScript rather than as VTL templates.
+func TestGraphQLApi_JSPipelineResolverRuntime(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/graphqlapi-composition.yaml")
+	mod := "export function request(ctx) { return {}; }\nexport function response(ctx) { return ctx.prev.result; }"
+	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"spec": map[string]any{
+			"dataSources": []any{map[string]any{"name": "t", "type": "memory"}},
+			"resolvers": []any{map[string]any{
+				"type": "Query", "field": "getTodo", "runtime": "appsync-js", "before": mod, "after": mod,
+				"functions": []any{map[string]any{"dataSource": "t", "runtime": "appsync-js", "request": mod, "response": mod}},
+			}},
+		},
+		"metadata": map[string]any{"uid": "u", "labels": map[string]any{"crossplane.io/claim-name": "u", "crossplane.io/claim-namespace": "team-a"}},
+	}}}}
+	out := render(t, tmpl, ctx)
+	for _, want := range []string{`"field": "getTodo", "runtime": "appsync-js", "before": "Query.getTodo.before.vtl"`, `"runtime": "appsync-js", "request": "Query.getTodo.fn0.request.vtl"`, "Query.getTodo.after.vtl:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("JS pipeline render missing %q; got:\n%s", want, grepCtx(out, "getTodo"))
+		}
+	}
 }
 
 // A resolver's field-auth requirement renders into config.json (the field-level authz).

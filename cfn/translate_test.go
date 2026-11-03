@@ -1746,7 +1746,7 @@ func TestTranslate_S3_ObjectLock(t *testing.T) {
 		t.Fatalf("unexpected findings: %s", findingsText(fs))
 	}
 	ol, ok := m.Spec["objectLock"].(map[string]any)
-	if !ok || ol["mode"] != "COMPLIANCE" || ol["days"] != float64(30) {
+	if !ok || ol["mode"] != "COMPLIANCE" || ol["days"] != 30 {
 		t.Fatalf("objectLock not mapped: %#v", m.Spec["objectLock"])
 	}
 }
