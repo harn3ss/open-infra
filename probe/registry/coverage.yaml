@@ -98,7 +98,7 @@ exceptions:
       the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2
       front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no
       DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints.
-    issue: "untracked — raised by the coverage registry"
+    issue: "tracked — serve the EC2 structural describes"
   - types: [AWS::IAM::InstanceProfile]
     check: read
     reason: >-
@@ -108,4 +108,4 @@ exceptions:
       role alone; the profile's name, path and roles are only in the stack's recorded template. The IAM
       front door does not read stack templates yet (the CloudFront and ACM reads resolve theirs with
       cfn.TemplateResources), so GetInstanceProfile and ListInstanceProfiles are not served.
-    issue: "untracked — raised by the coverage registry"
+    issue: "tracked — serve the IAM InstanceProfile reads"

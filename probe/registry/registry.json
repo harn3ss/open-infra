@@ -2167,7 +2167,7 @@
       "deployable": true,
       "exception": {
         "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
+        "issue": "tracked \u2014 serve the EC2 structural describes",
         "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
@@ -2267,7 +2267,7 @@
       "deployable": true,
       "exception": {
         "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
+        "issue": "tracked \u2014 serve the EC2 structural describes",
         "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
@@ -2291,7 +2291,7 @@
       "deployable": true,
       "exception": {
         "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
+        "issue": "tracked \u2014 serve the EC2 structural describes",
         "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
@@ -2404,7 +2404,7 @@
       "deployable": true,
       "exception": {
         "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
+        "issue": "tracked \u2014 serve the EC2 structural describes",
         "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
@@ -2428,7 +2428,7 @@
       "deployable": true,
       "exception": {
         "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
+        "issue": "tracked \u2014 serve the EC2 structural describes",
         "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
@@ -2513,7 +2513,7 @@
       "deployable": true,
       "exception": {
         "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
+        "issue": "tracked \u2014 serve the EC2 structural describes",
         "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
@@ -2537,7 +2537,7 @@
       "deployable": true,
       "exception": {
         "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
+        "issue": "tracked \u2014 serve the EC2 structural describes",
         "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
       },
       "flattened": false,
@@ -2874,7 +2874,7 @@
       "deployable": true,
       "exception": {
         "check": "read",
-        "issue": "untracked \u2014 raised by the coverage registry",
+        "issue": "tracked \u2014 serve the IAM InstanceProfile reads",
         "reason": "Provisions nothing: the translator only resolves an instance's IamInstanceProfile through it to the role, which binds directly on the VM (kind: VirtualMachine spec.instanceRole). The stack record keeps no resource or event for the profile (DescribeStackResources does not list it) and the VM keeps the role alone; the profile's name, path and roles are only in the stack's recorded template. The IAM front door does not read stack templates yet (the CloudFront and ACM reads resolve theirs with cfn.TemplateResources), so GetInstanceProfile and ListInstanceProfiles are not served."
       },
       "flattened": false,
