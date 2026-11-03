@@ -191,11 +191,11 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "CreateAccessKey":
 		h.createAccessKey(ctx, w, r, requestID)
 	case "DeleteAccessKey":
-		h.deleteAccessKey(ctx, w, r, requestID)
+		h.deleteAccessKey(ctx, w, r, requestID, claims)
 	case "ListAccessKeys":
-		h.listAccessKeys(ctx, w, r, requestID)
+		h.listAccessKeys(ctx, w, r, requestID, claims)
 	case "UpdateAccessKey":
-		h.updateAccessKey(ctx, w, r, requestID)
+		h.updateAccessKey(ctx, w, r, requestID, claims)
 	case "SimulatePrincipalPolicy":
 		h.simulatePrincipalPolicy(ctx, w, r, requestID)
 	default:
@@ -554,8 +554,48 @@ func (h *iamHandler) createAccessKey(ctx context.Context, w http.ResponseWriter,
 	h.writeResult(w, requestID, "CreateAccessKey", body)
 }
 
-func (h *iamHandler) listAccessKeys(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
-	user := r.PostFormValue("UserName")
+// accessKeyUser is the user an access-key op acts for: UserName, or — as on AWS — the calling user when
+// the request names none. A role session has no user of its own, so it must name one.
+func (h *iamHandler) accessKeyUser(w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims) (string, bool) {
+	if user := r.PostFormValue("UserName"); user != "" {
+		return user, true
+	}
+	if claims.AssumedRole != "" || claims.PrincipalID() == "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+			"Must specify userName when calling with non-User credentials", iamXMLNamespace)
+		return "", false
+	}
+	return claims.PrincipalID(), true
+}
+
+// ownedAccessKey is the AccessKeyId an op acts on, once it is known to be the named user's. A key another
+// user owns is NoSuchEntity, as on AWS: authority over one user's keys never reaches another's.
+func (h *iamHandler) ownedAccessKey(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims) (id, user string, ok bool) {
+	user, ok = h.accessKeyUser(w, r, requestID, claims)
+	if !ok {
+		return "", "", false
+	}
+	if h.keys == nil {
+		writeQueryError(w, http.StatusInternalServerError, "ServiceFailure", requestID, "access-key store not configured.", iamXMLNamespace)
+		return "", "", false
+	}
+	id = r.PostFormValue("AccessKeyId")
+	if m, found := h.keys.Describe(ctx, id); !found || m.Owner != user {
+		h.noSuchEntity(w, requestID, "The Access Key with id "+id+" cannot be found.")
+		return "", "", false
+	}
+	return id, user, true
+}
+
+func (h *iamHandler) listAccessKeys(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims) {
+	user, ok := h.accessKeyUser(w, r, requestID, claims)
+	if !ok {
+		return
+	}
+	if h.keys == nil {
+		writeQueryError(w, http.StatusInternalServerError, "ServiceFailure", requestID, "access-key store not configured.", iamXMLNamespace)
+		return
+	}
 	metas, err := h.keys.List(ctx, user)
 	if err != nil {
 		h.internal(w, requestID, err)
@@ -575,33 +615,40 @@ func (h *iamHandler) listAccessKeys(ctx context.Context, w http.ResponseWriter, 
 	h.writeResult(w, requestID, "ListAccessKeys", b.String())
 }
 
-func (h *iamHandler) deleteAccessKey(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
-	id := r.PostFormValue("AccessKeyId")
+func (h *iamHandler) deleteAccessKey(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims) {
+	id, user, ok := h.ownedAccessKey(ctx, w, r, requestID, claims)
+	if !ok {
+		return
+	}
 	if err := h.keys.Delete(ctx, id); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
-	h.audit(ctx, "DeleteAccessKey", r.PostFormValue("UserName"), "allow", "accessKeyId="+id)
+	h.audit(ctx, "DeleteAccessKey", user, "allow", "accessKeyId="+id)
 	h.writeResult(w, requestID, "DeleteAccessKey", "")
 }
 
-func (h *iamHandler) updateAccessKey(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
-	id := r.PostFormValue("AccessKeyId")
+func (h *iamHandler) updateAccessKey(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims) {
 	status := r.PostFormValue("Status")
-	var err error
-	switch status {
-	case "Inactive":
-		err = h.keys.Revoke(ctx, id)
-	case "Active":
-		err = h.keys.Activate(ctx, id)
-	default:
+	if status != "Inactive" && status != "Active" {
 		h.malformed(w, requestID, "Status must be Active or Inactive.")
 		return
+	}
+	id, user, ok := h.ownedAccessKey(ctx, w, r, requestID, claims)
+	if !ok {
+		return
+	}
+	var err error
+	if status == "Inactive" {
+		err = h.keys.Revoke(ctx, id)
+	} else {
+		err = h.keys.Activate(ctx, id)
 	}
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
+	h.audit(ctx, "UpdateAccessKey", user, "allow", "accessKeyId="+id+" status="+status)
 	h.writeResult(w, requestID, "UpdateAccessKey", "")
 }
 

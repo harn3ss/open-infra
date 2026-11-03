@@ -12,6 +12,7 @@
 #   - the assumed session is DENIED ListBucket on the granted bucket (action fidelity — same coarse verb)
 #   - SimulatePrincipalPolicy agrees in both directions and reports an explicit Deny as explicitDeny (forbid fidelity)
 #   - CreateAccessKey yields a key that genuinely AUTHENTICATES through the shim
+#   - Update/DeleteAccessKey naming one user and ANOTHER user's key id is NoSuchEntity (the key is untouched)
 # and the NEGATIVES:
 #   - a valid key ID with a WRONG secret on a management call → SignatureDoesNotMatch
 #   - a NotAction policy is ACCEPTED (translated to the Cedar complement — "any action except these")
@@ -207,6 +208,23 @@ CID="$(AWS_ACCESS_KEY_ID="$NAK" AWS_SECRET_ACCESS_KEY="$NSK" AWS_REGION="$REGION
 grep -q "$APPUSER" <<<"$CID" || fail "the created access key did not authenticate as ${APPUSER} (got '$CID'): $(cat "$PWD/.iam_ci" 2>/dev/null)"
 rm -f "$PWD/.iam_ci"
 log "    ✓ the created key authenticates as ${APPUSER}"
+
+# --- 6b. Mismatched pair: an access-key op names one user and another user's key --------------
+log "update/delete-access-key naming ANOTHER user with ${APPUSER}'s key id → NoSuchEntity, key untouched"
+OTHERUSER="iam-probe-other-$SFX"
+iam "$AAK" "$ASK" create-user --user-name "$OTHERUSER" >/dev/null 2>&1 || fail "create-user (other) failed"
+CREATED_USERS+=("$OTHERUSER")
+if iam "$AAK" "$ASK" update-access-key --user-name "$OTHERUSER" --access-key-id "$NAK" --status Inactive >/dev/null 2>"$PWD/.iam_mm"; then
+  fail "update-access-key acted on ${APPUSER}'s key through a request naming ${OTHERUSER}"
+fi
+grep -qi 'NoSuchEntity' "$PWD/.iam_mm" || fail "mismatched update-access-key refused with the wrong error: $(cat "$PWD/.iam_mm")"
+if iam "$AAK" "$ASK" delete-access-key --user-name "$OTHERUSER" --access-key-id "$NAK" >/dev/null 2>"$PWD/.iam_mm"; then
+  fail "delete-access-key deleted ${APPUSER}'s key through a request naming ${OTHERUSER}"
+fi
+rm -f "$PWD/.iam_mm"
+CID="$(AWS_ACCESS_KEY_ID="$NAK" AWS_SECRET_ACCESS_KEY="$NSK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager sts get-caller-identity --query Arn --output text 2>/dev/null || true)"
+grep -q "$APPUSER" <<<"$CID" || fail "${APPUSER}'s key stopped authenticating after the refused mismatched calls"
+log "    ✓ an access-key op acts only on the named user's own key"
 
 # --- 7a. Negative: wrong secret ---------------------------------------------------------------
 log "negative: a valid key ID with a WRONG secret must be rejected"

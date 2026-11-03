@@ -1296,7 +1296,8 @@ its translated policy grants (GetObject the granted bucket) and is **denied ever
 bucket = resource fidelity; `ListBucket` = action fidelity) — the end-to-end confused-deputy detector, proving
 the session is authorized on the *role*, not the shim's backend credentials; `SimulatePrincipalPolicy` agrees
 in both directions and reports an explicit `Deny` as `explicitDeny` (forbid fidelity); `CreateAccessKey`
-yields a key that authenticates; and the negatives (wrong secret → signature mismatch; a `NotAction` policy is
+yields a key that authenticates, and `Update`/`DeleteAccessKey` act only on a key the named user owns (another
+user's key id is `NoSuchEntity`, as on AWS; with no `UserName` the user is the caller's own); and the negatives (wrong secret → signature mismatch; a `NotAction` policy is
 accepted and translated to the complement, while a `NotResource` with an unmappable exclusion is refused).
 The live round-trip requires STS enabled (a Vault `sts/signing-key`, the same operator bootstrap as KMS).
 
