@@ -21,6 +21,14 @@ func awsSQSHost(r *http.Request) bool {
 	return r != nil && awsSQSHostRe.MatchString(hostNoPort(r.Host))
 }
 
+// awsCloudFormationHostRe matches CloudFormation's hostname, cloudformation.<region>.amazonaws.com.
+var awsCloudFormationHostRe = regexp.MustCompile(`^cloudformation\.[a-z0-9-]+\.amazonaws\.com$`)
+
+// awsCloudFormationHost reports whether the request came in by AWS's CloudFormation hostname (a VM guest).
+func awsCloudFormationHost(r *http.Request) bool {
+	return r != nil && awsCloudFormationHostRe.MatchString(hostNoPort(r.Host))
+}
+
 // splitSuffixes merges comma-separated host-suffix lists (empty entries dropped, duplicates kept once).
 func splitSuffixes(lists ...string) []string {
 	var out []string

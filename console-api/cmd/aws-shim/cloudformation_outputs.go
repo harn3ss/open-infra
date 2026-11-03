@@ -175,7 +175,7 @@ func (h *cfnDoorway) listExports(w http.ResponseWriter, r *http.Request, request
 		b.WriteString("<member>")
 		b.WriteString("<ExportingStackId>" + xesc(h.liveStackID(r.Context(), ex.owners[n])) + "</ExportingStackId>")
 		b.WriteString("<Name>" + xesc(n) + "</Name>")
-		b.WriteString("<Value>" + xesc(ex.values[n]) + "</Value>")
+		b.WriteString("<Value>" + xesc(h.queueURLsFor(r, ex.values[n])) + "</Value>")
 		b.WriteString("</member>")
 	}
 	h.writeResult(w, requestID, "ListExports", "<Exports>"+b.String()+"</Exports>")

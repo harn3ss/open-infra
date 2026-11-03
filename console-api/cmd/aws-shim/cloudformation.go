@@ -980,9 +980,43 @@ func (h *cfnDoorway) describeStacks(w http.ResponseWriter, r *http.Request, ap *
 	}
 	var members strings.Builder
 	for _, rec := range recs {
-		members.WriteString(h.stackMemberXML(rec))
+		members.WriteString(h.stackMemberXML(h.outputsFor(r, rec)))
 	}
 	h.writeResult(w, requestID, "DescribeStacks", "<Stacks>"+members.String()+"</Stacks>")
+}
+
+// outputsFor is rec as this caller is answered with it. A stack's queue URLs are built on
+// SQS_QUEUE_URL_BASE, the shim's own address, and kept so: an SDK that sends to the QueueUrl's host
+// (the JavaScript SDKs do — v2 sets the request's endpoint from QueueUrl) ignores AWS_ENDPOINT_URL, so a
+// caller outside a VM guest handed an amazonaws.com URL would send its signed request and message to AWS
+// (the AWS CLI v2 follows its configured endpoint either way). A caller that came in by AWS's own CloudFormation name is a guest,
+// whose resolver sends sqs.<region>.amazonaws.com to this shim — and which may not reach the shim's own
+// address at all — so it is answered with the AWS-form URLs, as the SQS front door answers it.
+func (h *cfnDoorway) outputsFor(r *http.Request, rec *cfn.StackRecord) *cfn.StackRecord {
+	if !awsCloudFormationHost(r) || len(rec.Outputs) == 0 {
+		return rec
+	}
+	out := *rec
+	out.Outputs = make([]cfn.StackOutput, len(rec.Outputs))
+	for i, o := range rec.Outputs {
+		o.OutputValue = h.queueURLsFor(r, o.OutputValue)
+		out.Outputs[i] = o
+	}
+	return &out
+}
+
+// queueURLsFor is a stack output or export value as this caller is answered with it: each queue URL on
+// the shim's own base in AWS's form for a caller that came in by AWS's CloudFormation name (outputsFor),
+// the value unchanged for any other.
+func (h *cfnDoorway) queueURLsFor(r *http.Request, v string) string {
+	if !awsCloudFormationHost(r) {
+		return v
+	}
+	base := strings.TrimRight(h.sqsURLBase, "/")
+	if base == "" {
+		base = defaultQueueURLBase
+	}
+	return strings.ReplaceAll(v, base+"/"+h.account+"/", "https://sqs."+h.region+".amazonaws.com/"+h.account+"/")
 }
 
 func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {

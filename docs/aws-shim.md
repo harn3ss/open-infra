@@ -212,7 +212,11 @@ re-reads the certificate on renewal and starts before it exists. Routing is unch
 credential scope); the Host matters only to S3 (virtual-hosted, above), API Gateway (`<id>.execute-api`)
 and SQS: a caller that came by `sqs.<region>.amazonaws.com` is answered with queue URLs at that name,
 while the queue is recorded under the shim's own URL (`SQS_QUEUE_URL_BASE`), so no other caller is ever
-handed an `amazonaws.com` URL. The registry answers `<account>.dkr.ecr.<region>.amazonaws.com` through
+handed an `amazonaws.com` URL: an SDK that sends to the `QueueUrl`'s host whatever endpoint it was given
+(the JavaScript SDK v2 does) would send an outside caller's signed request and message to AWS. A stack's
+`DescribeStacks` outputs and `ListExports` follow the same rule — a caller that came by
+`cloudformation.<region>.amazonaws.com` (a guest) gets the stack's queue URLs at `sqs.<region>.amazonaws.com`,
+every other caller the shim's own. The registry answers `<account>.dkr.ecr.<region>.amazonaws.com` through
 `ecr-registry-aws`, a third instance of the same registry that serves TLS itself (its token realm is this
 shim's in-cluster TLS port).
 

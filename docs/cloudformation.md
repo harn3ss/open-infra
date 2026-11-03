@@ -599,7 +599,10 @@ translated type's `Ref` and documented `Fn::GetAtt` attributes resolve too (`cfn
   `Arn`, a function's `Arn`, a role's `Arn`, a managed policy's `Ref`, a key's `Arn`, a state machine's
   `Ref`, an ECS service's `Ref`, a certificate's `Ref`).
 - **Names and URLs** are the ones the service uses: a queue's `Ref` / `QueueUrl` is
-  `<SQS_QUEUE_URL_BASE>/<account>/<name>` (the same URL the SQS front door reports for it), a parameter's
+  `<SQS_QUEUE_URL_BASE>/<account>/<name>` (the same URL the SQS front door reports for it; a VM guest
+  reading the stack's outputs through AWS's CloudFormation name gets it as
+  `https://sqs.<region>.amazonaws.com/<account>/<name>`, which its resolver sends to the shim — see
+  [aws-shim.md](aws-shim.md)), a parameter's
   `Ref` is its name, a bucket's `DomainName` / `RegionalDomainName` / `WebsiteURL` are AWS's shapes for
   its name. A queue, topic, subscription, parameter, key or alias in the SQS/SNS/SSM/KMS store (see
   *Queues, topics, parameters and keys*) resolves to exactly what that store holds — a stack key's `Ref`
