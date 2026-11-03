@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,26 +10,26 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	"github.com/minio/minio-go/v7"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
 // s3Handler fronts MinIO with an S3-faithful, SigV4-enforcing surface. The request path is the
-// design's four parts: authenticate (SigV4 → open-infra principal), authorize (the
-// SAME impersonated SubjectAccessReview the console uses), dispatch to MinIO, and re-encode the
-// response in S3's exact byte-shape.
+// design's four parts: authenticate (SigV4 → open-infra principal), authorize, dispatch to MinIO, and
+// re-encode the response in S3's exact byte-shape.
 //
-// Identity bridge — v1 and its graduation path (be explicit, per the design's own discipline):
+// Identity bridge:
 // - Authentication is per-principal and real: the caller's open-infra access key is verified and
-// resolved to their kind: User identity. This is the shared "one policy world" identity.
-// - Authorization in v1 is a COARSE, real RBAC gate: read vs. write is decided by the SAME
-// impersonated SubjectAccessReview everything else uses (see authorizeS3). It is bucket-
-// agnostic because open-infra has no per-bucket RBAC resource yet — the platform already flags
-// per-tenant object-storage isolation as an open gap. Per-bucket authorization (a kind: Bucket
-// or a boundary addition, minting a per-principal scoped MinIO user) is the flagged next
-// graduation step; until then the shim acts to MinIO as a single scoped, NON-root service
-// account, and this coarse gate is honest about what it does and does not enforce.
+// resolved to their kind: User identity (or an assumed role's session).
+// - Authorization is s3authz.Gate, the one object-storage check the console's bucket browser runs too:
+// platform buckets are admin-only; a User needs the coarse impersonated SubjectAccessReview (read,
+// write or delete) and no data-plane Deny; an assumed role needs a data-plane Allow. Each operation is
+// checked on what it acts on — an object operation on Bucket::<bucket>/<key>, a bucket operation on
+// Bucket::<bucket> — so an object-prefix grant reaches only its keys.
+// - To MinIO the shim acts as one scoped, NON-root service account; the gate above is what keeps a
+// caller to their grants.
 type s3Handler struct {
 	cs      kubernetes.Interface    // for the impersonated SubjectAccessReview (iam.CanDo)
 	mc      *minio.Client           // MinIO bridge — a scoped, non-root service account (v1 identity bridge)
@@ -182,42 +181,71 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 	}
 }
 
-// allowed runs the S3 authorization for op: for an assumed role, its data-plane policies alone (default
-// deny); for a User, the coarse SubjectAccessReview and then the data-plane policies, which can only
-// tighten it. A denial is logged with its reason.
+// allowed runs the S3 authorization for op (s3authz.Gate, the same check the console's bucket browser
+// runs): the platform-bucket fence; then for an assumed role its data-plane policies alone (default deny),
+// for a User the coarse SubjectAccessReview and then the data-plane policies, which can only tighten it —
+// each on the resource the operation acts on, the object for an object operation (Bucket::<bucket>/<key>)
+// and the bucket for a bucket operation. A denial is logged with its reason.
 func (h *s3Handler) allowed(r *http.Request, claims iam.Claims, op s3op) bool {
-	if claims.PrincipalType() == "Role" {
-		// An assumed kind: Role has no console user behind it, so the coarse console-user SAR
-		// (get/create applications) does NOT apply — an assumed session's control-plane groups are
-		// deliberately minimal (openinfra:users). Its authority is EXACTLY its attached data-plane
-		// policies, AWS-style default-deny: an ungoverned role (no applicable policy) is denied, never
-		// allowed to fall through the way an ungoverned console user does (#111 Gap C — fail closed).
-		// ListBuckets names no bucket: it is checked on Bucket::* (AWS's Resource "*").
-		allowed, governed, reason := h.authz.Authorize(r.Context(), "Role", claims.PrincipalID(), claims.Groups,
-			op.action(), "Bucket", scopeFor(claims, op.bucket), requestContext(claims, r))
-		if !governed || !allowed {
-			if reason == "" {
-				reason = "assumed role has no data-plane policy allowing this action (default deny)"
-			}
-			h.logger.Warn("s3 denied (assumed role)", "user", claims.Sub, "op", op.kind,
-				"bucket", op.bucket, "key", op.key, "reason", reason)
-			return false
-		}
+	return h.allowedIn(nil, r, claims, op)
+}
+
+// allowedIn is allowed within a batch (DeleteObjects' keys), which shares the coarse review; nil = none.
+func (h *s3Handler) allowedIn(b *s3authz.Batch, r *http.Request, claims iam.Claims, op s3op) bool {
+	var ok bool
+	var reason string
+	if b != nil {
+		ok, reason = b.Allow(r.Context(), claims, op.authzRequest(), requestContext(claims, r))
+	} else {
+		ok, reason = h.gate().Allow(r.Context(), claims, op.authzRequest(), requestContext(claims, r))
+	}
+	if !ok {
+		h.logger.Warn("s3 denied", "user", claims.Sub, "principal", claims.PrincipalType(), "op", op.kind,
+			"bucket", op.bucket, "key", op.key, "reason", reason)
+	}
+	return ok
+}
+
+// gate is the shared object-storage authorization (internal/s3authz) over this handler's clients.
+func (h *s3Handler) gate() s3authz.Gate {
+	return s3authz.Gate{CS: h.cs, Authz: h.authz, NS: h.authzNS}
+}
+
+// authzRequest is op as an authorization question: its AWS action, the coarse RBAC verb it needs, and the
+// resource it acts on (the object for an object operation).
+func (op s3op) authzRequest() s3authz.Request {
+	return s3authz.Request{Action: op.action(), Verb: op.verb(), Bucket: op.bucket, Key: op.key, Object: op.onObject()}
+}
+
+// onObject reports whether op acts on an object (authorized on Bucket::<bucket>/<key>, as AWS authorizes
+// it on arn:aws:s3:::<bucket>/<key>) rather than on its bucket. Listing a bucket's objects, versions or
+// multipart uploads is a bucket operation (s3:ListBucket …), as on AWS.
+func (op s3op) onObject() bool {
+	switch op.kind {
+	case "get", "head", "put", "delete", "copy-object",
+		"get-object-tagging", "put-object-tagging", "delete-object-tagging",
+		"create-multipart-upload", "upload-part", "upload-part-copy", "complete-multipart-upload",
+		"abort-multipart-upload", "list-parts":
 		return true
 	}
-	// Coarse impersonated SubjectAccessReview — one policy world (console-user principals).
-	if allowed, reason := h.authorizeS3(r.Context(), claims, op); !allowed {
-		h.logger.Warn("s3 denied", "user", claims.Sub, "op", op.kind,
-			"bucket", op.bucket, "key", op.key, "reason", reason)
-		return false
+	return false
+}
+
+// verb is the coarse RBAC verb op needs: "delete" to delete an object or bucket, "create" for any other
+// change (an upload, a copy, tagging, versioning), else "get".
+func (op s3op) verb() string {
+	switch op.kind {
+	case "delete", "delete-bucket":
+		return "delete"
+	case "put", "create-bucket", "put-bucket-versioning", "put-bucket-tagging", "delete-bucket-tagging",
+		"create-multipart-upload", "upload-part", "upload-part-copy", "complete-multipart-upload",
+		"abort-multipart-upload", "copy-object":
+		return "create"
 	}
-	// Fine-grained data-plane policy (kind: Policy dataPlane) — additive: can only tighten.
-	if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, op.action(), "Bucket", op.bucket, r); denied {
-		h.logger.Warn("s3 denied by data-plane policy", "user", claims.Sub, "op", op.kind,
-			"bucket", op.bucket, "key", op.key, "reason", reason)
-		return false
+	if op.write { // object tagging and anything else that changes state
+		return "create"
 	}
-	return true
+	return "get"
 }
 
 // decode maps a request onto an s3op, choosing virtual-hosted addressing (bucket in the Host header)
@@ -284,26 +312,6 @@ func decodeS3(r *http.Request) (s3op, bool) {
 		return s3op{}, false
 	}
 	return decodeTarget(r.Method, bucket, key, r.URL.Query())
-}
-
-// authorizeS3 is the v1 authorization gate: a real, impersonated SubjectAccessReview in the one
-// policy world, mapping read/write onto verbs the platform roles already grant differentially
-// (readers can get but not create/delete; powerusers/admins can do both). It is deliberately
-// coarse — bucket-agnostic — and that limitation is documented on s3Handler. It is NOT theater:
-// the decision is made by the API server's RBAC against the impersonated identity, and it fails
-// closed. verb "get" reads / "create" writes / "delete" deletes, checked on the primary product
-// resource that owns object storage (applications) in the configured namespace.
-func (h *s3Handler) authorizeS3(ctx context.Context, claims iam.Claims, op s3op) (bool, string) {
-	verb := "get"
-	switch op.kind {
-	case "put", "create-bucket", "put-bucket-versioning", "put-bucket-tagging", "delete-bucket-tagging",
-		"create-multipart-upload", "upload-part", "upload-part-copy", "complete-multipart-upload",
-		"abort-multipart-upload", "copy-object":
-		verb = "create"
-	case "delete", "delete-bucket":
-		verb = "delete"
-	}
-	return iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, "")
 }
 
 func (h *s3Handler) listBuckets(w http.ResponseWriter, r *http.Request, requestID string) {

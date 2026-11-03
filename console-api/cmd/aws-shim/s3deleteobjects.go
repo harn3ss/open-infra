@@ -112,20 +112,15 @@ func (h *s3Handler) deleteObjects(w http.ResponseWriter, r *http.Request, claims
 		return
 	}
 
-	// Authorize each key. The S3 data-plane resource is the bucket, so within one request the decision
-	// varies only with the action: it is made once per action, not once per key.
-	decided := map[string]bool{}
+	// Authorize each key on its own object (Bucket::<bucket>/<key>), as AWS does: a grant on a prefix
+	// deletes the keys under it and no others. The coarse review depends only on the verb, so the batch
+	// makes it once.
+	batch := h.gate().Batch()
 	var res deleteResult
 	var allowed []deleteEntry
 	for _, e := range entries {
 		keyOp := s3op{kind: "delete", bucket: op.bucket, key: e.key, versionID: e.versionID, write: true}
-		act := keyOp.action()
-		ok, seen := decided[act]
-		if !seen {
-			ok = h.allowed(r, claims, keyOp)
-			decided[act] = ok
-		}
-		if !ok {
+		if !h.allowedIn(batch, r, claims, keyOp) {
 			res.Errors = append(res.Errors, perKeyError(e, "AccessDenied"))
 			continue
 		}

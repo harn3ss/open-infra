@@ -27,6 +27,9 @@
 #     actually fires; naming a key is not enough
 #   - a valid key whose owner lacks write permission is DENIED (AccessDenied) — the boundary fires
 #   - CreateBucket of a platform bucket's name is BucketAlreadyExists, and a reader's is AccessDenied
+#   - a policy on a key prefix (Bucket::<bucket>/scoped/*) reaches only those keys: another key, a copy
+#     whose source is outside the prefix, and a listing of the bucket are AccessDenied
+#   - a platform bucket is AccessDenied to a non-admin
 #
 # On-demand (needs a deployed shim + MinIO + the platform IAM). Run from a host with cluster
 # access. Exit 0 = pass, 1 = a real failure (the shim is not faithful), 42 = INCONCLUSIVE (a
@@ -56,6 +59,7 @@ curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not r
 WORK="$(mktemp -d)"
 CREATED_KEYS=()
 CREATED_USERS=()
+CREATED_POLICIES=()
 BUCKET_NS="${S3_BUCKET_NAMESPACE:-open-infra-s3}"
 MB_BUCKET="aws-shim-probe-mb-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 cleanup() {
@@ -63,6 +67,7 @@ cleanup() {
   kubectl -n "$BUCKET_NS" delete buckets.openinfra.dev "$MB_BUCKET" "${MB_BUCKET}-eu" --ignore-not-found --wait=false >/dev/null 2>&1 || true
   for s in "${CREATED_KEYS[@]:-}";  do [ -n "$s" ] && kubectl -n "$SHIM_NS" delete secret "$s" --ignore-not-found >/dev/null 2>&1 || true; done
   for u in "${CREATED_USERS[@]:-}"; do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
+  for p in "${CREATED_POLICIES[@]:-}"; do [ -n "$p" ] && kubectl -n "$USERS_NS" delete policies.iam.openinfra.dev "$p" --ignore-not-found >/dev/null 2>&1 || true; done
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -237,6 +242,45 @@ awsq "$RAK" "$RSK" get-object --bucket "$BUCKET" --key probe.txt "$WORK/reader.t
 cmp -s "$WORK/in.txt" "$WORK/reader.txt" || fail "reader read returned wrong bytes"
 log "  ✓ reader read succeeded"
 
+# --- 6a. Object-level authorization: a grant on a key prefix reaches only those keys --------------
+# A policy on Bucket::<bucket>/scoped/* (what arn:aws:s3:::<bucket>/scoped/* imports to) lets its User read
+# and write the keys under scoped/, and nothing else in the bucket: not another key, not a copy whose
+# source is outside the prefix, not a listing (ListBucket is a bucket action). A platform bucket is refused
+# to every non-admin, whatever their grants.
+SCOPED_USER="probe-scoped-$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+SCOPED_POLICY="${SCOPED_USER}-s3"
+log "seeding a poweruser whose S3 policy grants only ${BUCKET}/scoped/*"
+mint_key "$SCOPED_USER" "powerusers"; SAK="$MK_AK"; SSK="$MK_SK"
+[ -n "$SAK" ] && [ -n "$SSK" ] || inconclusive "failed to mint the scoped user's key"
+cat <<YAML | kubectl apply -f - >/dev/null || inconclusive "could not create the scoped data-plane Policy"
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata: { name: "${SCOPED_POLICY}", namespace: "${USERS_NS}" }
+spec:
+  dataPlane:
+    appliesTo: ["User::${SCOPED_USER}"]
+    statements:
+      - { effect: Allow, actions: ["s3:GetObject", "s3:PutObject"], resources: ["Bucket::${BUCKET}/scoped/*"] }
+YAML
+CREATED_POLICIES+=("$SCOPED_POLICY")
+log "  waiting ~35s for the data-plane policy loader to pick it up..."
+sleep 35
+awsq "$SAK" "$SSK" put-object --bucket "$BUCKET" --key scoped/a.txt --body "$WORK/in.txt" >/dev/null 2>"$WORK/sc.err" \
+  || fail "a put under the granted prefix was refused: $(cat "$WORK/sc.err")"
+awsq "$SAK" "$SSK" get-object --bucket "$BUCKET" --key scoped/a.txt "$WORK/sc.txt" >/dev/null 2>"$WORK/sc.err" \
+  || fail "a get under the granted prefix was refused: $(cat "$WORK/sc.err")"
+cmp -s "$WORK/in.txt" "$WORK/sc.txt" || fail "the scoped object's bytes differ"
+ERR="$(awsq "$SAK" "$SSK" get-object --bucket "$BUCKET" --key probe.txt "$WORK/nope2.txt" 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q AccessDenied || fail "a get outside the granted prefix: want AccessDenied, got: $ERR"
+ERR="$(awsq "$SAK" "$SSK" copy-object --bucket "$BUCKET" --key scoped/copy.txt --copy-source "${BUCKET}/probe.txt" 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q AccessDenied || fail "a copy into the prefix from a source outside it: want AccessDenied, got: $ERR"
+ERR="$(awsq "$SAK" "$SSK" list-objects-v2 --bucket "$BUCKET" 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q AccessDenied || fail "a bucket listing with an object-only grant: want AccessDenied, got: $ERR"
+log "  ✓ the prefix grant reaches scoped/ only (another key, a copy from outside, and ListBucket are AccessDenied)"
+ERR="$(awsq "$WAK" "$WSK" list-objects-v2 --bucket db-snapshots 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q AccessDenied || fail "a non-admin listing a platform bucket: want AccessDenied, got: $ERR"
+log "  ✓ a platform bucket (db-snapshots) is AccessDenied to a non-admin"
+
 # --- 6b. DeleteObjects (batch delete): each key authorized, Quiet honored --------------------------
 log "DeleteObjects: delete-objects of two keys, then a Quiet one, then a reader's (per-key AccessDenied)"
 for k in del/a.txt del/b.txt del/c.txt del/r.txt; do
@@ -362,9 +406,9 @@ REGION=eu-west-1 awss3 "$WAK" "$WSK" rb "s3://${MB_BUCKET}-eu" >"$WORK/rbeu.out"
 log "  ✓ created from an eu-west-1 client; a mismatched constraint is IllegalLocationConstraintException"
 
 # --- cleanup the object we wrote --------------------------------------------------------------
-for k in probe.txt chunk.txt big.bin big-copy.bin probe-copy.txt del/r.txt; do
+for k in probe.txt chunk.txt big.bin big-copy.bin probe-copy.txt del/r.txt scoped/a.txt; do
   awsq "$WAK" "$WSK" delete-object --bucket "$BUCKET" --key "$k" >/dev/null 2>&1 || true
 done
 
 echo
-echo "✓ PASS — aws-shim S3 surface is byte-faithful (multipart and copies included), serves pre-signed URLs, batch-deletes key by key, creates and removes buckets, and enforces auth + the write boundary."
+echo "✓ PASS — aws-shim S3 surface is byte-faithful (multipart and copies included), serves pre-signed URLs, batch-deletes key by key, creates and removes buckets, and enforces auth, the write boundary, object-level grants and the platform-bucket fence."

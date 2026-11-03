@@ -33,6 +33,10 @@ const (
 // mapping to a Cedar permit/forbid. An empty list or a lone "*" in Actions/Resources means "any";
 // a "*" inside an entry (e.g. "s3:*", "Bucket::log-*") is a wildcard.
 //
+// S3 objects are "Bucket::<bucket>/<key>" (AWS's arn:aws:s3:::<bucket>/<key>): "Bucket::assets/logs/*"
+// is the objects under logs/ in assets. A whole-bucket entry, "Bucket::assets", covers the bucket AND
+// every object in it (withBucketObjects), which is what it has always meant here.
+//
 // NotActions/NotResources are the COMPLEMENT axes (AWS NotAction/NotResource): "any action/resource
 // EXCEPT these". They are mutually exclusive with their positive sibling — a statement sets Actions OR
 // NotActions, never both (toCedar errors on both, fail closed). A NotX set compiles to a negated match
@@ -457,10 +461,38 @@ func scopeClause(field string, positive, negative []string, idx int, axis string
 			}
 		}
 	}
+	if typed {
+		positive, negative = withBucketObjects(positive), withBucketObjects(negative)
+	}
 	if len(negative) > 0 {
 		return complementClause(field, negative), nil
 	}
 	return matchAny(field, positive), nil
+}
+
+// withBucketObjects adds, for each whole-bucket resource entry ("Bucket::<name>", no key and no
+// wildcard), the entry for every object in that bucket ("Bucket::<name>/*"). S3 object operations are
+// authorized on the object they act on ("Bucket::<name>/<key>"), and a bucket entry has always granted
+// (or denied, or excluded) the objects in the bucket as well as the bucket itself, so it keeps that
+// meaning: an Allow, a Deny, a NotResource exclusion and a permission boundary on "Bucket::assets" all
+// cover assets' objects. An entry that already names objects ("Bucket::assets/logs/*") or carries a
+// wildcard ("Bucket::log-*", which `like` already matches against "Bucket::log-a/<key>") is unchanged.
+func withBucketObjects(entries []string) []string {
+	var out []string
+	for _, e := range entries {
+		name, ok := strings.CutPrefix(e, "Bucket::")
+		if !ok || name == "" || strings.ContainsAny(name, "/*") {
+			continue
+		}
+		if out == nil {
+			out = append([]string{}, entries...)
+		}
+		out = append(out, e+"/*")
+	}
+	if out == nil {
+		return entries
+	}
+	return out
 }
 
 // complementClause renders the Cedar match for a NotAction/NotResource set: the negation of matchAny over

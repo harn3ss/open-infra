@@ -24,6 +24,7 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 )
 
 // newS3Handler builds the S3 front door. dyn and cfg may be nil (no Kubernetes dynamic client): the
@@ -440,9 +441,10 @@ func (h *s3Handler) getBucketEncryption(w http.ResponseWriter, r *http.Request, 
 
 // ---- DeleteBucket ----
 
-// platformBuckets are owned by the platform and never deleted through the S3 API. Keep in step with
-// PLATFORM_BUCKETS in platform/abstraction/provider-setup.yaml (TestPlatformBucketsMatchOwnership).
-var platformBuckets = []string{"velero", "lakehouse", "query-data", "query-results", "db-snapshots", "openinfra-audit", "ecr-registry", "longhorn"}
+// platformBuckets are owned by the platform: never deleted through the S3 API, and reachable by admins
+// only (s3authz.Gate). Kept in step with PLATFORM_BUCKETS in platform/abstraction/provider-setup.yaml
+// (TestPlatformBucketsMatchOwnership).
+var platformBuckets = s3authz.PlatformBuckets
 
 var (
 	xbucketGVR = schema.GroupVersionResource{Group: "openinfra.dev", Version: "v1", Resource: "xbuckets"}

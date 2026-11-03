@@ -20,6 +20,7 @@ import (
 
 	"github.com/harn3ss/open-infra/cfn"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	"github.com/minio/minio-go/v7"
 )
 
@@ -118,28 +119,15 @@ func (h *cfnDoorway) readTemplateURL(r *http.Request, raw string) (string, error
 	return string(b), nil
 }
 
-// s3ReadDenied is the S3 front door's authorization of a GetObject, for a template read on the caller's
-// behalf: an assumed role is default-deny under its data-plane policy; a User needs the coarse read right
-// and no data-plane deny.
+// s3ReadDenied is the S3 front door's authorization of a GetObject on the template's object, for a
+// template read on the caller's behalf (s3authz.Gate, exactly as the S3 API authorizes the same read): the
+// platform-bucket fence, then an assumed role default-deny under its data-plane policy, a User the coarse
+// read right and no data-plane deny.
 func (h *cfnDoorway) s3ReadDenied(r *http.Request, claims iam.Claims, bucket, key string) (bool, string) {
-	if claims.PrincipalType() == "Role" {
-		if h.authz == nil {
-			return true, "no data-plane policy engine: an assumed role is denied"
-		}
-		allowed, governed, reason := h.authz.Authorize(r.Context(), "Role", claims.PrincipalID(), claims.Groups,
-			"s3:GetObject", "Bucket", scopeFor(claims, bucket), requestContext(claims, r))
-		if !governed || !allowed {
-			if reason == "" {
-				reason = "the assumed role has no data-plane policy allowing s3:GetObject (default deny)"
-			}
-			return true, reason
-		}
-		return false, ""
-	}
-	if allowed, reason := h.s3.authorizeS3(r.Context(), claims, s3op{kind: "get", bucket: bucket, key: key}); !allowed {
-		return true, reason
-	}
-	return deniedByDataPlane(r.Context(), h.authz, claims, "s3:GetObject", "Bucket", bucket, r)
+	g := s3authz.Gate{CS: h.s3.cs, Authz: h.authz, NS: h.s3.authzNS}
+	ok, reason := g.Allow(r.Context(), claims,
+		s3authz.Request{Action: "s3:GetObject", Verb: "get", Bucket: bucket, Key: key, Object: true}, requestContext(claims, r))
+	return !ok, reason
 }
 
 // templateURLResolver resolves a nested stack's child TemplateURL the same way (cfn.TemplateResolver).

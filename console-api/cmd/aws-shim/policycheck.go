@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"net"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 )
 
 // deniedByDataPlane runs the fine-grained data-plane policy check AFTER the coarse SubjectAccessReview
@@ -133,37 +131,12 @@ func s3Action(kind string) string {
 // requestContext is the Cedar condition context: the request is past SigV4 auth (authenticated), the
 // source IP, the calling principal's name (username — the data-plane principal id: a User's name or an
 // assumed Role's name), and the wall-clock time the request is evaluated (currentTime, for aws:CurrentTime
-// Date* conditions). Each attribute here MUST stay in lockstep with policyengine's SupportedConditionKeys
-// (the TestSupportedConditionKeysMatchRequestContext drift guard): supporting a condition key the shim
-// never populates would make a Deny gated on it silently never fire. currentTime is ALWAYS populated —
-// the datetime attr must never be absent, or a time-window Deny would fail open via the forbid guard.
+// Date* conditions). It is s3authz.RequestContext, which the console's bucket browser uses too, so both
+// feed the engine the same attributes. Each attribute MUST stay in lockstep with policyengine's
+// SupportedConditionKeys (the TestSupportedConditionKeysMatchRequestContext drift guard): supporting a
+// condition key the shim never populates would make a Deny gated on it silently never fire.
 func requestContext(claims iam.Claims, r *http.Request) map[string]any {
-	c := map[string]any{
-		"authenticated": true,
-		// RFC3339 UTC with a trailing Z — the form cedar-go's datetime() parses (the import path validates
-		// targets with the same parser, so both sides of every comparison are Cedar-parseable).
-		"currentTime": time.Now().UTC().Format("2006-01-02T15:04:05Z"),
-	}
-	if r != nil {
-		if ip := clientIP(r); ip != "" {
-			c["sourceIp"] = ip
-		}
-	}
-	if p := claims.PrincipalID(); p != "" {
-		c["username"] = p
-	}
-	return c
+	return s3authz.RequestContext(claims.PrincipalID(), r)
 }
 
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.Index(xff, ","); i > 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
-}
+func clientIP(r *http.Request) string { return s3authz.ClientIP(r) }

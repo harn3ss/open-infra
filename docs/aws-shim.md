@@ -569,16 +569,28 @@ Native/neutral model first; AWS door second. See [open-appsync/README.md](../ope
 
 **Honest limitations (flagged, not hidden):**
 
-- **Authorization is coarse in v1.** The read-vs-write gate is a *real* impersonated
-  `SubjectAccessReview` (readers get read-only S3; powerusers/admins get read-write), but it is
-  **bucket-agnostic** — open-infra has no per-bucket RBAC resource yet, a gap the platform already
-  tracks for object storage. Per-bucket authorization (a `kind: Bucket` or a boundary addition) is
-  the next graduation.
-- **Single MinIO identity.** The shim acts to MinIO as one scoped, non-root service account.
-  Per-principal MinIO users with per-bucket policies are the graduation that pairs with per-bucket
-  authorization.
-- **Not served:** object ACLs, object tagging writes, CORS, and bucket policy and lifecycle through the
-  API (both are set on the `kind: Bucket`).
+- **Authorization is per resource, as on AWS.** Every operation is checked on what it acts on. An
+  object operation (`GetObject`, `PutObject`, `DeleteObject`, `CopyObject`, tagging, every multipart step)
+  is checked on the object, `Bucket::<bucket>/<key>`. A bucket operation (`ListBucket`, versioning, bucket
+  tagging) is checked on `Bucket::<bucket>`.
+  - A copy is also checked as a read of its source object.
+  - `DeleteObjects` checks each key on its own.
+  - A policy grant on `arn:aws:s3:::<bucket>/uploads/*` (imported as `Bucket::<bucket>/uploads/*`) reaches
+    only the keys under `uploads/`, and not `ListBucket`.
+  - A whole-bucket entry, `Bucket::<bucket>`, covers the bucket and all its objects, as it always has.
+  - A User still needs the coarse read, write or delete right (an impersonated `SubjectAccessReview`:
+    readers read, powerusers and admins write), and their data-plane policies can only tighten it. An
+    assumed role needs a data-plane Allow.
+  - The console's bucket browser runs this same check (`internal/s3authz`) as the signed-in user.
+- **Platform buckets are admin-only.** Only an administrator can reach `velero`, `longhorn`,
+  `db-snapshots`, `openinfra-audit`, `ecr-registry`, `lakehouse`, `query-data` and `query-results`,
+  through the S3 API, a `TemplateURL`, a copy source or the console, whatever a policy grants. They are
+  never deleted through the S3 API.
+- **Single MinIO identity.** The shim acts to MinIO as one scoped, non-root service account. The checks
+  above are what keep a caller to its grants. A per-request MinIO credential scoped to the caller's grants
+  is not built.
+- **Not served:** object ACLs, CORS, and bucket policy and lifecycle through the API (both are set on the
+  `kind: Bucket`).
 
 Each new operation or service graduates the same gated way the chaos-oracle adapters do: built →
 exercised → proven by the probe → counted.
