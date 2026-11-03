@@ -1,4 +1,4 @@
-// Deleted stacks (#350 Y), as AWS keeps them.
+// Deleted stacks, as AWS keeps them.
 //
 // AWS keeps a deleted stack for 90 days: ListStacks lists it (DELETE_COMPLETE, with its DeletionTime), and
 // DescribeStacks, DescribeStackEvents, DescribeStackResources, ListStackResources, DescribeStackResource,

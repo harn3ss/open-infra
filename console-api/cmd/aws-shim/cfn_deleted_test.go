@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// #350 Y: a deleted stack is kept, as AWS keeps one for 90 days, under the StackId of its own instance.
+// A deleted stack is kept, as AWS keeps one for 90 days, under the StackId of its own instance.
 
 var aliceClaims = iam.Claims{Sub: "alice", Groups: []string{"openinfra:powerusers", "openinfra:users"}}
 

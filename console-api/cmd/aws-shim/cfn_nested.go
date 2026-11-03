@@ -1,4 +1,4 @@
-// Nested stacks through the CloudFormation front door (#350 Y): the cfn.NestedStacks driver.
+// Nested stacks through the CloudFormation front door: the cfn.NestedStacks driver.
 //
 // A nested stack (AWS::CloudFormation::Stack) is created as a stack of its own, as AWS creates one: its
 // child template is read from its TemplateURL in this shim's own S3 as the caller is allowed to read it

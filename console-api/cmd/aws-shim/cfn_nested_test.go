@@ -14,7 +14,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-// #350 Y: a nested stack is a stack of its own through the front door, created from its child template in
+// A nested stack is a stack of its own through the front door, created from its child template in
 // the shim's S3, and deleted with its parent.
 
 // templateObjects serves GET /<bucket>/<key> from a map, as S3 would serve a template object.

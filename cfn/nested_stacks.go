@@ -1,4 +1,4 @@
-// Nested stacks as stacks of their own (#350 Y).
+// Nested stacks as stacks of their own.
 //
 // On AWS an AWS::CloudFormation::Stack resource creates a CHILD stack: a stack with its own record,
 // events and outputs, named <parent>-<LogicalId>-<suffix>, whose StackId is the resource's physical id

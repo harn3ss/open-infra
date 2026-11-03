@@ -17,7 +17,7 @@
 #     child template is in S3 too, named by a Fn::Sub (Fn::GetAtt Child.Outputs.X resolves); the nested
 #     stack is a stack of its own (the parent's resource and Ref are its StackId; it names its ParentId
 #     and RootId; it is not deleted on its own) and is deleted with its parent
-#   - deleted stacks are kept (#350 Y): both read DELETE_COMPLETE by their StackIds and are listed with
+#   - deleted stacks are kept: both read DELETE_COMPLETE by their StackIds and are listed with
 #     --stack-status-filter DELETE_COMPLETE; a stack re-created under the name gets a new StackId, and the
 #     deleted one's StackId never acts on it (DeleteStack with it is a no-op)
 #   - a Retain bucket a rolled-back create kept: re-creating the stack with its BucketName is refused (the
@@ -304,7 +304,7 @@ cfn list-stacks --query "StackSummaries[?StackName=='$CHILD'].ParentId" --output
 log "  ✓ the nested stack is a stack of its own ($CHILD), naming its parent and root"
 out="$(cfn delete-stack --stack-name "$CHILD" 2>&1)" && fail "a nested stack must not be deleted on its own"
 printf '%s' "$out" | grep -q "nested stack" || fail "the refusal must say it is a nested stack: $out"
-# Deleted with its parent; both are then kept as deleted stacks, readable by their StackIds (#350 Y).
+# Deleted with its parent; both are then kept as deleted stacks, readable by their StackIds.
 delete_parent() {
   cfn delete-stack --stack-name "$NEST" >/dev/null || fail "delete-stack $NEST"
   for _ in $(seq 1 100); do
