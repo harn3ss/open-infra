@@ -171,7 +171,7 @@ data:
     bi_ready() { kubectl -n $LH get backingimages.longhorn.io "$1" -o jsonpath='{range .status.diskFileStatusMap.*}{.state}{" "}{end}' 2>/dev/null | grep -qw ready; }
     sc() { # name replicas locality migratable backingImage checksum
       kubectl get sc "$1" >/dev/null 2>&1 && return 0
-      cat <<YAML | kubectl apply -f - >/dev/null
+      cat <<YAML | kubectl apply --validate=false -f - >/dev/null
     apiVersion: storage.k8s.io/v1
     kind: StorageClass
     metadata: { name: $1, labels: { openinfra.dev/vm-base: "true", openinfra.dev/vm-base-image: $5 } }
@@ -189,7 +189,7 @@ data:
         log "$os: building base $name from $repo@$digest"
         kubectl -n $NS delete pod "$name-copy" --ignore-not-found >/dev/null
         # 1. CDI imports the image by digest (a Filesystem disk.img — CDI cannot write a raw block device here).
-        cat <<YAML | kubectl apply -f - >/dev/null
+        cat <<YAML | kubectl apply --validate=false -f - >/dev/null
     apiVersion: cdi.kubevirt.io/v1beta1
     kind: DataVolume
     metadata:
@@ -208,7 +208,7 @@ data:
     YAML
         waitfor 2400 sh -c "[ \"\$(kubectl -n $NS get dv $name -o jsonpath='{.status.phase}')\" = Succeeded ]" || { log "$os: the import did not finish"; return 1; }
         # 2. A root pod copies the image (up to its GPT backup header) onto the Block volume.
-        cat <<YAML | kubectl apply -f - >/dev/null
+        cat <<YAML | kubectl apply --validate=false -f - >/dev/null
     apiVersion: v1
     kind: Pod
     metadata: { name: $name-copy, namespace: $NS, labels: { openinfra.dev/vm-base-image: $name } }
@@ -250,7 +250,7 @@ data:
         kubectl -n $NS delete pod "$name-copy" --wait=true >/dev/null
         # 3. The backing image, exported from that volume.
         vol=$(kubectl -n $NS get pvc "$name-stage" -o jsonpath='{.spec.volumeName}')
-        cat <<YAML | kubectl apply -f - >/dev/null
+        cat <<YAML | kubectl apply --validate=false -f - >/dev/null
     apiVersion: longhorn.io/v1beta2
     kind: BackingImage
     metadata:
@@ -275,7 +275,7 @@ data:
       sc "$name-reader" 1 strict-local false "$name" "$sum"
       # What an HA kind: AutoScalingGroup member clones (CDI clones a volume of the same class).
       if ! kubectl -n $NS get pvc "$name-pristine" >/dev/null 2>&1; then
-        cat <<YAML | kubectl apply -f - >/dev/null
+        cat <<YAML | kubectl apply --validate=false -f - >/dev/null
     apiVersion: v1
     kind: PersistentVolumeClaim
     metadata: { name: $name-pristine, namespace: $NS, labels: { openinfra.dev/vm-base: "$os", openinfra.dev/vm-base-image: $name } }
@@ -298,7 +298,7 @@ data:
       name="openinfra-${os//./-}-${digest:7:12}"
       build "$os" "$image" "$digest" "$name" </dev/null || rc=1
     done
-    cat <<YAML | kubectl apply -f - >/dev/null
+    cat <<YAML | kubectl apply --validate=false -f - >/dev/null
     apiVersion: apiextensions.crossplane.io/v1alpha1
     kind: EnvironmentConfig
     metadata: { name: openinfra-vm-bases }
@@ -348,7 +348,8 @@ spec:
               env:
                 - { name: COPY_IMAGE, value: "docker.io/alpine/k8s:1.30.0@sha256:bd01dae02676ce4cab62fc744e43443eee5bf660054e94d3496d23bfc35d384e" }
               command: [/bin/bash, /scripts/build.sh]
-              resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 500m, memory: 256Mi } }
+              # kubectl on a cluster with this many APIs needs more than a small shell job.
+              resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { cpu: 500m, memory: 1Gi } }
               securityContext: { allowPrivilegeEscalation: false, runAsNonRoot: true, runAsUser: 65534, capabilities: { drop: [ALL] } }
               volumeMounts: [{ name: scripts, mountPath: /scripts }]
           volumes: [{ name: scripts, configMap: { name: vm-base-builder } }]
