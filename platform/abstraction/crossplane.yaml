@@ -73,6 +73,14 @@ spec:
         resourcesRBACManager:
           limits: { cpu: 500m, memory: 1Gi }
           requests: { cpu: 100m, memory: 256Mi }
+        # The chart's "human" roles crossplane-admin/edit/view/browse take their base rules from the
+        # crossplane:aggregate-to-* roles; admin's and edit's base include every verb on every Secret in the
+        # cluster, the root CA key among them. Nothing here binds those roles: the only binding is the
+        # chart's own crossplane-admin -> group crossplane:masters, a group no identity is given (break-glass
+        # is system:masters). Without the base roles, crossplane-admin/edit/view keep the claim kinds the
+        # RBAC manager aggregates into them, and nobody reads Secrets through them.
+        rbacManager:
+          skipAggregatedClusterRoles: true
   destination:
     server: https://kubernetes.default.svc
     namespace: crossplane-system
