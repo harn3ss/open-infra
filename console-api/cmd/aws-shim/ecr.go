@@ -276,6 +276,15 @@ func (h *ecrHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 func (h *ecrHandler) getAuthorizationToken(ctx context.Context, w http.ResponseWriter, requestID string, claims iam.Claims) {
 	var user, pass string
 	perRepo := h.tokenAuth && h.signer != nil
+	// 12 hours, as on AWS, but never past the caller's session: a token minted from role credentials
+	// that expire in an hour must not keep pulling for eleven more.
+	ttl := ecrTokenTTL(claims, time.Now())
+	if ttl <= 0 {
+		reason := "the session's credentials have expired"
+		h.audit(ctx, "GetAuthorizationToken", "", "deny", reason)
+		writeECRError(w, http.StatusBadRequest, "ExpiredTokenException", requestID, reason)
+		return
+	}
 	if claims.AssumedRole != "" && !perRepo {
 		// The shared htpasswd credential reaches every repository, so it cannot be held to a role's policy
 		// (whose authority may be one repository). Without per-repository token auth a role gets none.
@@ -290,7 +299,7 @@ func (h *ecrHandler) getAuthorizationToken(ctx context.Context, w http.ResponseW
 		// docker login -u AWS -p <token>; docker then presents it to /ecr/token, which authorizes the
 		// requested repos against THIS caller and mints a registry token scoped to only what's granted.
 		caller, err := h.signer.mintCaller(ecrCaller{Sub: claims.Sub, Groups: claims.Groups, Role: claims.Role,
-			AssumedRole: claims.AssumedRole}, 12*time.Hour)
+			AssumedRole: claims.AssumedRole}, ttl)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
@@ -312,10 +321,22 @@ func (h *ecrHandler) getAuthorizationToken(ctx context.Context, w http.ResponseW
 	writeECRJSON(w, requestID, map[string]any{
 		"authorizationData": []any{map[string]any{
 			"authorizationToken": token,
-			"expiresAt":          float64(time.Now().Add(12 * time.Hour).Unix()),
+			"expiresAt":          float64(time.Now().Add(ttl).Unix()),
 			"proxyEndpoint":      h.proxyEndpoint,
 		}},
 	})
+}
+
+// ecrTokenTTL is how long an authorization token minted now lasts: 12 hours, capped at the remaining
+// life of the caller's session (zero or less when it has run out).
+func ecrTokenTTL(claims iam.Claims, now time.Time) time.Duration {
+	ttl := 12 * time.Hour
+	if !claims.SessionExpiry.IsZero() {
+		if left := claims.SessionExpiry.Sub(now); left < ttl {
+			ttl = left
+		}
+	}
+	return ttl
 }
 
 // --- repositories ---

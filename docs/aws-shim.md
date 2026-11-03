@@ -1648,7 +1648,7 @@ login`/`push`/`pull` — is the **standard OCI Distribution protocol spoken dire
 `proxyEndpoint`; the shim never proxies image bytes. The backend (`platform/aws-shim/ecr-registry.yaml`) is
 CNCF **distribution** (digest-pinned, non-root, read-only-rootfs) with its S3 storage driver pointed at the
 in-cluster MinIO under a **bucket-scoped, non-root identity** — image blobs live in MinIO, nothing else is
-reachable. `GetAuthorizationToken` hands back a 12-hour, shim-signed credential that identifies the caller
+reachable. `GetAuthorizationToken` hands back a shim-signed credential that identifies the caller and lasts 12 hours, or until the caller's session expires if that is sooner
 (base64 `AWS:<credential>`), so `aws ecr get-login-password | docker login --username AWS --password-stdin
 <proxyEndpoint>` and then `docker push`/`docker pull` work against the `proxyEndpoint`.
 

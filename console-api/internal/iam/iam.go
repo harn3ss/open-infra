@@ -15,6 +15,7 @@ package iam
 import (
 	"context"
 	"strings"
+	"time"
 
 	authzv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,8 +24,9 @@ import (
 
 // Claims is the minimal identity a front door reduces a request to before authorization: the
 // subject, an optional role (for Secret-backed accounts), and explicit groups (for kind: User
-// identities, whose spec.groups are authoritative). Front-door-specific material (session
-// expiry, SigV4 access-key IDs, …) lives in the caller, not here.
+// identities, whose spec.groups are authoritative). Front-door-specific material (SigV4 access-key
+// IDs, …) lives in the caller, not here; a session's expiry is carried only so that credentials
+// derived from the session never outlive it.
 type Claims struct {
 	Sub  string `json:"sub"`
 	Role string `json:"role"`
@@ -36,6 +38,9 @@ type Claims struct {
 	// (not a User): its value is the assumed role's name — the data-plane principal id. Sub still
 	// carries the full assumed-role session identifier (role/session) for audit + GetCallerIdentity.
 	AssumedRole string `json:"assumedRole,omitempty"`
+	// SessionExpiry is when an assumed-role session's credentials expire; zero for long-term keys. A
+	// credential minted from the session (an ECR authorization token) expires no later.
+	SessionExpiry time.Time `json:"-"`
 }
 
 // PrincipalType is the data-plane principal type the policy engine evaluates: "Role" for an
