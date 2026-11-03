@@ -69,6 +69,10 @@ type dynamoHandler struct {
 	// indexRetryBackoff. Guards concurrent access from the sync goroutine + request handlers.
 	idxMu   sync.Mutex
 	idxFail map[string]time.Time
+
+	// tableNS is the namespace the kind: Table declarations (spec-mirror ConfigMaps) are read from
+	// (startTableSync); "" when tables are not synced.
+	tableNS string
 }
 
 // tableStream returns a table's DynamoDB Streams view type ("" if streams are not enabled for it).
@@ -433,18 +437,7 @@ func (h *dynamoHandler) deleteTable(ctx context.Context, w http.ResponseWriter, 
 			"Table "+table+" is CREATING and cannot be deleted")
 		return
 	}
-	// Delete all items, then the stream log (best-effort), then the registry entry. Order matters: once
-	// the registry entry is gone the table no longer resolves (DescribeTable → ResourceNotFound).
-	if _, err := h.db.Collection(table).DeleteMany(ctx, bson.M{}); err != nil {
-		h.internal(w, requestID, err)
-		return
-	}
-	if h.stream != nil {
-		if err := h.stream.closeStream(ctx, table); err != nil {
-			h.logger.Warn("dynamodb stream close failed on DeleteTable", "table", table, "err", err)
-		}
-	}
-	if _, err := h.registry().DeleteOne(ctx, bson.M{"_id": table}); err != nil {
+	if err := h.dropTable(ctx, table); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -452,6 +445,23 @@ func (h *dynamoHandler) deleteTable(ctx context.Context, w http.ResponseWriter, 
 		"TableName": table, "TableStatus": "DELETING", "KeySchema": keySchemaFromAttrs(doc.KeyAttrs),
 		"ItemCount": float64(0),
 	}})
+}
+
+// dropTable removes a table and its data: all its items, then its stream log (best-effort), then its
+// registry entry. Order matters: once the registry entry is gone the table no longer resolves
+// (DescribeTable → ResourceNotFound), so a failure part-way leaves a table that still resolves and can be
+// dropped again.
+func (h *dynamoHandler) dropTable(ctx context.Context, table string) error {
+	if _, err := h.db.Collection(table).DeleteMany(ctx, bson.M{}); err != nil {
+		return err
+	}
+	if h.stream != nil {
+		if err := h.stream.closeStream(ctx, table); err != nil {
+			h.logger.Warn("dynamodb stream close failed on DeleteTable", "table", table, "err", err)
+		}
+	}
+	_, err := h.registry().DeleteOne(ctx, bson.M{"_id": table})
+	return err
 }
 
 func (h *dynamoHandler) getItem(ctx context.Context, w http.ResponseWriter, requestID, table string, body map[string]any) {

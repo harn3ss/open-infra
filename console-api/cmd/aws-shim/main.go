@@ -609,6 +609,7 @@ func run(logger *slog.Logger) error {
 			cfnH.noecho = &noEchoSecrets{cs: cs, ns: keysNS} // NoEcho values: Secrets in the shim's namespace
 			cfnH.recNS = keysNS                              // stack/change-set/drift records: Secrets there too (cfn_records.go)
 			cfnH.buckets = mc                                // a stack delete refuses a non-empty bucket and removes an empty one
+			cfnH.tables = dynamoH                            // a stack's table is never an existing one, and is deleted with its data
 			// A stack's queues/topics/parameters/keys go into the stores those front doors serve; its
 			// secrets, log groups, rules, buses, repositories and alarms through those front doors
 			// (cfn_services.go, cfn_services_doors.go).

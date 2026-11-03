@@ -66,6 +66,10 @@ func deleteStackObject(ctx context.Context, opts DeployOptions, ap Applier, r St
 			return false, fmt.Errorf("removing bucket %s of %s: %w", bucket, r.LogicalID, err)
 		}
 	}
+	// A DynamoDB table goes with its data, as AWS deletes a table (table_teardown.go).
+	if err := removeTableData(ctx, opts, r); err != nil {
+		return false, err
+	}
 	return false, nil
 }
 

@@ -114,6 +114,10 @@ type cfnDoorway struct {
 	// buckets is the S3 store a stack's kind: Bucket claims hold their buckets in: a stack delete refuses a
 	// bucket that still holds data and removes an empty one, as AWS does. nil = left to the bucket reaper.
 	buckets *minio.Client
+	// tables is the DynamoDB front door a stack's kind: Table claims declare their tables to: a table is
+	// created only where none has its name, and a stack delete deletes it with its data (cfn_tables.go).
+	// nil (or one without a data layer) = the claim alone is deleted.
+	tables *dynamoHandler
 	// services are the shim's own AWS API stores a stack's queues, topics, parameters and keys are
 	// provisioned into (cfn_services.go); nil = none (the engine then keeps its kind mappings).
 	services *cfnServices
@@ -644,6 +648,12 @@ func (h *cfnDoorway) opts(name string, params map[string]string) cfn.DeployOptio
 			}
 			return nil
 		}
+	}
+	// A stack's DynamoDB table is created only where no table has its name, and deleted with its data
+	// (cfn_tables.go).
+	if h.tables != nil && h.tables.db != nil {
+		o.TableExists = h.tables.stackTableExists
+		o.RemoveTable = h.tables.removeStackTable
 	}
 	return o
 }

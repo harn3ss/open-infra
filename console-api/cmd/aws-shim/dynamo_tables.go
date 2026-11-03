@@ -33,6 +33,7 @@ func (h *dynamoHandler) startTableSync(ctx context.Context, namespace string, in
 	if h.db == nil || h.cs == nil || namespace == "" {
 		return
 	}
+	h.tableNS = namespace
 	h.syncDeclaredTables(ctx, namespace) // register what already exists before serving
 	go func() {
 		t := time.NewTicker(interval)

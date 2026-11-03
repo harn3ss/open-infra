@@ -360,6 +360,14 @@ type DeployOptions struct {
 	// with its claim. Nil (the CLI): the claim is deleted and the bucket reaper removes an empty bucket.
 	BucketData   func(ctx context.Context, bucket string) (exists, empty bool, err error)
 	RemoveBucket func(ctx context.Context, bucket string) error
+	// TableExists reports whether a DynamoDB table of that name already exists; RemoveTable deletes a
+	// table's items, stream and registry entry. With them a kind: Table is AWS's DynamoDB table: creating
+	// one whose name is already a table's is refused ("Table already exists"), and deleting it — a stack
+	// delete, an update that removes it, a rolled-back create — deletes the table and its data, so a stack
+	// re-created with the same name never sees the earlier stack's items. Nil (the CLI, which has no
+	// access to the table data): the claim alone is deleted.
+	TableExists func(ctx context.Context, table string) (bool, error)
+	RemoveTable func(ctx context.Context, table string) error
 	// prior is the existing stack's recorded resources (an update or change set): each keeps the name it
 	// was created with (naming.go). Nil for a create.
 	prior []StackResource
@@ -663,6 +671,10 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 				rec.resourceEvent(a, "DELETE_FAILED", err.Error())
 				continue
 			}
+			if err := removeTableData(ctx, opts, a); err != nil {
+				rec.resourceEvent(a, "DELETE_FAILED", err.Error())
+				continue
+			}
 			rec.resourceEvent(a, "DELETE_COMPLETE", "")
 		}
 		rec.Status = "CREATE_FAILED"
@@ -707,6 +719,9 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		failed = b.res.LogicalID
 		rec.resourceEvent(b.res, "CREATE_IN_PROGRESS", "")
 		if !IsSignalWait(b.res) { // a WaitCondition: nothing to apply, only signals to wait for
+			if err := tableTaken(ctx, opts, b.res); err != nil {
+				return rollback(err)
+			}
 			if err := applyOwned(ctx, ap, b, opts.StackName, owned); err != nil {
 				return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, err))
 			}
@@ -847,6 +862,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 				continue
 			}
 			_ = ap.Delete(ctx, a.APIVersion, a.Kind, a.Name)
+			_ = removeTableData(ctx, opts, a)
 			rec.resourceEvent(a, "DELETE_COMPLETE", "")
 		}
 		for i := len(provisionedAPIs) - 1; i >= 0; i-- { // tear down provisioned REST v1 APIs too
@@ -1007,6 +1023,9 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			return rollback(werr)
 		}
 		for i, b := range built {
+			if terr := tableTaken(ctx, opts, b.res); terr != nil {
+				return rollback(terr)
+			}
 			if aerr := applyOwned(ctx, ap, b, opts.StackName, owned); aerr != nil {
 				return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, aerr))
 			}

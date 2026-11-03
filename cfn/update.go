@@ -192,6 +192,12 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 			event(b.res, verb+"_COMPLETE", "")
 			continue
 		}
+		if act == Add {
+			if err := tableTaken(ctx, opts, b.res); err != nil {
+				event(b.res, verb+"_FAILED", err.Error())
+				return rollback(err)
+			}
+		}
 		if err := applyOwned(ctx, ap, b, opts.StackName, owned); err != nil {
 			event(b.res, verb+"_FAILED", err.Error())
 			return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, err))
@@ -355,7 +361,9 @@ func restorePrior(ctx context.Context, opts DeployOptions, ap Applier, prior, ad
 		}
 		if err := ap.Delete(ctx, r.APIVersion, r.Kind, r.Name); err != nil {
 			note(fmt.Errorf("deleting added %s/%s: %w", r.Kind, r.Name, err))
+			continue
 		}
+		note(removeTableData(ctx, opts, r))
 	}
 	for _, r := range prior {
 		if isOutOfBand(r) {

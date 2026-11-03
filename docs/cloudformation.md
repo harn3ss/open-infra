@@ -495,6 +495,11 @@ Stack "tickets" is CREATE_COMPLETE (2 resources).
    The aws-shim front door keeps it as a Secret in the shim's own namespace, readable only by
    the shim and cluster admins, because the record holds every resource's resolved properties,
    including what a `NoEcho` parameter was fed into.
+   A stack's `AWS::DynamoDB::Table` is AWS's table through the aws-shim: one whose name is
+   already a table's is refused (`Table already exists`), and the table is deleted with its
+   items by a stack delete, an update that removes it, or a rolled-back create (unless
+   `DeletionPolicy: Retain`), so a stack re-created with the same name starts empty. The `cfn`
+   CLI, which has no access to the table data, deletes only the `kind: Table` claim.
 4. **Rollback** — if any create or readiness wait fails, what is still being created is
    cancelled (`CREATE_FAILED`, "Resource creation cancelled"), everything created in that deploy
    is deleted in reverse order and the stack is marked `CREATE_FAILED`. A failed create
