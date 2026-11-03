@@ -75,6 +75,37 @@ func verbForRDSOp(op string) (string, bool) {
 	return "", false
 }
 
+// rdsCheck is one authorization an RDS request needs: an AWS action on an instance or a snapshot.
+type rdsCheck struct{ verb, action, resType, id string }
+
+// rdsChecks are the resources an op is authorized on, as AWS authorizes them: an instance is
+// DBInstance::<id> (arn:...:db:<id>), a snapshot DBSnapshot::<id> (arn:...:snapshot:<id>).
+// CreateDBSnapshot needs the action on the instance and on the snapshot it makes;
+// RestoreDBInstanceFromDBSnapshot on the instance it makes and on the snapshot it reads; a
+// DeleteDBInstance that takes a final snapshot also needs rds:CreateDBSnapshot on that snapshot.
+func rdsChecks(op, verb string, r *http.Request) []rdsCheck {
+	inst, snap := r.PostFormValue("DBInstanceIdentifier"), r.PostFormValue("DBSnapshotIdentifier")
+	action := "rds:" + op
+	switch op {
+	case "CreateDBSnapshot", "RestoreDBInstanceFromDBSnapshot":
+		return []rdsCheck{{verb, action, "DBInstance", inst}, {verb, action, "DBSnapshot", snap}}
+	case "DeleteDBSnapshot":
+		return []rdsCheck{{verb, action, "DBSnapshot", snap}}
+	case "DescribeDBSnapshots":
+		if snap != "" || inst == "" {
+			return []rdsCheck{{verb, action, "DBSnapshot", snap}}
+		}
+	case "DeleteDBInstance":
+		checks := []rdsCheck{{verb, action, "DBInstance", inst}}
+		if final := r.PostFormValue("FinalDBSnapshotIdentifier"); final != "" && !boolForm(r, "SkipFinalSnapshot") {
+			createVerb, _ := verbForRDSOp("CreateDBSnapshot")
+			checks = append(checks, rdsCheck{createVerb, "rds:CreateDBSnapshot", "DBSnapshot", final})
+		}
+		return checks
+	}
+	return []rdsCheck{{verb, action, "DBInstance", inst}}
+}
+
 func (h *rdsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	_ = r.ParseForm()
 	op := r.PostFormValue("Action")
@@ -87,21 +118,20 @@ func (h *rdsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 			"The RDS action '"+op+"' is not implemented by this open-infra shim.", rdsXMLNamespace)
 		return
 	}
-	// Resource for authz: the instance identifier (or snapshot identifier).
-	res := formFirst(r, "DBInstanceIdentifier", "DBSnapshotIdentifier")
-
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, res); !allowed {
-		h.audit(ctx, op, res, "deny", reason)
-		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, rdsXMLNamespace)
-		return
-	}
-	// Fine-grained, per instance; an assumed role is checked on every op (DescribeDBInstances /
-	// DescribeDBSnapshots with no identifier on DBInstance::*).
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "rds:"+op, "DBInstance", res, r); denied {
-		h.audit(ctx, op, res, "deny", reason)
-		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, rdsXMLNamespace)
-		return
+	// Coarse gate, then the fine-grained check, on every instance and snapshot the op touches (rdsChecks);
+	// an assumed role is checked on every op (an op naming no identifier on <Type>::*).
+	for _, c := range rdsChecks(op, verb, r) {
+		if allowed, reason := iam.CanDo(ctx, h.cs, claims, c.verb, "openinfra.dev", "applications", h.authzNS, c.id); !allowed {
+			h.audit(ctx, op, c.id, "deny", reason)
+			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, rdsXMLNamespace)
+			return
+		}
+		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, c.action, c.resType, c.id, r); denied {
+			h.audit(ctx, op, c.id, "deny", reason)
+			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, rdsXMLNamespace)
+			return
+		}
 	}
 	if h.cnpg == nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID,

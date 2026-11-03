@@ -135,6 +135,52 @@ func TestEventBridge_AuthorizesTheBusEachEntryAndRuleIsOn(t *testing.T) {
 	}
 }
 
+// A User's per-table Deny holds for the multi-table ops as for GetItem: each table a batch, transaction
+// or restore touches is checked, not only a top-level TableName (which they do not carry).
+func TestDynamo_UserDenyHoldsForMultiTableOps(t *testing.T) {
+	authz := userPolicy(dpAllow([]string{"dynamodb:*"}, "*"),
+		dpDeny([]string{"dynamodb:BatchGetItem", "dynamodb:BatchWriteItem", "dynamodb:PutItem", "dynamodb:RestoreTableToPointInTime"}, "Table::victim"))
+	h := newDynamoHandler(csWithSAR(true), "default", nil, nil, "db", discardLogger())
+	h.authz = authz
+	key := `{"id":{"S":"1"}}`
+	for op, body := range map[string]string{
+		"BatchGetItem":              `{"RequestItems":{"mine":{"Keys":[` + key + `]},"victim":{"Keys":[` + key + `]}}}`,
+		"BatchWriteItem":            `{"RequestItems":{"victim":[{"PutRequest":{"Item":` + key + `}}]}}`,
+		"TransactWriteItems":        `{"TransactItems":[{"Put":{"TableName":"mine","Item":` + key + `}},{"Put":{"TableName":"victim","Item":` + key + `}}]}`,
+		"RestoreTableToPointInTime": `{"SourceTableName":"victim","TargetTableName":"mine-copy","UseLatestRestorableTime":true}`,
+	} {
+		w := serveWith(h, jsonOp("DynamoDB_20120810."+op, body), testUser)
+		if w.Code != 403 {
+			t.Errorf("%s touching a table the User is denied on: %d %s, want 403", op, w.Code, w.Body.String())
+		}
+	}
+	if w := serveWith(h, jsonOp("DynamoDB_20120810.BatchGetItem", `{"RequestItems":{"mine":{"Keys":[`+key+`]}}}`), testUser); w.Code == 403 {
+		t.Errorf("BatchGetItem on an allowed table must pass authorization: %s", w.Body.String())
+	}
+}
+
+// RDS authorizes the snapshot an op makes or reads, not only the instance: a Deny on a snapshot holds for
+// CreateDBSnapshot (and a final snapshot), RestoreDBInstanceFromDBSnapshot and DeleteDBSnapshot.
+func TestRDS_SnapshotOpsAuthorizeTheSnapshot(t *testing.T) {
+	authz := userPolicy(dpAllow([]string{"rds:*"}, "*"),
+		dpDeny([]string{"rds:CreateDBSnapshot", "rds:RestoreDBInstanceFromDBSnapshot", "rds:DeleteDBSnapshot"}, "DBSnapshot::prod-nightly"))
+	h := newRDSHandler(csWithSAR(true), nil, "default", "open-infra", "us-east-1", discardLogger())
+	h.authz = authz
+	for _, form := range []url.Values{
+		{"Action": {"CreateDBSnapshot"}, "DBInstanceIdentifier": {"mine"}, "DBSnapshotIdentifier": {"prod-nightly"}},
+		{"Action": {"RestoreDBInstanceFromDBSnapshot"}, "DBInstanceIdentifier": {"mine-copy"}, "DBSnapshotIdentifier": {"prod-nightly"}},
+		{"Action": {"DeleteDBSnapshot"}, "DBSnapshotIdentifier": {"prod-nightly"}},
+		{"Action": {"DeleteDBInstance"}, "DBInstanceIdentifier": {"mine"}, "FinalDBSnapshotIdentifier": {"prod-nightly"}},
+	} {
+		if w := serveWith(h, formOp(form), testUser); w.Code != 403 {
+			t.Errorf("%v: %d %s, want 403", form, w.Code, w.Body.String())
+		}
+	}
+	if w := serveWith(h, formOp(url.Values{"Action": {"RestoreDBInstanceFromDBSnapshot"}, "DBInstanceIdentifier": {"mine-copy"}, "DBSnapshotIdentifier": {"mine-nightly"}}), testUser); w.Code == 403 {
+		t.Errorf("a restore from an allowed snapshot must pass authorization: %s", w.Body.String())
+	}
+}
+
 // DynamoDB Streams GetRecords reads the table inside its iterator (which a caller can write by hand), so
 // it is authorized on that table — not on a TableName or StreamArn sent alongside.
 func TestDDBStreams_GetRecordsAuthorizesTheIteratorsTable(t *testing.T) {

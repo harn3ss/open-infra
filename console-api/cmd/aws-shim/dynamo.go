@@ -262,23 +262,16 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		writeDynamoError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
-	// Fine-grained data-plane policy (kind: Policy dataPlane). An assumed role is checked on EVERY op, per
-	// table and in AWS action names (dynamoRoleChecks): the multi-table ops on each table they touch, the
-	// table-less ones (ListTables) on Table::*. A User stays additive (can only tighten): a table name is
-	// required to scope it; the table-agnostic ops (ListTables) skip resource-level policy.
-	if claims.AssumedRole != "" {
-		for _, c := range dynamoRoleChecks(op, table, body) {
-			if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, c.action, "Table", c.table, r); denied {
-				h.logger.Warn("dynamo data-plane denied (assumed role)", "op", op, "action", c.action, "table", c.table,
-					"principal", claims.PrincipalID(), "reason", reason)
-				writeDynamoError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-				return
-			}
-		}
-	} else if table != "" {
-		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "dynamodb:"+op, "Table", table, r); denied {
-			h.logger.Warn("dynamo data-plane denied", "op", op, "table", table,
-				"principal", claims.PrincipalID(), "reason", reason)
+	// Fine-grained data-plane policy (kind: Policy dataPlane), per table and in AWS action names
+	// (dynamoRoleChecks): the multi-table ops on each table they touch, a transaction through its items'
+	// actions, a restore on its source and target. An assumed role is checked closed on EVERY op (the
+	// table-less ones, ListTables, on Table::*). A User stays additive (can only tighten) and is checked on
+	// the same tables, so a per-table Deny holds for BatchGetItem / BatchWriteItem / TransactWriteItems /
+	// RestoreTableToPointInTime as for GetItem; an op naming no table skips resource-level policy.
+	for _, c := range dynamoRoleChecks(op, table, body) {
+		if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, c.action, "Table", c.table, r); denied {
+			h.logger.Warn("dynamo data-plane denied", "op", op, "action", c.action, "table", c.table,
+				"principal", claims.PrincipalID(), "assumedRole", claims.AssumedRole != "", "reason", reason)
 			writeDynamoError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 			return
 		}

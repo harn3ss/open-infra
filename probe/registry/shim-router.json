@@ -523,6 +523,9 @@
         "ModifyDBInstance",
         "RestoreDBInstanceFromDBSnapshot",
         "RestoreDBInstanceToPointInTime"
+      ],
+      "actions": [
+        "rds:CreateDBSnapshot"
       ]
     },
     "s3": {

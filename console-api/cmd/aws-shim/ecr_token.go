@@ -310,8 +310,17 @@ func (h *ecrHandler) authorizeScope(ctx context.Context, r *http.Request, claims
 	if verb == "" {
 		return false
 	}
-	ok, _ := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, repo)
-	return ok
+	if ok, _ := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, repo); !ok {
+		return false
+	}
+	// A User's data-plane policy can only tighten, as at the ECR API: a Deny of any ECR action the docker
+	// action needs refuses it, so an ecr: Deny stops a docker pull or push as it stops BatchGetImage.
+	for _, a := range ecrRoleActions(action) {
+		if denied, _ := deniedByDataPlane(ctx, h.authz, claims, a, "Repository", repo, r); denied {
+			return false
+		}
+	}
+	return true
 }
 
 // ecrActionVerb maps a Docker registry action to the RBAC verb the caller must hold on the repo.

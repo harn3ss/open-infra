@@ -58,6 +58,7 @@ func TestImportAWS_ExtendedServices(t *testing.T) {
 	  {"Effect":"Allow","Action":"ecs:UpdateService","Resource":"arn:aws:ecs:us-east-1:123:service/prod/api"},
 	  {"Effect":"Allow","Action":"logs:PutLogEvents","Resource":"arn:aws:logs:us-east-1:123:log-group:/app/web:*"},
 	  {"Effect":"Allow","Action":"rds:DescribeDBInstances","Resource":"arn:aws:rds:us-east-1:123:db:pg1"},
+	  {"Effect":"Allow","Action":"rds:RestoreDBInstanceFromDBSnapshot","Resource":"arn:aws:rds:us-east-1:123:snapshot:pg1-nightly"},
 	  {"Effect":"Allow","Action":"ses:SendEmail","Resource":"arn:aws:ses:us-east-1:123:identity/noreply@x.test"},
 	  {"Effect":"Allow","Action":"cloudfront:CreateInvalidation","Resource":"arn:aws:cloudfront::123:distribution/E1A2B3C4D5E6F7"}
 	]}`
@@ -77,7 +78,7 @@ func TestImportAWS_ExtendedServices(t *testing.T) {
 	for _, want := range []string{
 		"Queue::orders", "Topic::events", "Stream::clicks", "Key::abcd-1234",
 		"Parameter::app/db", "Secret::db-creds", "Repository::web", "Service::api",
-		"LogGroup::/app/web", "DBInstance::pg1", "Identity::noreply@x.test", "Distribution::E1A2B3C4D5E6F7",
+		"LogGroup::/app/web", "DBInstance::pg1", "DBSnapshot::pg1-nightly", "Identity::noreply@x.test", "Distribution::E1A2B3C4D5E6F7",
 	} {
 		if !got[want] {
 			t.Errorf("missing mapped resource %q; got %v", want, got)

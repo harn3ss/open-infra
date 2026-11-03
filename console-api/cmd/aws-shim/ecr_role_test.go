@@ -438,6 +438,28 @@ func TestECRToken_RevokedRoleCredential(t *testing.T) {
 	}
 }
 
+// A User's ecr: Deny holds at the registry token realm as at the ECR API: RBAC alone no longer grants a
+// docker pull or push the User's data-plane policy denies on that repository.
+func TestECRToken_UserDataPlaneDenyHolds(t *testing.T) {
+	user := ecrClaims()
+	userDeny := dataplaneauthz.New(func(context.Context) (dataplaneauthz.Snapshot, error) {
+		return dataplaneauthz.Snapshot{Docs: []dataplaneauthz.PolicyDoc{{AppliesTo: []string{"User::" + user.Sub}, Statements: []policyengine.Statement{
+			dpAllow([]string{"ecr:*"}, "*"),
+			dpDeny([]string{"ecr:BatchGetImage"}, "Repository::secret-app"),
+			dpDeny([]string{"ecr:PutImage"}, "Repository::app"),
+		}}}}, nil
+	}, time.Minute)
+	h := tokenModeECR(t, true, userDeny)
+	cred, err := h.signer.mintCaller(ecrCaller{Sub: user.Sub, Groups: user.Groups}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := realmGrant(t, h, cred, "repository:secret-app:pull", "repository:app:pull,push")
+	if !equalGrants(got, map[string][]string{"app": {"pull"}}) {
+		t.Fatalf("the User's Denies must remove secret-app pull and app push, got %v", got)
+	}
+}
+
 func equalGrants(got, want map[string][]string) bool {
 	if len(got) != len(want) {
 		return false

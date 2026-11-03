@@ -948,7 +948,10 @@ CNPG basic-auth secret) and are **never** returned by `DescribeDBInstances`.
 **Snapshots and restore are real** (the highest-stakes item — a backup that has never been restored is not
 a backup). `CreateDBSnapshot` is a CNPG **volumeSnapshot** Backup on the Longhorn CSI; `RestoreDB
 InstanceFromDBSnapshot` bootstraps a **new** Cluster recovered from that snapshot. The probe proves it by
-restoring and reading a row back from the restored copy.
+restoring and reading a row back from the restored copy. A snapshot is its own resource, `DBSnapshot::<id>`
+(an AWS policy's `arn:aws:rds:…:snapshot:<id>`), as an instance is `DBInstance::<id>`: `CreateDBSnapshot`
+and `RestoreDBInstanceFromDBSnapshot` are authorized on both the instance and the snapshot, and a
+`DeleteDBInstance` that takes a final snapshot also needs `rds:CreateDBSnapshot` on it.
 
 **Honored capability flags** (mapped to reality, never accept-and-ignore): `DBInstanceClass` → real pod
 requests/limits (an unrecognized class is **refused**, never quietly under-provisioned); `AllocatedStorage`
@@ -1702,7 +1705,9 @@ plane is standard OCI at the `proxyEndpoint`, not this), and **resource tags**.
 with the shim as the token server, so all callers share one backing registry yet each reaches only its own
 repositories. The registry answers an unauthenticated `docker` request with `401 Bearer realm=<shim>/ecr/token`;
 `docker` presents the `GetAuthorizationToken` credential there with the scopes it needs
-(`repository:<name>:pull,push`); the shim authorizes **each** repository + action against the caller and mints
+(`repository:<name>:pull,push`); the shim authorizes **each** repository + action against the caller (a User:
+RBAC, then a data-plane `ecr:` Deny of any action the docker action needs refuses it; an assumed role: its
+policy alone) and mints
 a five-minute registry token whose `access` claim lists only what was granted; the registry verifies that token
 against the shim's signing certificate (published as the `ecr-token-cert` ConfigMap — the private key never
 leaves the shim's namespace) and enforces the scopes on every manifest and layer operation. A scope the caller

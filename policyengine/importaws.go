@@ -450,8 +450,11 @@ func arnToResource(arn string) (string, bool) {
 				return "LogGroup::" + n, true
 			}
 		}
-	case "rds":
-		return cut("db:", "DBInstance")
+	case "rds": // db:<id> -> DBInstance, snapshot:<id> -> DBSnapshot (the shim authorizes both)
+		if r, ok := cut("db:", "DBInstance"); ok {
+			return r, true
+		}
+		return cut("snapshot:", "DBSnapshot")
 	case "ses":
 		return cut("identity/", "Identity")
 	case "cloudfront": // arn:aws:cloudfront::<acct>:distribution/<id> (the invalidation calls)
