@@ -2843,7 +2843,7 @@
       "exception": {
         "check": "read",
         "issue": "untracked \u2014 raised by the coverage registry",
-        "reason": "Provisions nothing: the role binds directly on the VM (kind: VirtualMachine spec.instanceRole). GetInstanceProfile and ListInstanceProfiles are not served."
+        "reason": "Provisions nothing, and nothing records it: the translator only resolves an instance's IamInstanceProfile through it to the role, which binds directly on the VM (kind: VirtualMachine spec.instanceRole). The stack record keeps no resource or event for the profile (DescribeStackResources does not list it) and the VM keeps the role alone, so the profile's name, path and roles exist nowhere to answer GetInstanceProfile or ListInstanceProfiles from. Serving them needs the engine to record a stack's instance profiles first."
       },
       "flattened": false,
       "frontDoor": [
