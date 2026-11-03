@@ -1,0 +1,174 @@
+# Chaos Mesh's controller-manager and dashboard identities and RBAC, owned here instead of by the chart
+# (chaos-mesh.yaml sets rbac.create: false and points both Deployments at these ServiceAccounts).
+#
+# WHY: the chart's controller-manager-target-namespace ClusterRole grants get/list/watch (and delete,
+# update, patch) on every Secret in the cluster, which puts the root CA's private key in the
+# controller's reach, and the chart has no setting to leave Secrets out. Chaos Mesh reads Secrets only
+# for HTTPChaos TLS, RemoteCluster kubeconfigs and the cloud chaos kinds (AWS/GCP/Azure); the platform
+# compiles kind: FaultInjection to PodChaos, NetworkChaos, StressChaos and TimeChaos only, none of which
+# reads one. The controller still reads Secrets in its own namespace (its certificates) through the
+# control-plane Role below.
+#
+# Everything else is the chart's RBAC as rendered by chaos-mesh 2.7.2 (templates
+# controller-manager-rbac.yaml and chaos-dashboard-rbac.yaml, clusterScoped: true), renamed with an
+# openinfra- prefix so these objects never collide with the chart's own while Argo moves from one to the
+# other. ⚠️ When chaos-mesh.yaml's targetRevision changes, re-render those two templates and carry any
+# rule changes over (test/render keeps the version pinned in step: TestChaosMeshRBACMatchesChartVersion).
+# chart-version: 2.7.2
+#
+# The namespace is declared so a fresh install can create these before the chaos-mesh Application
+# (sync-wave 1) installs the chart; Prune=false keeps it if this file is ever removed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: chaos-mesh
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openinfra-chaos-controller-manager
+  namespace: chaos-mesh
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: controller-manager }
+---
+# The chart's controller-manager-target-namespace role, WITHOUT secrets.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-chaos-controller-manager-target
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: controller-manager }
+rules:
+  - apiGroups: [""]
+    resources: [pods, configmaps]
+    verbs: [get, list, watch, delete, update, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [patch, create, watch, list, get]
+  - apiGroups: [chaos-mesh.org]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-chaos-controller-manager-cluster-level
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: controller-manager }
+rules:
+  - apiGroups: [""]
+    resources: [nodes, persistentvolumes, persistentvolumeclaims, namespaces, services]
+    verbs: [get, list, watch]
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-chaos-controller-manager-target
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: controller-manager }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-chaos-controller-manager-target }
+subjects: [{ kind: ServiceAccount, name: openinfra-chaos-controller-manager, namespace: chaos-mesh }]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-chaos-controller-manager-cluster-level
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: controller-manager }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-chaos-controller-manager-cluster-level }
+subjects: [{ kind: ServiceAccount, name: openinfra-chaos-controller-manager, namespace: chaos-mesh }]
+---
+# Its own namespace: certificates and Services, leader election, the webhook's endpoint lookups.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openinfra-chaos-controller-manager-control-plane
+  namespace: chaos-mesh
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: controller-manager }
+rules:
+  - apiGroups: [""]
+    resources: [services, secrets]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: ["*"]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openinfra-chaos-controller-manager-control-plane
+  namespace: chaos-mesh
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: controller-manager }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: openinfra-chaos-controller-manager-control-plane }
+subjects: [{ kind: ServiceAccount, name: openinfra-chaos-controller-manager, namespace: chaos-mesh }]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openinfra-chaos-dashboard
+  namespace: chaos-mesh
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: chaos-dashboard }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-chaos-dashboard-cluster-level
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: chaos-dashboard }
+rules:
+  # namespaces for selector hints
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-chaos-dashboard-target
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: chaos-dashboard }
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list, watch]
+  - apiGroups: [chaos-mesh.org]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-chaos-dashboard-cluster-level
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: chaos-dashboard }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-chaos-dashboard-cluster-level }
+subjects: [{ kind: ServiceAccount, name: openinfra-chaos-dashboard, namespace: chaos-mesh }]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-chaos-dashboard-target
+  labels: { app.kubernetes.io/part-of: chaos-mesh, app.kubernetes.io/component: chaos-dashboard }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-chaos-dashboard-target }
+subjects: [{ kind: ServiceAccount, name: openinfra-chaos-dashboard, namespace: chaos-mesh }]

@@ -44,10 +44,17 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: "1", memory: 512Mi }
+        # The controller-manager's and dashboard's ServiceAccounts and RBAC are chaos-mesh-rbac.yaml's, not
+        # the chart's: the chart's controller role reads every Secret in the cluster (the root CA's key
+        # among them) and cannot be told not to. Same rules otherwise; see that file.
+        rbac:
+          create: false
         controllerManager:
+          serviceAccount: openinfra-chaos-controller-manager
           resources:
             requests: { cpu: 50m, memory: 128Mi }
         dashboard:
+          serviceAccount: openinfra-chaos-dashboard
           # require a ServiceAccount token to act (no anonymous chaos from the dashboard)
           securityMode: true
           resources:
