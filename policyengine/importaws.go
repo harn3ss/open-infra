@@ -14,11 +14,16 @@ import (
 // Every service here is one the aws-shim actually ENFORCES at the data plane (a deniedByDataPlane
 // check with this "<svc>:" action prefix), so importing its actions is faithful — never a grant the
 // shim won't honor. Keep this in lockstep with the shim's deniedByDataPlane call sites.
+// The aws-shim test TestImportableServicesMatchTheShimsChecks keeps this in lockstep with the shim: every
+// service here must be checked for Users as well as assumed roles (an imported Deny a User's requests never
+// meet would be a silent hole), and every service the shim checks is either here or listed there with why.
 var SupportedServices = map[string]bool{
 	"s3": true, "dynamodb": true, "lambda": true,
 	"sqs": true, "sns": true, "kinesis": true, "kms": true, "ssm": true,
 	"secretsmanager": true, "ecr": true, "ecs": true, "logs": true, "rds": true,
 	"ses": true, "apigateway": true, "cloudwatch": true, "cloudfront": true,
+	"iam": true, "states": true, "cloudformation": true, "appsync": true, "acm": true,
+	"cognito-idp": true, "glue": true, "athena": true, "eks": true, "events": true,
 }
 
 // SupportedActions are the actions of a service the aws-shim enforces only in part: just these import
@@ -370,6 +375,8 @@ func importResources(arns []string) (kept, unsupported []string) {
 		}
 		if res, ok := arnToResource(r); ok {
 			add(res)
+		} else if why := narrowerThanAuthorized(r); why != "" {
+			unsupported = append(unsupported, "resource "+r+" "+why)
 		} else {
 			unsupported = append(unsupported, "resource "+r+" is not a recognizable ARN for a shim-fronted service")
 		}
@@ -456,8 +463,16 @@ func arnToResource(arn string) (string, bool) {
 		return cut("snapshot:", "DBSnapshot")
 	case "ses":
 		return cut("identity/", "Identity")
-	case "cloudfront": // arn:aws:cloudfront::<acct>:distribution/<id> (the invalidation calls)
-		return cut("distribution/", "Distribution")
+	case "cloudfront": // arn:aws:cloudfront::<acct>:distribution/<id>, and the configuration reads' <type>/<id>
+		for _, m := range []struct{ prefix, typ string }{
+			{"distribution/", "Distribution"}, {"cache-policy/", "CachePolicy"},
+			{"origin-request-policy/", "OriginRequestPolicy"}, {"response-headers-policy/", "ResponseHeadersPolicy"},
+			{"origin-access-control/", "OriginAccessControl"}, {"origin-access-identity/", "OriginAccessIdentity"},
+		} {
+			if r, ok := cut(m.prefix, m.typ); ok {
+				return r, true
+			}
+		}
 	case "ec2": // arn:aws:ec2:<r>:<acct>:<type>/<id>: Elastic IP allocations, and the EC2 front door's resources
 		for _, m := range []struct{ prefix, typ string }{
 			{"elastic-ip/", "ElasticIp"}, {"instance/", "Instance"}, {"volume/", "Volume"},
@@ -474,8 +489,97 @@ func arnToResource(arn string) (string, bool) {
 				return "Api::" + n, true
 			}
 		}
+	case "iam": // arn:aws:iam::<acct>:role/<name>, user/<name>, policy/<name> (no path: open-infra principals have none)
+		for _, m := range []struct{ prefix, typ string }{{"role/", "Role"}, {"user/", "User"}, {"policy/", "Policy"}} {
+			if n, ok := strings.CutPrefix(tail, m.prefix); ok && n != "" && !strings.Contains(n, "/") {
+				return m.typ + "::" + n, true
+			}
+		}
+	case "states": // arn:aws:states:<r>:<acct>:stateMachine:<name> (an execution is authorized on its state machine)
+		if n, ok := strings.CutPrefix(tail, "stateMachine:"); ok && n != "" && !strings.Contains(n, ":") {
+			return "StateMachine::" + n, true
+		}
+	case "cloudformation": // arn:aws:cloudformation:<r>:<acct>:stack/<name>/* (the shim authorizes per stack name)
+		if n, ok := strings.CutPrefix(tail, "stack/"); ok {
+			name, id, hasID := strings.Cut(n, "/")
+			if name != "" && (!hasID || id == "*") {
+				return "Stack::" + name, true
+			}
+		}
+	case "appsync": // arn:aws:appsync:<r>:<acct>:apis/<id> (the API itself; apis/* is every API)
+		if n, ok := strings.CutPrefix(tail, "apis/"); ok && n != "" && !strings.Contains(n, "/") {
+			return "GraphQLApi::" + n, true
+		}
+	case "acm": // arn:aws:acm:<r>:<acct>:certificate/<id>
+		return cut("certificate/", "Certificate")
+	case "cognito-idp": // arn:aws:cognito-idp:<r>:<acct>:userpool/<id>
+		return cut("userpool/", "UserPool")
+	case "glue": // database/<db>, table/<db>/<table> (the shim's Table::<db>/<table>); the catalog has no resource here
+		if r, ok := cut("database/", "Database"); ok && !strings.Contains(r, "/") {
+			return r, true
+		}
+		if n, ok := strings.CutPrefix(tail, "table/"); ok {
+			if db, tbl, has := strings.Cut(n, "/"); has && db != "" && tbl != "" && !strings.Contains(tbl, "/") {
+				return "Table::" + db + "/" + tbl, true
+			}
+		}
+	case "athena": // arn:aws:athena:<r>:<acct>:workgroup/<name>
+		return cut("workgroup/", "WorkGroup")
+	case "eks": // arn:aws:eks:<r>:<acct>:cluster/<name>
+		if r, ok := cut("cluster/", "Cluster"); ok && !strings.Contains(r, "/") {
+			return r, true
+		}
+	case "events": // event-bus/<name>; rule/<name> (the default bus) or rule/<bus>/<name> — the shim's Rule::[<bus>/]<name>
+		if r, ok := cut("event-bus/", "EventBus"); ok && !strings.Contains(r, "/") {
+			return r, true
+		}
+		if n, ok := strings.CutPrefix(tail, "rule/"); ok && n != "" && strings.Count(n, "/") <= 1 && !strings.HasSuffix(n, "/") && !strings.HasPrefix(n, "/") {
+			return "Rule::" + n, true
+		}
 	}
 	return "", false
+}
+
+// narrowerThanAuthorized explains why an ARN of a fronted service has no faithful form: it names something
+// narrower than (or beside) the resource the shim authorizes, so mapping it to that resource would widen the
+// grant. "" when there is no specific reason (the caller then reports a generic unrecognizable ARN).
+func narrowerThanAuthorized(arn string) string {
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) < 6 || parts[0] != "arn" {
+		return ""
+	}
+	svc, tail := parts[2], parts[5]
+	switch svc {
+	case "iam":
+		for _, p := range []string{"role/", "user/", "policy/"} {
+			if n, ok := strings.CutPrefix(tail, p); ok && strings.Contains(n, "/") {
+				return "has an IAM path — open-infra roles, users and policies have none, so a path-scoped grant has no faithful form (a wildcard path would widen to every name)"
+			}
+		}
+	case "states":
+		if strings.HasPrefix(tail, "execution:") || strings.HasPrefix(tail, "express:") {
+			return "names executions — the shim authorizes an execution on its state machine, so honoring it would widen the grant to the state machine; scope it to the stateMachine ARN"
+		}
+		if strings.HasPrefix(tail, "activity:") {
+			return "names an activity — Step Functions activities are not served"
+		}
+	case "cloudformation":
+		if n, ok := strings.CutPrefix(tail, "stack/"); ok && strings.Contains(n, "/") {
+			return "names one stack instance by id — the shim authorizes per stack name, so honoring it would also cover a later stack of that name; use stack/<name>/*"
+		}
+		if strings.HasPrefix(tail, "changeSet/") || strings.HasPrefix(tail, "stackset/") {
+			return "names a change set or stack set — the shim authorizes change sets on their stack; scope it to the stack ARN"
+		}
+	case "appsync":
+		if n, ok := strings.CutPrefix(tail, "apis/"); ok && strings.Contains(n, "/") {
+			return "names part of an API (types, fields, data sources) — the shim authorizes per API, so honoring it would widen the grant to the whole API"
+		}
+	case "glue":
+		if strings.HasPrefix(tail, "catalog") {
+			return "names the Glue catalog — the shim authorizes databases and tables, not the catalog"
+		}
+	}
+	return ""
 }
 
 // secretSuffixRe matches the "-" + 6 random chars AWS appends to a Secrets Manager secret ARN.

@@ -2761,9 +2761,11 @@ func resolveInstanceRole(id string, ctx *stackCtx) (string, bool) {
 // The reason IAM::Policy was refused was that an AWS policy document has no faithful RBAC form. The
 // data-plane policy engine (kind: Policy spec.dataPlane, Cedar-backed, enforced at the aws-shim)
 // removes that barrier for exactly the actions the shim fronts — the services in
-// policyengine.SupportedServices (today 17: s3, dynamodb, lambda, sqs, sns, kinesis, kms, ssm,
-// secretsmanager, ecr, ecs, logs, rds, ses, apigateway, cloudwatch, cloudfront), plus ec2's Elastic IP
-// address actions (policyengine.SupportedActions). So this translator imports the
+// policyengine.SupportedServices (the data-plane services — s3, dynamodb, lambda, sqs, sns, kinesis, kms,
+// ssm, secretsmanager, ecr, ecs, logs, rds, ses, apigateway, cloudwatch, cloudfront, events, acm,
+// cognito-idp, glue, athena, eks — and the control services the shim also checks per resource: iam,
+// states, cloudformation, appsync), plus the EC2 front door's named actions
+// (policyengine.SupportedActions). So this translator imports the
 // DATA-PLANE part of the document (policyengine.ImportAWS) into a real, enforced Policy.
 //
 // It is fail-closed to a fault: a partially-translated security policy is worse than none (a dropped

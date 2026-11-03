@@ -120,6 +120,16 @@ func iamResource(op string, r *http.Request) (string, string) {
 	return "User", r.PostFormValue("UserName")
 }
 
+// iamActsOnCaller reports whether an IAM op that names no UserName acts on the calling user (AWS: the
+// access-key operations and GetUser default to the caller).
+func iamActsOnCaller(op string) bool {
+	switch op {
+	case "CreateAccessKey", "UpdateAccessKey", "DeleteAccessKey", "ListAccessKeys", "GetUser":
+		return true
+	}
+	return false
+}
+
 func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	op := r.PostFormValue("Action")
 	if op == "" {
@@ -144,16 +154,20 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, iamXMLNamespace)
 		return
 	}
-	// An assumed role's authority is its data-plane policy alone (CanDo passes a role), so IAM management —
-	// which writes with the shim's own identity — is default-deny for it: iam:<Op> on the Role/Policy/User it
-	// names, the List* ops on <Type>::*. Without this a role session could mint itself (or anyone) authority.
-	if claims.AssumedRole != "" {
-		resType, resID := iamResource(op, r)
-		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "iam:"+op, resType, resID, r); denied {
-			h.audit(ctx, op, resID, "deny", reason)
-			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, iamXMLNamespace)
-			return
-		}
+	// Every caller gets the data-plane check, iam:<Op> on the Role/Policy/User it names (the List* ops on
+	// <Type>::*). An assumed role's authority is its data-plane policy alone (CanDo passes a role), so IAM
+	// management — which writes with the shim's own identity — is default-deny for it; without this a role
+	// session could mint itself (or anyone) authority. For a User the check is additive, as at every front
+	// door: it can only tighten the RBAC grant, so a User's iam Deny (native, or imported from an AWS policy)
+	// holds here too. A User's access-key or GetUser op that names no user acts on the caller, as on AWS.
+	resType, resID := iamResource(op, r)
+	if resType == "User" && resID == "" && claims.AssumedRole == "" && iamActsOnCaller(op) {
+		resID = claims.PrincipalID()
+	}
+	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "iam:"+op, resType, resID, r); denied {
+		h.audit(ctx, op, resID, "deny", reason)
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, iamXMLNamespace)
+		return
 	}
 
 	switch op {

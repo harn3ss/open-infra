@@ -51,12 +51,11 @@ func (h *appsyncHandler) serveRead(w http.ResponseWriter, r *http.Request, claim
 		writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID, "not authorized to read this GraphQL API")
 		return
 	}
-	if claims.AssumedRole != "" {
-		if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "appsync:"+verb, "GraphQLApi", p.apiID, r); denied {
-			h.logger.Warn("appsync read denied (assumed role)", "user", claims.Sub, "api", p.apiID, "verb", verb, "reason", reason)
-			writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID, "not authorized to read this GraphQL API")
-			return
-		}
+	// Every caller: appsync:<Op> on the API — the whole authority of an assumed role, additive for a User.
+	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "appsync:"+verb, "GraphQLApi", p.apiID, r); denied {
+		h.logger.Warn("appsync read denied (data plane)", "user", claims.Sub, "api", p.apiID, "verb", verb, "reason", reason)
+		writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID, "not authorized to read this GraphQL API")
+		return
 	}
 	obj, err := h.apis.Get(r.Context(), p.ns, p.name)
 	if err != nil {

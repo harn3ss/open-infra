@@ -262,16 +262,17 @@ func TestTranslate_ManagedPolicy_StandaloneBlocks(t *testing.T) {
 	}
 }
 
-// The control-plane refusal holds for ManagedPolicy too (shared core).
+// The refusal of an action with no data plane holds for ManagedPolicy too (shared core). (iam actions
+// import now: the aws-shim checks them, including iam:PassRole, for Users and assumed roles.)
 func TestTranslate_ManagedPolicy_ControlPlaneBlocks(t *testing.T) {
 	_, fs := translateManagedPolicy("Mixed", map[string]any{
 		"Groups": []any{"eng"},
 		"PolicyDocument": map[string]any{
-			"Statement": []any{map[string]any{"Effect": "Allow", "Action": "iam:PassRole", "Resource": "*"}},
+			"Statement": []any{map[string]any{"Effect": "Allow", "Action": "organizations:CreateAccount", "Resource": "*"}},
 		},
 	}, nil)
-	if !strings.Contains(findingsText(fs), "iam:PassRole") {
-		t.Fatalf("a control-plane action must block, got: %s", findingsText(fs))
+	if !strings.Contains(findingsText(fs), "organizations:CreateAccount") {
+		t.Fatalf("an action with no data plane must block, got: %s", findingsText(fs))
 	}
 }
 

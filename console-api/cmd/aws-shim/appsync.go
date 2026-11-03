@@ -137,16 +137,15 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 			"not authorized to use the GraphQL API")
 		return
 	}
-	// An assumed role's authority is its data-plane policy (CanDo passes a role): a GraphQL request needs
-	// appsync:GraphQL, checked on GraphQLApi::* — this endpoint does not name one API, so a grant on a
-	// specific API ARN does not reach it. Default-deny; users keep the gate above.
-	if claims.AssumedRole != "" {
-		if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "appsync:GraphQL", "GraphQLApi", "", r); denied {
-			h.logger.Warn("appsync denied (assumed role)", "user", claims.Sub, "reason", reason)
-			writeAppsyncError(w, http.StatusForbidden, "UnauthorizedException", requestID,
-				"not authorized to use the GraphQL API")
-			return
-		}
+	// The data-plane check, appsync:GraphQL on GraphQLApi::* — this endpoint does not name one API, so a
+	// grant on a specific API ARN does not reach it. An assumed role's authority is its data-plane policy
+	// (CanDo passes a role), so it is default-deny for a role; for a User it holds an explicit Deny of
+	// appsync:GraphQL (the gate above stays its grant).
+	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "appsync:GraphQL", "GraphQLApi", "", r); denied {
+		h.logger.Warn("appsync denied (data plane)", "user", claims.Sub, "reason", reason)
+		writeAppsyncError(w, http.StatusForbidden, "UnauthorizedException", requestID,
+			"not authorized to use the GraphQL API")
+		return
 	}
 
 	// Fresh upstream request — never forward client headers. The GraphQL body streams straight

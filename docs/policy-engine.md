@@ -103,6 +103,15 @@ makes a gated `Deny` fail *closed* (deny), never silently vanish; an unsupported
 multi-valued condition, is refused wholesale rather than guessed (a silently-ineffective `Deny` condition
 is a security hole) — author those natively on `spec.dataPlane`, which the engine evaluates directly.
 
+The importer accepts exactly the services the shim checks for Users and assumed roles alike (a test reads
+the shim's checks and fails on drift), including IAM (`role/<name>`, `user/<name>`, `policy/<name>` →
+`Role::`, `User::`, `Policy::`), Step Functions (`stateMachine:<name>` → `StateMachine::`), CloudFormation
+(`stack/<name>/*` → `Stack::<name>`), AppSync (`apis/<id>` → `GraphQLApi::`), ACM certificates, the CloudFront
+configuration types, EventBridge buses and rules, Cognito user pools, Glue databases and tables, Athena
+workgroups and EKS clusters. An ARN narrower than what the shim authorizes is refused with its reason rather
+than widened: an IAM path, a Step Functions execution (authorized on its state machine), one stack instance
+by id, part of an AppSync API (types or fields).
+
 This is what lets the CFN engine translate `AWS::IAM::Policy`: `translateIAMPolicy` runs the importer
 and, being fail-closed to a fault, **blocks the whole resource** if the importer reports *any*
 unsupported part (a partial security policy is worse than none) — so only a policy that is purely
