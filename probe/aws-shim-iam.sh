@@ -180,6 +180,30 @@ if [ -z "$STS_GATED" ]; then
   grep -qiE 'AccessDenied|denied|forbidden' "$PWD/.iam_l" || fail "ListBucket denial had the wrong error: $(cat "$PWD/.iam_l")"
   rm -f "$PWD/.iam_l"
   log "    ✓ denied ListBucket (live session authorized on the ROLE, not the shim's backend creds)"
+
+  log "  DURATION: a session longer than the role's MaxSessionDuration (1h by default) is refused"
+  if AWS_ACCESS_KEY_ID="$AAK" AWS_SECRET_ACCESS_KEY="$ASK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager \
+    sts assume-role --role-arn "arn:aws:iam::${ACCOUNT}:role/${ROLE}" --role-session-name "probe-long-$SFX" \
+    --duration-seconds 43200 >/dev/null 2>"$PWD/.iam_dur"; then
+    fail "a 12h session was granted for a role whose MaxSessionDuration is the 1h default"
+  fi
+  grep -qi 'ValidationError' "$PWD/.iam_dur" || fail "the over-long session was refused with the wrong error: $(cat "$PWD/.iam_dur")"
+  rm -f "$PWD/.iam_dur"
+  log "    ✓ DurationSeconds above MaxSessionDuration → ValidationError"
+
+  # Mismatched pair: a role trusting the USER named ${ROLE} is not assumable by a session of the ROLE ${ROLE}.
+  ROLE2="iam-probe-role2-$SFX"
+  log "  TRUST TYPING: ${ROLE2} trusts user '${ROLE}' — the session of role '${ROLE}' must NOT assume it"
+  TRUST2='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::'"$ACCOUNT"':user/'"$ROLE"'"},"Action":"sts:AssumeRole"}]}'
+  iam "$AAK" "$ASK" create-role --role-name "$ROLE2" --assume-role-policy-document "$TRUST2" >/dev/null 2>&1 || fail "create-role ${ROLE2} failed"
+  CREATED_ROLES+=("$ROLE2")
+  if AWS_ACCESS_KEY_ID="$SAK" AWS_SECRET_ACCESS_KEY="$SSK" AWS_SESSION_TOKEN="$STOK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager \
+    sts assume-role --role-arn "arn:aws:iam::${ACCOUNT}:role/${ROLE2}" --role-session-name "chain-$SFX" >/dev/null 2>"$PWD/.iam_chain"; then
+    fail "a role session assumed a role whose trust names a USER of the same name (trust matched by bare name across principal types)"
+  fi
+  grep -qi 'AccessDenied' "$PWD/.iam_chain" || fail "the cross-type assume was refused with the wrong error: $(cat "$PWD/.iam_chain")"
+  rm -f "$PWD/.iam_chain"
+  log "    ✓ a trust entry names one kind of principal"
 fi
 
 # --- 6. forbid fidelity: an explicit Deny statement translates to a Cedar forbid ---------------

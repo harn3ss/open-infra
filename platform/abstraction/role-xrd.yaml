@@ -65,16 +65,30 @@ spec:
                 trust:
                   type: array
                   description: >-
-                    Trust policy — the principals permitted to assume this role via sts:AssumeRole
-                    (kind: User names, or "*" for any authenticated principal). The service principal
-                    "vm" additionally makes the role assumable by a VM INSTANCE that names it as its
-                    spec.instanceRole — the open-infra analog of an AWS role trusting ec2.amazonaws.com
-                    (the instance obtains credentials from the instance metadata service, no static
-                    keys). A role with no trust entries cannot be assumed by anyone (fail closed),
-                    exactly as an AWS role needs a trust policy. An assumed session acts with the role's
-                    attached policies.
+                    Trust policy — the principals permitted to assume this role. Each entry names one
+                    kind of principal, so a principal of one kind never stands in for another of the
+                    same name: a kind: User name (or "User::<name>"); "Role::<name>" (or
+                    "<namespace>/<name>" for a Role outside the IAM home namespace), a session of that
+                    role (role chaining); "system:serviceaccount:<ns>:<sa>", that workload's
+                    ServiceAccount token (sts:AssumeRoleWithWebIdentity); "OIDC::<provider>", any token
+                    that kind: IdentityProvider issues, or "OIDC::<provider>:<subject>" for one subject
+                    of it; or "*" for any authenticated principal. The service principal "vm" makes the
+                    role assumable by a VM INSTANCE that names it as its spec.instanceRole — the
+                    open-infra analog of an AWS role trusting ec2.amazonaws.com (the instance obtains
+                    credentials from the instance metadata service, no static keys). A role with no
+                    trust entries cannot be assumed by anyone (fail closed), exactly as an AWS role
+                    needs a trust policy. An assumed session acts with the role's attached policies.
                   items:
                     type: string
+                maxSessionDuration:
+                  type: integer
+                  minimum: 3600
+                  maximum: 43200
+                  description: >-
+                    The longest session, in seconds, this role may be assumed for (AWS's
+                    MaxSessionDuration): 3600 (1 hour, the default) to 43200 (12 hours). An assume that
+                    asks for longer (DurationSeconds) is refused; one that asks for nothing gets 1 hour.
+                    A session assumed by another role's session (role chaining) is capped at 1 hour.
                 permissionBoundary:
                   type: string
                   description: >-

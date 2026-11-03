@@ -53,15 +53,36 @@ func TestWebIdentity_OIDC_TrustedProvider(t *testing.T) {
 	}
 }
 
-// A role may also trust the exact subject rather than the provider.
+// A role may also trust one subject of a provider ("OIDC::<provider>:<subject>").
 func TestWebIdentity_OIDC_TrustedBySubject(t *testing.T) {
 	h := newOIDCSTS(t,
-		fakeRoles{"fed-role": {trust: []string{"alice@example.com"}}},
+		fakeRoles{"fed-role": {trust: []string{"OIDC::google:alice@example.com"}}},
 		fakeOIDC{"gtok": {"google", "alice@example.com"}})
 	w := httptest.NewRecorder()
 	h.serve(w, webIdentityRequest("fed-role", "gtok"), iam.Claims{}, "rid")
 	if w.Code != http.StatusOK {
 		t.Fatalf("subject-trusted OIDC should get creds, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// A trust entry names one kind of principal, and a subject is pinned to its provider: a token whose
+// subject equals a trusted User's name, a ServiceAccount's username, or a subject trusted from another
+// provider does not assume the role.
+func TestWebIdentity_OIDC_SubjectNeverStandsInForAnotherPrincipal(t *testing.T) {
+	for _, tc := range []struct{ trust, provider, subject string }{
+		{"alice@example.com", "google", "alice@example.com"},                                     // a bare name is a User
+		{"User::alice", "google", "alice"},                                                       // a User, by type
+		{"system:serviceaccount:apps:deployer", "google", "system:serviceaccount:apps:deployer"}, // an IRSA identity
+		{"OIDC::okta:alice@example.com", "google", "alice@example.com"},                          // another provider's subject
+		{"OIDC::google:bob@example.com", "google", "alice@example.com"},                          // another subject
+		{"vm", "google", "vm"}, // the instance principal
+	} {
+		h := newOIDCSTS(t, fakeRoles{"fed-role": {trust: []string{tc.trust}}}, fakeOIDC{"tok": {tc.provider, tc.subject}})
+		w := httptest.NewRecorder()
+		h.serve(w, webIdentityRequest("fed-role", "tok"), iam.Claims{}, "rid")
+		if w.Code != http.StatusForbidden {
+			t.Errorf("trust %q, %s token for %q: status %d, want 403", tc.trust, tc.provider, tc.subject, w.Code)
+		}
 	}
 }
 

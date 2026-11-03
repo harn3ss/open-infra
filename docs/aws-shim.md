@@ -386,9 +386,19 @@ stored under the old account or the new one.
 #### AssumeRole — temporary session credentials (opt-in)
 
 `aws sts assume-role` (and `assume-role-with-web-identity`, the IRSA-shaped workload path) mints a
-faithful AWS temporary credential: an `ASIA…` access key id, a secret, and an opaque `SessionToken`,
-15m–12h (1h default). The shim first checks the target `kind: Role`'s `spec.trust` (who may assume
-it — a list of principals, `"*"`, or empty ⇒ nobody, fail closed); later requests signed with the
+faithful AWS temporary credential: an `ASIA…` access key id, a secret, and an opaque `SessionToken`.
+A session lasts 1 hour unless `DurationSeconds` asks otherwise, from 15 minutes up to the role's
+`spec.maxSessionDuration` (AWS's `MaxSessionDuration`: 1 hour by default, at most 12 hours); a longer
+request is refused with `ValidationError`, as on AWS, and a session assumed by another role's session
+(role chaining) is capped at 1 hour. The shim first checks the target `kind: Role`'s `spec.trust` (who
+may assume it — empty ⇒ nobody, fail closed). Each entry names one kind of principal, so one kind
+never stands in for another of the same name: a `kind: User` name (or `User::<name>`), `Role::<name>`
+(a session of that role; `<namespace>/<name>` for a Role outside the IAM home namespace),
+`system:serviceaccount:<ns>:<sa>` (that workload's token), `OIDC::<provider>` (any token that
+`kind: IdentityProvider` issues) or `OIDC::<provider>:<subject>` (one subject of it), `vm` (the VM
+instance principal, matched only by the instance credentials path), or `"*"` (any authenticated
+principal). An IAM `CreateRole` trust policy maps a user ARN to the user's name and a role ARN to
+`Role::<name>`, and takes `MaxSessionDuration`. Later requests signed with the
 temporary credential and carrying the `SessionToken` are then authorized as principal type `Role`,
 so the Role's `kind: Policy` data-plane blocks govern the session — one policy world, no parallel
 authz.

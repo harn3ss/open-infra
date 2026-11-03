@@ -2340,8 +2340,16 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 	if p, ok := concrete(props["Path"]); ok && p != "" && p != "/" {
 		m.Caveats = append(m.Caveats, "Path "+p+" dropped — open-infra roles have no IAM path")
 	}
-	if _, ok := props["MaxSessionDuration"]; ok {
-		m.Caveats = append(m.Caveats, "MaxSessionDuration is not enforced — a session of this role may be requested for up to 12 hours (the platform's limit for every role), whatever this maximum")
+	if v, ok := props["MaxSessionDuration"]; ok {
+		// The role's session limit (spec.maxSessionDuration), enforced at sts:AssumeRole: 3600..43200
+		// seconds, as AWS validates it.
+		s, _ := concrete(v)
+		secs, err := strconv.Atoi(s)
+		if err != nil || secs < 3600 || secs > 43200 {
+			f = append(f, Finding{"Resource " + id, "MaxSessionDuration must be a number of seconds from 3600 to 43200"})
+			return nil, f
+		}
+		spec["maxSessionDuration"] = secs
 	}
 	return m, f
 }

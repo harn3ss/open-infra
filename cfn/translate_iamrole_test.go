@@ -551,6 +551,28 @@ func TestPlan_InstanceRoleChainDeployable(t *testing.T) {
 	}
 }
 
+// A role's MaxSessionDuration becomes its spec.maxSessionDuration (the shim caps sessions at it); a value
+// outside AWS's 3600..43200 blocks the role, as AWS refuses it.
+func TestTranslate_IAMRole_MaxSessionDuration(t *testing.T) {
+	tmpl := func(v string) string {
+		return strings.Replace(iamRoleTmpl, "      Description: app instance role\n", "      Description: app instance role\n      MaxSessionDuration: "+v+"\n", 1)
+	}
+	ctx := ecsCtx(t, tmpl("7200"))
+	m, fs := translateIAMRole("AppRole", resolvedProps(t, ctx, "AppRole"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("findings: %s", findingsText(fs))
+	}
+	if m.Spec["maxSessionDuration"] != 7200 {
+		t.Fatalf("spec.maxSessionDuration = %#v, want 7200", m.Spec["maxSessionDuration"])
+	}
+	for _, bad := range []string{"60", "50000"} {
+		ctx := ecsCtx(t, tmpl(bad))
+		if _, fs := translateIAMRole("AppRole", resolvedProps(t, ctx, "AppRole"), ctx); len(fs) == 0 {
+			t.Errorf("MaxSessionDuration %s translated; want a finding", bad)
+		}
+	}
+}
+
 // resolvedProps resolves a resource's properties through the stack's resolver (so a literal field is
 // usable and a !Ref stays followable via ctx.rawProps).
 func resolvedProps(t *testing.T, ctx *stackCtx, id string) map[string]any {

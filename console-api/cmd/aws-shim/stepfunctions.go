@@ -276,7 +276,7 @@ func (h *sfnHandler) createStateMachine(ctx context.Context, w http.ResponseWrit
 				"a roleArn was given but execution-role authority is not enabled on this shim (STS disabled).")
 			return
 		}
-		if _, _, ok := h.roles.Resolve(ctx, roleName); !ok {
+		if _, ok := h.roles.Resolve(ctx, roleName); !ok {
 			writeSFNError(w, http.StatusBadRequest, "InvalidArn", requestID, "role "+roleName+" does not exist.")
 			return
 		}
@@ -324,7 +324,7 @@ func (h *sfnHandler) updateStateMachine(ctx context.Context, w http.ResponseWrit
 	if ra, ok := body["roleArn"]; ok {
 		roleName := roleNameFromArn(str(ra))
 		if roleName != "" && h.roles != nil {
-			if _, _, ok := h.roles.Resolve(ctx, roleName); !ok {
+			if _, ok := h.roles.Resolve(ctx, roleName); !ok {
 				writeSFNError(w, http.StatusBadRequest, "InvalidArn", requestID, "role "+roleName+" does not exist.")
 				return
 			}
@@ -566,16 +566,17 @@ func (h *sfnHandler) mintExecutionCreds(ctx context.Context, roleName, execName 
 		return nil, &sfnErr{http.StatusBadRequest, "InvalidArn",
 			"this state machine has a roleArn but execution-role authority is not enabled on this shim (STS disabled)."}
 	}
-	trust, groups, ok := h.roles.Resolve(ctx, roleName)
+	role, ok := h.roles.Resolve(ctx, roleName)
 	if !ok {
 		return nil, &sfnErr{http.StatusBadRequest, "InvalidArn", "role " + roleName + " does not exist."}
 	}
-	caller := callerName(claims)
-	if !trusted(caller, trust) {
+	who := callerTrust(claims)
+	if !trusted(who, role.trust) {
 		return nil, &sfnErr{http.StatusForbidden, "AccessDeniedException",
-			caller + " is not authorized to run executions under role " + roleName + " (not named by its trust policy)."}
+			who.String() + " is not authorized to run executions under role " + roleName + " (not named by its trust policy)."}
 	}
-	akid, sk, token, exp, err := h.minter.Mint(roleName, groups, execName, caller, awssts.DefaultDuration)
+	caller := callerName(claims)
+	akid, sk, token, exp, err := h.minter.Mint(roleName, role.groups, execName, caller, awssts.DefaultDuration)
 	if err != nil {
 		return nil, &sfnErr{http.StatusInternalServerError, "InternalFailure", "could not mint execution credentials."}
 	}

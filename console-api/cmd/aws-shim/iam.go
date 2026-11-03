@@ -22,6 +22,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -216,11 +217,21 @@ func (h *iamHandler) createRole(ctx context.Context, w http.ResponseWriter, r *h
 		h.malformed(w, requestID, "AssumeRolePolicyDocument: "+err.Error())
 		return
 	}
+	spec := map[string]any{"description": r.PostFormValue("Description"), "trust": toAny(trust), "policies": []any{}}
+	if v := r.PostFormValue("MaxSessionDuration"); v != "" {
+		secs, err := strconv.Atoi(v)
+		if err != nil || secs < 3600 || secs > 43200 {
+			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+				"MaxSessionDuration must be a number of seconds from 3600 to 43200.", iamXMLNamespace)
+			return
+		}
+		spec["maxSessionDuration"] = int64(secs)
+	}
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "iam.openinfra.dev/v1",
 		"kind":       "Role",
 		"metadata":   map[string]any{"name": name, "namespace": h.usersNS},
-		"spec":       map[string]any{"description": r.PostFormValue("Description"), "trust": toAny(trust), "policies": []any{}},
+		"spec":       spec,
 	}}
 	if _, err := h.dyn.Resource(gvrRoles).Namespace(h.usersNS).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
 		if isAlreadyExists(err) {

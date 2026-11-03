@@ -125,6 +125,8 @@ func parseTrustPolicy(doc string) ([]string, error) {
 			}
 			if n := userFromArn(p); n != "" {
 				add(n)
+			} else if i := strings.Index(p, ":role/"); i >= 0 {
+				add("Role::" + p[i+len(":role/"):]) // a role's sessions (role chaining), never a User of its name
 			} else if isRootOrAccountArn(p) {
 				add("*")
 			}

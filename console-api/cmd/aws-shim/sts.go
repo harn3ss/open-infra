@@ -22,10 +22,58 @@ import (
 //
 // Protocol: AWS Query (form-encoded `Action=…` POST, XML response). Only GetCallerIdentity is
 // implemented; every other action returns a faithful query-protocol error rather than a guess.
-// roleResolver looks up a kind: Role's trust (who may assume it) and the groups an assumed session
-// acts as. Backed by a dynamic k8s client in production and a fake in tests.
+// roleResolver looks up a kind: Role's trust (who may assume it), the groups an assumed session acts
+// as, and the longest session it may be assumed for. Backed by a dynamic k8s client in production and a
+// fake in tests.
 type roleResolver interface {
-	Resolve(ctx context.Context, roleName string) (trust []string, groups []string, ok bool)
+	Resolve(ctx context.Context, roleName string) (resolvedRole, bool)
+}
+
+// resolvedRole is what assuming a role needs to know about it.
+type resolvedRole struct {
+	trust  []string
+	groups []string
+	// maxSession is the role's spec.maxSessionDuration (AWS's MaxSessionDuration: 1h by default, at most
+	// 12h); zero means the default.
+	maxSession time.Duration
+}
+
+// defaultMaxSession is AWS's MaxSessionDuration default; chainedMaxSession caps a session assumed by
+// another role's session (role chaining), whatever the role's own maximum, as on AWS.
+const (
+	defaultMaxSession = time.Hour
+	chainedMaxSession = time.Hour
+)
+
+// sessionDuration is the session length an assume asks for (DurationSeconds; 1h when absent), refused —
+// as AWS refuses it — when it is not a number, is under 15 minutes, or exceeds the role's maximum.
+func sessionDuration(r *http.Request, role resolvedRole, chained bool) (time.Duration, string) {
+	max := role.maxSession
+	if max <= 0 {
+		max = defaultMaxSession
+	}
+	if max > awssts.MaxDuration {
+		max = awssts.MaxDuration
+	}
+	if chained && max > chainedMaxSession {
+		max = chainedMaxSession
+	}
+	d := r.PostFormValue("DurationSeconds")
+	if d == "" {
+		return min(awssts.DefaultDuration, max), ""
+	}
+	secs, err := strconv.Atoi(d)
+	if err != nil || time.Duration(secs)*time.Second < awssts.MinDuration {
+		return 0, "DurationSeconds must be a number of seconds, at least 900."
+	}
+	ttl := time.Duration(secs) * time.Second
+	if ttl > max {
+		if chained {
+			return 0, "The requested DurationSeconds exceeds the 1 hour session limit for roles assumed by role chaining."
+		}
+		return 0, "The requested DurationSeconds exceeds the MaxSessionDuration set for this role."
+	}
+	return ttl, ""
 }
 
 // tokenReviewer verifies a projected ServiceAccount token (the web-identity token) and returns the
@@ -88,26 +136,26 @@ func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims i
 			"AssumeRole requires RoleArn and RoleSessionName", stsXMLNamespace)
 		return
 	}
-	trust, groups, ok := h.roles.Resolve(r.Context(), roleName)
+	role, ok := h.roles.Resolve(r.Context(), roleName)
 	if !ok {
 		// AWS returns AccessDenied (not "not found") so a caller can't probe which roles exist.
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
 			"not authorized to perform sts:AssumeRole on role "+roleName, stsXMLNamespace)
 		return
 	}
-	caller := callerName(claims)
-	if !trusted(caller, trust) {
+	who := callerTrust(claims)
+	if !trusted(who, role.trust) {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
-			caller+" is not authorized to assume role "+roleName+" (not named by its trust policy)", stsXMLNamespace)
+			who.String()+" is not authorized to assume role "+roleName+" (not named by its trust policy)", stsXMLNamespace)
 		return
 	}
-	ttl := awssts.DefaultDuration
-	if d := r.PostFormValue("DurationSeconds"); d != "" {
-		if secs, err := strconv.Atoi(d); err == nil {
-			ttl = time.Duration(secs) * time.Second
-		}
+	ttl, bad := sessionDuration(r, role, claims.AssumedRole != "")
+	if bad != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, bad, stsXMLNamespace)
+		return
 	}
-	akid, sk, token, exp, err := h.minter.Mint(roleName, groups, sessionName, caller, ttl)
+	caller := callerName(claims)
+	akid, sk, token, exp, err := h.minter.Mint(roleName, role.groups, sessionName, caller, ttl)
 	if err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not mint credentials", stsXMLNamespace)
 		return
@@ -137,17 +185,18 @@ func (h *stsHandler) assumeRoleWithWebIdentity(w http.ResponseWriter, r *http.Re
 	// Two web-identity paths. First the k8s workload-identity (IRSA) path: a projected SA token verified
 	// by a TokenReview, whose principal is the SA username. If that does not match, the external-OIDC
 	// path: a token from a registered kind: IdentityProvider, verified via go-oidc; its trust principal
-	// is the provider ("OIDC::<name>") and its subject is the token subject. `username` is the assumed
-	// subject; `caller` is what the role's trust policy is matched against.
-	var username, caller string
+	// is the provider ("OIDC::<name>", or "OIDC::<name>:<subject>" for one subject of it). `username` is
+	// the assumed subject; `who` is what the role's trust policy is matched against.
+	var username string
+	var who trustCaller
 	if h.webID != nil {
 		if u, ok := h.webID.Review(r.Context(), token); ok {
-			username, caller = u, u
+			username, who = u, trustCaller{kind: "ServiceAccount", name: u}
 		}
 	}
 	if username == "" && h.oidcWebID != nil {
 		if name, sub, ok := h.oidcWebID.verify(r.Context(), token); ok {
-			username, caller = sub, "OIDC::"+name
+			username, who = sub, trustCaller{kind: "OIDC", name: name, subject: sub}
 		}
 	}
 	if username == "" {
@@ -156,23 +205,21 @@ func (h *stsHandler) assumeRoleWithWebIdentity(w http.ResponseWriter, r *http.Re
 			"the web identity token could not be validated", stsXMLNamespace)
 		return
 	}
-	trust, groups, ok := h.roles.Resolve(r.Context(), roleName)
-	// For OIDC the trust policy may name either the provider ("OIDC::<name>") or the exact subject.
-	if !ok || !(trusted(caller, trust) || trusted(username, trust)) {
+	role, ok := h.roles.Resolve(r.Context(), roleName)
+	if !ok || !trusted(who, role.trust) {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
-			caller+" is not authorized to assume role "+roleName+" (not named by its trust policy)", stsXMLNamespace)
+			who.String()+" is not authorized to assume role "+roleName+" (not named by its trust policy)", stsXMLNamespace)
 		return
 	}
 	if sessionName == "" {
 		sessionName = saShortName(username)
 	}
-	ttl := awssts.DefaultDuration
-	if d := r.PostFormValue("DurationSeconds"); d != "" {
-		if secs, err := strconv.Atoi(d); err == nil {
-			ttl = time.Duration(secs) * time.Second
-		}
+	ttl, bad := sessionDuration(r, role, false)
+	if bad != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, bad, stsXMLNamespace)
+		return
 	}
-	akid, sk, tok, exp, err := h.minter.Mint(roleName, groups, sessionName, username, ttl)
+	akid, sk, tok, exp, err := h.minter.Mint(roleName, role.groups, sessionName, username, ttl)
 	if err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not mint credentials", stsXMLNamespace)
 		return
@@ -208,12 +255,78 @@ func callerName(c iam.Claims) string {
 	return c.Sub
 }
 
-// trusted reports whether the caller is named by the trust policy. "*" trusts any authenticated
-// principal (AWS's Principal:"*" trust); otherwise an exact name match.
-func trusted(caller string, trust []string) bool {
+// trustCaller is the principal asking to assume a role, typed the way a trust entry names it.
+type trustCaller struct {
+	kind    string // "User", "Role" (a session of that role: role chaining), "ServiceAccount" or "OIDC"
+	name    string // the User's name, the Role's name, the ServiceAccount username, or the IdentityProvider's name
+	subject string // OIDC: the token's subject
+}
+
+// callerTrust is a SigV4 caller as a trust policy names it: a User, or an assumed role's session.
+func callerTrust(c iam.Claims) trustCaller {
+	if c.AssumedRole != "" {
+		return trustCaller{kind: "Role", name: c.AssumedRole}
+	}
+	return trustCaller{kind: "User", name: c.Sub}
+}
+
+func (c trustCaller) String() string {
+	switch c.kind {
+	case "ServiceAccount":
+		return c.name
+	case "OIDC":
+		return "OIDC::" + c.name + ":" + c.subject
+	}
+	return c.kind + "::" + c.name
+}
+
+// trusted reports whether a role's trust policy names the caller. Entries are typed, so a principal of
+// one kind never stands in for another of the same name — as an AWS trust policy names a user's ARN, a
+// role's, or a federated provider:
+//
+//	"*"                                any authenticated principal (AWS's Principal "*")
+//	"<name>" or "User::<name>"         that kind: User (a bare name is a User, as spec.trust documents)
+//	"Role::<name>", "<namespace>/<name>"  a session of that role (role chaining)
+//	"system:serviceaccount:<ns>:<sa>"  that workload's projected ServiceAccount token
+//	"OIDC::<provider>"                 any token that kind: IdentityProvider issued
+//	"OIDC::<provider>:<subject>"       that provider's token for that one subject
+//
+// "vm" is the VM instance principal: only the instance-credentials path matches it (vmcreds.go).
+func trusted(c trustCaller, trust []string) bool {
 	for _, t := range trust {
-		if t == "*" || t == caller {
+		if t == "*" {
 			return true
+		}
+		switch {
+		case strings.HasPrefix(t, "User::"):
+			if c.kind == "User" && t[len("User::"):] == c.name {
+				return true
+			}
+		case strings.HasPrefix(t, "Role::"):
+			if c.kind == "Role" && t[len("Role::"):] == c.name {
+				return true
+			}
+		case strings.HasPrefix(t, "OIDC::"):
+			provider, subject, pinned := strings.Cut(t[len("OIDC::"):], ":")
+			if c.kind == "OIDC" && provider == c.name && (!pinned || subject == c.subject) {
+				return true
+			}
+		case strings.HasPrefix(t, "system:serviceaccount:"):
+			if c.kind == "ServiceAccount" && t == c.name {
+				return true
+			}
+		case t == "vm" || strings.Contains(t, "::"):
+			// the instance principal, or a principal type no assume path presents
+		default:
+			// A bare name is a User; one with a "/" — <namespace>/<name>, which no User name can be — is a
+			// Role outside the IAM home namespace, as docs/iam.md has a trust policy name one.
+			kind := "User"
+			if strings.Contains(t, "/") {
+				kind = "Role"
+			}
+			if c.kind == kind && t == c.name {
+				return true
+			}
 		}
 	}
 	return false

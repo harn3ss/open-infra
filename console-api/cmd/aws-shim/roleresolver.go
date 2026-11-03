@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"strings"
+	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	authnv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -22,17 +24,33 @@ type dynRoleResolver struct {
 
 var roleGVR = schema.GroupVersionResource{Group: "iam.openinfra.dev", Version: "v1", Resource: "roles"}
 
-func (r *dynRoleResolver) Resolve(ctx context.Context, roleName string) (trust []string, groups []string, ok bool) {
+func (r *dynRoleResolver) Resolve(ctx context.Context, roleName string) (resolvedRole, bool) {
 	u, err := r.dyn.Resource(roleGVR).Namespace(r.ns).Get(ctx, roleName, metav1.GetOptions{})
 	if err != nil {
-		return nil, nil, false
+		return resolvedRole{}, false
 	}
-	trust, _, _ = unstructured.NestedStringSlice(u.Object, "spec", "trust")
+	trust, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "trust")
 	// The session acts as openinfra:users at the control plane (least privilege); the role's real
 	// authority is its attached data-plane policies, evaluated with principal type "Role" (the
 	// assumed-role principal). Broader control-plane authority for assumed roles lands with the
 	// control-plane authorization work (#109 Phase 2).
-	return trust, []string{"openinfra:users"}, true
+	return resolvedRole{trust: trust, groups: []string{"openinfra:users"}, maxSession: roleMaxSession(u.Object)}, true
+}
+
+// roleMaxSession is a role's spec.maxSessionDuration (seconds), within AWS's 1h..12h; the default, 1h,
+// when it is unset or out of range (admission refuses an out-of-range value).
+func roleMaxSession(obj map[string]any) time.Duration {
+	secs, found, err := unstructured.NestedInt64(obj, "spec", "maxSessionDuration")
+	if err != nil || !found {
+		if f, ok, _ := unstructured.NestedFloat64(obj, "spec", "maxSessionDuration"); ok {
+			secs, found = int64(f), true
+		}
+	}
+	d := time.Duration(secs) * time.Second
+	if !found || d < defaultMaxSession || d > awssts.MaxDuration {
+		return defaultMaxSession
+	}
+	return d
 }
 
 // k8sTokenReviewer verifies a workload's projected ServiceAccount token via a Kubernetes

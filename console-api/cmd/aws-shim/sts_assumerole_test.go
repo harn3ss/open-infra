@@ -8,17 +8,21 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/awssig"
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
 
-type fakeRoles map[string]struct{ trust, groups []string }
+type fakeRoles map[string]struct {
+	trust, groups []string
+	maxSession    time.Duration
+}
 
-func (f fakeRoles) Resolve(_ context.Context, name string) ([]string, []string, bool) {
+func (f fakeRoles) Resolve(_ context.Context, name string) (resolvedRole, bool) {
 	r, ok := f[name]
-	return r.trust, r.groups, ok
+	return resolvedRole{trust: r.trust, groups: r.groups, maxSession: r.maxSession}, ok
 }
 
 func testMinter(t *testing.T) *awssts.Minter {

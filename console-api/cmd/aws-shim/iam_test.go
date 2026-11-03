@@ -25,6 +25,11 @@ func TestParseTrustPolicy(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, []string{"bob", "carol"}) {
 		t.Fatalf("list principals: got %v err %v", got, err)
 	}
+	// a role ARN → that role's sessions (Role::), never a User of the same name
+	got, err = parseTrustPolicy(`{"Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::a:role/deployer"},"Action":"sts:AssumeRole"}]}`)
+	if err != nil || !reflect.DeepEqual(got, []string{"Role::deployer"}) {
+		t.Fatalf("role principal: got %v err %v", got, err)
+	}
 	// root ARN → "*"
 	got, err = parseTrustPolicy(`{"Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::acct:root"},"Action":"sts:AssumeRole"}]}`)
 	if err != nil || !reflect.DeepEqual(got, []string{"*"}) {
