@@ -1,0 +1,354 @@
+# The OS image cache for Linux VMs (#354): each catalog image is imported ONCE, by digest, into a
+# platform-owned base, and new VMs are made from that base instead of each pulling its own copy.
+#
+# A base is a Longhorn backing image (longhorn-system): one stored, checksummed (SHA-512), read-only copy
+# per image digest, the analog of the snapshot behind an AMI. Every Longhorn volume made from it is a thin
+# copy-on-write layer on top; Longhorn refuses to delete a backing image while any volume uses it. The
+# builder also keeps CDI's import of the image (a Filesystem PVC in openinfra-images), which kind:
+# AutoScalingGroup members clone, and a pristine thin volume their HA members clone.
+#
+# How the compositions use a base (platform/abstraction/vm-composition.yaml):
+#   - an HA root (spec.highAvailability) IS a thin volume on the base (<base>-ha StorageClass);
+#   - a non-HA root stays on local-path (Longhorn I/O is several times slower than the local disk), and is
+#     filled by a copy from a thin, node-local volume on the base (<base>-reader StorageClass);
+#   - an encrypted root is filled the same way (LUKS keys each volume itself, so it cannot share the base).
+# Only NEW VMs use a base; a VM made before keeps the root it was made with.
+#
+# Refresh: the CronJob resolves each catalog tag to its current digest every hour (two registry requests
+# when nothing changed; a fresh install gets its bases within the hour, and until then VMs import from the
+# registry as before); a new digest is built
+# into a new base, recorded in the EnvironmentConfig `openinfra-vm-bases`, and used by VMs created from
+# then on. Running VMs are untouched. A base no catalog entry points at any more is deleted only when
+# nothing uses it (Longhorn refuses otherwise, and the builder leaves it). Refresh now:
+#   kubectl -n openinfra-images create job --from=cronjob/vm-base-refresh vm-base-refresh-manual-$(date +%s)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vm-base-catalog
+  namespace: openinfra-images
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+data:
+  # os (the kind: VirtualMachine spec.os) -> the image every VM of that os boots. KEEP IN SYNC with the
+  # catalog in vm-composition.yaml / autoscalinggroup-composition.yaml for these entries.
+  bases.tsv: |
+    ubuntu-24.04	quay.io/containerdisks/ubuntu:24.04
+    ubuntu-22.04	quay.io/containerdisks/ubuntu:22.04
+  # The base's size: every root made from it must be at least this large (Longhorn refuses a smaller
+  # volume). Both images fit (24.04 is 3.5 GiB, 22.04 2.2 GiB); a VM's root is 20Gi by default.
+  baseSize: 4Gi
+  # How many nodes keep a copy of each base ready, so the first VM on a node does not wait for one.
+  minCopies: "4"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vm-base-builder
+  namespace: openinfra-images
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+---
+# In openinfra-images: the import, the staging volume, the copy pod, the golden and pristine volumes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vm-base-builder
+  namespace: openinfra-images
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+rules:
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims, pods]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [vm-base-catalog]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vm-base-builder
+  namespace: openinfra-images
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: vm-base-builder }
+subjects: [{ kind: ServiceAccount, name: vm-base-builder, namespace: openinfra-images }]
+---
+# In longhorn-system: the backing images (the bases themselves).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vm-base-builder
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+rules:
+  - apiGroups: [longhorn.io]
+    resources: [backingimages]
+    verbs: [get, list, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vm-base-builder
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: vm-base-builder }
+subjects: [{ kind: ServiceAccount, name: vm-base-builder, namespace: openinfra-images }]
+---
+# Cluster-scoped: the bases' StorageClasses and the record the compositions read.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-vm-base-builder
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+rules:
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list, create, delete]
+  - apiGroups: [apiextensions.crossplane.io]
+    resources: [environmentconfigs]
+    verbs: [create]
+  - apiGroups: [apiextensions.crossplane.io]
+    resources: [environmentconfigs]
+    resourceNames: [openinfra-vm-bases]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-vm-base-builder
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-vm-base-builder }
+subjects: [{ kind: ServiceAccount, name: vm-base-builder, namespace: openinfra-images }]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vm-base-builder
+  namespace: openinfra-images
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+data:
+  build.sh: |
+    #!/bin/bash
+    # Builds (or confirms) the base of every catalog entry, records them, and removes unused old bases.
+    set -uo pipefail
+    NS=openinfra-images LH=longhorn-system
+    COPY_IMAGE="${COPY_IMAGE:?}"
+    SIZE=$(kubectl -n $NS get cm vm-base-catalog -o jsonpath='{.data.baseSize}')
+    COPIES=$(kubectl -n $NS get cm vm-base-catalog -o jsonpath='{.data.minCopies}')
+    log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*"; }
+    # until <timeout-s> <cmd...>
+    waitfor() { local t=$1; shift; local end=$(( $(date +%s) + t )); until "$@" >/dev/null 2>&1; do [ "$(date +%s)" -ge "$end" ] && return 1; sleep 5; done; }
+    ACCEPT='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
+    # resolve <registry/repo:tag> -> sha256:<digest> of the tag now (an anonymous registry token if asked).
+    resolve() {
+      local ref=$1 reg rest repo tag url h auth realm service scope tok
+      reg=${ref%%/*}; rest=${ref#*/}; repo=${rest%:*}; tag=${rest##*:}
+      url="https://$reg/v2/$repo/manifests/$tag"
+      h=$(curl -sSI -m 30 -H "Accept: $ACCEPT" "$url" | tr -d '\r')
+      if printf '%s' "$h" | head -1 | grep -q ' 401'; then
+        auth=$(printf '%s\n' "$h" | awk 'tolower($1)=="www-authenticate:"{sub(/^[^ ]+ +Bearer +/,""); print}')
+        realm=$(printf '%s' "$auth" | sed -n 's/.*realm="\([^"]*\)".*/\1/p')
+        service=$(printf '%s' "$auth" | sed -n 's/.*service="\([^"]*\)".*/\1/p')
+        scope=$(printf '%s' "$auth" | sed -n 's/.*scope="\([^"]*\)".*/\1/p')
+        tok=$(curl -sS -m 30 -G "$realm" --data-urlencode "service=$service" --data-urlencode "scope=$scope" | jq -r '.token // .access_token // empty')
+        h=$(curl -sSI -m 30 -H "Accept: $ACCEPT" -H "Authorization: Bearer $tok" "$url" | tr -d '\r')
+      fi
+      printf '%s\n' "$h" | awk 'tolower($1)=="docker-content-digest:"{print $2}' | grep -E '^sha256:[0-9a-f]{64}$'
+    }
+    bi_ready() { kubectl -n $LH get backingimages.longhorn.io "$1" -o jsonpath='{range .status.diskFileStatusMap.*}{.state}{" "}{end}' 2>/dev/null | grep -qw ready; }
+    sc() { # name replicas locality migratable backingImage checksum
+      kubectl get sc "$1" >/dev/null 2>&1 && return 0
+      cat <<YAML | kubectl apply -f - >/dev/null
+    apiVersion: storage.k8s.io/v1
+    kind: StorageClass
+    metadata: { name: $1, labels: { openinfra.dev/vm-base: "true", openinfra.dev/vm-base-image: $5 } }
+    provisioner: driver.longhorn.io
+    allowVolumeExpansion: true
+    reclaimPolicy: Delete
+    volumeBindingMode: Immediate
+    parameters: { numberOfReplicas: "$2", dataLocality: $3, migratable: "$4", staleReplicaTimeout: "30", dataEngine: v1, backingImage: $5, backingImageChecksum: $6 }
+    YAML
+    }
+    # build <os> <image> <digest> <name>: the base <name> of image@digest, built if it is not there.
+    build() {
+      local os=$1 image=$2 digest=$3 name=$4 repo=${2%:*} vol sum
+      if bi_ready "$name"; then log "$os: base $name is ready"; else
+        log "$os: building base $name from $repo@$digest"
+        kubectl -n $NS delete pod "$name-copy" --ignore-not-found >/dev/null
+        # 1. CDI imports the image by digest (a Filesystem disk.img — CDI cannot write a raw block device here).
+        cat <<YAML | kubectl apply -f - >/dev/null
+    apiVersion: cdi.kubevirt.io/v1beta1
+    kind: DataVolume
+    metadata:
+      name: $name
+      namespace: $NS
+      labels: { openinfra.dev/vm-base: "$os", openinfra.dev/vm-base-image: $name }
+      annotations: { cdi.kubevirt.io/storage.deleteAfterCompletion: "false", openinfra.dev/source: "$repo@$digest" }
+    spec:
+      storage: { accessModes: [ReadWriteOnce], storageClassName: longhorn, resources: { requests: { storage: 6Gi } } }
+      source: { registry: { url: "docker://$repo@$digest" } }
+    ---
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata: { name: $name-stage, namespace: $NS, labels: { openinfra.dev/vm-base: "$os", openinfra.dev/vm-base-image: $name } }
+    spec: { accessModes: [ReadWriteOnce], volumeMode: Block, storageClassName: longhorn, resources: { requests: { storage: $SIZE } } }
+    YAML
+        waitfor 2400 sh -c "[ \"\$(kubectl -n $NS get dv $name -o jsonpath='{.status.phase}')\" = Succeeded ]" || { log "$os: the import did not finish"; return 1; }
+        # 2. A root pod copies the image (up to its GPT backup header) onto the Block volume.
+        cat <<YAML | kubectl apply -f - >/dev/null
+    apiVersion: v1
+    kind: Pod
+    metadata: { name: $name-copy, namespace: $NS, labels: { openinfra.dev/vm-base-image: $name } }
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext: { runAsUser: 0, runAsGroup: 0 }
+      containers:
+        - name: copy
+          image: $COPY_IMAGE
+          resources: { requests: { cpu: 250m, memory: 256Mi }, limits: { cpu: "1", memory: 256Mi } }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL], add: [DAC_OVERRIDE] } }
+          command: [/bin/sh, -c]
+          args:
+            - |
+              set -eu
+              img=/src/disk.img dev=/dev/base
+              ib() { dd if="\$img" bs=1 skip="\$1" count="\$2" 2>/dev/null | od -An -tx1 | tr -d ' \n'; }
+              le() { h=\$1; r=""; while [ -n "\$h" ]; do r="\${h%"\${h#??}"}\$r"; h=\${h#??}; done; echo "\$r"; }
+              [ "\$(ib 512 8)" = 4546492050415254 ] || { echo "the image has no GPT header" >&2; exit 1; }
+              alt=\$((0x\$(le "\$(ib 544 8)"))); ext=\$(( (alt + 1) * 512 )); mib=1048576; n=\$(( (ext + mib - 1) / mib ))
+              [ "\$ext" -le "\$(blockdev --getsize64 \$dev)" ] || { echo "the image (\$ext bytes) does not fit the base" >&2; exit 1; }
+              dd if="\$img" of="\$dev" bs=1M count=\$n iflag=fullblock oflag=direct conv=notrunc,fsync
+              sync
+              [ "\$(dd if=\$dev bs=1 skip=512 count=8 2>/dev/null | od -An -tx1 | tr -d ' \n')" = 4546492050415254 ] || { echo "the copy left no GPT header" >&2; exit 1; }
+              echo "copied \$n MiB"
+          volumeMounts: [{ name: src, mountPath: /src, readOnly: true }]
+          volumeDevices: [{ name: dst, devicePath: /dev/base }]
+      volumes:
+        - { name: src, persistentVolumeClaim: { claimName: $name, readOnly: true } }
+        - { name: dst, persistentVolumeClaim: { claimName: $name-stage } }
+    YAML
+        waitfor 1800 sh -c "case \"\$(kubectl -n $NS get pod $name-copy -o jsonpath='{.status.phase}')\" in Succeeded|Failed) true;; *) false;; esac"
+        if [ "$(kubectl -n $NS get pod "$name-copy" -o jsonpath='{.status.phase}')" != Succeeded ]; then
+          log "$os: the copy failed: $(kubectl -n $NS logs "$name-copy" 2>&1 | tail -3)"; return 1
+        fi
+        log "$os: $(kubectl -n $NS logs "$name-copy" | tail -1)"
+        kubectl -n $NS delete pod "$name-copy" --wait=true >/dev/null
+        # 3. The backing image, exported from that volume.
+        vol=$(kubectl -n $NS get pvc "$name-stage" -o jsonpath='{.spec.volumeName}')
+        cat <<YAML | kubectl apply -f - >/dev/null
+    apiVersion: longhorn.io/v1beta2
+    kind: BackingImage
+    metadata:
+      name: $name
+      namespace: $LH
+      labels: { openinfra.dev/vm-base: "$os" }
+      annotations: { openinfra.dev/source: "$repo@$digest" }
+    spec:
+      sourceType: export-from-volume
+      sourceParameters: { volume-name: "$vol", export-type: raw }
+      minNumberOfCopies: $COPIES
+    YAML
+        waitfor 1800 bi_ready "$name" || { log "$os: the backing image did not become ready"; return 1; }
+        kubectl -n $NS delete pvc "$name-stage" --wait=false >/dev/null
+        log "$os: base $name ready"
+      fi
+      sum=$(kubectl -n $LH get backingimages.longhorn.io "$name" -o jsonpath='{.status.checksum}')
+      [ -n "$sum" ] || { log "$os: base $name has no checksum yet"; return 1; }
+      # HA roots ARE thin volumes on the base (replicated, live-migratable); a copy reads the base from a
+      # thin volume whose one replica sits on the node doing the copy.
+      sc "$name-ha" 2 disabled true "$name" "$sum"
+      sc "$name-reader" 1 strict-local false "$name" "$sum"
+      # What an HA kind: AutoScalingGroup member clones (CDI clones a volume of the same class).
+      if ! kubectl -n $NS get pvc "$name-pristine" >/dev/null 2>&1; then
+        cat <<YAML | kubectl apply -f - >/dev/null
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata: { name: $name-pristine, namespace: $NS, labels: { openinfra.dev/vm-base: "$os", openinfra.dev/vm-base-image: $name } }
+    spec: { accessModes: [ReadWriteMany], volumeMode: Block, storageClassName: $name-ha, resources: { requests: { storage: $SIZE } } }
+    YAML
+      fi
+      RECORD=$(printf '%s' "$RECORD" | jq -c --arg os "$os" --arg image "$repo@$digest" --arg bi "$name" --arg sum "$sum" --arg size "$SIZE" \
+        '.[$os] = {image: $image, backingImage: $bi, checksum: $sum, size: $size, haStorageClass: ($bi + "-ha"), readerStorageClass: ($bi + "-reader"), goldenNamespace: "openinfra-images", golden: $bi, pristine: ($bi + "-pristine")}')
+    }
+    # The current record (kept for an entry whose refresh fails this time).
+    RECORD=$(kubectl get environmentconfigs.apiextensions.crossplane.io openinfra-vm-bases -o json 2>/dev/null | jq -c '.data.vmBases // {}' || echo '{}')
+    [ -n "$RECORD" ] || RECORD='{}'
+    rc=0
+    mapfile -t ENTRIES < <(kubectl -n $NS get cm vm-base-catalog -o jsonpath='{.data.bases\.tsv}')
+    for entry in "${ENTRIES[@]}"; do
+      IFS=$'\t' read -r os image <<<"$entry"
+      [ -n "${os:-}" ] && [ -n "${image:-}" ] || continue
+      digest=$(resolve "$image") || digest=""
+      if [ -z "$digest" ]; then log "$os: could not resolve $image (kept the current base)"; rc=1; continue; fi
+      name="openinfra-${os//./-}-${digest:7:12}"
+      build "$os" "$image" "$digest" "$name" </dev/null || rc=1
+    done
+    cat <<YAML | kubectl apply -f - >/dev/null
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    metadata: { name: openinfra-vm-bases }
+    data:
+      vmBases: $RECORD
+    YAML
+    log "recorded: $(printf '%s' "$RECORD" | jq -c 'with_entries(.value |= .backingImage)')"
+    # Old bases: their golden/pristine volumes go, then the base itself unless a volume still uses it (Longhorn
+    # refuses: "cannot delete backing image ... since there are replicas using it"); its classes go with it.
+    current=$(printf '%s' "$RECORD" | jq -r '[.[].backingImage] | join(" ")')
+    for bi in $(kubectl -n $LH get backingimages.longhorn.io -l openinfra.dev/vm-base -o jsonpath='{.items[*].metadata.name}'); do
+      case " $current " in *" $bi "*) continue;; esac
+      kubectl -n $NS delete pvc "$bi-pristine" --ignore-not-found --wait=true >/dev/null 2>&1
+      kubectl -n $NS delete dv "$bi" --ignore-not-found --wait=false >/dev/null 2>&1
+      if out=$(kubectl -n $LH delete backingimages.longhorn.io "$bi" 2>&1); then
+        kubectl delete sc "$bi-ha" "$bi-reader" --ignore-not-found >/dev/null 2>&1
+        log "removed the unused old base $bi"
+      else
+        log "kept the old base $bi: $(printf '%s' "$out" | tail -1)"
+      fi
+    done
+    exit $rc
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vm-base-refresh
+  namespace: openinfra-images
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  schedule: "17 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 7200
+      template:
+        spec:
+          serviceAccountName: vm-base-builder
+          restartPolicy: Never
+          containers:
+            - name: build
+              image: docker.io/alpine/k8s:1.30.0@sha256:bd01dae02676ce4cab62fc744e43443eee5bf660054e94d3496d23bfc35d384e
+              env:
+                - { name: COPY_IMAGE, value: "docker.io/alpine/k8s:1.30.0@sha256:bd01dae02676ce4cab62fc744e43443eee5bf660054e94d3496d23bfc35d384e" }
+              command: [/bin/bash, /scripts/build.sh]
+              resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 500m, memory: 256Mi } }
+              securityContext: { allowPrivilegeEscalation: false, runAsNonRoot: true, runAsUser: 65534, capabilities: { drop: [ALL] } }
+              volumeMounts: [{ name: scripts, mountPath: /scripts }]
+          volumes: [{ name: scripts, configMap: { name: vm-base-builder } }]

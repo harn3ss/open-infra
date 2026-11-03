@@ -43,7 +43,7 @@ and how to connect.
 
 | `os` | Family | Source |
 |---|---|---|
-| `ubuntu-24.04`, `ubuntu-22.04` | Linux | cloud image (containerdisk), imported by CDI |
+| `ubuntu-24.04`, `ubuntu-22.04` | Linux | cloud image (containerdisk), cached once per release by the [OS image cache](#os-image-cache-ubuntu) |
 | `fedora-40` | Linux | cloud image |
 | `debian-12` | Linux | cloud image |
 | `centos-stream-9` | Linux | cloud image |
@@ -58,6 +58,36 @@ The catalog lives in two places that must stay in sync: the XRD enum
 > even though KubeVirt itself is arm64-capable — an arm64 host cannot boot an x86 guest. On an
 > arm64-only cluster a `VirtualMachine` claim is refused at admission. See
 > [architecture-support.md](architecture-support.md).
+
+## OS image cache (Ubuntu)
+
+Each Ubuntu image in the catalog is imported **once**, by digest, into a platform-owned **base**, and
+new VMs are made from that base rather than each pulling the image from the registry. A base is a
+Longhorn backing image (namespace `longhorn-system`): one stored, SHA-512-checksummed, read-only copy,
+the analog of the snapshot behind an AMI.
+
+| Root | Made from the base by |
+|---|---|
+| default (non-HA) | a local copy onto the VM's `local-path` disk, from a thin volume on the base that sits on the same node. The root keeps the local disk's speed (a Longhorn volume is several times slower). The VM starts once the copy is done. |
+| `highAvailability: true` | a **thin copy-on-write volume on the base** (its `-ha` class: replicated, live-migratable). The VM starts at once. |
+| `rootDisk.encrypted: true` | the same local copy, onto the LUKS volume. An encrypted root cannot be a layer on a shared base: Longhorn would need the base encrypted with the root's own key, and every volume on it would then share one volume key, where AWS gives each volume encrypted from an unencrypted AMI its own data key. |
+
+`kind: AutoScalingGroup` members clone the base too: a non-HA member clones the base's import onto its
+`local-path` root, an HA member clones the base's pristine thin volume.
+
+- **Isolation.** The base is read-only underneath every volume made from it; a VM's writes land in its
+  own volume, never in the base or in another VM's disk.
+- **Refresh.** The `vm-base-refresh` CronJob (namespace `openinfra-images`) resolves each catalog tag to
+  its digest every hour. A new digest becomes a new base, recorded in the EnvironmentConfig
+  `openinfra-vm-bases`, which VMs created from then on use. Running VMs are never changed. To refresh
+  now: `kubectl -n openinfra-images create job --from=cronjob/vm-base-refresh vm-base-refresh-now`.
+- **Deletion.** An old base is deleted only when nothing uses it: Longhorn refuses to delete a backing
+  image while any volume (attached or not) is made from it, and the refresh leaves it in place.
+- **Existing VMs** keep the root they were made with. `status.rootSource` records how a VM's root was
+  made (`base` or `image`) and `status.rootBase` the base.
+- **Without a base** (a fresh install's first hour, or an OS outside the cache, such as Fedora or
+  Debian), a VM imports its image from the registry, as before.
+- The catalog of cached images is the `vm-base-catalog` ConfigMap (`openinfra-images`).
 
 ## High availability & live migration
 

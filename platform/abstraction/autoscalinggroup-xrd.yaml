@@ -133,4 +133,18 @@ spec:
               properties:
                 poolName:        { type: string }
                 desiredCapacity: { type: integer }
+                rootSource:
+                  type: string
+                  description: >-
+                    How the members' root disks are made: "base" (cloned from the platform's OS image cache) or
+                    "image" (imported from the registry). Recorded when the group is made and kept.
+                rootBase:
+                  type: object
+                  description: The OS image cache base the members are made from (when rootSource is "base"), kept.
+                  properties:
+                    image:           { type: string }
+                    ha:              { type: string }
+                    goldenNamespace: { type: string }
+                    golden:          { type: string }
+                    pristine:        { type: string }
                 readyReplicas:   { type: integer }

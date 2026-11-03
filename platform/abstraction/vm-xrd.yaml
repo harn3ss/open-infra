@@ -241,7 +241,21 @@ spec:
                 ready:   { type: boolean }
                 rootPopulated:
                   type: boolean
-                  description: "An encrypted root disk (spec.rootDisk.encrypted) holds the OS image: set once the copy onto it has completed, and kept, so the image is never copied over the disk again."
+                  description: "The root disk holds the OS image: set once the copy onto it has completed (an encrypted root, or one made from the OS image cache), and kept, so the image is never copied over the disk again."
+                rootSource:
+                  type: string
+                  description: >-
+                    How the root disk was made: "base" (from the platform's OS image cache — a thin volume on the
+                    image's base, or a copy of it) or "image" (imported from the registry). Recorded when the VM
+                    is made and kept.
+                rootBase:
+                  type: object
+                  description: The OS image cache base the root was made from (when rootSource is "base"), kept.
+                  properties:
+                    image:  { type: string, description: "The base (a Longhorn backing image)." }
+                    ha:     { type: string, description: "Its StorageClass for an HA root (a thin, live-migratable volume)." }
+                    reader: { type: string, description: "Its StorageClass for the node-local volume a copy reads." }
+                    size:   { type: string, description: "The base's size." }
                 powerState:
                   type: string
                   description: >-

@@ -49,6 +49,11 @@ spec:
             - type: Reference
               ref:
                 name: openinfra-guest-dns
+            # The OS image cache (platform/abstraction/vm-bases.yaml): the base of each catalog image a new
+            # VM is made from. Absent: every VM imports its image from the registry, as before.
+            - type: Reference
+              ref:
+                name: openinfra-vm-bases
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -155,13 +160,45 @@ spec:
             {{- $rootPopulated := $xrStatus.rootPopulated | default false }}
             {{- $popJob := index (.observed.resources | default dict) "root-populate" }}
             {{- if $popJob }}{{ with $popJob.resource.status }}{{ with .atProvider }}{{ with .manifest }}{{ with .status }}{{ if eq (.phase | default "") "Succeeded" }}{{ $rootPopulated = true }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}
-            {{- /* The copy pod runs only once CDI reports the image import Succeeded: it must never copy a
-                   partial disk.img (a consumer pod can start while CDI is still writing it). */}}
+            {{- /* The OS image cache (#354, platform/abstraction/vm-bases.yaml). A NEW VM of a catalog OS that
+                   has a recorded base is made from it instead of importing its image from the registry:
+                     - an HA root IS a thin copy-on-write volume on the base (the base's -ha class);
+                     - a non-HA root stays on local-path (the local disk is several times faster than a
+                       Longhorn volume) and is filled by a copy from a thin, node-local volume on the base
+                       (its -reader class); the VM starts once the copy is done (status.rootPopulated);
+                     - an encrypted root is filled the same way (LUKS keys each volume itself, so it cannot
+                       be a layer on a shared base).
+                   status.rootSource records which way a VM was made ("base" or "image") on its first render
+                   and is kept, with the base's classes (status.rootBase), so a later refresh of the cache
+                   never changes an existing root; were the status lost, the VM's composed resources say. A
+                   VM made before the cache keeps importing as it always did. */}}
+            {{- $obsAll := .observed.resources | default dict }}
+            {{- $baseRec := index ($envCfg.vmBases | default dict) ($spec.os | default "") | default dict }}
+            {{- $obsImgKind := "" }}
+            {{- with index $obsAll "root-image" }}{{ with .resource.spec }}{{ with .forProvider }}{{ with .manifest }}{{ $obsImgKind = .kind | default "" }}{{ end }}{{ end }}{{ end }}{{ end }}
+            {{- $rootSource := $xrStatus.rootSource | default "" }}
+            {{- if not $rootSource }}
+            {{-   if or (index $obsAll "root-base") (eq $obsImgKind "PersistentVolumeClaim") }}{{ $rootSource = "base" }}
+            {{-   else if index $obsAll "virtualmachine" }}{{ $rootSource = "image" }}
+            {{-   else if and $baseRec.backingImage (not $isWin) (not $adopt) (or (eq $vmArch "") (eq $vmArch "amd64")) }}{{ $rootSource = "base" }}
+            {{-   else }}{{ $rootSource = "image" }}{{ end }}
+            {{- end }}
+            {{- $fromBase := and (eq $rootSource "base") (not $isWin) (not $adopt) }}
+            {{- $rb := $xrStatus.rootBase | default dict }}
+            {{- if and $fromBase (not $rb.reader) }}
+            {{-   $rb = dict "image" ($baseRec.backingImage | default "") "ha" ($baseRec.haStorageClass | default "") "reader" ($baseRec.readerStorageClass | default "") "size" ($baseRec.size | default "4Gi") }}
+            {{- end }}
+            {{- /* A root filled by a copy: an encrypted one, and a non-HA one made from the base. */}}
+            {{- $baseCopy := and $fromBase (not $ha) (not $rootEnc) }}
+            {{- $needsCopy := or $rootEnc (and $fromBase (not $ha)) }}
+            {{- /* The copy pod runs only once its source is complete: CDI's import Succeeded (it must never
+                   copy a partial disk.img; a consumer pod can start while CDI is still writing it), or the
+                   thin volume on the base is Bound (it holds the whole base from the start). */}}
             {{- $imgDone := false }}
-            {{- $img := index (.observed.resources | default dict) "root-image" }}
-            {{- if $img }}{{ with $img.resource.status }}{{ with .atProvider }}{{ with .manifest }}{{ with .status }}{{ if eq (.phase | default "") "Succeeded" }}{{ $imgDone = true }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}
-            {{- $rootReady := or (not $rootEnc) $rootPopulated }}
-            {{- $rootDV := and (not $adopt) (not $rootEnc) }}
+            {{- $img := index $obsAll "root-image" }}
+            {{- if $img }}{{ with $img.resource.status }}{{ with .atProvider }}{{ with .manifest }}{{ with .status }}{{ if or (eq (.phase | default "") "Succeeded") (and $fromBase (eq (.phase | default "") "Bound")) }}{{ $imgDone = true }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}
+            {{- $rootReady := or (not $needsCopy) $rootPopulated }}
+            {{- $rootDV := and (not $adopt) (not $rootEnc) (not $fromBase) }}
             {{- /* Instance identity: the kind: Role this VM assumes (spec.instanceRole). The VM carries a
                    per-VM ServiceAccount token (a projected disk, copied ROOT-ONLY to
                    /run/openinfra-identity/token at boot). The in-guest metadata agent presents it to the
@@ -588,7 +625,7 @@ spec:
                             {{- if $adopt }}
                             persistentVolumeClaim:
                               claimName: {{ $adopt }}
-                            {{- else if $rootEnc }}
+                            {{- else if or $rootEnc $fromBase }}
                             persistentVolumeClaim:
                               claimName: {{ $name }}-root
                             {{- else }}
@@ -698,14 +735,71 @@ spec:
                     volumeMode: Block
                     storageClassName: longhorn-encrypted
                     resources: { requests: { storage: {{ $disk | toJson }} } }
-            {{- if not $rootPopulated }}
+            {{- end }}
+            {{- if and $fromBase (not $rootEnc) }}
             ---
-            # --- Until the copy is done: the OS image, imported by CDI onto a TEMPORARY unencrypted disk
+            # --- A root made from the OS image cache (#354). An HA root IS a thin volume on the base: a
+            #     replicated, live-migratable Block volume of the base's -ha class, copy-on-write over the
+            #     read-only base. A non-HA root is a local-path volume (the local disk's speed), filled by
+            #     the copy below. The class is the one recorded on status.rootBase when the VM was made. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: root-base
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: PersistentVolumeClaim
+                  metadata:
+                    name: {{ $name }}-root
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }}, openinfra.dev/vm-base-image: {{ $rb.image | quote }} }
+                  spec:
+                    {{- if $ha }}
+                    accessModes: [ReadWriteMany]
+                    volumeMode: Block
+                    storageClassName: {{ $rb.ha | quote }}
+                    {{- else }}
+                    accessModes: [ReadWriteOnce]
+                    storageClassName: local-path
+                    {{- end }}
+                    resources: { requests: { storage: {{ $disk | toJson }} } }
+            {{- end }}
+            {{- if and $needsCopy (not $rootPopulated) }}
+            ---
+            # --- Until the copy is done: the OS image — a thin volume on the OS image cache's base, or else
+            #     imported by CDI onto a TEMPORARY unencrypted disk
             #     (the pristine catalog image, no tenant data) on Longhorn — bound at once, so CDI imports
             #     without waiting for a consumer — and, once the import has Succeeded, the pod that copies it
             #     onto the encrypted root. Both are dropped (and so deleted) once status.rootPopulated is set.
             #     A bare Pod, not a Job: provider-kubernetes deletes a dropped Job without its pods, and a
             #     completed pod left behind holds both disks (PVC protection), so neither could be deleted. ---
+            {{- if $fromBase }}
+            # A thin volume on the base, whose one replica sits on the node of the copy (the base's -reader
+            # class): what the copy reads. No registry, no CDI.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: root-image
+            spec:
+              watch: true
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: PersistentVolumeClaim
+                  metadata:
+                    name: {{ $name }}-root-image
+                    namespace: {{ $ns }}
+                    labels: { app.kubernetes.io/name: {{ $name }} }
+                  spec:
+                    accessModes: [ReadWriteOnce]
+                    volumeMode: Block
+                    storageClassName: {{ $rb.reader | quote }}
+                    resources: { requests: { storage: {{ $rb.size | toJson }} } }
+            {{- else }}
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -740,6 +834,7 @@ spec:
                       registry:
                         url: "docker://{{ $profile.image }}"
                       {{- end }}
+            {{- end }}
             {{- if $imgDone }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
@@ -767,7 +862,9 @@ spec:
                     # Root: it opens the encrypted block device, which (unlike CDI's non-root importer)
                     # needs no device-ownership support from the container runtime. No privileges.
                     securityContext: { runAsUser: 0, runAsGroup: 0 }
-                    # Where encrypted disks attach for VMs (the non-HA VM placement, #307).
+                    # Where VMs run (the non-HA VM placement, #307). A local-path root is placed by this pod
+                    # (its first user): the VM then runs on the same node, so the pod asks for what the VM
+                    # needs to run there (its node constraints and its memory).
                     affinity:
                       nodeAffinity:
                         requiredDuringSchedulingIgnoredDuringExecution:
@@ -777,22 +874,63 @@ spec:
                                 {{- if $vmArch }}
                                 - { key: kubernetes.io/arch, operator: In, values: [{{ $vmArch }}] }
                                 {{- end }}
+                                {{- if $baseCopy }}
+                                - { key: kubevirt.io/schedulable, operator: In, values: ["true"] }
+                                {{- if $lan }}
+                                - { key: openinfra.dev/vm-lan, operator: In, values: ["true"] }
+                                {{- end }}
+                                {{- end }}
                     containers:
                       - name: copy
                         image: alpine/k8s:1.30.0
                         resources:
+                          {{- if $baseCopy }}
+                          requests: { cpu: 250m, memory: {{ $memory | toJson }} }
+                          limits: { cpu: 250m, memory: {{ $memory | toJson }} }
+                          {{- else }}
                           requests: { cpu: 250m, memory: 256Mi }
                           limits: { cpu: 250m, memory: 256Mi }
-                        # DAC_OVERRIDE alone: CDI's image file belongs to its non-root importer, and root
-                        # without it cannot read the file (a baseline-PSS capability; nothing else is added).
-                        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL], add: [DAC_OVERRIDE] } }
+                          {{- end }}
+                        # DAC_OVERRIDE: CDI's image file belongs to its non-root importer, and root without it
+                        # cannot read the file; CHOWN: a local-path root's disk.img goes to the VM's QEMU user,
+                        # as CDI leaves it (baseline-PSS capabilities; nothing else is added).
+                        securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL], add: [DAC_OVERRIDE{{ if $baseCopy }}, CHOWN{{ end }}] } }
+                        env: [{ name: DISK, value: {{ $disk | toJson }} }]
                         command: ["/bin/sh", "-c"]
                         args:
                           - |
                             set -eu
-                            img=/src/disk.img
+                            # The source: a thin volume on the OS image cache's base (a block device), or
+                            # CDI's import (a disk.img). The target: the encrypted root (a block device), or a
+                            # local-path root's disk.img.
+                            if [ -b /dev/openinfra-image ]; then img=/dev/openinfra-image; else img=/src/disk.img; fi
+                            [ -b "$img" ] || [ -f "$img" ] || { echo "the OS image source is missing" >&2; exit 1; }
+                            isize() { if [ -b "$1" ]; then blockdev --getsize64 "$1"; else stat -c %s "$1"; fi; }
+                            if [ -d /dst ]; then
+                              # A local-path root: write the image to a temporary file and rename it only when
+                              # complete, so disk.img exists only as a whole copy.
+                              [ -f /dst/disk.img ] && { echo "the root already holds its disk.img: leaving it as it is"; exit 0; }
+                              ib() { dd if="$img" bs=1 skip="$1" count="$2" 2>/dev/null | od -An -tx1 | tr -d ' \n'; }
+                              le() { h=$1; r=""; while [ -n "$h" ]; do r="${h%"${h#??}"}$r"; h=${h#??}; done; echo "$r"; }
+                              mib=1048576; isz=$(isize "$img"); csz=$isz
+                              if [ "$(ib 512 8)" = 4546492050415254 ]; then
+                                alt=$(le "$(ib 544 8)")
+                                case "$alt" in [0-7]???????????????) end=$(( (0x$alt + 1) * 512 )); [ "$end" -le "$isz" ] && csz=$end ;; esac
+                              fi
+                              # The disk the VM sees is the root's size less the filesystem margin CDI leaves (6%).
+                              q=$DISK; num=${q%%[!0-9]*}; suf=${q#"$num"}
+                              case "$suf" in Ki) m=1024;; Mi) m=$mib;; Gi) m=1073741824;; Ti) m=1099511627776;; K|k) m=1000;; M) m=1000000;; G) m=1000000000;; T) m=1000000000000;; "") m=1;; *) echo "cannot read the disk size $q" >&2; exit 1;; esac
+                              want=$(( num * m * 94 / 100 / mib * mib ))
+                              [ "$csz" -le "$want" ] || { echo "the OS image ($csz bytes) is larger than the root ($want bytes)" >&2; exit 1; }
+                              n=$(( (csz + mib - 1) / mib ))
+                              dd if="$img" of=/dst/disk.img.part bs=1M count=$n iflag=fullblock oflag=direct conv=notrunc,fsync
+                              truncate -s "$want" /dst/disk.img.part
+                              chown 107:107 /dst/disk.img.part && chmod 0660 /dst/disk.img.part
+                              sync; mv /dst/disk.img.part /dst/disk.img; sync
+                              echo "copied the OS image ($csz bytes) onto the root's disk.img ($want bytes)"
+                              exit 0
+                            fi
                             dev=/dev/openinfra-root
-                            [ -f "$img" ] || { echo "the imported OS image has no disk.img" >&2; exit 1; }
                             # Never copy over a disk that already boots: a fresh encrypted disk reads as
                             # noise, so an MBR signature with a plausible first partition (or a GPT header)
                             # means the image is already there (a lost status, a re-created Job). The copy
@@ -805,7 +943,7 @@ spec:
                                 exit 0
                               fi
                             fi
-                            isz=$(stat -c %s "$img")
+                            isz=$(isize "$img")
                             dsz=$(blockdev --getsize64 "$dev" 2>/dev/null || stat -c %s "$dev")
                             [ "$isz" -le "$dsz" ] || { echo "the OS image ($isz bytes) is larger than the encrypted root ($dsz bytes)" >&2; exit 1; }
                             # Copy the image itself, not the zeros CDI appended: CDI grows disk.img to the
@@ -843,16 +981,27 @@ spec:
                             dd if="$img" of="$dev" bs=1M count=1 iflag=fullblock $direct conv=notrunc,fsync
                             sync
                             echo "copied the OS image ($csz of its file's $isz bytes) onto the encrypted root"
+                        {{- if not $fromBase }}
                         volumeMounts:
                           - { name: image, mountPath: /src, readOnly: true }
+                        {{- else if $baseCopy }}
+                        volumeMounts:
+                          - { name: root, mountPath: /dst }
+                        {{- end }}
+                        {{- if or $fromBase (not $baseCopy) }}
                         volumeDevices:
+                          {{- if $fromBase }}
+                          - { name: image, devicePath: /dev/openinfra-image }
+                          {{- end }}
+                          {{- if not $baseCopy }}
                           - { name: root, devicePath: /dev/openinfra-root }
+                          {{- end }}
+                        {{- end }}
                     volumes:
                       - name: image
                         persistentVolumeClaim: { claimName: {{ $name }}-root-image, readOnly: true }
                       - name: root
                         persistentVolumeClaim: { claimName: {{ $name }}-root }
-            {{- end }}
             {{- end }}
             {{- end }}
             {{- if $isWin }}
@@ -3033,9 +3182,14 @@ spec:
               ip: {{ $privIp | quote }}
               powerState: {{ $powerState | quote }}
               restartRequired: {{ $restartRequired }}
-              {{- if $rootEnc }}
-              {{- /* Kept once set: the copy onto the encrypted root is done exactly once. */}}
+              {{- if $needsCopy }}
+              {{- /* Kept once set: the copy onto the root is done exactly once. */}}
               rootPopulated: {{ $rootPopulated }}
+              {{- end }}
+              {{- /* Kept once set: how the VM's root was made, and from which base. */}}
+              rootSource: {{ $rootSource | quote }}
+              {{- if $fromBase }}
+              rootBase: { image: {{ $rb.image | quote }}, ha: {{ $rb.ha | quote }}, reader: {{ $rb.reader | quote }}, size: {{ $rb.size | quote }} }
               {{- end }}
             {{- if not $spec.securityGroups }}
             ---

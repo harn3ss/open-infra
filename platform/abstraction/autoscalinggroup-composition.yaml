@@ -36,6 +36,21 @@ spec:
     kind: XAutoScalingGroup
   mode: Pipeline
   pipeline:
+    # The OS image cache (platform/abstraction/vm-bases.yaml): the base each new fleet's members are made
+    # from. Optional: without it, members import their image from the registry, as before.
+    - step: environment
+      functionRef:
+        name: crossplane-contrib-function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          policy:
+            resolution: Optional
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: openinfra-vm-bases
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -104,6 +119,26 @@ spec:
             {{- /* highAvailability: per-member root on Longhorn (replicated RWX block) + live migration.
                    Storage cost scales with fleet size (N replicated disks). */}}
             {{- $ha := $lt.highAvailability | default false }}
+            {{- /* The OS image cache (#354, platform/abstraction/vm-bases.yaml): a NEW fleet of a catalog OS
+                   with a recorded base makes each member's root from it, not from the registry: a non-HA
+                   member clones the base's import (a CDI copy onto its local-path root), an HA member
+                   clones the base's pristine thin volume (a thin, live-migratable volume on the base).
+                   status.rootSource records the choice on the first render and is kept; a fleet made before
+                   the cache keeps its template (a change would roll every member). */}}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $baseRec := index ($envCfg.vmBases | default dict) ($lt.os | default "") | default dict }}
+            {{- $xrStatus := $xr.status | default dict }}
+            {{- $rootSource := $xrStatus.rootSource | default "" }}
+            {{- if not $rootSource }}
+            {{-   if index (.observed.resources | default dict) "pool" }}{{ $rootSource = "image" }}
+            {{-   else if and $baseRec.backingImage (not $isWin) (or (eq $vmArch "") (eq $vmArch "amd64")) }}{{ $rootSource = "base" }}
+            {{-   else }}{{ $rootSource = "image" }}{{ end }}
+            {{- end }}
+            {{- $fromBase := and (eq $rootSource "base") (not $isWin) }}
+            {{- $rb := $xrStatus.rootBase | default dict }}
+            {{- if and $fromBase (not $rb.ha) }}
+            {{-   $rb = dict "image" ($baseRec.backingImage | default "") "ha" ($baseRec.haStorageClass | default "") "goldenNamespace" ($baseRec.goldenNamespace | default "openinfra-images") "golden" ($baseRec.golden | default "") "pristine" ($baseRec.pristine | default "") }}
+            {{- end }}
             {{- /* explicit CPU model for cross-node portability (else host-model / Nehalem when HA) */}}
             {{- $cpuModel := $lt.cpuModel | default "" }}
             {{- /* Health check -> pool autohealing (replace a member whose Ready goes False). */}}
@@ -188,9 +223,15 @@ spec:
                                 resources:
                                   requests:
                                     storage: {{ $disk | toJson }}
-                                storageClassName: {{ if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
+                                storageClassName: {{ if and $ha $fromBase }}{{ $rb.ha | quote }}{{ else if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
                               source:
-                                {{- if $isWin }}
+                                {{- if $fromBase }}
+                                # Clone the OS image cache's base (no registry pull): its pristine thin volume
+                                # for an HA member (same class: a thin clone), its import for a local-path one.
+                                pvc:
+                                  namespace: {{ $rb.goldenNamespace | quote }}
+                                  name: {{ if $ha }}{{ $rb.pristine | quote }}{{ else }}{{ $rb.golden | quote }}{{ end }}
+                                {{- else if $isWin }}
                                 # Clone the per-version golden image (build via kind: VmImage). One clone
                                 # PER MEMBER (N x ~100Gi) — the honest cost of a Windows fleet.
                                 pvc:
@@ -413,6 +454,11 @@ spec:
             status:
               poolName: {{ $name }}
               desiredCapacity: {{ $replicas }}
+              {{- /* Kept once set: how the members' roots are made, and from which base. */}}
+              rootSource: {{ $rootSource | quote }}
+              {{- if $fromBase }}
+              rootBase: { image: {{ $rb.image | quote }}, ha: {{ $rb.ha | quote }}, goldenNamespace: {{ $rb.goldenNamespace | quote }}, golden: {{ $rb.golden | quote }}, pristine: {{ $rb.pristine | quote }} }
+              {{- end }}
             {{- if not $lt.securityGroups }}
             ---
             # --- Tenant isolation (ingress) for members of a group whose launch template names no security group:
