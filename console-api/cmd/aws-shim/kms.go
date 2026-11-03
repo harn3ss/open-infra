@@ -126,51 +126,29 @@ func (h *kmsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	}
 	body := readJSONBody(r)
 
-	// The key this op scopes to (for authz + policy), resolved to a canonical key id — accepting a raw id,
-	// a key ARN, an alias name, or an alias ARN. Ops without a key (CreateKey, ListKeys, ListAliases) have
-	// none. A key ref that does not resolve is reported as NotFound in the handler; here a miss just leaves
-	// the scope empty (the coarse gate still applies).
+	// The key ref most ops act on (KeyId, or TargetKeyId for CreateAlias): a raw id, a key ARN, an alias
+	// name or an alias ARN. A ref that does not resolve is reported as NotFound in the handler.
 	keyRef := firstString(body, "KeyId", "TargetKeyId")
-	// Decrypt and ReEncrypt do not carry the key in KeyId — Decrypt's key is embedded in the ciphertext
-	// blob, and ReEncrypt's write target is DestinationKeyId. Resolve those so the fine-grained Cedar scope
-	// is correct: this is what makes kms:Decrypt independently deniable from kms:Encrypt on the same key.
-	scopeRef := keyRef
-	if scopeRef == "" {
-		switch op {
-		case "Decrypt":
-			if blob, _ := body["CiphertextBlob"].(string); blob != "" {
-				if id, _, err := decodeBlob(blob); err == nil {
-					scopeRef = id
-				}
-			}
-		case "ReEncrypt":
-			scopeRef = firstString(body, "DestinationKeyId")
-		}
-	}
-	scopeKeyID := ""
-	if scopeRef != "" {
-		if id, ok, _ := h.resolveKeyID(r.Context(), scopeRef); ok {
-			scopeKeyID = id
-		}
-	}
 
 	// Carry the resolved open-infra principal on the context so every audit record — allowed OR denied —
 	// records *who*, not just the access-key id (AU-2/AU-9, the compliance stake of this doorway).
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 
-	// One policy world: the coarse impersonated SubjectAccessReview (resource-agnostic, as every front door in v1).
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, scopeKeyID); !allowed {
-		h.auditDeny(ctx, op, scopeKeyID, reason)
-		writeKMSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the key when we have one; this
-	// is where kms:Encrypt is separable from kms:Decrypt for the same principal on the same key. An assumed
-	// role is checked on every op — CreateKey/ListKeys/ListAliases/GenerateRandom on Key::*.
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "kms:"+op, "Key", scopeKeyID, r); denied {
-		h.auditDeny(ctx, op, scopeKeyID, reason)
-		writeKMSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
+	// Every key the request reads through or writes to is authorized, as on AWS, in the one policy world:
+	// the coarse impersonated SubjectAccessReview, then the fine-grained Cedar dataPlane at key granularity
+	// (additive for a User; closed for an assumed role, which is checked on Key::* for an op naming no key).
+	// This is where kms:Encrypt is separable from kms:Decrypt for one principal on one key.
+	for _, c := range h.kmsKeyChecks(r.Context(), op, verb, body) {
+		if allowed, reason := iam.CanDo(ctx, h.cs, claims, c.verb, "openinfra.dev", "applications", h.authzNS, c.keyID); !allowed {
+			h.auditDeny(ctx, op, c.keyID, reason)
+			writeKMSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+			return
+		}
+		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, c.action, "Key", c.keyID, r); denied {
+			h.auditDeny(ctx, op, c.keyID, reason)
+			writeKMSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+			return
+		}
 	}
 	if h.transit == nil {
 		writeKMSError(w, http.StatusNotImplemented, "KMSInternalException", requestID,
@@ -234,6 +212,54 @@ func (h *kmsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeKMSError(w, http.StatusBadRequest, "InvalidActionException", requestID,
 			"KMS "+op+" is recognized but not implemented by the open-infra shim.")
 	}
+}
+
+// kmsKeyCheck is one authorization a KMS request needs: an AWS action on a key, with its coarse verb.
+type kmsKeyCheck struct{ action, verb, keyID string }
+
+// kmsKeyChecks lists the keys an op touches, each with the action AWS authorizes on it. Most ops name one
+// key. Decrypt's key is the one its ciphertext names. ReEncrypt reads through the ciphertext's key
+// (kms:ReEncryptFrom) and writes under DestinationKeyId (kms:ReEncryptTo), so a key the caller may not
+// use cannot be re-encrypted out of. UpdateAlias moves an alias from one key to another and needs
+// kms:UpdateAlias on both; DeleteAlias needs kms:DeleteAlias on the key the alias names. A ref that does
+// not resolve leaves that check's key empty (the coarse gate still applies; the handler reports NotFound).
+func (h *kmsHandler) kmsKeyChecks(ctx context.Context, op, verb string, body map[string]any) []kmsKeyCheck {
+	resolve := func(ref string) string {
+		if ref == "" || h.store == nil {
+			return ""
+		}
+		if id, ok, _ := h.resolveKeyID(ctx, ref); ok {
+			return id
+		}
+		return ""
+	}
+	blobKey := func() string {
+		if blob, _ := body["CiphertextBlob"].(string); blob != "" {
+			if id, _, err := decodeBlob(blob); err == nil {
+				return resolve(id)
+			}
+		}
+		return ""
+	}
+	alias, _ := body["AliasName"].(string)
+	switch op {
+	case "Decrypt":
+		return []kmsKeyCheck{{"kms:Decrypt", verb, blobKey()}}
+	case "ReEncrypt":
+		return []kmsKeyCheck{
+			{"kms:ReEncryptFrom", "get", blobKey()},
+			{"kms:ReEncryptTo", verb, resolve(firstString(body, "DestinationKeyId"))},
+		}
+	case "UpdateAlias":
+		checks := []kmsKeyCheck{{"kms:UpdateAlias", verb, resolve(firstString(body, "TargetKeyId"))}}
+		if cur := resolve(alias); cur != "" {
+			checks = append(checks, kmsKeyCheck{"kms:UpdateAlias", verb, cur})
+		}
+		return checks
+	case "DeleteAlias":
+		return []kmsKeyCheck{{"kms:DeleteAlias", verb, resolve(alias)}}
+	}
+	return []kmsKeyCheck{{"kms:" + op, verb, resolve(firstString(body, "KeyId", "TargetKeyId"))}}
 }
 
 // --- key lifecycle ---

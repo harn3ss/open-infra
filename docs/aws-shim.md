@@ -750,7 +750,10 @@ Faithful semantics that matter:
   so `Decrypt` needs no `KeyId` — exactly as AWS.
 - Authorized through the one policy world; **`kms:Encrypt` is separable from `kms:Decrypt`** at key
   granularity (for `Decrypt` the key is resolved from the ciphertext blob so the fine-grained check still
-  scopes correctly).
+  scopes correctly). Every key a request touches is authorized, as on AWS: `ReEncrypt` needs
+  `kms:ReEncryptFrom` on the key the ciphertext names **and** `kms:ReEncryptTo` on `DestinationKeyId`
+  (`kms:ReEncrypt*` grants both); `UpdateAlias` needs `kms:UpdateAlias` on the key the alias names now and
+  on the key it is moved to; `DeleteAlias` needs `kms:DeleteAlias` on the key the alias names.
 - **Every operation writes a structured audit record** (`kms audit`): the resolved open-infra principal
   (the *who*, not the access-key id), the op, the key, the decision (allow/deny), and the EncryptionContext
   keys — the trail an auditor reads for AU-2/AU-9 and SC-12. It flows to Loki with the rest of the platform

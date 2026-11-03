@@ -256,6 +256,24 @@ func (a *impersonatingApplier) svcAuthorize(ctx context.Context, kind, op, name 
 			}
 		}
 	}
+	// An alias is moved or deleted only with the action on the key it names now, as the KMS front door
+	// checks: the spec names the key it is moved to (above), the store the key it names today.
+	if kind == cfn.KindKMSAlias && (op == "update" || op == "delete") && a.svc.kmsOK() {
+		cur, found, err := a.svc.kms.store.aliasTarget(ctx, name)
+		if err != nil {
+			return err
+		}
+		if target, _ := spec["targetKeyId"].(string); found && cur != target {
+			svcOp := map[string]string{"update": "UpdateAlias", "delete": "DeleteAlias"}[op]
+			verb, _ := verbForKMSOp(svcOp)
+			if ok, reason := a.door.callerCan(ctx, a, verb, "openinfra.dev", "applications", a.door.authzNS, cur); !ok {
+				return cfn.Unauthorized(fmt.Sprintf("%s %s not %sd: %s", kind, name, op, reason))
+			}
+			if ok, reason := a.door.callerPolicyAllows(ctx, a, "kms:"+svcOp, "Key", cur); !ok {
+				return cfn.Unauthorized(fmt.Sprintf("%s %s not %sd: %s", kind, name, op, reason))
+			}
+		}
+	}
 	return nil
 }
 

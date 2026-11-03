@@ -20,6 +20,8 @@
 #   - a valid key ID with a WRONG secret is rejected (signature mismatch)
 #   - an ENCRYPT-ONLY principal (granted only kms:Encrypt via Cedar) is DENIED kms:Decrypt while still
 #     able to Encrypt — the fine-grained separation
+#   - ReEncrypt is authorized on BOTH keys: kms:ReEncrypt* on the destination alone does not let a
+#     principal re-encrypt ciphertext out of a key it holds no kms:ReEncryptFrom on
 #
 # On-demand (needs a deployed shim + Vault Transit with the aws-shim-kms policy + the KMS Postgres + the
 # platform IAM). Exit 0 = pass, 1 = a real failure (the shim is not faithful), 42 = INCONCLUSIVE (a
@@ -270,6 +272,11 @@ log "  ✓ rejected on signature mismatch"
 # --- 11b. Negative: encrypt-only principal denied Decrypt (fine-grained Cedar) -----------------
 log "encrypt-only principal: granted only kms:Encrypt via Cedar, must be DENIED kms:Decrypt"
 mint_key "kms-probe-enconly-$SFX" "powerusers"; EAK="$MK_AK"; ESK="$MK_SK"
+# A second key the encrypt-only principal may re-encrypt INTO (kms:ReEncrypt* on it alone) — but never out
+# of a key it cannot use: ReEncrypt is authorized on the source key too (11c).
+DEST_KID="$(awsk "$WAK" "$WSK" create-key --description "dest-probe-$SFX" --query KeyMetadata.KeyId 2>/dev/null)"
+[ -n "$DEST_KID" ] && [ "$DEST_KID" != "None" ] || inconclusive "could not create the re-encrypt destination key"
+SCHEDULED+=("$DEST_KID")
 POLICY="kms-enconly-$SFX"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
@@ -280,6 +287,7 @@ spec:
     appliesTo: ["User::kms-probe-enconly-$SFX"]
     statements:
       - { effect: Allow, actions: ["kms:Encrypt"], resources: ["*"] }
+      - { effect: Allow, actions: ["kms:ReEncrypt*"], resources: ["Key::${DEST_KID}"] }
 YAML
 CREATED_POLICIES+=("$POLICY")
 log "  waiting ~35s for the data-plane policy loader to pick it up..."
@@ -296,7 +304,19 @@ if awsk "$EAK" "$ESK" decrypt --ciphertext-blob "fileb://$TMP_EO" >/dev/null 2>"
   fail "an encrypt-only principal was allowed to Decrypt (Decrypt must be independently denied)"
 fi
 grep -qiE 'AccessDenied|denied|AuthorizationError' "$PWD/.kms_dec" || fail "Decrypt denial had the wrong error: $(cat "$PWD/.kms_dec")"
-rm -f "$PWD/.kms_dec" "$TMP_PT" "$TMP_EO"
+rm -f "$PWD/.kms_dec"
 log "  ✓ encrypt-only principal DENIED Decrypt"
+
+# --- 11c. Mismatched pair: ReEncrypt is authorized on the SOURCE key as well as the destination ---------
+log "re-encrypt: allowed INTO the destination, but not OUT of a key it holds no kms:ReEncryptFrom on"
+if awsk "$EAK" "$ESK" re-encrypt --ciphertext-blob "fileb://$TMP_EO" --destination-key-id "$DEST_KID" >/dev/null 2>"$PWD/.kms_re"; then
+  fail "a principal with ReEncrypt* only on the destination re-encrypted ciphertext OUT of a key it cannot use (source key not authorized)"
+fi
+grep -qiE 'AccessDenied|denied' "$PWD/.kms_re" || fail "ReEncrypt denial had the wrong error: $(cat "$PWD/.kms_re")"
+# The owner (no data-plane policy) re-encrypts the same ciphertext fine — the denial above is the source key's.
+awsk "$WAK" "$WSK" re-encrypt --ciphertext-blob "fileb://$TMP_EO" --destination-key-id "$DEST_KID" >/dev/null 2>"$PWD/.kms_re" \
+  || fail "the key owner could not re-encrypt: $(cat "$PWD/.kms_re")"
+rm -f "$PWD/.kms_re" "$TMP_PT" "$TMP_EO"
+log "  ✓ ReEncrypt needs kms:ReEncryptFrom on the source key (destination-only grant refused)"
 
 printf '\n✓ PASS — aws-shim KMS is semantically faithful (round-trip, EncryptionContext binding, envelope keys, state machine, rotate-safe) and enforces auth + the encrypt/decrypt boundary.\n'
