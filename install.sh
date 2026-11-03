@@ -824,6 +824,11 @@ if [ "$(yget networking.lanExpose.enabled)" = "true" ] && [ -n "$KOURIER_IP" ]; 
     LOG "exposing kourier (Knative Functions) on $KOURIER_IP (ClusterIP + sslip.io domain + LAN forwarder)"
     $KUBECTL patch knativeserving knative-serving -n knative-serving --type merge \
       -p "{\"spec\":{\"ingress\":{\"kourier\":{\"service-type\":\"ClusterIP\"}},\"config\":{\"domain\":{\"${KOURIER_IP}.sslip.io\":\"\"}}}}"
+    # The domain map is REPLACED, not merged: a merge only adds keys, so after the gateway's address
+    # changed the previous <ip>.sslip.io stayed in config-domain and Functions kept advertising URLs on
+    # the old address.
+    $KUBECTL patch knativeserving knative-serving -n knative-serving --type json \
+      -p "[{\"op\":\"replace\",\"path\":\"/spec/config/domain\",\"value\":{\"${KOURIER_IP}.sslip.io\":\"\"}}]"
     cat <<EOF | $KUBECTL apply -f -
 apiVersion: v1
 kind: ConfigMap
