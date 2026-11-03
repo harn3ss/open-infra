@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ type fakeApplier struct {
 	liveStatus  map[string]map[string]any
 	statusFn    func(key string) (map[string]any, bool)
 	statusReads int
+	statusMu    sync.Mutex
 	// liveLabels is "Kind/name" -> metadata.labels of every live (applied, not deleted) non-record object
 	// — the LabelReader view recovery uses. Tests may pre-seed a foreign object here.
 	liveLabels map[string]map[string]string
@@ -68,6 +70,9 @@ func (f *fakeApplier) GetLabels(_ context.Context, _, kind, name string) (map[st
 // GetStatus makes fakeApplier a StatusReader: the live status of an APPLIED object (absent objects are
 // found=false), from liveStatus / statusFn.
 func (f *fakeApplier) GetStatus(_ context.Context, _, kind, name string) (map[string]any, bool, error) {
+	// The engine reads statuses from several waits at once (readiness.go); nothing else runs meanwhile.
+	f.statusMu.Lock()
+	defer f.statusMu.Unlock()
 	key := kind + "/" + name
 	f.statusReads++
 	if f.statusFn != nil {

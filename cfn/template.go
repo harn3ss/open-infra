@@ -33,6 +33,12 @@ type Parameter struct {
 	// NoEcho masks the value wherever CloudFormation would show it (DescribeStacks shows "****"), and
 	// keeps it out of the plain stack record.
 	NoEcho bool
+	// The value's constraints, checked as CloudFormation checks them (params.go). nil = not set.
+	AllowedValues         []string
+	AllowedPattern        string
+	MinLength, MaxLength  *int
+	MinValue, MaxValue    *float64
+	ConstraintDescription string
 }
 
 type Resource struct {
@@ -141,6 +147,7 @@ func Parse(data []byte) (*Template, error) {
 				param.Default, param.hasDef = d, true
 			}
 			param.NoEcho = cfnBool(pm["NoEcho"])
+			parseParamConstraints(pm, &param)
 			t.Parameters[name] = param
 		}
 	}

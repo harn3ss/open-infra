@@ -466,18 +466,37 @@ Stack "tickets" is CREATE_COMPLETE (2 resources).
 `deploy` is fail-closed by construction:
 
 1. **Plan gate** — it runs the same `plan`. A `REJECTED` template is refused before
-   anything is applied.
+   anything is applied. Parameter values are checked here as CloudFormation checks them, with
+   its messages: a value for a parameter the template does not declare (`Parameters: [X] do not
+   exist in the template`), a parameter with no value and no `Default` (`… must have values`), a
+   value outside its `AllowedValues`, `AllowedPattern` (a full match), `MinLength` / `MaxLength`
+   or `MinValue` / `MaxValue` (or its `ConstraintDescription`, when it has one), and a `Number`
+   that is not a number. Through the aws-shim, an `AWS::EC2::Subnet::Id`,
+   `AWS::EC2::SecurityGroup::Id` (or `GroupName`) or `AWS::EC2::VPC::Id` value — or a `List<…>`
+   of them — must name a `kind: Subnet`, `SecurityGroup` or `Vpc` that exists (`Parameter
+   validation failed: parameter value … does not exist`), and an update's `UsePreviousValue` key
+   must be a parameter of the stack's previous template. `AWS::EC2::KeyPair::KeyName` is not
+   looked up (open-infra has no key pairs; an instance's `KeyName` is a caveat).
 2. **Translate gate** — every included resource must have a create translator *and* every
    one of its properties must translate. A single property the engine cannot honor refuses
    the whole deploy. Nothing is applied until everything translates — there is no partial
    stack.
 3. **Ordered apply** — resources are created in dependency order, each recorded in a
-   persisted stack record and labeled with its stack, and each waited for until it is ready.
+   persisted stack record and labeled with its stack. As on AWS, a resource is created once
+   everything it depends on is complete, and resources that do not depend on each other are
+   created alongside each other: a resource's wait (the cluster reporting it ready, the signals
+   its `CreationPolicy` waits for) runs while the resources after it that do not depend on it
+   are created. So a `WaitCondition` with no `DependsOn` waits while the instance whose
+   `UserData` signals it is created. An `AWS::EC2::Instance` is complete once its VM is
+   running, as on AWS: one whose VM never starts fails the stack at the timeout, and one whose
+   VM stays in an error state (`ErrorUnschedulable`, an image that cannot be pulled) fails it
+   after three minutes.
    The `cfn` CLI keeps the record as a `cfn-stack-<name>` ConfigMap in the target namespace.
    The aws-shim front door keeps it as a Secret in the shim's own namespace, readable only by
    the shim and cluster admins, because the record holds every resource's resolved properties,
    including what a `NoEcho` parameter was fed into.
-4. **Rollback** — if any create or readiness wait fails, everything created in that deploy
+4. **Rollback** — if any create or readiness wait fails, what is still being created is
+   cancelled (`CREATE_FAILED`, "Resource creation cancelled"), everything created in that deploy
    is deleted in reverse order and the stack is marked `CREATE_FAILED`. A failed create
    leaves no orphans. A `DeletionPolicy: Retain` resource is kept, as AWS keeps it on
    rollback. One example is the shared default `EncryptionKey`, which may already key a
@@ -723,8 +742,8 @@ Change set for "tickets":
 The diff is between the new template and the specs recorded when the stack was last
 applied — the CloudFormation model (diff against the current stack), not against live
 cluster drift (that is `cfn drift`, below). `cfn update` then applies it: Adds and
-Modifies in dependency order (each readiness-gated), then Removes in reverse dependency
-order. A change to only a resource's `DeletionPolicy` or `DeletionProtection` is a Modify too
+Modifies in dependency order (each readiness-gated; an added resource's wait runs alongside what
+does not depend on it, as on create), then Removes in reverse dependency order. A change to only a resource's `DeletionPolicy` or `DeletionProtection` is a Modify too
 (the object is unchanged; the record takes the new deletion behavior), so protection can be turned
 off and a resource retained before it is removed from the template, as on AWS. An object a removed
 resource shares with one that stays (the stack's default `EncryptionKey`) is kept.

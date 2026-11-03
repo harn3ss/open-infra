@@ -6,6 +6,8 @@
 #     and an app stack that IMPORTS them deploys; its Outputs (queue URL + ARN, parameter name, bucket ARN
 #     + regional domain name) are all present; ListImports names the importing stack
 #   - an Output naming an attribute open-infra does not provide is REFUSED at validation (nothing created)
+#   - parameter values are refused in AWS's words before anything is created: an undeclared key, a
+#     missing value, a value outside AllowedValues, an AWS::EC2::Subnet::Id that names no subnet
 #   - a CreationPolicy ResourceSignal on a WaitCondition holds the stack CREATE_IN_PROGRESS until
 #     SignalResource sends SUCCESS; a FAILURE signal fails the create (CREATE_FAILED, events say why)
 #   - DescribeStackEvents (newest first, per resource), ListStackResources (AWS types, physical ids),
@@ -221,6 +223,31 @@ fi
 printf '%s' "$out" | grep -q "does not resolve on open-infra" || fail "the refusal must say the Output does not resolve: $out"
 cfn describe-stacks --stack-name "$BAD" >/dev/null 2>&1 && fail "nothing may be recorded for a refused stack"
 log "  ✓ an unresolvable Output is refused at validation (nothing created)"
+
+# --- 4b. parameter values are refused as AWS refuses them, before anything is created ------------------
+cat > "$TMP/params.yaml" <<'YAML'
+Parameters:
+  Env: { Type: String, AllowedValues: [dev, prod], Default: dev }
+  SubnetId: { Type: "AWS::EC2::Subnet::Id" }
+Resources:
+  P: { Type: AWS::SSM::Parameter, Properties: { Type: String, Value: !Sub "${Env}-${SubnetId}" } }
+YAML
+param_refused() { # <want> <parameters…>
+  local want="$1"; shift
+  local args=(); [ $# -gt 0 ] && args=(--parameters "$@")
+  if out="$(cfn create-stack --stack-name "$BAD" --template-body "file://$TMP/params.yaml" ${args[@]+"${args[@]}"} 2>&1)"; then
+    fail "create-stack with parameters [$*] must be refused ($want)"
+  fi
+  printf '%s' "$out" | grep -qF "$want" || fail "the refusal must say '$want': $out"
+  cfn describe-stacks --stack-name "$BAD" >/dev/null 2>&1 && fail "nothing may be recorded for a refused stack"
+  return 0
+}
+SUBNET_A="$(output "$NET" SubnetA)"
+param_refused "Parameters: [Bogus] do not exist in the template" ParameterKey=SubnetId,ParameterValue="$SUBNET_A" ParameterKey=Bogus,ParameterValue=x
+param_refused "Parameters: [SubnetId] must have values"
+param_refused "Parameter 'Env' must be one of AllowedValues" ParameterKey=SubnetId,ParameterValue="$SUBNET_A" ParameterKey=Env,ParameterValue=stage
+param_refused "parameter value cfnapi-nosuch-$SFX for parameter name SubnetId does not exist" ParameterKey=SubnetId,ParameterValue="cfnapi-nosuch-$SFX"
+log "  ✓ an undeclared parameter, a missing value, a value outside AllowedValues and a subnet that does not exist are refused in AWS's words"
 
 # --- 5. a FAILURE signal fails the create ---------------------------------------------------------------
 printf 'Resources:\n  P: { Type: AWS::SSM::Parameter, Properties: { Name: /cfnapi-%s/f, Type: String, Value: x } }\n  W:\n    Type: AWS::CloudFormation::WaitCondition\n    DependsOn: P\n    CreationPolicy: { ResourceSignal: { Count: 1, Timeout: PT10M } }\n' "$SFX" > "$TMP/fail.yaml"

@@ -1,0 +1,120 @@
+package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/harn3ss/open-infra/cfn"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+)
+
+const paramCheckTmpl = `
+Parameters:
+  Env:
+    Type: String
+    AllowedValues: [dev, prod]
+    Default: dev
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+Resources:
+  Key:
+    Type: AWS::KMS::Key
+    Properties: { Description: !Sub "${Env} in ${SubnetId}" }
+`
+
+// #347 item 25 / #350 U: CreateStack, UpdateStack and CreateChangeSet refuse parameter values as AWS
+// does, in AWS's words, before anything is created: a key the template does not declare, a parameter
+// with no value, a value outside its AllowedValues, a subnet that does not exist (looked up as the
+// caller), and a UsePreviousValue key the stack's previous template did not have.
+func TestCFN_ParameterValidation(t *testing.T) {
+	fa := newFakeAPI()
+	h := opsDoorway(t, fa, "aws-shim-new/0101")
+	h.mapper.(*meta.DefaultRESTMapper).Add(schema.GroupVersionKind{Group: "openinfra.dev", Version: "v1", Kind: "Subnet"}, meta.RESTScopeNamespace)
+	call := func(form url.Values) *httptest.ResponseRecorder {
+		t.Helper()
+		w := serveWith(h, formOp(form), testUser)
+		h.ops.drain(10 * time.Second)
+		return w
+	}
+	refused := func(form url.Values, want string) {
+		t.Helper()
+		w := call(form)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "<Code>ValidationError</Code>") ||
+			!strings.Contains(w.Body.String(), want) {
+			t.Fatalf("%v: want a ValidationError %q, got %d %s", form, want, w.Code, w.Body.String())
+		}
+	}
+	create := func(kv ...string) url.Values {
+		f := url.Values{"Action": {"CreateStack"}, "StackName": {"app"}, "TemplateBody": {paramCheckTmpl}}
+		for i := 0; i+1 < len(kv); i += 2 {
+			n := i/2 + 1
+			f.Set("Parameters.member."+strconv.Itoa(n)+".ParameterKey", kv[i])
+			f.Set("Parameters.member."+strconv.Itoa(n)+".ParameterValue", kv[i+1])
+		}
+		return f
+	}
+	refused(create("SubnetId", "app-net", "Bogus", "x"), "Parameters: [Bogus] do not exist in the template")
+	refused(create(), "Parameters: [SubnetId] must have values")
+	refused(create("SubnetId", "app-net", "Env", "stage"), "Parameter &#39;Env&#39; must be one of AllowedValues")
+	refused(create("SubnetId", "app-net"), "Parameter validation failed: parameter value app-net for parameter name SubnetId does not exist")
+	if rec, _ := recordIn(t, fa, "app"); rec != nil {
+		t.Fatalf("a refused create left a stack record: %+v", rec)
+	}
+
+	fa.put("subnets", opsNS, "app-net", map[string]any{"apiVersion": "openinfra.dev/v1", "kind": "Subnet", "spec": map[string]any{}})
+	if w := call(create("SubnetId", "app-net")); w.Code != http.StatusOK {
+		t.Fatalf("create with an existing subnet: %d %s", w.Code, w.Body.String())
+	}
+	if rec, _ := recordIn(t, fa, "app"); rec == nil || rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("want CREATE_COMPLETE: %+v", rec)
+	}
+
+	upd := url.Values{"Action": {"UpdateStack"}, "StackName": {"app"}, "UsePreviousTemplate": {"true"},
+		"Parameters.member.1.ParameterKey": {"SubnetId"}, "Parameters.member.1.UsePreviousValue": {"true"},
+		"Parameters.member.2.ParameterKey": {"Region"}, "Parameters.member.2.UsePreviousValue": {"true"}}
+	refused(upd, "Invalid input for parameter key Region. Cannot specify usePreviousValue as true for a parameter key not in the previous template")
+	upd = url.Values{"Action": {"UpdateStack"}, "StackName": {"app"}, "UsePreviousTemplate": {"true"},
+		"Parameters.member.1.ParameterKey": {"SubnetId"}, "Parameters.member.1.UsePreviousValue": {"true"},
+		"Parameters.member.2.ParameterKey": {"Env"}, "Parameters.member.2.ParameterValue": {"qa"}}
+	refused(upd, "Parameter &#39;Env&#39; must be one of AllowedValues")
+
+	cs := url.Values{"Action": {"CreateChangeSet"}, "StackName": {"app"}, "ChangeSetName": {"cs1"}, "UsePreviousTemplate": {"true"},
+		"Parameters.member.1.ParameterKey": {"SubnetId"}, "Parameters.member.1.ParameterValue": {"other-net"}}
+	refused(cs, "parameter value other-net for parameter name SubnetId does not exist")
+	cs.Set("Parameters.member.2.ParameterKey", "Extra")
+	cs.Set("Parameters.member.2.ParameterValue", "1")
+	refused(cs, "Parameters: [Extra] do not exist in the template")
+}
+
+// #350 W: while a create is under way, ListStackResources lists only the resources whose creation has
+// begun — a resource the record plans but has not started is not shown (it used to show CREATE_COMPLETE),
+// and DescribeStackResource does not answer for it; the same after a create that failed before reaching it.
+func TestCFN_ListStackResourcesOmitsUnstarted(t *testing.T) {
+	fa := newFakeAPI()
+	h := opsDoorway(t, fa, "aws-shim-new/0102")
+	for _, status := range []string{"CREATE_IN_PROGRESS", "CREATE_FAILED", "ROLLBACK_COMPLETE"} {
+		rec := cfn.StackRecord{Name: "mid", Status: status, Template: "Resources:\n  Wait: { Type: AWS::CloudFormation::WaitCondition }\n  Web: { Type: AWS::EC2::Instance }\n",
+			Resources: []cfn.StackResource{
+				{LogicalID: "Wait", APIVersion: "cfn.openinfra.dev/v1", Kind: "SignalWait", Name: "mid-wait", Type: "AWS::CloudFormation::WaitCondition"},
+				{LogicalID: "Web", APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: "mid-web", Type: "AWS::EC2::Instance"},
+			},
+			Events: []cfn.StackEvent{{EventID: "e1", LogicalID: "Wait", Type: "AWS::CloudFormation::WaitCondition", Status: "CREATE_IN_PROGRESS", Timestamp: "2026-11-03T00:00:00.000Z"}},
+		}
+		seedStack(fa, rec, nil)
+		w := serveWith(h, formOp(url.Values{"Action": {"ListStackResources"}, "StackName": {"mid"}}), testUser)
+		b := w.Body.String()
+		if w.Code != http.StatusOK || !strings.Contains(b, "<LogicalResourceId>Wait</LogicalResourceId>") || strings.Contains(b, "<LogicalResourceId>Web</LogicalResourceId>") {
+			t.Fatalf("%s: want only the started wait condition listed: %d %s", status, w.Code, b)
+		}
+		w = serveWith(h, formOp(url.Values{"Action": {"DescribeStackResource"}, "StackName": {"mid"}, "LogicalResourceId": {"Web"}}), testUser)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "Resource Web does not exist for stack mid") {
+			t.Fatalf("%s: DescribeStackResource of an unstarted resource: %d %s", status, w.Code, w.Body.String())
+		}
+	}
+}

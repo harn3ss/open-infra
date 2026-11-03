@@ -115,7 +115,11 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 
 	var added []StackResource // to delete on rollback
 	var restarted []string    // instances this update stopped and started, by logical id: restarted again on rollback
+	var waits waitQueue       // resources this update creates that are not yet complete (readiness.go)
 	rollback := func(cause error) (*StackRecord, error) {
+		for _, p := range waits.all() { // still being created when another resource failed: cancelled, as on AWS
+			inProg.addEvent(p.res.LogicalID, p.res.Name, typeOr(p.res), "CREATE_FAILED", "Resource creation cancelled")
+		}
 		inProg.stackEvent("UPDATE_ROLLBACK_IN_PROGRESS", cause.Error())
 		// Delete everything this update added (honoring Retain), then re-apply the entire prior stack.
 		_ = restorePrior(ctx, opts, ap, current.Resources, added, false)
@@ -143,10 +147,37 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	// Apply Adds and Modifies in dependency order. The stack owns what its record names (and what this
 	// update creates); another object carrying its label was left by an earlier stack of the same name.
 	owned := ownedFrom(current.Resources)
+	// A resource this update creates is complete once its wait passes (readiness.go): before anything
+	// that depends on it is changed, or at the end — so a new WaitCondition waits alongside the instance
+	// that signals it.
+	completed := map[string]bool{}
+	complete := func(b builtResource, sigs []Signal) {
+		if IsSignalWait(b.res) {
+			b.res.SignalData = signalData(sigs)
+			desiredByID[b.res.LogicalID] = b
+		}
+		completed[b.res.LogicalID] = true
+		event(b.res, "CREATE_COMPLETE", "")
+	}
+	settle := func(set []builtResource) error {
+		fb, err := settleWaits(ctx, opts, ap, set, complete)
+		if err != nil {
+			event(fb.res, "CREATE_FAILED", err.Error())
+			for _, b := range set { // what had not completed is cancelled by the rollback
+				if b.res.LogicalID != fb.res.LogicalID && !completed[b.res.LogicalID] {
+					waits.add(b)
+				}
+			}
+		}
+		return err
+	}
 	for _, b := range desired {
 		act := action[b.res.LogicalID]
 		if act != Add && act != Modify {
 			continue
+		}
+		if err := settle(waits.due(b.after)); err != nil {
+			return rollback(err)
 		}
 		verb := "UPDATE"
 		if act == Add {
@@ -155,13 +186,8 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		event(b.res, verb+"_IN_PROGRESS", "")
 		if IsSignalWait(b.res) {
 			if act == Add { // a wait condition waits when it is created, never on an update
-				sigs, err := waitForSignals(ctx, opts, *b.signals, b.res.LogicalID)
-				if err != nil {
-					event(b.res, verb+"_FAILED", err.Error())
-					return rollback(err)
-				}
-				b.res.SignalData = signalData(sigs)
-				desiredByID[b.res.LogicalID] = b
+				waits.add(b)
+				continue
 			}
 			event(b.res, verb+"_COMPLETE", "")
 			continue
@@ -172,6 +198,8 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		}
 		if act == Add {
 			added = append(added, b.res)
+			waits.add(b)
+			continue
 		}
 		if opts.Wait {
 			if err := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); err != nil {
@@ -181,7 +209,7 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 		}
 		// An instance whose change it reads only when it starts (its InstanceType, UserData…) is stopped and
 		// started, and the update waits until it runs on the new spec (instance_restart.go).
-		if act == Modify && isStackVM(b.res) {
+		if isStackVM(b.res) {
 			if fields := restartFields(currentByID[b.res.LogicalID].Spec, b.res.Spec); len(fields) > 0 {
 				if !opts.Wait {
 					event(b.res, verb+"_IN_PROGRESS", "the instance runs its earlier "+strings.Join(fields, ", ")+" until it is next stopped and started (this update does not wait)")
@@ -200,13 +228,10 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 				}
 			}
 		}
-		if act == Add && b.signals != nil { // a CreationPolicy applies when the resource is created
-			if _, err := waitForSignals(ctx, opts, *b.signals, b.res.LogicalID); err != nil {
-				event(b.res, verb+"_FAILED", err.Error())
-				return rollback(err)
-			}
-		}
 		event(b.res, verb+"_COMPLETE", "")
+	}
+	if err := settle(waits.all()); err != nil {
+		return rollback(err)
 	}
 	// Delete Removes in reverse dependency order (cs lists them reversed already). Honor Retain: a
 	// Retain resource is left in place (now unmanaged), matching destroy's behavior — e.g. removing

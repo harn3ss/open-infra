@@ -137,6 +137,11 @@ func (h *cfnDoorway) stackResourceRows(ctx context.Context, rec *cfn.StackRecord
 		if e, ok := latest[res.LogicalID]; ok && (row.status == "" || e.Timestamp > row.timestamp) {
 			row.status, row.reason, row.timestamp = e.Status, e.Reason, e.Timestamp
 		}
+		if row.status == "" && createNotFinished(rec.Status) {
+			// Planned (the record lists every resource of a create before the first is applied) but not
+			// started: AWS lists a resource once its creation begins.
+			continue
+		}
 		if row.status == "" {
 			row.status = completeStatusOf(rec.Status)
 		}
@@ -164,6 +169,12 @@ func (h *cfnDoorway) stackResourceRows(ctx context.Context, rec *cfn.StackRecord
 			reason: e.Reason, timestamp: e.Timestamp})
 	}
 	return rows
+}
+
+// createNotFinished reports whether a stack's create is under way or ended without completing (it
+// failed, or was rolled back): a resource of it with no status and no event was never started.
+func createNotFinished(stackStatus string) bool {
+	return stackStatus == "CREATE_IN_PROGRESS" || stackStatus == "CREATE_FAILED" || strings.HasPrefix(stackStatus, "ROLLBACK_")
 }
 
 // completeStatusOf is the resource status a record with no per-resource status implies.
@@ -219,7 +230,11 @@ func (h *cfnDoorway) describeStackResource(w http.ResponseWriter, r *http.Reques
 			break
 		}
 	}
-	if row == nil {
+	planned := false // a resource of the record that is not listed has not been started yet
+	for _, res := range rec.Resources {
+		planned = planned || res.LogicalID == lid
+	}
+	if row == nil && !planned {
 		// A resource that provisions nothing of its own (a WaitConditionHandle, an InternetGateway) is still
 		// a resource of the stack.
 		if t, perr := cfn.Parse([]byte(rec.Template)); perr == nil {

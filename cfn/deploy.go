@@ -90,6 +90,9 @@ type builtResource struct {
 	shared   bool          // applied by several stacks on purpose (Manifest.Shared): no ownership check
 	requires []Requirement // objects outside the stack that must exist first (Manifest.Requires)
 	signals  *signalSpec   // signals the resource waits for once Ready (signals.go); nil = none
+	// after is the template logical ids of every resource this one depends on (directly or through
+	// others): each must be complete before this one is applied (readiness.go).
+	after map[string]bool
 }
 
 // Creator is an optional Applier capability: create an object only if none of that kind and name exists
@@ -487,7 +490,11 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	findings = append(findings, r.findings...)
 	var order []builtResource
 	for _, id := range plan.Order {
-		order = append(order, byID[id]...)
+		after := ancestors(plan.deps, id)
+		for _, b := range byID[id] {
+			b.after = after
+			order = append(order, b)
+		}
 	}
 	seen := objectSet{}
 	for _, b := range order {
@@ -625,13 +632,20 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	}
 
 	var applied []StackResource
-	failed := ""       // the logical id that failed, for its CREATE_FAILED event
-	failedRes := order // looked up by logical id below
+	var waits waitQueue // created, not yet complete (readiness.go)
+	failed := ""        // the logical id that failed, for its CREATE_FAILED event
+	failedRes := order  // looked up by logical id below
 	rollback := func(cause error) (*StackRecord, error) {
 		for _, b := range failedRes {
 			if b.res.LogicalID == failed {
 				rec.resourceEvent(b.res, "CREATE_FAILED", cause.Error())
 				break
+			}
+		}
+		// What was still being created when another resource failed is cancelled, as on AWS.
+		for _, p := range waits.all() {
+			if p.res.LogicalID != failed {
+				rec.resourceEvent(p.res, "CREATE_FAILED", "Resource creation cancelled")
 			}
 		}
 		rec.stackEvent("ROLLBACK_IN_PROGRESS", rollbackReason(failed))
@@ -660,38 +674,49 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	}
 	progress := func() { flushEvents(ctx, ap, rec) } // so DescribeStackEvents shows the create as it goes
 
-	owned := ownedObjects{} // a new stack owns only what it creates
-	for _, b := range order {
-		failed = b.res.LogicalID
-		rec.resourceEvent(b.res, "CREATE_IN_PROGRESS", "")
-		if IsSignalWait(b.res) { // a WaitCondition: nothing to apply, only signals to wait for
-			progress() // it shows CREATE_IN_PROGRESS while it waits, as on AWS
-			sigs, err := waitForSignals(ctx, opts, *b.signals, b.res.LogicalID)
-			if err != nil {
-				return rollback(err)
-			}
+	// A resource is complete once its wait passes (readiness.go); a WaitCondition's signals data is kept.
+	completed := map[string]bool{}
+	complete := func(b builtResource, sigs []Signal) {
+		if IsSignalWait(b.res) {
 			setSignalData(rec, b.res.LogicalID, sigs)
-			rec.resourceEvent(b.res, "CREATE_COMPLETE", "")
-			progress()
-			continue
 		}
-		if err := applyOwned(ctx, ap, b, opts.StackName, owned); err != nil {
-			return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, err))
-		}
-		applied = append(applied, b.res)
-		progress()
-		if opts.Wait {
-			if err := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); err != nil {
-				return rollback(fmt.Errorf("%s/%s did not become ready: %w", b.res.Kind, b.res.Name, err))
-			}
-		}
-		if b.signals != nil {
-			if _, err := waitForSignals(ctx, opts, *b.signals, b.res.LogicalID); err != nil {
-				return rollback(err)
-			}
-		}
+		completed[b.res.LogicalID] = true
 		rec.resourceEvent(b.res, "CREATE_COMPLETE", "")
 		progress()
+	}
+	settle := func(set []builtResource) error {
+		fb, err := settleWaits(ctx, opts, ap, set, complete)
+		if err != nil {
+			failed = fb.res.LogicalID
+			for _, b := range set { // what had not completed is cancelled by the rollback
+				if b.res.LogicalID != failed && !completed[b.res.LogicalID] {
+					waits.add(b)
+				}
+			}
+		}
+		return err
+	}
+
+	owned := ownedObjects{} // a new stack owns only what it creates
+	for _, b := range order {
+		// Everything b depends on is complete before b is created; what does not depend on what is still
+		// being created goes ahead of it, as on AWS.
+		if err := settle(waits.due(b.after)); err != nil {
+			return rollback(err)
+		}
+		failed = b.res.LogicalID
+		rec.resourceEvent(b.res, "CREATE_IN_PROGRESS", "")
+		if !IsSignalWait(b.res) { // a WaitCondition: nothing to apply, only signals to wait for
+			if err := applyOwned(ctx, ap, b, opts.StackName, owned); err != nil {
+				return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, err))
+			}
+			applied = append(applied, b.res)
+		}
+		progress() // it shows CREATE_IN_PROGRESS while it is created, as on AWS
+		waits.add(b)
+	}
+	if err := settle(waits.all()); err != nil {
+		return rollback(err)
 	}
 
 	// 4. Complete — with the template's Outputs evaluated against the deployed stack. An Output that
@@ -803,10 +828,16 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 
 	var applied []StackResource
 	var provisionedAPIs []string // REST v1 API ids to tear down on rollback
+	var waits waitQueue          // created, not yet complete (readiness.go)
 	failedID, failedType := "", ""
 	rollback := func(cause error) (*StackRecord, error) {
 		if failedID != "" {
 			rec.addEvent(failedID, "", failedType, "CREATE_FAILED", cause.Error())
+		}
+		for _, p := range waits.all() { // still being created when another resource failed: cancelled, as on AWS
+			if p.res.LogicalID != failedID {
+				rec.resourceEvent(p.res, "CREATE_FAILED", "Resource creation cancelled")
+			}
 		}
 		rec.stackEvent("ROLLBACK_IN_PROGRESS", rollbackReason(failedID))
 		for i := len(applied) - 1; i >= 0; i-- { // reverse order, honoring Retain (as Deploy does)
@@ -843,6 +874,28 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		return nil
 	}
 
+	completed := map[string]bool{}
+	complete := func(b builtResource, sigs []Signal) {
+		if IsSignalWait(b.res) {
+			setSignalData(rec, b.res.LogicalID, sigs)
+		}
+		completed[b.res.LogicalID] = true
+		rec.resourceEvent(b.res, "CREATE_COMPLETE", "")
+		flushEvents(ctx, ap, rec)
+	}
+	settle := func(set []builtResource) error {
+		fb, err := settleWaits(ctx, opts, ap, set, complete)
+		if err != nil {
+			failedID, failedType = fb.res.LogicalID, typeOr(fb.res)
+			for _, b := range set { // what had not completed is cancelled by the rollback
+				if b.res.LogicalID != failedID && !completed[b.res.LogicalID] {
+					waits.add(b)
+				}
+			}
+		}
+		return err
+	}
+
 	seen := objectSet{}
 	owned := ownedObjects{} // a new stack owns only what it creates
 	for _, id := range plan.Order {
@@ -850,6 +903,11 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		tr := translatorFor(res.Type)
 		if tr == nil {
 			return rollback(fmt.Errorf("%s (%s) has no create translator", id, res.Type))
+		}
+		// Everything this resource depends on is complete before it is translated (a custom resource's
+		// Data, a GetAtt) and created; what does not depend on what is still being created goes ahead.
+		if err := settle(waits.due(ancestors(plan.deps, id))); err != nil {
+			return rollback(err)
 		}
 		r.where = "Resource " + id
 		failedID, failedType = id, res.Type
@@ -897,20 +955,16 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		if serr != nil {
 			return rollback(serr)
 		}
-		// A wait condition is waited for, not applied.
+		// A wait condition is waited for, not applied — alongside what is created after it that does not
+		// depend on it (readiness.go).
 		if m.APIVersion == waitAPIVersion && m.Kind == waitKind {
 			sr := StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec, Type: res.Type}
-			flushEvents(ctx, ap, rec) // it shows CREATE_IN_PROGRESS while it waits, as on AWS
-			sigs, werr := waitForSignals(ctx, opts, *spec, id)
-			if werr != nil {
-				return rollback(werr)
-			}
-			sr.SignalData = signalData(sigs)
 			rec.Resources = append(rec.Resources, sr)
-			rec.resourceEvent(sr, "CREATE_COMPLETE", "")
 			if werr := intend(); werr != nil {
 				return rollback(werr)
 			}
+			flushEvents(ctx, ap, rec) // it shows CREATE_IN_PROGRESS while it waits, as on AWS
+			waits.add(builtResource{res: sr, signals: spec})
 			continue
 		}
 		built, berr := expandManifest(id, res, m, opts)
@@ -952,28 +1006,22 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		if werr := intend(pending...); werr != nil {
 			return rollback(werr)
 		}
-		for _, b := range built {
+		for i, b := range built {
 			if aerr := applyOwned(ctx, ap, b, opts.StackName, owned); aerr != nil {
 				return rollback(fmt.Errorf("applying %s/%s: %w", b.res.Kind, b.res.Name, aerr))
 			}
 			applied = append(applied, b.res)
 			rec.Resources = append(rec.Resources, b.res)
-			if opts.Wait {
-				if werr := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); werr != nil {
-					return rollback(fmt.Errorf("%s/%s did not become ready: %w", b.res.Kind, b.res.Name, werr))
-				}
+			if i == 0 {
+				b.signals = spec // the resource's CreationPolicy signals, waited for once it is ready
 			}
+			waits.add(b)
 		}
-		if spec != nil {
-			flushEvents(ctx, ap, rec) // the resource shows CREATE_IN_PROGRESS while it waits for its signals
-			if _, werr := waitForSignals(ctx, opts, *spec, id); werr != nil {
-				return rollback(werr)
-			}
-		}
-		for _, b := range built {
-			rec.resourceEvent(b.res, "CREATE_COMPLETE", "")
-		}
-		rec.Pending = nil // now in Resources (written with the next write-ahead, or at COMPLETE)
+		flushEvents(ctx, ap, rec) // the resource shows CREATE_IN_PROGRESS while it is created
+		rec.Pending = nil         // now in Resources (written with the next write-ahead, or at COMPLETE)
+	}
+	if err := settle(waits.all()); err != nil {
+		return rollback(err)
 	}
 	// Outputs may read a custom resource's returned Data (Fn::GetAtt), so evaluate them with it. An Output
 	// that does not resolve fails the create.

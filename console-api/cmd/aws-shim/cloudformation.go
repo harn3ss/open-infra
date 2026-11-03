@@ -514,6 +514,30 @@ func withPreviousValues(params map[string]string, prev []string, current *cfn.St
 	return params
 }
 
+// parameterRefusal is AWS's ValidationError text for the parameter values of a create, an update or a
+// change set (cfn.CheckParameters: undeclared keys, missing values, constraints, a subnet / security
+// group / VPC that does not exist — looked up as the caller), or "" when they are accepted. prevKeys are
+// the UsePreviousValue keys; each must be a parameter of the stack's previous template (current), as on
+// AWS.
+func (h *cfnDoorway) parameterRefusal(ctx context.Context, body string, params map[string]string, prevKeys []string,
+	current *cfn.StackRecord, ap cfn.Applier) string {
+	if len(prevKeys) > 0 {
+		var declared map[string]bool
+		if current != nil {
+			declared = cfn.DeclaredParameters([]byte(current.Template))
+		}
+		for _, k := range prevKeys {
+			if !declared[k] {
+				return "Invalid input for parameter key " + k + ". Cannot specify usePreviousValue as true for a parameter key not in the previous template"
+			}
+		}
+	}
+	if err := cfn.CheckParameters(ctx, []byte(body), params, prevKeys, ap); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
 // previousNoEcho reads a stack's stored NoEcho values for UsePreviousValue (empty on error, logged).
 func (h *cfnDoorway) previousNoEcho(ctx context.Context, stack string) func() map[string]string {
 	return func() map[string]string {
@@ -639,6 +663,10 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 	}
 	params := parseCFNParams(r)
 	ctx := r.Context()
+	if msg := h.parameterRefusal(ctx, body, params, nil, nil, ap); msg != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
+		return
+	}
 	ex := h.exportsFor(ctx, name) // other stacks' exports, for Fn::ImportValue
 
 	// Synchronous validation gate — an unsupported type / bad template is refused WHOLE here, before
@@ -710,6 +738,10 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		return
 	}
 	if msg := h.notUpdatable(name, current.Status); msg != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
+		return
+	}
+	if msg := h.parameterRefusal(ctx, body, params, prevKeys, current, ap); msg != "" {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
@@ -1018,6 +1050,14 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 	ex := h.exportsFor(ctx, stack)
 	if len(prevKeys) > 0 && priorFound {
 		params = withPreviousValues(params, prevKeys, prior, h.previousNoEcho(ctx, stack))
+	}
+	var priorRec *cfn.StackRecord
+	if priorFound {
+		priorRec = prior
+	}
+	if msg := h.parameterRefusal(ctx, body, params, prevKeys, priorRec, ap); msg != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
+		return
 	}
 
 	// BuildChangeSet computes the diff against the current stack record and APPLIES NOTHING.

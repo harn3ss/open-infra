@@ -75,6 +75,9 @@ type Plan struct {
 	// GateSkipped says why the translate gate did not run ("" when it did). Without it, property-level
 	// fidelity was not checked at plan time, so an empty per-property summary claims nothing.
 	GateSkipped string `json:",omitempty"`
+	// deps is each included resource's dependencies (what Order is sorted by): what must be complete
+	// before it is created (readiness.go).
+	deps map[string][]string
 }
 
 // FidelityStack is the FidelityItem.Resource of a line about the whole stack rather than one resource.
@@ -186,6 +189,18 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 	sort.Strings(missing)
 	for _, name := range missing {
 		plan.Blockers = append(plan.Blockers, "parameter "+name+" has no default and no value supplied (pass -param "+name+"=…)")
+	}
+	// The value checks CloudFormation makes before it creates anything (params.go), so a CLI deploy
+	// refuses what the doorway refuses: a value for an undeclared parameter, a value outside its
+	// constraints, a malformed constraint.
+	plan.Blockers = append(plan.Blockers, paramDeclBlockers(t)...)
+	if unk := unknownParams(t, params, nil); len(unk) > 0 {
+		plan.Blockers = append(plan.Blockers, "Parameters: ["+strings.Join(unk, ", ")+"] do not exist in the template")
+	}
+	if len(missing) == 0 {
+		if msg := staticParamError(t, params, nil); strings.HasPrefix(msg, "Parameter '") {
+			plan.Blockers = append(plan.Blockers, msg)
+		}
 	}
 
 	r := newResolver(t, pvals, strMapToAny(exports), pseudoParams(stackName))
@@ -371,6 +386,7 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 	} else {
 		plan.Order = ord
 	}
+	plan.deps = incDeps
 
 	// Final verdict. A stack that maps but contains a resource with no create translator is never
 	// reported as cleanly PROVISIONABLE — deploy (all-or-nothing) would refuse it, so that is a
@@ -399,7 +415,8 @@ func ValidatePlan(data []byte, exports map[string]string, stackName string, caps
 	}
 	kept := plan.Blockers[:0]
 	for _, b := range plan.Blockers {
-		if (strings.HasPrefix(b, "parameter ") && strings.Contains(b, " has no default and no value supplied")) || strings.Contains(b, "<param:") {
+		if (strings.HasPrefix(b, "parameter ") && strings.Contains(b, " has no default and no value supplied")) || strings.Contains(b, "<param:") ||
+			strings.HasPrefix(b, "Parameter '") {
 			continue
 		}
 		kept = append(kept, b)
