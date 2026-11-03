@@ -261,6 +261,25 @@ VCODE="$(sec_code -H "Authorization: Bearer $VALID_JWT")"
 [ "$VCODE" = "200" ] || fail "a VALID JWT was NOT admitted (got '$VCODE', want 200) — issuer discovery/verify failed"
 log "  ✓ COGNITO_USER_POOLS authorizer: rejects missing/garbage/expired, admits valid"
 
+log "reads: get-method / get-authorizer(s) / get-deployment(s) answer what was written"
+[ "$(agw "$WAK" "$WSK" get-method --rest-api-id "$API" --resource-id "$SECRES" --http-method POST \
+  --query authorizerId 2>/dev/null)" = "$AUTHID" ] || fail "get-method did not answer the method's authorizer"
+[ "$(agw "$WAK" "$WSK" get-method --rest-api-id "$API" --resource-id "$SECRES" --http-method POST \
+  --query methodIntegration.type 2>/dev/null)" = "AWS_PROXY" ] || fail "get-method did not answer the method's integration"
+[ "$(agw "$WAK" "$WSK" get-authorizer --rest-api-id "$API" --authorizer-id "$AUTHID" --query 'providerARNs[0]' 2>/dev/null)" = "$ISS" ] \
+  || fail "get-authorizer did not answer the providerARNs it was created with"
+agw "$WAK" "$WSK" get-authorizers --rest-api-id "$API" --query 'items[].id' 2>/dev/null | tr '\t' '\n' | grep -qx "$AUTHID" \
+  || fail "get-authorizers did not list the authorizer"
+DEPID="$(agw "$WAK" "$WSK" get-deployments --rest-api-id "$API" --query 'items[-1].id' 2>/dev/null)" || fail "get-deployments failed"
+[ -n "$DEPID" ] && [ "$DEPID" != "None" ] || fail "get-deployments listed no deployment"
+[ "$(agw "$WAK" "$WSK" get-deployment --rest-api-id "$API" --deployment-id "$DEPID" --query id 2>/dev/null)" = "$DEPID" ] \
+  || fail "get-deployment did not answer the deployment"
+if agw "$WAK" "$WSK" get-method --rest-api-id "$API" --resource-id "$SECRES" --http-method DELETE >"$WORK/gm" 2>&1; then
+  fail "get-method of a method that does not exist succeeded"
+fi
+grep -q NotFoundException "$WORK/gm" || fail "get-method of a missing method: $(cat "$WORK/gm")"
+log "  ✓ methods, authorizers and deployments read back; a missing method is NotFound"
+
 # --- 4d. request validation: Models + RequestValidator → AWS-faithful 400s before the integration ---
 # A MOCK method (200 on pass) isolates validation from integration concerns. The validator checks BOTH
 # required parameters and the body against a Model; the data plane returns AWS's exact 400 shapes BEFORE

@@ -126,13 +126,6 @@ exceptions:
       Collated into its pool (kind: UserPool provisions one app client); DescribeUserPool is served,
       DescribeUserPoolClient and ListUserPoolClients are not.
     issue: "untracked — raised by the coverage registry"
-  - types: [AWS::ApiGateway::Method, AWS::ApiGateway::Deployment, AWS::ApiGateway::Authorizer]
-    check: read
-    reason: >-
-      The REST v1 surface the stack provisions through creates methods, deployments and authorizers but
-      serves no call that reads them (GetMethod, GetDeployments, GetAuthorizers); GetRestApi, GetResources,
-      GetStages, GetModels, GetRequestValidators, GetApiKeys and GetUsagePlans read the rest of the API.
-    issue: "untracked — raised by the coverage registry"
   - types: [AWS::AppSync::GraphQLApi, AWS::AppSync::GraphQLSchema, AWS::AppSync::DataSource,
             AWS::AppSync::FunctionConfiguration]
     check: read

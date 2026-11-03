@@ -98,7 +98,7 @@ func (h *apigwV1Handler) provisionRestAPIPlan(ctx context.Context, plan cfn.Rest
 			return fail(fmt.Errorf("authorizer %s: providerARNs resolve to no issuer", ap.LogicalID))
 		}
 		id := shortID(10)
-		if err := h.store.createAuthorizer(ctx, apiID, restAuthorizer{ID: id, Name: ap.Name, Type: "COGNITO_USER_POOLS", Issuer: issuer, IdentitySource: headerFromIdentitySource(ap.IdentitySource)}); err != nil {
+		if err := h.store.createAuthorizer(ctx, apiID, restAuthorizer{ID: id, Name: ap.Name, Type: "COGNITO_USER_POOLS", Issuer: issuer, IdentitySource: headerFromIdentitySource(ap.IdentitySource), ProviderARNs: ap.ProviderARNs}); err != nil {
 			return fail(fmt.Errorf("create authorizer %s: %w", ap.LogicalID, err))
 		}
 		authorizerID[ap.LogicalID] = id

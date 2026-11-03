@@ -168,6 +168,16 @@ func (h *apigwV1Handler) serve(w http.ResponseWriter, r *http.Request, claims ia
 		h.getStages(ctx, w, requestID, v.APIID)
 	case "CreateAuthorizer":
 		h.createAuthorizer(ctx, w, requestID, v.APIID, body)
+	case "GetMethod":
+		h.getMethod(ctx, w, requestID, v.APIID, v.ResourceID, v.HTTPMethod)
+	case "GetDeployments":
+		h.getDeployments(ctx, w, requestID, v.APIID)
+	case "GetDeployment":
+		h.getDeployment(ctx, w, requestID, v.APIID, v.Name)
+	case "GetAuthorizers":
+		h.getAuthorizers(ctx, w, requestID, v.APIID)
+	case "GetAuthorizer":
+		h.getAuthorizer(ctx, w, requestID, v.APIID, v.Name)
 	default:
 		writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "unimplemented op: "+v.Op)
 	}
@@ -803,6 +813,7 @@ func (h *apigwV1Handler) createAuthorizer(ctx context.Context, w http.ResponseWr
 	a := restAuthorizer{
 		ID: shortID(10), Name: name, Type: "COGNITO_USER_POOLS", Issuer: issuer, Audiences: auds,
 		IdentitySource: headerFromIdentitySource(firstStr(stringSlice(body["identitySource"]))),
+		ProviderARNs:   stringSlice(body["providerARNs"]),
 	}
 	if err := h.store.createAuthorizer(ctx, apiID, a); err != nil {
 		h.internal(w, requestID, err)

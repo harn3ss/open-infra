@@ -19,7 +19,7 @@ type restV1Op struct {
 	ResourceID string
 	HTTPMethod string
 	StatusCode string // PutIntegrationResponse / PutMethodResponse
-	Name       string // model name (GetModel) or request-validator id (GetRequestValidator)
+	Name       string // model name (GetModel), request-validator id (GetRequestValidator), deployment id (GetDeployment) or authorizer id (GetAuthorizer)
 	KeyID      string // API key id (GetApiKey) or the key associated by CreateUsagePlanKey
 	PlanID     string // usage-plan id (GetUsagePlan / usage-plan-key ops)
 }
@@ -30,13 +30,15 @@ type restV1Op struct {
 //	/restapis/{id}                                                    GET GetRestApi / DELETE DeleteRestApi
 //	/restapis/{id}/resources                                          GET GetResources
 //	/restapis/{id}/resources/{parentId}                               POST CreateResource (child of parent)
-//	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}        PUT PutMethod
+//	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}        PUT PutMethod / GET GetMethod
 //	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration  PUT PutIntegration
 //	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration/responses/{statusCode}  PUT PutIntegrationResponse
 //	/restapis/{id}/resources/{resourceId}/methods/{httpMethod}/responses/{statusCode}  PUT PutMethodResponse
-//	/restapis/{id}/deployments                                        POST CreateDeployment
+//	/restapis/{id}/deployments                                        POST CreateDeployment / GET GetDeployments
+//	/restapis/{id}/deployments/{deploymentId}                         GET GetDeployment
 //	/restapis/{id}/stages                                             POST CreateStage / GET GetStages
-//	/restapis/{id}/authorizers                                        POST CreateAuthorizer
+//	/restapis/{id}/authorizers                                        POST CreateAuthorizer / GET GetAuthorizers
+//	/restapis/{id}/authorizers/{authorizerId}                         GET GetAuthorizer
 //	/restapis/{id}/models                                             POST CreateModel / GET GetModels
 //	/restapis/{id}/models/{modelName}                                 GET GetModel
 //	/restapis/{id}/requestvalidators                                  POST CreateRequestValidator / GET GetRequestValidators
@@ -137,6 +139,9 @@ func restV1RestapisOp(r *http.Request, segs []string) (restV1Op, bool) {
 			if r.Method == http.MethodPost {
 				return restV1Op{Op: "CreateDeployment", APIID: segs[1]}, true
 			}
+			if r.Method == http.MethodGet {
+				return restV1Op{Op: "GetDeployments", APIID: segs[1]}, true
+			}
 		case "stages":
 			if r.Method == http.MethodPost {
 				return restV1Op{Op: "CreateStage", APIID: segs[1]}, true
@@ -147,6 +152,9 @@ func restV1RestapisOp(r *http.Request, segs []string) (restV1Op, bool) {
 		case "authorizers":
 			if r.Method == http.MethodPost {
 				return restV1Op{Op: "CreateAuthorizer", APIID: segs[1]}, true
+			}
+			if r.Method == http.MethodGet {
+				return restV1Op{Op: "GetAuthorizers", APIID: segs[1]}, true
 			}
 		case "models":
 			if r.Method == http.MethodPost {
@@ -177,10 +185,21 @@ func restV1RestapisOp(r *http.Request, segs []string) (restV1Op, bool) {
 			if r.Method == http.MethodGet {
 				return restV1Op{Op: "GetRequestValidator", APIID: segs[1], Name: segs[3]}, true
 			}
+		case "deployments":
+			if r.Method == http.MethodGet {
+				return restV1Op{Op: "GetDeployment", APIID: segs[1], Name: segs[3]}, true
+			}
+		case "authorizers":
+			if r.Method == http.MethodGet {
+				return restV1Op{Op: "GetAuthorizer", APIID: segs[1], Name: segs[3]}, true
+			}
 		}
 	case 6: // /restapis/{id}/resources/{resourceId}/methods/{httpMethod}
 		if segs[2] == "resources" && segs[4] == "methods" && r.Method == http.MethodPut {
 			return restV1Op{Op: "PutMethod", APIID: segs[1], ResourceID: segs[3], HTTPMethod: strings.ToUpper(segs[5])}, true
+		}
+		if segs[2] == "resources" && segs[4] == "methods" && r.Method == http.MethodGet {
+			return restV1Op{Op: "GetMethod", APIID: segs[1], ResourceID: segs[3], HTTPMethod: strings.ToUpper(segs[5])}, true
 		}
 	case 7: // /restapis/{id}/resources/{resourceId}/methods/{httpMethod}/integration
 		if segs[2] == "resources" && segs[4] == "methods" && segs[6] == "integration" && r.Method == http.MethodPut {

@@ -128,10 +128,11 @@ type restIntegration struct {
 type restAuthorizer struct {
 	ID             string   `json:"id"`
 	Name           string   `json:"name"`
-	Type           string   `json:"type"`           // COGNITO_USER_POOLS (TOKEN/REQUEST refused at CreateAuthorizer)
-	Issuer         string   `json:"issuer"`         // resolved OIDC issuer (from a Cognito pool ARN or a bare issuer URL)
-	Audiences      []string `json:"audiences"`      // allowed token audiences (empty = skip aud check)
-	IdentitySource string   `json:"identitySource"` // header the token is read from (default Authorization)
+	Type           string   `json:"type"`                   // COGNITO_USER_POOLS (TOKEN/REQUEST refused at CreateAuthorizer)
+	Issuer         string   `json:"issuer"`                 // resolved OIDC issuer (from a Cognito pool ARN or a bare issuer URL)
+	Audiences      []string `json:"audiences"`              // allowed token audiences (empty = skip aud check)
+	IdentitySource string   `json:"identitySource"`         // header the token is read from (default Authorization)
+	ProviderARNs   []string `json:"providerArns,omitempty"` // the providerARNs it was created with (GetAuthorizer answers them)
 }
 
 // restSnapshot is the immutable picture a deployment freezes and a stage serves. Models + Validators
@@ -273,7 +274,9 @@ ALTER TABLE rest_methods ADD COLUMN IF NOT EXISTS request_validator_id text NOT 
 ALTER TABLE rest_methods ADD COLUMN IF NOT EXISTS request_models       jsonb;
 ALTER TABLE rest_methods ADD COLUMN IF NOT EXISTS request_parameters   jsonb;
 -- increment 4 (API keys): add the method gate column in place for an already-live rest_methods table.
-ALTER TABLE rest_methods ADD COLUMN IF NOT EXISTS api_key_required boolean NOT NULL DEFAULT false;`)
+ALTER TABLE rest_methods ADD COLUMN IF NOT EXISTS api_key_required boolean NOT NULL DEFAULT false;
+-- increment 5 (GetAuthorizer): the providerARNs an authorizer was created with, answered back as given.
+ALTER TABLE rest_authorizers ADD COLUMN IF NOT EXISTS provider_arns jsonb;`)
 	return err
 }
 
@@ -495,17 +498,17 @@ func (s *apigwV1Store) listIntegrations(ctx context.Context, apiID string) ([]re
 
 func (s *apigwV1Store) createAuthorizer(ctx context.Context, apiID string, a restAuthorizer) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO rest_authorizers (api_id, authorizer_id, name, type, issuer, audiences, identity_source)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7)
+		`INSERT INTO rest_authorizers (api_id, authorizer_id, name, type, issuer, audiences, identity_source, provider_arns)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		 ON CONFLICT (api_id, authorizer_id)
 		 DO UPDATE SET name=EXCLUDED.name, type=EXCLUDED.type, issuer=EXCLUDED.issuer,
-		   audiences=EXCLUDED.audiences, identity_source=EXCLUDED.identity_source`,
-		apiID, a.ID, a.Name, a.Type, a.Issuer, marshalJSONBSlice(a.Audiences), a.IdentitySource)
+		   audiences=EXCLUDED.audiences, identity_source=EXCLUDED.identity_source, provider_arns=EXCLUDED.provider_arns`,
+		apiID, a.ID, a.Name, a.Type, a.Issuer, marshalJSONBSlice(a.Audiences), a.IdentitySource, marshalJSONBSlice(a.ProviderARNs))
 	return err
 }
 
 func (s *apigwV1Store) listAuthorizers(ctx context.Context, apiID string) ([]restAuthorizer, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT authorizer_id, name, type, issuer, audiences, identity_source FROM rest_authorizers WHERE api_id=$1`, apiID)
+	rows, err := s.db.QueryContext(ctx, `SELECT authorizer_id, name, type, issuer, audiences, identity_source, provider_arns FROM rest_authorizers WHERE api_id=$1 ORDER BY authorizer_id`, apiID)
 	if err != nil {
 		return nil, err
 	}
@@ -513,12 +516,15 @@ func (s *apigwV1Store) listAuthorizers(ctx context.Context, apiID string) ([]res
 	var out []restAuthorizer
 	for rows.Next() {
 		var a restAuthorizer
-		var auds []byte
-		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.Issuer, &auds, &a.IdentitySource); err != nil {
+		var auds, arns []byte
+		if err := rows.Scan(&a.ID, &a.Name, &a.Type, &a.Issuer, &auds, &a.IdentitySource, &arns); err != nil {
 			return nil, err
 		}
 		if len(auds) > 0 {
 			_ = json.Unmarshal(auds, &a.Audiences)
+		}
+		if len(arns) > 0 {
+			_ = json.Unmarshal(arns, &a.ProviderARNs)
 		}
 		out = append(out, a)
 	}
