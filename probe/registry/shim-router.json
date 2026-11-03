@@ -1,0 +1,691 @@
+{
+  "generatedBy": "console-api/cmd/aws-shim/coverage_registry_test.go",
+  "services": {
+    "apigateway": {
+      "handler": "apigwMux",
+      "operations": [
+        "CreateApi",
+        "CreateApiKey",
+        "CreateAuthorizer",
+        "CreateDeployment",
+        "CreateIntegration",
+        "CreateModel",
+        "CreateRequestValidator",
+        "CreateResource",
+        "CreateRestApi",
+        "CreateRoute",
+        "CreateStage",
+        "CreateUsagePlan",
+        "CreateUsagePlanKey",
+        "DeleteApi",
+        "DeleteRestApi",
+        "GetApi",
+        "GetApiKey",
+        "GetApiKeys",
+        "GetApis",
+        "GetModel",
+        "GetModels",
+        "GetRequestValidator",
+        "GetRequestValidators",
+        "GetResources",
+        "GetRestApi",
+        "GetRestApis",
+        "GetRoutes",
+        "GetStages",
+        "GetUsagePlan",
+        "GetUsagePlanKeys",
+        "GetUsagePlans",
+        "PutIntegration",
+        "PutIntegrationResponse",
+        "PutMethod",
+        "PutMethodResponse"
+      ],
+      "actions": [
+        "lambda:InvokeFunction"
+      ],
+      "delegates": [
+        "apigwV1Handler",
+        "apigwHandler"
+      ]
+    },
+    "appsync": {
+      "handler": "appsyncHandler",
+      "operations": [
+        "CreateDataSource",
+        "CreateResolver",
+        "DeleteDataSource",
+        "DeleteResolver",
+        "GetResolver",
+        "UpdateResolver"
+      ],
+      "actions": [
+        "appsync:GraphQL"
+      ]
+    },
+    "athena": {
+      "handler": "athenaHandler",
+      "operations": [
+        "BatchGetNamedQuery",
+        "BatchGetQueryExecution",
+        "CreateDataCatalog",
+        "CreateNamedQuery",
+        "CreatePreparedStatement",
+        "CreateWorkGroup",
+        "DeleteDataCatalog",
+        "DeleteNamedQuery",
+        "DeletePreparedStatement",
+        "DeleteWorkGroup",
+        "GetDataCatalog",
+        "GetDatabase",
+        "GetNamedQuery",
+        "GetPreparedStatement",
+        "GetQueryExecution",
+        "GetQueryResults",
+        "GetTableMetadata",
+        "GetWorkGroup",
+        "ListDataCatalogs",
+        "ListDatabases",
+        "ListNamedQueries",
+        "ListPreparedStatements",
+        "ListTableMetadata",
+        "ListWorkGroups",
+        "StartQueryExecution",
+        "StopQueryExecution",
+        "UpdateDataCatalog",
+        "UpdateWorkGroup"
+      ]
+    },
+    "cloudformation": {
+      "handler": "cfnDoorway",
+      "operations": [
+        "CreateChangeSet",
+        "CreateStack",
+        "DeleteChangeSet",
+        "DeleteStack",
+        "DescribeChangeSet",
+        "DescribeStackDriftDetectionStatus",
+        "DescribeStackEvents",
+        "DescribeStackResource",
+        "DescribeStackResourceDrifts",
+        "DescribeStackResources",
+        "DescribeStacks",
+        "DetectStackDrift",
+        "ExecuteChangeSet",
+        "GetTemplate",
+        "GetTemplateSummary",
+        "ListChangeSets",
+        "ListExports",
+        "ListImports",
+        "ListStackResources",
+        "ListStacks",
+        "UpdateStack",
+        "ValidateTemplate"
+      ],
+      "actions": [
+        "apigateway:CreateRestApi",
+        "apigateway:DeleteRestApi",
+        "cloudformation:DescribeStacks",
+        "cloudformation:SignalResource",
+        "lambda:InvokeFunction",
+        "s3:GetObject"
+      ],
+      "conditional": true
+    },
+    "cloudfront": {
+      "handler": "cloudFrontHandler",
+      "operations": [
+        "CreateInvalidation",
+        "GetInvalidation",
+        "ListInvalidations"
+      ],
+      "conditional": true
+    },
+    "cognito-idp": {
+      "handler": "cognitoHandler",
+      "operations": [
+        "AdminConfirmSignUp",
+        "AdminCreateUser",
+        "AdminGetUser",
+        "AdminInitiateAuth",
+        "AdminSetUserPassword",
+        "ConfirmForgotPassword",
+        "ConfirmSignUp",
+        "CreateUserPool",
+        "CreateUserPoolClient",
+        "DeleteUserPool",
+        "DescribeUserPool",
+        "ForgotPassword",
+        "GetUser",
+        "GlobalSignOut",
+        "InitiateAuth",
+        "ResendConfirmationCode",
+        "RespondToAuthChallenge",
+        "SignUp"
+      ],
+      "conditional": true
+    },
+    "dynamodb": {
+      "handler": "dynamoHandler",
+      "operations": [
+        "BatchGetItem",
+        "BatchWriteItem",
+        "CreateTable",
+        "DeleteItem",
+        "DeleteTable",
+        "DescribeContinuousBackups",
+        "DescribeTable",
+        "DescribeTimeToLive",
+        "GetItem",
+        "ListTables",
+        "PutItem",
+        "Query",
+        "RestoreTableToPointInTime",
+        "Scan",
+        "TransactGetItems",
+        "TransactWriteItems",
+        "UpdateContinuousBackups",
+        "UpdateItem",
+        "UpdateTimeToLive"
+      ]
+    },
+    "dynamodbstreams": {
+      "handler": "ddbStreamsHandler",
+      "operations": [
+        "DescribeStream",
+        "GetRecords",
+        "GetShardIterator",
+        "ListStreams"
+      ]
+    },
+    "ecr": {
+      "handler": "ecrHandler",
+      "operations": [
+        "BatchCheckLayerAvailability",
+        "BatchDeleteImage",
+        "BatchGetImage",
+        "BatchGetImageScanFindings",
+        "CompleteLayerUpload",
+        "CreatePullThroughCacheRule",
+        "CreateRepository",
+        "DeleteLifecyclePolicy",
+        "DeletePullThroughCacheRule",
+        "DeleteRepository",
+        "DeleteRepositoryPolicy",
+        "DescribeImageScanFindings",
+        "DescribeImages",
+        "DescribePullThroughCacheRules",
+        "DescribeRegistry",
+        "DescribeRepositories",
+        "GetAuthorizationToken",
+        "GetDownloadUrlForLayer",
+        "GetLifecyclePolicy",
+        "GetLifecyclePolicyPreview",
+        "GetRegistryPolicy",
+        "GetRepositoryPolicy",
+        "InitiateLayerUpload",
+        "ListImages",
+        "ListTagsForResource",
+        "PutImage",
+        "PutImageScanningConfiguration",
+        "PutImageTagMutability",
+        "PutLifecyclePolicy",
+        "PutRegistryPolicy",
+        "PutReplicationConfiguration",
+        "SetRepositoryPolicy",
+        "StartImageScan",
+        "StartLifecyclePolicyPreview",
+        "TagResource",
+        "UntagResource",
+        "UploadLayerPart"
+      ],
+      "actions": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchDeleteImage",
+        "ecr:BatchGetImage",
+        "ecr:CompleteLayerUpload",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:InitiateLayerUpload",
+        "ecr:PutImage",
+        "ecr:UploadLayerPart"
+      ]
+    },
+    "ecs": {
+      "handler": "ecsDoorway",
+      "operations": [
+        "CreateCluster",
+        "CreateService",
+        "DeleteCluster",
+        "DeleteService",
+        "DeregisterTaskDefinition",
+        "DescribeClusters",
+        "DescribeServices",
+        "DescribeTaskDefinition",
+        "ListClusters",
+        "ListServices",
+        "RegisterTaskDefinition",
+        "RunTask",
+        "UpdateService"
+      ],
+      "conditional": true
+    },
+    "eks": {
+      "handler": "eksHandler",
+      "operations": [
+        "DescribeCluster",
+        "DescribeIdentityProviderConfig",
+        "DescribeNodegroup",
+        "ListClusters",
+        "ListNodegroups"
+      ],
+      "refused": [
+        "CreateCluster",
+        "CreateNodegroup",
+        "DeleteCluster",
+        "DeleteNodegroup",
+        "UpdateAddon",
+        "UpdateClusterConfig",
+        "UpdateClusterVersion"
+      ]
+    },
+    "email": {
+      "handler": "sesHandler",
+      "operations": [
+        "CreateEmailIdentity",
+        "DeleteEmailIdentity",
+        "GetAccount",
+        "GetEmailIdentity",
+        "GetIdentityVerificationAttributes",
+        "GetSendQuota",
+        "GetSendStatistics",
+        "ListEmailIdentities",
+        "ListIdentities",
+        "SendBulkEmail",
+        "SendEmail",
+        "SendRawEmail",
+        "VerifyDomainIdentity",
+        "VerifyEmailIdentity"
+      ],
+      "actions": [
+        "ses:GetAccount",
+        "ses:SendEmail"
+      ],
+      "conditional": true
+    },
+    "events": {
+      "handler": "ebHandler",
+      "operations": [
+        "CreateEventBus",
+        "DeleteEventBus",
+        "DeleteRule",
+        "DescribeRule",
+        "DisableRule",
+        "EnableRule",
+        "ListEventBuses",
+        "ListRules",
+        "ListTargetsByRule",
+        "PutEvents",
+        "PutRule",
+        "PutTargets",
+        "RemoveTargets",
+        "TestEventPattern"
+      ],
+      "actions": [
+        "lambda:InvokeFunction",
+        "sqs:SendMessage"
+      ]
+    },
+    "glue": {
+      "handler": "glueHandler",
+      "operations": [
+        "BatchCreatePartition",
+        "BatchDeletePartition",
+        "BatchStopJobRun",
+        "BatchUpdatePartition",
+        "CreateCrawler",
+        "CreateDatabase",
+        "CreateJob",
+        "CreatePartition",
+        "CreateTable",
+        "DeleteCrawler",
+        "DeleteDatabase",
+        "DeleteJob",
+        "DeletePartition",
+        "DeleteTable",
+        "GetCrawler",
+        "GetCrawlers",
+        "GetDatabase",
+        "GetDatabases",
+        "GetJob",
+        "GetJobRun",
+        "GetJobRuns",
+        "GetJobs",
+        "GetPartitions",
+        "GetTable",
+        "GetTables",
+        "StartCrawler",
+        "StartJobRun",
+        "StopCrawler",
+        "UpdateCrawler",
+        "UpdateJob",
+        "UpdatePartition",
+        "UpdateTable"
+      ]
+    },
+    "iam": {
+      "handler": "iamHandler",
+      "operations": [
+        "AttachRolePolicy",
+        "CreateAccessKey",
+        "CreatePolicy",
+        "CreatePolicyVersion",
+        "CreateRole",
+        "CreateUser",
+        "DeleteAccessKey",
+        "DeletePolicy",
+        "DeleteRole",
+        "DeleteRolePolicy",
+        "DeleteUser",
+        "DetachRolePolicy",
+        "GetPolicy",
+        "GetPolicyVersion",
+        "GetRole",
+        "GetRolePolicy",
+        "GetUser",
+        "ListAccessKeys",
+        "ListAttachedRolePolicies",
+        "ListPolicies",
+        "ListPolicyVersions",
+        "ListRolePolicies",
+        "ListRoles",
+        "ListUsers",
+        "PutRolePolicy",
+        "SimulatePrincipalPolicy",
+        "TagUser",
+        "UpdateAccessKey"
+      ],
+      "actions": [
+        "sts:AssumeRole"
+      ],
+      "conditional": true
+    },
+    "kinesis": {
+      "handler": "kinesisHandler",
+      "operations": [
+        "CreateStream",
+        "DecreaseStreamRetentionPeriod",
+        "DeleteStream",
+        "DescribeStream",
+        "DescribeStreamSummary",
+        "GetRecords",
+        "GetShardIterator",
+        "IncreaseStreamRetentionPeriod",
+        "ListShards",
+        "ListStreams",
+        "PutRecord",
+        "PutRecords"
+      ]
+    },
+    "kms": {
+      "handler": "kmsHandler",
+      "operations": [
+        "CancelKeyDeletion",
+        "CreateAlias",
+        "CreateKey",
+        "Decrypt",
+        "DeleteAlias",
+        "DescribeKey",
+        "DisableKey",
+        "DisableKeyRotation",
+        "EnableKey",
+        "EnableKeyRotation",
+        "Encrypt",
+        "GenerateDataKey",
+        "GenerateDataKeyWithoutPlaintext",
+        "GenerateRandom",
+        "GetKeyPolicy",
+        "GetKeyRotationStatus",
+        "ListAliases",
+        "ListKeyPolicies",
+        "ListKeys",
+        "PutKeyPolicy",
+        "ReEncrypt",
+        "ScheduleKeyDeletion",
+        "UpdateAlias"
+      ]
+    },
+    "lambda": {
+      "handler": "lambdaHandler",
+      "operations": [],
+      "actions": [
+        "lambda:InvokeFunction"
+      ]
+    },
+    "logs": {
+      "handler": "cwlHandler",
+      "operations": [
+        "CreateLogGroup",
+        "CreateLogStream",
+        "DeleteLogGroup",
+        "DeleteLogStream",
+        "DeleteRetentionPolicy",
+        "DescribeLogGroups",
+        "DescribeLogStreams",
+        "DescribeQueries",
+        "FilterLogEvents",
+        "GetLogEvents",
+        "GetQueryResults",
+        "PutLogEvents",
+        "PutRetentionPolicy",
+        "StartQuery",
+        "StopQuery",
+        "TagLogGroup"
+      ]
+    },
+    "monitoring": {
+      "handler": "cwHandler",
+      "operations": [
+        "DeleteAlarms",
+        "DescribeAlarms",
+        "GetMetricData",
+        "GetMetricStatistics",
+        "ListMetrics",
+        "PutMetricAlarm",
+        "PutMetricData",
+        "SetAlarmState"
+      ],
+      "actions": [
+        "cloudwatch:DeleteAlarms",
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:GetMetricData",
+        "cloudwatch:SetAlarmState",
+        "sns:Publish"
+      ]
+    },
+    "rds": {
+      "handler": "rdsHandler",
+      "operations": [
+        "AddTagsToResource",
+        "CreateDBInstance",
+        "CreateDBInstanceReadReplica",
+        "CreateDBSnapshot",
+        "DeleteDBInstance",
+        "DeleteDBSnapshot",
+        "DescribeDBInstances",
+        "DescribeDBSnapshots",
+        "ListTagsForResource",
+        "ModifyDBInstance",
+        "RestoreDBInstanceFromDBSnapshot",
+        "RestoreDBInstanceToPointInTime"
+      ]
+    },
+    "s3": {
+      "handler": "s3Handler",
+      "operations": [
+        "AbortMultipartUpload",
+        "CompleteMultipartUpload",
+        "CopyObject",
+        "CreateBucket",
+        "CreateMultipartUpload",
+        "DeleteBucket",
+        "DeleteBucketTagging",
+        "DeleteObject",
+        "DeleteObjects",
+        "GetBucketEncryption",
+        "GetBucketLocation",
+        "GetBucketOwnershipControls",
+        "GetBucketTagging",
+        "GetBucketVersioning",
+        "GetObject",
+        "GetObjectTagging",
+        "HeadBucket",
+        "HeadObject",
+        "ListBuckets",
+        "ListMultipartUploads",
+        "ListObjectVersions",
+        "ListObjects",
+        "ListParts",
+        "PutBucketTagging",
+        "PutBucketVersioning",
+        "PutObject",
+        "UploadPart",
+        "UploadPartCopy"
+      ]
+    },
+    "secretsmanager": {
+      "handler": "secretsHandler",
+      "operations": [
+        "CancelRotateSecret",
+        "CreateSecret",
+        "DeleteSecret",
+        "DescribeSecret",
+        "GetRandomPassword",
+        "GetSecretValue",
+        "ListSecretVersionIds",
+        "ListSecrets",
+        "PutSecretValue",
+        "RestoreSecret",
+        "RotateSecret",
+        "TagResource",
+        "UntagResource",
+        "UpdateSecret",
+        "UpdateSecretVersionStage"
+      ]
+    },
+    "ses": {
+      "handler": "sesHandler",
+      "operations": [
+        "CreateEmailIdentity",
+        "DeleteEmailIdentity",
+        "GetAccount",
+        "GetEmailIdentity",
+        "GetIdentityVerificationAttributes",
+        "GetSendQuota",
+        "GetSendStatistics",
+        "ListEmailIdentities",
+        "ListIdentities",
+        "SendBulkEmail",
+        "SendEmail",
+        "SendRawEmail",
+        "VerifyDomainIdentity",
+        "VerifyEmailIdentity"
+      ],
+      "actions": [
+        "ses:GetAccount",
+        "ses:SendEmail"
+      ],
+      "conditional": true
+    },
+    "sns": {
+      "handler": "snsHandler",
+      "operations": [
+        "CreateTopic",
+        "DeleteTopic",
+        "GetSubscriptionAttributes",
+        "GetTopicAttributes",
+        "ListSubscriptions",
+        "ListSubscriptionsByTopic",
+        "ListTopics",
+        "Publish",
+        "PublishBatch",
+        "SetSubscriptionAttributes",
+        "SetTopicAttributes",
+        "Subscribe",
+        "Unsubscribe"
+      ],
+      "actions": [
+        "lambda:InvokeFunction",
+        "sqs:SendMessage"
+      ]
+    },
+    "sqs": {
+      "handler": "sqsHandler",
+      "operations": [
+        "ChangeMessageVisibility",
+        "ChangeMessageVisibilityBatch",
+        "CreateQueue",
+        "DeleteMessage",
+        "DeleteMessageBatch",
+        "DeleteQueue",
+        "GetQueueAttributes",
+        "GetQueueUrl",
+        "ListQueues",
+        "PurgeQueue",
+        "ReceiveMessage",
+        "SendMessage",
+        "SendMessageBatch",
+        "SetQueueAttributes"
+      ]
+    },
+    "ssm": {
+      "handler": "ssmHandler",
+      "operations": [
+        "AddTagsToResource",
+        "DeleteParameter",
+        "DeleteParameters",
+        "DescribeParameters",
+        "GetParameter",
+        "GetParameterHistory",
+        "GetParameters",
+        "GetParametersByPath",
+        "LabelParameterVersion",
+        "ListTagsForResource",
+        "PutParameter",
+        "RemoveTagsFromResource"
+      ],
+      "actions": [
+        "kms:Decrypt",
+        "ssm:DeleteParameters",
+        "ssm:GetParameters"
+      ]
+    },
+    "states": {
+      "handler": "sfnHandler",
+      "operations": [
+        "CreateStateMachine",
+        "DeleteStateMachine",
+        "DescribeExecution",
+        "DescribeStateMachine",
+        "DescribeStateMachineForExecution",
+        "GetExecutionHistory",
+        "ListExecutions",
+        "ListStateMachines",
+        "StartExecution",
+        "StartSyncExecution",
+        "StopExecution",
+        "UpdateStateMachine"
+      ],
+      "actions": [
+        "iam:PassRole"
+      ],
+      "conditional": true
+    },
+    "sts": {
+      "handler": "stsHandler",
+      "operations": [
+        "AssumeRole",
+        "AssumeRoleWithWebIdentity",
+        "GetCallerIdentity"
+      ]
+    }
+  }
+}

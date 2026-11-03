@@ -20,129 +20,162 @@
 #
 # `cell` is the short backend phrase shown next to the service name. `experimental: true` marks a
 # service whose engine is on the experimental tier (see README "Maturity & guarantees").
+#
+# `sigv4` is the SigV4 signing name(s) the service is served under: the keys of the aws-shim router
+# (probe/registry/shim-router.json, read from console-api/cmd/aws-shim/main.go). Every router key is
+# claimed by exactly one service here; a proven or gated service's keys must all be routed (the docs
+# cannot claim a front door the code lacks), and a planned one's must not be (it is built: probe it and
+# promote it). This joins each service's proof to the CloudFormation coverage registry (probe/coverage.py).
 
 services:
   # --- identity, security, keys ---
   - name: S3
     cell: "→ MinIO"
     tier: proven
+    sigv4: [s3]
     probes: [s3]
   - name: STS
     cell: "identity + `AssumeRole` / web-identity"
     tier: proven
+    sigv4: [sts]
     probes: [sts, vm-credentials]
   - name: IAM
     cell: "roles/policies/users → AWS policy JSON → Cedar"
     tier: proven
+    sigv4: [iam]
     probes: [iam, iam-timecond, iam-username-like]
   - name: KMS
     cell: "→ Vault Transit"
     tier: proven
+    sigv4: [kms]
     probes: [kms, kms-keypolicy]
   - name: Secrets Manager
     cell: "→ Vault-Transit-encrypted, versioned"
     tier: proven
+    sigv4: [secretsmanager]
     probes: [secretsmanager]
   - name: Cognito
     cell: "user pools → real RS256 JWTs (JWKS-verifiable)"
     tier: proven
+    sigv4: [cognito-idp]
     probes: [cognito]
 
   # --- compute ---
   - name: Lambda
     cell: "→ Knative `Function`s"
     tier: proven
+    sigv4: [lambda]
     probes: [lambda]
   - name: ECS
     cell: "service + task def → one `kind: Application` (cfn engine), caller-authority via impersonation"
     tier: proven
+    sigv4: [ecs]
     probes: [ecs]
   - name: EKS
     cell: "`DescribeCluster` → a working `aws eks update-kubeconfig` against the real API server"
     tier: proven
+    sigv4: [eks]
     probes: [eks]
   - name: ECR
     cell: "→ a backing OCI registry (Distribution /v2)"
     tier: proven
+    sigv4: [ecr]
     probes: [ecr, ecr-perrepo]
 
   # --- data ---
   - name: RDS
     cell: "→ real PostgreSQL (CloudNativePG)"
     tier: proven
+    sigv4: [rds]
     probes: [rds]
   - name: DynamoDB
     cell: "→ FerretDB (+ transactions, Streams)"
     tier: proven
+    sigv4: [dynamodb, dynamodbstreams]
     probes: [dynamodb, dynamodb-lsi, dynamodb-restore, dynamodb-streams]
   - name: Athena
     cell: "serverless SQL → Trino over the Iceberg lake"
     tier: proven
+    sigv4: [athena]
     probes: [athena]
   - name: Glue
     cell: "Data Catalog → the Iceberg REST metastore"
     tier: proven
+    sigv4: [glue]
     probes: [glue]
 
   # --- messaging / streaming ---
   - name: SQS
     cell: "→ Postgres-backed queues"
     tier: proven
+    sigv4: [sqs]
     probes: [sqs]
   - name: SNS
     cell: "→ durable SQS fan-out"
     tier: proven
+    sigv4: [sns]
     probes: [sns]
   - name: EventBridge
     cell: "scheduled + event-driven rules"
     tier: proven
+    sigv4: [events]
     probes: [eventbridge]
   - name: Kinesis Data Streams
     cell: "ordered, sharded, replayable (Postgres)"
     tier: proven
+    sigv4: [kinesis]
     probes: [kinesis]
 
   # --- app / config / observability ---
   - name: SSM Parameter Store
     cell: "→ Postgres + KMS-encrypted `SecureString`"
     tier: proven
+    sigv4: [ssm]
     probes: [ssm]
   - name: API Gateway
     cell: "HTTP API v2 + REST v1 → runtime proxy to Lambda"
     tier: proven
+    sigv4: [apigateway]
     probes: [apigateway, apigateway-restv1, apigateway-restv1-cfn]
   - name: CloudWatch
     cell: "metrics + alarms that evaluate and fire SNS"
     tier: proven
+    sigv4: [monitoring]
     probes: [cloudwatch]
   - name: CloudWatch Logs
     cell: "→ Postgres"
     tier: proven
+    sigv4: [logs]
     probes: [cloudwatchlogs]
 
   # --- workflow / provisioning ---
   - name: Step Functions
     cell: "owned ASL engine; Tasks run under the state machine's IAM role (per-execution STS)"
     tier: proven
+    sigv4: [states]
     experimental: true
     probes: [stepfunctions]
   - name: CloudFormation
     cell: "owned cfn engine; stacks provision under the caller's authority (impersonation)"
     tier: proven
+    sigv4: [cloudformation]
     probes: [cloudformation, cfn-customresource, cfn-lift-and-shift, cfn-data-services, cfn-api]
   - name: CloudFront
     cell: "invalidations of a stack's distribution (`kind: StaticSite`): Completed once the site serves the upload"
     tier: proven
+    sigv4: [cloudfront]
     probes: [cfn-cloudfront]
   - name: AppSync
     cell: "→ open-appsync (VTL-faithful engine)"
     tier: proven
+    sigv4: [appsync]
     experimental: true
     probes: [appsync]
 
   - name: SES
     cell: "v1 `SendEmail`/`SendRawEmail` + v2 `SendEmail` → the platform SMTP relay (the `mail` component; a capturing sink on test clusters)"
     tier: proven
+    sigv4: [ses, email]
     note: "Served while the `mail` component's relay exists; with it off, SES answers as not fronted."
     probes: [ses]
 
@@ -150,4 +183,5 @@ services:
   - name: Route 53
     cell: "DNS"
     tier: planned
+    sigv4: [route53]
     probes: []

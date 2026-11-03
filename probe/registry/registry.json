@@ -1,0 +1,3325 @@
+{
+  "breadth": {
+    "services": [
+      {
+        "exampleApps": 1,
+        "knownTypes": [],
+        "namespaces": [
+          "AWS::Kinesis"
+        ],
+        "operations": 12,
+        "probes": 1,
+        "rank": 1,
+        "service": "Kinesis Data Streams",
+        "signingNames": [
+          "kinesis"
+        ],
+        "templateUses": 0
+      },
+      {
+        "exampleApps": 0,
+        "knownTypes": [],
+        "namespaces": [
+          "AWS::Glue"
+        ],
+        "operations": 32,
+        "probes": 1,
+        "rank": 2,
+        "service": "Glue",
+        "signingNames": [
+          "glue"
+        ],
+        "templateUses": 0
+      },
+      {
+        "exampleApps": 0,
+        "knownTypes": [],
+        "namespaces": [
+          "AWS::Athena"
+        ],
+        "operations": 28,
+        "probes": 1,
+        "rank": 3,
+        "service": "Athena",
+        "signingNames": [
+          "athena"
+        ],
+        "templateUses": 0
+      },
+      {
+        "exampleApps": 0,
+        "knownTypes": [],
+        "namespaces": [
+          "AWS::SES"
+        ],
+        "operations": 14,
+        "probes": 1,
+        "rank": 4,
+        "service": "SES",
+        "signingNames": [
+          "email",
+          "ses"
+        ],
+        "templateUses": 0
+      },
+      {
+        "exampleApps": 0,
+        "knownTypes": [],
+        "namespaces": [
+          "AWS::EKS"
+        ],
+        "operations": 5,
+        "probes": 1,
+        "rank": 5,
+        "service": "EKS",
+        "signingNames": [
+          "eks"
+        ],
+        "templateUses": 0
+      }
+    ],
+    "sources": {
+      "cfn/testdata": 9,
+      "probe": 6
+    },
+    "undeployableUses": [
+      {
+        "status": "unknown",
+        "templateUses": 1,
+        "type": "AWS::GuardDuty::Detector"
+      },
+      {
+        "status": "unsupported",
+        "templateUses": 1,
+        "type": "AWS::Route53::HostedZone"
+      }
+    ]
+  },
+  "generatedBy": "probe/shimgen.py (probe/coverage.py) from probe/registry/cfn-types.json, probe/registry/shim-router.json, probe/shim-services.yaml and probe/registry/coverage.yaml",
+  "services": {
+    "apigateway": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::ApiGateway::ApiKey",
+        "AWS::ApiGateway::Authorizer",
+        "AWS::ApiGateway::Deployment",
+        "AWS::ApiGateway::Method",
+        "AWS::ApiGateway::Model",
+        "AWS::ApiGateway::RequestValidator",
+        "AWS::ApiGateway::Resource",
+        "AWS::ApiGateway::RestApi",
+        "AWS::ApiGateway::Stage",
+        "AWS::ApiGateway::UsagePlan",
+        "AWS::ApiGateway::UsagePlanKey"
+      ],
+      "handler": "apigwMux",
+      "namespaces": [
+        "AWS::ApiGateway",
+        "AWS::ApiGatewayV2"
+      ],
+      "operations": [
+        "CreateApi",
+        "CreateApiKey",
+        "CreateAuthorizer",
+        "CreateDeployment",
+        "CreateIntegration",
+        "CreateModel",
+        "CreateRequestValidator",
+        "CreateResource",
+        "CreateRestApi",
+        "CreateRoute",
+        "CreateStage",
+        "CreateUsagePlan",
+        "CreateUsagePlanKey",
+        "DeleteApi",
+        "DeleteRestApi",
+        "GetApi",
+        "GetApiKey",
+        "GetApiKeys",
+        "GetApis",
+        "GetModel",
+        "GetModels",
+        "GetRequestValidator",
+        "GetRequestValidators",
+        "GetResources",
+        "GetRestApi",
+        "GetRestApis",
+        "GetRoutes",
+        "GetStages",
+        "GetUsagePlan",
+        "GetUsagePlanKeys",
+        "GetUsagePlans",
+        "PutIntegration",
+        "PutIntegrationResponse",
+        "PutMethod",
+        "PutMethodResponse"
+      ],
+      "probes": [
+        "apigateway",
+        "apigateway-restv1",
+        "apigateway-restv1-cfn"
+      ],
+      "refused": [],
+      "service": "API Gateway",
+      "tier": "proven"
+    },
+    "appsync": {
+      "actions": [
+        "appsync:GraphQL"
+      ],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::AppSync::DataSource",
+        "AWS::AppSync::FunctionConfiguration",
+        "AWS::AppSync::GraphQLApi",
+        "AWS::AppSync::GraphQLSchema",
+        "AWS::AppSync::Resolver"
+      ],
+      "handler": "appsyncHandler",
+      "namespaces": [
+        "AWS::AppSync"
+      ],
+      "operations": [
+        "CreateDataSource",
+        "CreateResolver",
+        "DeleteDataSource",
+        "DeleteResolver",
+        "GetResolver",
+        "UpdateResolver"
+      ],
+      "probes": [
+        "appsync"
+      ],
+      "refused": [],
+      "service": "AppSync",
+      "tier": "proven"
+    },
+    "athena": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [],
+      "handler": "athenaHandler",
+      "namespaces": [
+        "AWS::Athena"
+      ],
+      "operations": [
+        "BatchGetNamedQuery",
+        "BatchGetQueryExecution",
+        "CreateDataCatalog",
+        "CreateNamedQuery",
+        "CreatePreparedStatement",
+        "CreateWorkGroup",
+        "DeleteDataCatalog",
+        "DeleteNamedQuery",
+        "DeletePreparedStatement",
+        "DeleteWorkGroup",
+        "GetDataCatalog",
+        "GetDatabase",
+        "GetNamedQuery",
+        "GetPreparedStatement",
+        "GetQueryExecution",
+        "GetQueryResults",
+        "GetTableMetadata",
+        "GetWorkGroup",
+        "ListDataCatalogs",
+        "ListDatabases",
+        "ListNamedQueries",
+        "ListPreparedStatements",
+        "ListTableMetadata",
+        "ListWorkGroups",
+        "StartQueryExecution",
+        "StopQueryExecution",
+        "UpdateDataCatalog",
+        "UpdateWorkGroup"
+      ],
+      "probes": [
+        "athena"
+      ],
+      "refused": [],
+      "service": "Athena",
+      "tier": "proven"
+    },
+    "cloudformation": {
+      "actions": [
+        "cloudformation:DescribeStacks",
+        "cloudformation:SignalResource"
+      ],
+      "conditional": true,
+      "deployableTypes": [
+        "AWS::CloudFormation::CustomResource",
+        "AWS::CloudFormation::WaitCondition",
+        "AWS::CloudFormation::WaitConditionHandle"
+      ],
+      "handler": "cfnDoorway",
+      "namespaces": [
+        "AWS::CloudFormation"
+      ],
+      "operations": [
+        "CreateChangeSet",
+        "CreateStack",
+        "DeleteChangeSet",
+        "DeleteStack",
+        "DescribeChangeSet",
+        "DescribeStackDriftDetectionStatus",
+        "DescribeStackEvents",
+        "DescribeStackResource",
+        "DescribeStackResourceDrifts",
+        "DescribeStackResources",
+        "DescribeStacks",
+        "DetectStackDrift",
+        "ExecuteChangeSet",
+        "GetTemplate",
+        "GetTemplateSummary",
+        "ListChangeSets",
+        "ListExports",
+        "ListImports",
+        "ListStackResources",
+        "ListStacks",
+        "UpdateStack",
+        "ValidateTemplate"
+      ],
+      "probes": [
+        "cloudformation",
+        "cfn-customresource",
+        "cfn-lift-and-shift",
+        "cfn-data-services",
+        "cfn-api"
+      ],
+      "refused": [],
+      "service": "CloudFormation",
+      "tier": "proven"
+    },
+    "cloudfront": {
+      "actions": [],
+      "conditional": true,
+      "deployableTypes": [
+        "AWS::CloudFront::CachePolicy",
+        "AWS::CloudFront::CloudFrontOriginAccessIdentity",
+        "AWS::CloudFront::Distribution",
+        "AWS::CloudFront::OriginAccessControl",
+        "AWS::CloudFront::OriginRequestPolicy",
+        "AWS::CloudFront::ResponseHeadersPolicy"
+      ],
+      "handler": "cloudFrontHandler",
+      "namespaces": [
+        "AWS::CloudFront"
+      ],
+      "operations": [
+        "CreateInvalidation",
+        "GetInvalidation",
+        "ListInvalidations"
+      ],
+      "probes": [
+        "cfn-cloudfront"
+      ],
+      "refused": [],
+      "service": "CloudFront",
+      "tier": "proven"
+    },
+    "cognito-idp": {
+      "actions": [],
+      "conditional": true,
+      "deployableTypes": [
+        "AWS::Cognito::UserPool",
+        "AWS::Cognito::UserPoolClient"
+      ],
+      "handler": "cognitoHandler",
+      "namespaces": [
+        "AWS::Cognito"
+      ],
+      "operations": [
+        "AdminConfirmSignUp",
+        "AdminCreateUser",
+        "AdminGetUser",
+        "AdminInitiateAuth",
+        "AdminSetUserPassword",
+        "ConfirmForgotPassword",
+        "ConfirmSignUp",
+        "CreateUserPool",
+        "CreateUserPoolClient",
+        "DeleteUserPool",
+        "DescribeUserPool",
+        "ForgotPassword",
+        "GetUser",
+        "GlobalSignOut",
+        "InitiateAuth",
+        "ResendConfirmationCode",
+        "RespondToAuthChallenge",
+        "SignUp"
+      ],
+      "probes": [
+        "cognito"
+      ],
+      "refused": [],
+      "service": "Cognito",
+      "tier": "proven"
+    },
+    "dynamodb": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::DynamoDB::Table"
+      ],
+      "handler": "dynamoHandler",
+      "namespaces": [
+        "AWS::DynamoDB"
+      ],
+      "operations": [
+        "BatchGetItem",
+        "BatchWriteItem",
+        "CreateTable",
+        "DeleteItem",
+        "DeleteTable",
+        "DescribeContinuousBackups",
+        "DescribeTable",
+        "DescribeTimeToLive",
+        "GetItem",
+        "ListTables",
+        "PutItem",
+        "Query",
+        "RestoreTableToPointInTime",
+        "Scan",
+        "TransactGetItems",
+        "TransactWriteItems",
+        "UpdateContinuousBackups",
+        "UpdateItem",
+        "UpdateTimeToLive"
+      ],
+      "probes": [
+        "dynamodb",
+        "dynamodb-lsi",
+        "dynamodb-restore",
+        "dynamodb-streams"
+      ],
+      "refused": [],
+      "service": "DynamoDB",
+      "tier": "proven"
+    },
+    "dynamodbstreams": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [],
+      "handler": "ddbStreamsHandler",
+      "namespaces": [],
+      "operations": [
+        "DescribeStream",
+        "GetRecords",
+        "GetShardIterator",
+        "ListStreams"
+      ],
+      "probes": [
+        "dynamodb",
+        "dynamodb-lsi",
+        "dynamodb-restore",
+        "dynamodb-streams"
+      ],
+      "refused": [],
+      "service": "DynamoDB",
+      "tier": "proven"
+    },
+    "ecr": {
+      "actions": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:BatchDeleteImage",
+        "ecr:BatchGetImage",
+        "ecr:CompleteLayerUpload",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:InitiateLayerUpload",
+        "ecr:PutImage",
+        "ecr:UploadLayerPart"
+      ],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::ECR::Repository"
+      ],
+      "handler": "ecrHandler",
+      "namespaces": [
+        "AWS::ECR"
+      ],
+      "operations": [
+        "BatchCheckLayerAvailability",
+        "BatchDeleteImage",
+        "BatchGetImage",
+        "BatchGetImageScanFindings",
+        "CompleteLayerUpload",
+        "CreatePullThroughCacheRule",
+        "CreateRepository",
+        "DeleteLifecyclePolicy",
+        "DeletePullThroughCacheRule",
+        "DeleteRepository",
+        "DeleteRepositoryPolicy",
+        "DescribeImageScanFindings",
+        "DescribeImages",
+        "DescribePullThroughCacheRules",
+        "DescribeRegistry",
+        "DescribeRepositories",
+        "GetAuthorizationToken",
+        "GetDownloadUrlForLayer",
+        "GetLifecyclePolicy",
+        "GetLifecyclePolicyPreview",
+        "GetRegistryPolicy",
+        "GetRepositoryPolicy",
+        "InitiateLayerUpload",
+        "ListImages",
+        "ListTagsForResource",
+        "PutImage",
+        "PutImageScanningConfiguration",
+        "PutImageTagMutability",
+        "PutLifecyclePolicy",
+        "PutRegistryPolicy",
+        "PutReplicationConfiguration",
+        "SetRepositoryPolicy",
+        "StartImageScan",
+        "StartLifecyclePolicyPreview",
+        "TagResource",
+        "UntagResource",
+        "UploadLayerPart"
+      ],
+      "probes": [
+        "ecr",
+        "ecr-perrepo"
+      ],
+      "refused": [],
+      "service": "ECR",
+      "tier": "proven"
+    },
+    "ecs": {
+      "actions": [],
+      "conditional": true,
+      "deployableTypes": [
+        "AWS::ECS::Cluster",
+        "AWS::ECS::Service",
+        "AWS::ECS::TaskDefinition"
+      ],
+      "handler": "ecsDoorway",
+      "namespaces": [
+        "AWS::ECS"
+      ],
+      "operations": [
+        "CreateCluster",
+        "CreateService",
+        "DeleteCluster",
+        "DeleteService",
+        "DeregisterTaskDefinition",
+        "DescribeClusters",
+        "DescribeServices",
+        "DescribeTaskDefinition",
+        "ListClusters",
+        "ListServices",
+        "RegisterTaskDefinition",
+        "RunTask",
+        "UpdateService"
+      ],
+      "probes": [
+        "ecs"
+      ],
+      "refused": [],
+      "service": "ECS",
+      "tier": "proven"
+    },
+    "eks": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [],
+      "handler": "eksHandler",
+      "namespaces": [
+        "AWS::EKS"
+      ],
+      "operations": [
+        "DescribeCluster",
+        "DescribeIdentityProviderConfig",
+        "DescribeNodegroup",
+        "ListClusters",
+        "ListNodegroups"
+      ],
+      "probes": [
+        "eks"
+      ],
+      "refused": [
+        "CreateCluster",
+        "CreateNodegroup",
+        "DeleteCluster",
+        "DeleteNodegroup",
+        "UpdateAddon",
+        "UpdateClusterConfig",
+        "UpdateClusterVersion"
+      ],
+      "service": "EKS",
+      "tier": "proven"
+    },
+    "email": {
+      "actions": [
+        "ses:GetAccount",
+        "ses:SendEmail"
+      ],
+      "conditional": true,
+      "deployableTypes": [],
+      "handler": "sesHandler",
+      "namespaces": [
+        "AWS::SES"
+      ],
+      "operations": [
+        "CreateEmailIdentity",
+        "DeleteEmailIdentity",
+        "GetAccount",
+        "GetEmailIdentity",
+        "GetIdentityVerificationAttributes",
+        "GetSendQuota",
+        "GetSendStatistics",
+        "ListEmailIdentities",
+        "ListIdentities",
+        "SendBulkEmail",
+        "SendEmail",
+        "SendRawEmail",
+        "VerifyDomainIdentity",
+        "VerifyEmailIdentity"
+      ],
+      "probes": [
+        "ses"
+      ],
+      "refused": [],
+      "service": "SES",
+      "tier": "proven"
+    },
+    "events": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::Events::EventBus",
+        "AWS::Events::Rule"
+      ],
+      "handler": "ebHandler",
+      "namespaces": [
+        "AWS::Events"
+      ],
+      "operations": [
+        "CreateEventBus",
+        "DeleteEventBus",
+        "DeleteRule",
+        "DescribeRule",
+        "DisableRule",
+        "EnableRule",
+        "ListEventBuses",
+        "ListRules",
+        "ListTargetsByRule",
+        "PutEvents",
+        "PutRule",
+        "PutTargets",
+        "RemoveTargets",
+        "TestEventPattern"
+      ],
+      "probes": [
+        "eventbridge"
+      ],
+      "refused": [],
+      "service": "EventBridge",
+      "tier": "proven"
+    },
+    "glue": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [],
+      "handler": "glueHandler",
+      "namespaces": [
+        "AWS::Glue"
+      ],
+      "operations": [
+        "BatchCreatePartition",
+        "BatchDeletePartition",
+        "BatchStopJobRun",
+        "BatchUpdatePartition",
+        "CreateCrawler",
+        "CreateDatabase",
+        "CreateJob",
+        "CreatePartition",
+        "CreateTable",
+        "DeleteCrawler",
+        "DeleteDatabase",
+        "DeleteJob",
+        "DeletePartition",
+        "DeleteTable",
+        "GetCrawler",
+        "GetCrawlers",
+        "GetDatabase",
+        "GetDatabases",
+        "GetJob",
+        "GetJobRun",
+        "GetJobRuns",
+        "GetJobs",
+        "GetPartitions",
+        "GetTable",
+        "GetTables",
+        "StartCrawler",
+        "StartJobRun",
+        "StopCrawler",
+        "UpdateCrawler",
+        "UpdateJob",
+        "UpdatePartition",
+        "UpdateTable"
+      ],
+      "probes": [
+        "glue"
+      ],
+      "refused": [],
+      "service": "Glue",
+      "tier": "proven"
+    },
+    "iam": {
+      "actions": [],
+      "conditional": true,
+      "deployableTypes": [
+        "AWS::IAM::InstanceProfile",
+        "AWS::IAM::ManagedPolicy",
+        "AWS::IAM::Policy",
+        "AWS::IAM::Role",
+        "AWS::IAM::User"
+      ],
+      "handler": "iamHandler",
+      "namespaces": [
+        "AWS::IAM"
+      ],
+      "operations": [
+        "AttachRolePolicy",
+        "CreateAccessKey",
+        "CreatePolicy",
+        "CreatePolicyVersion",
+        "CreateRole",
+        "CreateUser",
+        "DeleteAccessKey",
+        "DeletePolicy",
+        "DeleteRole",
+        "DeleteRolePolicy",
+        "DeleteUser",
+        "DetachRolePolicy",
+        "GetPolicy",
+        "GetPolicyVersion",
+        "GetRole",
+        "GetRolePolicy",
+        "GetUser",
+        "ListAccessKeys",
+        "ListAttachedRolePolicies",
+        "ListPolicies",
+        "ListPolicyVersions",
+        "ListRolePolicies",
+        "ListRoles",
+        "ListUsers",
+        "PutRolePolicy",
+        "SimulatePrincipalPolicy",
+        "TagUser",
+        "UpdateAccessKey"
+      ],
+      "probes": [
+        "iam",
+        "iam-timecond",
+        "iam-username-like"
+      ],
+      "refused": [],
+      "service": "IAM",
+      "tier": "proven"
+    },
+    "kinesis": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [],
+      "handler": "kinesisHandler",
+      "namespaces": [
+        "AWS::Kinesis"
+      ],
+      "operations": [
+        "CreateStream",
+        "DecreaseStreamRetentionPeriod",
+        "DeleteStream",
+        "DescribeStream",
+        "DescribeStreamSummary",
+        "GetRecords",
+        "GetShardIterator",
+        "IncreaseStreamRetentionPeriod",
+        "ListShards",
+        "ListStreams",
+        "PutRecord",
+        "PutRecords"
+      ],
+      "probes": [
+        "kinesis"
+      ],
+      "refused": [],
+      "service": "Kinesis Data Streams",
+      "tier": "proven"
+    },
+    "kms": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::KMS::Alias",
+        "AWS::KMS::Key"
+      ],
+      "handler": "kmsHandler",
+      "namespaces": [
+        "AWS::KMS"
+      ],
+      "operations": [
+        "CancelKeyDeletion",
+        "CreateAlias",
+        "CreateKey",
+        "Decrypt",
+        "DeleteAlias",
+        "DescribeKey",
+        "DisableKey",
+        "DisableKeyRotation",
+        "EnableKey",
+        "EnableKeyRotation",
+        "Encrypt",
+        "GenerateDataKey",
+        "GenerateDataKeyWithoutPlaintext",
+        "GenerateRandom",
+        "GetKeyPolicy",
+        "GetKeyRotationStatus",
+        "ListAliases",
+        "ListKeyPolicies",
+        "ListKeys",
+        "PutKeyPolicy",
+        "ReEncrypt",
+        "ScheduleKeyDeletion",
+        "UpdateAlias"
+      ],
+      "probes": [
+        "kms",
+        "kms-keypolicy"
+      ],
+      "refused": [],
+      "service": "KMS",
+      "tier": "proven"
+    },
+    "lambda": {
+      "actions": [
+        "lambda:InvokeFunction"
+      ],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::Lambda::Function",
+        "AWS::Lambda::Permission"
+      ],
+      "handler": "lambdaHandler",
+      "namespaces": [
+        "AWS::Lambda"
+      ],
+      "operations": [],
+      "probes": [
+        "lambda"
+      ],
+      "refused": [],
+      "service": "Lambda",
+      "tier": "proven"
+    },
+    "logs": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::Logs::LogGroup"
+      ],
+      "handler": "cwlHandler",
+      "namespaces": [
+        "AWS::Logs"
+      ],
+      "operations": [
+        "CreateLogGroup",
+        "CreateLogStream",
+        "DeleteLogGroup",
+        "DeleteLogStream",
+        "DeleteRetentionPolicy",
+        "DescribeLogGroups",
+        "DescribeLogStreams",
+        "DescribeQueries",
+        "FilterLogEvents",
+        "GetLogEvents",
+        "GetQueryResults",
+        "PutLogEvents",
+        "PutRetentionPolicy",
+        "StartQuery",
+        "StopQuery",
+        "TagLogGroup"
+      ],
+      "probes": [
+        "cloudwatchlogs"
+      ],
+      "refused": [],
+      "service": "CloudWatch Logs",
+      "tier": "proven"
+    },
+    "monitoring": {
+      "actions": [
+        "cloudwatch:DeleteAlarms",
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:GetMetricData",
+        "cloudwatch:SetAlarmState"
+      ],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::CloudWatch::Alarm"
+      ],
+      "handler": "cwHandler",
+      "namespaces": [
+        "AWS::CloudWatch"
+      ],
+      "operations": [
+        "DeleteAlarms",
+        "DescribeAlarms",
+        "GetMetricData",
+        "GetMetricStatistics",
+        "ListMetrics",
+        "PutMetricAlarm",
+        "PutMetricData",
+        "SetAlarmState"
+      ],
+      "probes": [
+        "cloudwatch"
+      ],
+      "refused": [],
+      "service": "CloudWatch",
+      "tier": "proven"
+    },
+    "rds": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::RDS::DBInstance"
+      ],
+      "handler": "rdsHandler",
+      "namespaces": [
+        "AWS::RDS"
+      ],
+      "operations": [
+        "AddTagsToResource",
+        "CreateDBInstance",
+        "CreateDBInstanceReadReplica",
+        "CreateDBSnapshot",
+        "DeleteDBInstance",
+        "DeleteDBSnapshot",
+        "DescribeDBInstances",
+        "DescribeDBSnapshots",
+        "ListTagsForResource",
+        "ModifyDBInstance",
+        "RestoreDBInstanceFromDBSnapshot",
+        "RestoreDBInstanceToPointInTime"
+      ],
+      "probes": [
+        "rds"
+      ],
+      "refused": [],
+      "service": "RDS",
+      "tier": "proven"
+    },
+    "s3": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::S3::Bucket",
+        "AWS::S3::BucketPolicy"
+      ],
+      "handler": "s3Handler",
+      "namespaces": [
+        "AWS::S3"
+      ],
+      "operations": [
+        "AbortMultipartUpload",
+        "CompleteMultipartUpload",
+        "CopyObject",
+        "CreateBucket",
+        "CreateMultipartUpload",
+        "DeleteBucket",
+        "DeleteBucketTagging",
+        "DeleteObject",
+        "DeleteObjects",
+        "GetBucketEncryption",
+        "GetBucketLocation",
+        "GetBucketOwnershipControls",
+        "GetBucketTagging",
+        "GetBucketVersioning",
+        "GetObject",
+        "GetObjectTagging",
+        "HeadBucket",
+        "HeadObject",
+        "ListBuckets",
+        "ListMultipartUploads",
+        "ListObjectVersions",
+        "ListObjects",
+        "ListParts",
+        "PutBucketTagging",
+        "PutBucketVersioning",
+        "PutObject",
+        "UploadPart",
+        "UploadPartCopy"
+      ],
+      "probes": [
+        "s3"
+      ],
+      "refused": [],
+      "service": "S3",
+      "tier": "proven"
+    },
+    "secretsmanager": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::SecretsManager::Secret"
+      ],
+      "handler": "secretsHandler",
+      "namespaces": [
+        "AWS::SecretsManager"
+      ],
+      "operations": [
+        "CancelRotateSecret",
+        "CreateSecret",
+        "DeleteSecret",
+        "DescribeSecret",
+        "GetRandomPassword",
+        "GetSecretValue",
+        "ListSecretVersionIds",
+        "ListSecrets",
+        "PutSecretValue",
+        "RestoreSecret",
+        "RotateSecret",
+        "TagResource",
+        "UntagResource",
+        "UpdateSecret",
+        "UpdateSecretVersionStage"
+      ],
+      "probes": [
+        "secretsmanager"
+      ],
+      "refused": [],
+      "service": "Secrets Manager",
+      "tier": "proven"
+    },
+    "ses": {
+      "actions": [
+        "ses:GetAccount",
+        "ses:SendEmail"
+      ],
+      "conditional": true,
+      "deployableTypes": [],
+      "handler": "sesHandler",
+      "namespaces": [
+        "AWS::SES"
+      ],
+      "operations": [
+        "CreateEmailIdentity",
+        "DeleteEmailIdentity",
+        "GetAccount",
+        "GetEmailIdentity",
+        "GetIdentityVerificationAttributes",
+        "GetSendQuota",
+        "GetSendStatistics",
+        "ListEmailIdentities",
+        "ListIdentities",
+        "SendBulkEmail",
+        "SendEmail",
+        "SendRawEmail",
+        "VerifyDomainIdentity",
+        "VerifyEmailIdentity"
+      ],
+      "probes": [
+        "ses"
+      ],
+      "refused": [],
+      "service": "SES",
+      "tier": "proven"
+    },
+    "sns": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::SNS::Subscription",
+        "AWS::SNS::Topic",
+        "AWS::SNS::TopicPolicy"
+      ],
+      "handler": "snsHandler",
+      "namespaces": [
+        "AWS::SNS"
+      ],
+      "operations": [
+        "CreateTopic",
+        "DeleteTopic",
+        "GetSubscriptionAttributes",
+        "GetTopicAttributes",
+        "ListSubscriptions",
+        "ListSubscriptionsByTopic",
+        "ListTopics",
+        "Publish",
+        "PublishBatch",
+        "SetSubscriptionAttributes",
+        "SetTopicAttributes",
+        "Subscribe",
+        "Unsubscribe"
+      ],
+      "probes": [
+        "sns"
+      ],
+      "refused": [],
+      "service": "SNS",
+      "tier": "proven"
+    },
+    "sqs": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::SQS::Queue",
+        "AWS::SQS::QueuePolicy"
+      ],
+      "handler": "sqsHandler",
+      "namespaces": [
+        "AWS::SQS"
+      ],
+      "operations": [
+        "ChangeMessageVisibility",
+        "ChangeMessageVisibilityBatch",
+        "CreateQueue",
+        "DeleteMessage",
+        "DeleteMessageBatch",
+        "DeleteQueue",
+        "GetQueueAttributes",
+        "GetQueueUrl",
+        "ListQueues",
+        "PurgeQueue",
+        "ReceiveMessage",
+        "SendMessage",
+        "SendMessageBatch",
+        "SetQueueAttributes"
+      ],
+      "probes": [
+        "sqs"
+      ],
+      "refused": [],
+      "service": "SQS",
+      "tier": "proven"
+    },
+    "ssm": {
+      "actions": [
+        "ssm:DeleteParameters",
+        "ssm:GetParameters"
+      ],
+      "conditional": false,
+      "deployableTypes": [
+        "AWS::SSM::Parameter"
+      ],
+      "handler": "ssmHandler",
+      "namespaces": [
+        "AWS::SSM"
+      ],
+      "operations": [
+        "AddTagsToResource",
+        "DeleteParameter",
+        "DeleteParameters",
+        "DescribeParameters",
+        "GetParameter",
+        "GetParameterHistory",
+        "GetParameters",
+        "GetParametersByPath",
+        "LabelParameterVersion",
+        "ListTagsForResource",
+        "PutParameter",
+        "RemoveTagsFromResource"
+      ],
+      "probes": [
+        "ssm"
+      ],
+      "refused": [],
+      "service": "SSM Parameter Store",
+      "tier": "proven"
+    },
+    "states": {
+      "actions": [],
+      "conditional": true,
+      "deployableTypes": [
+        "AWS::StepFunctions::StateMachine"
+      ],
+      "handler": "sfnHandler",
+      "namespaces": [
+        "AWS::StepFunctions"
+      ],
+      "operations": [
+        "CreateStateMachine",
+        "DeleteStateMachine",
+        "DescribeExecution",
+        "DescribeStateMachine",
+        "DescribeStateMachineForExecution",
+        "GetExecutionHistory",
+        "ListExecutions",
+        "ListStateMachines",
+        "StartExecution",
+        "StartSyncExecution",
+        "StopExecution",
+        "UpdateStateMachine"
+      ],
+      "probes": [
+        "stepfunctions"
+      ],
+      "refused": [],
+      "service": "Step Functions",
+      "tier": "proven"
+    },
+    "sts": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [],
+      "handler": "stsHandler",
+      "namespaces": [],
+      "operations": [
+        "AssumeRole",
+        "AssumeRoleWithWebIdentity",
+        "GetCallerIdentity"
+      ],
+      "probes": [
+        "sts",
+        "vm-credentials"
+      ],
+      "refused": [],
+      "service": "STS",
+      "tier": "proven"
+    }
+  },
+  "summary": {
+    "cfnTypes": 97,
+    "covered": 38,
+    "deployable": 74,
+    "excFrontDoor": 18,
+    "excRead": 18,
+    "excepted": 36,
+    "flattened": 1,
+    "operations": 446,
+    "planOnly": 11,
+    "refused": 11,
+    "services": 27,
+    "signingNames": 29,
+    "violations": 0
+  },
+  "types": {
+    "AWS::ApiGateway::ApiKey": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "apigateway"
+      ],
+      "kind": "aws-shim apigateway (v1)",
+      "namespace": "AWS::ApiGateway",
+      "readCalls": [
+        "GetApiKey",
+        "GetApiKeys"
+      ],
+      "service": "API Gateway",
+      "serviceTier": "proven",
+      "signingNames": [
+        "apigateway"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::ApiGateway::Authorizer": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "The REST v1 surface the stack provisions through creates methods, deployments and authorizers but serves no call that reads them (GetMethod, GetDeployments, GetAuthorizers); GetRestApi, GetResources, GetStages, GetModels, GetRequestValidators, GetApiKeys and GetUsagePlans read the rest of the API."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "apigateway"
+      ],
+      "kind": "aws-shim apigateway (v1)",
+      "namespace": "AWS::ApiGateway",
+      "readCalls": [],
+      "service": "API Gateway",
+      "serviceTier": "proven",
+      "signingNames": [
+        "apigateway"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::ApiGateway::Deployment": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "The REST v1 surface the stack provisions through creates methods, deployments and authorizers but serves no call that reads them (GetMethod, GetDeployments, GetAuthorizers); GetRestApi, GetResources, GetStages, GetModels, GetRequestValidators, GetApiKeys and GetUsagePlans read the rest of the API."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "apigateway"
+      ],
+      "kind": "aws-shim apigateway (v1)",
+      "namespace": "AWS::ApiGateway",
+      "readCalls": [],
+      "service": "API Gateway",
+      "serviceTier": "proven",
+      "signingNames": [
+        "apigateway"
+      ],
+      "stackProbes": [
+        "apigateway-restv1-cfn"
+      ],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "excepted"
+    },
+    "AWS::ApiGateway::Method": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "The REST v1 surface the stack provisions through creates methods, deployments and authorizers but serves no call that reads them (GetMethod, GetDeployments, GetAuthorizers); GetRestApi, GetResources, GetStages, GetModels, GetRequestValidators, GetApiKeys and GetUsagePlans read the rest of the API."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "apigateway"
+      ],
+      "kind": "aws-shim apigateway (v1)",
+      "namespace": "AWS::ApiGateway",
+      "readCalls": [],
+      "service": "API Gateway",
+      "serviceTier": "proven",
+      "signingNames": [
+        "apigateway"
+      ],
+      "stackProbes": [
+        "apigateway-restv1-cfn"
+      ],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "excepted"
+    },
+    "AWS::ApiGateway::Model": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "apigateway"
+      ],
+      "kind": "aws-shim apigateway (v1)",
+      "namespace": "AWS::ApiGateway",
+      "readCalls": [
+        "GetModel",
+        "GetModels"
+      ],
+      "service": "API Gateway",
+      "serviceTier": "proven",
+      "signingNames": [
+        "apigateway"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::ApiGateway::RequestValidator": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "apigateway"
+      ],
+      "kind": "aws-shim apigateway (v1)",
+      "namespace": "AWS::ApiGateway",
+      "readCalls": [
+        "GetRequestValidator",
+        "GetRequestValidators"
+      ],
+      "service": "API Gateway",
+      "serviceTier": "proven",
+      "signingNames": [
+        "apigateway"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::ApiGateway::Resource": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "apigateway"
+      ],
+      "kind": "aws-shim apigateway (v1)",
+      "namespace": "AWS::ApiGateway",
+      "readCalls": [
+        "GetResources"
+      ],
+      "service": "API Gateway",
+      "serviceTier": "proven",
+      "signingNames": [
+        "apigateway"
+      ],
+      "stackProbes": [
+        "apigateway-restv1-cfn"
+      ],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "ok"
+    },
+    "AWS::ApiGateway::RestApi": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "apigateway"
+      ],
+      "kind": "aws-shim apigateway (v1)",
+      "namespace": "AWS::ApiGateway",
+      "readCalls": [
+        "GetRestApi",
+        "GetRestApis"
+      ],
+      "service": "API Gateway",
+      "serviceTier": "proven",
+      "signingNames": [
+        "apigateway"
+      ],
+      "stackProbes": [
+        "apigateway-restv1-cfn"
+      ],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "ok"
+    },
+    "AWS::ApiGateway::Stage": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "apigateway"
+      ],
+      "kind": "aws-shim apigateway (v1)",
+      "namespace": "AWS::ApiGateway",
+      "readCalls": [
+        "GetStages"
+      ],
+      "service": "API Gateway",
+      "serviceTier": "proven",
+      "signingNames": [
+        "apigateway"
+      ],
+      "stackProbes": [
+        "apigateway-restv1-cfn"
+      ],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "ok"
+    },
+    "AWS::ApiGateway::UsagePlan": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "apigateway"
+      ],
+      "kind": "aws-shim apigateway (v1)",
+      "namespace": "AWS::ApiGateway",
+      "readCalls": [
+        "GetUsagePlan",
+        "GetUsagePlanKeys",
+        "GetUsagePlans"
+      ],
+      "service": "API Gateway",
+      "serviceTier": "proven",
+      "signingNames": [
+        "apigateway"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::ApiGateway::UsagePlanKey": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "apigateway"
+      ],
+      "kind": "aws-shim apigateway (v1)",
+      "namespace": "AWS::ApiGateway",
+      "readCalls": [
+        "GetUsagePlanKeys"
+      ],
+      "service": "API Gateway",
+      "serviceTier": "proven",
+      "signingNames": [
+        "apigateway"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::AppSync::DataSource": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "A stack's API is one kind: GraphQLApi, served at its GraphQL endpoint (appsync:GraphQL). The AppSync management surface serves resolver and data-source writes and GetResolver only \u2014 no GetGraphqlApi, GetIntrospectionSchema, GetDataSource or GetFunction."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "appsync"
+      ],
+      "kind": "GraphQLApi",
+      "namespace": "AWS::AppSync",
+      "readCalls": [],
+      "service": "AppSync",
+      "serviceTier": "proven",
+      "signingNames": [
+        "appsync"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::AppSync::FunctionConfiguration": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "A stack's API is one kind: GraphQLApi, served at its GraphQL endpoint (appsync:GraphQL). The AppSync management surface serves resolver and data-source writes and GetResolver only \u2014 no GetGraphqlApi, GetIntrospectionSchema, GetDataSource or GetFunction."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "appsync"
+      ],
+      "kind": "GraphQLApi",
+      "namespace": "AWS::AppSync",
+      "readCalls": [],
+      "service": "AppSync",
+      "serviceTier": "proven",
+      "signingNames": [
+        "appsync"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::AppSync::GraphQLApi": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "A stack's API is one kind: GraphQLApi, served at its GraphQL endpoint (appsync:GraphQL). The AppSync management surface serves resolver and data-source writes and GetResolver only \u2014 no GetGraphqlApi, GetIntrospectionSchema, GetDataSource or GetFunction."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "appsync"
+      ],
+      "kind": "GraphQLApi",
+      "namespace": "AWS::AppSync",
+      "readCalls": [],
+      "service": "AppSync",
+      "serviceTier": "proven",
+      "signingNames": [
+        "appsync"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::AppSync::GraphQLSchema": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "A stack's API is one kind: GraphQLApi, served at its GraphQL endpoint (appsync:GraphQL). The AppSync management surface serves resolver and data-source writes and GetResolver only \u2014 no GetGraphqlApi, GetIntrospectionSchema, GetDataSource or GetFunction."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "appsync"
+      ],
+      "kind": "GraphQLApi",
+      "namespace": "AWS::AppSync",
+      "readCalls": [],
+      "service": "AppSync",
+      "serviceTier": "proven",
+      "signingNames": [
+        "appsync"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::AppSync::Resolver": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "appsync"
+      ],
+      "kind": "GraphQLApi",
+      "namespace": "AWS::AppSync",
+      "readCalls": [
+        "GetResolver"
+      ],
+      "service": "AppSync",
+      "serviceTier": "proven",
+      "signingNames": [
+        "appsync"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::AutoScaling::AutoScalingGroup": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "",
+      "namespace": "AWS::AutoScaling",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "autoscaling"
+      ],
+      "stackProbes": [],
+      "status": "unsupported",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::AutoScaling::LaunchConfiguration": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "",
+      "namespace": "AWS::AutoScaling",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "autoscaling"
+      ],
+      "stackProbes": [],
+      "status": "unsupported",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::CertificateManager::Certificate": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "A certificate exists only as the TLS certificate of the CloudFront static site in the same stack (kind: StaticSite), issued in-cluster by the platform's ACM-style CA; its Ref resolves for that distribution, but there is no ACM front door (DescribeCertificate, ListCertificates)."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "StaticSite(tls)",
+      "namespace": "AWS::CertificateManager",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "acm"
+      ],
+      "stackProbes": [
+        "cfn-cloudfront"
+      ],
+      "status": "partial",
+      "templateUses": 2,
+      "verdict": "excepted"
+    },
+    "AWS::CloudFormation::CustomResource": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "cloudformation"
+      ],
+      "kind": "Function(invoke)",
+      "namespace": "AWS::CloudFormation",
+      "readCalls": [
+        "DescribeStackResource"
+      ],
+      "service": "CloudFormation",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cloudformation"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::CloudFormation::Stack": {
+      "deployable": false,
+      "flattened": true,
+      "frontDoor": [
+        "cloudformation"
+      ],
+      "kind": "",
+      "namespace": "AWS::CloudFormation",
+      "readCalls": [
+        "DescribeStackDriftDetectionStatus",
+        "DescribeStackEvents",
+        "DescribeStackResource",
+        "DescribeStackResourceDrifts",
+        "DescribeStackResources",
+        "DescribeStacks",
+        "ListStackResources",
+        "ListStacks"
+      ],
+      "service": "CloudFormation",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cloudformation"
+      ],
+      "stackProbes": [
+        "cfn-api"
+      ],
+      "status": "unsupported",
+      "templateUses": 1,
+      "verdict": "flattened"
+    },
+    "AWS::CloudFormation::WaitCondition": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "cloudformation"
+      ],
+      "kind": "(signal wait)",
+      "namespace": "AWS::CloudFormation",
+      "readCalls": [
+        "DescribeStackResource"
+      ],
+      "service": "CloudFormation",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cloudformation"
+      ],
+      "stackProbes": [
+        "cfn-api"
+      ],
+      "status": "supported",
+      "templateUses": 3,
+      "verdict": "ok"
+    },
+    "AWS::CloudFormation::WaitConditionHandle": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "cloudformation"
+      ],
+      "kind": "(signal URL)",
+      "namespace": "AWS::CloudFormation",
+      "readCalls": [
+        "DescribeStackResource"
+      ],
+      "service": "CloudFormation",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cloudformation"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::CloudFront::CachePolicy": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "cloudfront"
+      ],
+      "kind": "(implicit)",
+      "namespace": "AWS::CloudFront",
+      "readCalls": [],
+      "service": "CloudFront",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cloudfront"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::CloudFront::CloudFrontOriginAccessIdentity": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "cloudfront"
+      ],
+      "kind": "StaticSite(origin access)",
+      "namespace": "AWS::CloudFront",
+      "readCalls": [],
+      "service": "CloudFront",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cloudfront"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::CloudFront::Distribution": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "cloudfront"
+      ],
+      "kind": "StaticSite",
+      "namespace": "AWS::CloudFront",
+      "readCalls": [],
+      "service": "CloudFront",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cloudfront"
+      ],
+      "stackProbes": [
+        "cfn-cloudfront"
+      ],
+      "status": "partial",
+      "templateUses": 2,
+      "verdict": "excepted"
+    },
+    "AWS::CloudFront::OriginAccessControl": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "cloudfront"
+      ],
+      "kind": "StaticSite(origin access)",
+      "namespace": "AWS::CloudFront",
+      "readCalls": [],
+      "service": "CloudFront",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cloudfront"
+      ],
+      "stackProbes": [
+        "cfn-cloudfront"
+      ],
+      "status": "partial",
+      "templateUses": 2,
+      "verdict": "excepted"
+    },
+    "AWS::CloudFront::OriginRequestPolicy": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "cloudfront"
+      ],
+      "kind": "(implicit)",
+      "namespace": "AWS::CloudFront",
+      "readCalls": [],
+      "service": "CloudFront",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cloudfront"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::CloudFront::ResponseHeadersPolicy": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) \u2014 no GetDistribution or Get*Policy."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "cloudfront"
+      ],
+      "kind": "StaticSite(responseHeaders)",
+      "namespace": "AWS::CloudFront",
+      "readCalls": [],
+      "service": "CloudFront",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cloudfront"
+      ],
+      "stackProbes": [
+        "cfn-cloudfront"
+      ],
+      "status": "partial",
+      "templateUses": 2,
+      "verdict": "excepted"
+    },
+    "AWS::CloudWatch::Alarm": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "monitoring"
+      ],
+      "kind": "CloudWatch alarm",
+      "namespace": "AWS::CloudWatch",
+      "readCalls": [
+        "DescribeAlarms"
+      ],
+      "service": "CloudWatch",
+      "serviceTier": "proven",
+      "signingNames": [
+        "monitoring"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::Cognito::UserPool": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "cognito-idp"
+      ],
+      "kind": "UserPool",
+      "namespace": "AWS::Cognito",
+      "readCalls": [
+        "DescribeUserPool"
+      ],
+      "service": "Cognito",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cognito-idp"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "ok"
+    },
+    "AWS::Cognito::UserPoolClient": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "Collated into its pool (kind: UserPool provisions one app client); DescribeUserPool is served, DescribeUserPoolClient and ListUserPoolClients are not."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "cognito-idp"
+      ],
+      "kind": "UserPool(client)",
+      "namespace": "AWS::Cognito",
+      "readCalls": [],
+      "service": "Cognito",
+      "serviceTier": "proven",
+      "signingNames": [
+        "cognito-idp"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::DynamoDB::Table": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "dynamodb"
+      ],
+      "kind": "Table",
+      "namespace": "AWS::DynamoDB",
+      "readCalls": [
+        "DescribeTable",
+        "ListTables"
+      ],
+      "service": "DynamoDB",
+      "serviceTier": "proven",
+      "signingNames": [
+        "dynamodb"
+      ],
+      "stackProbes": [
+        "cloudformation"
+      ],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "ok"
+    },
+    "AWS::EC2::EIP": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "VirtualMachine(spec.expose)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 2,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::EIPAssociation": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "VirtualMachine(spec.expose)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::FlowLog": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "FlowLog",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::EC2::Instance": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "VirtualMachine",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::InternetGateway": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "(implicit)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::LaunchTemplate": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "unsupported",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::EC2::NatGateway": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "NatGateway",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::EC2::NetworkAcl": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "Subnet(acls)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::EC2::NetworkAclEntry": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "Subnet(acls)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::EC2::Route": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "Vpc(routes)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::RouteTable": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "Vpc(routes)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::SecurityGroup": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "SecurityGroup",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [
+        "cfn-api"
+      ],
+      "status": "partial",
+      "templateUses": 2,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::SecurityGroupEgress": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "SecurityGroup",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::SecurityGroupIngress": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "SecurityGroup",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::Subnet": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "Subnet",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [
+        "cfn-api"
+      ],
+      "status": "partial",
+      "templateUses": 2,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::SubnetNetworkAclAssociation": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "(implicit)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::SubnetRouteTableAssociation": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "(implicit)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::TransitGateway": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "TransitGateway",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::EC2::TransitGatewayAttachment": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "TransitGateway",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::EC2::VPC": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "Vpc",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [
+        "cfn-api"
+      ],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::VPCEndpoint": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "VpcEndpoint",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::VPCGatewayAttachment": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "(implicit)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::VPCPeeringConnection": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "Vpc(peerings)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::EC2::Volume": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "Volume",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "excepted"
+    },
+    "AWS::EC2::VolumeAttachment": {
+      "deployable": true,
+      "exception": {
+        "check": "front-door",
+        "issue": "EC2 front door \u2014 in progress",
+        "reason": "A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup, VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their associations are structural no-ops), visible in the console and the Kubernetes API but not through `aws ec2 describe-*`: the shim has no EC2 front door yet."
+      },
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "VirtualMachine(spec.volumes)",
+      "namespace": "AWS::EC2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "ec2"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::ECR::Repository": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "ecr"
+      ],
+      "kind": "ECR repository",
+      "namespace": "AWS::ECR",
+      "readCalls": [
+        "DescribeRepositories",
+        "GetRepositoryPolicy"
+      ],
+      "service": "ECR",
+      "serviceTier": "proven",
+      "signingNames": [
+        "ecr"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::ECS::Cluster": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "ecs"
+      ],
+      "kind": "(implicit)",
+      "namespace": "AWS::ECS",
+      "readCalls": [
+        "DescribeClusters",
+        "ListClusters"
+      ],
+      "service": "ECS",
+      "serviceTier": "proven",
+      "signingNames": [
+        "ecs"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "ok"
+    },
+    "AWS::ECS::Service": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "ecs"
+      ],
+      "kind": "Application",
+      "namespace": "AWS::ECS",
+      "readCalls": [
+        "DescribeServices",
+        "ListServices"
+      ],
+      "service": "ECS",
+      "serviceTier": "proven",
+      "signingNames": [
+        "ecs"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "ok"
+    },
+    "AWS::ECS::TaskDefinition": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "ecs"
+      ],
+      "kind": "Application (container)",
+      "namespace": "AWS::ECS",
+      "readCalls": [
+        "DescribeTaskDefinition"
+      ],
+      "service": "ECS",
+      "serviceTier": "proven",
+      "signingNames": [
+        "ecs"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "ok"
+    },
+    "AWS::EFS::FileSystem": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "FileShare",
+      "namespace": "AWS::EFS",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "elasticfilesystem"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::ElasticLoadBalancing::LoadBalancer": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "",
+      "namespace": "AWS::ElasticLoadBalancing",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "elasticloadbalancing"
+      ],
+      "stackProbes": [],
+      "status": "unsupported",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::ElasticLoadBalancingV2::Listener": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "",
+      "namespace": "AWS::ElasticLoadBalancingV2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "elasticloadbalancing"
+      ],
+      "stackProbes": [],
+      "status": "unsupported",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::ElasticLoadBalancingV2::ListenerRule": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "",
+      "namespace": "AWS::ElasticLoadBalancingV2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "elasticloadbalancing"
+      ],
+      "stackProbes": [],
+      "status": "unsupported",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::ElasticLoadBalancingV2::LoadBalancer": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "",
+      "namespace": "AWS::ElasticLoadBalancingV2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "elasticloadbalancing"
+      ],
+      "stackProbes": [],
+      "status": "unsupported",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::ElasticLoadBalancingV2::TargetGroup": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "",
+      "namespace": "AWS::ElasticLoadBalancingV2",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "elasticloadbalancing"
+      ],
+      "stackProbes": [],
+      "status": "unsupported",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::Events::EventBus": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "events"
+      ],
+      "kind": "EventBridge event bus",
+      "namespace": "AWS::Events",
+      "readCalls": [
+        "ListEventBuses"
+      ],
+      "service": "EventBridge",
+      "serviceTier": "proven",
+      "signingNames": [
+        "events"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::Events::Rule": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "events"
+      ],
+      "kind": "EventBridge rule",
+      "namespace": "AWS::Events",
+      "readCalls": [
+        "DescribeRule",
+        "ListRules"
+      ],
+      "service": "EventBridge",
+      "serviceTier": "proven",
+      "signingNames": [
+        "events"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::IAM::Group": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [
+        "iam"
+      ],
+      "kind": "Group",
+      "namespace": "AWS::IAM",
+      "readCalls": [],
+      "service": "IAM",
+      "serviceTier": "proven",
+      "signingNames": [
+        "iam"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::IAM::InstanceProfile": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "Provisions nothing: the role binds directly on the VM (kind: VirtualMachine spec.instanceRole). GetInstanceProfile and ListInstanceProfiles are not served."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "iam"
+      ],
+      "kind": "(implicit)",
+      "namespace": "AWS::IAM",
+      "readCalls": [],
+      "service": "IAM",
+      "serviceTier": "proven",
+      "signingNames": [
+        "iam"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "excepted"
+    },
+    "AWS::IAM::ManagedPolicy": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "iam"
+      ],
+      "kind": "Policy",
+      "namespace": "AWS::IAM",
+      "readCalls": [
+        "GetPolicy"
+      ],
+      "service": "IAM",
+      "serviceTier": "proven",
+      "signingNames": [
+        "iam"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::IAM::Policy": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "iam"
+      ],
+      "kind": "Policy",
+      "namespace": "AWS::IAM",
+      "readCalls": [
+        "GetRolePolicy"
+      ],
+      "service": "IAM",
+      "serviceTier": "proven",
+      "signingNames": [
+        "iam"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::IAM::Role": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "iam"
+      ],
+      "kind": "Role",
+      "namespace": "AWS::IAM",
+      "readCalls": [
+        "GetRole",
+        "GetRolePolicy",
+        "ListRolePolicies",
+        "ListRoles"
+      ],
+      "service": "IAM",
+      "serviceTier": "proven",
+      "signingNames": [
+        "iam"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 2,
+      "verdict": "ok"
+    },
+    "AWS::IAM::User": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "iam"
+      ],
+      "kind": "User",
+      "namespace": "AWS::IAM",
+      "readCalls": [
+        "GetUser",
+        "ListUsers"
+      ],
+      "service": "IAM",
+      "serviceTier": "proven",
+      "signingNames": [
+        "iam"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 1,
+      "verdict": "ok"
+    },
+    "AWS::KMS::Alias": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "kms"
+      ],
+      "kind": "KMSAlias",
+      "namespace": "AWS::KMS",
+      "readCalls": [
+        "ListAliases"
+      ],
+      "service": "KMS",
+      "serviceTier": "proven",
+      "signingNames": [
+        "kms"
+      ],
+      "stackProbes": [
+        "cfn-data-services"
+      ],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "ok"
+    },
+    "AWS::KMS::Key": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "kms"
+      ],
+      "kind": "EncryptionKey",
+      "namespace": "AWS::KMS",
+      "readCalls": [
+        "DescribeKey",
+        "GetKeyPolicy",
+        "GetKeyRotationStatus",
+        "ListKeyPolicies",
+        "ListKeys"
+      ],
+      "service": "KMS",
+      "serviceTier": "proven",
+      "signingNames": [
+        "kms"
+      ],
+      "stackProbes": [
+        "cfn-data-services"
+      ],
+      "status": "supported",
+      "templateUses": 6,
+      "verdict": "ok"
+    },
+    "AWS::Lambda::Alias": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [
+        "lambda"
+      ],
+      "kind": "Function(spec.aliases)",
+      "namespace": "AWS::Lambda",
+      "readCalls": [],
+      "service": "Lambda",
+      "serviceTier": "proven",
+      "signingNames": [
+        "lambda"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::Lambda::Function": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "The Lambda front door serves Invoke only (lambda:InvokeFunction): a stack's function is invocable by the name and ARN the stack reports, but GetFunction and ListFunctions are not served."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "lambda"
+      ],
+      "kind": "Function",
+      "namespace": "AWS::Lambda",
+      "readCalls": [],
+      "service": "Lambda",
+      "serviceTier": "proven",
+      "signingNames": [
+        "lambda"
+      ],
+      "stackProbes": [
+        "cfn-customresource"
+      ],
+      "status": "supported",
+      "templateUses": 4,
+      "verdict": "excepted"
+    },
+    "AWS::Lambda::Permission": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "Provisions nothing: the integration that invokes the function is authorized when it is created, against its creator's authority, not by a resource policy. GetPolicy is not served."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "lambda"
+      ],
+      "kind": "(implicit)",
+      "namespace": "AWS::Lambda",
+      "readCalls": [],
+      "service": "Lambda",
+      "serviceTier": "proven",
+      "signingNames": [
+        "lambda"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "excepted"
+    },
+    "AWS::Lambda::Version": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [
+        "lambda"
+      ],
+      "kind": "Function(revision)",
+      "namespace": "AWS::Lambda",
+      "readCalls": [],
+      "service": "Lambda",
+      "serviceTier": "proven",
+      "signingNames": [
+        "lambda"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::Logs::LogGroup": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "logs"
+      ],
+      "kind": "CloudWatch Logs log group",
+      "namespace": "AWS::Logs",
+      "readCalls": [
+        "DescribeLogGroups"
+      ],
+      "service": "CloudWatch Logs",
+      "serviceTier": "proven",
+      "signingNames": [
+        "logs"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::RDS::DBInstance": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "rds"
+      ],
+      "kind": "Application(database)",
+      "namespace": "AWS::RDS",
+      "readCalls": [
+        "DescribeDBInstances"
+      ],
+      "service": "RDS",
+      "serviceTier": "proven",
+      "signingNames": [
+        "rds"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::Route53::HostedZone": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "",
+      "namespace": "AWS::Route53",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "route53"
+      ],
+      "stackProbes": [
+        "cloudformation"
+      ],
+      "status": "unsupported",
+      "templateUses": 1,
+      "verdict": "not-deployable"
+    },
+    "AWS::Route53::RecordSet": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "",
+      "namespace": "AWS::Route53",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "route53"
+      ],
+      "stackProbes": [],
+      "status": "unsupported",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::Route53::RecordSetGroup": {
+      "deployable": false,
+      "flattened": false,
+      "frontDoor": [],
+      "kind": "",
+      "namespace": "AWS::Route53",
+      "readCalls": [],
+      "service": null,
+      "serviceTier": null,
+      "signingNames": [
+        "route53"
+      ],
+      "stackProbes": [],
+      "status": "unsupported",
+      "templateUses": 0,
+      "verdict": "not-deployable"
+    },
+    "AWS::S3::Bucket": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "s3"
+      ],
+      "kind": "Bucket",
+      "namespace": "AWS::S3",
+      "readCalls": [
+        "GetBucketEncryption",
+        "GetBucketLocation",
+        "GetBucketOwnershipControls",
+        "GetBucketTagging",
+        "GetBucketVersioning",
+        "HeadBucket",
+        "ListBuckets"
+      ],
+      "service": "S3",
+      "serviceTier": "proven",
+      "signingNames": [
+        "s3"
+      ],
+      "stackProbes": [
+        "cfn-api",
+        "cfn-cloudfront"
+      ],
+      "status": "partial",
+      "templateUses": 6,
+      "verdict": "ok"
+    },
+    "AWS::S3::BucketPolicy": {
+      "deployable": true,
+      "exception": {
+        "check": "read",
+        "issue": "untracked \u2014 raised by the coverage registry",
+        "reason": "Collated into its bucket (kind: Bucket spec.policy, applied to MinIO verbatim); the S3 front door serves no GetBucketPolicy."
+      },
+      "flattened": false,
+      "frontDoor": [
+        "s3"
+      ],
+      "kind": "Bucket",
+      "namespace": "AWS::S3",
+      "readCalls": [],
+      "service": "S3",
+      "serviceTier": "proven",
+      "signingNames": [
+        "s3"
+      ],
+      "stackProbes": [
+        "cfn-cloudfront"
+      ],
+      "status": "supported",
+      "templateUses": 2,
+      "verdict": "excepted"
+    },
+    "AWS::SNS::Subscription": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "sns"
+      ],
+      "kind": "Function",
+      "namespace": "AWS::SNS",
+      "readCalls": [
+        "GetSubscriptionAttributes",
+        "ListSubscriptions",
+        "ListSubscriptionsByTopic"
+      ],
+      "service": "SNS",
+      "serviceTier": "proven",
+      "signingNames": [
+        "sns"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::SNS::Topic": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "sns"
+      ],
+      "kind": "Queue",
+      "namespace": "AWS::SNS",
+      "readCalls": [
+        "GetTopicAttributes",
+        "ListTopics"
+      ],
+      "service": "SNS",
+      "serviceTier": "proven",
+      "signingNames": [
+        "sns"
+      ],
+      "stackProbes": [
+        "cfn-data-services"
+      ],
+      "status": "partial",
+      "templateUses": 3,
+      "verdict": "ok"
+    },
+    "AWS::SNS::TopicPolicy": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "sns"
+      ],
+      "kind": "SNSTopicPolicy",
+      "namespace": "AWS::SNS",
+      "readCalls": [
+        "GetTopicAttributes"
+      ],
+      "service": "SNS",
+      "serviceTier": "proven",
+      "signingNames": [
+        "sns"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::SQS::Queue": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "sqs"
+      ],
+      "kind": "Queue",
+      "namespace": "AWS::SQS",
+      "readCalls": [
+        "GetQueueAttributes",
+        "GetQueueUrl",
+        "ListQueues"
+      ],
+      "service": "SQS",
+      "serviceTier": "proven",
+      "signingNames": [
+        "sqs"
+      ],
+      "stackProbes": [
+        "cfn-api",
+        "cfn-data-services"
+      ],
+      "status": "partial",
+      "templateUses": 6,
+      "verdict": "ok"
+    },
+    "AWS::SQS::QueuePolicy": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "sqs"
+      ],
+      "kind": "SQSQueuePolicy",
+      "namespace": "AWS::SQS",
+      "readCalls": [
+        "GetQueueAttributes"
+      ],
+      "service": "SQS",
+      "serviceTier": "proven",
+      "signingNames": [
+        "sqs"
+      ],
+      "stackProbes": [
+        "cfn-data-services"
+      ],
+      "status": "partial",
+      "templateUses": 1,
+      "verdict": "ok"
+    },
+    "AWS::SSM::Parameter": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "ssm"
+      ],
+      "kind": "Parameter",
+      "namespace": "AWS::SSM",
+      "readCalls": [
+        "DescribeParameters",
+        "GetParameter",
+        "GetParameterHistory",
+        "GetParameters",
+        "GetParametersByPath"
+      ],
+      "service": "SSM Parameter Store",
+      "serviceTier": "proven",
+      "signingNames": [
+        "ssm"
+      ],
+      "stackProbes": [
+        "cfn-api",
+        "cfn-data-services"
+      ],
+      "status": "partial",
+      "templateUses": 5,
+      "verdict": "ok"
+    },
+    "AWS::SecretsManager::Secret": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "secretsmanager"
+      ],
+      "kind": "Secrets Manager secret",
+      "namespace": "AWS::SecretsManager",
+      "readCalls": [
+        "DescribeSecret",
+        "GetSecretValue",
+        "ListSecretVersionIds",
+        "ListSecrets"
+      ],
+      "service": "Secrets Manager",
+      "serviceTier": "proven",
+      "signingNames": [
+        "secretsmanager"
+      ],
+      "stackProbes": [],
+      "status": "supported",
+      "templateUses": 0,
+      "verdict": "ok"
+    },
+    "AWS::StepFunctions::StateMachine": {
+      "deployable": true,
+      "flattened": false,
+      "frontDoor": [
+        "states"
+      ],
+      "kind": "StateMachine",
+      "namespace": "AWS::StepFunctions",
+      "readCalls": [
+        "DescribeStateMachine",
+        "DescribeStateMachineForExecution",
+        "ListStateMachines"
+      ],
+      "service": "Step Functions",
+      "serviceTier": "proven",
+      "signingNames": [
+        "states"
+      ],
+      "stackProbes": [],
+      "status": "partial",
+      "templateUses": 2,
+      "verdict": "ok"
+    }
+  }
+}

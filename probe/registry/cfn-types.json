@@ -1,0 +1,576 @@
+{
+  "generatedBy": "cfn/coverage_registry_test.go",
+  "types": {
+    "AWS::ApiGateway::ApiKey": {
+      "status": "partial",
+      "kind": "aws-shim apigateway (v1)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ApiGateway::Authorizer": {
+      "status": "partial",
+      "kind": "aws-shim apigateway (v1)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ApiGateway::Deployment": {
+      "status": "partial",
+      "kind": "aws-shim apigateway (v1)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ApiGateway::Method": {
+      "status": "partial",
+      "kind": "aws-shim apigateway (v1)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ApiGateway::Model": {
+      "status": "partial",
+      "kind": "aws-shim apigateway (v1)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ApiGateway::RequestValidator": {
+      "status": "partial",
+      "kind": "aws-shim apigateway (v1)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ApiGateway::Resource": {
+      "status": "partial",
+      "kind": "aws-shim apigateway (v1)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ApiGateway::RestApi": {
+      "status": "partial",
+      "kind": "aws-shim apigateway (v1)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ApiGateway::Stage": {
+      "status": "partial",
+      "kind": "aws-shim apigateway (v1)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ApiGateway::UsagePlan": {
+      "status": "partial",
+      "kind": "aws-shim apigateway (v1)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ApiGateway::UsagePlanKey": {
+      "status": "partial",
+      "kind": "aws-shim apigateway (v1)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::AppSync::DataSource": {
+      "status": "supported",
+      "kind": "GraphQLApi",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::AppSync::FunctionConfiguration": {
+      "status": "supported",
+      "kind": "GraphQLApi",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::AppSync::GraphQLApi": {
+      "status": "supported",
+      "kind": "GraphQLApi",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::AppSync::GraphQLSchema": {
+      "status": "supported",
+      "kind": "GraphQLApi",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::AppSync::Resolver": {
+      "status": "supported",
+      "kind": "GraphQLApi",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::AutoScaling::AutoScalingGroup": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::AutoScaling::LaunchConfiguration": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::CertificateManager::Certificate": {
+      "status": "partial",
+      "kind": "StaticSite(tls)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::CloudFormation::CustomResource": {
+      "status": "supported",
+      "kind": "Function(invoke)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::CloudFormation::Stack": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false,
+      "flattened": true
+    },
+    "AWS::CloudFormation::WaitCondition": {
+      "status": "supported",
+      "kind": "(signal wait)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::CloudFormation::WaitConditionHandle": {
+      "status": "supported",
+      "kind": "(signal URL)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::CloudFront::CachePolicy": {
+      "status": "partial",
+      "kind": "(implicit)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::CloudFront::CloudFrontOriginAccessIdentity": {
+      "status": "partial",
+      "kind": "StaticSite(origin access)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::CloudFront::Distribution": {
+      "status": "partial",
+      "kind": "StaticSite",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::CloudFront::OriginAccessControl": {
+      "status": "partial",
+      "kind": "StaticSite(origin access)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::CloudFront::OriginRequestPolicy": {
+      "status": "partial",
+      "kind": "(implicit)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::CloudFront::ResponseHeadersPolicy": {
+      "status": "partial",
+      "kind": "StaticSite(responseHeaders)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::CloudWatch::Alarm": {
+      "status": "partial",
+      "kind": "CloudWatch alarm",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::Cognito::UserPool": {
+      "status": "partial",
+      "kind": "UserPool",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::Cognito::UserPoolClient": {
+      "status": "partial",
+      "kind": "UserPool(client)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::DynamoDB::Table": {
+      "status": "partial",
+      "kind": "Table",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::EIP": {
+      "status": "partial",
+      "kind": "VirtualMachine(spec.expose)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::EIPAssociation": {
+      "status": "partial",
+      "kind": "VirtualMachine(spec.expose)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::FlowLog": {
+      "status": "partial",
+      "kind": "FlowLog",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::EC2::Instance": {
+      "status": "partial",
+      "kind": "VirtualMachine",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::InternetGateway": {
+      "status": "partial",
+      "kind": "(implicit)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::LaunchTemplate": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::EC2::NatGateway": {
+      "status": "partial",
+      "kind": "NatGateway",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::EC2::NetworkAcl": {
+      "status": "partial",
+      "kind": "Subnet(acls)",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::EC2::NetworkAclEntry": {
+      "status": "partial",
+      "kind": "Subnet(acls)",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::EC2::Route": {
+      "status": "partial",
+      "kind": "Vpc(routes)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::RouteTable": {
+      "status": "partial",
+      "kind": "Vpc(routes)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::SecurityGroup": {
+      "status": "partial",
+      "kind": "SecurityGroup",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::SecurityGroupEgress": {
+      "status": "partial",
+      "kind": "SecurityGroup",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::SecurityGroupIngress": {
+      "status": "partial",
+      "kind": "SecurityGroup",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::Subnet": {
+      "status": "partial",
+      "kind": "Subnet",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::SubnetNetworkAclAssociation": {
+      "status": "partial",
+      "kind": "(implicit)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::SubnetRouteTableAssociation": {
+      "status": "partial",
+      "kind": "(implicit)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::TransitGateway": {
+      "status": "partial",
+      "kind": "TransitGateway",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::EC2::TransitGatewayAttachment": {
+      "status": "partial",
+      "kind": "TransitGateway",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::EC2::VPC": {
+      "status": "partial",
+      "kind": "Vpc",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::VPCEndpoint": {
+      "status": "partial",
+      "kind": "VpcEndpoint",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::VPCGatewayAttachment": {
+      "status": "partial",
+      "kind": "(implicit)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::VPCPeeringConnection": {
+      "status": "partial",
+      "kind": "Vpc(peerings)",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::EC2::Volume": {
+      "status": "partial",
+      "kind": "Volume",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EC2::VolumeAttachment": {
+      "status": "partial",
+      "kind": "VirtualMachine(spec.volumes)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ECR::Repository": {
+      "status": "partial",
+      "kind": "ECR repository",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ECS::Cluster": {
+      "status": "partial",
+      "kind": "(implicit)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ECS::Service": {
+      "status": "partial",
+      "kind": "Application",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::ECS::TaskDefinition": {
+      "status": "partial",
+      "kind": "Application (container)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::EFS::FileSystem": {
+      "status": "partial",
+      "kind": "FileShare",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::ElasticLoadBalancing::LoadBalancer": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::ElasticLoadBalancingV2::Listener": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::ElasticLoadBalancingV2::ListenerRule": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::ElasticLoadBalancingV2::LoadBalancer": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::ElasticLoadBalancingV2::TargetGroup": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::Events::EventBus": {
+      "status": "supported",
+      "kind": "EventBridge event bus",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::Events::Rule": {
+      "status": "partial",
+      "kind": "EventBridge rule",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::IAM::Group": {
+      "status": "partial",
+      "kind": "Group",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::IAM::InstanceProfile": {
+      "status": "partial",
+      "kind": "(implicit)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::IAM::ManagedPolicy": {
+      "status": "supported",
+      "kind": "Policy",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::IAM::Policy": {
+      "status": "supported",
+      "kind": "Policy",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::IAM::Role": {
+      "status": "partial",
+      "kind": "Role",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::IAM::User": {
+      "status": "supported",
+      "kind": "User",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::KMS::Alias": {
+      "status": "partial",
+      "kind": "KMSAlias",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::KMS::Key": {
+      "status": "supported",
+      "kind": "EncryptionKey",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::Lambda::Alias": {
+      "status": "partial",
+      "kind": "Function(spec.aliases)",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::Lambda::Function": {
+      "status": "supported",
+      "kind": "Function",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::Lambda::Permission": {
+      "status": "partial",
+      "kind": "(implicit)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::Lambda::Version": {
+      "status": "partial",
+      "kind": "Function(revision)",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::Logs::LogGroup": {
+      "status": "supported",
+      "kind": "CloudWatch Logs log group",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::RDS::DBInstance": {
+      "status": "partial",
+      "kind": "Application(database)",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::Route53::HostedZone": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::Route53::RecordSet": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::Route53::RecordSetGroup": {
+      "status": "unsupported",
+      "translator": false,
+      "deployable": false
+    },
+    "AWS::S3::Bucket": {
+      "status": "partial",
+      "kind": "Bucket",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::S3::BucketPolicy": {
+      "status": "supported",
+      "kind": "Bucket",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::SNS::Subscription": {
+      "status": "partial",
+      "kind": "Function",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::SNS::Topic": {
+      "status": "partial",
+      "kind": "Queue",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::SNS::TopicPolicy": {
+      "status": "partial",
+      "kind": "SNSTopicPolicy",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::SQS::Queue": {
+      "status": "partial",
+      "kind": "Queue",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::SQS::QueuePolicy": {
+      "status": "partial",
+      "kind": "SQSQueuePolicy",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::SSM::Parameter": {
+      "status": "partial",
+      "kind": "Parameter",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::SecretsManager::Secret": {
+      "status": "supported",
+      "kind": "Secrets Manager secret",
+      "translator": true,
+      "deployable": true
+    },
+    "AWS::StepFunctions::StateMachine": {
+      "status": "partial",
+      "kind": "StateMachine",
+      "translator": true,
+      "deployable": true
+    }
+  }
+}

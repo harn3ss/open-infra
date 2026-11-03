@@ -1,0 +1,167 @@
+# The few HAND-KEPT facts of the AWS coverage registry. Everything else is read from code:
+#   probe/registry/cfn-types.json    — the cfn engine's mapping table + translator dispatch (cfn/coverage_registry_test.go)
+#   probe/registry/shim-router.json  — the aws-shim's router + each handler's operations (console-api/cmd/aws-shim/coverage_registry_test.go)
+#   probe/shim-services.yaml         — each shim service's proof (its probes)
+# probe/shimgen.py joins them into probe/registry/registry.json, gates on it, and renders the coverage
+# docs from it (docs/aws-coverage.md, and blocks in README.md, docs/aws-shim.md, docs/cloudformation.md).
+#
+# Nothing here claims coverage. `namespaces` and `reads` are AWS facts (which API serves a resource
+# type, and which calls read one); `exceptions` lists, with a reason, each place the gate would fail
+# today. A missing fact fails the gate loudly rather than passing silently.
+
+# CloudFormation namespace -> the SigV4 signing name(s) of the AWS API that serves its resources.
+# Every namespace the cfn engine knows must be here (a new one fails the gate until it is added).
+namespaces:
+  AWS::ApiGateway: [apigateway]
+  AWS::ApiGatewayV2: [apigateway]
+  AWS::AppSync: [appsync]
+  AWS::Athena: [athena]
+  AWS::AutoScaling: [autoscaling]
+  AWS::CertificateManager: [acm]
+  AWS::CloudFormation: [cloudformation]
+  AWS::CloudFront: [cloudfront]
+  AWS::CloudWatch: [monitoring]
+  AWS::Cognito: [cognito-idp]
+  AWS::DynamoDB: [dynamodb]
+  AWS::EC2: [ec2]
+  AWS::ECR: [ecr]
+  AWS::ECS: [ecs]
+  AWS::EFS: [elasticfilesystem]
+  AWS::EKS: [eks]
+  AWS::ElasticLoadBalancing: [elasticloadbalancing]
+  AWS::ElasticLoadBalancingV2: [elasticloadbalancing]
+  AWS::Events: [events]
+  AWS::Glue: [glue]
+  AWS::IAM: [iam]
+  AWS::Kinesis: [kinesis]
+  AWS::KMS: [kms]
+  AWS::Lambda: [lambda]
+  AWS::Logs: [logs]
+  AWS::RDS: [rds]
+  AWS::Route53: [route53]
+  AWS::S3: [s3]
+  AWS::SecretsManager: [secretsmanager]
+  AWS::SES: [ses, email]
+  AWS::SNS: [sns]
+  AWS::SQS: [sqs]
+  AWS::SSM: [ssm]
+  AWS::StepFunctions: [states]
+
+# Signing names the shim serves that have no CloudFormation resource types of their own on AWS, so they
+# are never a breadth gap. Every other router service must map from a namespace above.
+noResourceTypes:
+  sts: "STS issues credentials; CloudFormation has no STS resource type."
+  dynamodbstreams: "A table's stream is a property of AWS::DynamoDB::Table (StreamSpecification), not a resource."
+
+# The calls that read a resource type, where the default does not find them. The default: any served
+# operation that starts with Describe/Get/List/Head and the type's own name (AWS::SQS::Queue ->
+# GetQueueUrl, GetQueueAttributes, ListQueues). One of the listed calls served is enough.
+reads:
+  AWS::CloudFormation::CustomResource: [DescribeStackResource]
+  AWS::CloudFormation::WaitCondition: [DescribeStackResource]
+  AWS::CloudFormation::WaitConditionHandle: [DescribeStackResource]
+  AWS::IAM::ManagedPolicy: [GetPolicy]
+  AWS::IAM::Policy: [GetRolePolicy, GetUserPolicy, GetGroupPolicy]
+  AWS::SQS::QueuePolicy: [GetQueueAttributes]
+  AWS::SNS::TopicPolicy: [GetTopicAttributes]
+  AWS::S3::BucketPolicy: [GetBucketPolicy]
+  AWS::Lambda::Permission: [GetPolicy]
+  AWS::AppSync::GraphQLApi: [GetGraphqlApi, ListGraphqlApis]
+  AWS::AppSync::GraphQLSchema: [GetIntrospectionSchema, GetSchemaCreationStatus]
+  AWS::AppSync::FunctionConfiguration: [GetFunction, ListFunctions]
+  AWS::EC2::EIP: [DescribeAddresses]
+  AWS::EC2::EIPAssociation: [DescribeAddresses]
+  AWS::EC2::SecurityGroupIngress: [DescribeSecurityGroupRules, DescribeSecurityGroups]
+  AWS::EC2::SecurityGroupEgress: [DescribeSecurityGroupRules, DescribeSecurityGroups]
+  AWS::EC2::VolumeAttachment: [DescribeVolumes, DescribeInstances]
+  AWS::EC2::Route: [DescribeRouteTables]
+  AWS::EC2::SubnetRouteTableAssociation: [DescribeRouteTables]
+  AWS::EC2::VPCGatewayAttachment: [DescribeInternetGateways]
+  AWS::EC2::SubnetNetworkAclAssociation: [DescribeNetworkAcls]
+
+# Each place the gate fails today, with why and where it is tracked. Types are named one by one — no
+# wildcards — so a NEW type is never covered by an old exception. An exception that no longer applies
+# (the front door or the read call now exists, or the type is no longer deployable) fails the gate
+# until it is removed, so this list cannot outlive what it excuses.
+#   types:  the CloudFormation types it excuses
+#   check:  front-door (no shim service for the type's own API) | read (the service exists but serves
+#           none of the calls that read the type)
+#   reason: why a stack may still create it today
+#   issue:  where the gap is tracked (described generically: this repository is public)
+exceptions:
+  # --- no front door for the type's own API ---
+  - types: [AWS::EC2::Instance, AWS::EC2::Volume, AWS::EC2::VolumeAttachment, AWS::EC2::VPC, AWS::EC2::Subnet,
+            AWS::EC2::SecurityGroup, AWS::EC2::SecurityGroupIngress, AWS::EC2::SecurityGroupEgress,
+            AWS::EC2::VPCEndpoint, AWS::EC2::EIP, AWS::EC2::EIPAssociation, AWS::EC2::InternetGateway,
+            AWS::EC2::VPCGatewayAttachment, AWS::EC2::RouteTable, AWS::EC2::Route,
+            AWS::EC2::SubnetRouteTableAssociation, AWS::EC2::SubnetNetworkAclAssociation]
+    check: front-door
+    reason: >-
+      A stack's EC2 resources are open-infra kinds (kind: VirtualMachine, Volume, Vpc, Subnet, SecurityGroup,
+      VpcEndpoint; an Elastic IP is the shim's own address allocation; gateways, route tables and their
+      associations are structural no-ops), visible in the console and the Kubernetes API but not through
+      `aws ec2 describe-*`: the shim has no EC2 front door yet.
+    issue: "EC2 front door — in progress"
+  - types: [AWS::CertificateManager::Certificate]
+    check: front-door
+    reason: >-
+      A certificate exists only as the TLS certificate of the CloudFront static site in the same stack
+      (kind: StaticSite), issued in-cluster by the platform's ACM-style CA; its Ref resolves for that
+      distribution, but there is no ACM front door (DescribeCertificate, ListCertificates).
+    issue: "untracked — raised by the coverage registry"
+
+  # --- the front door exists, but serves no call that reads the type ---
+  - types: [AWS::Lambda::Function]
+    check: read
+    reason: >-
+      The Lambda front door serves Invoke only (lambda:InvokeFunction): a stack's function is invocable by
+      the name and ARN the stack reports, but GetFunction and ListFunctions are not served.
+    issue: "untracked — raised by the coverage registry"
+  - types: [AWS::Lambda::Permission]
+    check: read
+    reason: >-
+      Provisions nothing: the integration that invokes the function is authorized when it is created,
+      against its creator's authority, not by a resource policy. GetPolicy is not served.
+    issue: "untracked — raised by the coverage registry"
+  - types: [AWS::IAM::InstanceProfile]
+    check: read
+    reason: >-
+      Provisions nothing: the role binds directly on the VM (kind: VirtualMachine spec.instanceRole).
+      GetInstanceProfile and ListInstanceProfiles are not served.
+    issue: "untracked — raised by the coverage registry"
+  - types: [AWS::S3::BucketPolicy]
+    check: read
+    reason: >-
+      Collated into its bucket (kind: Bucket spec.policy, applied to MinIO verbatim); the S3 front door
+      serves no GetBucketPolicy.
+    issue: "untracked — raised by the coverage registry"
+  - types: [AWS::Cognito::UserPoolClient]
+    check: read
+    reason: >-
+      Collated into its pool (kind: UserPool provisions one app client); DescribeUserPool is served,
+      DescribeUserPoolClient and ListUserPoolClients are not.
+    issue: "untracked — raised by the coverage registry"
+  - types: [AWS::ApiGateway::Method, AWS::ApiGateway::Deployment, AWS::ApiGateway::Authorizer]
+    check: read
+    reason: >-
+      The REST v1 surface the stack provisions through creates methods, deployments and authorizers but
+      serves no call that reads them (GetMethod, GetDeployments, GetAuthorizers); GetRestApi, GetResources,
+      GetStages, GetModels, GetRequestValidators, GetApiKeys and GetUsagePlans read the rest of the API.
+    issue: "untracked — raised by the coverage registry"
+  - types: [AWS::AppSync::GraphQLApi, AWS::AppSync::GraphQLSchema, AWS::AppSync::DataSource,
+            AWS::AppSync::FunctionConfiguration]
+    check: read
+    reason: >-
+      A stack's API is one kind: GraphQLApi, served at its GraphQL endpoint (appsync:GraphQL). The AppSync
+      management surface serves resolver and data-source writes and GetResolver only — no GetGraphqlApi,
+      GetIntrospectionSchema, GetDataSource or GetFunction.
+    issue: "untracked — raised by the coverage registry"
+  - types: [AWS::CloudFront::Distribution, AWS::CloudFront::CachePolicy, AWS::CloudFront::OriginRequestPolicy,
+            AWS::CloudFront::ResponseHeadersPolicy, AWS::CloudFront::OriginAccessControl,
+            AWS::CloudFront::CloudFrontOriginAccessIdentity]
+    check: read
+    reason: >-
+      A stack's distribution and its policies collate into one kind: StaticSite. The CloudFront front door
+      serves that site's invalidations only (CreateInvalidation, GetInvalidation, ListInvalidations) — no
+      GetDistribution or Get*Policy.
+    issue: "untracked — raised by the coverage registry"

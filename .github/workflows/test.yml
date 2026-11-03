@@ -34,6 +34,8 @@ on:
       - "docs/openapi/**" # the generated platform spec — re-run the drift gate when it changes
       - "probe/**" # aws-shim probes + registry — the shimgen service-list/count drift gate
       - "docs/aws-shim.md" # generated shim service blocks — re-run the drift gate when it changes
+      - "docs/cloudformation.md" # generated coverage block + hand tables the coverage gate checks
+      - "docs/aws-coverage.md" # the generated AWS coverage registry page
       - "README.md" # generated shim service matrix — re-run the drift gate when it changes
       - ".github/workflows/test.yml"
   pull_request:
@@ -59,6 +61,8 @@ on:
       - "docs/openapi/**" # the generated platform spec — re-run the drift gate when it changes
       - "probe/**" # aws-shim probes + registry — the shimgen service-list/count drift gate
       - "docs/aws-shim.md" # generated shim service blocks — re-run the drift gate when it changes
+      - "docs/cloudformation.md" # generated coverage block + hand tables the coverage gate checks
+      - "docs/aws-coverage.md" # the generated AWS coverage registry page
       - "README.md" # generated shim service matrix — re-run the drift gate when it changes
       - ".github/workflows/test.yml"
   workflow_dispatch: {}
@@ -224,10 +228,23 @@ jobs:
       # The aws-shim service list + count in README.md and docs/aws-shim.md are generated from
       # probe/shim-services.yaml and cross-checked against probe/aws-shim-*.sh — fail if they drifted
       # (e.g. a new probe not added to the registry, or a hand-edited generated block).
-      - name: aws-shim service-list drift gate
+      # The same command is the AWS coverage gate: it joins the CloudFormation engine's types with the
+      # shim router's front doors (probe/registry/, read from code by the cfn and console-api Go tests,
+      # which fail when those halves are stale) and fails when a type a stack can create has no front
+      # door for its own API, or a front door that serves no call reading it, unless
+      # probe/registry/coverage.yaml excuses it with a reason; or when the docs it renders are stale.
+      - name: aws-shim service-list drift gate + AWS coverage gate
         run: |
           python3 -c "import yaml" 2>/dev/null || pip3 install --quiet pyyaml
           python3 probe/shimgen.py --check
+
+      # The coverage gate proven RED as well as green: a deliberately added CloudFormation type with no
+      # front door fails it — in the module and end to end through `shimgen.py --check` on a copy of
+      # the repository — as do stale, wildcard or reasonless exceptions and over-claiming docs.
+      - name: AWS coverage gate tests (prove-red)
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip3 install --quiet pyyaml
+          python3 probe/test_coverage.py
 
       - name: chaos shell scripts parse (bash -n)
         run: for f in chaos/*.sh; do bash -n "$f"; done
