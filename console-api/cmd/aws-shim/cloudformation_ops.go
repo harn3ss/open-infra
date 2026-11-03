@@ -526,7 +526,7 @@ func (h *cfnDoorway) refuseOp(w http.ResponseWriter, requestID string, err error
 func (h *cfnDoorway) notUpdatable(stack, status string) string {
 	switch {
 	case inProgress(status), status == "ROLLBACK_COMPLETE", status == "ROLLBACK_FAILED", status == "UPDATE_ROLLBACK_FAILED":
-		return "Stack:" + h.stackID(stack) + " is in " + status + " state and can not be updated."
+		return "Stack:" + h.liveStackID(context.Background(), stack) + " is in " + status + " state and can not be updated."
 	}
 	return ""
 }
@@ -556,6 +556,7 @@ func (h *cfnDoorway) claimRefusal(w http.ResponseWriter, requestID, stack, verb 
 func (h *cfnDoorway) runRecovery(ctx context.Context) {
 	h.migrateLegacyRecords(ctx)
 	h.recoverOrphans(ctx)
+	h.pruneDeleted(ctx, time.Now()) // deleted stacks past their 90 days (cfn_deleted.go)
 	t := time.NewTicker(h.ops.recoveryInterval())
 	defer t.Stop()
 	for {
@@ -565,6 +566,7 @@ func (h *cfnDoorway) runRecovery(ctx context.Context) {
 		case <-t.C:
 			h.migrateLegacyRecords(ctx)
 			h.recoverOrphans(ctx)
+			h.pruneDeleted(ctx, time.Now())
 		}
 	}
 }
@@ -653,7 +655,11 @@ func (h *cfnDoorway) recoverStack(stack string, caller *recordedCaller, reason s
 		var ap *impersonatingApplier
 		if ap, err = h.applierForIdentity(caller.User, caller.Groups); err == nil {
 			ap.assumedRole = caller.AssumedRole
+			before, found, _ := h.getRecord(ctx, stack)
 			out, err = cfn.RecoverInterrupted(ctx, h.asCaller(h.opts(stack, nil), ap), ap, reason)
+			if err == nil && out == nil && found && before.Status == "DELETE_IN_PROGRESS" {
+				h.keepDeleted(ctx, before, nil) // the resumed delete completed: kept as any deleted stack is
+			}
 		}
 	} else {
 		out, err = h.settleWithoutAuthority(ctx, stack, reason)

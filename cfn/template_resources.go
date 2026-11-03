@@ -26,6 +26,12 @@ type TemplateResource struct {
 // into another kind, so the stack record keeps no entry for it), such as a CloudFront policy or an ACM
 // certificate. A NoEcho parameter's value is not in params, so a property fed by one stays unresolved.
 func TemplateResources(data []byte, params, exports map[string]string, stackName string, types ...string) ([]TemplateResource, error) {
+	return TemplateResourcesForStack(data, params, exports, stackName, "", types...)
+}
+
+// TemplateResourcesForStack is TemplateResources for one stack instance: AWS::StackId resolves to stackID
+// ("" = the derived StackId of stackName).
+func TemplateResourcesForStack(data []byte, params, exports map[string]string, stackName, stackID string, types ...string) ([]TemplateResource, error) {
 	t, err := Parse(data)
 	if err != nil {
 		return nil, err
@@ -34,7 +40,7 @@ func TemplateResources(data []byte, params, exports map[string]string, stackName
 	for _, typ := range types {
 		want[typ] = true
 	}
-	r := newResolver(t, resolveParams(t, params), strMapToAny(exports), pseudoParams(stackName))
+	r := newResolver(t, resolveParams(t, params), strMapToAny(exports), pseudoParamsFor(stackName, stackID))
 	r.evalConditions()
 	sctx := &stackCtx{template: t, resolver: r, namer: newPhysNamer(stackName, nil)}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }

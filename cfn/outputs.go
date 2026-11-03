@@ -145,7 +145,7 @@ func setOutputs(ctx context.Context, data []byte, opts DeployOptions, rec *Stack
 // names each VM with an encrypted root that such an attribute waits on, and where it is in coming up.
 func evaluateOutputs(ctx context.Context, t *Template, opts DeployOptions, rec *StackRecord, sr StatusReader,
 	customData map[string]map[string]any) (outs []StackOutput, omitted []OutputOmission, pending bool, booting map[string]vmBoot) {
-	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
+	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParamsFor(opts.StackName, opts.StackID))
 	r.evalConditions()
 	r.customData = customData
 	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, rec.Resources), signalURL: opts.SignalURL}
@@ -455,7 +455,7 @@ func (d *deployedAttrs) statusString(id, field, what string) (any, bool) {
 // templateImports returns the export names this stack reads through Fn::ImportValue (resources +
 // Outputs, included only), sorted — recorded so a stack whose exports are in use can't be deleted.
 func templateImports(t *Template, opts DeployOptions) []string {
-	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
+	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParamsFor(opts.StackName, opts.StackID))
 	r.evalConditions()
 	r.imported = map[string]bool{}
 	for _, id := range t.rawOrder {
@@ -643,7 +643,7 @@ func walkOutputRefs(v any, t *Template, conds map[string]bool, subVars map[strin
 // PhysicalResourceId DescribeStackResources reports. A companion object (an inline policy) is its own
 // name. A Ref that does not resolve leaves the resource's name.
 func setPhysicalIDs(ctx context.Context, t *Template, opts DeployOptions, rec *StackRecord, sr StatusReader) {
-	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
+	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParamsFor(opts.StackName, opts.StackID))
 	r.evalConditions()
 	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, rec.Resources), signalURL: opts.SignalURL}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }

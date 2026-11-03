@@ -356,7 +356,16 @@ func (h *cfnDoorway) serveQuery(w http.ResponseWriter, r *http.Request, claims i
 			r.Form.Set("StackName", stack)
 		}
 	}
+	// A stack named by its StackId names one stack instance: kept on the request, so a deleted stack's
+	// StackId reads the deleted stack, and never acts on a newer stack of its name (cfn_deleted.go).
+	stackARN := ""
+	if v := r.PostFormValue("StackName"); v != "" {
+		if _, ok := awsidentity.StackIDName(v); ok {
+			stackARN = v
+		}
+	}
 	normalizeStackArgs(r)
+	r = withStackARN(r, stackARN)
 	action := r.PostFormValue("Action")
 	if action == "" {
 		writeQueryError(w, http.StatusBadRequest, "MissingAction", requestID, "no Action in the request.", cfnXMLNamespace)
@@ -398,6 +407,11 @@ func (h *cfnDoorway) serveQuery(w http.ResponseWriter, r *http.Request, claims i
 	}
 	if action != "ValidateTemplate" {
 		h.migrateLegacyRecords(r.Context()) // records an earlier front door kept as ConfigMaps (cfn_records.go)
+	}
+	// A StackId that is not the live stack's names a deleted stack: only the reads AWS serves for one find
+	// it; anything else does not act on the stack now using its name.
+	if !readsDeleted(action) && h.stackGone(w, r, ap, action, requestID) {
+		return
 	}
 	switch action {
 	case "CreateStack":
@@ -703,11 +717,12 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		return
 	}
 	ex := h.exportsFor(ctx, name) // other stacks' exports, for Fn::ImportValue
+	stackID := h.newStackID(name) // this stack instance's own StackId (cfn_deleted.go)
 
 	// Synchronous validation gate — an unsupported type / bad template is refused WHOLE here, before
 	// anything is created (the DoD's "refused at validation, nothing created"). This mirrors the engine's
 	// own plan gate but surfaces it as an immediate ValidationError to the caller.
-	plan, perr := cfn.BuildPlanWithCaps([]byte(body), params, ex.values, name, h.caps())
+	plan, perr := cfn.BuildPlanForStack([]byte(body), params, ex.values, name, stackID, h.caps())
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return
@@ -736,7 +751,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 	}
 	// The record is created already owned by this operation (lease + caller), in one atomic Create.
 	now := time.Now().UTC().Format(time.RFC3339)
-	seed := &cfn.StackRecord{Name: name, Namespace: h.ns, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now, Owner: ap.user}
+	seed := &cfn.StackRecord{Name: name, Namespace: h.ns, StackID: stackID, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now, Owner: ap.user}
 	if err := h.seedRecord(ctx, seed, "CreateStack", ap.identity()); err != nil {
 		h.ops.end(name)
 		if apierrors.IsAlreadyExists(err) {
@@ -747,6 +762,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		return
 	}
 	createOpts := h.asCaller(h.stackOpts(name, params, ex, body), ap)
+	createOpts.StackID = stackID
 	createOpts.TerminationProtection = strings.EqualFold(r.PostFormValue("EnableTerminationProtection"), "true")
 	h.runStackOp(name, "CreateStack", "ROLLBACK_COMPLETE", ap, func(bctx context.Context) error {
 		rec, derr := cfn.Deploy(bctx, []byte(body), createOpts, ap)
@@ -755,7 +771,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		}
 		return derr
 	})
-	h.writeResult(w, requestID, "CreateStack", "<StackId>"+xesc(h.stackID(name))+"</StackId>")
+	h.writeResult(w, requestID, "CreateStack", "<StackId>"+xesc(stackID)+"</StackId>")
 }
 
 func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
@@ -783,7 +799,7 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 	}
 	h.auditNonOwner("UpdateStack", current, ap)
 	ex := h.exportsFor(ctx, name)
-	plan, perr := cfn.BuildPlanWithCaps([]byte(body), params, ex.values, name, h.caps())
+	plan, perr := cfn.BuildPlanForStack([]byte(body), params, ex.values, name, current.StackID, h.caps())
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return
@@ -811,6 +827,7 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		return
 	}
 	updateOpts := h.asCaller(h.stackOpts(name, params, ex, body), ap)
+	updateOpts.StackID = current.StackID
 	h.runStackOp(name, "UpdateStack", "UPDATE_FAILED", ap, func(bctx context.Context) error {
 		rec, derr := cfn.Update(bctx, []byte(body), updateOpts, ap)
 		if derr == nil {
@@ -818,7 +835,7 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		}
 		return derr
 	})
-	h.writeResult(w, requestID, "UpdateStack", "<StackId>"+xesc(h.stackID(name))+"</StackId>")
+	h.writeResult(w, requestID, "UpdateStack", "<StackId>"+xesc(h.idOf(current))+"</StackId>")
 }
 
 // updateTerminationProtection — UpdateTerminationProtection: turns the stack's termination protection on
@@ -854,7 +871,7 @@ func (h *cfnDoorway) updateTerminationProtection(w http.ResponseWriter, r *http.
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not record the stack's termination protection: "+err.Error(), cfnXMLNamespace)
 		return
 	}
-	h.writeResult(w, requestID, "UpdateTerminationProtection", "<StackId>"+xesc(h.stackID(name))+"</StackId>")
+	h.writeResult(w, requestID, "UpdateTerminationProtection", "<StackId>"+xesc(h.idOf(rec))+"</StackId>")
 }
 
 func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
@@ -902,9 +919,16 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 		h.claimRefusal(w, requestID, name, "delete", err)
 		return
 	}
+	before := rec
 	h.runStackOp(name, "DeleteStack", "DELETE_FAILED", ap, func(bctx context.Context) error {
-		_, derr := cfn.Destroy(bctx, h.asCaller(h.opts(name, nil), ap), ap)
+		if cur, found, err := ap.GetStack(bctx, name); err == nil && found {
+			before = cur // the record as the delete begins (claimed by this operation)
+		}
+		out, derr := cfn.Destroy(bctx, h.asCaller(h.opts(name, nil), ap), ap)
 		if derr == nil {
+			// As on AWS, the deleted stack is kept (listed, and readable by its StackId) for 90 days
+			// (cfn_deleted.go) — before its events record goes below.
+			h.keepDeleted(bctx, before, out)
 			// As on AWS, deleting a stack deletes its change sets — and its stored NoEcho values, events and
 			// signals.
 			h.deleteChangeSetsOf(bctx, name)
@@ -924,13 +948,14 @@ func (h *cfnDoorway) describeStacks(w http.ResponseWriter, r *http.Request, ap *
 	name := r.PostFormValue("StackName")
 	var recs []*cfn.StackRecord
 	if name != "" {
-		rec, found, err := ap.GetStack(r.Context(), name)
+		// By name: the stack of that name now in use. By StackId: that stack instance, deleted or not.
+		rec, _, found, err := h.readStack(r, ap)
 		if err != nil {
 			writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, err.Error(), cfnXMLNamespace)
 			return
 		}
 		if !found {
-			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+name+" does not exist", cfnXMLNamespace)
+			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+stackRef(r)+" does not exist", cfnXMLNamespace)
 			return
 		}
 		recs = []*cfn.StackRecord{rec}
@@ -955,9 +980,12 @@ func (h *cfnDoorway) describeStacks(w http.ResponseWriter, r *http.Request, ap *
 func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {
 	var b strings.Builder
 	b.WriteString("<member>")
-	b.WriteString("<StackId>" + xesc(h.stackID(rec.Name)) + "</StackId>")
+	b.WriteString("<StackId>" + xesc(h.idOf(rec)) + "</StackId>")
 	b.WriteString("<StackName>" + xesc(rec.Name) + "</StackName>")
 	b.WriteString("<StackStatus>" + xesc(rec.Status) + "</StackStatus>")
+	if rec.DeletedAt != "" {
+		b.WriteString("<DeletionTime>" + xesc(rec.DeletedAt) + "</DeletionTime>")
+	}
 	switch {
 	case rec.Message != "":
 		b.WriteString("<StackStatusReason>" + xesc(rec.Message) + "</StackStatusReason>")
@@ -994,10 +1022,9 @@ func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {
 }
 
 func (h *cfnDoorway) describeStackResources(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
-	name := r.PostFormValue("StackName")
-	rec, found, err := ap.GetStack(r.Context(), name)
+	rec, _, found, err := h.readStack(r, ap)
 	if err != nil || !found {
-		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist.", cfnXMLNamespace)
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+stackRef(r)+"] does not exist.", cfnXMLNamespace)
 		return
 	}
 	h.describeStackResourcesOf(w, r, rec, requestID)
@@ -1013,7 +1040,7 @@ func (h *cfnDoorway) describeStackResourcesOf(w http.ResponseWriter, r *http.Req
 		}
 		b.WriteString("<member>")
 		b.WriteString("<StackName>" + xesc(rec.Name) + "</StackName>")
-		b.WriteString("<StackId>" + xesc(h.stackID(rec.Name)) + "</StackId>")
+		b.WriteString("<StackId>" + xesc(h.idOf(rec)) + "</StackId>")
 		b.WriteString("<LogicalResourceId>" + xesc(row.logicalID) + "</LogicalResourceId>")
 		b.WriteString("<PhysicalResourceId>" + xesc(row.physicalID) + "</PhysicalResourceId>")
 		b.WriteString("<ResourceType>" + xesc(row.typ) + "</ResourceType>")
@@ -1027,16 +1054,54 @@ func (h *cfnDoorway) describeStackResourcesOf(w http.ResponseWriter, r *http.Req
 	h.writeResult(w, requestID, "DescribeStackResources", "<StackResources>"+b.String()+"</StackResources>")
 }
 
+// listStacks serves ListStacks: every stack in use and, as on AWS, every stack deleted in the last 90 days
+// (DELETE_COMPLETE, with its DeletionTime — cfn_deleted.go). StackStatusFilter keeps only stacks in the
+// statuses it names.
 func (h *cfnDoorway) listStacks(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
+	filter := map[string]bool{}
+	for k, vs := range r.PostForm {
+		if strings.HasPrefix(k, "StackStatusFilter.member.") {
+			for _, v := range vs {
+				filter[v] = true
+			}
+		}
+	}
+	recs := append(h.allRecords(r.Context()), h.deletedStacks(r.Context(), "")...)
 	var b strings.Builder
-	for _, rec := range h.allRecords(r.Context()) {
+	for _, rec := range recs {
+		if len(filter) > 0 && !filter[rec.Status] {
+			continue
+		}
 		b.WriteString("<member>")
-		b.WriteString("<StackId>" + xesc(h.stackID(rec.Name)) + "</StackId>")
+		b.WriteString("<StackId>" + xesc(h.idOf(rec)) + "</StackId>")
 		b.WriteString("<StackName>" + xesc(rec.Name) + "</StackName>")
+		if rec.Description != "" {
+			b.WriteString("<TemplateDescription>" + xesc(rec.Description) + "</TemplateDescription>")
+		}
+		if rec.CreatedAt != "" {
+			b.WriteString("<CreationTime>" + xesc(rec.CreatedAt) + "</CreationTime>")
+		}
+		if rec.UpdatedAt != "" && rec.DeletedAt == "" {
+			b.WriteString("<LastUpdatedTime>" + xesc(rec.UpdatedAt) + "</LastUpdatedTime>")
+		}
+		if rec.DeletedAt != "" {
+			b.WriteString("<DeletionTime>" + xesc(rec.DeletedAt) + "</DeletionTime>")
+		}
 		b.WriteString("<StackStatus>" + xesc(rec.Status) + "</StackStatus>")
+		if rec.Message != "" {
+			b.WriteString("<StackStatusReason>" + xesc(rec.Message) + "</StackStatusReason>")
+		}
 		b.WriteString("</member>")
 	}
 	h.writeResult(w, requestID, "ListStacks", "<StackSummaries>"+b.String()+"</StackSummaries>")
+}
+
+// stackRef is how a request named its stack: its StackId when it gave one, else its name.
+func stackRef(r *http.Request) string {
+	if arn := stackARNOf(r); arn != "" {
+		return arn
+	}
+	return r.PostFormValue("StackName")
 }
 
 // allRecords lists every stack record in the record store (shim client).
@@ -1105,7 +1170,11 @@ func headerSafe(s string) string {
 
 // changeSet is the doorway's persisted change-set bookkeeping (a record cfn-changeset-<stack>.<name>).
 type changeSet struct {
-	StackName    string            `json:"stackName"`
+	StackName string `json:"stackName"`
+	// StackID is the StackId of the stack the change set is for: the existing stack's, or — a CREATE
+	// change set — the one the stack it creates will have ("" on a change set from before StackIds were
+	// per instance: the derived one).
+	StackID      string            `json:"stackId,omitempty"`
 	Name         string            `json:"name"`
 	TemplateBody string            `json:"templateBody"`
 	Params       map[string]string `json:"params,omitempty"` // never a NoEcho value
@@ -1177,12 +1246,16 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 		return
 	}
 	csType := "UPDATE"
-	if !cs.Exists {
+	var stackID string
+	if cs.Exists {
+		stackID = h.idOf(current)
+	} else {
 		csType = "CREATE"
+		stackID = h.newStackID(stack) // the StackId the stack it creates will have, as AWS returns it here
 	}
 	// NoEcho values stay out of the change-set record (a ConfigMap): they go to its NoEcho Secret.
 	plain, noEchoNames, noEchoValues := cfn.SplitNoEcho([]byte(body), params)
-	rec := &changeSet{StackName: stack, Name: csName, TemplateBody: body, Params: plain, NoEchoParams: noEchoNames,
+	rec := &changeSet{StackName: stack, StackID: stackID, Name: csName, TemplateBody: body, Params: plain, NoEchoParams: noEchoNames,
 		Type: csType, Changes: cs.Changes}
 	if err := h.noecho.put(ctx, changeSetCMName(stack, csName), stack, noEchoValues); err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not store the NoEcho parameters: "+err.Error(), cfnXMLNamespace)
@@ -1194,7 +1267,7 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 	}
 	csID := fmt.Sprintf("arn:aws:cloudformation:%s:%s:changeSet/%s/%s", h.region, h.account, csName, shortHash(stack+"/"+csName))
 	h.writeResult(w, requestID, "CreateChangeSet",
-		"<Id>"+xesc(csID)+"</Id><StackId>"+xesc(h.stackID(stack))+"</StackId>")
+		"<Id>"+xesc(csID)+"</Id><StackId>"+xesc(stackID)+"</StackId>")
 }
 
 // changeSetFidelity renders a change set's fidelity summary (every caveat of a resource it adds or
@@ -1268,7 +1341,7 @@ func (h *cfnDoorway) describeChangeSet(w http.ResponseWriter, r *http.Request, a
 	inner := "<ChangeSetName>" + xesc(cs.Name) + "</ChangeSetName>" +
 		"<ChangeSetId>" + xesc(csID) + "</ChangeSetId>" +
 		"<StackName>" + xesc(cs.StackName) + "</StackName>" +
-		"<StackId>" + xesc(h.stackID(cs.StackName)) + "</StackId>" +
+		"<StackId>" + xesc(h.changeSetStackID(cs)) + "</StackId>" +
 		"<Status>" + status + "</Status><ExecutionStatus>" + exec + "</ExecutionStatus>" +
 		"<StatusReason>" + xesc(reason) + "</StatusReason>" +
 		"<Changes>" + b.String() + "</Changes>"
@@ -1396,7 +1469,10 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		// A CREATE change set seeds the record like CreateStack: already owned, atomically (a stack that
 		// was created since the change set was is refused, never overwritten).
 		now := time.Now().UTC().Format(time.RFC3339)
-		seed := &cfn.StackRecord{Name: stack, Namespace: h.ns, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now, Owner: ap.user}
+		if cs.StackID == "" { // a change set from before StackIds were per instance
+			cs.StackID = h.newStackID(stack)
+		}
+		seed := &cfn.StackRecord{Name: stack, Namespace: h.ns, StackID: cs.StackID, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now, Owner: ap.user}
 		if err := h.seedRecord(ctx, seed, "ExecuteChangeSet", ap.identity()); err != nil {
 			h.ops.end(stack)
 			if apierrors.IsAlreadyExists(err) {
@@ -1416,6 +1492,11 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		return
 	}
 	execOpts := h.asCaller(h.stackOpts(stack, params, ex, body), ap)
+	if create {
+		execOpts.StackID = cs.StackID
+	} else {
+		execOpts.StackID = current.StackID
+	}
 	// The change set's ExecutionStatus follows the operation, as on AWS: EXECUTE_IN_PROGRESS, then
 	// EXECUTE_COMPLETE or EXECUTE_FAILED (an executed change set cannot be executed again).
 	markExecution := func(ctx context.Context, status string) {
@@ -1579,7 +1660,7 @@ func (h *cfnDoorway) describeDriftStatus(w http.ResponseWriter, r *http.Request,
 			drifted++
 		}
 	}
-	inner := "<StackId>" + xesc(h.stackID(stack)) + "</StackId>" +
+	inner := "<StackId>" + xesc(h.liveStackID(r.Context(), stack)) + "</StackId>" +
 		"<StackDriftDetectionId>" + xesc(detID) + "</StackDriftDetectionId>" +
 		"<DetectionStatus>DETECTION_COMPLETE</DetectionStatus>" +
 		"<StackDriftStatus>" + status + "</StackDriftStatus>" +
@@ -1604,7 +1685,7 @@ func (h *cfnDoorway) describeResourceDrifts(w http.ResponseWriter, r *http.Reque
 			cfnStatus = "DELETED"
 		}
 		b.WriteString("<member>")
-		b.WriteString("<StackId>" + xesc(h.stackID(stack)) + "</StackId>")
+		b.WriteString("<StackId>" + xesc(h.liveStackID(r.Context(), stack)) + "</StackId>")
 		b.WriteString("<LogicalResourceId>" + xesc(rd.LogicalID) + "</LogicalResourceId>")
 		b.WriteString("<PhysicalResourceId>" + xesc(rd.Name) + "</PhysicalResourceId>")
 		b.WriteString("<ResourceType>" + xesc(rd.Kind) + "</ResourceType>")
@@ -1788,9 +1869,13 @@ func templateParametersXML(data []byte, summary bool) string {
 func (h *cfnDoorway) getTemplateSummary(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
 	var body string
 	if name := r.PostFormValue("StackName"); name != "" {
-		rec, found, err := ap.GetStack(r.Context(), name)
+		rec, _, found, err := h.readStack(r, ap) // a deleted stack by its StackId, as on AWS
 		if err != nil || !found {
-			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+name+" does not exist", cfnXMLNamespace)
+			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+stackRef(r)+" does not exist", cfnXMLNamespace)
+			return
+		}
+		if rec.Template == "" && rec.DeletedAt != "" {
+			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, deletedTemplateGone(rec), cfnXMLNamespace)
 			return
 		}
 		body = rec.Template
@@ -1826,10 +1911,13 @@ func (h *cfnDoorway) getTemplateSummary(w http.ResponseWriter, r *http.Request, 
 
 // getTemplate returns the template a stack was last deployed with.
 func (h *cfnDoorway) getTemplate(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
-	name := r.PostFormValue("StackName")
-	rec, found, err := ap.GetStack(r.Context(), name)
+	rec, _, found, err := h.readStack(r, ap) // a deleted stack by its StackId, as on AWS
 	if err != nil || !found {
-		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+name+" does not exist", cfnXMLNamespace)
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+stackRef(r)+" does not exist", cfnXMLNamespace)
+		return
+	}
+	if rec.Template == "" && rec.DeletedAt != "" {
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, deletedTemplateGone(rec), cfnXMLNamespace)
 		return
 	}
 	h.writeResult(w, requestID, "GetTemplate", "<TemplateBody>"+xesc(rec.Template)+"</TemplateBody><StagesAvailable><member>Original</member><member>Processed</member></StagesAvailable>")

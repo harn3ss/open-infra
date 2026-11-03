@@ -54,6 +54,7 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 	if found {
 		opts.prior = current.Resources
 		owned = ownedFrom(current.Resources)
+		opts.adoptStackID(current) // AWS::StackId is the stack's own, as its create resolved it
 	}
 	// A resource the update adds is named around anything an earlier stack of this name (or an earlier
 	// update that removed a Retain resource) left behind; what the stack recorded keeps its name.

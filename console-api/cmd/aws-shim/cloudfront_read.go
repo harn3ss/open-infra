@@ -123,7 +123,7 @@ func templateResources(rec *cfn.StackRecord, all []*cfn.StackRecord, types ...st
 	if rec.Template == "" {
 		return nil
 	}
-	res, err := cfn.TemplateResources([]byte(rec.Template), rec.Parameters, exportsFrom(all, rec.Name).values, rec.Name, types...)
+	res, err := cfn.TemplateResourcesForStack([]byte(rec.Template), rec.Parameters, exportsFrom(all, rec.Name).values, rec.Name, rec.StackID, types...)
 	if err != nil {
 		return nil
 	}

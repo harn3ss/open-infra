@@ -173,7 +173,7 @@ func (h *cfnDoorway) listExports(w http.ResponseWriter, r *http.Request, request
 	var b strings.Builder
 	for _, n := range names {
 		b.WriteString("<member>")
-		b.WriteString("<ExportingStackId>" + xesc(h.stackID(ex.owners[n])) + "</ExportingStackId>")
+		b.WriteString("<ExportingStackId>" + xesc(h.liveStackID(r.Context(), ex.owners[n])) + "</ExportingStackId>")
 		b.WriteString("<Name>" + xesc(n) + "</Name>")
 		b.WriteString("<Value>" + xesc(ex.values[n]) + "</Value>")
 		b.WriteString("</member>")

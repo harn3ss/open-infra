@@ -63,6 +63,7 @@ func RecoverInterrupted(ctx context.Context, opts DeployOptions, ap Applier, rea
 	if !found {
 		return nil, nil
 	}
+	opts.adoptStackID(rec) // the rollback resolves AWS::StackId as the interrupted operation did
 	switch rec.Status {
 	case "CREATE_IN_PROGRESS", "ROLLBACK_IN_PROGRESS":
 		return recoverCreate(ctx, opts, ap, rec, reason)

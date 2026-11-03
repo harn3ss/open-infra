@@ -18,8 +18,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/harn3ss/open-infra/cfn/awsidentity"
 )
 
 // Destroy tears down a stack. It returns the resulting record (DELETE_COMPLETE — with any
@@ -35,6 +33,7 @@ func Destroy(ctx context.Context, opts DeployOptions, ap Applier) (*StackRecord,
 	if !found {
 		return nil, fmt.Errorf("no stack %q in namespace %q to destroy", opts.StackName, opts.Namespace)
 	}
+	opts.adoptStackID(rec) // a custom resource's Delete event names the stack instance's own StackId
 
 	// Termination protection refuses the delete, as on AWS.
 	if rec.TerminationProtection {
@@ -151,7 +150,7 @@ func customResourceDelete(ctx context.Context, opts DeployOptions, r StackResour
 	resType, _ := r.Spec["resourceType"].(string)
 	props, _ := r.Spec["properties"].(map[string]any)
 	event, _ := json.Marshal(map[string]any{
-		"RequestType": "Delete", "ResponseURL": "", "StackId": awsidentity.Current().StackID(opts.StackName),
+		"RequestType": "Delete", "ResponseURL": "", "StackId": opts.stackID(),
 		"RequestId": opts.StackName + "/" + r.LogicalID, "ResourceType": resType,
 		"LogicalResourceId": r.LogicalID, "ResourceProperties": props,
 	})

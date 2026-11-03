@@ -158,6 +158,12 @@ func underValidatedDomain(host string, domains []string) bool {
 
 // BuildPlanWithCaps is BuildPlanWithExports with explicit deploy-environment Capabilities.
 func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName string, caps Capabilities) (*Plan, error) {
+	return BuildPlanForStack(data, params, exports, stackName, "", caps)
+}
+
+// BuildPlanForStack is BuildPlanWithCaps for one stack instance: AWS::StackId resolves to stackID ("" =
+// the derived StackId of stackName — DeployOptions.StackID).
+func BuildPlanForStack(data []byte, params, exports map[string]string, stackName, stackID string, caps Capabilities) (*Plan, error) {
 	t, err := Parse(data)
 	if err != nil {
 		return nil, err
@@ -203,7 +209,7 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 		}
 	}
 
-	r := newResolver(t, pvals, strMapToAny(exports), pseudoParams(stackName))
+	r := newResolver(t, pvals, strMapToAny(exports), pseudoParamsFor(stackName, stackID))
 	r.evalConditions()
 
 	// Decide inclusion + mapping for every resource, walking properties only for included ones.
@@ -273,7 +279,7 @@ func BuildPlanWithCaps(data []byte, params, exports map[string]string, stackName
 		for _, b := range plan.Blockers {
 			seen[b] = true
 		}
-		tr := newResolver(t, pvals, strMapToAny(exports), pseudoParams(stackName))
+		tr := newResolver(t, pvals, strMapToAny(exports), pseudoParamsFor(stackName, stackID))
 		tr.evalConditions()
 		tctx := &stackCtx{template: t, resolver: tr, caps: caps, namer: newPhysNamer(stackName, nil)}
 		tr.staticRef = func(id string) (string, bool) { return inStackRef(id, tctx) }
@@ -483,20 +489,43 @@ func (p *Plan) hasUndeployable() bool {
 // (awsidentity.Current — the account, region and partition the aws-shim reports), and the stack's own
 // StackId, the same ARN the CloudFormation front door returns for it. An ARN a template builds from
 // them therefore matches the ARN the shim reports, as on AWS.
-func pseudoParams(stackName string) map[string]any {
+func pseudoParams(stackName string) map[string]any { return pseudoParamsFor(stackName, "") }
+
+// pseudoParamsFor is pseudoParams for one stack instance: AWS::StackId is stackID, or the derived StackId
+// of stackName when stackID is "" (a stack from before StackIds were per instance).
+func pseudoParamsFor(stackName, stackID string) map[string]any {
 	if stackName == "" {
 		stackName = "openinfra-stack"
 	}
 	id := awsidentity.Current()
+	if stackID == "" {
+		stackID = id.StackID(stackName)
+	}
 	return map[string]any{
 		"AWS::Region":           id.Region,
 		"AWS::AccountId":        id.AccountID,
 		"AWS::Partition":        awsidentity.Partition,
 		"AWS::URLSuffix":        awsidentity.URLSuffix,
 		"AWS::StackName":        stackName,
-		"AWS::StackId":          id.StackID(stackName),
+		"AWS::StackId":          stackID,
 		"AWS::NoValue":          nil,
 		"AWS::NotificationARNs": []any{},
+	}
+}
+
+// stackID is the StackId of the stack these options deploy: StackID, else the derived StackId of its name.
+func (o DeployOptions) stackID() string {
+	if o.StackID != "" {
+		return o.StackID
+	}
+	return awsidentity.Current().StackID(o.StackName)
+}
+
+// adoptStackID gives the options the StackId the stack's record names, when they name none: an update,
+// delete, change set or recovery of an existing stack resolves AWS::StackId as its create did.
+func (o *DeployOptions) adoptStackID(rec *StackRecord) {
+	if o.StackID == "" && rec != nil {
+		o.StackID = rec.StackID
 	}
 }
 

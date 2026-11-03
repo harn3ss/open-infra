@@ -1486,6 +1486,18 @@ with the caller's permissions and never fetched over the network; nested stacks 
 `/cfn-signal/…`, signed for its stack and handle
 ([cloudformation.md](cloudformation.md#resource-signals-and-wait-conditions)).
 
+**StackIds and deleted stacks.** Each stack instance has its own `StackId`
+(`arn:aws:cloudformation:<region>:<account>:stack/<name>/<uuid>`, the value `AWS::StackId` resolves to), so a
+stack re-created under a deleted stack's name gets a new one. As on AWS, a deleted stack is kept for 90 days:
+`ListStacks` lists it `DELETE_COMPLETE` with its `DeletionTime` (and honors `StackStatusFilter`), and
+`DescribeStacks`, `DescribeStackEvents`, `DescribeStackResources`, `ListStackResources`,
+`DescribeStackResource`, `GetTemplate` and `GetTemplateSummary` answer for it when it is named by its `StackId`.
+By name, a stack name means only the stack of that name now in use, and `DescribeStacks` of every stack lists
+only stacks in use. A deleted stack's `StackId` never acts on a newer stack of its name: `DeleteStack` with it
+is a no-op, any other change does not find the stack. A stack created before StackIds were per instance keeps
+the StackId it was created with. Two bounds AWS does not have: at most 1,000 deleted stacks are kept (the
+oldest go first), and a deleted stack's template over 256 KiB is not kept with it (`GetTemplate` says so).
+
 **Stack outputs and exports.** When a create or update completes, the engine evaluates the template's
 `Outputs` against the deployed stack and stores them with it; `DescribeStacks` returns them in the AWS shape
 (`OutputKey` / `OutputValue` / `Description` / `ExportName`), so `aws cloudformation describe-stacks

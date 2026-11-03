@@ -39,6 +39,7 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	if !cs.Exists {
 		return nil, fmt.Errorf("no stack %q in namespace %q to update — use deploy to create it", opts.StackName, opts.Namespace)
 	}
+	opts.adoptStackID(current) // the stack instance's own StackId, as its create resolved AWS::StackId
 	// Also refuse if the EXISTING stack was created with custom resources (removing one via update would
 	// need a Delete-event invoke the diff path doesn't run) — destroy + recreate.
 	for _, r := range current.Resources {
@@ -262,7 +263,7 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	// The stack's Outputs must resolve against what it is about to become (an Output that does not resolve
 	// fails the update, which rolls back) — checked before anything is removed.
 	newRec := &StackRecord{
-		Name: opts.StackName, Namespace: opts.Namespace, Status: "UPDATE_COMPLETE",
+		Name: opts.StackName, Namespace: opts.Namespace, StackID: current.StackID, Status: "UPDATE_COMPLETE",
 		CreatedAt: current.CreatedAt, UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		Template: string(data), Owner: current.Owner, Description: templateDescription(data), Fidelity: opts.Fidelity, TerminationProtection: current.TerminationProtection,
 	}

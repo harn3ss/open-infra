@@ -11,11 +11,13 @@
 package awsidentity
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -151,12 +153,58 @@ func (i Identity) STSARN(resource string) string { return i.ARN("sts", "", resou
 // S3BucketARN builds arn:aws:s3:::<bucket>.
 func S3BucketARN(bucket string) string { return "arn:" + Partition + ":s3:::" + bucket }
 
-// StackID is the StackId of stack name: arn:aws:cloudformation:<region>:<account>:stack/<name>/<id>,
-// where <id> is derived from the stack namespace and name, so it is stable for the stack's life.
-// AWS::StackId resolves to the same value.
+// StackID is the derived StackId of stack name: arn:aws:cloudformation:<region>:<account>:stack/<name>/<id>,
+// where <id> is derived from the stack namespace and name. Stacks created before StackIds were per stack
+// instance keep it for their life (their record names no StackId of its own), and AWS::StackId resolves
+// to it for them; a stack created since has its own, from NewStackID.
 func (i Identity) StackID(name string) string {
 	sum := sha256.Sum256([]byte(i.StackNamespace + "/" + name))
 	return i.RegionalARN("cloudformation", "stack/"+name+"/"+hex.EncodeToString(sum[:])[:32])
+}
+
+// NewStackID is a new stack instance's StackId, as AWS gives each stack it creates:
+// arn:aws:cloudformation:<region>:<account>:stack/<name>/<uuid>, the uuid random. A stack re-created
+// under a deleted stack's name gets a new one, so the deleted stack stays known by its own.
+func (i Identity) NewStackID(name string) string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// No randomness: the name and the time still make the id unique to this instance.
+		sum := sha256.Sum256([]byte(i.StackNamespace + "/" + name + "/" + time.Now().UTC().Format(time.RFC3339Nano)))
+		copy(b[:], sum[:16])
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // a version 4 UUID, the form AWS's StackIds take
+	b[8] = (b[8] & 0x3f) | 0x80
+	h := hex.EncodeToString(b[:])
+	return i.RegionalARN("cloudformation", "stack/"+name+"/"+h[0:8]+"-"+h[8:12]+"-"+h[12:16]+"-"+h[16:20]+"-"+h[20:32])
+}
+
+// StackIDName is the stack name a StackId names (arn:…:stack/<name>/<id>); ok=false when s is not one.
+func StackIDName(s string) (name string, ok bool) {
+	if !strings.HasPrefix(s, "arn:") || !strings.Contains(s, ":cloudformation:") {
+		return "", false
+	}
+	i := strings.Index(s, ":stack/")
+	if i < 0 {
+		return "", false
+	}
+	rest := s[i+len(":stack/"):]
+	name, id, found := strings.Cut(rest, "/")
+	if !found || name == "" || id == "" {
+		return "", false
+	}
+	return name, true
+}
+
+// SameStackID reports whether two StackIds name the same stack instance: the same name and the same
+// unique part. The account, region and partition are not compared, so a StackId kept from before the
+// install's identity changed (the legacy partition or account) still matches.
+func SameStackID(a, b string) bool {
+	an, aok := StackIDName(a)
+	bn, bok := StackIDName(b)
+	if !aok || !bok || an != bn {
+		return false
+	}
+	return a[strings.LastIndex(a, "/")+1:] == b[strings.LastIndex(b, "/")+1:]
 }
 
 // Canonical rewrites an ARN or a URL from the legacy form to this identity: the "openinfra" partition

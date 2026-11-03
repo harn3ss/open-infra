@@ -26,7 +26,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -282,8 +281,15 @@ func physicalNameFree(ctx context.Context, ap Applier, b builtResource, stack st
 }
 
 type StackRecord struct {
-	Name      string          `json:"name"`
-	Namespace string          `json:"namespace"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	// StackID is this stack instance's StackId (awsidentity NewStackID), the value AWS::StackId resolves
+	// to. "" on a stack created before StackIds were per instance: its StackId is the derived one
+	// (awsidentity StackID of its name), which it keeps.
+	StackID string `json:"stackId,omitempty"`
+	// DeletedAt is when a deleted stack's delete completed (its DeletionTime), set only on the record a
+	// front door keeps of a deleted stack.
+	DeletedAt string          `json:"deletedAt,omitempty"`
 	Status    string          `json:"status"`
 	Message   string          `json:"message,omitempty"`
 	CreatedAt string          `json:"createdAt"`
@@ -339,6 +345,10 @@ type StackRecord struct {
 type DeployOptions struct {
 	StackName string
 	Namespace string
+	// StackID is the stack instance's StackId: what AWS::StackId resolves to and the record keeps. "" =
+	// the derived StackId of StackName (awsidentity StackID), which every stack created before StackIds
+	// were per instance keeps; an update, delete or recovery adopts the one its record names.
+	StackID string
 	// Owner is the caller a create records as the stack's owner (StackRecord.Owner); "" records none.
 	Owner   string
 	Params  map[string]string
@@ -444,7 +454,7 @@ func expandManifest(id string, res Resource, m *Manifest, opts DeployOptions) ([
 // deploy and update: a REJECTED plan, a type with no create translator, or any untranslatable
 // property returns an error and no manifests — there is no partial result.
 func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
-	plan, err := BuildPlanWithCaps(data, opts.Params, opts.Exports, opts.StackName, opts.Caps)
+	plan, err := BuildPlanForStack(data, opts.Params, opts.Exports, opts.StackName, opts.StackID, opts.Caps)
 	if err != nil {
 		return nil, err
 	}
@@ -455,7 +465,7 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
+	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParamsFor(opts.StackName, opts.StackID))
 	r.evalConditions()
 	namer := newPhysNamer(opts.StackName, opts.prior)
 	namer.avoid(opts.leftovers)
@@ -802,7 +812,7 @@ func hasAPIGatewayRestV1(t *Template) bool {
 // Fn::GetAtt resolved against it. Same fail-closed rollback as Deploy. A stack with no custom resource
 // never reaches here (Deploy branches on hasCustomResources), so the common path is untouched.
 func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*StackRecord, error) {
-	plan, err := BuildPlanWithCaps(data, opts.Params, opts.Exports, opts.StackName, opts.Caps)
+	plan, err := BuildPlanForStack(data, opts.Params, opts.Exports, opts.StackName, opts.StackID, opts.Caps)
 	if err != nil {
 		return nil, err
 	}
@@ -813,7 +823,7 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 	if err != nil {
 		return nil, err
 	}
-	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParams(opts.StackName))
+	r := newResolver(t, resolveParams(t, opts.Params), strMapToAny(opts.Exports), pseudoParamsFor(opts.StackName, opts.StackID))
 	r.evalConditions()
 	r.customData = map[string]map[string]any{}
 	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(opts.StackName, nil), signalURL: opts.SignalURL}
@@ -1062,7 +1072,7 @@ func invokeCustomResource(ctx context.Context, opts DeployOptions, r *resolver, 
 	event, _ := json.Marshal(map[string]any{
 		"RequestType":        "Create",
 		"ResponseURL":        "", // open-infra: the handler returns the response synchronously (no S3 callback)
-		"StackId":            awsidentity.Current().StackID(opts.StackName),
+		"StackId":            opts.stackID(),
 		"RequestId":          opts.StackName + "/" + id,
 		"ResourceType":       resType,
 		"LogicalResourceId":  id,
@@ -1134,6 +1144,9 @@ func renderManifest(m *Manifest, opts DeployOptions) ([]byte, error) {
 
 // writeStackRecord persists the stack record as a ConfigMap via the applier.
 func writeStackRecord(ctx context.Context, ap Applier, rec *StackRecord, opts DeployOptions) error {
+	if rec.StackID == "" {
+		rec.StackID = opts.StackID // a fresh record of this stack instance carries its StackId
+	}
 	blob, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return err

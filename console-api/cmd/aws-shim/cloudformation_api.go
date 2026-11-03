@@ -59,13 +59,12 @@ func (a *impersonatingApplier) PutEvents(ctx context.Context, stack string, even
 }
 
 // stackEvents is a stack's events, newest first: the events record when it is newer than the stack
-// record's own copy, else the record's.
+// record's own copy, else the record's. A deleted stack's are its kept record's alone (an events record
+// of its name is a later stack's).
 func (h *cfnDoorway) stackEvents(ctx context.Context, rec *cfn.StackRecord) []cfn.StackEvent {
 	evs := rec.Events
-	st := h.recs()
-	if u, err := st.client().Get(ctx, eventsRecordName(rec.Name), metav1.GetOptions{}); err == nil {
-		var side []cfn.StackEvent
-		if json.Unmarshal([]byte(st.value(u, "events.json")), &side) == nil && len(side) > len(evs) {
+	if rec.DeletedAt == "" {
+		if side := h.sideEvents(ctx, rec.Name); len(side) > len(evs) {
 			evs = side
 		}
 	}
@@ -74,13 +73,12 @@ func (h *cfnDoorway) stackEvents(ctx context.Context, rec *cfn.StackRecord) []cf
 }
 
 func (h *cfnDoorway) describeStackEvents(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
-	name := r.PostFormValue("StackName")
-	rec, found, err := ap.GetStack(r.Context(), name)
+	rec, _, found, err := h.readStack(r, ap)
 	if err != nil || !found {
-		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist", cfnXMLNamespace)
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+stackRef(r)+"] does not exist", cfnXMLNamespace)
 		return
 	}
-	stackID := h.stackID(rec.Name)
+	stackID := h.idOf(rec)
 	var b strings.Builder
 	for _, e := range h.stackEvents(r.Context(), rec) {
 		phys := e.PhysicalID
@@ -190,10 +188,9 @@ func completeStatusOf(stackStatus string) string {
 }
 
 func (h *cfnDoorway) listStackResources(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
-	name := r.PostFormValue("StackName")
-	rec, found, err := ap.GetStack(r.Context(), name)
+	rec, _, found, err := h.readStack(r, ap)
 	if err != nil || !found {
-		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+name+" does not exist", cfnXMLNamespace)
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+stackRef(r)+" does not exist", cfnXMLNamespace)
 		return
 	}
 	var b strings.Builder
@@ -216,10 +213,9 @@ func (h *cfnDoorway) listStackResources(w http.ResponseWriter, r *http.Request, 
 // describeStackResource serves DescribeStackResource: one resource, with its Metadata (from the template the
 // stack was deployed with) — what cfn-init reads for AWS::CloudFormation::Init.
 func (h *cfnDoorway) describeStackResource(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
-	name := r.PostFormValue("StackName")
-	rec, found, err := ap.GetStack(r.Context(), name)
+	rec, _, found, err := h.readStack(r, ap)
 	if err != nil || !found {
-		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+name+" does not exist", cfnXMLNamespace)
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack with id "+stackRef(r)+" does not exist", cfnXMLNamespace)
 		return
 	}
 	h.describeStackResourceOf(w, r, rec, requestID)
@@ -265,7 +261,7 @@ func (h *cfnDoorway) describeStackResourceOf(w http.ResponseWriter, r *http.Requ
 	var b strings.Builder
 	b.WriteString("<StackResourceDetail>")
 	b.WriteString("<StackName>" + xesc(rec.Name) + "</StackName>")
-	b.WriteString("<StackId>" + xesc(h.stackID(rec.Name)) + "</StackId>")
+	b.WriteString("<StackId>" + xesc(h.idOf(rec)) + "</StackId>")
 	b.WriteString("<LogicalResourceId>" + xesc(row.logicalID) + "</LogicalResourceId>")
 	b.WriteString("<PhysicalResourceId>" + xesc(row.physicalID) + "</PhysicalResourceId>")
 	b.WriteString("<ResourceType>" + xesc(row.typ) + "</ResourceType>")
@@ -301,7 +297,7 @@ func (h *cfnDoorway) listChangeSets(w http.ResponseWriter, r *http.Request, ap *
 			continue
 		}
 		b.WriteString("<member>")
-		b.WriteString("<StackId>" + xesc(h.stackID(stack)) + "</StackId>")
+		b.WriteString("<StackId>" + xesc(h.changeSetStackID(cs)) + "</StackId>")
 		b.WriteString("<StackName>" + xesc(stack) + "</StackName>")
 		b.WriteString("<ChangeSetId>" + xesc(h.changeSetID(stack, csName)) + "</ChangeSetId>")
 		b.WriteString("<ChangeSetName>" + xesc(csName) + "</ChangeSetName>")
