@@ -119,6 +119,7 @@
         "ListStackResources",
         "ListStacks",
         "UpdateStack",
+        "UpdateTerminationProtection",
         "ValidateTemplate"
       ],
       "actions": [
@@ -558,6 +559,7 @@
         "DeleteBucket",
         "DeleteBucketTagging",
         "DeleteObject",
+        "DeleteObjectTagging",
         "DeleteObjects",
         "GetBucketEncryption",
         "GetBucketLocation",
@@ -576,6 +578,7 @@
         "PutBucketTagging",
         "PutBucketVersioning",
         "PutObject",
+        "PutObjectTagging",
         "UploadPart",
         "UploadPartCopy"
       ]

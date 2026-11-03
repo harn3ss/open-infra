@@ -277,6 +277,7 @@
         "ListStackResources",
         "ListStacks",
         "UpdateStack",
+        "UpdateTerminationProtection",
         "ValidateTemplate"
       ],
       "probes": [
@@ -986,6 +987,7 @@
         "DeleteBucket",
         "DeleteBucketTagging",
         "DeleteObject",
+        "DeleteObjectTagging",
         "DeleteObjects",
         "GetBucketEncryption",
         "GetBucketLocation",
@@ -1004,6 +1006,7 @@
         "PutBucketTagging",
         "PutBucketVersioning",
         "PutObject",
+        "PutObjectTagging",
         "UploadPart",
         "UploadPartCopy"
       ],
@@ -1270,7 +1273,7 @@
     "excRead": 25,
     "excepted": 26,
     "flattened": 1,
-    "operations": 478,
+    "operations": 481,
     "planOnly": 11,
     "refused": 11,
     "services": 28,
@@ -2362,7 +2365,7 @@
         "cfn-api"
       ],
       "status": "partial",
-      "templateUses": 2,
+      "templateUses": 3,
       "verdict": "ok"
     },
     "AWS::EC2::SubnetNetworkAclAssociation": {
@@ -3382,7 +3385,7 @@
         "cfn-data-services"
       ],
       "status": "partial",
-      "templateUses": 5,
+      "templateUses": 6,
       "verdict": "ok"
     },
     "AWS::SecretsManager::Secret": {
