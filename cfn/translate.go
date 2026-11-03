@@ -50,6 +50,9 @@ type Manifest struct {
 	// Protected (RDS DeletionProtection) makes a stack delete, or an update that removes the resource,
 	// refuse while it is set.
 	Protected bool
+	// Annotations are set on the applied object (AWSViewAnnotation: the AWS-side properties the kind does
+	// not model, for the aws-shim's EC2 API). nil = none.
+	Annotations map[string]string
 }
 
 // Requirement is an object outside the stack that must exist before a resource is applied.
@@ -740,6 +743,9 @@ func resolveEC2Image(imageID string) (os, reason string) {
 		}
 	}
 	if strings.HasPrefix(lc, "ami-") {
+		if c := catalogOSForImageID(lc); c != "" {
+			return c, "" // a catalog OS's own image id (ec2 describe-images; the guest's ami-id)
+		}
 		return "", "ami"
 	}
 	for _, p := range ssmImagePaths {
@@ -952,9 +958,9 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		}
 	}
 
-	// --- KeyName: the key-pair public key is not in the template ---
+	// --- KeyName: the key pair's public key, from the environment's key pairs (ec2 import-key-pair) ---
 	if _, ok := props["KeyName"]; ok {
-		cav = append(cav, "KeyName references a pre-registered EC2 key pair whose public key is NOT in the template — open-infra can't inject it; a login password is generated (in the <name>-vm secret), or supply an sshKey natively")
+		f, cav = ec2KeyName(id, props, ctx, spec, f, cav)
 	}
 
 	// --- UserData -> cloud-init (#! script form; a #cloud-config isn't merged) ---

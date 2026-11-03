@@ -134,6 +134,11 @@ type Capabilities struct {
 	// ACM's. When set, a CloudFront alias outside them refuses: on AWS its certificate would stay
 	// PENDING_VALIDATION. Empty (none configured, or the CLI), sites keep the self-signed openinfra-issuer.
 	ValidatedDomains []string
+	// KeyPairs are the EC2 key pairs this environment holds (the aws-shim's ImportKeyPair/CreateKeyPair),
+	// key name -> OpenSSH public key. An instance's KeyName carries that key into the VM's spec.sshKey, and
+	// a KeyName it does not hold refuses, as AWS's InvalidKeyPair.NotFound. nil (the CLI, or a shim without
+	// the key-pair store): KeyName is a caveat and no key is injected.
+	KeyPairs map[string]string
 }
 
 // underValidatedDomain reports whether host is one of domains or a subdomain of one.

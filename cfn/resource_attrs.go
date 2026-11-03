@@ -336,8 +336,8 @@ var resourceAttrs = map[string]typeAttrs{
 		"Arn":  static(func(e *attrEnv) string { return e.arn("states", "stateMachine:"+e.awsName("StateMachineName")) }),
 		"Name": static(func(e *attrEnv) string { return e.awsName("StateMachineName") }),
 	}},
-	"AWS::EC2::Instance": {ref: static(nameAttr), attrs: map[string]attrFunc{
-		"InstanceId":       static(nameAttr),
+	"AWS::EC2::Instance": {ref: instanceID, attrs: map[string]attrFunc{
+		"InstanceId":       instanceID,
 		"AvailabilityZone": static(func(e *attrEnv) string { return e.az() }),
 		"PublicIp": func(e *attrEnv) (string, bool) {
 			if e.d == nil {
@@ -509,6 +509,18 @@ var resourceAttrs = map[string]typeAttrs{
 			return e.res.SignalData, true
 		},
 	}},
+}
+
+// instanceID is an instance's Ref and InstanceId: its VM's status.instanceId, the i- id the guest's
+// instance metadata reports and the aws-shim's EC2 and SSM APIs take. The VM's composite sets it when it is
+// first rendered (and the aws-shim's status reader derives it for a VM rendered before that), so it waits
+// like any status attribute until the VM exists. A deploy path that cannot read live status (the CLI)
+// gets the VM's name, as it always has.
+func instanceID(e *attrEnv) (string, bool) {
+	if e.d == nil || e.d.sr == nil {
+		return e.name(), true
+	}
+	return e.status("instanceId", "instance "+e.name()+"'s instance id")
 }
 
 // eipPublicIP is an Elastic IP's address: its instance VM's LAN IP.

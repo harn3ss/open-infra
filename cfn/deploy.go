@@ -1066,6 +1066,13 @@ func renderManifest(m *Manifest, opts DeployOptions) ([]byte, error) {
 		},
 		"spec": m.Spec,
 	}
+	if len(m.Annotations) > 0 {
+		ann := map[string]any{}
+		for k, v := range m.Annotations {
+			ann[k] = v
+		}
+		obj["metadata"].(map[string]any)["annotations"] = ann
+	}
 	return yaml.Marshal(obj)
 }
 
