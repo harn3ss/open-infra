@@ -33,8 +33,11 @@ const (
 // in the same stack) to provision via the aws-shim apigateway API. Exported so the shim doorway's
 // ProvisionRestAPI hook can parse it from the sentinel's Spec with ParseRestAPIPlan.
 type RestAPIPlan struct {
-	LogicalID   string               `json:"logicalId"`
-	Name        string               `json:"name"`
+	LogicalID string `json:"logicalId"`
+	Name      string `json:"name"`
+	// APIID is the id the API is created with, chosen by the engine and recorded on the stack before the
+	// API is provisioned (write-ahead), so a create interrupted mid-provision can still tear it down.
+	APIID       string               `json:"apiId,omitempty"`
 	Resources   []RestResourcePlan   `json:"resources,omitempty"`
 	Methods     []RestMethodPlan     `json:"methods,omitempty"`
 	Models      []RestModelPlan      `json:"models,omitempty"`

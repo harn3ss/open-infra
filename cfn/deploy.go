@@ -20,6 +20,7 @@ package cfn
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -1075,6 +1076,14 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		// A REST v1 API sentinel is provisioned via the apigateway hook (not applied); its created id is
 		// recorded for teardown/rollback — persisted at once, since the id is only known after provisioning.
 		if m.APIVersion == apigwRestV1APIVersion && m.Kind == apigwRestV1Kind {
+			// The API's id is chosen here and recorded before it is provisioned (write-ahead): a process
+			// that dies mid-provision leaves a record naming it, which RecoverInterrupted tears down.
+			apiID := newRestAPIID()
+			m.Spec["apiId"] = apiID
+			if werr := intend(StackResource{LogicalID: id, APIVersion: m.APIVersion, Kind: m.Kind, Name: m.Name, Spec: m.Spec,
+				Type: "AWS::ApiGateway::RestApi", ProvisionedID: apiID, PhysicalID: apiID}); werr != nil {
+				return rollback(werr)
+			}
 			sr, apiID, perr := provisionRestAPI(ctx, opts, id, m)
 			if perr != nil {
 				return rollback(perr)
@@ -1222,6 +1231,17 @@ func invokeCustomResource(ctx context.Context, opts DeployOptions, r *resolver, 
 		sr.PhysicalID = opts.StackName + "/" + id
 	}
 	return sr, nil
+}
+
+// newRestAPIID is a REST v1 API id in AWS's shape: 10 lowercase letters and digits, random.
+func newRestAPIID() string {
+	const alpha = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 10)
+	_, _ = rand.Read(b)
+	for i := range b {
+		b[i] = alpha[int(b[i])%len(alpha)]
+	}
+	return string(b)
 }
 
 // provisionRestAPI hands a collated REST v1 plan to the apigateway hook and records the created api id

@@ -9,16 +9,25 @@ package main
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	"github.com/harn3ss/open-infra/cfn"
 )
+
+// restAPIIDRe is a REST v1 API id the engine may choose: 10 lowercase letters and digits.
+var restAPIIDRe = regexp.MustCompile(`^[a-z0-9]{10}$`)
 
 // provisionRestAPIPlan creates a REST v1 API from a collated plan and returns the created API id.
 func (h *apigwV1Handler) provisionRestAPIPlan(ctx context.Context, plan cfn.RestAPIPlan) (string, error) {
 	if h.store == nil {
 		return "", fmt.Errorf("the API Gateway data layer is not configured on this shim (set SQS_PG_URI)")
 	}
-	apiID := shortID(10)
+	// The engine chooses the id and records it before provisioning (cfn.RestAPIPlan.APIID), so an
+	// interrupted create can tear the API down; a plan without one (an older engine) gets a fresh id.
+	apiID := plan.APIID
+	if !restAPIIDRe.MatchString(apiID) {
+		apiID = shortID(10)
+	}
 	name := plan.Name
 	if name == "" {
 		name = plan.LogicalID
