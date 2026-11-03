@@ -20,6 +20,16 @@ spec:
       values: |
         crds:
           enabled: true
+        # cert-manager issues and rotates the webhook's serving certificate (a self-signed Issuer the
+        # chart creates in this namespace) instead of the chart's cert-controller, a second Deployment
+        # whose ClusterRole lists and watches every Secret in the cluster (the root CA's key among them)
+        # only to manage that one certificate.
+        certController:
+          enabled: false
+        webhook:
+          cert:
+            certManager:
+              enabled: true
   destination:
     server: https://kubernetes.default.svc
     namespace: mariadb-operator
