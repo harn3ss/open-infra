@@ -2409,9 +2409,13 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 		m.Caveats = append(m.Caveats, fmt.Sprintf("inline Policies translated to %d companion kind: Policy object(s) (spec.dataPlane, appliesTo Role::%s) that govern this role's assumed sessions — enforced where the aws-shim data-plane front doors are enabled (opt-in, off by default)", len(extras), ctx.name(id)))
 	}
 	if v, ok := props["ManagedPolicyArns"]; ok {
-		extra, cav, mf := managedPolicyCompanions(id, ctx.name(id), v)
+		// AWS managed policies attach as the platform's own copies (kind: Policy aws-<name> in the IAM home
+		// namespace, cfn/managed_policies.go), by name in spec.policies, as AWS attaches them by ARN.
+		refs, cav, mf := managedPolicyRefs(id, v)
 		f = append(f, mf...)
-		m.Extra = append(m.Extra, extra...)
+		if len(refs) > 0 {
+			spec["policies"] = toAnySlice(refs)
+		}
 		m.Caveats = append(m.Caveats, cav...)
 	}
 	if _, ok := props["PermissionsBoundary"]; ok {

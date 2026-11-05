@@ -1,0 +1,2458 @@
+# AWS MANAGED POLICIES, as AWS names them — generated from cfn/managed_policies.go by
+#   UPDATE_MANAGED_POLICIES=1 go test ./cfn -run TestManagedPolicyLibraryIsCurrent
+# Do not edit by hand.
+#
+# Each is a kind: Policy in the management account's IAM home namespace carrying AWS's PolicyName, ARN
+# and document: attach one to a User, Group or Role by its ARN (the IAM API, CloudFormation
+# ManagedPolicyArns) or by its object name (spec.policies), exactly as on AWS. A document keeps only
+# the actions of services open-infra serves; the description names what is not served, which is never
+# granted. AdministratorAccess and PowerUserAccess are AWS's documents unchanged: PowerUserAccess
+# allows everything except IAM, Organizations and Account management (its NotAction), as AWS.
+#
+# spec.dataPlane is DERIVED from spec.document by the AWS importer, for the front doors that read
+# data-plane statements; it is never wider than the document and goes away once every door evaluates
+# spec.document. These policies grant nothing until attached (no appliesTo).
+#
+# GitOps: raw claim-kind manifests (SkipDryRunOnMissingResource; sync-wave 4, after the Policy XRD).
+---
+# AdministratorAccess (arn:aws:iam::aws:policy/AdministratorAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AdministratorAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: job-function
+  name: aws-administratoraccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AdministratorAccess
+  dataPlane:
+    statements:
+      - actions:
+          - '*'
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides full access to AWS services and resources.
+  policyName: AdministratorAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "*",
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# PowerUserAccess (arn:aws:iam::aws:policy/PowerUserAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: PowerUserAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: job-function
+  name: aws-poweruseraccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/PowerUserAccess
+  dataPlane:
+    statements:
+      - effect: Allow
+        notActions:
+          - iam:*
+          - organizations:*
+          - account:*
+        resources:
+          - '*'
+      - actions:
+          - iam:CreateServiceLinkedRole
+          - iam:DeleteServiceLinkedRole
+          - iam:ListRoles
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides full access to AWS services and resources, but does not allow management of Users and groups.
+  policyName: PowerUserAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "NotAction": [
+            "iam:*",
+            "organizations:*",
+            "account:*"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "account:GetAccountInformation",
+            "account:GetPrimaryEmail",
+            "account:ListRegions",
+            "iam:CreateServiceLinkedRole",
+            "iam:DeleteServiceLinkedRole",
+            "iam:ListRoles",
+            "organizations:DescribeOrganization"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# ReadOnlyAccess (arn:aws:iam::aws:policy/ReadOnlyAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: ReadOnlyAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: job-function
+  name: aws-readonlyaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/ReadOnlyAccess
+  dataPlane:
+    statements:
+      - actions:
+          - acm:Describe*
+          - acm:Get*
+          - acm:List*
+          - apigateway:GET
+          - appsync:Get*
+          - appsync:List*
+          - athena:Batch*
+          - athena:Get*
+          - athena:List*
+          - cloudformation:Describe*
+          - cloudformation:Detect*
+          - cloudformation:Estimate*
+          - cloudformation:Get*
+          - cloudformation:List*
+          - cloudformation:ValidateTemplate
+          - cloudfront:Describe*
+          - cloudfront:Get*
+          - cloudfront:List*
+          - cloudwatch:Describe*
+          - cloudwatch:Get*
+          - cloudwatch:List*
+          - cognito-idp:AdminGet*
+          - cognito-idp:AdminList*
+          - cognito-idp:Describe*
+          - cognito-idp:Get*
+          - cognito-idp:List*
+          - dynamodb:BatchGet*
+          - dynamodb:Describe*
+          - dynamodb:Get*
+          - dynamodb:List*
+          - dynamodb:PartiQLSelect
+          - dynamodb:Query
+          - dynamodb:Scan
+          - ecr:BatchCheck*
+          - ecr:BatchGet*
+          - ecr:Describe*
+          - ecr:Get*
+          - ecr:List*
+          - ecs:Describe*
+          - ecs:List*
+          - eks:Describe*
+          - eks:List*
+          - events:Describe*
+          - events:List*
+          - events:Test*
+          - glue:BatchGet*
+          - glue:Get*
+          - glue:List*
+          - iam:Generate*
+          - iam:Get*
+          - iam:List*
+          - iam:Simulate*
+          - kinesis:Describe*
+          - kinesis:Get*
+          - kinesis:List*
+          - kms:Describe*
+          - kms:Get*
+          - kms:List*
+          - lambda:Get*
+          - lambda:List*
+          - logs:Describe*
+          - logs:FilterLogEvents
+          - logs:Get*
+          - logs:List*
+          - logs:StartQuery
+          - logs:StopQuery
+          - logs:TestMetricFilter
+          - rds:Describe*
+          - rds:Download*
+          - rds:List*
+          - s3:Describe*
+          - s3:Get*
+          - s3:List*
+          - secretsmanager:Describe*
+          - secretsmanager:GetResourcePolicy
+          - secretsmanager:List*
+          - ses:Describe*
+          - ses:Get*
+          - ses:List*
+          - sns:Check*
+          - sns:Get*
+          - sns:List*
+          - sqs:Get*
+          - sqs:List*
+          - sqs:Receive*
+          - ssm:Describe*
+          - ssm:Get*
+          - ssm:List*
+          - states:Describe*
+          - states:GetExecutionHistory
+          - states:List*
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides read-only access to AWS services and resources. Not served here (never granted): xray.'
+  policyName: ReadOnlyAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Sid": "ReadOnlyActions",
+          "Effect": "Allow",
+          "Action": [
+            "acm:Describe*",
+            "acm:Get*",
+            "acm:List*",
+            "apigateway:GET",
+            "appsync:Get*",
+            "appsync:List*",
+            "athena:Batch*",
+            "athena:Get*",
+            "athena:List*",
+            "cloudformation:Describe*",
+            "cloudformation:Detect*",
+            "cloudformation:Estimate*",
+            "cloudformation:Get*",
+            "cloudformation:List*",
+            "cloudformation:ValidateTemplate",
+            "cloudfront:Describe*",
+            "cloudfront:Get*",
+            "cloudfront:List*",
+            "cloudwatch:Describe*",
+            "cloudwatch:Get*",
+            "cloudwatch:List*",
+            "cognito-idp:AdminGet*",
+            "cognito-idp:AdminList*",
+            "cognito-idp:Describe*",
+            "cognito-idp:Get*",
+            "cognito-idp:List*",
+            "dynamodb:BatchGet*",
+            "dynamodb:Describe*",
+            "dynamodb:Get*",
+            "dynamodb:List*",
+            "dynamodb:PartiQLSelect",
+            "dynamodb:Query",
+            "dynamodb:Scan",
+            "ec2:Describe*",
+            "ec2:Get*",
+            "ecr:BatchCheck*",
+            "ecr:BatchGet*",
+            "ecr:Describe*",
+            "ecr:Get*",
+            "ecr:List*",
+            "ecs:Describe*",
+            "ecs:List*",
+            "eks:Describe*",
+            "eks:List*",
+            "events:Describe*",
+            "events:List*",
+            "events:Test*",
+            "glue:BatchGet*",
+            "glue:Get*",
+            "glue:List*",
+            "iam:Generate*",
+            "iam:Get*",
+            "iam:List*",
+            "iam:Simulate*",
+            "kinesis:Describe*",
+            "kinesis:Get*",
+            "kinesis:List*",
+            "kms:Describe*",
+            "kms:Get*",
+            "kms:List*",
+            "lambda:Get*",
+            "lambda:List*",
+            "logs:Describe*",
+            "logs:FilterLogEvents",
+            "logs:Get*",
+            "logs:List*",
+            "logs:StartQuery",
+            "logs:StopQuery",
+            "logs:TestMetricFilter",
+            "organizations:Describe*",
+            "organizations:List*",
+            "rds:Describe*",
+            "rds:Download*",
+            "rds:List*",
+            "s3:Describe*",
+            "s3:Get*",
+            "s3:List*",
+            "secretsmanager:Describe*",
+            "secretsmanager:GetResourcePolicy",
+            "secretsmanager:List*",
+            "ses:Describe*",
+            "ses:Get*",
+            "ses:List*",
+            "sns:Check*",
+            "sns:Get*",
+            "sns:List*",
+            "sqs:Get*",
+            "sqs:List*",
+            "sqs:Receive*",
+            "ssm:Describe*",
+            "ssm:Get*",
+            "ssm:List*",
+            "states:Describe*",
+            "states:GetExecutionHistory",
+            "states:List*"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Sid": "OpenInfraReadOnlyActions",
+          "Effect": "Allow",
+          "Action": [
+            "openinfra:Describe*",
+            "openinfra:Get*",
+            "openinfra:List*"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# ViewOnlyAccess (arn:aws:iam::aws:policy/job-function/ViewOnlyAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: ViewOnlyAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: job-function
+  name: aws-viewonlyaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/job-function/ViewOnlyAccess
+  dataPlane:
+    statements:
+      - actions:
+          - acm:ListCertificates
+          - apigateway:GET
+          - appsync:ListGraphqlApis
+          - athena:List*
+          - cloudformation:DescribeStacks
+          - cloudformation:ListStacks
+          - cloudfront:ListDistributions
+          - cloudwatch:DescribeAlarms
+          - cloudwatch:ListMetrics
+          - cognito-idp:ListUserPools
+          - dynamodb:DescribeTable
+          - dynamodb:ListTables
+          - ecr:DescribeRepositories
+          - ecs:Describe*
+          - ecs:List*
+          - eks:DescribeCluster
+          - eks:ListClusters
+          - events:ListRules
+          - glue:GetDatabases
+          - glue:GetTables
+          - iam:List*
+          - kinesis:DescribeStream
+          - kinesis:ListStreams
+          - kms:ListAliases
+          - kms:ListKeys
+          - lambda:List*
+          - logs:DescribeLogGroups
+          - rds:Describe*
+          - rds:List*
+          - s3:GetBucketLocation
+          - s3:ListAllMyBuckets
+          - s3:ListBucket
+          - secretsmanager:ListSecrets
+          - ses:ListIdentities
+          - sns:ListTopics
+          - sqs:ListQueues
+          - ssm:DescribeParameters
+          - states:ListStateMachines
+        effect: Allow
+        resources:
+          - '*'
+  description: Grants permissions to view resources and basic metadata across all AWS services, without reading their data.
+  policyName: ViewOnlyAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "acm:ListCertificates",
+            "apigateway:GET",
+            "appsync:ListGraphqlApis",
+            "athena:List*",
+            "cloudformation:DescribeStacks",
+            "cloudformation:ListStacks",
+            "cloudfront:ListDistributions",
+            "cloudwatch:DescribeAlarms",
+            "cloudwatch:ListMetrics",
+            "cognito-idp:ListUserPools",
+            "dynamodb:DescribeTable",
+            "dynamodb:ListTables",
+            "ec2:Describe*",
+            "ecr:DescribeRepositories",
+            "ecs:Describe*",
+            "ecs:List*",
+            "eks:DescribeCluster",
+            "eks:ListClusters",
+            "events:ListRules",
+            "glue:GetDatabases",
+            "glue:GetTables",
+            "iam:List*",
+            "kinesis:DescribeStream",
+            "kinesis:ListStreams",
+            "kms:ListAliases",
+            "kms:ListKeys",
+            "lambda:List*",
+            "logs:DescribeLogGroups",
+            "organizations:DescribeOrganization",
+            "organizations:ListAccounts",
+            "rds:Describe*",
+            "rds:List*",
+            "s3:GetBucketLocation",
+            "s3:ListAllMyBuckets",
+            "s3:ListBucket",
+            "secretsmanager:ListSecrets",
+            "ses:ListIdentities",
+            "sns:ListTopics",
+            "sqs:ListQueues",
+            "ssm:DescribeParameters",
+            "states:ListStateMachines"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "openinfra:Describe*",
+            "openinfra:List*"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# IAMFullAccess (arn:aws:iam::aws:policy/IAMFullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: IAMFullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: job-function
+  name: aws-iamfullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/IAMFullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - iam:*
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides full access to IAM.
+  policyName: IAMFullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "iam:*",
+            "organizations:DescribeAccount",
+            "organizations:DescribeOrganization",
+            "organizations:DescribeOrganizationalUnit",
+            "organizations:DescribePolicy",
+            "organizations:ListChildren",
+            "organizations:ListParents",
+            "organizations:ListPoliciesForTarget",
+            "organizations:ListRoots",
+            "organizations:ListPolicies",
+            "organizations:ListTargetsForPolicy"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# IAMUserChangePassword (arn:aws:iam::aws:policy/IAMUserChangePassword)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: IAMUserChangePassword
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: job-function
+  name: aws-iamuserchangepassword
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/IAMUserChangePassword
+  dataPlane:
+    statements:
+      - actions:
+          - iam:ChangePassword
+        effect: Allow
+        resources:
+          - User::${aws:username}
+      - actions:
+          - iam:GetAccountPasswordPolicy
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides the ability for an IAM user to change their own password.
+  policyName: IAMUserChangePassword
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "iam:ChangePassword"
+          ],
+          "Resource": [
+            "arn:aws:iam::*:user/${aws:username}"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "iam:GetAccountPasswordPolicy"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AWSLambdaVPCAccessExecutionRole (arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AWSLambdaVPCAccessExecutionRole
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-awslambdavpcaccessexecutionrole
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+  dataPlane:
+    statements:
+      - actions:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          - ec2:DescribeSubnets
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides minimum permissions for a Lambda function to execute while accessing a resource within a VPC.
+  policyName: AWSLambdaVPCAccessExecutionRole
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Sid": "AWSLambdaVPCAccessExecutionPermissions",
+          "Effect": "Allow",
+          "Action": [
+            "logs:CreateLogGroup",
+            "logs:CreateLogStream",
+            "logs:PutLogEvents",
+            "ec2:CreateNetworkInterface",
+            "ec2:DescribeNetworkInterfaces",
+            "ec2:DescribeSubnets",
+            "ec2:DeleteNetworkInterface",
+            "ec2:AssignPrivateIpAddresses",
+            "ec2:UnassignPrivateIpAddresses"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AmazonS3FullAccess (arn:aws:iam::aws:policy/AmazonS3FullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonS3FullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazons3fullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonS3FullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - s3:*
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides full access to all buckets. Not served here (never granted): s3-object-lambda.'
+  policyName: AmazonS3FullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:*"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AmazonS3ReadOnlyAccess (arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonS3ReadOnlyAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazons3readonlyaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+  dataPlane:
+    statements:
+      - actions:
+          - s3:Get*
+          - s3:List*
+          - s3:Describe*
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides read only access to all buckets. Not served here (never granted): s3-object-lambda.'
+  policyName: AmazonS3ReadOnlyAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "s3:Get*",
+            "s3:List*",
+            "s3:Describe*"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AmazonECSTaskExecutionRolePolicy (arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonECSTaskExecutionRolePolicy
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonecstaskexecutionrolepolicy
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+  dataPlane:
+    statements:
+      - actions:
+          - ecr:GetAuthorizationToken
+          - ecr:BatchCheckLayerAvailability
+          - ecr:GetDownloadUrlForLayer
+          - ecr:BatchGetImage
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides access to other AWS service resources that are required to run Amazon ECS tasks.
+  policyName: AmazonECSTaskExecutionRolePolicy
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "ecr:GetAuthorizationToken",
+            "ecr:BatchCheckLayerAvailability",
+            "ecr:GetDownloadUrlForLayer",
+            "ecr:BatchGetImage",
+            "logs:CreateLogStream",
+            "logs:PutLogEvents"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AmazonCognitoPowerUser (arn:aws:iam::aws:policy/AmazonCognitoPowerUser)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonCognitoPowerUser
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazoncognitopoweruser
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonCognitoPowerUser
+  dataPlane:
+    statements:
+      - actions:
+          - cognito-idp:*
+          - iam:ListRoles
+          - iam:ListOpenIdConnectProviders
+          - iam:GetRole
+          - iam:ListSAMLProviders
+          - iam:GetSAMLProvider
+          - kinesis:ListStreams
+          - lambda:GetPolicy
+          - lambda:ListFunctions
+          - sns:GetSMSSandboxAccountStatus
+          - sns:ListPlatformApplications
+          - ses:ListIdentities
+          - ses:GetIdentityVerificationAttributes
+          - acm:ListCertificates
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides administrative access to existing Amazon Cognito resources. Not served here (never granted): cognito-identity, cognito-sync, mobiletargeting.'
+  policyName: AmazonCognitoPowerUser
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cognito-idp:*",
+            "iam:ListRoles",
+            "iam:ListOpenIdConnectProviders",
+            "iam:GetRole",
+            "iam:ListSAMLProviders",
+            "iam:GetSAMLProvider",
+            "kinesis:ListStreams",
+            "lambda:GetPolicy",
+            "lambda:ListFunctions",
+            "sns:GetSMSSandboxAccountStatus",
+            "sns:ListPlatformApplications",
+            "ses:ListIdentities",
+            "ses:GetIdentityVerificationAttributes",
+            "acm:ListCertificates"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": "iam:CreateServiceLinkedRole",
+          "Resource": "*",
+          "Condition": {
+            "StringEquals": {
+              "iam:AWSServiceName": [
+                "cognito-idp.amazonaws.com",
+                "email.cognito-idp.amazonaws.com"
+              ]
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "iam:DeleteServiceLinkedRole",
+            "iam:GetServiceLinkedRoleDeletionStatus"
+          ],
+          "Resource": "arn:aws:iam::*:role/aws-service-role/cognito-idp.amazonaws.com/AWSServiceRoleForAmazonCognitoIdp*"
+        }
+      ]
+    }
+---
+# AWSLambdaBasicExecutionRole (arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AWSLambdaBasicExecutionRole
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-awslambdabasicexecutionrole
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  dataPlane:
+    statements:
+      - actions:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides write permissions to CloudWatch Logs.
+  policyName: AWSLambdaBasicExecutionRole
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "logs:CreateLogGroup",
+            "logs:CreateLogStream",
+            "logs:PutLogEvents"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AmazonSSMManagedInstanceCore (arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonSSMManagedInstanceCore
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonssmmanagedinstancecore
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+  dataPlane:
+    statements:
+      - actions:
+          - ssm:DescribeAssociation
+          - ssm:GetDeployablePatchSnapshotForInstance
+          - ssm:GetDocument
+          - ssm:DescribeDocument
+          - ssm:GetManifest
+          - ssm:GetParameter
+          - ssm:GetParameters
+          - ssm:ListAssociations
+          - ssm:ListInstanceAssociations
+          - ssm:PutInventory
+          - ssm:PutComplianceItems
+          - ssm:PutConfigurePackageResult
+          - ssm:UpdateAssociationStatus
+          - ssm:UpdateInstanceAssociationStatus
+          - ssm:UpdateInstanceInformation
+        effect: Allow
+        resources:
+          - '*'
+      - actions:
+          - ec2messages:AcknowledgeMessage
+          - ec2messages:DeleteMessage
+          - ec2messages:FailMessage
+          - ec2messages:GetEndpoint
+          - ec2messages:GetMessages
+          - ec2messages:SendReply
+        effect: Allow
+        resources:
+          - '*'
+  description: 'The policy for Amazon EC2 Role to enable AWS Systems Manager service core functionality. Not served here (never granted): ssmmessages.'
+  policyName: AmazonSSMManagedInstanceCore
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "ssm:DescribeAssociation",
+            "ssm:GetDeployablePatchSnapshotForInstance",
+            "ssm:GetDocument",
+            "ssm:DescribeDocument",
+            "ssm:GetManifest",
+            "ssm:GetParameter",
+            "ssm:GetParameters",
+            "ssm:ListAssociations",
+            "ssm:ListInstanceAssociations",
+            "ssm:PutInventory",
+            "ssm:PutComplianceItems",
+            "ssm:PutConfigurePackageResult",
+            "ssm:UpdateAssociationStatus",
+            "ssm:UpdateInstanceAssociationStatus",
+            "ssm:UpdateInstanceInformation"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "ec2messages:AcknowledgeMessage",
+            "ec2messages:DeleteMessage",
+            "ec2messages:FailMessage",
+            "ec2messages:GetEndpoint",
+            "ec2messages:GetMessages",
+            "ec2messages:SendReply"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AWSCloudFormationFullAccess (arn:aws:iam::aws:policy/AWSCloudFormationFullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AWSCloudFormationFullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-awscloudformationfullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - cloudformation:*
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides full access to AWS CloudFormation.
+  policyName: AWSCloudFormationFullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cloudformation:*"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# CloudWatchFullAccess (arn:aws:iam::aws:policy/CloudWatchFullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: CloudWatchFullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-cloudwatchfullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/CloudWatchFullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - cloudwatch:*
+          - logs:*
+          - sns:*
+          - iam:GetPolicy
+          - iam:GetPolicyVersion
+          - iam:GetRole
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides full access to CloudWatch. Not served here (never granted): autoscaling, oam.'
+  policyName: CloudWatchFullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cloudwatch:*",
+            "logs:*",
+            "sns:*",
+            "iam:GetPolicy",
+            "iam:GetPolicyVersion",
+            "iam:GetRole"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": "iam:CreateServiceLinkedRole",
+          "Resource": "arn:aws:iam::*:role/aws-service-role/events.amazonaws.com/AWSServiceRoleForCloudWatchEvents*",
+          "Condition": {
+            "StringLike": {
+              "iam:AWSServiceName": "events.amazonaws.com"
+            }
+          }
+        }
+      ]
+    }
+---
+# AmazonRDSFullAccess (arn:aws:iam::aws:policy/AmazonRDSFullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonRDSFullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonrdsfullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonRDSFullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - rds:*
+          - cloudwatch:DescribeAlarms
+          - cloudwatch:GetMetricStatistics
+          - cloudwatch:PutMetricAlarm
+          - cloudwatch:DeleteAlarms
+          - cloudwatch:ListMetrics
+          - cloudwatch:GetMetricData
+          - ec2:DescribeAvailabilityZones
+          - ec2:DescribeSecurityGroups
+          - ec2:DescribeSubnets
+          - ec2:DescribeVpcs
+          - sns:ListSubscriptions
+          - sns:ListTopics
+          - sns:Publish
+          - logs:DescribeLogStreams
+          - logs:GetLogEvents
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides full access to Amazon RDS via the AWS Management Console. Not served here (never granted): application-autoscaling, devops-guru, outposts, pi.'
+  policyName: AmazonRDSFullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "rds:*",
+            "cloudwatch:DescribeAlarms",
+            "cloudwatch:GetMetricStatistics",
+            "cloudwatch:PutMetricAlarm",
+            "cloudwatch:DeleteAlarms",
+            "cloudwatch:ListMetrics",
+            "cloudwatch:GetMetricData",
+            "ec2:DescribeAccountAttributes",
+            "ec2:DescribeAvailabilityZones",
+            "ec2:DescribeCoipPools",
+            "ec2:DescribeInternetGateways",
+            "ec2:DescribeLocalGatewayRouteTablePermissions",
+            "ec2:DescribeLocalGatewayRouteTables",
+            "ec2:DescribeLocalGatewayRouteTableVpcAssociations",
+            "ec2:DescribeLocalGateways",
+            "ec2:DescribeSecurityGroups",
+            "ec2:DescribeSubnets",
+            "ec2:DescribeVpcAttribute",
+            "ec2:DescribeVpcs",
+            "ec2:GetCoipPoolUsage",
+            "sns:ListSubscriptions",
+            "sns:ListTopics",
+            "sns:Publish",
+            "logs:DescribeLogStreams",
+            "logs:GetLogEvents"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": "iam:CreateServiceLinkedRole",
+          "Resource": "*",
+          "Condition": {
+            "StringLike": {
+              "iam:AWSServiceName": [
+                "rds.amazonaws.com",
+                "rds.application-autoscaling.amazonaws.com"
+              ]
+            }
+          }
+        }
+      ]
+    }
+---
+# AWSStepFunctionsFullAccess (arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AWSStepFunctionsFullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-awsstepfunctionsfullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - states:*
+        effect: Allow
+        resources:
+          - '*'
+  description: 'An access policy for providing a user/role/etc access to the AWS StepFunctions API. Not served here (never granted): xray.'
+  policyName: AWSStepFunctionsFullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "states:*",
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": "iam:PassRole",
+          "Resource": "arn:aws:iam::*:role/service-role/StepFunctions*",
+          "Condition": {
+            "StringEquals": {
+              "iam:PassedToService": "states.amazonaws.com"
+            }
+          }
+        }
+      ]
+    }
+---
+# AmazonSQSFullAccess (arn:aws:iam::aws:policy/AmazonSQSFullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonSQSFullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonsqsfullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonSQSFullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - sqs:*
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides full access to Amazon SQS via the AWS Management Console.
+  policyName: AmazonSQSFullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sqs:*"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AmazonSQSReadOnlyAccess (arn:aws:iam::aws:policy/AmazonSQSReadOnlyAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonSQSReadOnlyAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonsqsreadonlyaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonSQSReadOnlyAccess
+  dataPlane:
+    statements:
+      - actions:
+          - sqs:GetQueueAttributes
+          - sqs:GetQueueUrl
+          - sqs:ListDeadLetterSourceQueues
+          - sqs:ListQueues
+          - sqs:ListMessageMoveTasks
+          - sqs:ListQueueTags
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides read only access to Amazon SQS via the AWS Management Console.
+  policyName: AmazonSQSReadOnlyAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "sqs:GetQueueAttributes",
+            "sqs:GetQueueUrl",
+            "sqs:ListDeadLetterSourceQueues",
+            "sqs:ListQueues",
+            "sqs:ListMessageMoveTasks",
+            "sqs:ListQueueTags"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AmazonSSMFullAccess (arn:aws:iam::aws:policy/AmazonSSMFullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonSSMFullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonssmfullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonSSMFullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - cloudwatch:PutMetricData
+          - logs:*
+          - ssm:*
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides full access to Amazon SSM. Not served here (never granted): ds, ssmmessages.'
+  policyName: AmazonSSMFullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cloudwatch:PutMetricData",
+            "ec2:DescribeInstanceStatus",
+            "logs:*",
+            "ssm:*",
+            "ec2messages:*"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": "iam:CreateServiceLinkedRole",
+          "Resource": "arn:aws:iam::*:role/aws-service-role/ssm.amazonaws.com/AWSServiceRoleForAmazonSSM*",
+          "Condition": {
+            "StringLike": {
+              "iam:AWSServiceName": "ssm.amazonaws.com"
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "iam:DeleteServiceLinkedRole",
+            "iam:GetServiceLinkedRoleDeletionStatus"
+          ],
+          "Resource": "arn:aws:iam::*:role/aws-service-role/ssm.amazonaws.com/AWSServiceRoleForAmazonSSM*"
+        }
+      ]
+    }
+---
+# CloudWatchAgentServerPolicy (arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: CloudWatchAgentServerPolicy
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-cloudwatchagentserverpolicy
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+  dataPlane:
+    statements:
+      - actions:
+          - cloudwatch:PutMetricData
+          - ec2:DescribeVolumes
+          - logs:PutLogEvents
+          - logs:PutRetentionPolicy
+          - logs:DescribeLogStreams
+          - logs:DescribeLogGroups
+          - logs:CreateLogStream
+          - logs:CreateLogGroup
+        effect: Allow
+        resources:
+          - '*'
+      - actions:
+          - ssm:GetParameter
+        effect: Allow
+        resources:
+          - Parameter::AmazonCloudWatch-*
+  description: 'Permissions required to use AmazonCloudWatchAgent on servers. Not served here (never granted): xray.'
+  policyName: CloudWatchAgentServerPolicy
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cloudwatch:PutMetricData",
+            "ec2:DescribeVolumes",
+            "ec2:DescribeTags",
+            "logs:PutLogEvents",
+            "logs:PutRetentionPolicy",
+            "logs:DescribeLogStreams",
+            "logs:DescribeLogGroups",
+            "logs:CreateLogStream",
+            "logs:CreateLogGroup"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "ssm:GetParameter"
+          ],
+          "Resource": "arn:aws:ssm:*:*:parameter/AmazonCloudWatch-*"
+        }
+      ]
+    }
+---
+# AWSAppSyncInvokeFullAccess (arn:aws:iam::aws:policy/AWSAppSyncInvokeFullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AWSAppSyncInvokeFullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-awsappsyncinvokefullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AWSAppSyncInvokeFullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - appsync:GraphQL
+          - appsync:GetGraphqlApi
+          - appsync:ListGraphqlApis
+          - appsync:ListApiKeys
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides full invoke access to the AppSync service, both via the AWS Management Console and the API.
+  policyName: AWSAppSyncInvokeFullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "appsync:GraphQL",
+            "appsync:GetGraphqlApi",
+            "appsync:ListGraphqlApis",
+            "appsync:ListApiKeys"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AWSLambda_FullAccess (arn:aws:iam::aws:policy/AWSLambda_FullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AWSLambda_FullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-awslambda-fullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AWSLambda_FullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - cloudformation:DescribeStacks
+          - cloudformation:ListStackResources
+          - cloudwatch:ListMetrics
+          - cloudwatch:GetMetricData
+          - ec2:DescribeSecurityGroups
+          - ec2:DescribeSubnets
+          - ec2:DescribeVpcs
+          - kms:ListAliases
+          - iam:GetPolicy
+          - iam:GetPolicyVersion
+          - iam:GetRole
+          - iam:GetRolePolicy
+          - iam:ListAttachedRolePolicies
+          - iam:ListRolePolicies
+          - iam:ListRoles
+          - lambda:*
+          - logs:DescribeLogGroups
+          - states:DescribeStateMachine
+          - states:ListStateMachines
+        effect: Allow
+        resources:
+          - '*'
+      - actions:
+          - logs:DescribeLogStreams
+          - logs:GetLogEvents
+          - logs:FilterLogEvents
+          - logs:StartLiveTail
+          - logs:StopLiveTail
+        effect: Allow
+        resources:
+          - LogGroup::/aws/lambda/*
+  description: 'Grants full access to AWS Lambda service, AWS Lambda console features, and other related AWS services. Not served here (never granted): tag, xray.'
+  policyName: AWSLambda_FullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cloudformation:DescribeStacks",
+            "cloudformation:ListStackResources",
+            "cloudwatch:ListMetrics",
+            "cloudwatch:GetMetricData",
+            "ec2:DescribeSecurityGroups",
+            "ec2:DescribeSubnets",
+            "ec2:DescribeVpcs",
+            "kms:ListAliases",
+            "iam:GetPolicy",
+            "iam:GetPolicyVersion",
+            "iam:GetRole",
+            "iam:GetRolePolicy",
+            "iam:ListAttachedRolePolicies",
+            "iam:ListRolePolicies",
+            "iam:ListRoles",
+            "lambda:*",
+            "logs:DescribeLogGroups",
+            "states:DescribeStateMachine",
+            "states:ListStateMachines"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": "iam:PassRole",
+          "Resource": "*",
+          "Condition": {
+            "StringEquals": {
+              "iam:PassedToService": "lambda.amazonaws.com"
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "logs:DescribeLogStreams",
+            "logs:GetLogEvents",
+            "logs:FilterLogEvents",
+            "logs:StartLiveTail",
+            "logs:StopLiveTail"
+          ],
+          "Resource": "arn:aws:logs:*:*:log-group:/aws/lambda/*"
+        }
+      ]
+    }
+---
+# AWSLambdaFullAccess (arn:aws:iam::aws:policy/AWSLambdaFullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AWSLambdaFullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-awslambdafullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AWSLambdaFullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - cloudformation:DescribeChangeSet
+          - cloudformation:DescribeStackResources
+          - cloudformation:DescribeStacks
+          - cloudformation:GetTemplate
+          - cloudformation:ListStackResources
+          - cloudwatch:*
+          - dynamodb:*
+          - ec2:DescribeSecurityGroups
+          - ec2:DescribeSubnets
+          - ec2:DescribeVpcs
+          - events:*
+          - iam:GetPolicy
+          - iam:GetPolicyVersion
+          - iam:GetRole
+          - iam:GetRolePolicy
+          - iam:ListAttachedRolePolicies
+          - iam:ListRolePolicies
+          - iam:ListRoles
+          - iam:PassRole
+          - kinesis:DescribeStream
+          - kinesis:ListStreams
+          - kinesis:PutRecord
+          - kms:ListAliases
+          - lambda:*
+          - logs:*
+          - s3:*
+          - sns:ListSubscriptions
+          - sns:ListSubscriptionsByTopic
+          - sns:ListTopics
+          - sns:Publish
+          - sns:Subscribe
+          - sns:Unsubscribe
+          - sqs:ListQueues
+          - sqs:SendMessage
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Deprecated by AWS in favour of AWSLambda_FullAccess, and still attached in estates: full access to Lambda and the services its console uses. Not served here (never granted): cognito-identity, cognito-sync, iot, tag, xray.'
+  policyName: AWSLambdaFullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cloudformation:DescribeChangeSet",
+            "cloudformation:DescribeStackResources",
+            "cloudformation:DescribeStacks",
+            "cloudformation:GetTemplate",
+            "cloudformation:ListStackResources",
+            "cloudwatch:*",
+            "dynamodb:*",
+            "ec2:DescribeSecurityGroups",
+            "ec2:DescribeSubnets",
+            "ec2:DescribeVpcs",
+            "events:*",
+            "iam:GetPolicy",
+            "iam:GetPolicyVersion",
+            "iam:GetRole",
+            "iam:GetRolePolicy",
+            "iam:ListAttachedRolePolicies",
+            "iam:ListRolePolicies",
+            "iam:ListRoles",
+            "iam:PassRole",
+            "kinesis:DescribeStream",
+            "kinesis:ListStreams",
+            "kinesis:PutRecord",
+            "kms:ListAliases",
+            "lambda:*",
+            "logs:*",
+            "s3:*",
+            "sns:ListSubscriptions",
+            "sns:ListSubscriptionsByTopic",
+            "sns:ListTopics",
+            "sns:Publish",
+            "sns:Subscribe",
+            "sns:Unsubscribe",
+            "sqs:ListQueues",
+            "sqs:SendMessage"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AWSLambdaRole (arn:aws:iam::aws:policy/service-role/AWSLambdaRole)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AWSLambdaRole
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-awslambdarole
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+  dataPlane:
+    statements:
+      - actions:
+          - lambda:InvokeFunction
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Default policy for AWS Lambda service role: invoke any function.'
+  policyName: AWSLambdaRole
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "lambda:InvokeFunction"
+          ],
+          "Resource": [
+            "*"
+          ]
+        }
+      ]
+    }
+---
+# AmazonDynamoDBFullAccess (arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonDynamoDBFullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazondynamodbfullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - dynamodb:*
+          - cloudwatch:DeleteAlarms
+          - cloudwatch:DescribeAlarmHistory
+          - cloudwatch:DescribeAlarms
+          - cloudwatch:DescribeAlarmsForMetric
+          - cloudwatch:GetMetricStatistics
+          - cloudwatch:ListMetrics
+          - cloudwatch:PutMetricAlarm
+          - cloudwatch:GetMetricData
+          - ec2:DescribeVpcs
+          - ec2:DescribeSubnets
+          - ec2:DescribeSecurityGroups
+          - iam:GetRole
+          - iam:ListRoles
+          - kms:DescribeKey
+          - kms:ListAliases
+          - sns:CreateTopic
+          - sns:DeleteTopic
+          - sns:ListSubscriptions
+          - sns:ListSubscriptionsByTopic
+          - sns:ListTopics
+          - sns:Subscribe
+          - sns:Unsubscribe
+          - sns:SetTopicAttributes
+          - lambda:CreateFunction
+          - lambda:ListFunctions
+          - lambda:ListEventSourceMappings
+          - lambda:CreateEventSourceMapping
+          - lambda:DeleteEventSourceMapping
+          - lambda:GetFunctionConfiguration
+          - lambda:DeleteFunction
+          - kinesis:ListStreams
+          - kinesis:DescribeStream
+          - kinesis:DescribeStreamSummary
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides full access to Amazon DynamoDB via the AWS Management Console. Not served here (never granted): application-autoscaling, dax, resource-groups, tag.'
+  policyName: AmazonDynamoDBFullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "dynamodb:*",
+            "cloudwatch:DeleteAlarms",
+            "cloudwatch:DescribeAlarmHistory",
+            "cloudwatch:DescribeAlarms",
+            "cloudwatch:DescribeAlarmsForMetric",
+            "cloudwatch:GetMetricStatistics",
+            "cloudwatch:ListMetrics",
+            "cloudwatch:PutMetricAlarm",
+            "cloudwatch:GetMetricData",
+            "ec2:DescribeVpcs",
+            "ec2:DescribeSubnets",
+            "ec2:DescribeSecurityGroups",
+            "iam:GetRole",
+            "iam:ListRoles",
+            "kms:DescribeKey",
+            "kms:ListAliases",
+            "sns:CreateTopic",
+            "sns:DeleteTopic",
+            "sns:ListSubscriptions",
+            "sns:ListSubscriptionsByTopic",
+            "sns:ListTopics",
+            "sns:Subscribe",
+            "sns:Unsubscribe",
+            "sns:SetTopicAttributes",
+            "lambda:CreateFunction",
+            "lambda:ListFunctions",
+            "lambda:ListEventSourceMappings",
+            "lambda:CreateEventSourceMapping",
+            "lambda:DeleteEventSourceMapping",
+            "lambda:GetFunctionConfiguration",
+            "lambda:DeleteFunction",
+            "kinesis:ListStreams",
+            "kinesis:DescribeStream",
+            "kinesis:DescribeStreamSummary"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": "cloudwatch:GetInsightRuleReport",
+          "Resource": "arn:aws:cloudwatch:*:*:insight-rule/DynamoDBContributorInsights*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "iam:PassRole"
+          ],
+          "Resource": "*",
+          "Condition": {
+            "StringLike": {
+              "iam:PassedToService": [
+                "application-autoscaling.amazonaws.com",
+                "application-autoscaling.amazonaws.com.cn",
+                "dax.amazonaws.com"
+              ]
+            }
+          }
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "iam:CreateServiceLinkedRole"
+          ],
+          "Resource": "*",
+          "Condition": {
+            "StringEquals": {
+              "iam:AWSServiceName": [
+                "replication.dynamodb.amazonaws.com",
+                "dax.amazonaws.com",
+                "dynamodb.application-autoscaling.amazonaws.com",
+                "contributorinsights.dynamodb.amazonaws.com",
+                "kinesisreplication.dynamodb.amazonaws.com"
+              ]
+            }
+          }
+        }
+      ]
+    }
+---
+# AmazonDynamoDBReadOnlyAccess (arn:aws:iam::aws:policy/AmazonDynamoDBReadOnlyAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonDynamoDBReadOnlyAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazondynamodbreadonlyaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonDynamoDBReadOnlyAccess
+  dataPlane:
+    statements:
+      - actions:
+          - cloudwatch:DescribeAlarmHistory
+          - cloudwatch:DescribeAlarms
+          - cloudwatch:DescribeAlarmsForMetric
+          - cloudwatch:GetMetricData
+          - cloudwatch:GetMetricStatistics
+          - cloudwatch:ListMetrics
+          - cloudwatch:GetInsightRuleReport
+          - dynamodb:BatchGetItem
+          - dynamodb:Describe*
+          - dynamodb:List*
+          - dynamodb:GetItem
+          - dynamodb:GetResourcePolicy
+          - dynamodb:Query
+          - dynamodb:Scan
+          - dynamodb:PartiQLSelect
+          - ec2:DescribeVpcs
+          - ec2:DescribeSubnets
+          - ec2:DescribeSecurityGroups
+          - iam:GetRole
+          - iam:ListRoles
+          - kms:DescribeKey
+          - kms:ListAliases
+          - sns:ListSubscriptionsByTopic
+          - sns:ListTopics
+          - lambda:ListFunctions
+          - lambda:ListEventSourceMappings
+          - lambda:GetFunctionConfiguration
+          - kinesis:ListStreams
+          - kinesis:DescribeStream
+          - kinesis:DescribeStreamSummary
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides read only access to Amazon DynamoDB via the AWS Management Console. Not served here (never granted): application-autoscaling, dax, resource-groups, tag.'
+  policyName: AmazonDynamoDBReadOnlyAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cloudwatch:DescribeAlarmHistory",
+            "cloudwatch:DescribeAlarms",
+            "cloudwatch:DescribeAlarmsForMetric",
+            "cloudwatch:GetMetricData",
+            "cloudwatch:GetMetricStatistics",
+            "cloudwatch:ListMetrics",
+            "cloudwatch:GetInsightRuleReport",
+            "dynamodb:BatchGetItem",
+            "dynamodb:Describe*",
+            "dynamodb:List*",
+            "dynamodb:GetItem",
+            "dynamodb:GetResourcePolicy",
+            "dynamodb:Query",
+            "dynamodb:Scan",
+            "dynamodb:PartiQLSelect",
+            "ec2:DescribeVpcs",
+            "ec2:DescribeSubnets",
+            "ec2:DescribeSecurityGroups",
+            "iam:GetRole",
+            "iam:ListRoles",
+            "kms:DescribeKey",
+            "kms:ListAliases",
+            "sns:ListSubscriptionsByTopic",
+            "sns:ListTopics",
+            "lambda:ListFunctions",
+            "lambda:ListEventSourceMappings",
+            "lambda:GetFunctionConfiguration",
+            "kinesis:ListStreams",
+            "kinesis:DescribeStream",
+            "kinesis:DescribeStreamSummary"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# SecretsManagerReadWrite (arn:aws:iam::aws:policy/SecretsManagerReadWrite)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: SecretsManagerReadWrite
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-secretsmanagerreadwrite
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/SecretsManagerReadWrite
+  dataPlane:
+    statements:
+      - actions:
+          - secretsmanager:*
+          - cloudformation:CreateChangeSet
+          - cloudformation:DescribeChangeSet
+          - cloudformation:DescribeStackResource
+          - cloudformation:DescribeStacks
+          - cloudformation:ExecuteChangeSet
+          - ec2:DescribeSecurityGroups
+          - ec2:DescribeSubnets
+          - ec2:DescribeVpcs
+          - kms:DescribeKey
+          - kms:ListAliases
+          - kms:ListKeys
+          - lambda:ListFunctions
+          - rds:DescribeDBClusters
+          - rds:DescribeDBInstances
+        effect: Allow
+        resources:
+          - '*'
+      - actions:
+          - lambda:AddPermission
+          - lambda:CreateFunction
+          - lambda:GetFunction
+          - lambda:InvokeFunction
+          - lambda:UpdateFunctionConfiguration
+        effect: Allow
+        resources:
+          - Function::SecretsManager*
+      - actions:
+          - s3:GetObject
+        effect: Allow
+        resources:
+          - Bucket::awsserverlessrepo-changesets*
+          - Bucket::secrets-manager-rotation-apps-*/*
+  description: 'Provides read/write access to AWS Secrets Manager via the AWS Management Console. Not served here (never granted): docdb-elastic, redshift, redshift-serverless, serverlessrepo, tag.'
+  policyName: SecretsManagerReadWrite
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Sid": "BasePermissions",
+          "Effect": "Allow",
+          "Action": [
+            "secretsmanager:*",
+            "cloudformation:CreateChangeSet",
+            "cloudformation:DescribeChangeSet",
+            "cloudformation:DescribeStackResource",
+            "cloudformation:DescribeStacks",
+            "cloudformation:ExecuteChangeSet",
+            "ec2:DescribeSecurityGroups",
+            "ec2:DescribeSubnets",
+            "ec2:DescribeVpcs",
+            "kms:DescribeKey",
+            "kms:ListAliases",
+            "kms:ListKeys",
+            "lambda:ListFunctions",
+            "rds:DescribeDBClusters",
+            "rds:DescribeDBInstances"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Sid": "LambdaPermissions",
+          "Effect": "Allow",
+          "Action": [
+            "lambda:AddPermission",
+            "lambda:CreateFunction",
+            "lambda:GetFunction",
+            "lambda:InvokeFunction",
+            "lambda:UpdateFunctionConfiguration"
+          ],
+          "Resource": "arn:aws:lambda:*:*:function:SecretsManager*"
+        },
+        {
+          "Sid": "S3Permissions",
+          "Effect": "Allow",
+          "Action": [
+            "s3:GetObject"
+          ],
+          "Resource": [
+            "arn:aws:s3:::awsserverlessrepo-changesets*",
+            "arn:aws:s3:::secrets-manager-rotation-apps-*/*"
+          ]
+        }
+      ]
+    }
+---
+# AmazonRDSReadOnlyAccess (arn:aws:iam::aws:policy/AmazonRDSReadOnlyAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonRDSReadOnlyAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonrdsreadonlyaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonRDSReadOnlyAccess
+  dataPlane:
+    statements:
+      - actions:
+          - rds:Describe*
+          - rds:ListTagsForResource
+          - ec2:DescribeAvailabilityZones
+          - ec2:DescribeSecurityGroups
+          - ec2:DescribeSubnets
+          - ec2:DescribeVpcs
+        effect: Allow
+        resources:
+          - '*'
+      - actions:
+          - cloudwatch:GetMetricStatistics
+          - cloudwatch:ListMetrics
+          - cloudwatch:GetMetricData
+          - logs:DescribeLogStreams
+          - logs:GetLogEvents
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides read only access to Amazon RDS via the AWS Management Console. Not served here (never granted): devops-guru.'
+  policyName: AmazonRDSReadOnlyAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "rds:Describe*",
+            "rds:ListTagsForResource",
+            "ec2:DescribeAccountAttributes",
+            "ec2:DescribeAvailabilityZones",
+            "ec2:DescribeInternetGateways",
+            "ec2:DescribeSecurityGroups",
+            "ec2:DescribeSubnets",
+            "ec2:DescribeVpcAttribute",
+            "ec2:DescribeVpcs"
+          ],
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cloudwatch:GetMetricStatistics",
+            "cloudwatch:ListMetrics",
+            "cloudwatch:GetMetricData",
+            "logs:DescribeLogStreams",
+            "logs:GetLogEvents"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AmazonEC2FullAccess (arn:aws:iam::aws:policy/AmazonEC2FullAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonEC2FullAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonec2fullaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonEC2FullAccess
+  dataPlane:
+    statements:
+      - actions:
+          - cloudwatch:*
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides full access to Amazon EC2 via the AWS Management Console. Not served here (never granted): autoscaling, elasticloadbalancing.'
+  policyName: AmazonEC2FullAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "ec2:*",
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": "cloudwatch:*",
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": "iam:CreateServiceLinkedRole",
+          "Resource": "*",
+          "Condition": {
+            "StringEquals": {
+              "iam:AWSServiceName": [
+                "autoscaling.amazonaws.com",
+                "ec2scheduled.amazonaws.com",
+                "elasticloadbalancing.amazonaws.com",
+                "spot.amazonaws.com",
+                "spotfleet.amazonaws.com",
+                "transitgateway.amazonaws.com"
+              ]
+            }
+          }
+        }
+      ]
+    }
+---
+# AmazonEC2ReadOnlyAccess (arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonEC2ReadOnlyAccess
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonec2readonlyaccess
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
+  dataPlane:
+    statements:
+      - actions:
+          - cloudwatch:ListMetrics
+          - cloudwatch:GetMetricStatistics
+          - cloudwatch:Describe*
+        effect: Allow
+        resources:
+          - '*'
+  description: 'Provides read only access to Amazon EC2 via the AWS Management Console. Not served here (never granted): autoscaling, elasticloadbalancing.'
+  policyName: AmazonEC2ReadOnlyAccess
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": "ec2:Describe*",
+          "Resource": "*"
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "cloudwatch:ListMetrics",
+            "cloudwatch:GetMetricStatistics",
+            "cloudwatch:Describe*"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AmazonAPIGatewayAdministrator (arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonAPIGatewayAdministrator
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonapigatewayadministrator
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator
+  description: Provides full access to create/edit/delete APIs in Amazon API Gateway via the AWS Management Console.
+  policyName: AmazonAPIGatewayAdministrator
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "apigateway:*"
+          ],
+          "Resource": "arn:aws:apigateway:*::/*"
+        }
+      ]
+    }
+---
+# AmazonEC2ContainerRegistryReadOnly (arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonEC2ContainerRegistryReadOnly
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonec2containerregistryreadonly
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+  dataPlane:
+    statements:
+      - actions:
+          - ecr:GetAuthorizationToken
+          - ecr:BatchCheckLayerAvailability
+          - ecr:GetDownloadUrlForLayer
+          - ecr:GetRepositoryPolicy
+          - ecr:DescribeRepositories
+          - ecr:ListImages
+          - ecr:DescribeImages
+          - ecr:BatchGetImage
+          - ecr:GetLifecyclePolicy
+          - ecr:GetLifecyclePolicyPreview
+          - ecr:ListTagsForResource
+          - ecr:DescribeImageScanFindings
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides read-only access to Amazon EC2 Container Registry repositories.
+  policyName: AmazonEC2ContainerRegistryReadOnly
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "ecr:GetAuthorizationToken",
+            "ecr:BatchCheckLayerAvailability",
+            "ecr:GetDownloadUrlForLayer",
+            "ecr:GetRepositoryPolicy",
+            "ecr:DescribeRepositories",
+            "ecr:ListImages",
+            "ecr:DescribeImages",
+            "ecr:BatchGetImage",
+            "ecr:GetLifecyclePolicy",
+            "ecr:GetLifecyclePolicyPreview",
+            "ecr:ListTagsForResource",
+            "ecr:DescribeImageScanFindings"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AmazonEC2ContainerRegistryPullOnly (arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonEC2ContainerRegistryPullOnly
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonec2containerregistrypullonly
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly
+  dataPlane:
+    statements:
+      - actions:
+          - ecr:GetAuthorizationToken
+          - ecr:BatchGetImage
+          - ecr:GetDownloadUrlForLayer
+          - ecr:BatchImportUpstreamImage
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides read-only access to pull images from Amazon ECR repositories.
+  policyName: AmazonEC2ContainerRegistryPullOnly
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "ecr:GetAuthorizationToken",
+            "ecr:BatchGetImage",
+            "ecr:GetDownloadUrlForLayer",
+            "ecr:BatchImportUpstreamImage"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }
+---
+# AmazonEC2ContainerRegistryPowerUser (arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser)
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "4"
+    openinfra.dev/title: AmazonEC2ContainerRegistryPowerUser
+  labels:
+    openinfra.dev/aws-managed-policy: "true"
+    openinfra.dev/managed-policy: "true"
+    openinfra.dev/policy-category: service
+  name: aws-amazonec2containerregistrypoweruser
+  namespace: open-infra-console
+spec:
+  arn: arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+  dataPlane:
+    statements:
+      - actions:
+          - ecr:GetAuthorizationToken
+          - ecr:BatchCheckLayerAvailability
+          - ecr:GetDownloadUrlForLayer
+          - ecr:GetRepositoryPolicy
+          - ecr:DescribeRepositories
+          - ecr:ListImages
+          - ecr:DescribeImages
+          - ecr:BatchGetImage
+          - ecr:GetLifecyclePolicy
+          - ecr:GetLifecyclePolicyPreview
+          - ecr:ListTagsForResource
+          - ecr:DescribeImageScanFindings
+          - ecr:InitiateLayerUpload
+          - ecr:UploadLayerPart
+          - ecr:CompleteLayerUpload
+          - ecr:PutImage
+        effect: Allow
+        resources:
+          - '*'
+  description: Provides full access to Amazon EC2 Container Registry repositories, but does not allow repository deletion or policy changes.
+  policyName: AmazonEC2ContainerRegistryPowerUser
+  document:
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "ecr:GetAuthorizationToken",
+            "ecr:BatchCheckLayerAvailability",
+            "ecr:GetDownloadUrlForLayer",
+            "ecr:GetRepositoryPolicy",
+            "ecr:DescribeRepositories",
+            "ecr:ListImages",
+            "ecr:DescribeImages",
+            "ecr:BatchGetImage",
+            "ecr:GetLifecyclePolicy",
+            "ecr:GetLifecyclePolicyPreview",
+            "ecr:ListTagsForResource",
+            "ecr:DescribeImageScanFindings",
+            "ecr:InitiateLayerUpload",
+            "ecr:UploadLayerPart",
+            "ecr:CompleteLayerUpload",
+            "ecr:PutImage"
+          ],
+          "Resource": "*"
+        }
+      ]
+    }

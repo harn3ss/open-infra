@@ -43,7 +43,7 @@ Resources:
 // An EC2 instance-trust role (Principal: ec2.amazonaws.com) translates to a kind: Role that trusts the
 // "vm" service principal, and its inline Policies become companion kind: Policy objects (data-plane)
 // that govern the role's assumed sessions — so a VM booted from it actually HAS s3/sqs permissions.
-// ManagedPolicyArns (AWS-managed policies, not attached) stay a loud caveat.
+// ManagedPolicyArns attach the platform's copies of those AWS managed policies by name.
 func TestTranslate_IAMRole_Ec2TrustToVm(t *testing.T) {
 	ctx := ecsCtx(t, iamRoleTmpl)
 	m, fs := translateIAMRole("AppRole", resolvedProps(t, ctx, "AppRole"), ctx)
@@ -57,10 +57,13 @@ func TestTranslate_IAMRole_Ec2TrustToVm(t *testing.T) {
 	if len(trust) != 1 || trust[0] != "vm" {
 		t.Fatalf("ec2.amazonaws.com trust must map to spec.trust: [vm], got %#v", m.Spec["trust"])
 	}
-	// The inline policy is now a companion kind: Policy (data-plane), applied to this role, and so is the
-	// served part of the AWS managed policy (managed_policies.go).
-	if len(m.Extra) != 2 || m.Extra[1].Name != "approle-managed-amazonssmmanagedinstancecore" {
-		t.Fatalf("the inline Policy and the managed one must become 2 companion kind: Policy objects, got %d", len(m.Extra))
+	// The inline policy is now a companion kind: Policy (data-plane), applied to this role; the AWS managed
+	// policy attaches as the platform's copy of it, by name (managed_policies.go).
+	if len(m.Extra) != 1 {
+		t.Fatalf("the inline Policy must become 1 companion kind: Policy object, got %d", len(m.Extra))
+	}
+	if pols, _ := m.Spec["policies"].([]any); len(pols) != 1 || pols[0] != "aws-amazonssmmanagedinstancecore" {
+		t.Fatalf("the managed policy must attach by name in spec.policies, got %#v", m.Spec["policies"])
 	}
 	pol := m.Extra[0]
 	if pol.Kind != "Policy" || pol.Name != "approle-app-access" {
@@ -76,7 +79,7 @@ func TestTranslate_IAMRole_Ec2TrustToVm(t *testing.T) {
 		t.Fatalf("companion policy must carry the s3/sqs statements, got %#v", dp["statements"])
 	}
 	cav := strings.Join(m.Caveats, "\n")
-	if !strings.Contains(cav, "inline Policies translated to 1 companion") || !strings.Contains(cav, "managed policy AmazonSSMManagedInstanceCore is attached") || !strings.Contains(cav, "Session Manager") {
+	if !strings.Contains(cav, "inline Policies translated to 1 companion") || !strings.Contains(cav, "managed policy AmazonSSMManagedInstanceCore is attached") || !strings.Contains(cav, "ssmmessages") {
 		t.Fatalf("inline-translated + managed-attached (and what of it is not) must surface as caveats: %v", m.Caveats)
 	}
 }
