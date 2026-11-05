@@ -1155,8 +1155,10 @@
   "cloudformation": [
    "apigateway:CreateRestApi",
    "apigateway:DeleteRestApi",
+   "cloudformation:DeleteStack",
    "cloudformation:DescribeStacks",
    "cloudformation:SignalResource",
+   "cloudformation:UpdateStack",
    "lambda:InvokeFunction",
    "s3:GetObject"
   ],
@@ -1275,8 +1277,10 @@
   "backup:ListBackupVaults",
   "backup:PutBackupVaultAccessPolicy",
   "backup:UpdateBackupPlan",
+  "cloudformation:DeleteStack",
   "cloudformation:DescribeStacks",
   "cloudformation:SignalResource",
+  "cloudformation:UpdateStack",
   "cloudfront:CreateDistribution",
   "cloudfront:DeleteDistribution",
   "cloudfront:GetDistribution",
