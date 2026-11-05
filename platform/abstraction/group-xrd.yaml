@@ -1,5 +1,9 @@
-# kind: Group — a named set of permissions users are placed into, the thing that actually
-# grants access (a kind: User only names an identity and its group memberships).
+# kind: Group — as on AWS, a container of policies users are placed into: every member gets
+# the group's attached policies (spec.policies) and inline policies (spec.inlinePolicies). A
+# group with no policies grants nothing.
+#
+# DEPRECATED FORM, kept working until the cutover rewrites it: spec.clusterRole, a permission
+# tier the group binds members to. What follows describes that form.
 #
 # A Group compiles to a ClusterRoleBinding whose subject is the Kubernetes group
 # `openinfra:<name>`, bound to a ClusterRole. The console sends that group as an
@@ -49,15 +53,51 @@ spec:
                 description:
                   type: string
                   description: What this group is for, shown in the console.
+                policies:
+                  type: array
+                  description: >-
+                    The policies attached to this group (AWS AttachGroupPolicy): names of kind: Policy — an AWS
+                    managed policy by its object name (aws-poweruseraccess) or a customer policy's name. Every
+                    member gets them, as on AWS. A group is a container of policies, not a permission tier: a
+                    group with no policies grants nothing.
+                  items:
+                    type: string
+                    # a Policy name, or "<namespace>/<name>" for one outside the group's namespace
+                    pattern: '^([a-z0-9]([-a-z0-9]*[a-z0-9])?/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+                    maxLength: 128
+                inlinePolicies:
+                  type: array
+                  description: >-
+                    Inline policies embedded in this group (AWS PutGroupPolicy): each a name and an AWS policy
+                    document, deleted with the group.
+                  items:
+                    type: object
+                    required: [name, document]
+                    properties:
+                      name:
+                        type: string
+                        maxLength: 128
+                      document:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                        required: [Statement]
+                        properties:
+                          Version:
+                            type: string
+                            enum: ["2012-10-17", "2008-10-17"]
+                          Id:
+                            type: string
+                          Statement:
+                            x-kubernetes-preserve-unknown-fields: true
+                            description: One statement object or a list of them (Effect, Action/NotAction, Resource/NotResource, Condition), as AWS accepts.
                 clusterRole:
                   type: string
                   description: >-
-                    Name of the ClusterRole members receive. Use a built-in
-                    (open-infra-console for full access, open-infra-poweruser,
-                    open-infra-readonly) or your own. This is the ONLY field that grants
-                    anything — choose it deliberately.
-                  default: open-infra-readonly
-              required: [clusterRole]
+                    DEPRECATED — the permission-tier form: the name of a ClusterRole members receive (built-in
+                    open-infra-console, open-infra-poweruser, open-infra-readonly, or your own). Use policies
+                    instead (AdministratorAccess, PowerUserAccess, ReadOnlyAccess are attachable managed
+                    policies); hack/iam-migrate rewrites a tier into its managed policy. Still bound while set,
+                    and admission warns.
             status:
               type: object
               properties:

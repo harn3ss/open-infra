@@ -67,6 +67,40 @@ spec:
                 {{- end }}
               {{- end }}
             {{- end }}
+            {{- if and $spec.document (not $spec.statements) }}
+            {{- /* A Policy with only an AWS policy document (spec.document) renders no ClusterRole: the
+                   document is evaluated as written at every door, and the IAM compiler generates whatever
+                   Kubernetes RBAC it needs. A spec-mirror ConfigMap in the claim's namespace is the
+                   pipeline's one composed resource, without which the composite status never lands. */ -}}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "open-infra-console" }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: policy-document
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: openinfra-policy-{{ $name }}
+                    namespace: {{ $ns }}
+                    labels:
+                      openinfra.dev/iam-policy: {{ $name }}
+                  data:
+                    name: {{ $name | quote }}
+                    policyName: {{ $spec.policyName | default $name | quote }}
+                    arn: {{ $spec.arn | default "" | quote }}
+            ---
+            apiVersion: iam.openinfra.dev/v1
+            kind: XPolicy
+            status:
+              ready: true
+              ruleCount: 0
+              arn: {{ $spec.arn | default "" | quote }}
+            {{- else }}
             ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
@@ -92,6 +126,7 @@ spec:
               ready: true
               clusterRole: openinfra-policy-{{ $name }}
               ruleCount: {{ len $rules }}
+            {{- end }}
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

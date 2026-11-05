@@ -1,5 +1,7 @@
-# The compiler: one Group claim -> one ClusterRoleBinding that binds the Kubernetes group
-# `openinfra:<name>` to the chosen ClusterRole.
+# A Group of policies (spec.policies) renders no binding: its policies are evaluated for every
+# member. The DEPRECATED permission-tier form (spec.clusterRole) still compiles as before: one
+# Group claim -> one ClusterRoleBinding that binds the Kubernetes group `openinfra:<name>` to the
+# chosen ClusterRole. What follows describes that form.
 #
 # This is the whole mechanism. The console authenticates a user, looks up their kind: User,
 # and sends Impersonate-Group: openinfra:<group> with every proxied call. The API server
@@ -33,7 +35,8 @@ spec:
             {{- $spec := .observed.composite.resource.spec }}
             {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
-            {{- $role := $spec.clusterRole | default "open-infra-readonly" }}
+            {{- $role := $spec.clusterRole | default "" }}
+            {{- if $role }}
             ---
             # Bind openinfra:<name> to the requested ClusterRole. Note this grants to a
             # GROUP STRING, not to an object: Kubernetes users/groups are assertions made
@@ -61,6 +64,31 @@ spec:
                     - kind: Group
                       name: "openinfra:{{ $name }}"
                       apiGroup: rbac.authorization.k8s.io
+            {{- else }}
+            {{- /* A Group of policies (spec.policies / inlinePolicies, as on AWS) binds no ClusterRole: the
+                   one evaluator reads its policies for every member, and the IAM compiler generates any RBAC
+                   they need. A spec-mirror ConfigMap is the pipeline's composed resource, so the status lands. */ -}}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "open-infra-console" }}
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: group-spec
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: openinfra-group-{{ $name }}
+                    namespace: {{ $ns }}
+                    labels:
+                      openinfra.dev/iam-group: {{ $name }}
+                  data:
+                    name: {{ $name | quote }}
+                    policies: {{ $spec.policies | default list | toJson | quote }}
+            {{- end }}
             ---
             {{- $ready := true }}
             apiVersion: iam.openinfra.dev/v1

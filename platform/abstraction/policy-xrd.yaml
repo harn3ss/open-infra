@@ -1,6 +1,12 @@
 # open-infra's "IAM policies": kind: Policy — an attachable permission document, like an
-# AWS managed policy. You author it once and attach it to Roles; it grants nothing until
-# attached.
+# AWS managed policy. You author it once and attach it to Users, Groups and Roles; it grants
+# nothing until attached.
+#
+# spec.document is the AWS IAM policy document itself and the one source of truth: the same
+# evaluator reads it at every door. The AWS managed policies ship as kind: Policy objects
+# carrying AWS's names, ARNs and documents (platform/abstraction/managed-policies/). The
+# statements / dataPlane / controlPlane blocks described below are the earlier forms, read for
+# one more release.
 #
 # THE PERMISSION BOUNDARY. A Policy can only ever grant verbs on the platform's own
 # resources (the openinfra.dev API group). That is enforced structurally: the composition
@@ -56,6 +62,44 @@ spec:
                 description:
                   type: string
                   description: What this policy is for, shown in the console.
+                policyName:
+                  type: string
+                  maxLength: 128
+                  description: >-
+                    The policy's IAM name (AWS's PolicyName), when it is not the object's name: an AWS
+                    managed policy keeps AWS's name (PowerUserAccess) while its object is
+                    aws-poweruseraccess. Defaults to the object's name.
+                arn:
+                  type: string
+                  pattern: '^arn:aws:iam::(aws|[0-9]{12}):policy/.+$'
+                  description: >-
+                    The policy's ARN. An AWS managed policy carries AWS's
+                    (arn:aws:iam::aws:policy[/path]/<Name>), which is how a principal attaches it — by ARN, as
+                    on AWS. A customer policy's ARN is its account's (arn:aws:iam::<account>:policy/<name>)
+                    and need not be set.
+                document:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                  required: [Statement]
+                  properties:
+                    Version:
+                      type: string
+                      enum: ["2012-10-17", "2008-10-17"]
+                    Id:
+                      type: string
+                    Statement:
+                      x-kubernetes-preserve-unknown-fields: true
+                      description: One statement object or a list of them (Effect, Action/NotAction, Resource/NotResource, Condition), as AWS accepts.
+                  description: >-
+                    THE SOURCE OF TRUTH: the AWS IAM policy document — {"Version": "2012-10-17", "Statement":
+                    [...]} with Effect, Action/NotAction, Resource/NotResource and Condition — stored as
+                    written (JSON is YAML, so it can be pasted as is). One evaluator reads it for every door:
+                    the aws-shim, the console and the Kubernetes RBAC the IAM compiler generates from it.
+                    Explicit Deny wins over Allow; a condition key that cannot be evaluated never widens a
+                    grant (an Allow carrying it is dropped and reported, a Deny applies unconditionally). A
+                    Policy with a document renders no ClusterRole of its own. The statements, dataPlane and
+                    controlPlane blocks below are the earlier forms, read for one more release and rewritten
+                    into a document by hack/iam-migrate.
                 statements:
                   type: array
                   description: >-
@@ -297,10 +341,20 @@ spec:
                   type: boolean
                 clusterRole:
                   type: string
-                  description: The ClusterRole this policy compiled to.
+                  description: The ClusterRole this policy compiled to (a policy with only statements; a document policy has none).
                 ruleCount:
                   type: integer
                   description: How many RBAC rules it produced.
+                arn:
+                  type: string
+                  description: The policy's ARN, when it carries one (spec.arn).
+                compiled:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: >-
+                    What the IAM compiler made of spec.document: ok, or the statements it dropped and why
+                    (a condition it cannot evaluate, a NotAction/NotResource Kubernetes RBAC cannot express).
+                    Written by the compiler.
       additionalPrinterColumns:
         - name: Rules
           type: integer

@@ -49,12 +49,39 @@ spec:
                 description:
                   type: string
                   description: What this role is for, shown in the console.
+                inlinePolicies:
+                  type: array
+                  description: >-
+                    Inline policies embedded in this role (AWS PutRolePolicy): each a name and an AWS policy
+                    document, deleted with the role.
+                  items:
+                    type: object
+                    required: [name, document]
+                    properties:
+                      name:
+                        type: string
+                        maxLength: 128
+                      document:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                        required: [Statement]
+                        properties:
+                          Version:
+                            type: string
+                            enum: ["2012-10-17", "2008-10-17"]
+                          Id:
+                            type: string
+                          Statement:
+                            x-kubernetes-preserve-unknown-fields: true
+                            description: One statement object or a list of them (Effect, Action/NotAction, Resource/NotResource, Condition), as AWS accepts.
                 policies:
                   type: array
                   description: >-
-                    Names of Policies (in this namespace) to aggregate. Optional — a role with no
-                    policies is a trust anchor (an aggregated ClusterRole with no rules of its own),
-                    exactly as AWS allows a role carrying only a trust policy (Cognito and Elastic
+                    The policies attached to this role (AWS AttachRolePolicy): names of Policies in this
+                    namespace, or of the platform's AWS managed policies (aws-<name>, resolved from the
+                    management account's library when this namespace has no Policy of that name). Optional —
+                    a role with no policies is a trust anchor (an aggregated ClusterRole with no rules of its
+                    own), exactly as AWS allows a role carrying only a trust policy (Cognito and Elastic
                     Beanstalk create these). The composition already renders an empty-policy role safely.
                   items:
                     type: string

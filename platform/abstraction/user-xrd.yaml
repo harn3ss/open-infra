@@ -57,32 +57,55 @@ spec:
                 groups:
                   type: array
                   description: >-
-                    Groups this user belongs to. Each becomes an
-                    Impersonate-Group of openinfra:<group>, and RBAC bindings on that
-                    group are what actually grant permission. A user with no groups can
-                    sign in but can do nothing.
+                    The groups this user is a member of (AWS AddUserToGroup) — membership only: a group
+                    confers its attached policies, as on AWS. (A group still in the deprecated
+                    permission-tier form grants its clusterRole through the openinfra:<group>
+                    impersonation until the cutover rewrites it.)
                   items:
                     type: string
                   default: []
                 policies:
                   type: array
                   description: >-
-                    Optional managed-policy attachment (the AWS "attach a managed policy to a
-                    user" analog): names of kind: Policy to attach to this user. Their
-                    spec.dataPlane blocks confer this user's DATA-PLANE authority at the aws-shim
-                    front doors (S3/DynamoDB/Lambda) — the same single policy world as a Policy's
-                    own dataPlane.appliesTo, resolved by internal/dataplaneauthz. Control-plane
-                    (Kubernetes) permission still comes only from the user's groups (above); an
-                    attached Policy's control-plane statements are not conferred through this field.
+                    The policies attached to this user (AWS AttachUserPolicy): names of kind: Policy — an
+                    AWS managed policy by its object name (aws-readonlyaccess) or a customer policy's name.
+                    With the user's groups' policies and inline policies these are the user's identity
+                    policies, which the one evaluator reads at every door. A user with no policies, through
+                    itself or a group, can sign in and do nothing, as on AWS.
                   items:
                     type: string
                   default: []
+                inlinePolicies:
+                  type: array
+                  description: >-
+                    Inline policies embedded in this user (AWS PutUserPolicy): each a name and an AWS policy
+                    document, deleted with the user.
+                  items:
+                    type: object
+                    required: [name, document]
+                    properties:
+                      name:
+                        type: string
+                        maxLength: 128
+                      document:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                        required: [Statement]
+                        properties:
+                          Version:
+                            type: string
+                            enum: ["2012-10-17", "2008-10-17"]
+                          Id:
+                            type: string
+                          Statement:
+                            x-kubernetes-preserve-unknown-fields: true
+                            description: One statement object or a list of them (Effect, Action/NotAction, Resource/NotResource, Condition), as AWS accepts.
                 permissionBoundary:
                   type: string
                   description: >-
-                    Optional data-plane permission boundary (the AWS permission-boundary analog): the
-                    name of a kind: Policy whose dataPlane Allow statements are the CEILING for this
-                    user's data-plane authority. The effective permission is the INTERSECTION of the
+                    Optional permission boundary (AWS PutUserPermissionsBoundary): the name of a kind:
+                    Policy whose Allow statements (spec.document; or its earlier dataPlane block) are the
+                    CEILING for this user's authority. The effective permission is the INTERSECTION of the
                     user's identity policies (spec.policies + any Policy whose appliesTo names them) and
                     this boundary — nothing outside the boundary can be allowed (compiled as a Cedar
                     forbid-unless guard, fail-closed). It caps a user already governed at the data plane

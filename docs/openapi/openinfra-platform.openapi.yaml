@@ -6542,13 +6542,51 @@ components:
             description:
               type: string
               description: What this group is for, shown in the console.
+            policies:
+              type: array
+              description: "The policies attached to this group (AWS AttachGroupPolicy): names of kind: Policy \u2014 an AWS\
+                \ managed policy by its object name (aws-poweruseraccess) or a customer policy's name. Every member gets them,\
+                \ as on AWS. A group is a container of policies, not a permission tier: a group with no policies grants nothing."
+              items:
+                type: string
+                pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                maxLength: 128
+            inlinePolicies:
+              type: array
+              description: 'Inline policies embedded in this group (AWS PutGroupPolicy): each a name and an AWS policy document,
+                deleted with the group.'
+              items:
+                type: object
+                required:
+                - name
+                - document
+                properties:
+                  name:
+                    type: string
+                    maxLength: 128
+                  document:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    required:
+                    - Statement
+                    properties:
+                      Version:
+                        type: string
+                        enum:
+                        - '2012-10-17'
+                        - '2008-10-17'
+                      Id:
+                        type: string
+                      Statement:
+                        x-kubernetes-preserve-unknown-fields: true
+                        description: One statement object or a list of them (Effect, Action/NotAction, Resource/NotResource,
+                          Condition), as AWS accepts.
             clusterRole:
               type: string
-              description: "Name of the ClusterRole members receive. Use a built-in (open-infra-console for full access, open-infra-poweruser,\
-                \ open-infra-readonly) or your own. This is the ONLY field that grants anything \u2014 choose it deliberately."
-              default: open-infra-readonly
-          required:
-          - clusterRole
+              description: "DEPRECATED \u2014 the permission-tier form: the name of a ClusterRole members receive (built-in\
+                \ open-infra-console, open-infra-poweruser, open-infra-readonly, or your own). Use policies instead (AdministratorAccess,\
+                \ PowerUserAccess, ReadOnlyAccess are attachable managed policies); hack/iam-migrate rewrites a tier into\
+                \ its managed policy. Still bound while set, and admission warns."
         status:
           type: object
           properties:
@@ -7319,6 +7357,42 @@ components:
             description:
               type: string
               description: What this policy is for, shown in the console.
+            policyName:
+              type: string
+              maxLength: 128
+              description: 'The policy''s IAM name (AWS''s PolicyName), when it is not the object''s name: an AWS managed
+                policy keeps AWS''s name (PowerUserAccess) while its object is aws-poweruseraccess. Defaults to the object''s
+                name.'
+            arn:
+              type: string
+              pattern: ^arn:aws:iam::(aws|[0-9]{12}):policy/.+$
+              description: "The policy's ARN. An AWS managed policy carries AWS's (arn:aws:iam::aws:policy[/path]/<Name>),\
+                \ which is how a principal attaches it \u2014 by ARN, as on AWS. A customer policy's ARN is its account's\
+                \ (arn:aws:iam::<account>:policy/<name>) and need not be set."
+            document:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              required:
+              - Statement
+              properties:
+                Version:
+                  type: string
+                  enum:
+                  - '2012-10-17'
+                  - '2008-10-17'
+                Id:
+                  type: string
+                Statement:
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: One statement object or a list of them (Effect, Action/NotAction, Resource/NotResource, Condition),
+                    as AWS accepts.
+              description: "THE SOURCE OF TRUTH: the AWS IAM policy document \u2014 {\"Version\": \"2012-10-17\", \"Statement\"\
+                : [...]} with Effect, Action/NotAction, Resource/NotResource and Condition \u2014 stored as written (JSON\
+                \ is YAML, so it can be pasted as is). One evaluator reads it for every door: the aws-shim, the console and\
+                \ the Kubernetes RBAC the IAM compiler generates from it. Explicit Deny wins over Allow; a condition key that\
+                \ cannot be evaluated never widens a grant (an Allow carrying it is dropped and reported, a Deny applies unconditionally).\
+                \ A Policy with a document renders no ClusterRole of its own. The statements, dataPlane and controlPlane blocks\
+                \ below are the earlier forms, read for one more release and rewritten into a document by hack/iam-migrate."
             statements:
               type: array
               description: "Control-plane Allow statements \u2014 compiled to a Kubernetes ClusterRole over the openinfra.dev\
@@ -7547,10 +7621,18 @@ components:
               type: boolean
             clusterRole:
               type: string
-              description: The ClusterRole this policy compiled to.
+              description: The ClusterRole this policy compiled to (a policy with only statements; a document policy has none).
             ruleCount:
               type: integer
               description: How many RBAC rules it produced.
+            arn:
+              type: string
+              description: The policy's ARN, when it carries one (spec.arn).
+            compiled:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              description: 'What the IAM compiler made of spec.document: ok, or the statements it dropped and why (a condition
+                it cannot evaluate, a NotAction/NotResource Kubernetes RBAC cannot express). Written by the compiler.'
     ProcessingJob:
       type: object
       description: 'open-infra kind: ProcessingJob.'
@@ -7968,12 +8050,43 @@ components:
             description:
               type: string
               description: What this role is for, shown in the console.
+            inlinePolicies:
+              type: array
+              description: 'Inline policies embedded in this role (AWS PutRolePolicy): each a name and an AWS policy document,
+                deleted with the role.'
+              items:
+                type: object
+                required:
+                - name
+                - document
+                properties:
+                  name:
+                    type: string
+                    maxLength: 128
+                  document:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    required:
+                    - Statement
+                    properties:
+                      Version:
+                        type: string
+                        enum:
+                        - '2012-10-17'
+                        - '2008-10-17'
+                      Id:
+                        type: string
+                      Statement:
+                        x-kubernetes-preserve-unknown-fields: true
+                        description: One statement object or a list of them (Effect, Action/NotAction, Resource/NotResource,
+                          Condition), as AWS accepts.
             policies:
               type: array
-              description: "Names of Policies (in this namespace) to aggregate. Optional \u2014 a role with no policies is\
-                \ a trust anchor (an aggregated ClusterRole with no rules of its own), exactly as AWS allows a role carrying\
-                \ only a trust policy (Cognito and Elastic Beanstalk create these). The composition already renders an empty-policy\
-                \ role safely."
+              description: "The policies attached to this role (AWS AttachRolePolicy): names of Policies in this namespace,\
+                \ or of the platform's AWS managed policies (aws-<name>, resolved from the management account's library when\
+                \ this namespace has no Policy of that name). Optional \u2014 a role with no policies is a trust anchor (an\
+                \ aggregated ClusterRole with no rules of its own), exactly as AWS allows a role carrying only a trust policy\
+                \ (Cognito and Elastic Beanstalk create these). The composition already renders an empty-policy role safely."
               items:
                 type: string
                 pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
@@ -8873,29 +8986,59 @@ components:
               description: Optional contact address; not used for authentication.
             groups:
               type: array
-              description: Groups this user belongs to. Each becomes an Impersonate-Group of openinfra:<group>, and RBAC bindings
-                on that group are what actually grant permission. A user with no groups can sign in but can do nothing.
+              description: "The groups this user is a member of (AWS AddUserToGroup) \u2014 membership only: a group confers\
+                \ its attached policies, as on AWS. (A group still in the deprecated permission-tier form grants its clusterRole\
+                \ through the openinfra:<group> impersonation until the cutover rewrites it.)"
               items:
                 type: string
               default: []
             policies:
               type: array
-              description: "Optional managed-policy attachment (the AWS \"attach a managed policy to a user\" analog): names\
-                \ of kind: Policy to attach to this user. Their spec.dataPlane blocks confer this user's DATA-PLANE authority\
-                \ at the aws-shim front doors (S3/DynamoDB/Lambda) \u2014 the same single policy world as a Policy's own dataPlane.appliesTo,\
-                \ resolved by internal/dataplaneauthz. Control-plane (Kubernetes) permission still comes only from the user's\
-                \ groups (above); an attached Policy's control-plane statements are not conferred through this field."
+              description: "The policies attached to this user (AWS AttachUserPolicy): names of kind: Policy \u2014 an AWS\
+                \ managed policy by its object name (aws-readonlyaccess) or a customer policy's name. With the user's groups'\
+                \ policies and inline policies these are the user's identity policies, which the one evaluator reads at every\
+                \ door. A user with no policies, through itself or a group, can sign in and do nothing, as on AWS."
               items:
                 type: string
               default: []
+            inlinePolicies:
+              type: array
+              description: 'Inline policies embedded in this user (AWS PutUserPolicy): each a name and an AWS policy document,
+                deleted with the user.'
+              items:
+                type: object
+                required:
+                - name
+                - document
+                properties:
+                  name:
+                    type: string
+                    maxLength: 128
+                  document:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    required:
+                    - Statement
+                    properties:
+                      Version:
+                        type: string
+                        enum:
+                        - '2012-10-17'
+                        - '2008-10-17'
+                      Id:
+                        type: string
+                      Statement:
+                        x-kubernetes-preserve-unknown-fields: true
+                        description: One statement object or a list of them (Effect, Action/NotAction, Resource/NotResource,
+                          Condition), as AWS accepts.
             permissionBoundary:
               type: string
-              description: "Optional data-plane permission boundary (the AWS permission-boundary analog): the name of a kind:\
-                \ Policy whose dataPlane Allow statements are the CEILING for this user's data-plane authority. The effective\
-                \ permission is the INTERSECTION of the user's identity policies (spec.policies + any Policy whose appliesTo\
-                \ names them) and this boundary \u2014 nothing outside the boundary can be allowed (compiled as a Cedar forbid-unless\
-                \ guard, fail-closed). It caps a user already governed at the data plane for a service; it does not itself\
-                \ confer access."
+              description: "Optional permission boundary (AWS PutUserPermissionsBoundary): the name of a kind: Policy whose\
+                \ Allow statements (spec.document; or its earlier dataPlane block) are the CEILING for this user's authority.\
+                \ The effective permission is the INTERSECTION of the user's identity policies (spec.policies + any Policy\
+                \ whose appliesTo names them) and this boundary \u2014 nothing outside the boundary can be allowed (compiled\
+                \ as a Cedar forbid-unless guard, fail-closed). It caps a user already governed at the data plane for a service;\
+                \ it does not itself confer access."
             source:
               type: string
               description: Where the password is verified. `local` uses passwordSecretRef; `ldap` and `oidc` defer to the
