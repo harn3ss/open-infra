@@ -963,6 +963,12 @@ spec:
             httpGet: { path: /healthz, port: 4566 }
             initialDelaySeconds: 15
             periodSeconds: 20
+          # On a rollout the gateway and kube-proxy still send new connections to a terminating pod for a
+          # few seconds after it is told to stop. Keep serving that long before shutting down, so a
+          # rollout drops no request (the shim then drains in-flight ones on SIGTERM).
+          lifecycle:
+            preStop:
+              sleep: { seconds: 10 }
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false

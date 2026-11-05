@@ -1,0 +1,33 @@
+# The name `root` is reserved for the account's root user, the console's Secret-backed break-glass
+# sign-in. The console and the authorization webhook recognise root by name together with how it signed
+# in, so an IAM user called root (any namespace, any letter case) could be mistaken for it. AWS has no
+# IAM user named root either: the root user is not an IAM user. Refused here at the API, whichever door
+# creates the User (console, IAM API, kubectl, GitOps).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-reserved-user-names
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["iam.openinfra.dev"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["users"]
+  validations:
+    - expression: "object.metadata.name.lowerAscii() != 'root'"
+      message: "the user name root is reserved for the account's root user"
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-reserved-user-names
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  policyName: openinfra-reserved-user-names
+  validationActions: [Deny]

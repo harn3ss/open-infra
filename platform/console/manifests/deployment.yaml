@@ -119,6 +119,12 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 20
 
+          # Keep serving for a few seconds after a rollout tells the pod to stop, while the Service still
+          # routes new connections to it, so a rollout drops no request.
+          lifecycle:
+            preStop:
+              sleep: { seconds: 10 }
+
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
