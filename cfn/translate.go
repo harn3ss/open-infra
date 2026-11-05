@@ -2708,8 +2708,9 @@ func inStackARN(id string, ctx *stackCtx) (string, bool) {
 		return "", false
 	}
 	name := func(prop string) string { return inStackName(id, prop, ctx) }
-	// The install's identity, so a synthesized ARN is the one the aws-shim reports for the resource.
-	ident := awsidentity.Current()
+	// The stack's identity (its AWS::AccountId and AWS::Region: the install's, or its member account's), so
+	// a synthesized ARN is the one the aws-shim reports for the resource.
+	ident := ctx.ident()
 	switch res.Type {
 	case "AWS::S3::Bucket":
 		return awsidentity.S3BucketARN(ctx.bucketName(id)), true

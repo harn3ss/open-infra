@@ -498,12 +498,14 @@ func (p *Plan) hasUndeployable() bool {
 func pseudoParams(stackName string) map[string]any { return pseudoParamsFor(stackName, "") }
 
 // pseudoParamsFor is pseudoParams for one stack instance: AWS::StackId is stackID, or the derived StackId
-// of stackName when stackID is "" (a stack from before StackIds were per instance).
+// of stackName when stackID is "" (a stack from before StackIds were per instance). The stack acts in the
+// account its StackId names (stackIdentity): a member account's stack resolves AWS::AccountId to its own
+// account, the management account's exactly as before.
 func pseudoParamsFor(stackName, stackID string) map[string]any {
 	if stackName == "" {
 		stackName = "openinfra-stack"
 	}
-	id := awsidentity.Current()
+	id := stackIdentity(stackID)
 	if stackID == "" {
 		stackID = id.StackID(stackName)
 	}
@@ -525,6 +527,13 @@ func (o DeployOptions) stackID() string {
 		return o.StackID
 	}
 	return awsidentity.Current().StackID(o.StackName)
+}
+
+// stackIdentity is the identity of the account a stack instance acts in: the install's (the management
+// account's, unchanged) with the account its StackId names. A StackId that names no 12-digit account, or
+// the install's own, is the install's identity exactly.
+func stackIdentity(stackID string) awsidentity.Identity {
+	return awsidentity.Current().ForAccount(awsidentity.AccountOfARN(stackID), "")
 }
 
 // adoptStackID gives the options the StackId the stack's record names, when they name none: an update,
