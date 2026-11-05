@@ -210,15 +210,18 @@ func TestCWLDerived_DescribeLogGroupsListsTheAccountsServiceGroups(t *testing.T)
 	if got := groupNames(out); len(got) != 1 || got[0] != "/aws/lambda/helloworld" {
 		t.Errorf("prefix: %v", got)
 	}
-	// A caller of the member account sees its own function's group only.
+	// A caller of the member account: its account's groups are its own function's only (the scoping) …
 	member := testUser
 	member.Account = "912345678901"
-	_, out = cwlCall(t, h, member, "DescribeLogGroups", map[string]any{})
-	if got := groupNames(out); len(got) != 1 || got[0] != "/aws/lambda/stackfn" {
-		t.Errorf("member account groups %v", got)
+	scoped := h.derived.groups(t.Context(), member, "")
+	if len(scoped) != 1 || scoped[0].Name != "/aws/lambda/stackfn" {
+		t.Errorf("member account groups %v", scoped)
 	}
-	if arn := sliceOf(out["logGroups"])[0].(map[string]any)["arn"]; !strings.Contains(arn.(string), ":912345678901:") {
-		t.Errorf("a member account's group ARN names its account: %v", arn)
+	// … and through the API a member principal is judged by IAM policy alone: with none attached it sees
+	// nothing, as an AWS user with no policy does.
+	_, out = cwlCall(t, h, member, "DescribeLogGroups", map[string]any{})
+	if got := groupNames(out); len(got) != 0 {
+		t.Errorf("a member principal with no policy listed %v", got)
 	}
 }
 
