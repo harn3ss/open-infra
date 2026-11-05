@@ -29,6 +29,7 @@ import (
 func main() {
 	ns := flag.String("namespace", "open-infra-authz", "namespace for the generated objects")
 	asCM := flag.Bool("configmap", false, "emit ONE control-plane-corpus ConfigMap bundle instead of one kind: Policy per principal — a lighter delivery the webhook loader reads (no Crossplane claim per principal). Must land in the open-infra-authz namespace.")
+	skipIAM := flag.Bool("skip-iam-principals", false, "leave out every openinfra:* user and group subject (the console and shim principals): once IAM policy is the authority their grants are compiled into the iam-corpus by the iam-compiler, and this corpus covers platform identities only. Off by default (the corpus is unchanged until the cutover).")
 	flag.Parse()
 
 	cs, err := clientset()
@@ -38,7 +39,7 @@ func main() {
 	}
 	ctx := context.Background()
 
-	in := rbactocedar.Inputs{ClusterRoles: map[string]rbacv1.ClusterRole{}, Roles: map[string]rbacv1.Role{}}
+	in := rbactocedar.Inputs{ClusterRoles: map[string]rbacv1.ClusterRole{}, Roles: map[string]rbacv1.Role{}, SkipIAMPrincipals: *skipIAM}
 	crs, err := cs.RbacV1().ClusterRoles().List(ctx, metav1.ListOptions{})
 	must(err)
 	for _, cr := range crs.Items {

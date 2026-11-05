@@ -325,6 +325,84 @@ func TestCorpusImpersonationNarrowing(t *testing.T) {
 	}
 }
 
+// openinfra.dev/impersonate-users-deny names exact users the holder may never impersonate, whatever its
+// allow pattern says: the aws-shim's ceiling uses it for the break-glass root identities, which only the
+// console's root sign-in may act as. Other openinfra:* users stay impersonable; a wildcard deny entry is
+// ignored with a caveat (a Deny never covers more than its literal name).
+func TestCorpusImpersonationDeny(t *testing.T) {
+	in := equivalenceInputs()
+	imp := in.ClusterRoles["impersonate"]
+	imp.Annotations = map[string]string{
+		ImpersonateUsersAnnotation:     "openinfra:*",
+		ImpersonateUsersDenyAnnotation: "openinfra:root, openinfra:000000000000:root, openinfra:*",
+	}
+	in.ClusterRoles["impersonate"] = imp
+
+	var docs []controlplaneauthz.PolicyDoc
+	var caveats []string
+	for _, g := range Generate(in) {
+		docs = append(docs, controlplaneauthz.PolicyDoc{Statements: g.Statements, AppliesTo: []string{g.Principal}})
+		if g.Principal == "ServiceAccount::front/door" {
+			caveats = g.Caveats
+		}
+	}
+	checker := controlplaneauthz.New(func(context.Context) ([]controlplaneauthz.PolicyDoc, error) { return docs, nil }, time.Hour)
+	door := "system:serviceaccount:front:door"
+	for _, c := range []struct {
+		name string
+		want bool
+	}{
+		{"openinfra:alice", true},
+		{"openinfra:000000000000:alice", true},
+		{"openinfra:root", false},
+		{"openinfra:000000000000:root", false},
+		{"openinfra:912345678901:root", true}, // a member account's root is an ordinary principal
+	} {
+		spec := authzv1.SubjectAccessReviewSpec{User: door, Groups: l("system:serviceaccounts"),
+			ResourceAttributes: &authzv1.ResourceAttributes{Verb: "impersonate", Resource: "users", Name: c.name}}
+		if got := checker.Evaluate(context.Background(), spec).Allowed; got != c.want {
+			t.Errorf("corpus impersonate users %q = %v, want %v", c.name, got, c.want)
+		}
+	}
+	joined := strings.Join(caveats, " ")
+	if !strings.Contains(joined, "is denied by "+ImpersonateUsersDenyAnnotation) || !strings.Contains(joined, `"openinfra:*" on ClusterRole`) {
+		t.Errorf("the deny and the ignored wildcard entry must be recorded as caveats; got %v", caveats)
+	}
+}
+
+// With SkipIAMPrincipals the corpus leaves out every openinfra:* user and group subject — their grants
+// come from the iam-corpus once IAM is the authority — and keeps every platform identity exactly as
+// before. Off (the default), nothing changes.
+func TestGenerate_SkipIAMPrincipals(t *testing.T) {
+	in := Inputs{
+		ClusterRoles: map[string]rbacv1.ClusterRole{"r": cr("r", rule(l("get"), l(""), l("pods"), nil))},
+		ClusterRoleBindings: []rbacv1.ClusterRoleBinding{{RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "r"}, Subjects: []rbacv1.Subject{
+			{Kind: "Group", Name: "openinfra:admins"},
+			{Kind: "User", Name: "openinfra:000000000000:root"},
+			{Kind: "ServiceAccount", Namespace: "kube-system", Name: "op"},
+			{Kind: "Group", Name: "system:masters"},
+		}}},
+		RoleBindings: []rbacv1.RoleBinding{{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}, RoleRef: rbacv1.RoleRef{Kind: "ClusterRole", Name: "r"},
+			Subjects: []rbacv1.Subject{{Kind: "User", Name: "openinfra:alice"}, {Kind: "ServiceAccount", Name: "app"}}}},
+	}
+	principals := func(gs []Grant) []string {
+		var out []string
+		for _, g := range gs {
+			out = append(out, g.Principal)
+		}
+		return out
+	}
+	all := principals(Generate(in))
+	if len(all) != 6 {
+		t.Fatalf("default: every subject keeps its grant, got %v", all)
+	}
+	in.SkipIAMPrincipals = true
+	got := strings.Join(principals(Generate(in)), ",")
+	if got != "Group::system:masters,ServiceAccount::kube-system/op,ServiceAccount::team-a/app" {
+		t.Fatalf("SkipIAMPrincipals must keep exactly the platform identities, got %s", got)
+	}
+}
+
 // An unusable pattern (empty, "*" alone, a "*" mid-name, odd characters) is ignored with a caveat — it
 // never widens and never silently drops the grant.
 func TestImpersonationNarrowing_UnusablePatternsAreIgnored(t *testing.T) {

@@ -293,7 +293,12 @@ kind: ClusterRole
 metadata:
   name: open-infra-aws-shim-impersonator
   annotations:
+    # openinfra:* covers both identity forms: openinfra:<user> (legacy) and openinfra:<account>:<user>
+    # (once IAM policy is the authority).
     openinfra.dev/impersonate-users: "openinfra:*"
+    # The shim never acts as the break-glass root (root has no access keys): a shim that impersonated
+    # either root identity could only be a principal borrowing root's name.
+    openinfra.dev/impersonate-users-deny: "openinfra:root,openinfra:000000000000:root"
 rules:
   - apiGroups: [""]
     resources: [groups]

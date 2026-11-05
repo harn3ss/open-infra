@@ -31,7 +31,15 @@ type Inputs struct {
 	Roles               map[string]rbacv1.Role        // keyed by "namespace/name"
 	ClusterRoleBindings []rbacv1.ClusterRoleBinding
 	RoleBindings        []rbacv1.RoleBinding
+	// SkipIAMPrincipals leaves out every User and Group subject named "openinfra:*" — the console and
+	// shim principals — because their control-plane grants are compiled from IAM policy into the
+	// iam-corpus (iamcompile) once IAM is the authority. The corpus then covers platform identities only.
+	// Off by default, so the corpus is unchanged until the cutover turns it on.
+	SkipIAMPrincipals bool
 }
+
+// IAMPrincipalPrefix is the prefix of every console and shim identity (users and groups).
+const IAMPrincipalPrefix = "openinfra:"
 
 // Generate aggregates RBAC into per-principal control-plane grants mirroring what RBAC allows.
 func Generate(in Inputs) []Grant {
@@ -39,6 +47,9 @@ func Generate(in Inputs) []Grant {
 	add := func(subj rbacv1.Subject, rules []rbacv1.PolicyRule, scopeNS string) {
 		p := principal(subj)
 		if p == "" {
+			return
+		}
+		if in.SkipIAMPrincipals && isIAMSubject(subj) {
 			return
 		}
 		g := byPrincipal[p]
@@ -56,9 +67,12 @@ func Generate(in Inputs) []Grant {
 	for _, crb := range in.ClusterRoleBindings {
 		if cr, ok := in.ClusterRoles[crb.RoleRef.Name]; ok {
 			rules, narrowed, cav := narrowImpersonation(cr)
+			denied, dcav := impersonationDenies(cr)
+			narrowed = append(narrowed, denied...)
+			cav = append(cav, dcav...)
 			for _, s := range crb.Subjects {
 				add(s, rules, "") // "" scope = cluster-wide
-				if p := principal(s); p != "" {
+				if p := principal(s); p != "" && byPrincipal[p] != nil {
 					byPrincipal[p].Statements = append(byPrincipal[p].Statements, narrowed...)
 					byPrincipal[p].Caveats = append(byPrincipal[p].Caveats, cav...)
 				}
@@ -131,6 +145,45 @@ func narrowImpersonation(cr rbacv1.ClusterRole) (rest []rbacv1.PolicyRule, narro
 		caveats = append(caveats, fmt.Sprintf("impersonate users narrowed to %q by %s on ClusterRole %s (RBAC itself allows any user name)", pattern, ImpersonateUsersAnnotation, cr.Name))
 	}
 	return rest, narrowed, caveats
+}
+
+// ImpersonateUsersDenyAnnotation, on a ClusterRole, lists exact user names (comma-separated) its holder
+// may never impersonate, whatever else it grants: each becomes a Deny on impersonating "users::<name>",
+// which wins over the role's Allow. The aws-shim's ceiling names the break-glass root identities with it:
+// the shim has no root path (root has no access keys), so a shim that impersonated root could only be a
+// principal borrowing root's name. This is the one place the translation adds a Deny, and it only narrows.
+const ImpersonateUsersDenyAnnotation = "openinfra.dev/impersonate-users-deny"
+
+// impersonationDenies turns ImpersonateUsersDenyAnnotation into Deny statements. A name that is empty,
+// carries a wildcard, or contains characters a Kubernetes user name here never has is skipped with a
+// caveat (a Deny never covers more than its literal name).
+func impersonationDenies(cr rbacv1.ClusterRole) ([]policyengine.Statement, []string) {
+	raw, ok := cr.Annotations[ImpersonateUsersDenyAnnotation]
+	if !ok {
+		return nil, nil
+	}
+	var names, caveats []string
+	for _, n := range strings.Split(raw, ",") {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		if strings.Contains(n, "*") || !usablePattern(n) {
+			caveats = append(caveats, fmt.Sprintf("%s entry %q on ClusterRole %s is not a literal user name; ignored", ImpersonateUsersDenyAnnotation, n, cr.Name))
+			continue
+		}
+		names = append(names, "users::"+n)
+	}
+	if len(names) == 0 {
+		return nil, caveats
+	}
+	caveats = append(caveats, fmt.Sprintf("impersonating %s is denied by %s on ClusterRole %s", strings.Join(names, ", "), ImpersonateUsersDenyAnnotation, cr.Name))
+	return []policyengine.Statement{{Effect: policyengine.Deny, Actions: []string{"impersonate"}, Resources: names}}, caveats
+}
+
+// isIAMSubject reports whether an RBAC subject is a console or shim principal (an "openinfra:*" user or group).
+func isIAMSubject(s rbacv1.Subject) bool {
+	return (s.Kind == "User" || s.Kind == "Group") && strings.HasPrefix(s.Name, IAMPrincipalPrefix)
 }
 
 // usablePattern: a literal prefix of safe name characters, optionally ending in one "*". Never "*" alone.
