@@ -30,6 +30,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/crd"
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
 	"github.com/harn3ss/open-infra/console-api/internal/proxy"
@@ -583,8 +584,26 @@ func handleCRDSchema(fetcher *crd.Fetcher, logger *slog.Logger) http.HandlerFunc
 	}
 }
 
-// writeJSON encodes v as JSON with the given status code.
+// writeJSON encodes v as JSON with the given status code. An error answer ({"error": …}, status 400 and
+// up) is said in AWS's terms: a Kubernetes or Crossplane message the handler passed through is rewritten
+// by awserr.Clean (the original is logged), and the AWS error code is added as "errorCode".
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	if m, ok := v.(map[string]string); ok && status >= 400 {
+		if msg, has := m["error"]; has {
+			out := make(map[string]string, len(m)+1)
+			for k, val := range m {
+				out[k] = val
+			}
+			if clean := awserr.Clean(msg); clean != msg {
+				out["error"] = clean
+				slog.Default().Info("kubernetes error answered in AWS terms", slog.Int("status", status), slog.String("original", msg))
+			}
+			if _, set := out["errorCode"]; !set {
+				out["errorCode"] = awserr.Code(status, "", msg)
+			}
+			v = out
+		}
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {

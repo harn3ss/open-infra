@@ -213,3 +213,53 @@ func TestExplainImpersonationDenial(t *testing.T) {
 		t.Fatal("a malformed 403 body was not preserved")
 	}
 }
+
+// An API error reaches the browser in AWS's terms: an AWS error code and a message naming the AWS
+// resource, with the Status envelope (kind, reason, details, the numeric code) the console reads intact.
+// Successful responses and non-Status bodies pass through byte for byte.
+func TestProxyAnswersAPIErrorsInAWSTerms(t *testing.T) {
+	denial := `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"functions.openinfra.dev \"orders\" is forbidden: User \"alice\" cannot delete resource \"functions\" in API group \"openinfra.dev\" in the namespace \"main-dev\"","reason":"Forbidden","details":{"name":"orders","group":"openinfra.dev","kind":"functions"},"code":403}`
+	list := `{"kind":"FunctionList","items":[]}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, denial)
+			return
+		}
+		_, _ = io.WriteString(w, list)
+	}))
+	defer upstream.Close()
+	host, _ := url.Parse(upstream.URL)
+	h := New(host, http.DefaultTransport, "/api/k8s", slog.New(slog.DiscardHandler), nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/k8s/apis/openinfra.dev/v1/namespaces/main-dev/functions/orders", nil))
+	got := rec.Body.String()
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status %d, want 403", rec.Code)
+	}
+	for _, want := range []string{
+		`"errorCode":"AccessDeniedException"`,
+		`"message":"User: alice is not authorized to perform: delete on resource: Lambda function orders"`,
+		`"reason":"Forbidden"`, `"kind":"Status"`, `"code":403`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("response lacks %s: %s", want, got)
+		}
+	}
+	for _, leak := range []string{"API group", "in the namespace"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("response still says %q: %s", leak, got)
+		}
+	}
+	if rec.Header().Get("Content-Length") != "" && rec.Header().Get("Content-Length") != strconv.Itoa(len(got)) {
+		t.Errorf("Content-Length %q does not match the body (%d)", rec.Header().Get("Content-Length"), len(got))
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/k8s/apis/openinfra.dev/v1/functions", nil))
+	if rec.Body.String() != list {
+		t.Errorf("a successful response was modified: %s", rec.Body.String())
+	}
+}

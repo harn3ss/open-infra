@@ -20,6 +20,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 )
 
 // New returns an http.Handler that reverse-proxies requests to the API server at
@@ -106,7 +108,15 @@ func New(host *url.URL, transport http.RoundTripper, stripPrefix string, logger 
 		// It actually means a kind: Group used a name outside the impersonator
 		// ClusterRole's resourceNames — a deliberate privilege ceiling. Rewrite the
 		// message so the person hitting it can act on it.
-		ModifyResponse: explainImpersonationDenial,
+		// Every other API error is answered in AWS's terms (awsShapeError): an AWS error code and a message
+		// that names the AWS resource, never Kubernetes' "forbidden: User … cannot create resource … in API
+		// group …", a webhook's name or a composition's template position. The original is logged.
+		ModifyResponse: func(resp *http.Response) error {
+			if err := explainImpersonationDenial(resp); err != nil {
+				return err
+			}
+			return awsShapeError(resp, logger)
+		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			// Upstream/transport failure (DNS, TLS, connection reset). The API
 			// server's own 4xx/5xx responses are NOT errors and flow through the
@@ -176,5 +186,49 @@ func explainImpersonationDenial(resp *http.Response) error {
 	resp.Body = io.NopCloser(bytes.NewReader(nb))
 	resp.ContentLength = int64(len(nb))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(nb)))
+	return nil
+}
+
+// awsShapeError rewrites an API server error (a 4xx/5xx carrying a metav1.Status) in AWS's terms: it adds
+// `errorCode` (the AWS error code, awserr.Code; the Status's own numeric `code` stays) and replaces
+// `message` with awserr.Clean's rewrite, keeping `reason`, `details` and the HTTP status the console's own
+// logic reads. The original message is logged.
+// Anything that is not a Status (a watch stream, a proxied pod response) passes through untouched.
+func awsShapeError(resp *http.Response, logger *slog.Logger) error {
+	if resp.StatusCode < 400 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	resp.Body.Close()
+	setBody := func(b []byte) {
+		resp.Body = io.NopCloser(bytes.NewReader(b))
+		resp.ContentLength = int64(len(b))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(b)))
+	}
+	if err != nil {
+		setBody(body)
+		return nil
+	}
+	var st map[string]any
+	if json.Unmarshal(body, &st) != nil || st["kind"] != "Status" {
+		setBody(body)
+		return nil
+	}
+	msg, _ := st["message"].(string)
+	reason, _ := st["reason"].(string)
+	st["errorCode"] = awserr.Code(resp.StatusCode, reason, msg)
+	if clean := awserr.Clean(msg); clean != msg {
+		st["message"] = clean
+		if logger != nil {
+			logger.Info("kubernetes API error answered in AWS terms",
+				slog.Int("status", resp.StatusCode), slog.String("reason", reason), slog.String("original", msg))
+		}
+	}
+	nb, err := json.Marshal(st)
+	if err != nil {
+		setBody(body)
+		return nil
+	}
+	setBody(nb)
 	return nil
 }
