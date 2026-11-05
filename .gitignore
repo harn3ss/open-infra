@@ -78,3 +78,14 @@ apply-sink/applysink
 # Same for a stray `go build ./cmd/aws-shim/` in console-api/ (the shim binary).
 console-api/aws-shim
 console-api/console-api
+
+# go build inside a cmd/ directory writes a binary named after it
+console-api/cmd/apigw-validator/apigw-validator
+console-api/cmd/attest/attest
+console-api/cmd/audit-offsite/audit-offsite
+console-api/cmd/authz-webhook/authz-webhook
+console-api/cmd/aws-shim/aws-shim
+console-api/cmd/ca-issuer/ca-issuer
+console-api/cmd/corpus-check/corpus-check
+console-api/cmd/rbac-to-cedar/rbac-to-cedar
+console-api/cmd/server/server
