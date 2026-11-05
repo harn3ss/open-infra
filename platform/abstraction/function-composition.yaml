@@ -39,8 +39,8 @@ spec:
             {{- $arch := index $envCfg "imageArchSuffix" | default "" }}
             {{- /* image | code: EXACTLY one. code => run a handler on a managed runtime base image. */}}
             {{- $code := $spec.code }}
-            {{- if and (not $spec.image) (not $code) }}{{- fail "kind: Function requires exactly one of spec.image or spec.code (neither set)" }}{{- end }}
-            {{- if and $spec.image $code }}{{- fail "kind: Function: set spec.image OR spec.code, not both" }}{{- end }}
+            {{- if and (not $spec.image) (not $code) }}{{- fail "Lambda function: specify a container image (ImageUri) or a deployment package (Code); neither is set (image / code)" }}{{- end }}
+            {{- if and $spec.image $code }}{{- fail "Lambda function: specify a container image (ImageUri) or a deployment package (Code), not both (image / code)" }}{{- end }}
             {{- $img := $spec.image }}
             {{- $csrc := dict }}
             {{- $unsupported := false }}
@@ -49,14 +49,14 @@ spec:
             {{-   if $code.runtimeImage }}
             {{- /* ESCAPE HATCH: a BYO base image for a runtime we don't vouch for (EOL/other). Fails
                    closed — requires unsupportedRuntime, then the service is marked/isolated/asleep below. */}}
-            {{-     if $code.runtime }}{{- fail "kind: Function spec.code: set runtime OR runtimeImage, not both" }}{{- end }}
-            {{-     if not ($code.unsupportedRuntime | default false) }}{{- fail "kind: Function spec.code.runtimeImage requires unsupportedRuntime: true (a BYO runtime is unsupported + non-production — see the field docs)" }}{{- end }}
+            {{-     if $code.runtime }}{{- fail "Lambda function: specify a managed runtime (Runtime) or a custom runtime image, not both (code.runtime / code.runtimeImage)" }}{{- end }}
+            {{-     if not ($code.unsupportedRuntime | default false) }}{{- fail "Lambda function: a custom runtime image is unsupported and not for production, so it must be accepted as such (code.unsupportedRuntime: true)" }}{{- end }}
             {{-     $img = $code.runtimeImage }}{{- $unsupported = true }}
             {{-   else if eq $code.runtime "python3.12" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python:latest%s" $arch }}{{- else if eq $code.runtime "python3.13" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python313:latest%s" $arch }}{{- else if eq $code.runtime "nodejs20" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-nodejs:latest%s" $arch }}{{- else if eq $code.runtime "nodejs22" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-nodejs22:latest%s" $arch }}{{- else if eq $code.runtime "dotnet8" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-dotnet:latest%s" $arch }}{{- else }}{{- fail (printf "kind: Function spec.code: set runtime (a supported enum value) or runtimeImage (BYO, unsupported); got runtime=%q" ($code.runtime | default "")) }}{{- end }}
-            {{-   if and $csrc.bucket $csrc.configMap }}{{- fail "kind: Function spec.code.source: set configMap OR bucket+key, not both" }}{{- end }}
-            {{-   if and (not $csrc.bucket) (not $csrc.configMap) }}{{- fail "kind: Function spec.code.source: set configMap (inline) or bucket+key (zip)" }}{{- end }}
+            {{-   if and $csrc.bucket $csrc.configMap }}{{- fail "Lambda function: the deployment package is inline code (ZipFile) or an S3 object (S3Bucket and S3Key), not both (code.source)" }}{{- end }}
+            {{-   if and (not $csrc.bucket) (not $csrc.configMap) }}{{- fail "Lambda function: the deployment package needs inline code (ZipFile) or an S3 object (S3Bucket and S3Key) (code.source)" }}{{- end }}
             {{- /* Layers are .zip artifacts fetched with the handler's S3 creds, so they require a bucket source. */}}
-            {{-   if and $code.layers (not (and $csrc.bucket $csrc.secret)) }}{{- fail "kind: Function spec.code.layers require a bucket source with a creds secret (source.bucket + source.secret)" }}{{- end }}
+            {{-   if and $code.layers (not (and $csrc.bucket $csrc.secret)) }}{{- fail "Lambda function: layers need the deployment package in S3, with credentials to read it (code.source.bucket and code.source.secret)" }}{{- end }}
             {{- end }}
             {{- /* Burstable admission (the Lambda memory model). Default false = today's Guaranteed QoS
                    (request == limit == memory). true: request = a per-runtime floor, limit = memory, so a
@@ -70,7 +70,7 @@ spec:
             {{- $floors := dict "python3.12" "128Mi" "python3.13" "128Mi" "nodejs20" "128Mi" "nodejs22" "128Mi" "dotnet8" "128Mi" }}
             {{- $memReq := "" }}
             {{- if $burst }}
-            {{-   if not $spec.memory }}{{- fail "kind: Function spec.burstable: true requires spec.memory (Burstable sets request=per-runtime floor, limit=memory)" }}{{- end }}
+            {{-   if not $spec.memory }}{{- fail "Lambda function: burstable memory needs a memory size (MemorySize): the runtime's floor is reserved and the memory size is the limit (burstable / memory)" }}{{- end }}
             {{-   $memReq = $spec.memoryRequest | default (index $floors $rt) | default "128Mi" }}
             {{- end }}
             {{- /* Weighted aliases (Knative traffic) must sum to 100, as Knative requires. */}}

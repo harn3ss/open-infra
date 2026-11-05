@@ -53,8 +53,8 @@ spec:
             {{- /* Each route backend is EXACTLY ONE of in-cluster (name) or external (url, the
                    HTTP_PROXY integration). Fail loud rather than render an empty/ambiguous target. */}}
             {{- range $spec.routes }}
-            {{-   if and .backend.name .backend.url }}{{- fail "kind: HttpApi route backend: set backend.name OR backend.url, not both" }}{{- end }}
-            {{-   if and (not .backend.name) (not .backend.url) }}{{- fail "kind: HttpApi route backend: set backend.name (in-cluster) or backend.url (external)" }}{{- end }}
+            {{-   if and .backend.name .backend.url }}{{- fail "API Gateway HTTP API route: an integration targets a function or service in the account (backend.name) or an external URL (backend.url), not both" }}{{- end }}
+            {{-   if and (not .backend.name) (not .backend.url) }}{{- fail "API Gateway HTTP API route: an integration needs a target: a function or service in the account (backend.name) or an external URL (backend.url)" }}{{- end }}
             {{- end }}
             {{- /* Multi-domain: the primary domain plus any extras (the custom-domains equivalent) —
                    added to every route's Host match and to the TLS certificate SANs. */}}

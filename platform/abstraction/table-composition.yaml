@@ -47,7 +47,7 @@ spec:
             {{- /* LSIs share the table's HASH key and add an alternate RANGE key: keyAttrs = [tableHash, lsiRange]. */}}
             {{- $lsis := list }}
             {{- range $l := ($spec.localSecondaryIndexes | default list) }}
-              {{- if not $spec.rangeKey }}{{- fail "kind: Table localSecondaryIndexes require the table to have a rangeKey" }}{{- end }}
+              {{- if not $spec.rangeKey }}{{- fail "DynamoDB table: a local secondary index requires the table to have a sort key (rangeKey)" }}{{- end }}
               {{- $lka := list $spec.hashKey.name $l.rangeKey.name }}
               {{- $lsis = append $lsis (dict "name" $l.name "keyAttrs" $lka) }}
             {{- end }}

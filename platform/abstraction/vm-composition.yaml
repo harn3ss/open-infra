@@ -152,9 +152,9 @@ spec:
             {{- $rootEnc := $rootDiskSpec.encrypted | default false }}
             {{- $rootKey := $rootDiskSpec.encryptionKey | default "" }}
             {{- if $rootEnc }}
-            {{-   if not $rootKey }}{{ fail "kind: VirtualMachine spec.rootDisk.encrypted requires spec.rootDisk.encryptionKey (the kind: EncryptionKey that keys the root disk)" }}{{ end }}
-            {{-   if $ha }}{{ fail "kind: VirtualMachine spec.rootDisk.encrypted cannot be combined with highAvailability: there is no encrypted, live-migratable storage class (an encrypted root is RWO)" }}{{ end }}
-            {{-   if $adopt }}{{ fail "kind: VirtualMachine spec.rootDisk.encrypted cannot be combined with existingRootClaim: an adopted disk is booted as it is" }}{{ end }}
+            {{-   if not $rootKey }}{{ fail "EC2 instance: an encrypted root volume (rootDisk.encrypted) needs the KMS key that encrypts it (rootDisk.encryptionKey)" }}{{ end }}
+            {{-   if $ha }}{{ fail "EC2 instance: an encrypted root volume (rootDisk.encrypted) cannot be combined with high availability (live migration): no encrypted storage can move with a running instance (an encrypted root attaches to one host)" }}{{ end }}
+            {{-   if $adopt }}{{ fail "EC2 instance: an encrypted root volume (rootDisk.encrypted) cannot be combined with an imported root disk (existingRootClaim): an imported disk boots as it is" }}{{ end }}
             {{- end }}
             {{- $xrStatus := .observed.composite.resource.status | default dict }}
             {{- $rootPopulated := $xrStatus.rootPopulated | default false }}
@@ -345,16 +345,16 @@ spec:
             {{- $fw := $spec.firmware | default dict }}
             {{- $fwMode := $fw.mode | default "" }}
             {{- if and $adopt (not $fwMode) }}
-            {{-   fail "kind: VirtualMachine existingRootClaim requires spec.firmware.mode (bios|uefi): a migrated disk's boot mode cannot be guessed — a UEFI-installed disk (GPT/ESP) will not boot under BIOS. Set it from the source instance's boot mode." }}
+            {{-   fail "EC2 instance: an imported root disk (existingRootClaim) needs its boot mode, as EC2's BootMode (firmware.mode: bios or uefi): a migrated disk's boot mode cannot be guessed, and a UEFI-installed disk (GPT/ESP) will not boot under BIOS. Set it from the source instance's boot mode." }}
             {{- end }}
             {{- if and $isWin (not $adopt) (eq $fwMode "uefi") }}
-            {{-   fail "kind: VirtualMachine spec.firmware.mode: uefi on a FRESH windows-server-* clone: the golden images are MBR/BIOS, so a UEFI clone would not boot. Boot a UEFI disk via existingRootClaim, or build a UEFI golden via kind: VmImage." }}
+            {{-   fail "EC2 instance: UEFI boot mode (firmware.mode: uefi) on a new Windows Server instance: the Windows Server images boot BIOS (MBR), so it would not boot. Import a UEFI disk as the root disk (existingRootClaim), or build a UEFI image." }}
             {{- end }}
             {{- $fwMode = $fwMode | default "bios" }}
             {{- $secureBoot := $fw.secureBoot | default false }}
             {{- $vTPM := $fw.tpm | default false }}
             {{- if and $secureBoot (ne $fwMode "uefi") }}
-            {{-   fail "kind: VirtualMachine spec.firmware.secureBoot requires spec.firmware.mode: uefi." }}
+            {{-   fail "EC2 instance: Secure Boot (firmware.secureBoot) requires UEFI boot mode (firmware.mode: uefi)." }}
             {{- end }}
             {{- $efi := eq $fwMode "uefi" }}
             ---

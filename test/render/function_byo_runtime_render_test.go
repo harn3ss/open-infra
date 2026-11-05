@@ -27,11 +27,11 @@ func TestFunction_UnsupportedRuntime(t *testing.T) {
 	}
 
 	// Fail-closed: a BYO image without accepting unsupportedRuntime is refused.
-	if err := renderErr(tmpl, ctx(byo(nil))); err == nil || !strings.Contains(err.Error(), "requires unsupportedRuntime") {
+	if err := renderErr(tmpl, ctx(byo(nil))); err == nil || !strings.Contains(err.Error(), "code.unsupportedRuntime: true") {
 		t.Errorf("runtimeImage without unsupportedRuntime must fail closed; got %v", err)
 	}
 	// Mutually exclusive with the managed runtime enum.
-	if err := renderErr(tmpl, ctx(byo(map[string]any{"unsupportedRuntime": true, "runtime": "nodejs20"}))); err == nil || !strings.Contains(err.Error(), "runtime OR runtimeImage") {
+	if err := renderErr(tmpl, ctx(byo(map[string]any{"unsupportedRuntime": true, "runtime": "nodejs20"}))); err == nil || !strings.Contains(err.Error(), "code.runtime / code.runtimeImage") {
 		t.Errorf("runtime + runtimeImage together must fail; got %v", err)
 	}
 

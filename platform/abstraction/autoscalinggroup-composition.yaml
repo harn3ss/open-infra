@@ -66,7 +66,7 @@ spec:
             {{- /* launchTemplate.userData is re-indented into a block scalar with nindent, which breaks
                    lines on LF only: any other YAML line break (a lone CR, NEL, LS, PS) would end the block
                    and could add fields to the manifest. CRLF scripts are fine. */}}
-            {{- if regexMatch "\r([^\n]|$)|[\u0085\u2028\u2029]" (printf "%v" ($lt.userData | default "")) }}{{ fail "kind: AutoScalingGroup: launchTemplate.userData contains a line break other than LF or CRLF" }}{{ end }}
+            {{- if regexMatch "\r([^\n]|$)|[\u0085\u2028\u2029]" (printf "%v" ($lt.userData | default "")) }}{{ fail "Auto Scaling group: the launch template's UserData contains a line break other than LF or CRLF (launchTemplate.userData)" }}{{ end }}
             {{- $labels := $xr.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}

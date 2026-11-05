@@ -53,7 +53,7 @@ spec:
             {{-   range $f := ($r.functions | default list) }}{{ $texts = append $texts ($f.request | default "") }}{{ $texts = append $texts ($f.response | default "") }}{{ end }}
             {{- end }}
             {{- range $s := ($spec.subscriptions | default list) }}{{ $texts = append $texts ($s.response | default "") }}{{ end }}
-            {{- range $t := $texts }}{{ if regexMatch "\r([^\n]|$)|[\u0085\u2028\u2029]" (printf "%v" $t) }}{{ fail "kind: GraphQLApi: the schema or a mapping template contains a line break other than LF or CRLF" }}{{ end }}{{ end }}
+            {{- range $t := $texts }}{{ if regexMatch "\r([^\n]|$)|[\u0085\u2028\u2029]" (printf "%v" $t) }}{{ fail "AppSync API: the schema or a resolver mapping template contains a line break other than LF or CRLF" }}{{ end }}{{ end }}
             {{- /* Per-resource override: annotation openinfra.dev/arch (amd64|arm64) beats the cluster
                    default, so a specific claim can target the other arch in a MIXED cluster. */}}
             {{- $annos := .observed.composite.resource.metadata.annotations | default dict }}

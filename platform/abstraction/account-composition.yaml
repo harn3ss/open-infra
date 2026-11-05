@@ -53,11 +53,11 @@ spec:
             {{- $mgmt := index $envCfg "awsAccountId" | default "000000000000" }}
             {{- $acct := $spec.accountId | default "" }}
             {{- if not (regexMatch "^[0-9]{12}$" $acct) }}
-            {{-   fail "kind: Account needs spec.accountId, 12 digits" }}
+            {{-   fail "Account: the account id must be 12 digits (accountId)" }}
             {{- end }}
             {{- $nss := $spec.namespaces | default list }}
             {{- if eq (len $nss) 0 }}
-            {{-   fail "kind: Account needs at least one namespace in spec.namespaces (the first is its home)" }}
+            {{-   fail "Account: an account needs at least one namespace, the first being its home (namespaces)" }}
             {{- end }}
             {{- $home := index $nss 0 }}
             {{- $isMgmt := eq $acct $mgmt }}
