@@ -251,6 +251,11 @@ jobs:
           python3 -c "import yaml" 2>/dev/null || pip3 install --quiet pyyaml
           python3 probe/test_coverage.py
 
+      # The IAM probes' own self-tests, against fakes (no cluster): each probe's allow/deny logic, cleanup
+      # and inconclusive paths.
+      - name: IAM probe self-tests
+        run: python3 probe/test_iam_probes.py
+
       - name: chaos shell scripts parse (bash -n)
         run: for f in chaos/*.sh; do bash -n "$f"; done
 
