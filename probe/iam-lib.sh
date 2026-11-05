@@ -139,10 +139,17 @@ iamp_login() {
   # The mode is the principal's own (a canary-labelled User is in enforce while the platform is in shadow),
   # read from a policy world each door caches for 30 s: a User made a moment ago reads as the platform's
   # mode until the cache reloads, so ask until it has (IAMP_SETTLED_AT), not once.
+  # A request that got no answer at all (a dropped port-forward connection) is asked again, a few times,
+  # even after the caches have reloaded: no answer is not the principal's mode.
+  local silent=0
   while :; do
     mode="$(curl -s -m 10 -b "$jar" "$CONSOLE/api/auth/me" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("iamAuthz",""))' 2>/dev/null)"
     [ "$mode" = enforce ] && break
-    [ "$(date +%s)" -lt "${IAMP_SETTLED_AT:-0}" ] || break
+    [ -n "$mode" ] || silent=$((silent + 1))
+    if [ "$(date +%s)" -ge "${IAMP_SETTLED_AT:-0}" ]; then
+      [ -n "$mode" ] && break
+      [ "$silent" -ge 10 ] && break
+    fi
     sleep 2
   done
   if [ "$mode" != enforce ]; then
