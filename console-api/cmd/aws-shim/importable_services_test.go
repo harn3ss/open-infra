@@ -37,7 +37,7 @@ var notImportable = map[string]string{
 // dynamicResourceTypes are the resource types of the checks whose type is a variable, per file (read from
 // the code next to the call): each must be one the importer can produce.
 var dynamicResourceTypes = map[string][]string{
-	"iam.go":                {"Role", "User", "Policy"},
+	"iam.go":                {"Role", "User", "Policy", "ARN"},
 	"cloudfront_read.go":    {"CachePolicy", "OriginRequestPolicy", "ResponseHeadersPolicy", "OriginAccessControl", "OriginAccessIdentity"},
 	"glue.go":               {"Database", "Table"},
 	"athena.go":             {"WorkGroup", "Table"},
@@ -104,6 +104,7 @@ var exampleArn = map[string]string{
 var notImportableTypes = map[string]string{
 	"Namespace": "CloudWatch metrics and alarms are authorized per namespace, which AWS policies scope with a condition (cloudwatch:namespace), not an ARN; Resource \"*\" imports",
 	"Account":   "Organizations accounts (organizations.go); the importer does not map organizations ARNs yet, so the service is not importable (notImportable)",
+	"ARN":       "a resource authorized on its ARN as written (an IAM group, arn:aws:iam::<account>:group/<name>): the policy compiler keeps an ARN it has no typed resource for as that ARN, so a request and a policy naming it meet",
 }
 
 // scanDataPlaneCalls parses the shim's non-test sources and returns every data-plane check.

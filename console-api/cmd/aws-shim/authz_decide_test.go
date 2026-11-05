@@ -162,6 +162,10 @@ func TestEnforce_PowerUserAccessIsDeniedIAMWrites(t *testing.T) {
 	ih := newIAMHandler(csWithSAR(true), fakeDynWith(gvrRoles, gvrPolicies, gvrUsers), nil, authz, "open-infra-console", "000000000000", "us-east-1", discardLogger())
 	for _, form := range []url.Values{
 		{"Action": {"CreateUser"}, "UserName": {"x"}},
+		{"Action": {"AttachUserPolicy"}, "UserName": {"tester"}, "PolicyArn": {"arn:aws:iam::aws:policy/AdministratorAccess"}},
+		{"Action": {"AddUserToGroup"}, "UserName": {"tester"}, "GroupName": {"admins"}},
+		{"Action": {"PutUserPolicy"}, "UserName": {"tester"}, "PolicyName": {"p"}, "PolicyDocument": {"{}"}},
+		{"Action": {"DeleteUserPermissionsBoundary"}, "UserName": {"tester"}},
 		{"Action": {"PutRolePolicy"}, "RoleName": {"r"}, "PolicyName": {"p"}, "PolicyDocument": {"{}"}},
 		{"Action": {"CreateAccessKey"}, "UserName": {"x"}},
 	} {

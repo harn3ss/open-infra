@@ -131,6 +131,41 @@ reimplementing a weaker parallel one.
   (`sts:GetCallerIdentity`, which needs no permission on AWS either), and with no data-plane engine
   configured a role is denied everything.
 
+### IAM policy as the one authority (`IAM_AUTHZ`)
+
+Every front door makes **one** authorization decision per operation — the AWS action on the resource it
+names — asked of the one IAM evaluator (`internal/iamauthz`, AWS's evaluation logic: an explicit `Deny`
+anywhere wins; identity policies — the user's own, its groups', its inline policies, within its permissions
+boundary — or the resource's own policy allow; default deny). `IAM_AUTHZ` on the shim picks who answers:
+
+| `IAM_AUTHZ` | Who decides | What a caller sees |
+|---|---|---|
+| `legacy` (default) | each door's earlier check: the RBAC gate and the data-plane refinement above | exactly what it saw before |
+| `shadow` | legacy, while IAM policy decides beside it | as legacy; every difference is logged |
+| `enforce` | IAM policy alone | AWS's answer: a User with no policy is denied everywhere; AWS's `PowerUserAccess` may not manage IAM |
+
+In `shadow` a difference is one log line, `iam-shadow allow` (IAM policy would allow what legacy denies) or
+`iam-shadow deny` (IAM policy would deny what legacy allows), with `action`, `resource`, `principal` (its
+ARN), `legacy`, `reason` and the `policy` that matched — the list to clear before switching to `enforce`. A
+`kind: User` or `kind: Role` labelled `openinfra.dev/iam-authz: enforce` is enforced while the shim shadows
+(a canary). In `enforce` a denial is AWS's message: `User: arn:aws:iam::<account>:user/<name> is not
+authorized to perform: <action> on resource: <resource>`. A queue's or topic's own policy (`Policy`
+attribute) joins the decision in `shadow` and `enforce`.
+
+Where a door writes as the caller (CloudFormation's and ECS's applier, S3 `CreateBucket`/`DeleteBucket`), in
+`enforce` it acts as the caller's account-qualified identity, `openinfra:<account>:<user>`, whose RBAC the IAM
+compiler generates from its IAM policy. The shim never acts as the account's root user (`openinfra:root` or
+`openinfra:<account>:root`): root has no access keys.
+
+**Accounts.** A caller acts in its account: an access key records its owner's account (a key minted before
+accounts is the management account's), an assumed-role session the account of the role it assumed. ARNs
+(`GetCallerIdentity`, `AWS::AccountId`) follow the caller. A member account's users, groups, roles and policies
+live in its home namespace — its `bob` is never the management account's `bob` — and a member account's
+principal is decided by IAM policy whatever `IAM_AUTHZ` says. `AssumeRole` into another account's role (its
+`RoleArn` names the account) needs the role's trust to name the caller (`arn:aws:iam::<account>:root`,
+`…:user/<name>`, `…:role/<name>`); a resource in another account needs both the caller's identity policy and
+the resource's own policy, as on AWS. A principal of a suspended account does not authenticate.
+
 ### The credential store
 
 An access key is a sub-resource of a `kind: User`, stored as one Kubernetes Secret per key
@@ -298,7 +333,7 @@ create on its own API's front door):
 | SES | `email` | 14: CreateEmailIdentity, DeleteEmailIdentity, GetAccount, GetEmailIdentity, GetIdentityVerificationAttributes, GetSendQuota, GetSendStatistics, ListEmailIdentities, ListIdentities, SendBulkEmail, SendEmail, SendRawEmail, VerifyDomainIdentity, VerifyEmailIdentity | 0 |
 | EventBridge | `events` | 14: CreateEventBus, DeleteEventBus, DeleteRule, DescribeRule, DisableRule, EnableRule, ListEventBuses, ListRules, ListTargetsByRule, PutEvents, PutRule, PutTargets, RemoveTargets, TestEventPattern | 2 |
 | Glue | `glue` | 32: BatchCreatePartition, BatchDeletePartition, BatchStopJobRun, BatchUpdatePartition, CreateCrawler, CreateDatabase, CreateJob, CreatePartition, CreateTable, DeleteCrawler, DeleteDatabase, DeleteJob, DeletePartition, DeleteTable, GetCrawler, GetCrawlers, GetDatabase, GetDatabases, GetJob, GetJobRun, GetJobRuns, GetJobs, GetPartitions, GetTable, GetTables, StartCrawler, StartJobRun, StopCrawler, UpdateCrawler, UpdateJob, UpdatePartition, UpdateTable | 0 |
-| IAM | `iam` | 28: AttachRolePolicy, CreateAccessKey, CreatePolicy, CreatePolicyVersion, CreateRole, CreateUser, DeleteAccessKey, DeletePolicy, DeleteRole, DeleteRolePolicy, DeleteUser, DetachRolePolicy, GetPolicy, GetPolicyVersion, GetRole, GetRolePolicy, GetUser, ListAccessKeys, ListAttachedRolePolicies, ListPolicies, ListPolicyVersions, ListRolePolicies, ListRoles, ListUsers, PutRolePolicy, SimulatePrincipalPolicy, TagUser, UpdateAccessKey | 5 |
+| IAM | `iam` | 56: AddUserToGroup, AttachGroupPolicy, AttachRolePolicy, AttachUserPolicy, CreateAccessKey, CreateGroup, CreatePolicy, CreatePolicyVersion, CreateRole, CreateUser, DeleteAccessKey, DeleteGroup, DeleteGroupPolicy, DeletePolicy, DeletePolicyVersion, DeleteRole, DeleteRolePermissionsBoundary, DeleteRolePolicy, DeleteUser, DeleteUserPermissionsBoundary, DeleteUserPolicy, DetachGroupPolicy, DetachRolePolicy, DetachUserPolicy, GetAccountAuthorizationDetails, GetGroup, GetGroupPolicy, GetPolicy, GetPolicyVersion, GetRole, GetRolePolicy, GetUser, GetUserPolicy, ListAccessKeys, ListAttachedGroupPolicies, ListAttachedRolePolicies, ListAttachedUserPolicies, ListGroupPolicies, ListGroups, ListGroupsForUser, ListPolicies, ListPolicyVersions, ListRolePolicies, ListRoles, ListUserPolicies, ListUsers, PutGroupPolicy, PutRolePermissionsBoundary, PutRolePolicy, PutUserPermissionsBoundary, PutUserPolicy, RemoveUserFromGroup, SetDefaultPolicyVersion, SimulatePrincipalPolicy, TagUser, UpdateAccessKey | 5 |
 | Kinesis Data Streams | `kinesis` | 12: CreateStream, DecreaseStreamRetentionPeriod, DeleteStream, DescribeStream, DescribeStreamSummary, GetRecords, GetShardIterator, IncreaseStreamRetentionPeriod, ListShards, ListStreams, PutRecord, PutRecords | 0 |
 | KMS | `kms` | 23: CancelKeyDeletion, CreateAlias, CreateKey, Decrypt, DeleteAlias, DescribeKey, DisableKey, DisableKeyRotation, EnableKey, EnableKeyRotation, Encrypt, GenerateDataKey, GenerateDataKeyWithoutPlaintext, GenerateRandom, GetKeyPolicy, GetKeyRotationStatus, ListAliases, ListKeyPolicies, ListKeys, PutKeyPolicy, ReEncrypt, ScheduleKeyDeletion, UpdateAlias; authorizes `kms:ReEncryptFrom`, `kms:ReEncryptTo` | 2 |
 | Lambda | `lambda` | 4: GetFunction, GetFunctionConfiguration, GetPolicy, ListFunctions; authorizes `lambda:InvokeFunction` | 2 |
@@ -1392,18 +1427,34 @@ cryptographic verification, Cognito→API Gateway); `GlobalSignOut` invalidating
 (control-plane wrong secret → signature mismatch; a non-admin principal denied `AdminCreateUser`). See
 [`examples/cognito-app/`](../examples/cognito-app/).
 
-### IAM (management API + JSON→Cedar translation; probe-proven)
+### IAM (management API over the one policy world; probe-proven)
 
-The AWS IAM management verbs over the platform's existing `kind: Role`/`Policy`/`User` entities (SigV4 service
-`iam`, query protocol). This is the API-compatible branch (Branch A): an application's existing AWS IAM
-Terraform/CDK creates roles and policies against the shim. Implemented: `CreateRole`/`GetRole`/`DeleteRole`/
-`ListRoles`, `CreatePolicy`/`GetPolicy`/`DeletePolicy`/`ListPolicies`, `AttachRolePolicy`/`DetachRolePolicy`/
-`PutRolePolicy`/`ListAttachedRolePolicies`, `CreateUser`/`GetUser`/`DeleteUser`/`ListUsers`, the access-key
+The AWS IAM management verbs over the platform's `kind: User`/`Group`/`Role`/`Policy` (SigV4 service `iam`,
+query protocol), in the caller's account: an application's existing AWS IAM Terraform/CDK manages users,
+groups, roles and policies against the shim. Implemented: users (`CreateUser`/`GetUser`/`DeleteUser`/
+`ListUsers`), groups (`CreateGroup`/`GetGroup`/`DeleteGroup`/`ListGroups`, `AddUserToGroup`/
+`RemoveUserFromGroup`/`ListGroupsForUser`), roles (`CreateRole`/`GetRole`/`DeleteRole`/`ListRoles`), managed
+policies and their versions (`CreatePolicy`/`GetPolicy`/`DeletePolicy`/`ListPolicies`,
+`CreatePolicyVersion`/`GetPolicyVersion`/`ListPolicyVersions`/`DeletePolicyVersion`/`SetDefaultPolicyVersion`),
+attachments (`Attach`/`Detach`/`ListAttached` `User`/`Group`/`Role` `Policies`), inline policies (`Put`/`Get`/
+`Delete`/`List` `User`/`Group`/`Role` `Policy`), permissions boundaries (`Put`/`Delete` `User`/`Role`
+`PermissionsBoundary`, or `PermissionsBoundary` on create), `GetAccountAuthorizationDetails`, the access-key
 verbs, and `SimulatePrincipalPolicy`.
 
-**One policy world, no second engine.** `CreatePolicy` translates the AWS PolicyDocument through
-`policyengine.ImportAWS` into the SAME Cedar statements the data plane already enforces, stored on a
-`kind: Policy`'s `spec.dataPlane`. A role assumed via the STS doorway is then an **independent principal whose
+**What each call writes is what the console and CloudFormation write**, so one object has one shape whoever
+made it: `CreatePolicy` stores the AWS document as written on `spec.document` (a mixed-case `PolicyName` is
+kept as `spec.policyName`; `CreatePolicyVersion` with `SetAsDefault` replaces it and keeps the earlier
+version, up to AWS's five); `Attach*Policy` adds the policy's object name to the principal's `spec.policies`
+— an AWS managed policy's ARN (`arn:aws:iam::aws:policy/PowerUserAccess`) is the shipped library's
+`aws-poweruseraccess`; `Put*Policy` writes a `{name, document}` entry of `spec.inlinePolicies`; a boundary is
+`spec.permissionBoundary`; a group is a container of policies and membership is the user's `spec.groups`. As
+on AWS, a policy that is attached, or has versions besides its default, or a group with members or policies,
+is a `DeleteConflict`; an AWS managed policy is read-only. The user name `root` is the account's root user's:
+`CreateUser` refuses it in any case (`InvalidInput`).
+
+**One policy world, no second engine.** The one evaluator reads `spec.document` at every door — the
+aws-shim, the console, and the Kubernetes RBAC the IAM compiler generates from it. A role assumed via the STS
+doorway is then an **independent principal whose
 authority is exactly its attached policies**, evaluated **closed / default-deny** (a role with no policy can
 do nothing) — the faithful AWS model, and a deliberate departure from the additive-over-coarse-RBAC model a
 User gets. The coarse k8s-RBAC gate does not apply to an assumed role (k8s RBAC is not the role's authority);
@@ -1411,26 +1462,25 @@ its policies are. This is the authority model: the Cedar query carries the assum
 session as the principal, the shim's backend credentials are never the authorization subject (a confused
 deputy would pass the allow case and fail every deny), and a session may only narrow.
 
-**Translation fidelity is guarded, not assumed.** `ImportAWS` reports (never silently drops) anything it can't
-honor, and the doorway **refuses** a policy with any unsupported part (`MalformedPolicyDocument`) rather than
-storing a grant that differs from the JSON. `NotAction`/`NotResource` translate to the engine's **complement**
-axes ("any action/resource except these") — themselves fail-closed: a statement cannot set both a positive and
-its `Not` sibling, and a `NotResource` whose exclusion can't be mapped is **refused** (never silently widened to
-all resources by dropping the carve-out). Deny statements translate to Cedar `forbid` (forbid overrides permit).
-The importer covers every shim-fronted service's actions + a narrow condition set (authenticated, `aws:SourceIp`, `aws:username` —
-StringEquals/StringLike, and `aws:CurrentTime` — `Date{Greater,Less}Than[Equals]` time windows); anything
-outside that is refused, not narrowed. The time keys render to Cedar's `datetime` extension and the shim
-populates `currentTime` on every request, so a time-boxed `Deny` cannot fail open on an absent clock.
+**Fidelity is guarded, not assumed.** A document that is not a policy document is refused
+(`MalformedPolicyDocument`); a valid one is stored as written, as AWS stores it, and the evaluator never widens
+it: an `Allow` whose condition it cannot evaluate is dropped (and reported in the audit log and the IAM
+compiler's report), a `Deny` with one applies unconditionally. `NotAction`/`NotResource` are the engine's
+**complement** axes ("any action/resource except these"); a resource the platform has no typed form for is
+kept as its ARN, so a `NotResource` exclusion is never lost. A statement cannot set both a positive and its
+`Not` sibling. The conditions evaluated are authenticated, `aws:SourceIp`, `aws:username` — StringEquals/
+StringLike — and `aws:CurrentTime` — `Date{Greater,Less}Than[Equals]` time windows; the shim populates
+`currentTime` on every request, so a time-boxed `Deny` cannot fail open on an absent clock.
 
-`probe/aws-shim-iam.sh` proves, against the deployed shim: `CreatePolicy` (JSON→Cedar) + `CreateRole` (trust)
+`probe/aws-shim-iam.sh` proves, against the deployed shim: `CreatePolicy` + `CreateRole` (trust)
 + `AttachRolePolicy`; the **live `AssumeRole`→S3 round-trip** — an STS-assumed session does **exactly** what
 its translated policy grants (GetObject the granted bucket) and is **denied everything it does not** (another
 bucket = resource fidelity; `ListBucket` = action fidelity) — the end-to-end confused-deputy detector, proving
 the session is authorized on the *role*, not the shim's backend credentials; `SimulatePrincipalPolicy` agrees
 in both directions and reports an explicit `Deny` as `explicitDeny` (forbid fidelity); `CreateAccessKey`
 yields a key that authenticates, and `Update`/`DeleteAccessKey` act only on a key the named user owns (another
-user's key id is `NoSuchEntity`, as on AWS; with no `UserName` the user is the caller's own); and the negatives (wrong secret → signature mismatch; a `NotAction` policy is
-accepted and translated to the complement, while a `NotResource` with an unmappable exclusion is refused).
+user's key id is `NoSuchEntity`, as on AWS; with no `UserName` the user is the caller's own); and the negatives (wrong secret → signature mismatch; a `NotAction` policy and a
+`NotResource` policy are accepted as written, while a document with no `Statement` is `MalformedPolicyDocument`).
 The live round-trip requires STS enabled (a Vault `sts/signing-key`, the same operator bootstrap as KMS).
 
 ### Step Functions (kind: StateMachine + per-execution role authority; probe-proven)

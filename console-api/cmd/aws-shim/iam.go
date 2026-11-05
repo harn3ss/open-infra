@@ -1,21 +1,20 @@
-// IAM management front door for the aws-shim (Branch A) — the AWS IAM management
-// verbs (roles, policies, users, access keys) over the platform's existing entities, with a faithful AWS
-// IAM policy JSON → Cedar translation as the core.
+// IAM management front door for the aws-shim — the AWS IAM management verbs (users, groups, roles,
+// managed and inline policies, permissions boundaries, access keys) over the platform's kind: User,
+// Group, Role and Policy, in the caller's account.
 //
 // Speaks the AWS QUERY protocol (form-encoded request, XML response) — IAM has not migrated to JSON.
 //
-// ONE policy world, no second engine: a CreatePolicy translates the AWS PolicyDocument through
-// policyengine.ImportAWS into the SAME Cedar Statement type the data plane already enforces, stored on a
-// kind: Policy's spec.dataPlane. A role assumed via the STS doorway is then authorized by those translated
-// policies in CLOSED/default-deny mode (internal/dataplaneauthz + internal/iam): the role's authority is
-// EXACTLY its attached policies. That is why the probe must prove BOTH directions — a confused-deputy
-// implementation would pass the allow assertion and fail the deny assertions.
+// ONE policy world, no second engine: CreatePolicy stores the AWS policy document as written on a kind:
+// Policy's spec.document, which the one evaluator (internal/iamauthz) reads at every door — the aws-shim,
+// the console, and the Kubernetes RBAC the IAM compiler generates from it. What each call writes is the
+// shape the console and CloudFormation write (iam_model.go), so an attachment made here, there or by a
+// stack is the same object. A role assumed via the STS doorway is authorized by exactly its policies,
+// default deny.
 //
-// Translation fidelity guardrails: ImportAWS reports (never silently drops) anything it can't honor, and
-// this handler REFUSES a policy with any unsupported part (MalformedPolicyDocument) rather than storing a
-// policy that grants more or less than the JSON says. NotAction/NotResource translate faithfully to the
-// engine's complement axes (ImportAWS is fail-closed on them — it refuses a statement whose NotResource
-// exclusion can't be mapped rather than widening the grant), so they are accepted, not rejected.
+// Translation fidelity guardrails: a document that is not a policy document is refused
+// (MalformedPolicyDocument); a part of a valid one the evaluator cannot evaluate is stored as written (as
+// on AWS) and never widens a grant — an Allow it cannot evaluate is dropped and reported, a Deny applies
+// unconditionally.
 package main
 
 import (
@@ -29,8 +28,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
-	"github.com/harn3ss/open-infra/policyengine"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -53,7 +51,7 @@ type iamHandler struct {
 	dyn     dynamic.Interface
 	keys    *awskeys.Store
 	authz   *dataplaneauthz.Checker
-	usersNS string // where kind: User/Role/Policy live
+	usersNS string // the management account's IAM home: where its kind: User/Group/Role/Policy live
 	account string
 	region  string
 	logger  *slog.Logger
@@ -68,35 +66,47 @@ func (h *iamHandler) authFailure(w http.ResponseWriter, _ *http.Request, request
 		"The request signature we calculated does not match the signature you provided.", iamXMLNamespace)
 }
 
-// verbForIAMOp maps an IAM op to its coarse RBAC verb + the CRD resource it authorizes against, so IAM
-// management is gated by the caller's existing k8s RBAC on the iam.openinfra.dev CRDs (no new authz surface).
+// verbForIAMOp maps an IAM op to its coarse RBAC verb + the CRD resource it authorizes against in legacy
+// mode, so IAM management is gated by the caller's k8s RBAC on the iam.openinfra.dev CRDs (no new authz
+// surface). A write to a principal (attach, inline policy, boundary, membership) is create on its kind.
 func verbForIAMOp(op string) (verb, resource string, ok bool) {
 	switch op {
-	case "CreateRole", "PutRolePolicy", "AttachRolePolicy", "DetachRolePolicy":
+	case "CreateRole", "PutRolePolicy", "AttachRolePolicy", "DetachRolePolicy",
+		"PutRolePermissionsBoundary", "DeleteRolePermissionsBoundary":
 		return "create", "roles", true
 	case "GetRole", "ListRoles", "ListAttachedRolePolicies", "ListRolePolicies", "GetRolePolicy":
 		return "get", "roles", true
 	case "DeleteRole", "DeleteRolePolicy":
 		return "delete", "roles", true
-	case "CreatePolicy", "CreatePolicyVersion":
+	case "CreatePolicy", "CreatePolicyVersion", "SetDefaultPolicyVersion":
 		return "create", "policies", true
-	case "GetPolicy", "ListPolicies", "SimulatePrincipalPolicy", "GetPolicyVersion", "ListPolicyVersions":
+	case "GetPolicy", "ListPolicies", "SimulatePrincipalPolicy", "GetPolicyVersion", "ListPolicyVersions",
+		"GetAccountAuthorizationDetails":
 		return "get", "policies", true
-	case "DeletePolicy":
+	case "DeletePolicy", "DeletePolicyVersion":
 		return "delete", "policies", true
-	case "CreateUser", "CreateAccessKey", "UpdateAccessKey", "TagUser":
+	case "CreateUser", "CreateAccessKey", "UpdateAccessKey", "TagUser", "AttachUserPolicy", "DetachUserPolicy",
+		"PutUserPolicy", "PutUserPermissionsBoundary", "DeleteUserPermissionsBoundary":
 		return "create", "users", true
-	case "GetUser", "ListUsers", "ListAccessKeys":
+	case "GetUser", "ListUsers", "ListAccessKeys", "ListAttachedUserPolicies", "ListUserPolicies", "GetUserPolicy",
+		"ListGroupsForUser":
 		return "get", "users", true
-	case "DeleteUser", "DeleteAccessKey":
+	case "DeleteUser", "DeleteAccessKey", "DeleteUserPolicy":
 		return "delete", "users", true
+	case "CreateGroup", "AttachGroupPolicy", "DetachGroupPolicy", "PutGroupPolicy", "AddUserToGroup", "RemoveUserFromGroup":
+		return "create", "groups", true
+	case "GetGroup", "ListGroups", "ListAttachedGroupPolicies", "ListGroupPolicies", "GetGroupPolicy":
+		return "get", "groups", true
+	case "DeleteGroup", "DeleteGroupPolicy":
+		return "delete", "groups", true
 	}
 	return "", "", false
 }
 
-// iamResource is the (type, name) an IAM op is authorized on for an assumed role: the Role, Policy, or User
-// it names (SimulatePrincipalPolicy: the principal being simulated). An op that names none (ListRoles,
-// ListPolicies, ListUsers, an access-key op with no UserName) returns "" — checked on <Type>::*.
+// iamResource is the (type, name) an IAM op is authorized on: the Role, Policy, User or Group it names
+// (SimulatePrincipalPolicy: the principal being simulated; AddUserToGroup and RemoveUserFromGroup: the
+// group, as AWS authorizes them). An op that names none (ListRoles, ListPolicies, ListUsers, an
+// access-key op with no UserName) returns "" — checked on <Type>::*.
 func iamResource(op string, r *http.Request) (string, string) {
 	_, resource, _ := verbForIAMOp(op)
 	switch op {
@@ -107,6 +117,10 @@ func iamResource(op string, r *http.Request) (string, string) {
 		return "Role", ""
 	case "CreatePolicy":
 		return "Policy", r.PostFormValue("PolicyName")
+	case "ListGroupsForUser":
+		return "User", r.PostFormValue("UserName")
+	case "GetAccountAuthorizationDetails":
+		return "", ""
 	}
 	switch resource {
 	case "roles":
@@ -116,6 +130,8 @@ func iamResource(op string, r *http.Request) (string, string) {
 			return "Policy", policyNameFromArn(a)
 		}
 		return "Policy", ""
+	case "groups":
+		return "Group", r.PostFormValue("GroupName")
 	}
 	return "User", r.PostFormValue("UserName")
 }
@@ -147,20 +163,20 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	}
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 
-	// Every caller gets the data-plane check, iam:<Op> on the Role/Policy/User it names (the List* ops on
-	// <Type>::*). An assumed role's authority is its data-plane policy alone (CanDo passes a role), so IAM
-	// management — which writes with the shim's own identity — is default-deny for it; without this a role
-	// session could mint itself (or anyone) authority. For a User the check is additive, as at every front
-	// door: it can only tighten the RBAC grant, so a User's iam Deny (native, or imported from an AWS policy)
-	// holds here too. A User's access-key or GetUser op that names no user acts on the caller, as on AWS.
+	// iam:<Op> on the Role/Policy/User/Group it names (the List* ops on <Type>::*); a User's access-key or
+	// GetUser op that names no user acts on the caller, as on AWS. A group is authorized on its ARN
+	// (arn:aws:iam::<account>:group/<name>), which a policy names as written.
 	resType, resID := iamResource(op, r)
 	if resType == "User" && resID == "" && claims.AssumedRole == "" && iamActsOnCaller(op) {
 		resID = claims.PrincipalID()
 	}
-	// iam:<Op> on the principal or policy (decide). In legacy the coarse check first — the caller must hold
-	// k8s RBAC on the iam.openinfra.dev CRD (impersonated SAR; IAM management is admin-level, the RBAC the
-	// console's IAM pages use) — then the data-plane check above. In enforce IAM policy alone: AWS's
-	// PowerUserAccess, which excludes iam:*, may not manage IAM here either.
+	if resType == "Group" {
+		resType, resID = arnType, h.scope(ctx).arn("group/"+orStar(resID))
+	}
+	// In legacy the coarse check first — the caller must hold k8s RBAC on the iam.openinfra.dev CRD
+	// (impersonated SAR; IAM management is admin-level, the RBAC the console's IAM pages use) — then the
+	// data-plane check (an assumed role's authority is its policy alone). In enforce IAM policy alone:
+	// AWS's PowerUserAccess, which excludes iam:*, may not manage IAM here either.
 	if ok, reason := decide(ctx, r, h.authz, claims, "iam:"+op, resType, resID,
 		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "iam.openinfra.dev", resource, h.usersNS, "",
 			"iam:"+op, resType, resID)); !ok {
@@ -185,19 +201,55 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "DeletePolicy":
 		h.deletePolicy(ctx, w, r, requestID)
 	case "ListPolicies":
-		h.listPolicies(ctx, w, requestID)
-	case "AttachRolePolicy":
-		h.attachRolePolicy(ctx, w, r, requestID, true)
-	case "DetachRolePolicy":
-		h.attachRolePolicy(ctx, w, r, requestID, false)
-	case "ListAttachedRolePolicies":
-		h.listAttachedRolePolicies(ctx, w, r, requestID)
-	case "PutRolePolicy":
-		h.putRolePolicy(ctx, w, r, requestID)
+		h.listPolicies(ctx, w, r, requestID)
+	case "CreatePolicyVersion":
+		h.createPolicyVersion(ctx, w, r, requestID)
+	case "GetPolicyVersion":
+		h.getPolicyVersion(ctx, w, r, requestID)
+	case "ListPolicyVersions":
+		h.listPolicyVersions(ctx, w, r, requestID)
+	case "DeletePolicyVersion":
+		h.deletePolicyVersion(ctx, w, r, requestID)
+	case "SetDefaultPolicyVersion":
+		h.setDefaultPolicyVersion(ctx, w, r, requestID)
+	case "AttachRolePolicy", "AttachUserPolicy", "AttachGroupPolicy":
+		h.attachPolicy(ctx, w, r, requestID, entityOf(op), true)
+	case "DetachRolePolicy", "DetachUserPolicy", "DetachGroupPolicy":
+		h.attachPolicy(ctx, w, r, requestID, entityOf(op), false)
+	case "ListAttachedRolePolicies", "ListAttachedUserPolicies", "ListAttachedGroupPolicies":
+		h.listAttachedPolicies(ctx, w, r, requestID, entityOf(op))
+	case "PutRolePolicy", "PutUserPolicy", "PutGroupPolicy":
+		h.putInlinePolicy(ctx, w, r, requestID, entityOf(op))
+	case "GetRolePolicy", "GetUserPolicy", "GetGroupPolicy":
+		h.getInlinePolicy(ctx, w, r, requestID, entityOf(op))
+	case "DeleteRolePolicy", "DeleteUserPolicy", "DeleteGroupPolicy":
+		h.deleteInlinePolicy(ctx, w, r, requestID, entityOf(op))
+	case "ListRolePolicies", "ListUserPolicies", "ListGroupPolicies":
+		h.listInlinePolicies(ctx, w, r, requestID, entityOf(op))
+	case "PutRolePermissionsBoundary", "PutUserPermissionsBoundary":
+		h.putBoundary(ctx, w, r, requestID, entityOf(op), true)
+	case "DeleteRolePermissionsBoundary", "DeleteUserPermissionsBoundary":
+		h.putBoundary(ctx, w, r, requestID, entityOf(op), false)
+	case "CreateGroup":
+		h.createGroup(ctx, w, r, requestID)
+	case "GetGroup":
+		h.getGroup(ctx, w, r, requestID)
+	case "DeleteGroup":
+		h.deleteGroup(ctx, w, r, requestID)
+	case "ListGroups":
+		h.listGroups(ctx, w, requestID)
+	case "AddUserToGroup":
+		h.groupMembership(ctx, w, r, requestID, true)
+	case "RemoveUserFromGroup":
+		h.groupMembership(ctx, w, r, requestID, false)
+	case "ListGroupsForUser":
+		h.listGroupsForUser(ctx, w, r, requestID)
+	case "GetAccountAuthorizationDetails":
+		h.getAccountAuthorizationDetails(ctx, w, r, requestID)
 	case "CreateUser":
 		h.createUser(ctx, w, r, requestID)
 	case "GetUser":
-		h.getUser(ctx, w, r, requestID)
+		h.getUser(ctx, w, r, requestID, claims)
 	case "DeleteUser":
 		h.deleteUser(ctx, w, r, requestID)
 	case "ListUsers":
@@ -211,21 +263,41 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "UpdateAccessKey":
 		h.updateAccessKey(ctx, w, r, requestID, claims)
 	case "SimulatePrincipalPolicy":
-		h.simulatePrincipalPolicy(ctx, w, r, requestID)
+		h.simulatePrincipalPolicy(ctx, w, r, requestID, claims)
 	default:
 		writeQueryError(w, http.StatusBadRequest, "InvalidAction", requestID, "IAM "+op+" is recognized but not implemented.", iamXMLNamespace)
 	}
 }
 
+// entityOf is the principal kind an op's name carries (AttachUserPolicy: users).
+func entityOf(op string) iamEntity {
+	switch {
+	case strings.Contains(op, "User"):
+		return userEntity
+	case strings.Contains(op, "Group"):
+		return groupEntity
+	}
+	return roleEntity
+}
+
+func orStar(s string) string {
+	if s == "" {
+		return "*"
+	}
+	return s
+}
+
 // --- roles ---
 
 func (h *iamHandler) createRole(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+	sc := h.scope(ctx)
 	name := r.PostFormValue("RoleName")
 	if name == "" {
 		h.malformed(w, requestID, "CreateRole requires RoleName.")
 		return
 	}
-	trust, err := parseTrustPolicy(r.PostFormValue("AssumeRolePolicyDocument"))
+	trustDoc := r.PostFormValue("AssumeRolePolicyDocument")
+	trust, err := parseTrustPolicy(trustDoc)
 	if err != nil {
 		h.malformed(w, requestID, "AssumeRolePolicyDocument: "+err.Error())
 		return
@@ -240,13 +312,22 @@ func (h *iamHandler) createRole(ctx context.Context, w http.ResponseWriter, r *h
 		}
 		spec["maxSessionDuration"] = int64(secs)
 	}
+	if pb := r.PostFormValue("PermissionsBoundary"); pb != "" {
+		ref, err := h.boundaryRef(ctx, sc, pb)
+		if err != nil {
+			h.fail(w, requestID, err)
+			return
+		}
+		spec["permissionBoundary"] = ref
+	}
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "iam.openinfra.dev/v1",
 		"kind":       "Role",
-		"metadata":   map[string]any{"name": name, "namespace": h.usersNS},
-		"spec":       spec,
+		"metadata": map[string]any{"name": name, "namespace": sc.ns,
+			"annotations": map[string]any{assumeRolePolicyAnnotation: trustDoc}},
+		"spec": spec,
 	}}
-	if _, err := h.dyn.Resource(gvrRoles).Namespace(h.usersNS).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
+	if _, err := h.dyn.Resource(gvrRoles).Namespace(sc.ns).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
 		if isAlreadyExists(err) {
 			h.conflict(w, requestID, "EntityAlreadyExists", "Role with name "+name+" already exists.")
 			return
@@ -255,23 +336,24 @@ func (h *iamHandler) createRole(ctx context.Context, w http.ResponseWriter, r *h
 		return
 	}
 	h.audit(ctx, "CreateRole", name, "allow", "")
-	h.writeResult(w, requestID, "CreateRole", "<Role>"+h.roleXML(name, r.PostFormValue("AssumeRolePolicyDocument"))+"</Role>")
+	h.writeResult(w, requestID, "CreateRole", "<Role>"+h.roleXML(ctx, name, trustDoc)+"</Role>")
 }
 
 func (h *iamHandler) getRole(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+	sc := h.scope(ctx)
 	name := r.PostFormValue("RoleName")
-	u, err := h.dyn.Resource(gvrRoles).Namespace(h.usersNS).Get(ctx, name, metav1.GetOptions{})
+	u, err := h.dyn.Resource(gvrRoles).Namespace(sc.ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		h.noSuchEntity(w, requestID, "Role "+name+" not found.")
 		return
 	}
-	_ = u
-	h.writeResult(w, requestID, "GetRole", "<Role>"+h.roleXML(name, "")+"</Role>")
+	h.writeResult(w, requestID, "GetRole", "<Role>"+h.roleXML(ctx, name, h.trustDocument(sc, u))+h.boundaryXML(ctx, sc, u)+"</Role>")
 }
 
 func (h *iamHandler) deleteRole(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+	sc := h.scope(ctx)
 	name := r.PostFormValue("RoleName")
-	if err := h.dyn.Resource(gvrRoles).Namespace(h.usersNS).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+	if err := h.dyn.Resource(gvrRoles).Namespace(sc.ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 		h.noSuchEntity(w, requestID, "Role "+name+" not found.")
 		return
 	}
@@ -280,7 +362,8 @@ func (h *iamHandler) deleteRole(ctx context.Context, w http.ResponseWriter, r *h
 }
 
 func (h *iamHandler) listRoles(ctx context.Context, w http.ResponseWriter, requestID string) {
-	list, err := h.dyn.Resource(gvrRoles).Namespace(h.usersNS).List(ctx, metav1.ListOptions{})
+	sc := h.scope(ctx)
+	list, err := h.dyn.Resource(gvrRoles).Namespace(sc.ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -288,215 +371,43 @@ func (h *iamHandler) listRoles(ctx context.Context, w http.ResponseWriter, reque
 	var b strings.Builder
 	b.WriteString("<Roles>")
 	for _, it := range list.Items {
-		b.WriteString("<member>" + h.roleXML(it.GetName(), "") + "</member>")
+		b.WriteString("<member>" + h.roleXML(ctx, it.GetName(), "") + "</member>")
 	}
 	b.WriteString("</Roles><IsTruncated>false</IsTruncated>")
 	h.writeResult(w, requestID, "ListRoles", b.String())
 }
 
-// --- policies ---
-
-func (h *iamHandler) createPolicy(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
-	name := r.PostFormValue("PolicyName")
-	doc := r.PostFormValue("PolicyDocument")
-	if name == "" || doc == "" {
-		h.malformed(w, requestID, "CreatePolicy requires PolicyName and PolicyDocument.")
-		return
-	}
-	stmts, spec, ok := h.translateOrRefuse(w, requestID, doc, nil)
-	if !ok {
-		return
-	}
-	_ = stmts
-	obj := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "iam.openinfra.dev/v1",
-		"kind":       "Policy",
-		"metadata":   map[string]any{"name": name, "namespace": h.usersNS},
-		"spec": map[string]any{
-			"description": r.PostFormValue("Description"),
-			"statements":  []any{}, // control-plane statements: none (this is a data-plane identity policy)
-			"dataPlane":   map[string]any{"appliesTo": []any{}, "statements": spec},
-		},
-	}}
-	if _, err := h.dyn.Resource(gvrPolicies).Namespace(h.usersNS).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
-		if isAlreadyExists(err) {
-			h.conflict(w, requestID, "EntityAlreadyExists", "Policy "+name+" already exists.")
-			return
-		}
-		h.internal(w, requestID, err)
-		return
-	}
-	h.audit(ctx, "CreatePolicy", name, "allow", "")
-	h.writeResult(w, requestID, "CreatePolicy", "<Policy>"+h.policyXML(name)+"</Policy>")
-}
-
-func (h *iamHandler) getPolicy(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
-	name := policyNameFromArn(r.PostFormValue("PolicyArn"))
-	if _, err := h.dyn.Resource(gvrPolicies).Namespace(h.usersNS).Get(ctx, name, metav1.GetOptions{}); err != nil {
-		h.noSuchEntity(w, requestID, "Policy "+name+" not found.")
-		return
-	}
-	h.writeResult(w, requestID, "GetPolicy", "<Policy>"+h.policyXML(name)+"</Policy>")
-}
-
-func (h *iamHandler) deletePolicy(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
-	name := policyNameFromArn(r.PostFormValue("PolicyArn"))
-	if err := h.dyn.Resource(gvrPolicies).Namespace(h.usersNS).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-		h.noSuchEntity(w, requestID, "Policy "+name+" not found.")
-		return
-	}
-	h.audit(ctx, "DeletePolicy", name, "allow", "")
-	h.writeResult(w, requestID, "DeletePolicy", "")
-}
-
-func (h *iamHandler) listPolicies(ctx context.Context, w http.ResponseWriter, requestID string) {
-	list, err := h.dyn.Resource(gvrPolicies).Namespace(h.usersNS).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		h.internal(w, requestID, err)
-		return
-	}
-	var b strings.Builder
-	b.WriteString("<Policies>")
-	for _, it := range list.Items {
-		b.WriteString("<member>" + h.policyXML(it.GetName()) + "</member>")
-	}
-	b.WriteString("</Policies><IsTruncated>false</IsTruncated>")
-	h.writeResult(w, requestID, "ListPolicies", b.String())
-}
-
-// --- attachment ---
-
-func (h *iamHandler) attachRolePolicy(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, attach bool) {
-	role := r.PostFormValue("RoleName")
-	pol := policyNameFromArn(r.PostFormValue("PolicyArn"))
-	if role == "" || pol == "" {
-		h.malformed(w, requestID, "requires RoleName and PolicyArn.")
-		return
-	}
-	// get→modify→update, retried on the optimistic-concurrency conflict (concurrent attach/detach on the
-	// same role race on spec.policies).
-	var updErr error
-	for attempt := 0; attempt < 4; attempt++ {
-		u, err := h.dyn.Resource(gvrRoles).Namespace(h.usersNS).Get(ctx, role, metav1.GetOptions{})
-		if err != nil {
-			h.noSuchEntity(w, requestID, "Role "+role+" not found.")
-			return
-		}
-		cur, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "policies")
-		next := cur[:0:0]
-		next = append(next, cur...)
-		if attach {
-			if !containsStr(next, pol) {
-				next = append(next, pol)
-			}
-		} else {
-			out := next[:0]
-			for _, p := range next {
-				if p != pol {
-					out = append(out, p)
-				}
-			}
-			next = out
-		}
-		_ = unstructured.SetNestedStringSlice(u.Object, next, "spec", "policies")
-		if _, updErr = h.dyn.Resource(gvrRoles).Namespace(h.usersNS).Update(ctx, u, metav1.UpdateOptions{}); updErr == nil {
-			break
-		}
-		if !apierrors.IsConflict(updErr) {
-			break
-		}
-	}
-	if updErr != nil {
-		h.internal(w, requestID, updErr)
-		return
-	}
-	action := "AttachRolePolicy"
-	if !attach {
-		action = "DetachRolePolicy"
-	}
-	h.audit(ctx, action, role, "allow", "policy="+pol)
-	h.writeResult(w, requestID, action, "")
-}
-
-func (h *iamHandler) listAttachedRolePolicies(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
-	role := r.PostFormValue("RoleName")
-	u, err := h.dyn.Resource(gvrRoles).Namespace(h.usersNS).Get(ctx, role, metav1.GetOptions{})
-	if err != nil {
-		h.noSuchEntity(w, requestID, "Role "+role+" not found.")
-		return
-	}
-	pols, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "policies")
-	var b strings.Builder
-	b.WriteString("<AttachedPolicies>")
-	for _, p := range pols {
-		b.WriteString("<member><PolicyName>" + xmlEscape(p) + "</PolicyName><PolicyArn>" + xmlEscape(h.policyArn(p)) + "</PolicyArn></member>")
-	}
-	b.WriteString("</AttachedPolicies><IsTruncated>false</IsTruncated>")
-	h.writeResult(w, requestID, "ListAttachedRolePolicies", b.String())
-}
-
-func (h *iamHandler) putRolePolicy(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
-	role := r.PostFormValue("RoleName")
-	polName := r.PostFormValue("PolicyName")
-	doc := r.PostFormValue("PolicyDocument")
-	if role == "" || polName == "" || doc == "" {
-		h.malformed(w, requestID, "PutRolePolicy requires RoleName, PolicyName and PolicyDocument.")
-		return
-	}
-	if _, err := h.dyn.Resource(gvrRoles).Namespace(h.usersNS).Get(ctx, role, metav1.GetOptions{}); err != nil {
-		h.noSuchEntity(w, requestID, "Role "+role+" not found.")
-		return
-	}
-	_, spec, ok := h.translateOrRefuse(w, requestID, doc, nil)
-	if !ok {
-		return
-	}
-	// An inline role policy is a Policy whose dataPlane appliesTo the role directly.
-	inlineName := "role-" + role + "-" + polName
-	obj := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "iam.openinfra.dev/v1",
-		"kind":       "Policy",
-		"metadata":   map[string]any{"name": inlineName, "namespace": h.usersNS},
-		"spec": map[string]any{
-			"description": "inline policy for role " + role,
-			"statements":  []any{},
-			"dataPlane":   map[string]any{"appliesTo": []any{"Role::" + role}, "statements": spec},
-		},
-	}}
-	_, err := h.dyn.Resource(gvrPolicies).Namespace(h.usersNS).Create(ctx, obj, metav1.CreateOptions{})
-	if isAlreadyExists(err) {
-		// update in place
-		existing, gerr := h.dyn.Resource(gvrPolicies).Namespace(h.usersNS).Get(ctx, inlineName, metav1.GetOptions{})
-		if gerr == nil {
-			_ = unstructured.SetNestedField(existing.Object, map[string]any{"appliesTo": []any{"Role::" + role}, "statements": spec}, "spec", "dataPlane")
-			_, err = h.dyn.Resource(gvrPolicies).Namespace(h.usersNS).Update(ctx, existing, metav1.UpdateOptions{})
-		} else {
-			err = gerr
-		}
-	}
-	if err != nil {
-		h.internal(w, requestID, err)
-		return
-	}
-	h.audit(ctx, "PutRolePolicy", role, "allow", "policy="+polName)
-	h.writeResult(w, requestID, "PutRolePolicy", "")
-}
-
 // --- users ---
 
 func (h *iamHandler) createUser(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+	sc := h.scope(ctx)
 	name := r.PostFormValue("UserName")
 	if name == "" {
 		h.malformed(w, requestID, "CreateUser requires UserName.")
 		return
 	}
+	// The user name root is the account's root user's, never an IAM user's (as the console and admission
+	// refuse it): a kind: User named root would act as root does.
+	if reservedUserName(name) {
+		h.fail(w, requestID, invalidInputErr("The user name "+name+" is reserved for the account's root user."))
+		return
+	}
+	spec := map[string]any{"displayName": name, "source": "local", "groups": []any{}}
+	if pb := r.PostFormValue("PermissionsBoundary"); pb != "" {
+		ref, err := h.boundaryRef(ctx, sc, pb)
+		if err != nil {
+			h.fail(w, requestID, err)
+			return
+		}
+		spec["permissionBoundary"] = ref
+	}
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "iam.openinfra.dev/v1",
 		"kind":       "User",
-		"metadata":   map[string]any{"name": name, "namespace": h.usersNS},
-		"spec":       map[string]any{"displayName": name, "source": "local", "groups": []any{}},
+		"metadata":   map[string]any{"name": name, "namespace": sc.ns},
+		"spec":       spec,
 	}}
-	if _, err := h.dyn.Resource(gvrUsers).Namespace(h.usersNS).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
+	if _, err := h.dyn.Resource(gvrUsers).Namespace(sc.ns).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
 		if isAlreadyExists(err) {
 			h.conflict(w, requestID, "EntityAlreadyExists", "User "+name+" already exists.")
 			return
@@ -505,21 +416,27 @@ func (h *iamHandler) createUser(ctx context.Context, w http.ResponseWriter, r *h
 		return
 	}
 	h.audit(ctx, "CreateUser", name, "allow", "")
-	h.writeResult(w, requestID, "CreateUser", "<User>"+h.userXML(name)+"</User>")
+	h.writeResult(w, requestID, "CreateUser", "<User>"+h.userXML(ctx, name)+"</User>")
 }
 
-func (h *iamHandler) getUser(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+func (h *iamHandler) getUser(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims) {
+	sc := h.scope(ctx)
 	name := r.PostFormValue("UserName")
-	if _, err := h.dyn.Resource(gvrUsers).Namespace(h.usersNS).Get(ctx, name, metav1.GetOptions{}); err != nil {
+	if name == "" && claims.AssumedRole == "" {
+		name = claims.PrincipalID()
+	}
+	u, err := h.dyn.Resource(gvrUsers).Namespace(sc.ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
 		h.noSuchEntity(w, requestID, "User "+name+" not found.")
 		return
 	}
-	h.writeResult(w, requestID, "GetUser", "<User>"+h.userXML(name)+"</User>")
+	h.writeResult(w, requestID, "GetUser", "<User>"+h.userXML(ctx, name)+h.boundaryXML(ctx, sc, u)+"</User>")
 }
 
 func (h *iamHandler) deleteUser(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+	sc := h.scope(ctx)
 	name := r.PostFormValue("UserName")
-	if err := h.dyn.Resource(gvrUsers).Namespace(h.usersNS).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+	if err := h.dyn.Resource(gvrUsers).Namespace(sc.ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 		h.noSuchEntity(w, requestID, "User "+name+" not found.")
 		return
 	}
@@ -528,7 +445,8 @@ func (h *iamHandler) deleteUser(ctx context.Context, w http.ResponseWriter, r *h
 }
 
 func (h *iamHandler) listUsers(ctx context.Context, w http.ResponseWriter, requestID string) {
-	list, err := h.dyn.Resource(gvrUsers).Namespace(h.usersNS).List(ctx, metav1.ListOptions{})
+	sc := h.scope(ctx)
+	list, err := h.dyn.Resource(gvrUsers).Namespace(sc.ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -536,7 +454,7 @@ func (h *iamHandler) listUsers(ctx context.Context, w http.ResponseWriter, reque
 	var b strings.Builder
 	b.WriteString("<Users>")
 	for _, it := range list.Items {
-		b.WriteString("<member>" + h.userXML(it.GetName()) + "</member>")
+		b.WriteString("<member>" + h.userXML(ctx, it.GetName()) + "</member>")
 	}
 	b.WriteString("</Users><IsTruncated>false</IsTruncated>")
 	h.writeResult(w, requestID, "ListUsers", b.String())
@@ -544,7 +462,26 @@ func (h *iamHandler) listUsers(ctx context.Context, w http.ResponseWriter, reque
 
 // --- access keys (reuse the shared awskeys.Store — the key genuinely authenticates through the shim) ---
 
+// keyAccount is the account an access key minted in sc records: a member account's id; nothing for the
+// management account, whose keys are as they always were.
+func (h *iamHandler) keyAccount(sc iamScope) string {
+	if sc.ns == h.usersNS {
+		return ""
+	}
+	return sc.account
+}
+
+// inScope reports whether a key is the caller's account's: a user of the same name in another account
+// is another user, and its keys are not this account's to list, change or delete.
+func (h *iamHandler) inScope(sc iamScope, m awskeys.Meta) bool {
+	if acct := h.keyAccount(sc); acct != "" {
+		return m.Account == acct
+	}
+	return m.Account == "" || m.Account == sc.account || m.Account == iamauthz.ManagementAccount
+}
+
 func (h *iamHandler) createAccessKey(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+	sc := h.scope(ctx)
 	user := r.PostFormValue("UserName")
 	if user == "" {
 		h.malformed(w, requestID, "CreateAccessKey requires UserName.")
@@ -554,20 +491,28 @@ func (h *iamHandler) createAccessKey(ctx context.Context, w http.ResponseWriter,
 		writeQueryError(w, http.StatusInternalServerError, "ServiceFailure", requestID, "access-key store not configured.", iamXMLNamespace)
 		return
 	}
-	if _, err := h.dyn.Resource(gvrUsers).Namespace(h.usersNS).Get(ctx, user, metav1.GetOptions{}); err != nil {
+	if _, err := h.dyn.Resource(gvrUsers).Namespace(sc.ns).Get(ctx, user, metav1.GetOptions{}); err != nil {
 		h.noSuchEntity(w, requestID, "User "+user+" not found.")
 		return
 	}
-	if existing, err := h.keys.List(ctx, user); err == nil && len(existing) >= maxKeysPerUser {
-		h.conflict(w, requestID, "LimitExceeded", "Cannot exceed quota of "+itoa(maxKeysPerUser)+" access keys for user "+user+".")
-		return
+	if existing, err := h.keys.List(ctx, user); err == nil {
+		n := 0
+		for _, m := range existing {
+			if h.inScope(sc, m) {
+				n++
+			}
+		}
+		if n >= maxKeysPerUser {
+			h.conflict(w, requestID, "LimitExceeded", "Cannot exceed quota of "+itoa(maxKeysPerUser)+" access keys for user "+user+".")
+			return
+		}
 	}
 	id, secret, err := awskeys.GenerateKeyPair()
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
-	if err := h.keys.Put(ctx, awskeys.Key{AccessKeyID: id, SecretKey: secret, Owner: user}); err != nil {
+	if err := h.keys.Put(ctx, awskeys.Key{AccessKeyID: id, SecretKey: secret, Owner: user, Account: h.keyAccount(sc)}); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -592,8 +537,9 @@ func (h *iamHandler) accessKeyUser(w http.ResponseWriter, r *http.Request, reque
 	return claims.PrincipalID(), true
 }
 
-// ownedAccessKey is the AccessKeyId an op acts on, once it is known to be the named user's. A key another
-// user owns is NoSuchEntity, as on AWS: authority over one user's keys never reaches another's.
+// ownedAccessKey is the AccessKeyId an op acts on, once it is known to be the named user's in the
+// caller's account. A key another user (or another account's user of the same name) owns is
+// NoSuchEntity, as on AWS: authority over one user's keys never reaches another's.
 func (h *iamHandler) ownedAccessKey(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims) (id, user string, ok bool) {
 	user, ok = h.accessKeyUser(w, r, requestID, claims)
 	if !ok {
@@ -604,7 +550,7 @@ func (h *iamHandler) ownedAccessKey(ctx context.Context, w http.ResponseWriter, 
 		return "", "", false
 	}
 	id = r.PostFormValue("AccessKeyId")
-	if m, found := h.keys.Describe(ctx, id); !found || m.Owner != user {
+	if m, found := h.keys.Describe(ctx, id); !found || m.Owner != user || !h.inScope(h.scope(ctx), m) {
 		h.noSuchEntity(w, requestID, "The Access Key with id "+id+" cannot be found.")
 		return "", "", false
 	}
@@ -625,9 +571,13 @@ func (h *iamHandler) listAccessKeys(ctx context.Context, w http.ResponseWriter, 
 		h.internal(w, requestID, err)
 		return
 	}
+	sc := h.scope(ctx)
 	var b strings.Builder
 	b.WriteString("<AccessKeyMetadata>")
 	for _, m := range metas {
+		if !h.inScope(sc, m) {
+			continue
+		}
 		status := "Active"
 		if m.Disabled {
 			status = "Inactive"
@@ -676,9 +626,12 @@ func (h *iamHandler) updateAccessKey(ctx context.Context, w http.ResponseWriter,
 	h.writeResult(w, requestID, "UpdateAccessKey", "")
 }
 
-// --- SimulatePrincipalPolicy (the honest self-check: run the Cedar query the data plane uses) ---
+// --- SimulatePrincipalPolicy (the honest self-check: run the query the doors run) ---
 
-func (h *iamHandler) simulatePrincipalPolicy(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+// simulatePrincipalPolicy evaluates the principal's identity policies for each action and resource. In
+// enforce it asks the one evaluator, as the doors do (the principal in the caller's account, a user with
+// its groups); in legacy the data-plane checker, as before.
+func (h *iamHandler) simulatePrincipalPolicy(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims) {
 	src := r.PostFormValue("PolicySourceArn")
 	pType, pID := principalFromArn(src)
 	if pID == "" {
@@ -694,16 +647,30 @@ func (h *iamHandler) simulatePrincipalPolicy(ctx context.Context, w http.Respons
 		writeQueryError(w, http.StatusInternalServerError, "ServiceFailure", requestID, "data-plane authz not configured.", iamXMLNamespace)
 		return
 	}
+	sc := h.scope(ctx)
+	enforce := enforcing(ctx, h.authz, claims)
+	var p iamauthz.Principal
+	if enforce {
+		p = h.simulatedPrincipal(ctx, sc, pType, pID)
+	}
 	var b strings.Builder
 	b.WriteString("<EvaluationResults>")
 	for _, action := range actions {
 		for _, res := range resources {
-			rt, rid := arnToResourceShim(res)
-			allowed, _, reason := h.authz.Authorize(ctx, pType, pID, nil, action, rt, rid, map[string]any{"authenticated": true})
+			var allowed, explicit bool
+			if enforce {
+				d := h.authz.IAM().Authorize(ctx, p, action, res, map[string]any{"authenticated": "true", "username": pID})
+				allowed, explicit = d.Allowed, d.ExplicitDeny
+			} else {
+				rt, rid := arnToResourceShim(res)
+				var reason string
+				allowed, _, reason = h.authz.Authorize(ctx, pType, pID, nil, action, rt, rid, map[string]any{"authenticated": true})
+				explicit = strings.Contains(reason, "explicit")
+			}
 			decision := "implicitDeny"
 			if allowed {
 				decision = "allowed"
-			} else if strings.Contains(reason, "explicit") {
+			} else if explicit {
 				decision = "explicitDeny"
 			}
 			b.WriteString("<member><EvalActionName>" + xmlEscape(action) + "</EvalActionName><EvalResourceName>" +
@@ -715,55 +682,69 @@ func (h *iamHandler) simulatePrincipalPolicy(ctx context.Context, w http.Respons
 	h.writeResult(w, requestID, "SimulatePrincipalPolicy", b.String())
 }
 
-// --- translation ---
-
-// translateOrRefuse parses an AWS PolicyDocument, translates via policyengine.ImportAWS, and REFUSES
-// (writes MalformedPolicyDocument, returns ok=false) on any error or any unsupported part — never storing
-// a policy that grants more or less than the JSON says. NotAction/NotResource now translate faithfully to
-// the engine's complement axes (ImportAWS is itself fail-closed on them — a NotResource whose exclusion
-// doesn't map is reported here, not silently widened), so they are no longer refused up front.
-func (h *iamHandler) translateOrRefuse(w http.ResponseWriter, requestID, doc string, _ any) ([]policyengine.Statement, []any, bool) {
-	stmts, unsupported, err := policyengine.ImportAWS(doc)
-	if err != nil {
-		h.malformed(w, requestID, "PolicyDocument: "+err.Error())
-		return nil, nil, false
+// simulatedPrincipal is the principal a PolicySourceArn names in the caller's account: a role, or a user
+// with the groups its kind: User lists (qualified by a member account's home, as principalOf does).
+func (h *iamHandler) simulatedPrincipal(ctx context.Context, sc iamScope, pType, name string) iamauthz.Principal {
+	id := name
+	if sc.ns != h.usersNS {
+		id = sc.ns + "/" + name
 	}
-	if len(unsupported) > 0 {
-		h.malformed(w, requestID, "PolicyDocument has parts the data plane cannot honor faithfully (refused rather than silently narrowed/widened): "+strings.Join(unsupported, "; "))
-		return nil, nil, false
+	if pType == "Role" {
+		return iamauthz.Principal{Account: sc.account, Type: iamauthz.Role, ID: id}
 	}
-	if len(stmts) == 0 {
-		h.malformed(w, requestID, "PolicyDocument has no statements the data plane can honor.")
-		return nil, nil, false
+	p := iamauthz.Principal{Account: sc.account, Type: iamauthz.User, ID: id}
+	if u, err := h.dyn.Resource(gvrUsers).Namespace(sc.ns).Get(ctx, name, metav1.GetOptions{}); err == nil {
+		groups, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "groups")
+		for _, g := range groups {
+			if sc.ns != h.usersNS {
+				g = sc.ns + "/" + g
+			}
+			p.Groups = append(p.Groups, g)
+		}
 	}
-	return stmts, statementsToSpecAny(stmts), true
+	return p
 }
 
 // --- XML fragment builders ---
 
-func (h *iamHandler) roleXML(name, assumeDoc string) string {
-	s := "<RoleName>" + xmlEscape(name) + "</RoleName><RoleId>" + roleID(name) + "</RoleId><Arn>" + xmlEscape(h.roleArn(name)) +
-		"</Arn><Path>/</Path><CreateDate>" + time.Now().UTC().Format(time.RFC3339) + "</CreateDate>"
+func (h *iamHandler) roleXML(ctx context.Context, name, assumeDoc string) string {
+	sc := h.scope(ctx)
+	s := "<Path>/</Path><RoleName>" + xmlEscape(name) + "</RoleName><RoleId>" + roleID(name) + "</RoleId><Arn>" + xmlEscape(sc.arn("role/"+name)) +
+		"</Arn><CreateDate>" + time.Now().UTC().Format(time.RFC3339) + "</CreateDate>"
 	if assumeDoc != "" {
-		s += "<AssumeRolePolicyDocument>" + xmlEscape(assumeDoc) + "</AssumeRolePolicyDocument>"
+		s += "<AssumeRolePolicyDocument>" + xmlEscape(encodeDocument(assumeDoc)) + "</AssumeRolePolicyDocument>"
 	}
 	return s
 }
 
-func (h *iamHandler) policyXML(name string) string {
-	return "<PolicyName>" + xmlEscape(name) + "</PolicyName><PolicyId>" + roleID(name) + "</PolicyId><Arn>" + xmlEscape(h.policyArn(name)) +
-		"</Arn><Path>/</Path><DefaultVersionId>v1</DefaultVersionId><AttachmentCount>0</AttachmentCount><CreateDate>" +
-		time.Now().UTC().Format(time.RFC3339) + "</CreateDate>"
+// policyXML is a stored Policy as IAM describes one: its IAM name and ARN (AWS's for a managed policy),
+// default version, description and attachment count.
+func (h *iamHandler) policyXML(ctx context.Context, sc iamScope, u *unstructured.Unstructured) string {
+	name, arn := policyIdentity(sc, u)
+	desc, _, _ := unstructured.NestedString(u.Object, "spec", "description")
+	count := 0
+	if !isAWSManaged(u) {
+		count, _ = h.attachmentCount(ctx, sc, u.GetName())
+	}
+	created := u.GetCreationTimestamp().UTC()
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	s := "<PolicyName>" + xmlEscape(name) + "</PolicyName><PolicyId>" + roleID(name) + "</PolicyId><Arn>" + xmlEscape(arn) +
+		"</Arn><Path>/</Path><DefaultVersionId>" + xmlEscape(defaultVersion(u)) + "</DefaultVersionId><AttachmentCount>" +
+		strconv.Itoa(count) + "</AttachmentCount><IsAttachable>true</IsAttachable><CreateDate>" + created.Format(time.RFC3339) +
+		"</CreateDate><UpdateDate>" + created.Format(time.RFC3339) + "</UpdateDate>"
+	if desc != "" {
+		s += "<Description>" + xmlEscape(desc) + "</Description>"
+	}
+	return s
 }
 
-func (h *iamHandler) userXML(name string) string {
-	return "<UserName>" + xmlEscape(name) + "</UserName><UserId>" + roleID(name) + "</UserId><Arn>" + xmlEscape(h.userArn(name)) +
-		"</Arn><Path>/</Path><CreateDate>" + time.Now().UTC().Format(time.RFC3339) + "</CreateDate>"
+func (h *iamHandler) userXML(ctx context.Context, name string) string {
+	sc := h.scope(ctx)
+	return "<Path>/</Path><UserName>" + xmlEscape(name) + "</UserName><UserId>" + roleID(name) + "</UserId><Arn>" + xmlEscape(sc.arn("user/"+name)) +
+		"</Arn><CreateDate>" + time.Now().UTC().Format(time.RFC3339) + "</CreateDate>"
 }
-
-func (h *iamHandler) roleArn(n string) string   { return "arn:aws:iam::" + h.account + ":role/" + n }
-func (h *iamHandler) policyArn(n string) string { return "arn:aws:iam::" + h.account + ":policy/" + n }
-func (h *iamHandler) userArn(n string) string   { return "arn:aws:iam::" + h.account + ":user/" + n }
 
 // --- response + error helpers (query protocol XML) ---
 
@@ -804,7 +785,7 @@ func (h *iamHandler) audit(ctx context.Context, op, entity, decision, extra stri
 	if entity != "" {
 		args = append(args, "entity", entity)
 	}
-	if extra != "" {
+	if extra = strings.TrimSpace(extra); extra != "" {
 		args = append(args, "detail", extra)
 	}
 	h.logger.InfoContext(ctx, "iam audit", args...)

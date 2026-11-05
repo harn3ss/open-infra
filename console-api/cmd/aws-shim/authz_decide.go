@@ -115,11 +115,17 @@ func withAccountHome(ctx context.Context, home string) context.Context {
 	return context.WithValue(ctx, accountHomeKey{}, home)
 }
 
+// arnType is the resource type of a resource authorized on its ARN as written (resID is the ARN): one
+// the platform has no typed resource for, such as an IAM group, which a policy names by its ARN.
+const arnType = "ARN"
+
 // typedResource is the evaluator's resource for resType::resID: "<Type>::*" for an operation that names no
 // single resource (AWS evaluates those on Resource "*"; a grant scoped to one resource does not reach it),
-// "*" when the operation has no resource type at all.
+// "*" when the operation has no resource type at all, the ARN itself for arnType.
 func typedResource(resType, resID string) string {
 	switch {
+	case resType == arnType:
+		return orStar(resID)
 	case resType == "":
 		return "*"
 	case resID == "":

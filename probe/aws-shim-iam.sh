@@ -16,7 +16,8 @@
 # and the NEGATIVES:
 #   - a valid key ID with a WRONG secret on a management call → SignatureDoesNotMatch
 #   - a NotAction policy is ACCEPTED (translated to the Cedar complement — "any action except these")
-#   - a NotResource whose exclusion cannot be mapped is still REFUSED (never silently widened)
+#   - a NotResource naming a resource the platform has no typed form for is ACCEPTED as written (as AWS
+#     accepts it): the evaluator keeps the exclusion as the ARN, so it is never widened
 #
 # On-demand (needs a deployed shim + STS AssumeRole + MinIO/S3 + the IAM CRDs + an openinfra:admins caller).
 # Exit 0 = pass, 1 = a real failure, 42 = INCONCLUSIVE. By policy, a probe failure is a shim defect.
@@ -261,7 +262,7 @@ grep -qiE 'Signature|does not match' "$PWD/.iam_neg" || fail "wrong secret rejec
 rm -f "$PWD/.iam_neg"
 log "    ✓ rejected on signature mismatch"
 
-# --- 7b. NotAction translates (complement); unmappable NotResource still refused -------------
+# --- 7b. NotAction translates (complement); a NotResource is kept as written -----------------
 log "a NotAction policy must now be ACCEPTED (translated to the Cedar complement), not refused"
 NADOC='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","NotAction":"s3:DeleteObject","Resource":"*"}]}'
 if iam "$AAK" "$ASK" create-policy --policy-name "iam-probe-na-$SFX" --policy-document "$NADOC" >/dev/null 2>"$PWD/.iam_na"; then
@@ -272,17 +273,27 @@ else
 fi
 rm -f "$PWD/.iam_na"
 
-# An exclusion in a service the importer does not map (Redshift): an EC2 instance ARN used to serve here,
-# but it maps now (the EC2 front door's Instance::<id>), so it would translate faithfully, not widen.
-log "negative: a NotResource whose exclusion cannot be mapped must still be REFUSED (never silently widened)"
+# An exclusion in a service the platform has no typed resource for (Redshift): the policy is a valid AWS
+# document, so it is stored as written, and the one evaluator keeps the exclusion as that ARN — the grant
+# is every resource but it, exactly as on AWS, never all resources.
+log "a NotResource naming a resource the platform has no typed form for is ACCEPTED as written (the exclusion is kept)"
 NRDOC='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject","NotResource":"arn:aws:redshift:us-east-1:123:cluster:probe-cluster"}]}'
 if iam "$AAK" "$ASK" create-policy --policy-name "iam-probe-nr-$SFX" --policy-document "$NRDOC" >/dev/null 2>"$PWD/.iam_nr"; then
   CREATED_POLICIES+=("iam-probe-nr-$SFX")
-  fail "a NotResource with an unmappable exclusion was accepted (would widen the grant to all resources)"
+  log "    ✓ NotResource accepted as written"
+else
+  fail "a valid NotResource policy was refused: $(cat "$PWD/.iam_nr")"
 fi
-grep -qiE 'Malformed|NotResource|map' "$PWD/.iam_nr" || fail "unmappable-NotResource refusal had the wrong error: $(cat "$PWD/.iam_nr")"
 rm -f "$PWD/.iam_nr"
-log "    ✓ unmappable NotResource refused (fail-closed carve-out)"
+
+log "negative: a document that is not a policy document is REFUSED (MalformedPolicyDocument)"
+if iam "$AAK" "$ASK" create-policy --policy-name "iam-probe-bad-$SFX" --policy-document '{"Version":"2012-10-17"}' >/dev/null 2>"$PWD/.iam_bad"; then
+  CREATED_POLICIES+=("iam-probe-bad-$SFX")
+  fail "a document with no Statement was accepted"
+fi
+grep -qi 'MalformedPolicyDocument' "$PWD/.iam_bad" || fail "a malformed document was refused with the wrong error: $(cat "$PWD/.iam_bad")"
+rm -f "$PWD/.iam_bad"
+log "    ✓ malformed document refused"
 
 if [ -n "$STS_GATED" ]; then
   printf '\n⚠ INCONCLUSIVE — the TRANSLATION is proven faithful both directions (SimulatePrincipalPolicy: allow + resource-deny + action-deny + explicit-forbid), CreateAccessKey authenticates, and the negatives hold. BUT the LIVE AssumeRole→S3 round-trip (the confused-deputy detector) could not run: STS AssumeRole is not enabled on this shim (no Vault sts/signing-key). Enable STS (write sts/signing-key in Vault, like the KMS bootstrap) and re-run to complete the DoD.\n'
