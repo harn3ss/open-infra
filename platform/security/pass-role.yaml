@@ -37,6 +37,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: openinfra-pass-role-admins
+  labels: { openinfra.dev/legacy: "true" }   # a legacy tier grant, deleted at the IAM cutover (iam:PassRole is IAM policy then)
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

@@ -278,6 +278,38 @@ describe() {
   fi
 }
 
+# --- 6. User authority outside the generated set ----------------------------------------------------
+# IAM policy is the only place a console or shim principal's authority is written: the iam-compiler
+# generates the RBAC that still enforces (label openinfra.dev/generated-by: iam-compiler). Any other
+# binding — in ANY namespace — whose subject is an openinfra:* User or Group is user authority granted by
+# hand, and a finding, except: the break-glass binding (openinfra-root-break-glass, exactly the management
+# account's root), the legacy tiers (label openinfra.dev/legacy: "true") and the two legacy compositions'
+# bindings (openinfra-group-*, openinfra-grant-*) until the IAM cutover deletes them, and an object
+# acknowledged with openinfra.dev/rbac-unmanaged-reason. The repo-side twin is
+# test/render/rbac_user_authority_test.go.
+kubectl get rolebindings -A -o json >"$WORK/rb-all.json" 2>"$WORK/err" \
+  || inconclusive "cannot list RoleBindings: $(head -c300 "$WORK/err")"
+jq -s '[ (.[0].items[] | select(.kind == "ClusterRoleBinding")), .[1].items[] ]
+  | map(select(any(.subjects[]?; (.kind == "User" or .kind == "Group") and (.name | startswith("openinfra:")))))
+  | map(select(
+      ((.metadata.labels // {})["openinfra.dev/generated-by"] != "iam-compiler")
+      and ((.metadata.labels // {})["openinfra.dev/legacy"] != "true")
+      and (((.metadata.annotations // {})["openinfra.dev/rbac-unmanaged-reason"] // "") == "")
+      and ((.metadata.name | test("^openinfra-(group|grant)-")) | not)
+      and ((.metadata.name == "openinfra-root-break-glass" and .kind == "ClusterRoleBinding"
+            and (.subjects | length) == 1 and .subjects[0].kind == "User"
+            and .subjects[0].name == "openinfra:000000000000:root") | not)))
+  | map({id: (.kind + "/" + (if (.metadata.namespace // "") != "" then .metadata.namespace + "/" else "" end) + .metadata.name),
+         roleRef: (.roleRef.kind + "/" + .roleRef.name),
+         subjects: ([.subjects[] | select((.kind == "User" or .kind == "Group") and (.name | startswith("openinfra:"))) | .kind + " " + .name] | join("; "))})' \
+  "$WORK/cluster.json" "$WORK/rb-all.json" >"$WORK/user-authority.json"
+nuser="$(jq 'length' "$WORK/user-authority.json")"
+if [ "$nuser" -gt 0 ]; then
+  echo
+  echo "✗ ${nuser} binding(s) grant a console or shim principal authority outside the generated set (IAM policy is the source; the iam-compiler generates the RBAC):"
+  jq -r '.[] | "✗ \(.id) — roleRef \(.roleRef) — subjects \(.subjects)"' "$WORK/user-authority.json" | sort
+fi
+
 # Acknowledged objects are printed on every run, pass or fail: an annotation ends the finding, not
 # the review.
 nack="$(jq '[.[] | select(.managed == "acknowledged")] | length' "$WORK/classified.json")"
@@ -290,8 +322,12 @@ fi
 
 if [ "$nfind" -eq 0 ]; then
   echo
+  if [ "$nuser" -gt 0 ]; then
+    printf '✗ every audited RBAC object is managed, but %s binding(s) grant user authority outside the generated set (above).\n' "$nuser"
+    exit 1
+  fi
   ack_note=""; [ "$nack" -gt 0 ] && ack_note=" or acknowledged"
-  echo "✓ PASS — every audited ClusterRole/ClusterRoleBinding/Role/RoleBinding is managed${ack_note}."
+  echo "✓ PASS — every audited ClusterRole/ClusterRoleBinding/Role/RoleBinding is managed${ack_note}, and no user authority is granted outside the generated set."
   exit 0
 fi
 

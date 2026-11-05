@@ -31,7 +31,8 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: ecr-runtime-puller-group
-  labels: { openinfra.dev/component: ecr }
+  # A legacy group grant, deleted at the IAM cutover (AmazonEC2ContainerRegistryPullOnly on the group then).
+  labels: { openinfra.dev/component: ecr, openinfra.dev/legacy: "true" }
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
