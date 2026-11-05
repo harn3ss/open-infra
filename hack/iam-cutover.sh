@@ -405,6 +405,17 @@ PY
   if [ "$cur" = "$id" ]; then ok "$ns is already account $id"
   else
     [ -z "$cur" ] || [ "$cur" = "$MGMT" ] || die "$ns already belongs to account $cur"
+    # The account labels its namespaces with its Lambda concurrency quota (L-B99A9384, default 1000). A
+    # namespace already capped (openinfra.dev/function-concurrency, set by its operator) keeps its cap as
+    # the account's applied quota: moving into an account never loosens it.
+    local conc quotas=""
+    conc="$(kubectl get ns "$ns" -o jsonpath='{.metadata.labels.openinfra\.dev/function-concurrency}')"
+    if [ -n "$conc" ]; then
+      case "$conc" in *[!0-9]*) die "$ns has a non-numeric function-concurrency label ($conc)" ;; esac
+      quotas="  serviceQuotas:
+    - { serviceCode: lambda, quotaCode: L-B99A9384, value: $conc }"
+      echo "    keeping $ns's Lambda concurrency cap ($conc) as the account's applied quota"
+    fi
     cat > "$TMP/acct.yaml" <<YAML
 apiVersion: organizations.openinfra.dev/v1
 kind: Account
@@ -414,6 +425,7 @@ spec:
   alias: estate-mirror
   isolation: none
   namespaces: ["$ns"]
+$quotas
 YAML
     cat "$TMP/acct.yaml"; confirm
     kubectl apply -f "$TMP/acct.yaml" >/dev/null || die "could not create the account"
@@ -424,6 +436,11 @@ YAML
   done
   [ "$(kubectl get ns "$ns" -o jsonpath='{.metadata.labels.openinfra\.dev/account-id}')" = "$id" ] || die "$ns was not labelled into account $id"
   ok "account $id is Ready; $ns carries its label"
+  if [ -n "${conc:-}" ]; then
+    local now; now="$(kubectl get ns "$ns" -o jsonpath='{.metadata.labels.openinfra\.dev/function-concurrency}')"
+    [ "$now" = "$conc" ] || die "$ns's Lambda concurrency cap changed ($conc → $now): roll back with hack/iam-cutover.sh 5 --rollback"
+    ok "$ns keeps its Lambda concurrency cap ($conc)"
+  fi
   sleep 60
   local after; after="$(ready_counts "$ns")"; echo "    Ready after:  $after"
   [ "$before" = "$after" ] || die "Ready claims changed in $ns ($before → $after): roll back with hack/iam-cutover.sh 5 --rollback"
