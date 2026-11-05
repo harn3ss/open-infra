@@ -1908,9 +1908,46 @@ func (c *stackCtx) collatedChildren(cfnType, refProp, targetID string) []string 
 }
 
 // sgStandaloneRules returns the INCLUDED in-stack logical ids of `cfnType` (AWS::EC2::SecurityGroupIngress
-// or ...Egress) whose GroupId !Refs sgID — the standalone rules collated into that SG.
+// or ...Egress) whose GroupId names sgID (sgGroupIDTarget) — the standalone rules collated into that SG.
 func (c *stackCtx) sgStandaloneRules(sgID, cfnType string) []string {
-	return c.collatedChildren(cfnType, "GroupId", sgID)
+	var ids []string
+	for cid, res := range c.template.Resources {
+		if res.Type != cfnType || !c.included(res) {
+			continue
+		}
+		raw, _ := c.rawProps(cid)
+		if t, ok := sgGroupIDTarget(raw["GroupId"]); ok && t == sgID {
+			ids = append(ids, cid)
+		}
+	}
+	sortStrs(ids)
+	return ids
+}
+
+// sgGroupIDTarget is the security group a rule's raw GroupId names: !Ref <sg> or !GetAtt <sg>.GroupId,
+// which for a VPC security group are both its id, so AWS accepts either. Any other attribute (a group's
+// VpcId, say) names no group.
+func sgGroupIDTarget(raw any) (string, bool) {
+	if t, ok := refTarget(raw); ok {
+		return t, true
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	switch ga := m["Fn::GetAtt"].(type) {
+	case []any:
+		if len(ga) == 2 && fmt.Sprint(ga[1]) == "GroupId" {
+			if s, ok := ga[0].(string); ok {
+				return s, true
+			}
+		}
+	case string:
+		if s, ok := strings.CutSuffix(ga, ".GroupId"); ok && s != "" {
+			return s, true
+		}
+	}
+	return "", false
 }
 
 // translateEC2SecurityGroupRule is the no-op half of the standalone-rule collation: a
@@ -1942,7 +1979,7 @@ func translateEC2SecurityGroupRule(id string, props map[string]any, ctx *stackCt
 	inStack := false
 	if ctx != nil {
 		if raw, ok := ctx.rawProps(id); ok {
-			if t, isRef := refTarget(raw["GroupId"]); isRef {
+			if t, named := sgGroupIDTarget(raw["GroupId"]); named {
 				if r, in := ctx.template.Resources[t]; in && r.Type == "AWS::EC2::SecurityGroup" {
 					inStack = true
 				}
@@ -1950,7 +1987,7 @@ func translateEC2SecurityGroupRule(id string, props map[string]any, ctx *stackCt
 		}
 	}
 	if !inStack {
-		f = append(f, Finding{"Resource " + id, "GroupId must !Ref an in-stack AWS::EC2::SecurityGroup — a standalone rule on an out-of-stack group can't be attached (author it inline on the group or natively)"})
+		f = append(f, Finding{"Resource " + id, "GroupId must name an in-stack AWS::EC2::SecurityGroup (!Ref it or !GetAtt its GroupId) — a standalone rule on an out-of-stack group can't be attached (author it inline on the group or natively)"})
 	}
 	return nil, f // collated into the group (or refused above)
 }
