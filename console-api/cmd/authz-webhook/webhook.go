@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/harn3ss/open-infra/console-api/internal/controlplaneauthz"
+	"github.com/harn3ss/open-infra/console-api/internal/iamcompile"
 	"github.com/harn3ss/open-infra/policyengine"
 	authzv1 "k8s.io/api/authorization/v1"
 )
@@ -44,11 +45,18 @@ func verdict(d policyengine.Decision) string {
 // webhookHandler serves the Kubernetes authorization-webhook contract: a SubjectAccessReview in, the
 // same object with its Status filled, out.
 type webhookHandler struct {
-	checker         *controlplaneauthz.Checker
+	checker *controlplaneauthz.Checker
+	// iamChecker evaluates the iam-corpus — compiled from IAM policy (iamcompile) — and is authoritative
+	// for account-qualified principals ("openinfra:<account>:<principal>"). With none loaded, those
+	// principals defer to RBAC, where the generated bindings decide. Nil = no iam-corpus configured.
+	iamChecker      *controlplaneauthz.Checker
 	mode            Mode
 	logger          *slog.Logger
 	breakGlass      map[string]bool // groups always allowed in enforce, independent of the corpus
 	breakGlassUsers map[string]bool // users always allowed in enforce (the webhook's own SA, for bootstrap)
+	// rootBreakGlass is the console's break-glass root, always allowed in enforce whatever either corpus
+	// says, so a regenerated corpus that drops the admins grant can never lock root out (rootFloor).
+	rootBreakGlass bool
 	// deferSANamespaces holds namespaces whose ServiceAccounts are governed by their own operator-authored
 	// RBAC, not Cedar. Cedar ABSTAINS (NoOpinion → RBAC) for those SAs. This is for dynamically-created
 	// infrastructure SAs the corpus cannot know in advance (e.g. a CloudNativePG cluster the RDS front door
@@ -76,8 +84,8 @@ func isServiceAccountUser(user string) bool {
 }
 
 // isBreakGlass reports whether the request's identity is in the break-glass floor — by exact user
-// (the webhook's own ServiceAccount, so it can bootstrap its corpus) or by group (system:masters, for
-// cluster-admin recovery through a broken/empty corpus).
+// (the webhook's own ServiceAccount, so it can bootstrap its corpus), by group (system:masters, for
+// cluster-admin recovery through a broken/empty corpus), or as the console's break-glass root.
 func (h *webhookHandler) isBreakGlass(spec authzv1.SubjectAccessReviewSpec) bool {
 	if h.breakGlassUsers[spec.User] {
 		return true
@@ -87,7 +95,51 @@ func (h *webhookHandler) isBreakGlass(spec authzv1.SubjectAccessReviewSpec) bool
 			return true
 		}
 	}
+	return h.rootBreakGlass && isRootFloor(spec)
+}
+
+const (
+	// legacyRootUser is the console's root as the legacy identity impersonates it (iam.Identity):
+	// "openinfra:root" with the admins group.
+	legacyRootUser = "openinfra:root"
+	legacyAdmins   = "openinfra:admins"
+	// accountRootUser is the management account's root as the account-qualified identity names it
+	// (iam.AccountIdentity). Member accounts' roots are not break-glass: their power is their account's,
+	// compiled like any principal's.
+	accountRootUser = "openinfra:" + managementAccount + ":root"
+	// managementAccount is the install's management account (iam.ManagementAccount).
+	managementAccount = "000000000000"
+)
+
+// isRootFloor reports whether the request is the console's break-glass root. The legacy identity counts
+// only WITH the admins group: the user name alone is not proof of root (a kind: User or directory user
+// named "root" would be impersonated with the same name), so the floor never grants more than the
+// principal's own admins tier already does — it makes that tier independent of the corpus, which is
+// what keeps root from being locked out (a corpus regenerated without the admins grant). The
+// management account's root is matched by its account-qualified name; the name "root" is reserved for
+// it at every door that creates principals.
+func isRootFloor(spec authzv1.SubjectAccessReviewSpec) bool {
+	switch spec.User {
+	case accountRootUser:
+		return true
+	case legacyRootUser:
+		for _, g := range spec.Groups {
+			if g == legacyAdmins {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// checkerFor picks the corpus that decides the principal: the iam-corpus for an account-qualified
+// principal, the RBAC-derived control-plane corpus for everyone else (platform ServiceAccounts, the
+// legacy console identities).
+func (h *webhookHandler) checkerFor(user string) (*controlplaneauthz.Checker, bool) {
+	if h.iamChecker != nil && iamcompile.IsAccountIdentity(user) {
+		return h.iamChecker, true
+	}
+	return h.checker, false
 }
 
 func (h *webhookHandler) serve(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +160,27 @@ func (h *webhookHandler) serve(w http.ResponseWriter, r *http.Request) {
 		h.logger.Info("control-plane authz decision", "mode", h.mode, "user", sar.Spec.User,
 			"verb", verbOf(sar.Spec), "resource", resourceOf(sar.Spec), "wouldAllow", true, "reason", "break-glass floor")
 		sar.Status = authzv1.SubjectAccessReviewStatus{Allowed: true, Reason: "break-glass floor (" + sar.Spec.User + ")"}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&sar)
+		return
+	}
+	// An account-qualified principal is decided by the iam-corpus, compiled from its IAM policies, and
+	// never by the RBAC-derived corpus. With no iam-corpus loaded it defers to RBAC, where the bindings
+	// generated from the same policies decide — never to the legacy tier grants.
+	if chk, isIAM := h.checkerFor(sar.Spec.User); isIAM {
+		if h.mode == Enforce && !chk.HasCorpus(r.Context()) {
+			h.logger.Warn("no iam-corpus loaded — deferring to RBAC (generated bindings)",
+				"user", sar.Spec.User, "verb", verbOf(sar.Spec), "resource", resourceOf(sar.Spec))
+			sar.Status = authzv1.SubjectAccessReviewStatus{Allowed: false, Denied: false,
+				Reason: "control-plane authz: no iam-corpus loaded — deferring to RBAC"}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&sar)
+			return
+		}
+		d := chk.Evaluate(r.Context(), sar.Spec)
+		h.logger.Info("control-plane authz decision", "mode", h.mode, "corpus", "iam", "user", sar.Spec.User,
+			"verb", verbOf(sar.Spec), "resource", resourceOf(sar.Spec), "wouldAllow", d.Allowed, "reason", d.Reason)
+		sar.Status = answer(d, h.mode)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(&sar)
 		return

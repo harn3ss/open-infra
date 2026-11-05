@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/controlplaneauthz"
+	"github.com/harn3ss/open-infra/console-api/internal/iamcompile"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -45,12 +46,14 @@ func main() {
 		os.Exit(1)
 	}
 	checker := controlplaneauthz.New(controlplaneauthz.K8sLoader(dyn), 30*time.Second)
-	h := &webhookHandler{checker: checker, mode: mode, logger: logger,
+	iamChecker := controlplaneauthz.New(iamcompile.CorpusLoader(dyn), 30*time.Second)
+	h := &webhookHandler{checker: checker, iamChecker: iamChecker, mode: mode, logger: logger,
 		breakGlass: breakGlassGroups(), breakGlassUsers: breakGlassUsers(),
+		rootBreakGlass:    rootBreakGlass(),
 		deferSANamespaces: deferSANamespaces()}
 	if mode == Enforce {
 		logger.Info("break-glass floor active (corpus-independent)",
-			"groups", keysOf(h.breakGlass), "users", keysOf(h.breakGlassUsers))
+			"groups", keysOf(h.breakGlass), "users", keysOf(h.breakGlassUsers), "consoleRoot", h.rootBreakGlass)
 		if len(h.deferSANamespaces) > 0 {
 			logger.Info("defer-to-RBAC for operator-managed infra ServiceAccounts",
 				"namespaces", keysOf(h.deferSANamespaces))
@@ -145,6 +148,13 @@ func breakGlassUsers() map[string]bool {
 		}
 	}
 	return out
+}
+
+// rootBreakGlass reports whether the console's break-glass root is in the floor (isRootFloor). On by
+// default, so no corpus — the RBAC-derived one or the iam-corpus — can lock root out; BREAK_GLASS_ROOT=off
+// turns it off (a cluster that keeps root out of the API server's path entirely).
+func rootBreakGlass() bool {
+	return !strings.EqualFold(strings.TrimSpace(os.Getenv("BREAK_GLASS_ROOT")), "off")
 }
 
 // selfServiceAccountUser returns the webhook's own ServiceAccount username

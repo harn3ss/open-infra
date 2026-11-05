@@ -235,3 +235,65 @@ func TestWebhook_EnforceReturnsDecision(t *testing.T) {
 		t.Fatalf("enforce should explicitly deny an ungranted verb, got allowed=%v denied=%v", st.Allowed, st.Denied)
 	}
 }
+
+// The console's break-glass root stays allowed whatever the corpus says: a corpus regenerated
+// WITHOUT Group::openinfra:admins (the grant root's tier rides on) must not lock root out, in either
+// identity form — the legacy one with its admins group, and the management account's
+// account-qualified root. The legacy user name alone is not root: a kind: User or directory user named
+// "root" is impersonated with the same name but without the admins tier, and stays under the corpus.
+func TestWebhook_RootFloorSurvivesACorpusWithoutAdmins(t *testing.T) {
+	// A corpus that grants something to someone else, and nothing to admins.
+	corpus := checkerFor([]string{"Group::openinfra:readers"},
+		policyengine.Statement{Effect: policyengine.Allow, Actions: []string{"get"}, Resources: []string{"*"}})
+	h := &webhookHandler{checker: corpus, iamChecker: corpus, mode: Enforce, logger: discard(), rootBreakGlass: true}
+
+	if st := post(t, h, sar("openinfra:root", []string{"openinfra:admins", "openinfra:users"}, "delete", "", "secrets", "kube-system", "x")); !st.Allowed {
+		t.Fatalf("legacy root (admins tier) must pass a corpus without the admins grant, got %+v", st)
+	}
+	if st := post(t, h, sar("openinfra:000000000000:root", nil, "create", "rbac.authorization.k8s.io", "clusterrolebindings", "", "x")); !st.Allowed {
+		t.Fatalf("the management account's root must pass a corpus without any grant for it, got %+v", st)
+	}
+	// The name without the tier is not root: a User named "root" with the readers tier stays a reader.
+	if st := post(t, h, sar("openinfra:root", []string{"openinfra:readers", "openinfra:users"}, "delete", "", "secrets", "kube-system", "x")); st.Allowed || !st.Denied {
+		t.Fatalf("a principal named root without the admins tier must not get the floor, got %+v", st)
+	}
+	// A member account's root is not break-glass.
+	if st := post(t, h, sar("openinfra:912345678901:root", nil, "delete", "", "secrets", "kube-system", "x")); st.Allowed {
+		t.Fatalf("a member account's root must not get the floor, got %+v", st)
+	}
+	// Off means off.
+	h.rootBreakGlass = false
+	if st := post(t, h, sar("openinfra:000000000000:root", nil, "create", "rbac.authorization.k8s.io", "clusterrolebindings", "", "x")); st.Allowed {
+		t.Fatalf("with the root floor off, root is decided by the corpus, got %+v", st)
+	}
+}
+
+// An account-qualified principal is decided by the iam-corpus alone: the RBAC-derived corpus's grants
+// (here a blanket grant to everyone) never reach it, and with no iam-corpus loaded it defers to RBAC
+// (the generated bindings) rather than being denied or decided by the legacy tiers.
+func TestWebhook_AccountPrincipalsUseTheIAMCorpus(t *testing.T) {
+	legacy := checkerFor([]string{"*"},
+		policyengine.Statement{Effect: policyengine.Allow, Actions: []string{"*"}, Resources: []string{"*"}})
+	iamCorpus := checkerFor([]string{"User::openinfra:000000000000:alice"},
+		policyengine.Statement{Effect: policyengine.Allow, Actions: []string{"get", "list"}, Resources: []string{"buckets.openinfra.dev::open-infra-s3/*"}})
+	h := &webhookHandler{checker: legacy, iamChecker: iamCorpus, mode: Enforce, logger: discard()}
+
+	if st := post(t, h, sar("openinfra:000000000000:alice", nil, "get", "openinfra.dev", "buckets", "open-infra-s3", "b1")); !st.Allowed {
+		t.Fatalf("alice's iam-corpus grant must allow, got %+v", st)
+	}
+	if st := post(t, h, sar("openinfra:000000000000:alice", nil, "delete", "openinfra.dev", "buckets", "open-infra-s3", "b1")); st.Allowed || !st.Denied {
+		t.Fatalf("what alice's IAM policy does not grant is denied, even though the legacy corpus allows '*', got %+v", st)
+	}
+	if st := post(t, h, sar("openinfra:000000000000:bob", nil, "get", "openinfra.dev", "buckets", "open-infra-s3", "b1")); st.Allowed || !st.Denied {
+		t.Fatalf("a principal with no IAM policy is denied (the legacy '*' does not reach it), got %+v", st)
+	}
+	// The legacy identity still uses the RBAC-derived corpus.
+	if st := post(t, h, sar("openinfra:alice", []string{"openinfra:readers"}, "delete", "openinfra.dev", "buckets", "open-infra-s3", "b1")); !st.Allowed {
+		t.Fatalf("a legacy identity is decided by the control-plane corpus, got %+v", st)
+	}
+	// No iam-corpus loaded: defer (no opinion), so the generated RBAC decides.
+	h.iamChecker = controlplaneauthz.New(func(context.Context) ([]controlplaneauthz.PolicyDoc, error) { return nil, nil }, time.Minute)
+	if st := post(t, h, sar("openinfra:000000000000:alice", nil, "get", "openinfra.dev", "buckets", "open-infra-s3", "b1")); st.Allowed || st.Denied {
+		t.Fatalf("with no iam-corpus an account principal defers to RBAC, got %+v", st)
+	}
+}

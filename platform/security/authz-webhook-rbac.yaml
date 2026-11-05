@@ -24,15 +24,16 @@ metadata: { name: open-infra-authz-webhook-policies }
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-authz-webhook-policies }
 subjects: [{ kind: ServiceAccount, name: authz-webhook, namespace: open-infra-authz }]
 ---
-# Read the optional compiled corpus bundle (control-plane-corpus ConfigMap). This MUST be allowed
-# here by RBAC so the loader's own read is authorized BEFORE the webhook is consulted — otherwise the
-# read falls through to the webhook and recurses (bootstrap acyclicity), which cancels the load.
-# Scoped to the one ConfigMap, get-only.
+# Read the optional compiled corpus bundles: control-plane-corpus (generated from RBAC for platform
+# identities) and iam-corpus (compiled from IAM policy by the iam-compiler, for account-qualified
+# principals). This MUST be allowed here by RBAC so the loader's own read is authorized BEFORE the
+# webhook is consulted — otherwise the read falls through to the webhook and recurses (bootstrap
+# acyclicity), which cancels the load. Scoped to the two ConfigMaps, get-only.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata: { name: authz-webhook-corpus-reader, namespace: open-infra-authz }
 rules:
-  - { apiGroups: [""], resources: [configmaps], verbs: [get], resourceNames: [control-plane-corpus] }
+  - { apiGroups: [""], resources: [configmaps], verbs: [get], resourceNames: [control-plane-corpus, iam-corpus] }
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

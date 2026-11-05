@@ -33,6 +33,8 @@ kind: ClusterRole
 metadata:
   name: open-infra-console-impersonator
   annotations:
+    # openinfra:* covers both identity forms: openinfra:<user> (legacy, with the groups below) and
+    # openinfra:<account>:<user> (once IAM policy is the authority: no groups, generated bindings).
     openinfra.dev/impersonate-users: "openinfra:*"
 rules:
   - apiGroups: [""]
@@ -93,6 +95,9 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: open-infra-admins
+  # A legacy permission tier: deleted at the IAM cutover, when the iam-compiler's generated bindings
+  # take over (the rbac-user-authority check allows it only while it carries this label).
+  labels: { openinfra.dev/legacy: "true" }
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -100,6 +105,28 @@ roleRef:
 subjects:
   - kind: Group
     name: openinfra:admins
+    apiGroup: rbac.authorization.k8s.io
+---
+# 2b. Break-glass: the management account's root, as the account-qualified identity names it
+#     (openinfra:000000000000:root), holds everything the console can do through RBAC alone, so
+#     neither a regenerated corpus nor a missing IAM grant can lock root out, and nothing generated
+#     from IAM policy is in the way. The authorization webhook's root floor (BREAK_GLASS_ROOT) is the
+#     same guarantee on the Cedar side. Hand-written on purpose, and the ONE user binding the
+#     rbac-user-authority check allows outside the generated set. The name "root" is reserved for
+#     this account at every door that creates principals. The legacy identity (openinfra:root) is
+#     deliberately not bound by name: that name alone is not proof of root.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-root-break-glass
+  labels: { openinfra.dev/break-glass: "true" }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: open-infra-console
+subjects:
+  - kind: User
+    name: openinfra:000000000000:root
     apiGroup: rbac.authorization.k8s.io
 ---
 # 3. Power users: manage open-infra resources and workloads, but NOT secrets
@@ -191,6 +218,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: open-infra-powerusers
+  labels: { openinfra.dev/legacy: "true" }   # a legacy tier, deleted at the IAM cutover
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -233,6 +261,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: open-infra-readers
+  labels: { openinfra.dev/legacy: "true" }   # a legacy tier, deleted at the IAM cutover
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

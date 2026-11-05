@@ -55,6 +55,11 @@ spec:
             # bootstrap. The corpus-auditor SA in this namespace is granted by the corpus like any other
             # principal, so the old namespace-wide bypass is gone. Extra users via BREAK_GLASS_USERS.
             - { name: BREAK_GLASS_GROUPS, value: "system:masters" }
+            # The console's break-glass root is in the floor too (on unless "off"), so a corpus regenerated
+            # without the admins grant, or an iam-corpus missing a grant, can never lock root out. Legacy
+            # identity: openinfra:root WITH openinfra:admins (the name alone is not proof). Account form:
+            # openinfra:000000000000:root (the management account's root).
+            - { name: BREAK_GLASS_ROOT, value: "on" }
             # Defer-to-RBAC (NoOpinion, NOT allow) for operator-managed infrastructure ServiceAccounts in
             # fenced namespaces the corpus cannot enumerate in advance — the RDS front door provisions a
             # CloudNativePG cluster per DB instance, each minting a new SA governed by CNPG's own tightly
