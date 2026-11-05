@@ -63,8 +63,11 @@ spec:
           image: ghcr.io/harn3ss/open-infra-authz-webhook:latest
           imagePullPolicy: Always
           command: ["/iam-compiler"]
+          # IAM_COMPILER_MODE (report by default; the IAM cutover sets apply) comes from an optional
+          # ConfigMap `openinfra-iam` kept out of git, so ArgoCD's self-heal never undoes a cutover step.
+          envFrom:
+            - configMapRef: { name: openinfra-iam, optional: true }
           env:
-            - { name: IAM_COMPILER_MODE, value: "report" }   # the IAM cutover sets apply
             - { name: IAM_COMPILER_INTERVAL, value: "60s" }
             - { name: POD_NAMESPACE, valueFrom: { fieldRef: { fieldPath: metadata.namespace } } }
             - { name: GOMEMLIMIT, value: "230MiB" }
