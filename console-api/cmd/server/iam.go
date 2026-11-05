@@ -302,6 +302,10 @@ func handleIAMUserCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 			return
 		}
 		in.Name = strings.TrimSpace(in.Name)
+		if reservedRootName(in.Name) {
+			writeReservedRoot(w)
+			return
+		}
 		if !validName(in.Name) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name must be a lowercase DNS label (a-z, 0-9, -)"})
 			return

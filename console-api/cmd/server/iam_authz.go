@@ -353,6 +353,10 @@ func (z *consoleAuthz) proxyHandler(prefix string, next http.Handler) http.Handl
 			next.ServeHTTP(w, r) // legacy: forwarded as before, the API server answers
 			return
 		}
+		if proxiedRootUser(r, k) {
+			writeReservedRoot(w) // in every mode: only the Secret-backed root is root
+			return
+		}
 		allowed, reason, action, arn := z.authorizeKubernetes(r, k, nil)
 		if !allowed {
 			writeAccessDenied(w, action, arn, reason)

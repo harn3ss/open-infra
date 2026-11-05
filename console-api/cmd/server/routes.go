@@ -273,13 +273,8 @@ const maxPeek = 1 << 20
 // peekBody reads a string field of the request's JSON body and puts the body back for the handler. A
 // body that isn't a JSON object, or is larger than maxPeek, yields "".
 func peekBody(r *http.Request, field string) string {
-	if r.Body == nil {
-		return ""
-	}
-	b, err := io.ReadAll(io.LimitReader(r.Body, maxPeek+1))
-	_ = r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewReader(b))
-	if err != nil || len(b) > maxPeek {
+	b, ok := peekRaw(r)
+	if !ok {
 		return ""
 	}
 	var m map[string]any
@@ -288,6 +283,23 @@ func peekBody(r *http.Request, field string) string {
 	}
 	s, _ := m[field].(string)
 	return strings.TrimSpace(s)
+}
+
+// peekRaw reads up to maxPeek bytes of the request body and puts the whole body back for the handler:
+// what was read, then the unread rest. ok is false when there is no body or it is larger than maxPeek.
+func peekRaw(r *http.Request) ([]byte, bool) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, false
+	}
+	b, err := io.ReadAll(io.LimitReader(r.Body, maxPeek+1))
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(b), r.Body), r.Body}
+	if err != nil || len(b) > maxPeek {
+		return nil, false
+	}
+	return b, true
 }
 
 // rdsARN is the RDS ARN (db or cluster) of the {namespace}/{name} database, in its namespace's account.

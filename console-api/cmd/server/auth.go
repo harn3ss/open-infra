@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -181,7 +182,17 @@ func (a *authStore) users(ctx context.Context) map[string]userRec {
 // 2. kind: User (iam.openinfra.dev) — the GitOps-managed form, whose spec.groups are
 // authoritative for authorization.
 // 3. LDAP, when AUTH_MODE=ldap.
+//
+// The name root is reserved (rootUserName): it signs in only as the Secret-backed root, never as a
+// kind: User or a directory account of that name, nor as "Root" or " root".
 func (a *authStore) verify(ctx context.Context, user, pass string) (string, []string, bool) {
+	if reservedRootName(user) {
+		if user != rootUserName {
+			return "", nil, false
+		}
+		role, ok := a.verifyLocal(ctx, user, pass)
+		return role, nil, ok
+	}
 	if role, ok := a.verifyLocal(ctx, user, pass); ok {
 		return role, nil, true
 	}
@@ -245,6 +256,10 @@ func (a *authStore) verifyLocal(ctx context.Context, user, pass string) (string,
 	if role == "" {
 		role = "user"
 	}
+	if strings.EqualFold(role, "root") && user != rootUserName {
+		// Only root is root: another Secret account given role root is an administrator.
+		role = "admin"
+	}
 	return role, true
 }
 
@@ -263,6 +278,9 @@ func (a *authStore) issue(user, role string, groups []string) (string, error) {
 
 // issueClaims signs a session for claims (a switched role's session carries its account and role).
 func (a *authStore) issueClaims(claims iam.Claims) (string, error) {
+	if !rootSessionValid(claims) {
+		return "", errors.New("the name root is reserved for the account's root user")
+	}
 	c, err := json.Marshal(sessionClaims{Claims: claims, Exp: time.Now().Add(sessionTTL).Unix()})
 	if err != nil {
 		return "", err
@@ -294,6 +312,9 @@ func (a *authStore) parse(tok string) (sessionClaims, bool) {
 	}
 	if time.Now().Unix() > out.Exp {
 		return out, false
+	}
+	if !rootSessionValid(out.Claims) {
+		return out, false // a session named root that is not the Secret's root (issued before the name was reserved)
 	}
 	return out, true
 }

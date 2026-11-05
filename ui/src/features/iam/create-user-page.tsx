@@ -114,6 +114,7 @@ export function CreateUserPage() {
     const e: Record<string, string> = {};
     if (i === 0) {
       if (!name.trim()) e.name = "A user name is required.";
+      else if (name.trim().toLowerCase() === "root") e.name = "root is reserved for the account's root user.";
       else if (!RFC1123.test(name)) e.name = "Lowercase letters, digits and dashes only (a DNS label).";
       if (consoleAccess && password.length < 8) e.password = "At least 8 characters.";
     }
