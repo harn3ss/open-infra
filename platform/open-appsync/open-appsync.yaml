@@ -14,6 +14,10 @@ kind: Namespace
 metadata:
   name: open-infra-open-appsync
   labels:
+    # the management account (kind: Account 000000000000): GitOps owns this namespace, so its account
+    # labels live here, not in the Account composition (two appliers would undo each other's labels)
+    openinfra.dev/account-id: "000000000000"
+    openinfra.dev/account-status: ACTIVE
     openinfra.dev/component: open-appsync
 ---
 # The declarative engine config: config.json (data sources + resolvers) + the VTL templates as

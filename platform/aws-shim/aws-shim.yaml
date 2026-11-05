@@ -329,6 +329,10 @@ kind: Namespace
 metadata:
   name: open-infra-cfn
   labels:
+    # the management account (kind: Account 000000000000): GitOps owns this namespace, so its account
+    # labels live here, not in the Account composition (two appliers would undo each other's labels)
+    openinfra.dev/account-id: "000000000000"
+    openinfra.dev/account-status: ACTIVE
     openinfra.dev/component: aws-shim
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -361,6 +365,10 @@ kind: Namespace
 metadata:
   name: open-infra-s3
   labels:
+    # the management account (kind: Account 000000000000): GitOps owns this namespace, so its account
+    # labels live here, not in the Account composition (two appliers would undo each other's labels)
+    openinfra.dev/account-id: "000000000000"
+    openinfra.dev/account-status: ACTIVE
     openinfra.dev/component: aws-shim
 ---
 # A stack's Elastic IP allocations (cfn_addresses.go): each is a holder LoadBalancer Service the shim
@@ -488,6 +496,10 @@ kind: Namespace
 metadata:
   name: open-infra-ecs
   labels:
+    # the management account (kind: Account 000000000000): GitOps owns this namespace, so its account
+    # labels live here, not in the Account composition (two appliers would undo each other's labels)
+    openinfra.dev/account-id: "000000000000"
+    openinfra.dev/account-status: ACTIVE
     openinfra.dev/component: aws-shim
 ---
 apiVersion: rbac.authorization.k8s.io/v1

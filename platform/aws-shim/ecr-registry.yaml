@@ -16,6 +16,10 @@ kind: Namespace
 metadata:
   name: open-infra-ecr
   labels:
+    # the management account (kind: Account 000000000000): GitOps owns this namespace, so its account
+    # labels live here, not in the Account composition (two appliers would undo each other's labels)
+    openinfra.dev/account-id: "000000000000"
+    openinfra.dev/account-status: ACTIVE
     app.kubernetes.io/part-of: aws-shim
     openinfra.dev/component: ecr-registry
 ---

@@ -58,24 +58,52 @@ func objectFor(docs []map[string]any, kind, name string) map[string]any {
 	return nil
 }
 
-func TestAccount_ManagementAccountOnlyLabels(t *testing.T) {
+// The management account renders no namespace Objects: its namespaces are the platform's own, which GitOps
+// owns, so their account labels are in their manifests (TestAccount_ManagementNamespacesCarryTheirLabels).
+// A provider-kubernetes Object applying labels to them as well would rewrite their last-applied
+// configuration, and the next GitOps apply would then remove the labels.
+func TestAccount_ManagementAccountRendersNoNamespaceObjects(t *testing.T) {
 	docs := accountDocs(t, map[string]any{"accountId": "000000000000",
 		"namespaces": []any{"open-infra-console", "open-infra-cfn"}}, "000000000000")
 	k := byKind(docs)
-	if len(k["Namespace"]) != 2 || len(k["NetworkPolicy"]) != 0 || len(k["ConfigMap"]) != 0 || len(k["Role"]) != 0 {
-		t.Fatalf("the management account renders only its namespaces' labels, got %v", keys(k))
-	}
-	home := k["Namespace"][0]
-	if mstr(home, "metadata", "name") != "open-infra-console" || mstr(home, "metadata", "labels", "openinfra.dev/account-id") != "000000000000" ||
-		mstr(home, "metadata", "labels", "openinfra.dev/account-home") != "true" || mstr(home, "metadata", "labels", "openinfra.dev/account-status") != "ACTIVE" {
-		t.Errorf("home namespace %v", home)
-	}
-	if other := k["Namespace"][1]; mget(other, "metadata", "labels", "openinfra.dev/account-home") != nil {
-		t.Errorf("only the first namespace is the home: %v", other)
+	if len(k["Namespace"]) != 0 || len(k["NetworkPolicy"]) != 0 || len(k["ConfigMap"]) != 0 || len(k["Role"]) != 0 {
+		t.Fatalf("the management account renders no resources of its own, got %v", keys(k))
 	}
 	st := k["Account"][0]
 	if fmt.Sprint(mget(st, "status", "management")) != "true" || mget(st, "status", "accessRoleArn") != nil {
 		t.Errorf("management status %v", st["status"])
+	}
+}
+
+// The management account's namespaces carry its labels in their own manifests, home included.
+func TestAccount_ManagementNamespacesCarryTheirLabels(t *testing.T) {
+	want := map[string]string{
+		"open-infra-console":      "../../platform/security/hardened-profile.yaml",
+		"open-infra-cfn":          "../../platform/aws-shim/aws-shim.yaml",
+		"open-infra-ecs":          "../../platform/aws-shim/aws-shim.yaml",
+		"open-infra-s3":           "../../platform/aws-shim/aws-shim.yaml",
+		"open-infra-ecr":          "../../platform/aws-shim/ecr-registry.yaml",
+		"open-infra-rds":          "../../platform/aws-shim/rds-provisioning.yaml",
+		"open-infra-open-appsync": "../../platform/open-appsync/open-appsync.yaml",
+	}
+	for ns, file := range want {
+		found := false
+		for _, d := range readYAMLDocs(t, file) {
+			if mstr(d, "kind") != "Namespace" || mstr(d, "metadata", "name") != ns {
+				continue
+			}
+			found = true
+			if mstr(d, "metadata", "labels", "openinfra.dev/account-id") != "000000000000" ||
+				mstr(d, "metadata", "labels", "openinfra.dev/account-status") != "ACTIVE" {
+				t.Errorf("%s (%s) lacks the management account's labels: %v", ns, file, mget(d, "metadata", "labels"))
+			}
+			if home := mget(d, "metadata", "labels", "openinfra.dev/account-home") != nil; home != (ns == "open-infra-console") {
+				t.Errorf("%s: account-home must be set on open-infra-console only", ns)
+			}
+		}
+		if !found {
+			t.Errorf("no Namespace %s in %s", ns, file)
+		}
 	}
 }
 
@@ -224,6 +252,24 @@ func keys(m map[string][]map[string]any) map[string]int {
 	out := map[string]int{}
 	for k, v := range m {
 		out[k] = len(v)
+	}
+	return out
+}
+
+// readYAMLDocs reads a multi-document manifest file into maps (the render module's own parser).
+func readYAMLDocs(t *testing.T, file string) []map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	var out []map[string]any
+	for _, d := range splitDocs(string(raw)) {
+		docs, err := parseYAMLDocs(d)
+		if err != nil {
+			continue // a document the subset parser can't read is not a Namespace we look for
+		}
+		out = append(out, docs...)
 	}
 	return out
 }

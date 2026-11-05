@@ -1,8 +1,9 @@
 # The account compiler: one kind: Account -> its namespaces labeled into the account, and, for a member
 # account, the isolation baseline, Service Quotas defaults and OrganizationAccountAccessRole.
 #
-# The management account (the install's own, openinfra-aws-identity awsAccountId) only labels its
-# namespaces: nothing about how they work changes, so creating its Account is a no-op relabel.
+# The management account (the install's own, openinfra-aws-identity awsAccountId) renders nothing: its
+# namespaces are the platform's own, which GitOps owns, so their account labels are in their manifests.
+# Labeling them here too would make two client-side appliers undo each other's labels.
 #
 # A namespace is labeled through a provider-kubernetes Object with no Delete in its managementPolicies and
 # deletionPolicy Orphan: closing an account (deleting its Account) never deletes a namespace or its data.
@@ -63,6 +64,7 @@ spec:
             {{- $state := "ACTIVE" }}{{- if $spec.suspended }}{{- $state = "SUSPENDED" }}{{- end }}
             {{- $isolation := $spec.isolation | default "baseline" }}
             {{- range $i, $ns := $nss }}
+            {{- if not $isMgmt }}
             ---
             # Namespace {{ $ns }} into account {{ $acct }}. Observe/Create/Update only and orphaned on delete:
             # an Account never deletes a namespace. Create covers a new account's home (CreateAccount).
@@ -86,6 +88,7 @@ spec:
                       {{- if eq $i 0 }}
                       openinfra.dev/account-home: "true"
                       {{- end }}
+            {{- end }}
             {{- if and (not $isMgmt) (eq $isolation "baseline") }}
             ---
             # The account's isolation baseline in {{ $ns }}: ingress only from the account's own namespaces and

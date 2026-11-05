@@ -197,16 +197,17 @@ func (wr Writer) putConfigMap(ctx context.Context, ns, name, key, value string) 
 // writeStatus sets status.compiled on each User and Role (its compile result) and Policy (its document's
 // compile result) — only for a kind whose schema declares status.compiled, so the API server keeps it.
 func (wr Writer) writeStatus(ctx context.Context, in Input, out Output) error {
+	var firstErr error
 	if wr.DC == nil {
 		return nil
 	}
-	results := map[schema.GroupVersionResource]map[types.NamespacedName]string{userGVR: {}, roleGVR: {}, policyGVR: {}, groupGVR: {}}
+	results := map[schema.GroupVersionResource]map[types.NamespacedName]any{userGVR: {}, roleGVR: {}, policyGVR: {}, groupGVR: {}}
 	for _, p := range out.Principals {
 		gvr := userGVR
 		if p.Kind == "Role" {
 			gvr = roleGVR
 		}
-		results[gvr][types.NamespacedName{Namespace: p.Namespace, Name: p.Name}] = p.Status()
+		results[gvr][types.NamespacedName{Namespace: p.Namespace, Name: p.Name}] = map[string]any{"message": p.Status()}
 	}
 	for _, p := range in.World.Docs {
 		ns, name := iamauthz.SplitQualified(in.Home, p.Name)
@@ -214,7 +215,9 @@ func (wr Writer) writeStatus(ctx context.Context, in Input, out Output) error {
 		if len(p.Report) > 0 {
 			s = fmt.Sprintf("ok, %d statement(s) narrowed (see the iam-compiler report)", len(p.Report))
 		}
-		results[policyGVR][types.NamespacedName{Namespace: ns, Name: name}] = s
+		// status.compiled is an object in the schema (ok, narrowed, message).
+		results[policyGVR][types.NamespacedName{Namespace: ns, Name: name}] = map[string]any{
+			"ok": true, "narrowed": len(p.Report), "message": s}
 	}
 	for _, gvr := range []schema.GroupVersionResource{userGVR, roleGVR, policyGVR} {
 		if !wr.statusDeclared(ctx, gvr) {
@@ -228,12 +231,13 @@ func (wr Writer) writeStatus(ctx context.Context, in Input, out Output) error {
 		for _, k := range keys {
 			patch, _ := json.Marshal(map[string]any{"status": map[string]any{"compiled": results[gvr][k]}})
 			_, err := wr.DC.Resource(gvr).Namespace(k.Namespace).Patch(ctx, k.Name, types.MergePatchType, patch, metav1.PatchOptions{}, "status")
-			if err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("%s %s: %w", gvr.Resource, k, err)
+			if err != nil && !apierrors.IsNotFound(err) && firstErr == nil {
+				// One object's status must not stop the others' (or the report): keep going, report the first.
+				firstErr = fmt.Errorf("%s %s: %w", gvr.Resource, k, err)
 			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // statusDeclared reports whether the kind's CRD declares status.compiled (a field the schema does not
