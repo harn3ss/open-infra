@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -30,6 +31,7 @@ type resolver struct {
 	exports  map[string]any // cross-stack Exports supplied to Fn::ImportValue (export name -> value)
 	pseudo   map[string]any
 	conds    map[string]bool // evaluated named conditions
+	condBusy map[string]bool // conditions being evaluated (a condition that refers to itself)
 	where    string          // current location, for findings
 	findings []Finding
 	refs     map[string]bool // resource logical ids referenced by the current item
@@ -76,10 +78,44 @@ func (r *resolver) find(reason string) {
 // Condition checks can look them up). A condition using an unsupported intrinsic produces a
 // finding and is treated as false.
 func (r *resolver) evalConditions() {
-	for name, expr := range r.t.Conditions {
-		r.where = "Condition " + name
-		r.conds[name] = truthy(r.resolve(expr))
+	names := make([]string, 0, len(r.t.Conditions))
+	for name := range r.t.Conditions {
+		names = append(names, name)
 	}
+	sort.Strings(names)
+	for _, name := range names {
+		r.condition(name)
+	}
+}
+
+// condition is named condition name's value, evaluated on first use. A condition may refer to another
+// ({"Condition": X} inside Fn::And/Or/Not) in any order, as on AWS, so each is evaluated when it is first
+// needed, not in the order the template's map happens to yield (which left a referenced condition that
+// had not been evaluated yet reading as false). A condition that refers to itself, directly or through
+// others, is a finding and false.
+func (r *resolver) condition(name string) bool {
+	if b, ok := r.conds[name]; ok {
+		return b
+	}
+	expr, ok := r.t.Conditions[name]
+	if !ok {
+		return false
+	}
+	if r.condBusy == nil {
+		r.condBusy = map[string]bool{}
+	}
+	if r.condBusy[name] {
+		r.find("condition " + name + " refers to itself")
+		return false
+	}
+	r.condBusy[name] = true
+	where := r.where
+	r.where = "Condition " + name
+	b := truthy(r.resolve(expr))
+	r.where = where
+	delete(r.condBusy, name)
+	r.conds[name] = b
+	return b
 }
 
 // resolveResource walks a resource's Properties (for findings) and returns the set of
@@ -140,6 +176,9 @@ func (r *resolver) intrinsic(key string, arg any) (bool, any) {
 		return true, r.ref(fmt.Sprint(arg))
 	case "Condition":
 		name := fmt.Sprint(arg)
+		if _, ok := r.t.Conditions[name]; ok {
+			return true, r.condition(name)
+		}
 		if b, ok := r.conds[name]; ok {
 			return true, b
 		}
@@ -507,7 +546,7 @@ func (r *resolver) ifFn(arg any) any {
 		return nil
 	}
 	name := fmt.Sprint(l[0])
-	if r.conds[name] {
+	if r.condition(name) || (r.t.Conditions[name] == nil && r.conds[name]) {
 		return r.resolve(l[1])
 	}
 	return r.resolve(l[2])
