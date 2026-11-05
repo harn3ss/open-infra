@@ -9,7 +9,7 @@ import { KeyValueList } from "@/components/common/detail-row";
 import { Badge } from "@/components/ui/badge";
 import { CopyButton } from "@/components/common/copy-button";
 import { StatusBadge } from "@/components/common/status-badge";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
@@ -87,7 +87,7 @@ export function ApplicationDetailPage() {
           </TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger
             value="danger"
             className="text-destructive data-[state=active]:text-destructive"
@@ -334,7 +334,7 @@ export function ApplicationDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={app} />
+          <AdvancedYaml value={app} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
 import { CopyButton } from "@/components/common/copy-button";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
 import { ResourceNameRow } from "@/components/common/resource-name-row";
 import { DbConnectivity } from "@/components/common/db-connectivity";
@@ -200,7 +200,7 @@ export function DatabaseDetailPage() {
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
           <TabsTrigger value="snapshots">Snapshots</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
 
@@ -404,7 +404,7 @@ export function DatabaseDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={db} />
+          <AdvancedYaml value={db} />
         </TabsContent>
       <TabsContent value="danger" className="space-y-3 pt-4">
         <label className="flex items-start gap-2 rounded-md border p-3 text-sm">

@@ -5,7 +5,7 @@ import { DetailShell } from "@/components/common/detail-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { k8sDelete, k8sGet } from "@/lib/api";
@@ -55,7 +55,7 @@ export function VpcDetailPage() {
           <TabsTrigger value="subnets">Subnets ({inVpc.length})</TabsTrigger>
           <TabsTrigger value="routes">Route table ({vpc.spec?.routes?.length ?? 0})</TabsTrigger>
           <TabsTrigger value="peering">Peering ({vpc.spec?.peerings?.length ?? 0})</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
 
@@ -113,7 +113,7 @@ export function VpcDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={vpc} />
+          <AdvancedYaml value={vpc} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

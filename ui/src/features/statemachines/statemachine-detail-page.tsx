@@ -6,7 +6,7 @@ import { DetailShell } from "@/components/common/detail-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status-badge";
@@ -145,7 +145,7 @@ export function StateMachineDetailPage() {
           <TabsTrigger value="graph">Graph</TabsTrigger>
           <TabsTrigger value="executions">Executions</TabsTrigger>
           <TabsTrigger value="definition">Definition</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
 
@@ -209,7 +209,7 @@ export function StateMachineDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={sm} />
+          <AdvancedYaml value={sm} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

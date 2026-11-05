@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
 import { ResourceNameRow } from "@/components/common/resource-name-row";
 import { DangerZone } from "@/components/common/danger-zone";
@@ -221,7 +221,7 @@ export function FunctionDetailPage() {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="security">Security</TabsTrigger>
           <TabsTrigger value="monitoring">Monitoring</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
 
@@ -318,7 +318,7 @@ export function FunctionDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={fn} />
+          <AdvancedYaml value={fn} />
         </TabsContent>
       <TabsContent value="danger" className="pt-4">
 <DangerZone

@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { k8sDelete, k8sGet } from "@/lib/api";
@@ -88,7 +88,7 @@ export function SecurityGroupDetailPage() {
           <TabsTrigger value="inbound">Inbound rules</TabsTrigger>
           <TabsTrigger value="outbound">Outbound rules</TabsTrigger>
           <TabsTrigger value="usedby">Used by ({usedBy.length})</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
 
@@ -129,7 +129,7 @@ export function SecurityGroupDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={sg} />
+          <AdvancedYaml value={sg} />
         </TabsContent>
       <TabsContent value="danger" className="pt-4">
 <DangerZone

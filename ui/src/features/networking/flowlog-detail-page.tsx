@@ -5,7 +5,7 @@ import { DetailShell } from "@/components/common/detail-shell";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { KeyValuePairs } from "@/components/common/key-value-pairs";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { GrafanaEmbed } from "@/components/common/grafana-embed";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
@@ -60,7 +60,7 @@ export function FlowLogDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="records">Flow records</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
 
@@ -127,7 +127,7 @@ export function FlowLogDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={flowLog} />
+          <AdvancedYaml value={flowLog} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

@@ -10,7 +10,7 @@ import { KeyValuePairs } from "@/components/common/key-value-pairs";
 import { CopyButton } from "@/components/common/copy-button";
 import { StatusBadge } from "@/components/common/status-badge";
 import { DangerZone } from "@/components/common/danger-zone";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/states";
 import { k8sDelete, k8sGet, listQueues, type StreamInfo } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
@@ -105,7 +105,7 @@ export function StreamDetailPage() {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="consumers">Consumers</TabsTrigger>
           <TabsTrigger value="throughput">Throughput</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger
             value="danger"
             className="text-destructive data-[state=active]:text-destructive"
@@ -305,7 +305,7 @@ export function StreamDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={data} />
+          <AdvancedYaml value={data} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

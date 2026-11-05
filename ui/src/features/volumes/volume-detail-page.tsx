@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { ApiError, k8sCreate, k8sDelete, k8sGet, k8sList } from "@/lib/api";
@@ -109,7 +109,7 @@ export function VolumeDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="snapshots">Snapshots ({snaps.length})</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger
             value="danger"
             className="text-destructive data-[state=active]:text-destructive"
@@ -191,7 +191,7 @@ export function VolumeDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={vol} />
+          <AdvancedYaml value={vol} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

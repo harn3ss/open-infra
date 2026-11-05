@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { KeyValuePairs } from "@/components/common/key-value-pairs";
 import { CopyButton } from "@/components/common/copy-button";
 import { StatusBadge } from "@/components/common/status-badge";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { k8sDelete, k8sGet } from "@/lib/api";
@@ -109,7 +109,7 @@ export function HttpApiDetailPage() {
           <TabsTrigger value="authorization">Authorization</TabsTrigger>
           <TabsTrigger value="cors">CORS</TabsTrigger>
           <TabsTrigger value="throttling">Throttling</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
 
@@ -353,7 +353,7 @@ export function HttpApiDetailPage() {
 
         {/* ── YAML ── */}
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={api} />
+          <AdvancedYaml value={api} />
         </TabsContent>
 
         {/* ── Danger Zone ── */}

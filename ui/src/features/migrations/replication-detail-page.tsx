@@ -3,7 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Repeat, ArrowRight } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { DetailRow } from "@/components/common/detail-row";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { DangerZone } from "@/components/common/danger-zone";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -83,7 +83,7 @@ export function ReplicationDetailPage() {
         <TabsList>
           <TabsTrigger value="status">Status</TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
 
@@ -133,7 +133,7 @@ export function ReplicationDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={repl} />
+          <AdvancedYaml value={repl} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

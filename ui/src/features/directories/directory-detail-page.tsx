@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
 import { CopyButton } from "@/components/common/copy-button";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { AdExplorer } from "./ad-explorer";
@@ -89,7 +89,7 @@ export function DirectoryDetailPage() {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="explorer">Explorer</TabsTrigger>
           <TabsTrigger value="join">Join</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger
             value="danger"
             className="text-destructive data-[state=active]:text-destructive"
@@ -148,7 +148,7 @@ export function DirectoryDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={dir} />
+          <AdvancedYaml value={dir} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

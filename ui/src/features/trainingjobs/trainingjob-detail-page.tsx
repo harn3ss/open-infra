@@ -13,7 +13,7 @@ import { DetailRow } from "@/components/common/detail-row";
 import { CopyButton } from "@/components/common/copy-button";
 import { JobLogs } from "@/components/common/job-logs";
 import { MetricChart } from "@/components/common/metric-chart";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status-badge";
@@ -121,7 +121,7 @@ export function TrainingJobDetailPage() {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="logs">Logs</TabsTrigger>
           <TabsTrigger value="metrics">Metrics</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">Danger Zone</TabsTrigger>
         </TabsList>
 
@@ -266,7 +266,7 @@ export function TrainingJobDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={tj} />
+          <AdvancedYaml value={tj} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { ResourceNameRow } from "@/components/common/resource-name-row";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
@@ -244,7 +244,7 @@ export function GraphQLApiDetailPage() {
           <TabsTrigger value="resolvers">Resolvers</TabsTrigger>
           <TabsTrigger value="datasources">Data sources</TabsTrigger>
           <TabsTrigger value="subscriptions">Subscriptions</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">
             Danger Zone
           </TabsTrigger>
@@ -393,7 +393,7 @@ export function GraphQLApiDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={api} />
+          <AdvancedYaml value={api} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">

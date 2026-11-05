@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { KeyValuePairs } from "@/components/common/key-value-pairs";
 import { CopyButton } from "@/components/common/copy-button";
 import { StatusBadge } from "@/components/common/status-badge";
-import { YamlViewer } from "@/components/common/yaml-viewer";
+import { AdvancedYaml } from "@/components/common/advanced-yaml";
 import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { k8sDelete, k8sGet } from "@/lib/api";
@@ -55,7 +55,7 @@ export function IdentityProviderDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="use">Use with a Role</TabsTrigger>
-          <TabsTrigger value="yaml">YAML</TabsTrigger>
+          <TabsTrigger value="yaml">Advanced</TabsTrigger>
           <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">
             Danger Zone
           </TabsTrigger>
@@ -149,7 +149,7 @@ export function IdentityProviderDetailPage() {
         </TabsContent>
 
         <TabsContent value="yaml" className="pt-4">
-          <YamlViewer value={idp} />
+          <AdvancedYaml value={idp} />
         </TabsContent>
 
         <TabsContent value="danger" className="pt-4">
