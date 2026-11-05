@@ -213,6 +213,9 @@ func TestCloudFront_SiteSubset_Provisionable(t *testing.T) {
 			map[string]any{"name": "X-XSS-Protection", "value": "1; mode=block"},
 			map[string]any{"name": "Permissions-Policy", "value": "camera=(), microphone=()"},
 		},
+		// CloudFront answers plain HTTP with a 301 to https, and gzips compressible responses.
+		"viewerProtocolPolicy": "redirect-to-https",
+		"compress":             true,
 	}
 	if !reflect.DeepEqual(site.res.Spec, want) {
 		gotJ, _ := json.MarshalIndent(site.res.Spec, "", "  ")
@@ -222,9 +225,9 @@ func TestCloudFront_SiteSubset_Provisionable(t *testing.T) {
 	// Every accepted-but-not-emulated property is in the fidelity summary.
 	for _, c := range []string{
 		"edge caching is not emulated",
-		"CachePolicyId/CachedMethods/Compress", // the caching group, in template-key order
+		"CachePolicyId/CachedMethods are accepted but not emulated", // the caching group, in template-key order
+		"Compress: responses are gzip-compressed (no Brotli)",
 		"PriceClass/HttpVersion/IPV6Enabled/Comment have no open-infra effect",
-		"ViewerProtocolPolicy redirect-to-https: the site answers on HTTPS only",
 		"openinfra-issuer",
 		"MinimumProtocolVersion TLSv1.2_2021",
 		"certificate SiteCertificate is not requested from ACM",
@@ -545,6 +548,9 @@ func TestCloudFront_ManagedHeadersAndErrorDocument(t *testing.T) {
 	}
 	if cfHasCaveat(site.cav, "ViewerProtocolPolicy") {
 		t.Errorf("https-only needs no protocol caveat; got:\n  %s", strings.Join(site.cav, "\n  "))
+	}
+	if site.res.Spec["viewerProtocolPolicy"] != "https-only" {
+		t.Errorf("https-only must reach the site (plain HTTP answered 403), spec: %v", site.res.Spec)
 	}
 	// No error responses at all: a plain site, with the 404-vs-403 caveat.
 	delete(cfDC(tmpl), "CustomErrorResponses")

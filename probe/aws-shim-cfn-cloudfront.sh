@@ -234,7 +234,7 @@ template() {
     "Enabled":true,"Aliases":["$HOST"],"DefaultRootObject":"index.html","PriceClass":"PriceClass_100",
     "Origins":[{"Id":"s3-site","DomainName":{"Fn::GetAtt":["$L_BUCKET","RegionalDomainName"]},
       "S3OriginConfig":{"OriginAccessIdentity":""},"OriginAccessControlId":{"Fn::GetAtt":["$L_OAC","Id"]}}],
-    "DefaultCacheBehavior":{"TargetOriginId":"s3-site","ViewerProtocolPolicy":"redirect-to-https",
+    "DefaultCacheBehavior":{"TargetOriginId":"s3-site","ViewerProtocolPolicy":"redirect-to-https","Compress":true,
       "CachePolicyId":"658327ea-f89d-4fab-a63d-7e88639e58f6","ResponseHeadersPolicyId":{"Ref":"$L_HDR"}$extra},
     "CustomErrorResponses":[{"ErrorCode":403,"ResponseCode":200,"ResponsePagePath":"/index.html"},
                             {"ErrorCode":404,"ResponseCode":200,"ResponsePagePath":"/index.html"}],
@@ -301,7 +301,7 @@ log "    ✓ StaticSite $SITE (spa, $HOST, headers) over kind: Bucket $BCLAIM (n
 # --- 3. upload through the shim's S3 front door ---------------------------------------------------------
 log "uploading index.html + assets/app.js to s3://$BUCKET through the shim (as a CI aws-s3 step would)"
 printf '<!doctype html><title>cf probe</title><div id="app">%s</div>\n' "$MARKER" > "$TMP/index.html"
-printf 'console.log("asset-%s");\n' "$SFX" > "$TMP/app.js"
+{ printf 'console.log("asset-%s");\n' "$SFX"; for _ in $(seq 1 40); do printf '// padding so the asset is past CloudFront'"'"'s 1,000-byte compression floor\n'; done; } > "$TMP/app.js"
 s3api put-object --bucket "$BUCKET" --key index.html --body "$TMP/index.html" --content-type text/html >/dev/null 2>"$TMP/up.err" \
   || inconclusive "uploading through the shim's S3 front door failed (S3 front door / authz, not the CloudFront path): $(cat "$TMP/up.err")"
 s3api put-object --bucket "$BUCKET" --key assets/app.js --body "$TMP/app.js" --content-type application/javascript >/dev/null 2>"$TMP/up.err" \
@@ -369,6 +369,15 @@ for r in "$ROOT" "$DEEP" "$ASSET"; do
   [ "$(header_of "$r" X-Content-Type-Options)" = "nosniff" ] || fail "response missing the policy's X-Content-Type-Options: nosniff"
 done
 log "    ✓ https://$HOST/ and a deep route → index.html (200), the asset as itself, policy headers on every response"
+
+# The viewer protocol policy and Compress, as CloudFront answers them: http:// is a 301 to the https URL,
+# and a client that accepts gzip gets the asset (past the 1,000-byte floor) gzip-compressed.
+HTTP="$(kubectl -n "$CLIENT_NS" exec "$CLIENT" -- curl -sS -m 10 -D - -o /dev/null --resolve "$HOST:80:$TRAEFIK_IP" "http://$HOST/deep/route?q=1" 2>/dev/null | tr -d '\r' || true)"
+[ "$(status_of "$HTTP")" = 301 ] && [ "$(header_of "$HTTP" Location)" = "https://$HOST/deep/route?q=1" ] \
+  || fail "redirect-to-https: http://$HOST/deep/route?q=1 must answer 301 to the https URL; got: $(snip "$HTTP")"
+GZ="$(kubectl -n "$CLIENT_NS" exec "$CLIENT" -- curl -sS -m 10 $TLS_OPT -D - -o /dev/null -H 'Accept-Encoding: gzip' --resolve "$HOST:443:$TRAEFIK_IP" "https://$HOST/assets/app.js" 2>/dev/null | tr -d '\r' || true)"
+[ "$(header_of "$GZ" Content-Encoding)" = gzip ] || fail "Compress: the asset was not gzip-compressed for Accept-Encoding: gzip; got: $(snip "$GZ")"
+log "    ✓ http:// → 301 to https:// (redirect-to-https); the asset gzip-compressed (Compress)"
 
 # --- 4b. a re-deploy: upload, create-invalidation, wait invalidation-completed → served at once ----------
 DIST="$(cfn describe-stack-resource --stack-name "$STACK" --logical-resource-id "$L_CDN" --query 'StackResourceDetail.PhysicalResourceId' --output text 2>/dev/null || true)"

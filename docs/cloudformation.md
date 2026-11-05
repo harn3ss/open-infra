@@ -383,14 +383,15 @@ own properties and is read by the distribution that references it.
 | `DefaultRootObject` | `spec.indexDocument` |
 | `DefaultCacheBehavior.ResponseHeadersPolicyId` — an in-stack `AWS::CloudFront::ResponseHeadersPolicy` (`SecurityHeadersConfig`, `CustomHeadersConfig`) or the AWS managed `SecurityHeadersPolicy` id | `spec.responseHeaders` (added by nginx to every response, errors included) |
 | `Fn::GetAtt <Distribution>.DomainName` | the first Alias — the hostname the site is served on |
+| `DefaultCacheBehavior.ViewerProtocolPolicy` | `spec.viewerProtocolPolicy` — a plain-HTTP request is answered as CloudFront answers it: `redirect-to-https` a 301 to the `https://` URL, `https-only` a 403, `allow-all` the content |
+| `DefaultCacheBehavior.Compress: true` | `spec.compress` — compressible types (text, JSON, JavaScript, CSS, SVG, fonts, …) of 1,000 bytes or more are gzip-compressed for a client that sends `Accept-Encoding: gzip` (gzip only, no Brotli) |
 
 **Accepted, not emulated — printed as caveats:** caching (`CachePolicyId` / `OriginRequestPolicyId`,
-`CachedMethods`, TTLs, `ForwardedValues`, `Compress`, `ErrorCachingMinTTL`) — every request is served
+`CachedMethods`, TTLs, `ForwardedValues`, `ErrorCachingMinTTL`) — every request is served
 from the synced copy of the bucket, which re-syncs every 30 seconds (an upload goes live within about
 30s; `aws cloudfront create-invalidation` and `wait invalidation-completed` work, and the invalidation is
 Completed once the site has re-synced — see [aws-shim.md](aws-shim.md#cloudfront-a-stacks-distribution-its-invalidations-and-reads-probe-proven));
-`ViewerProtocolPolicy` `redirect-to-https` / `allow-all` (the
-site answers on HTTPS only — a plain-HTTP request is neither served nor redirected); `PriceClass`,
+`PriceClass`,
 `HttpVersion`, `IPV6Enabled`, `Comment`, `Tags`; `Logging` (nginx logs to the pod's stdout); origin
 timeouts, `OriginShield`, `OriginCustomHeaders`; `MinimumProtocolVersion` (Traefik's TLS defaults
 apply); ACM's DNS/email validation records (the operator validates domains once, below); OAC request signing. Two behaviours differ

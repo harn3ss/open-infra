@@ -646,8 +646,10 @@ func TestIsolation_IngressBackendsAreDialedByClusterIP(t *testing.T) {
 			t.Fatal(err)
 		}
 		src := string(b)
-		ingresses := strings.Count(src, "kind: Ingress\n")
-		if ingresses == 0 {
+		// An Ingress annotated openinfra.dev/backend-of routes to the backend Service of the Ingress it
+		// names (a second entrypoint to the same server), so it needs no Service of its own.
+		ingresses := strings.Count(src, "kind: Ingress\n") - strings.Count(src, "openinfra.dev/backend-of:")
+		if ingresses <= 0 {
 			continue
 		}
 		if n := strings.Count(src, `traefik.ingress.kubernetes.io/service.nativelb: "true"`); n < ingresses {

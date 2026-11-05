@@ -352,6 +352,22 @@ spec:
                         {{- range $h := ($spec.responseHeaders | default list) }}
                         add_header {{ $h.name }} {{ $h.value | quote }} always;
                         {{- end }}
+                        {{- if and $tls (eq ($spec.viewerProtocolPolicy | default "") "redirect-to-https") }}
+                        # CloudFront redirect-to-https: a plain-HTTP request (Traefik's web entrypoint sets
+                        # X-Forwarded-Proto: http, and overwrites any the client sends) is sent to https.
+                        if ($http_x_forwarded_proto = "http") { return 301 https://$host$request_uri; }
+                        {{- else if and $tls (eq ($spec.viewerProtocolPolicy | default "") "https-only") }}
+                        # CloudFront https-only: a plain-HTTP request is answered 403 Forbidden.
+                        if ($http_x_forwarded_proto = "http") { return 403; }
+                        {{- end }}
+                        {{- if $spec.compress }}
+                        # CloudFront Compress: gzip compressible types of 1,000 bytes or more on Accept-Encoding: gzip.
+                        gzip on;
+                        gzip_vary on;
+                        gzip_proxied any;
+                        gzip_min_length 1000;
+                        gzip_types text/css text/javascript text/plain text/xml text/csv text/x-component application/javascript application/x-javascript application/json application/ld+json application/manifest+json application/xml application/xhtml+xml application/rss+xml application/atom+xml application/vnd.ms-fontobject application/x-font-ttf application/x-web-app-manifest+json font/opentype font/otf font/ttf image/svg+xml image/x-icon image/vnd.microsoft.icon;
+                        {{- end }}
                         location / {
                           {{- if $spa }}
                           try_files $uri $uri/ /{{ $index }};
@@ -569,6 +585,45 @@ spec:
                       - hosts: [ {{ join ", " $hosts }} ]
                         secretName: staticsite-{{ $name }}-tls
                     {{- end }}
+            {{- if and $tls ($spec.viewerProtocolPolicy | default "") }}
+            ---
+            # Plain HTTP for a TLS site with a viewer protocol policy: the same server on Traefik's web
+            # entrypoint, where nginx answers as the policy says (301 to https, 403, or the content).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: ingress-http
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: Ingress
+                  metadata:
+                    name: staticsite-{{ $name }}-http
+                    namespace: {{ $ns }}
+                    labels:
+                      openinfra.dev/staticsite: {{ $name }}
+                    annotations:
+                      traefik.ingress.kubernetes.io/router.entrypoints: web
+                      # the same backend Service as the HTTPS Ingress (already dialed by ClusterIP)
+                      openinfra.dev/backend-of: staticsite-{{ $name }}
+                  spec:
+                    ingressClassName: traefik
+                    rules:
+                      {{- range $h := $hosts }}
+                      - host: {{ $h }}
+                        http:
+                          paths:
+                            - path: /
+                              pathType: Prefix
+                              backend:
+                                service:
+                                  name: {{ $name }}-site
+                                  port:
+                                    number: 80
+                      {{- end }}
+            {{- end }}
             ---
             # --- Tenant isolation (ingress) for the site server and its build pods: this namespace and the
             #     platform callers named below only; every other namespace is refused. Pod->Service calls keep the

@@ -357,6 +357,13 @@ func translateCloudFrontDistribution(id string, props map[string]any, ctx *stack
 		}
 		spec["responseHeaders"] = hs
 	}
+	// What plain HTTP gets (403, a 301 to https, or the content) and gzip, as CloudFront answers them.
+	if p, _ := concrete(dcb["ViewerProtocolPolicy"]); p != "" {
+		spec["viewerProtocolPolicy"] = p
+	}
+	if cfTrue(dcb["Compress"]) {
+		spec["compress"] = true
+	}
 	return &Manifest{APIVersion: "openinfra.dev/v1", Kind: "StaticSite", Name: ctx.name(id), Spec: spec, Caveats: cav}, nil
 }
 
@@ -532,14 +539,14 @@ func cfDefaultBehavior(b map[string]any, originID string, ctx *stackCtx, refuse 
 		refuse("DefaultCacheBehavior.AllowedMethods %v include write methods (POST/PUT/PATCH/DELETE) — kind: StaticSite serves the bucket read-only (GET/HEAD/OPTIONS); refusing rather than dropping writes", cfStringList(b["AllowedMethods"]))
 	}
 
-	switch p, _ := concrete(b["ViewerProtocolPolicy"]); p {
-	case "https-only":
-	case "redirect-to-https", "allow-all":
-		cav = append(cav, "ViewerProtocolPolicy "+p+": the site answers on HTTPS only (Traefik's websecure entrypoint) — a plain-HTTP request is neither served nor redirected to HTTPS, so http:// links fail rather than redirect")
+	viewerPolicy, _ := concrete(b["ViewerProtocolPolicy"])
+	switch viewerPolicy {
+	case "https-only", "redirect-to-https", "allow-all":
+		// spec.viewerProtocolPolicy: plain HTTP is answered as CloudFront does — 403, a 301 to https, or the content.
 	case "":
 		refuse("DefaultCacheBehavior.ViewerProtocolPolicy is required")
 	default:
-		refuse("DefaultCacheBehavior.ViewerProtocolPolicy %q is not a CloudFront viewer protocol policy", p)
+		refuse("DefaultCacheBehavior.ViewerProtocolPolicy %q is not a CloudFront viewer protocol policy", viewerPolicy)
 	}
 
 	// In-stack policy references must be included (a reference to a conditioned-off resource has no value).
@@ -554,11 +561,12 @@ func cfDefaultBehavior(b map[string]any, originID string, ctx *stackCtx, refuse 
 			caching = append(caching, k)
 		}
 	}
-	if cfTrue(b["Compress"]) {
-		caching = append(caching, "Compress")
-	}
+	compress := cfTrue(b["Compress"]) // spec.compress: gzip for compressible types, as CloudFront's Compress
 	if len(caching) > 0 {
-		cav = append(cav, "DefaultCacheBehavior "+strings.Join(caching, "/")+" are accepted but not emulated — there is no cache tier (every request is served from the synced copy of the bucket), no cache key, and responses are not compressed")
+		cav = append(cav, "DefaultCacheBehavior "+strings.Join(caching, "/")+" are accepted but not emulated — there is no cache tier (every request is served from the synced copy of the bucket) and no cache key")
+	}
+	if compress {
+		cav = append(cav, "Compress: responses are gzip-compressed (no Brotli); compressible types of 1,000 bytes or more, for a client that sends Accept-Encoding: gzip")
 	}
 
 	// Response headers: an in-stack AWS::CloudFront::ResponseHeadersPolicy, or an AWS managed policy id.

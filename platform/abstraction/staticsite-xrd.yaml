@@ -72,6 +72,14 @@ spec:
                   type: boolean
                   default: true
                   description: "Terminate TLS via cert-manager (openinfra-issuer). Set false for plain HTTP."
+                viewerProtocolPolicy:
+                  type: string
+                  enum: [https-only, redirect-to-https, allow-all]
+                  description: "With tls, what a plain-HTTP request gets, as CloudFront's viewer protocol policy: https-only answers 403, redirect-to-https answers 301 to the https:// URL, allow-all serves it. Unset: plain HTTP is not routed to the site at all."
+                compress:
+                  type: boolean
+                  default: false
+                  description: "Gzip compressible responses (text, JSON, JavaScript, CSS, SVG, …) of 1,000 bytes or more for a client that sends Accept-Encoding: gzip, as CloudFront's Compress does."
                 spa:
                   type: boolean
                   default: true
