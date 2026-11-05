@@ -244,3 +244,38 @@ func TestManagedPolicies_JobFunctionsMeanWhatAWSDocuments(t *testing.T) {
 		}
 	}
 }
+
+// Every kebab-case built-in (platform/security/managed-policies.yaml) names its AWS equivalent — a policy
+// this library ships — or "none" with a reason; hack/iam-migrate re-points attachments by it.
+func TestManagedPolicies_BuiltInAliasesNameShippedPolicies(t *testing.T) {
+	raw, err := os.ReadFile("../platform/security/managed-policies.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eqRE := regexp.MustCompile(`openinfra.dev/aws-equivalent: (\S+)`)
+	kindRE := regexp.MustCompile(`(?m)^kind: Policy$`)
+	n := 0
+	for _, doc := range strings.Split(string(raw), "\n---\n") {
+		if !kindRE.MatchString(doc) {
+			continue
+		}
+		n++
+		eq := eqRE.FindStringSubmatch(doc)
+		if eq == nil {
+			t.Errorf("a built-in policy names no openinfra.dev/aws-equivalent:\n%s", doc[:min(len(doc), 300)])
+			continue
+		}
+		if eq[1] == "none" {
+			if !strings.Contains(doc, "openinfra.dev/aws-equivalent-reason:") {
+				t.Errorf("a built-in with no AWS equivalent must say why")
+			}
+			continue
+		}
+		if _, ok := ManagedPolicyByName(eq[1]); !ok {
+			t.Errorf("built-in alias of %s, which the library does not ship", eq[1])
+		}
+	}
+	if n != 25 {
+		t.Fatalf("found %d built-in policies, want 25", n)
+	}
+}

@@ -15,6 +15,13 @@
 #     ATTACHABLE (managed-axis) policies — the grant takes effect only when a Role/User names
 #     the Policy in its spec.policies, never inline-to-everyone.
 #
+# DEPRECATED ALIASES (the AWS policy model): the AWS managed policies now ship under AWS's own names and
+# ARNs (platform/abstraction/managed-policies/). A policy here whose annotation openinfra.dev/aws-equivalent
+# names one is a deprecated alias of it, kept for one release; hack/iam-migrate re-points attachments to the
+# AWS policy, whose AWS meaning may be broader (AdministratorAccess includes IAM). One whose equivalent is
+# "none" covers open-infra kinds no AWS managed policy does (its reason is annotated) and stays a platform
+# policy.
+#
 # COORDINATING CONVENTION (with the console agent):
 #   label  openinfra.dev/managed-policy: "true"   → the console marks these read-only / "Managed"
 #   label  openinfra.dev/policy-category: job-function | service
@@ -52,6 +59,8 @@ metadata:
     openinfra.dev/policy-category: job-function
   annotations:
     openinfra.dev/title: Administrator Access
+    openinfra.dev/aws-equivalent: AdministratorAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -84,6 +93,8 @@ metadata:
     openinfra.dev/policy-category: job-function
   annotations:
     openinfra.dev/title: Power User Access
+    openinfra.dev/aws-equivalent: PowerUserAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -155,6 +166,8 @@ metadata:
     openinfra.dev/policy-category: job-function
   annotations:
     openinfra.dev/title: Read Only Access
+    openinfra.dev/aws-equivalent: ReadOnlyAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -196,6 +209,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Bucket Full Access
+    openinfra.dev/aws-equivalent: AmazonS3FullAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -223,6 +238,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Bucket Read Only
+    openinfra.dev/aws-equivalent: AmazonS3ReadOnlyAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -250,6 +267,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Table Full Access
+    openinfra.dev/aws-equivalent: AmazonDynamoDBFullAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -277,6 +296,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Table Read Only
+    openinfra.dev/aws-equivalent: AmazonDynamoDBReadOnlyAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -312,6 +333,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Function Full Access
+    openinfra.dev/aws-equivalent: AWSLambda_FullAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -340,6 +363,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Function Invoke
+    openinfra.dev/aws-equivalent: AWSLambdaRole
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -367,6 +392,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Virtual Machine Full Access
+    openinfra.dev/aws-equivalent: AmazonEC2FullAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -389,6 +416,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Virtual Machine Read Only
+    openinfra.dev/aws-equivalent: AmazonEC2ReadOnlyAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -420,6 +449,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Storage Full Access
+    openinfra.dev/aws-equivalent: none
+    openinfra.dev/aws-equivalent-reason: "volumes and file shares have no single AWS managed policy (EBS is in AmazonEC2FullAccess, EFS is its own service)"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -441,6 +472,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Storage Read Only
+    openinfra.dev/aws-equivalent: none
+    openinfra.dev/aws-equivalent-reason: "volumes and file shares have no single AWS managed policy"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -469,6 +502,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Queue Full Access
+    openinfra.dev/aws-equivalent: AmazonSQSFullAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -490,6 +525,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Queue Read Only
+    openinfra.dev/aws-equivalent: AmazonSQSReadOnlyAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -513,6 +550,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Machine Learning Full Access
+    openinfra.dev/aws-equivalent: none
+    openinfra.dev/aws-equivalent-reason: "open-infra's model kinds are not SageMaker (AmazonSageMakerFullAccess grants a service not served)"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -542,6 +581,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Machine Learning Read Only
+    openinfra.dev/aws-equivalent: none
+    openinfra.dev/aws-equivalent-reason: "open-infra's model kinds are not SageMaker"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -589,6 +630,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Database Full Access
+    openinfra.dev/aws-equivalent: AmazonRDSFullAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -616,6 +659,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Database Read Only
+    openinfra.dev/aws-equivalent: AmazonRDSReadOnlyAccess
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -656,6 +701,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Networking Full Access
+    openinfra.dev/aws-equivalent: none
+    openinfra.dev/aws-equivalent-reason: "security groups, VPCs and address kinds span several AWS policies; AmazonVPCFullAccess grants VPC features not served"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -678,6 +725,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Networking Read Only
+    openinfra.dev/aws-equivalent: none
+    openinfra.dev/aws-equivalent-reason: "no single AWS managed policy covers open-infra's networking kinds"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -701,6 +750,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Application Full Access
+    openinfra.dev/aws-equivalent: none
+    openinfra.dev/aws-equivalent-reason: "kind: Application has no AWS service of its own"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -723,6 +774,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: Application Read Only
+    openinfra.dev/aws-equivalent: none
+    openinfra.dev/aws-equivalent-reason: "kind: Application has no AWS service of its own"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -747,6 +800,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: API Full Access
+    openinfra.dev/aws-equivalent: AmazonAPIGatewayAdministrator
+    openinfra.dev/deprecated-alias: "true"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
@@ -768,6 +823,8 @@ metadata:
     openinfra.dev/policy-category: service
   annotations:
     openinfra.dev/title: API Read Only
+    openinfra.dev/aws-equivalent: none
+    openinfra.dev/aws-equivalent-reason: "AWS has no read-only API Gateway managed policy (AmazonAPIGatewayAdministrator is full access)"
     argocd.argoproj.io/sync-wave: "4"
     argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
 spec:
