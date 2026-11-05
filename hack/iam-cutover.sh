@@ -209,7 +209,7 @@ import json, os, shlex, sys
 res = {"Policy": "policies.iam.openinfra.dev", "Group": "groups.iam.openinfra.dev",
        "User": "users.iam.openinfra.dev", "Role": "roles.iam.openinfra.dev"}
 plan = json.load(open(sys.argv[1]))
-for c in plan.get("changes", []):
+for c in plan.get("changes") or []:
     r = res.get(c["kind"]); ns, name = c["namespace"], c["name"]
     if not r:
         continue
@@ -229,7 +229,7 @@ PY
   say "step 1: the AWS policy model next to the old forms (hack/iam-migrate, additive)"
   migrate --json > "$TMP/plan.json" || die "hack/iam-migrate could not plan"
   migrate | tail -40
-  local n; n="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("changes",[])))' "$TMP/plan.json")"
+  local n; n="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("changes") or []))' "$TMP/plan.json")"
   if [ "$n" = 0 ]; then ok "nothing left to migrate"; done_mark 1; return; fi
   confirm
   cp "$TMP/plan.json" "$STATE/step1-plan.json"
@@ -243,7 +243,7 @@ for c in json.load(open(sys.argv[1]))["changes"]:
   done
   migrate --apply || die "hack/iam-migrate --apply failed (roll back with: hack/iam-cutover.sh 1 --rollback)"
   migrate --json > "$TMP/plan2.json"
-  n="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("changes",[])))' "$TMP/plan2.json")"
+  n="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("changes") or []))' "$TMP/plan2.json")"
   [ "$n" = 0 ] || die "$n change(s) still planned after --apply"
   ok "migrated: a re-plan finds nothing left"
   verify_root
