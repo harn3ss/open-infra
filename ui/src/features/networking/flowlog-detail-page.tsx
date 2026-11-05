@@ -13,14 +13,12 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { StatusTone } from "@/lib/format";
-import type { Condition, FlowLog } from "@/types/k8s";
+import type { FlowLog } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 function flowLogStatus(f: FlowLog): { label: string; tone: StatusTone } {
-  const ready = (f.status as { conditions?: Condition[] } | undefined)?.conditions?.find(
-    (c) => c.type === "Ready",
-  );
-  if (ready?.status === "True" || f.status?.ready === true) return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(f, "flowlog");
 }
 
 export function FlowLogDetailPage() {

@@ -53,9 +53,9 @@ export function ModelMonitorsPage() {
       {
         id: "status",
         header: "Status",
-        accessorFn: (m) => claimHealth(m).label,
+        accessorFn: (m) => claimHealth(m, "modelmonitor").label,
         cell: ({ row }) => {
-          const h = claimHealth(row.original);
+          const h = claimHealth(row.original, "modelmonitor");
           return <StatusBadge status={h.label} tone={h.tone} />;
         },
         size: 140,

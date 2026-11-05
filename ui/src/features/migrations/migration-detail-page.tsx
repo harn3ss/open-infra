@@ -19,9 +19,9 @@ function migStatus(m?: Migration): { label: string; tone: StatusTone } {
   const conds = m?.status?.conditions ?? [];
   const ready = conds.find((c) => c.type === "Ready");
   const synced = conds.find((c) => c.type === "Synced");
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  if (synced?.status === "False") return { label: "Error", tone: "destructive" };
-  return { label: "Provisioning", tone: "warning" };
+  if (ready?.status === "True") return { label: "Available", tone: "success" };
+  if (synced?.status === "False") return { label: "Failed", tone: "destructive" };
+  return { label: "Creating", tone: "warning" };
 }
 
 export function MigrationDetailPage() {

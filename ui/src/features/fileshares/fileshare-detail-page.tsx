@@ -109,7 +109,7 @@ export function FileShareDetailPage() {
                   <span className="text-xs text-muted-foreground">pending IP…</span>
                 )}
               </DetailRow>
-              <DetailRow label="Status">{ready ? "Ready" : "Provisioning"}</DetailRow>
+              <DetailRow label="Status">{ready ? "Available" : "Creating"}</DetailRow>
             </CardContent>
           </Card>
         </TabsContent>

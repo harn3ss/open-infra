@@ -9,14 +9,12 @@ import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import { type Condition, type Subnet } from "@/types/k8s";
+import { type Subnet } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 function subnetStatus(s: Subnet): { label: string; tone: StatusTone } {
-  const ready = (s.status as { conditions?: Condition[] } | undefined)?.conditions?.find(
-    (c) => c.type === "Ready",
-  );
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(s, "network");
 }
 
 export function SubnetsPage() {

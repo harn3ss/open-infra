@@ -42,7 +42,7 @@ export function FeatureGroupDetailPage() {
       icon={<Table2 className="size-5" />}
       title={name}
       subtitle={`Feature group · ${namespace}`}
-      status={claimHealth(fg)}
+      status={claimHealth(fg, "featuregroup")}
     >
       <Tabs defaultValue="overview">
         <TabsList>

@@ -68,9 +68,9 @@ export function ScheduledJobsPage() {
       {
         id: "status",
         header: "Status",
-        accessorFn: (s) => claimHealth(s).label,
+        accessorFn: (s) => claimHealth(s, "scheduledjob").label,
         cell: ({ row }) => {
-          const h = claimHealth(row.original);
+          const h = claimHealth(row.original, "scheduledjob");
           return <StatusBadge status={h.label} tone={h.tone} />;
         },
         size: 140,

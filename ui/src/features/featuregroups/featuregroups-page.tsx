@@ -50,9 +50,9 @@ export function FeatureGroupsPage() {
       {
         id: "status",
         header: "Status",
-        accessorFn: (g) => claimHealth(g).label,
+        accessorFn: (g) => claimHealth(g, "featuregroup").label,
         cell: ({ row }) => {
-          const h = claimHealth(row.original);
+          const h = claimHealth(row.original, "featuregroup");
           return <StatusBadge status={h.label} tone={h.tone} />;
         },
         size: 140,

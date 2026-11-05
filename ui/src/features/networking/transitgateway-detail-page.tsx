@@ -13,14 +13,12 @@ import { LoadingState, ErrorState } from "@/components/common/states";
 import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { StatusTone } from "@/lib/format";
-import type { Condition, TransitGateway } from "@/types/k8s";
+import type { TransitGateway } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 function tgStatus(t: TransitGateway): { label: string; tone: StatusTone } {
-  const ready = (t.status as { conditions?: Condition[] } | undefined)?.conditions?.find(
-    (c) => c.type === "Ready",
-  );
-  if (ready?.status === "True" || t.status?.ready) return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(t, "network");
 }
 
 /** A monospace value with a copy affordance, for IPs and CIDRs. */

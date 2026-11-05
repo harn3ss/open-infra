@@ -25,7 +25,7 @@ function streamStatus(s: Stream): { label: string; tone: StatusTone } {
     return { label: "Ready", tone: "success" };
   if (synced?.status === "False")
     return { label: "Error", tone: "destructive" };
-  return { label: s.status?.phase || "Provisioning", tone: "warning" };
+  return { label: s.status?.phase || "Creating", tone: "warning" };
 }
 
 /**

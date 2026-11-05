@@ -9,14 +9,11 @@ import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age, type StatusTone } from "@/lib/format";
 import type { Replication } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 function replStatus(r: Replication): { label: string; tone: StatusTone } {
-  const conds = r.status?.conditions ?? [];
-  const ready = conds.find((c) => c.type === "Ready");
-  const synced = conds.find((c) => c.type === "Synced");
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  if (synced?.status === "False") return { label: "Error", tone: "destructive" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(r);
 }
 
 export function ReplicationsPage() {

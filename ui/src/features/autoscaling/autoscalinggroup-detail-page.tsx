@@ -24,7 +24,7 @@ import { osLabel } from "@/features/vms/vm-shared";
 
 /** A member VM's live status, derived from the KubeVirt VM's printableStatus / ready. */
 function memberStatus(vm: KubevirtVm): Health {
-  if (vm.metadata.deletionTimestamp) return { label: "Terminating", tone: "warning" };
+  if (vm.metadata.deletionTimestamp) return { label: "Shutting down", tone: "warning" };
   const ps = vm.status?.printableStatus;
   if (ps) return { label: ps, tone: statusTone(ps) };
   if (vm.status?.ready) return { label: "Running", tone: "success" };

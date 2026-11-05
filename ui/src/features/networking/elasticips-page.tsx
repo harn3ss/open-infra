@@ -10,14 +10,12 @@ import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import { type Condition, type ElasticIp } from "@/types/k8s";
+import { type ElasticIp } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 function eipStatus(e: ElasticIp): { label: string; tone: StatusTone } {
-  const ready = (e.status as { conditions?: Condition[] } | undefined)?.conditions?.find(
-    (c) => c.type === "Ready",
-  );
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(e, "elasticip");
 }
 
 function eipAddress(e: ElasticIp): string | undefined {
@@ -139,7 +137,7 @@ export function ElasticIpsPage() {
         key: "status",
         label: "Status",
         getValue: (e) => eipStatus(e).label,
-        options: [{ value: "Ready" }, { value: "Provisioning" }],
+        options: [{ value: "Allocated" }, { value: "Creating" }, { value: "Failed" }],
       },
     ],
     [],

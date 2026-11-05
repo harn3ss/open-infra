@@ -28,5 +28,7 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* Unit tests run under node (npm test), not in the app bundle. */
+  "exclude": ["src/**/*.test.ts"]
 }

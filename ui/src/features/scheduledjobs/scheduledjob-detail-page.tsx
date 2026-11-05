@@ -70,7 +70,7 @@ export function ScheduledJobDetailPage() {
       icon={<CalendarClock className="size-5" />}
       title={name}
       subtitle={`Scheduled job · ${namespace}`}
-      status={claimHealth(sj)}
+      status={claimHealth(sj, "scheduledjob")}
     >
       <Tabs defaultValue="overview">
         <TabsList>

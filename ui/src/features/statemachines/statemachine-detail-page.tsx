@@ -138,7 +138,7 @@ export function StateMachineDetailPage() {
       icon={<Route className="size-5" />}
       title={name}
       subtitle={`State machine · ${namespace}`}
-      status={claimHealth(sm)}
+      status={claimHealth(sm, "statemachine")}
     >
       <Tabs defaultValue="graph">
         <TabsList>

@@ -10,14 +10,11 @@ import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import { type Stream } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 function streamStatus(s: Stream): { label: string; tone: StatusTone } {
-  const conds = s.status?.conditions ?? [];
-  const ready = conds.find((c) => c.type === "Ready");
-  const synced = conds.find((c) => c.type === "Synced");
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  if (synced?.status === "False") return { label: "Error", tone: "destructive" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(s, "stream");
 }
 
 export function StreamsPage() {

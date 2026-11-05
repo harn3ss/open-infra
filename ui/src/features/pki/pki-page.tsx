@@ -231,7 +231,7 @@ export function CertificateAuthorityDetailPage() {
                 <code className="text-xs">{ca.pkiMount || "—"}</code>
               </DetailRow>
               <DetailRow label="State">
-                {ca.ready ? "Ready" : "Provisioning"}
+                {ca.ready ? "Active" : "Creating"}
               </DetailRow>
               <DetailRow label="Serial">
                 <code className="text-xs">{ca.serial || "—"}</code>

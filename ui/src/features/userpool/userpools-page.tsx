@@ -10,16 +10,13 @@ import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import { type Condition, type UserPool } from "@/types/k8s";
+import { type UserPool } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 /** Ready when status.ready is true (or a Ready=True condition); otherwise still provisioning. */
 export function userPoolStatus(p: UserPool): { label: string; tone: StatusTone } {
-  const ready =
-    p.status?.ready === true ||
-    (p.status?.conditions as Condition[] | undefined)?.find((c) => c.type === "Ready")?.status ===
-      "True";
-  if (ready) return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(p);
 }
 
 export function UserPoolsPage() {
@@ -104,7 +101,7 @@ export function UserPoolsPage() {
         key: "status",
         label: "Status",
         getValue: (p) => userPoolStatus(p).label,
-        options: [{ value: "Ready" }, { value: "Provisioning" }],
+        options: [{ value: "Available" }, { value: "Creating" }, { value: "Failed" }],
       },
     ],
     [],

@@ -10,14 +10,12 @@ import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import { type Condition, type HttpApi } from "@/types/k8s";
+import { type HttpApi } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 function apiStatus(a: HttpApi): { label: string; tone: StatusTone } {
-  const ready = (a.status as { conditions?: Condition[] } | undefined)?.conditions?.find(
-    (c) => c.type === "Ready",
-  );
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(a);
 }
 
 /** List of kind: HttpApi (API Gateway HTTP API) — a hostname routing paths onto Function/Application backends. */
@@ -97,7 +95,7 @@ export function HttpApisPage() {
         key: "status",
         label: "Status",
         getValue: (a) => apiStatus(a).label,
-        options: [{ value: "Ready" }, { value: "Provisioning" }],
+        options: [{ value: "Available" }, { value: "Creating" }, { value: "Failed" }],
       },
     ],
     [],

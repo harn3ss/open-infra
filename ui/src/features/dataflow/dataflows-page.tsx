@@ -12,14 +12,11 @@ import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age, type StatusTone } from "@/lib/format";
 import type { DataFlow } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 function dfStatus(d: DataFlow): { label: string; tone: StatusTone } {
-  const conds = d.status?.conditions ?? [];
-  const ready = conds.find((c) => c.type === "Ready");
-  const synced = conds.find((c) => c.type === "Synced");
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  if (synced?.status === "False") return { label: "Error", tone: "destructive" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(d);
 }
 
 export function DataFlowsPage() {

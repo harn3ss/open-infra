@@ -10,8 +10,8 @@ import { useNamespace } from "@/lib/namespace-context";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
+import { awsState } from "@/lib/aws-states";
 import {
-  type Condition,
   type FileShare,
   type K8sObject,
 } from "@/types/k8s";
@@ -20,11 +20,8 @@ type SvcStatus = K8sObject<unknown, { loadBalancer?: { ingress?: { ip?: string }
 
 
 function fsStatus(f: FileShare): { label: string; tone: StatusTone } {
-  const ready = (f.status as { conditions?: Condition[] } | undefined)?.conditions?.find(
-    (c) => c.type === "Ready",
-  );
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(f);
 }
 
 export function FileSharesPage() {

@@ -100,19 +100,11 @@ function dvErrorMessage(dv?: DataVolume): string | undefined {
   return undefined;
 }
 
-const DV_PHASE_LABEL: Record<string, string> = {
-  ImportScheduled: "Importing disk",
-  ImportInProgress: "Importing disk",
-  CloneScheduled: "Cloning disk",
-  CloneInProgress: "Cloning disk",
-  SnapshotForSmartCloneInProgress: "Cloning disk",
-  Pending: "Provisioning",
-};
-
 /**
- * Power/lifecycle status from the claim's spec.running + the live VMI phase, plus
- * the root DataVolume so an unbootable / stuck disk clone shows as an error (and
- * a healthy import shows live progress) instead of a perpetual "Provisioning".
+ * The instance state, as EC2 names it (pending | running | shutting-down | stopped), from the claim's
+ * spec.running, the live VM's phase and the root volume's copy, so a stuck or failed root volume shows
+ * as Failed (with why) and a healthy copy as pending with its progress — never a KubeVirt phase
+ * ("Scheduling") or a disk-import step's name.
  */
 export function vmStatus(
   vm: VirtualMachine,
@@ -120,24 +112,25 @@ export function vmStatus(
   rootDv?: DataVolume,
 ): { label: string; tone: StatusTone; detail?: string } {
   if (vm.metadata.deletionTimestamp)
-    return { label: "Terminating", tone: "warning" };
+    return { label: "Shutting down", tone: "warning" };
   const running = vm.spec?.running !== false; // default true
-  if (!running) return { label: "Stopped", tone: "muted" };
+  if (!running) return { label: vmi ? "Stopping" : "Stopped", tone: "muted" };
   const phase = vmi?.status?.phase;
   if (phase === "Running") return { label: "Running", tone: "success" };
-  if (phase) return { label: phase, tone: "warning" }; // Pending/Scheduling/…
-  // No VMI yet — the root disk is still being provisioned by CDI.
+  if (phase === "Failed") return { label: "Failed", tone: "destructive" };
+  if (phase === "Succeeded") return { label: "Stopped", tone: "muted" }; // the guest powered off
+  if (phase) return { label: "Pending", tone: "warning" }; // scheduling / starting
+  // Not started yet: its root volume is still being prepared from the image.
   const failure = dvFailure(rootDv);
-  if (failure) return { label: "Disk error", tone: "destructive", detail: failure };
+  if (failure) return { label: "Failed", tone: "destructive", detail: `root volume: ${failure}` };
   const dvPhase = rootDv?.status?.phase;
   if (dvPhase && dvPhase !== "Succeeded") {
-    const base = DV_PHASE_LABEL[dvPhase] ?? "Provisioning";
     const pct = rootDv?.status?.progress;
     const label =
-      pct && pct !== "N/A" && pct !== "0.0%" ? `${base} ${pct}` : base;
+      pct && pct !== "N/A" && pct !== "0.0%" ? `Pending (root volume ${pct})` : "Pending";
     return { label, tone: "warning" };
   }
-  return { label: "Provisioning", tone: "warning" }; // DV done/absent, VMI booting
+  return { label: "Pending", tone: "warning" }; // the root volume is ready; the instance is starting
 }
 
 export function vmIp(vmi?: Vmi): string | undefined {

@@ -13,12 +13,12 @@ import { LoadingState, ErrorState } from "@/components/common/states";
 import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { StatusTone } from "@/lib/format";
-import type { Condition, ElasticIp } from "@/types/k8s";
+import type { ElasticIp } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 function eipStatus(e: ElasticIp): { label: string; tone: StatusTone } {
-  const ready = e.status?.conditions?.find((c: Condition) => c.type === "Ready");
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(e, "elasticip");
 }
 
 export function ElasticIpDetailPage() {

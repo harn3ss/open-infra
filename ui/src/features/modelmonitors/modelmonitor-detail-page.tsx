@@ -84,7 +84,7 @@ export function ModelMonitorDetailPage() {
       icon={<Gauge className="size-5" />}
       title={name}
       subtitle={`Model monitor · ${namespace}`}
-      status={claimHealth(mm)}
+      status={claimHealth(mm, "modelmonitor")}
     >
       <Tabs defaultValue="overview">
         <TabsList>

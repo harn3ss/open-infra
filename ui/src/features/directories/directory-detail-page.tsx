@@ -112,7 +112,7 @@ export function DirectoryDetailPage() {
                   <span className="text-xs text-muted-foreground">pending IP…</span>
                 )}
               </DetailRow>
-              <DetailRow label="Status">{ready ? "Ready" : "Provisioning"}</DetailRow>
+              <DetailRow label="Status">{ready ? "Active" : "Creating"}</DetailRow>
             </CardContent>
           </Card>
         </TabsContent>

@@ -1,35 +1,25 @@
 import type { Condition, K8sObject } from "@/types/k8s";
 import type { StatusTone } from "@/lib/format";
+import { awsState } from "@/lib/aws-states";
 
 export interface Health {
   label: string;
   tone: StatusTone;
+  /** Why it failed or is waiting, when its conditions say. */
+  detail?: string;
 }
 
 /**
- * Derive a single human status from Crossplane-style claim conditions
- * (Ready / Synced). Works for any open-infra claim (Application / Function /
- * Model) — they all carry standard `Ready` and `Synced` conditions.
+ * A resource's status in AWS's words (lib/aws-states): Available / Creating / Pending / Deleting /
+ * Failed, or the service's own (a Lambda function is Active). `service` picks the service's words:
+ * "function", "statemachine", "featuregroup", "modelmonitor", "scheduledjob".
  */
 export function claimHealth(
   obj: K8sObject<unknown, { conditions?: Condition[] }>,
+  service?: string,
 ): Health {
-  if (obj.metadata.deletionTimestamp) {
-    return { label: "Terminating", tone: "warning" };
-  }
-  const conditions = obj.status?.conditions ?? [];
-  const ready = conditions.find((c) => c.type === "Ready");
-  const synced = conditions.find((c) => c.type === "Synced");
-
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  if (ready?.status === "False") {
-    return { label: ready.reason || "Not ready", tone: "destructive" };
-  }
-  if (synced?.status === "False") {
-    return { label: synced.reason || "Sync error", tone: "destructive" };
-  }
-  if (conditions.length === 0) return { label: "Pending", tone: "warning" };
-  return { label: "Provisioning", tone: "warning" };
+  const s = awsState(obj, service);
+  return { label: s.label, tone: s.tone, detail: s.detail };
 }
 
 /**
@@ -50,8 +40,9 @@ export function nodeAwareHealth(
   const offline = nodes.filter((n) => offlineNodes.has(n));
   if (offline.length === 0) return base;
   if (offline.length === nodes.length) {
-    // Every backing pod is on a dead node — the claim is not actually serving.
-    return { label: "Node offline", tone: "destructive" };
+    // Every backing pod is on a dead node — the claim is not actually serving. AWS calls a resource whose
+    // host is down "impaired" (an EC2 status check), not by the host's Kubernetes name.
+    return { label: "Impaired", tone: "destructive" };
   }
   // Some replicas remain on healthy nodes: degraded, not down.
   return { label: "Degraded", tone: "warning" };

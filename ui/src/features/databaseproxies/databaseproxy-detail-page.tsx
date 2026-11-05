@@ -18,7 +18,7 @@ import type { Condition, DatabaseProxy } from "@/types/k8s";
 function proxyStatus(p: DatabaseProxy): { label: string; tone: StatusTone } {
   const ready = p.status?.conditions?.find((c: Condition) => c.type === "Ready");
   if (ready?.status === "True") return { label: "Available", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  return { label: "Creating", tone: "warning" };
 }
 
 export function DatabaseProxyDetailPage() {

@@ -212,7 +212,7 @@ export function FunctionDetailPage() {
       icon={<Zap className="size-5" />}
       title={name}
       subtitle={`Serverless function · ${namespace}`}
-      status={claimHealth(fn)}
+      status={claimHealth(fn, "function")}
     >
       <Tabs defaultValue="code">
         <TabsList>

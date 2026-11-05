@@ -56,8 +56,8 @@ export function ParameterDetailPage() {
   const ready = param.status?.ready === true;
   const isSecure = type === "SecureString";
   const status: { label: string; tone: StatusTone } = ready
-    ? { label: "Ready", tone: "success" }
-    : { label: "Provisioning", tone: "warning" };
+    ? { label: "Available", tone: "success" }
+    : { label: "Creating", tone: "warning" };
 
   return (
     <DetailShell

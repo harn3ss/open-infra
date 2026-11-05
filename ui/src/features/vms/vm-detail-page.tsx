@@ -194,11 +194,10 @@ export function VmDetailPage() {
   const password = decode(secret?.data?.PASSWORD);
   const port = decode(secret?.data?.PORT) || (isWin ? "3389" : "22");
 
-  const reachHost = lanIp ?? "<port-forward>";
+  const reachHost = lanIp ?? "<public-ip>";
   const connectCmd = isWin
     ? `mstsc /v:${reachHost}:${port}`
     : `ssh ${username}@${reachHost}`;
-  const portForward = `kubectl port-forward -n ${namespace} svc/${name} ${port}:${port}`;
 
   return (
     <DetailShell
@@ -326,28 +325,20 @@ export function VmDetailPage() {
                     : "No key set — use the password above."}
                 </DetailRow>
               ) : null}
-              <DetailRow label={spec?.expose ? "LAN endpoint" : "LAN endpoint"}>
+              <DetailRow label="Public IPv4 address">
                 {spec?.expose ? (
                   lanIp ? (
                     <code className="text-xs">
                       {lanIp}:{port}
                     </code>
                   ) : (
-                    <span className="text-xs text-muted-foreground">
-                      pending MetalLB IP…
-                    </span>
+                    <span className="text-xs text-muted-foreground">pending…</span>
                   )
                 ) : (
                   <span className="text-xs text-muted-foreground">
-                    not exposed — use port-forward below
+                    none — expose the instance or associate an Elastic IP to reach it from your network
                   </span>
                 )}
-              </DetailRow>
-              <DetailRow label="Port-forward">
-                <span className="flex items-center gap-1">
-                  <code className="text-xs">{portForward}</code>
-                  <CopyButton value={portForward} />
-                </span>
               </DetailRow>
             </CardContent>
           </Card>

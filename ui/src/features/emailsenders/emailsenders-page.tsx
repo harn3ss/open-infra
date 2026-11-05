@@ -10,13 +10,13 @@ import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import type { Condition, EmailSender } from "@/types/k8s";
+import type { EmailSender } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
-/** Ready when the Ready condition is True (or status.ready is set); else provisioning. */
+/** The sender identity's verification state, as SES shows it (Verified / Pending / Failed). */
 function senderStatus(s: EmailSender): { label: string; tone: StatusTone } {
-  const ready = s.status?.conditions?.find((c: Condition) => c.type === "Ready");
-  if (ready?.status === "True" || s.status?.ready) return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(s, "emailsender");
 }
 
 export function EmailSendersPage() {
@@ -87,7 +87,7 @@ export function EmailSendersPage() {
         key: "status",
         label: "Status",
         getValue: (s) => senderStatus(s).label,
-        options: [{ value: "Ready" }, { value: "Provisioning" }],
+        options: [{ value: "Verified" }, { value: "Pending" }, { value: "Failed" }],
       },
     ],
     [],

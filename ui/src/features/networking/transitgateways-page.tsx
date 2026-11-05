@@ -9,14 +9,12 @@ import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import { type Condition, type TransitGateway } from "@/types/k8s";
+import { type TransitGateway } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 function tgStatus(t: TransitGateway): { label: string; tone: StatusTone } {
-  const ready = (t.status as { conditions?: Condition[] } | undefined)?.conditions?.find(
-    (c) => c.type === "Ready",
-  );
-  if (ready?.status === "True" || t.status?.ready) return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(t, "network");
 }
 
 function spokeNames(t: TransitGateway): string[] {

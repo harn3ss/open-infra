@@ -14,12 +14,12 @@ import { LoadingState, ErrorState } from "@/components/common/states";
 import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { StatusTone } from "@/lib/format";
-import type { Condition, HttpApi, HttpApiRoute } from "@/types/k8s";
+import type { HttpApi, HttpApiRoute } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 function apiStatus(a: HttpApi): { label: string; tone: StatusTone } {
-  const ready = a.status?.conditions?.find((c: Condition) => c.type === "Ready");
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(a);
 }
 
 function OnOff({ on, onLabel = "Enabled", offLabel = "Disabled" }: { on?: boolean; onLabel?: string; offLabel?: string }) {

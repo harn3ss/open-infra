@@ -10,15 +10,12 @@ import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type { Migration } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 // A Migration's status, derived from the claim's Crossplane conditions.
 function migStatus(m: Migration): { label: string; tone: StatusTone } {
-  const conds = m.status?.conditions ?? [];
-  const ready = conds.find((c) => c.type === "Ready");
-  const synced = conds.find((c) => c.type === "Synced");
-  if (ready?.status === "True") return { label: "Ready", tone: "success" };
-  if (synced?.status === "False") return { label: "Error", tone: "destructive" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(m);
 }
 
 export function MigrationsPage() {

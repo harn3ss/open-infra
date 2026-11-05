@@ -10,13 +10,13 @@ import { Button } from "@/components/ui/button";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import type { Condition, StaticSite } from "@/types/k8s";
+import type { StaticSite } from "@/types/k8s";
+import { awsState } from "@/lib/aws-states";
 
 /** Ready when the Ready condition is True (or status.ready is set); else provisioning. */
 function siteStatus(s: StaticSite): { label: string; tone: StatusTone } {
-  const ready = s.status?.conditions?.find((c: Condition) => c.type === "Ready");
-  if (ready?.status === "True" || s.status?.ready) return { label: "Ready", tone: "success" };
-  return { label: "Provisioning", tone: "warning" };
+  // The resource's state in AWS's words (lib/aws-states).
+  return awsState(s, "staticsite");
 }
 
 export function StaticSitesPage() {
@@ -107,7 +107,7 @@ export function StaticSitesPage() {
         key: "status",
         label: "Status",
         getValue: (s) => siteStatus(s).label,
-        options: [{ value: "Ready" }, { value: "Provisioning" }],
+        options: [{ value: "Deployed" }, { value: "In progress" }, { value: "Failed" }],
       },
     ],
     [],

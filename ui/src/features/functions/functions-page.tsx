@@ -64,9 +64,9 @@ export function FunctionsPage() {
       {
         id: "status",
         header: "Status",
-        accessorFn: (f) => claimHealth(f).label,
+        accessorFn: (f) => claimHealth(f, "function").label,
         cell: ({ row }) => {
-          const h = claimHealth(row.original);
+          const h = claimHealth(row.original, "function");
           return <StatusBadge status={h.label} tone={h.tone} />;
         },
         size: 150,
