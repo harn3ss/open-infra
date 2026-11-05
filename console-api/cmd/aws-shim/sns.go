@@ -32,6 +32,7 @@ import (
 	"github.com/harn3ss/open-infra/cfn/snsfilter"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -99,12 +100,12 @@ func (h *snsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 
 	res := snsAuthzTopic(op, r)
 
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, res); !allowed {
-		writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID, reason, snsXMLNamespace)
-		return
-	}
-	// Fine-grained, per topic; an assumed role is checked on every op (ListTopics/ListSubscriptions on Topic::*).
-	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "sns:"+op, "Topic", res, r); denied {
+	// sns:<Op> on the topic (decide): in legacy the coarse SubjectAccessReview, then the data-plane
+	// refinement per topic (an assumed role is checked on every op, ListTopics/ListSubscriptions on
+	// Topic::*); in enforce IAM policy alone, with the topic's own policy.
+	if ok, reason := decide(r.Context(), r, h.authz, claims, "sns:"+op, "Topic", res,
+		coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, res,
+			"sns:"+op, "Topic", res), h.topicPolicyOpt(r.Context(), res)...); !ok {
 		writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID, reason, snsXMLNamespace)
 		return
 	}
@@ -333,16 +334,14 @@ func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *ht
 func (h *snsHandler) mayDeliverToQueue(ctx context.Context, r *http.Request, claims iam.Claims, topicArn, queueURL string) (string, bool, error) {
 	queue := queueNameFromURL(queueURL)
 	verb, _ := verbForSQSOp("SendMessage")
-	allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, queue)
-	if allowed {
-		denied, why := dataPlaneDenied(ctx, h.authz, claims, "sqs:SendMessage", "Queue", queue, r)
-		if !denied {
-			return "", true, nil
-		}
-		reason = why
+	if ok, reason := decide(ctx, r, h.authz, claims, "sqs:SendMessage", "Queue", queue,
+		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, queue,
+			"sqs:SendMessage", "Queue", queue)); ok {
+		return "", true, nil
+	} else {
+		granted, err := h.queueGrantsTopic(ctx, topicArn, queueURL)
+		return reason, granted, err
 	}
-	granted, err := h.queueGrantsTopic(ctx, topicArn, queueURL)
-	return reason, granted, err
 }
 
 // queueGrantsTopic reports whether the queue's own policy (one is set) lets the topic send to it.
@@ -723,4 +722,23 @@ func xmlEscape(s string) string {
 	var b strings.Builder
 	_ = xml.EscapeText(&b, []byte(s))
 	return b.String()
+}
+
+// topicPolicyOpt carries topic name's Policy attribute (its resource policy) to the evaluator, read only
+// when IAM policy decides (resourcePolicyOpt).
+func (h *snsHandler) topicPolicyOpt(ctx context.Context, name string) []iamauthz.RequestOption {
+	if h.store == nil || name == "" {
+		return nil
+	}
+	return resourcePolicyOpt(h.authz, func() string {
+		arn, found, err := h.store.topicARNByName(ctx, name)
+		if err != nil || !found {
+			return ""
+		}
+		attrs, found, err := h.store.topicAttrs(ctx, arn)
+		if err != nil || !found {
+			return ""
+		}
+		return attrs["Policy"]
+	})
 }

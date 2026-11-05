@@ -114,12 +114,9 @@ func (h *ebHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 	// Coarse gate, then the fine-grained check per rule/bus the op acts on; an assumed role is checked on
 	// every op (ListRules on Rule::*).
 	for _, res := range ebAuthzResources(op, body) {
-		if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, res.id); !allowed {
-			h.auditDeny(ctx, op, res.id, reason)
-			writeEBError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
-		}
-		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "events:"+op, res.typ, res.id, r); denied {
+		if ok, reason := decide(ctx, r, h.authz, claims, "events:"+op, res.typ, res.id,
+			coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, res.id,
+				"events:"+op, res.typ, res.id)); !ok {
 			h.auditDeny(ctx, op, res.id, reason)
 			writeEBError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 			return
@@ -783,22 +780,20 @@ func (h *ebHandler) authorizeTarget(ctx context.Context, r *http.Request, claims
 	switch ttype {
 	case "lambda":
 		fn := lambdaNameFromArn(arn)
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "lambda:InvokeFunction", "Function", fn, r); denied {
-			return reason, false
-		}
 		if fnNS == "" {
 			fnNS = h.fns.namespaceOf(ctx, fn, h.fnNS) // where the Function is (fn_locate.go)
 		}
-		if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", fnNS, fn); !allowed {
+		if ok, reason := decide(ctx, r, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
+			scopedDataPlaneThenCoarse(ctx, r, h.cs, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
+				"create", "openinfra.dev", "functions", fnNS, fn)); !ok {
 			return reason, false
 		}
 		return "", true
 	case "sqs":
 		q := arnLast(arn)
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "sqs:SendMessage", "Queue", q, r); denied {
-			return reason, false
-		}
-		if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "applications", h.authzNS, q); !allowed {
+		if ok, reason := decide(ctx, r, h.authz, claims, "sqs:SendMessage", "Queue", q,
+			scopedDataPlaneThenCoarse(ctx, r, h.cs, h.authz, claims, "sqs:SendMessage", "Queue", q,
+				"create", "openinfra.dev", "applications", h.authzNS, q)); !ok {
 			return reason, false
 		}
 		return "", true

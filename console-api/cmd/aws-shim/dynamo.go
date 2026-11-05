@@ -262,28 +262,25 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 
 	// Authorize with the same impersonated SubjectAccessReview every front door uses — one policy
 	// world; coarse on openinfra.dev/applications in v1.
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, table); !allowed {
+	// Per table and in AWS action names (dynamoRoleChecks): the multi-table ops on each table they touch,
+	// a transaction through its items' actions, a restore on its source and target (decideEach). In legacy
+	// the coarse impersonated SubjectAccessReview first, then the data-plane refinement on each: an assumed
+	// role is checked closed on EVERY op (the table-less ones, ListTables, on Table::*); a User stays
+	// additive (can only tighten), so a per-table Deny holds for BatchGetItem / BatchWriteItem /
+	// TransactWriteItems / RestoreTableToPointInTime as for GetItem. In enforce IAM policy alone.
+	var checks []authzCheck
+	for _, c := range dynamoRoleChecks(op, table, body) {
+		checks = append(checks, authzCheck{c.action, "Table", c.table})
+	}
+	if ok, reason, c := decideEach(r.Context(), r, h.authz, claims,
+		coarseOnly(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, table), checks); !ok {
 		// Log the denial with its reason: a client-only 403 with nothing recorded server-side is
-		// undiagnosable, and "authorization check failed" (a SAR error/timeout — e.g. the authz
-		// webhook down) reads very differently from a genuine policy denial.
-		h.logger.Warn("dynamo authz denied", "op", op, "table", table,
-			"principal", claims.PrincipalID(), "verb", verb, "reason", reason)
+		// undiagnosable, and "authorization check failed" (a SAR error/timeout — e.g. the authz webhook
+		// down) reads very differently from a genuine policy denial.
+		h.logger.Warn("dynamo authz denied", "op", op, "action", c.action, "table", c.resID,
+			"principal", claims.PrincipalID(), "assumedRole", claims.AssumedRole != "", "verb", verb, "reason", reason)
 		writeDynamoError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
-	}
-	// Fine-grained data-plane policy (kind: Policy dataPlane), per table and in AWS action names
-	// (dynamoRoleChecks): the multi-table ops on each table they touch, a transaction through its items'
-	// actions, a restore on its source and target. An assumed role is checked closed on EVERY op (the
-	// table-less ones, ListTables, on Table::*). A User stays additive (can only tighten) and is checked on
-	// the same tables, so a per-table Deny holds for BatchGetItem / BatchWriteItem / TransactWriteItems /
-	// RestoreTableToPointInTime as for GetItem; an op naming no table skips resource-level policy.
-	for _, c := range dynamoRoleChecks(op, table, body) {
-		if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, c.action, "Table", c.table, r); denied {
-			h.logger.Warn("dynamo data-plane denied", "op", op, "action", c.action, "table", c.table,
-				"principal", claims.PrincipalID(), "assumedRole", claims.AssumedRole != "", "reason", reason)
-			writeDynamoError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
-		}
 	}
 	if h.db == nil {
 		writeDynamoError(w, http.StatusNotImplemented, "NotImplementedException", requestID,

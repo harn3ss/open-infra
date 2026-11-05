@@ -40,6 +40,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -138,16 +139,22 @@ func (h *ssmHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 
 	// One policy world: coarse impersonated SubjectAccessReview.
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, resName); !allowed {
-		h.auditDeny(ctx, op, resName, reason)
-		writeSSMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained Cedar dataPlane — additive, per-parameter / per-path. For batch ops (GetParameters,
-	// DeleteParameters) the check is per-name inside the op; here we gate only the single-resource ops. An
-	// assumed role is checked on every non-batch op — DescribeParameters on Parameter::*.
-	if !ssmBatchOp(op) {
-		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "ssm:"+op, "Parameter", resName, r); denied {
+	// ssm:<Op> on the parameter (decide). In legacy the coarse SubjectAccessReview, then the data-plane
+	// refinement per parameter / path; a batch op (GetParameters, DeleteParameters) is checked per name
+	// inside the op instead, so here the coarse check alone gates it (and in enforce, each name is checked
+	// there). An assumed role is checked on every non-batch op — DescribeParameters on Parameter::*.
+	if ssmBatchOp(op) {
+		if h.authz.IAM().ModeFor(ctx, principalOf(claims)) != iamauthz.ModeEnforce {
+			if ok, reason := coarseOnly(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, resName)(); !ok {
+				h.auditDeny(ctx, op, resName, reason)
+				writeSSMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+				return
+			}
+		}
+	} else {
+		if ok, reason := decide(ctx, r, h.authz, claims, "ssm:"+op, "Parameter", resName,
+			coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, resName,
+				"ssm:"+op, "Parameter", resName)); !ok {
 			h.auditDeny(ctx, op, resName, reason)
 			writeSSMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 			return
@@ -248,8 +255,9 @@ func (h *ssmHandler) decryptValue(ctx context.Context, name, ciphertext string) 
 // canDecrypt implements the second permission of the two-permission WithDecryption model: reading a
 // SecureString plaintext needs kms:Decrypt on the managed key, additively to ssm:GetParameter.
 func (h *ssmHandler) canDecrypt(ctx context.Context, claims iam.Claims, r *http.Request) bool {
-	denied, _ := deniedByDataPlane(ctx, h.authz, claims, "kms:Decrypt", "Key", ssmDefaultKeyID, r)
-	return !denied
+	ok, _ := decide(ctx, r, h.authz, claims, "kms:Decrypt", "Key", ssmDefaultKeyID,
+		scopedDataPlaneOnly(ctx, r, h.authz, claims, "kms:Decrypt", "Key", ssmDefaultKeyID))
+	return ok
 }
 
 // --- operations ---
@@ -354,7 +362,8 @@ func (h *ssmHandler) getParameters(ctx context.Context, w http.ResponseWriter, r
 	for _, raw := range names {
 		base, _, _ := parseParamRef(raw)
 		// per-name Cedar
-		if denied, _ := deniedByDataPlane(ctx, h.authz, claims, "ssm:GetParameters", "Parameter", base, r); denied {
+		if ok, _ := decide(ctx, r, h.authz, claims, "ssm:GetParameters", "Parameter", base,
+			scopedDataPlaneOnly(ctx, r, h.authz, claims, "ssm:GetParameters", "Parameter", base)); !ok {
 			invalid = append(invalid, raw)
 			continue
 		}
@@ -433,7 +442,8 @@ func (h *ssmHandler) deleteParameters(ctx context.Context, w http.ResponseWriter
 	invalid := make([]any, 0)
 	for _, raw := range names {
 		base, _, _ := parseParamRef(raw)
-		if denied, _ := deniedByDataPlane(ctx, h.authz, claims, "ssm:DeleteParameters", "Parameter", base, r); denied {
+		if ok, _ := decide(ctx, r, h.authz, claims, "ssm:DeleteParameters", "Parameter", base,
+			scopedDataPlaneOnly(ctx, r, h.authz, claims, "ssm:DeleteParameters", "Parameter", base)); !ok {
 			invalid = append(invalid, raw)
 			continue
 		}

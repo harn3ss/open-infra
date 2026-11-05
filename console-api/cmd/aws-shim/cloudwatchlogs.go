@@ -112,13 +112,11 @@ func (h *cwlHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	group, _ := body["logGroupName"].(string)
 
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, group); !allowed {
-		h.audit(ctx, op, group, "deny", reason)
-		writeCWLError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained, per log group; an assumed role is checked on every op (DescribeLogGroups on LogGroup::*).
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "logs:"+op, "LogGroup", group, r); denied {
+	// logs:<Op> on the log group (decide): in legacy the coarse SubjectAccessReview, then the data-plane
+	// refinement per log group (an assumed role is checked on every op, DescribeLogGroups on LogGroup::*).
+	if ok, reason := decide(ctx, r, h.authz, claims, "logs:"+op, "LogGroup", group,
+		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, group,
+			"logs:"+op, "LogGroup", group)); !ok {
 		h.audit(ctx, op, group, "deny", reason)
 		writeCWLError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return

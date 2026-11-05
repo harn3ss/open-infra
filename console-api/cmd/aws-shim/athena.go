@@ -201,17 +201,15 @@ func (h *athenaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	resType, res := h.athenaResource(op, body)
 
 	// One policy world: the coarse impersonated SubjectAccessReview (resource-agnostic, as every front door).
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, res); !allowed {
-		h.audit(ctx, op, res, "deny", reason)
-		writeAthenaError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the workgroup when we have one; an
-	// assumed role is checked on every op (ListWorkGroups on WorkGroup::*).
+	// athena:<Op> on the workgroup (decide): in legacy the coarse SubjectAccessReview, then the data-plane
+	// refinement scoped to the workgroup when there is one (an assumed role is checked on every op,
+	// ListWorkGroups on WorkGroup::*).
 	if resType == "" {
 		resType = "WorkGroup"
 	}
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "athena:"+op, resType, res, r); denied {
+	if ok, reason := decide(ctx, r, h.authz, claims, "athena:"+op, resType, res,
+		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, res,
+			"athena:"+op, resType, res)); !ok {
 		h.audit(ctx, op, res, "deny", reason)
 		writeAthenaError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
 		return
@@ -299,7 +297,8 @@ func (h *athenaHandler) tableAuthorizer(ctx context.Context, claims iam.Claims, 
 	principal := principalFromCtx(ctx)
 	return func(ctx context.Context, checks [][2]string) string {
 		for _, c := range checks {
-			if denied, reason := dataPlaneDenied(ctx, h.authz, claims, c[0], "Table", c[1], req); denied {
+			if ok, reason := decide(ctx, req, h.authz, claims, c[0], "Table", c[1],
+				dataPlaneOnly(ctx, req, h.authz, claims, c[0], "Table", c[1])); !ok {
 				h.audit(withPrincipal(ctx, principal), "StartQueryExecution", c[1], "deny", c[0]+": "+reason)
 				return "not authorized to " + c[0] + " on table " + c[1] + ": " + reason
 			}

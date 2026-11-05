@@ -101,12 +101,11 @@ func (h *apigwV1Handler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 
 	// One policy world: coarse impersonated SubjectAccessReview + Cedar data-plane (apigateway:<Op>).
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, restVerb(v.Op), "openinfra.dev", "applications", h.authzNS, resID); !allowed {
-		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// An assumed role's api-less ops (GetRestApis, CreateRestApi with no name) are checked on Api::*.
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "apigateway:"+v.Op, "Api", scopeFor(claims, resID), r); denied {
+	// apigateway:<Op> on the API (decide): in legacy the coarse SubjectAccessReview, then the data-plane
+	// refinement (an assumed role's api-less ops, GetRestApis and CreateRestApi with no name, on Api::*).
+	if ok, reason := decide(ctx, r, h.authz, claims, "apigateway:"+v.Op, "Api", resID,
+		coarseThenScopedDataPlane(ctx, r, h.cs, h.authz, claims, restVerb(v.Op), "openinfra.dev", "applications", h.authzNS, resID,
+			"apigateway:"+v.Op, "Api", scopeFor(claims, resID))); !ok {
 		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
@@ -369,11 +368,9 @@ func (h *apigwV1Handler) putIntegration(ctx context.Context, w http.ResponseWrit
 			return
 		}
 		fn := functionFromURI(uri)
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "lambda:InvokeFunction", "Function", fn, r); denied {
-			writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, "not authorized to integrate function "+fn+": "+reason)
-			return
-		}
-		if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", h.fnNamespace(ctx, fn), fn); !allowed {
+		if ok, reason := decide(ctx, r, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
+			scopedDataPlaneThenCoarse(ctx, r, h.cs, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
+				"create", "openinfra.dev", "functions", h.fnNamespace(ctx, fn), fn)); !ok {
 			writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, "not authorized to integrate function "+fn+": "+reason)
 			return
 		}

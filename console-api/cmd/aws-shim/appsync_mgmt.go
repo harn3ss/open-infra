@@ -66,15 +66,12 @@ func (h *appsyncHandler) serveManagement(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "update", "openinfra.dev", "graphqlapis", p.ns, p.name); !allowed {
-		h.logger.Warn("appsync management denied", "user", claims.Sub, "api", p.apiID, "verb", verb, "reason", reason)
-		writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID,
-			"not authorized to manage this GraphQL API")
-		return
-	}
-	// Every caller: appsync:<Op> on the API. An assumed role's authority is its data-plane policy (CanDo
-	// passes a role); for a User the check is additive (it can only tighten the RBAC grant).
-	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "appsync:"+verb, "GraphQLApi", p.apiID, r); denied {
+	// appsync:<Op> on the API (decide): in legacy the coarse check on the kind: GraphQLApi, then the
+	// data-plane check (an assumed role's authority is its data-plane policy; for a User it can only
+	// tighten the RBAC grant). In enforce IAM policy alone.
+	if ok, reason := decide(r.Context(), r, h.authz, claims, "appsync:"+verb, "GraphQLApi", p.apiID,
+		coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, "update", "openinfra.dev", "graphqlapis", p.ns, p.name,
+			"appsync:"+verb, "GraphQLApi", p.apiID)); !ok {
 		h.logger.Warn("appsync management denied (data plane)", "user", claims.Sub, "api", p.apiID, "verb", verb, "reason", reason)
 		writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID,
 			"not authorized to manage this GraphQL API")

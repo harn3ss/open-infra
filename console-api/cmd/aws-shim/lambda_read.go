@@ -134,16 +134,19 @@ func (h *lambdaHandler) serveRead(w http.ResponseWriter, r *http.Request, claims
 	}
 	ctx := r.Context()
 	action := lambdaReadAction(op)
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, action, "Function", name, r); denied {
-		h.logger.Warn("lambda read denied by data-plane policy", "user", claims.Sub, "function", name, "op", op, "reason", reason)
-		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
 	ns := h.fns.namespaceOf(ctx, name, h.fnNS)
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, "get", "openinfra.dev", "functions", ns, name); !allowed {
+	if ok, reason := decide(ctx, r, h.authz, claims, action, "Function", name, func() (bool, string) {
+		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, action, "Function", name, r); denied {
+			return false, reason
+		}
+		if allowed, reason := iam.CanDo(ctx, h.cs, claims, "get", "openinfra.dev", "functions", ns, name); !allowed {
+			h.logger.Warn("lambda read denied", "user", claims.Sub, "function", name, "op", op, "reason", reason)
+			return false, "User: " + claims.Sub + " is not authorized to perform: " + action + " on resource: " + h.functionARN(name)
+		}
+		return true, ""
+	}); !ok {
 		h.logger.Warn("lambda read denied", "user", claims.Sub, "function", name, "op", op, "reason", reason)
-		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID,
-			"User: "+claims.Sub+" is not authorized to perform: "+action+" on resource: "+h.functionARN(name))
+		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
 	obj, err := h.fns.dyn.Resource(functionClaimGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
@@ -204,8 +207,9 @@ func decodeLambdaMarker(s string) (lambdaMarker, bool) {
 func (h *lambdaHandler) listFunctions(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	ctx := r.Context()
 	// AWS evaluates lambda:ListFunctions on Resource "*" (an assumed role needs a grant on Function::*).
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "lambda:ListFunctions", "Function", "", r); denied {
-		h.logger.Warn("lambda ListFunctions denied by data-plane policy", "user", claims.Sub, "reason", reason)
+	if ok, reason := decide(ctx, r, h.authz, claims, "lambda:ListFunctions", "Function", "",
+		dataPlaneOnly(ctx, r, h.authz, claims, "lambda:ListFunctions", "Function", "")); !ok {
+		h.logger.Warn("lambda ListFunctions denied", "user", claims.Sub, "reason", reason)
 		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
@@ -233,10 +237,17 @@ func (h *lambdaHandler) listFunctions(w http.ResponseWriter, r *http.Request, cl
 	}
 	// The namespaces the caller may list functions in; one it may not is not listed (its functions are not
 	// the caller's to see). A caller who may list none is refused, as AWS refuses ListFunctions.
+	// In enforce, IAM policy allowed lambda:ListFunctions above: the account's functions are listed, as on
+	// AWS. In legacy each namespace is listed only where the caller may list functions.
 	readable := make([]bool, len(h.fns.namespaces))
 	anyReadable := false
+	enforce := enforcing(ctx, h.authz, claims)
 	for i, ns := range h.fns.namespaces {
-		if ok, _ := iam.CanDo(ctx, h.cs, claims, "list", "openinfra.dev", "functions", ns, ""); ok {
+		if enforce {
+			readable[i], anyReadable = true, true
+			continue
+		}
+		if ok, _ := coarseOnly(ctx, h.cs, claims, "list", "openinfra.dev", "functions", ns, "")(); ok {
 			readable[i], anyReadable = true, true
 		}
 	}

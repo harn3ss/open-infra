@@ -135,19 +135,22 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeEC2Error(w, http.StatusServiceUnavailable, "Unavailable", requestID, "EC2 needs the CloudFormation front door's account namespace, which is not configured on this shim")
 		return
 	}
-	if denied, reason := dataPlaneDenied(ctx, h.door.authz, claims, "ec2:"+op, spec.resType, resID, r); denied {
+	// ec2:<Op> on the resource (decide): in legacy the data-plane refinement here, and the coarse RBAC check
+	// below for the shim's own state; in enforce IAM policy alone.
+	if ok, reason := decide(ctx, r, h.door.authz, claims, "ec2:"+op, spec.resType, resID,
+		dataPlaneOnly(ctx, r, h.door.authz, claims, "ec2:"+op, spec.resType, resID)); !ok {
 		h.audit(ctx, op, resID, reason)
 		writeEC2Error(w, http.StatusForbidden, "UnauthorizedOperation", requestID, "You are not authorized to perform this operation. "+reason)
 		return
 	}
 	// The shim's own state (key pairs, the catalog, the region, the account's addresses) takes the coarse
-	// RBAC check; the kinds are read with the caller's authority below.
-	if ec2StoreOp(op) {
+	// RBAC check in legacy; the kinds are read with the caller's authority below.
+	if ec2StoreOp(op) && !enforcing(ctx, h.door.authz, claims) {
 		if h.door.cs == nil && claims.AssumedRole == "" {
 			writeEC2Error(w, http.StatusForbidden, "UnauthorizedOperation", requestID, "EC2 authorization is not configured on this shim")
 			return
 		}
-		if allowed, reason := iam.CanDo(ctx, h.door.cs, claims, spec.verb, "openinfra.dev", "applications", h.door.authzNS, resID); !allowed {
+		if allowed, reason := coarseOnly(ctx, h.door.cs, claims, spec.verb, "openinfra.dev", "applications", h.door.authzNS, resID)(); !allowed {
 			h.audit(ctx, op, resID, reason)
 			writeEC2Error(w, http.StatusForbidden, "UnauthorizedOperation", requestID, "You are not authorized to perform this operation. "+reason)
 			return

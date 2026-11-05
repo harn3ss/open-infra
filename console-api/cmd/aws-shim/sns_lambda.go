@@ -56,12 +56,9 @@ func (h *snsHandler) subscribeLambda(ctx context.Context, w http.ResponseWriter,
 	}
 	fn := lambdaNameFromArn(endpoint)
 	ns := h.fns.namespaceOf(ctx, fn, h.lambdaNS)
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", ns, fn); !allowed {
-		writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID,
-			"not authorized to subscribe the function "+endpoint+" (a subscription cannot invoke what its creator cannot): "+reason, snsXMLNamespace)
-		return
-	}
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "lambda:InvokeFunction", "Function", fn, r); denied {
+	if ok, reason := decide(ctx, r, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
+		coarseThenScopedDataPlane(ctx, r, h.cs, h.authz, claims, "create", "openinfra.dev", "functions", ns, fn,
+			"lambda:InvokeFunction", "Function", fn)); !ok {
 		writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID,
 			"not authorized to subscribe the function "+endpoint+" (a subscription cannot invoke what its creator cannot): "+reason, snsXMLNamespace)
 		return

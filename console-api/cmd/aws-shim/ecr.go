@@ -216,35 +216,47 @@ func (h *ecrHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	// Coarse impersonated SubjectAccessReview. ECR has its OWN resource type ("repositories") so a grant
 	// for registry login/push does NOT also unlock Secrets Manager (which gates on "secrets") — the two
 	// front doors are least-privilege-separable, not coupled through a shared "applications" gate (#345.6).
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, repoName); !allowed {
-		h.audit(ctx, op, repoName, "deny", reason)
-		writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained Cedar dataPlane (`ecr:<Op>` on Repository::<name>), checked for EVERY repository the op names.
-	//   - A User: additive over the coarse grant above — it can only tighten, where an op names a repository.
+	// `ecr:<Op>` on Repository::<name>, for EVERY repository the op names (decide). In legacy the coarse
+	// impersonated SubjectAccessReview first (on its own "repositories" grant), then the data-plane check:
+	//   - A User: additive over the coarse grant — it can only tighten, where an op names a repository.
 	//   - An assumed Role: its COMPLETE authority (CanDo passes a role) — default-deny on every op, including the
 	//     repository-less ones (GetAuthorizationToken, an unfiltered DescribeRepositories), which are checked
 	//     against Repository::* (AWS's Resource "*"). No data-plane engine → a role is denied (fail closed).
+	// In enforce IAM policy alone, the repository-less ops on Repository::*.
 	repos := ecrAuthzRepos(op, body)
-	if claims.AssumedRole != "" {
-		if len(repos) == 0 {
-			repos = []string{ecrAnyRepository}
-		}
-		for _, res := range repos {
-			if ok, reason := allowedForAssumedRole(ctx, h.authz, claims, "ecr:"+op, "Repository", res, r); !ok {
-				h.audit(ctx, op, res, "deny", reason)
-				writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
-				return
+	targets := repos
+	if len(targets) == 0 {
+		targets = []string{""}
+	}
+	for i, res := range targets {
+		res, first := res, i == 0
+		if ok, reason := decide(ctx, r, h.authz, claims, "ecr:"+op, "Repository", res, func() (bool, string) {
+			if first {
+				if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, repoName); !allowed {
+					return false, reason
+				}
 			}
-		}
-	} else {
-		for _, res := range repos {
-			if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "ecr:"+op, "Repository", res, r); denied {
-				h.audit(ctx, op, res, "deny", reason)
-				writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
-				return
+			if claims.AssumedRole != "" {
+				scope := res
+				if scope == "" {
+					scope = ecrAnyRepository
+				}
+				return allowedForAssumedRole(ctx, h.authz, claims, "ecr:"+op, "Repository", scope, r)
 			}
+			if res != "" {
+				if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "ecr:"+op, "Repository", res, r); denied {
+					return false, reason
+				}
+			}
+			return true, ""
+		}); !ok {
+			audited := res
+			if audited == "" {
+				audited = repoName
+			}
+			h.audit(ctx, op, audited, "deny", reason)
+			writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
+			return
 		}
 	}
 

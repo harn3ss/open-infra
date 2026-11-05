@@ -122,12 +122,9 @@ func (h *rdsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	// Coarse gate, then the fine-grained check, on every instance and snapshot the op touches (rdsChecks);
 	// an assumed role is checked on every op (an op naming no identifier on <Type>::*).
 	for _, c := range rdsChecks(op, verb, r) {
-		if allowed, reason := iam.CanDo(ctx, h.cs, claims, c.verb, "openinfra.dev", "applications", h.authzNS, c.id); !allowed {
-			h.audit(ctx, op, c.id, "deny", reason)
-			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, rdsXMLNamespace)
-			return
-		}
-		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, c.action, c.resType, c.id, r); denied {
+		if ok, reason := decide(ctx, r, h.authz, claims, c.action, c.resType, c.id,
+			coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, c.verb, "openinfra.dev", "applications", h.authzNS, c.id,
+				c.action, c.resType, c.id)); !ok {
 			h.audit(ctx, op, c.id, "deny", reason)
 			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, rdsXMLNamespace)
 			return

@@ -296,6 +296,26 @@ func ecrRoleActions(action string) []string {
 // authorized by its data-plane policy alone, default-deny: every ECR action the docker action needs must
 // be allowed on Repository::<repo>; with no data-plane engine configured, nothing is granted.
 func (h *ecrHandler) authorizeScope(ctx context.Context, r *http.Request, claims iam.Claims, repo, action string) bool {
+	need := ecrRoleActions(action)
+	if len(need) == 0 {
+		return false
+	}
+	// Every ECR action the docker action needs, on Repository::<repo> (decide): legacy decides once, as
+	// before (legacyAuthorizeScope); in enforce IAM policy decides each.
+	for i, a := range need {
+		legacy := func() (bool, string) { return true, "" }
+		if i == 0 {
+			legacy = func() (bool, string) { return h.legacyAuthorizeScope(ctx, r, claims, repo, action), "" }
+		}
+		if ok, _ := decide(ctx, r, h.authz, claims, a, "Repository", repo, legacy); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// legacyAuthorizeScope is authorizeScope's decision before IAM policy decided.
+func (h *ecrHandler) legacyAuthorizeScope(ctx context.Context, r *http.Request, claims iam.Claims, repo, action string) bool {
 	if claims.AssumedRole != "" {
 		need := ecrRoleActions(action)
 		if len(need) == 0 {
@@ -312,7 +332,7 @@ func (h *ecrHandler) authorizeScope(ctx context.Context, r *http.Request, claims
 	if verb == "" {
 		return false
 	}
-	if ok, _ := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, repo); !ok {
+	if ok, _ := coarseOnly(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, repo)(); !ok {
 		return false
 	}
 	// A User's data-plane policy can only tighten, as at the ECR API: a Deny of any ECR action the docker

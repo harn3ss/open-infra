@@ -41,6 +41,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -129,15 +130,13 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 
 	queueName := sqsAuthzQueue(op, body)
 
-	// One policy world: the coarse impersonated SubjectAccessReview (table-agnostic, as S3/DynamoDB in v1).
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, queueName); !allowed {
-		writeSQSError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
-		return
-	}
-	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the queue when we have one;
-	// this is where sqs:ReceiveMessage is separable from sqs:DeleteMessage. An assumed role is checked on
-	// every op — ListQueues on Queue::* (dataPlaneDenied).
-	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "sqs:"+op, "Queue", queueName, r); denied {
+	// sqs:<Op> on the queue (decide): in legacy the coarse impersonated SubjectAccessReview, then the
+	// data-plane refinement scoped to the queue (where sqs:ReceiveMessage is separable from
+	// sqs:DeleteMessage; an assumed role is checked on every op, ListQueues on Queue::*); in enforce IAM
+	// policy alone, with the queue's own policy.
+	if ok, reason := decide(r.Context(), r, h.authz, claims, "sqs:"+op, "Queue", queueName,
+		coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, queueName,
+			"sqs:"+op, "Queue", queueName), h.queuePolicyOpt(r.Context(), queueName)...); !ok {
 		writeSQSError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
 		return
 	}
@@ -147,11 +146,9 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	if op == "CreateQueue" || op == "SetQueueAttributes" {
 		if dlq := redriveTarget(stringMap(body["Attributes"])); dlq != "" {
 			sendVerb, _ := verbForSQSOp("SendMessage")
-			if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, sendVerb, "openinfra.dev", "applications", h.authzNS, dlq); !allowed {
-				writeSQSError(w, http.StatusForbidden, "AccessDenied", requestID, "RedrivePolicy dead-letter queue "+dlq+": "+reason)
-				return
-			}
-			if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "sqs:SendMessage", "Queue", dlq, r); denied {
+			if ok, reason := decide(r.Context(), r, h.authz, claims, "sqs:SendMessage", "Queue", dlq,
+				coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, sendVerb, "openinfra.dev", "applications", h.authzNS, dlq,
+					"sqs:SendMessage", "Queue", dlq), h.queuePolicyOpt(r.Context(), dlq)...); !ok {
 				writeSQSError(w, http.StatusForbidden, "AccessDenied", requestID, "RedrivePolicy dead-letter queue "+dlq+": "+reason)
 				return
 			}
@@ -994,4 +991,23 @@ func filterMessageAttributes(attrs map[string]any, want []string) map[string]any
 		}
 	}
 	return out
+}
+
+// queuePolicyOpt carries queue name's Policy attribute (its resource policy) to the evaluator, read only
+// when IAM policy decides (resourcePolicyOpt).
+func (h *sqsHandler) queuePolicyOpt(ctx context.Context, name string) []iamauthz.RequestOption {
+	if h.store == nil || name == "" {
+		return nil
+	}
+	return resourcePolicyOpt(h.authz, func() string {
+		url, found, err := h.store.queueURLByName(ctx, name)
+		if err != nil || !found {
+			return ""
+		}
+		attrs, _, found, err := h.store.queueAttrs(ctx, url)
+		if err != nil || !found {
+			return ""
+		}
+		return attrs["Policy"]
+	})
 }

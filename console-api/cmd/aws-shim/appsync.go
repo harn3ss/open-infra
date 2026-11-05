@@ -132,17 +132,14 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	// Coarse platform-membership gate via the shared impersonated SubjectAccessReview — one policy
 	// world. Fine-grained (per-type/field/resolver) authorization lives INSIDE open-appsync, which
 	// resolves the same principal conveyed below.
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "get", "openinfra.dev", "applications", h.authzNS, ""); !allowed {
-		h.logger.Warn("appsync denied", "user", claims.Sub, "reason", reason)
-		writeAppsyncError(w, http.StatusForbidden, "UnauthorizedException", requestID,
-			"not authorized to use the GraphQL API")
-		return
-	}
-	// The data-plane check, appsync:GraphQL on GraphQLApi::* — this endpoint does not name one API, so a
-	// grant on a specific API ARN does not reach it. An assumed role's authority is its data-plane policy
-	// (CanDo passes a role), so it is default-deny for a role; for a User it holds an explicit Deny of
-	// appsync:GraphQL (the gate above stays its grant).
-	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "appsync:GraphQL", "GraphQLApi", "", r); denied {
+	// appsync:GraphQL on GraphQLApi::* (decide) — this endpoint does not name one API, so a grant on a
+	// specific API ARN does not reach it. In legacy the coarse platform-membership gate first, then the
+	// data-plane check: an assumed role's authority is its data-plane policy (CanDo passes a role), so it is
+	// default-deny for a role; for a User it holds an explicit Deny of appsync:GraphQL (the gate stays its
+	// grant). In enforce IAM policy alone.
+	if ok, reason := decide(r.Context(), r, h.authz, claims, "appsync:GraphQL", "GraphQLApi", "",
+		coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, "get", "openinfra.dev", "applications", h.authzNS, "",
+			"appsync:GraphQL", "GraphQLApi", "")); !ok {
 		h.logger.Warn("appsync denied (data plane)", "user", claims.Sub, "reason", reason)
 		writeAppsyncError(w, http.StatusForbidden, "UnauthorizedException", requestID,
 			"not authorized to use the GraphQL API")

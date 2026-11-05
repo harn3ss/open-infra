@@ -104,7 +104,8 @@ func (h *acmHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	ctx := r.Context()
 	switch op {
 	case "ListCertificates":
-		if denied, reason := dataPlaneDenied(ctx, h.cfn.authz, claims, action, "Certificate", "", r); denied {
+		if ok, reason := decide(ctx, r, h.cfn.authz, claims, action, "Certificate", "",
+			dataPlaneOnly(ctx, r, h.cfn.authz, claims, action, "Certificate", "")); !ok {
 			writeACMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 			return
 		}
@@ -117,7 +118,8 @@ func (h *acmHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeACMError(w, http.StatusBadRequest, "InvalidArnException", requestID, "The certificate ARN "+arn+" is not valid.")
 		return
 	}
-	if denied, reason := deniedByDataPlane(ctx, h.cfn.authz, claims, action, "Certificate", id, r); denied {
+	if ok, reason := decide(ctx, r, h.cfn.authz, claims, action, "Certificate", id,
+		scopedDataPlaneOnly(ctx, r, h.cfn.authz, claims, action, "Certificate", id)); !ok {
 		writeACMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}

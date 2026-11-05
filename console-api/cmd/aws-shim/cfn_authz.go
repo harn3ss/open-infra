@@ -60,7 +60,9 @@ func (h *cfnDoorway) callerCan(ctx context.Context, ap *impersonatingApplier, ve
 
 // callerPolicyAllows is the data-plane check for the caller: action on resType::resID.
 func (h *cfnDoorway) callerPolicyAllows(ctx context.Context, ap *impersonatingApplier, action, resType, resID string) (bool, string) {
-	if denied, reason := deniedByDataPlane(ctx, h.authz, ap.callerClaims(), action, resType, resID, nil); denied {
+	caller := ap.callerClaims()
+	if ok, reason := decide(ctx, nil, h.authz, caller, action, resType, resID,
+		scopedDataPlaneOnly(ctx, nil, h.authz, caller, action, resType, resID)); !ok {
 		return false, fmt.Sprintf("%s may not %s on %s::%s: %s", ap.user, action, resType, resID, reason)
 	}
 	return true, ""
@@ -223,7 +225,9 @@ func (h *cfnDoorway) authorizeTeardownDepth(ctx context.Context, ap *impersonati
 				ok, reason = false, "nested stacks are nested too deeply"
 				break
 			}
-			if okDel, why := h.canDo(ctx, ap.callerClaims(), "delete", r.Name); !okDel {
+			caller, name := ap.callerClaims(), r.Name
+			if okDel, why := decide(ctx, nil, h.authz, caller, "cloudformation:DeleteStack", "Stack", name,
+				func() (bool, string) { return h.canDo(ctx, caller, "delete", name) }); !okDel {
 				ok, reason = false, why
 				break
 			}

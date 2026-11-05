@@ -38,10 +38,9 @@ func callerMayPassRole(ctx context.Context, cs kubernetes.Interface, authz *data
 	if cs == nil && claims.AssumedRole == "" {
 		return false, "iam:PassRole cannot be checked on this shim"
 	}
-	if ok, reason := iam.CanDo(ctx, cs, claims, passRoleVerb, "iam.openinfra.dev", "roles", roleNS, role); !ok {
-		return false, "not authorized to perform iam:PassRole on role " + role + ": " + reason
-	}
-	if denied, reason := dataPlaneDenied(ctx, authz, claims, "iam:PassRole", "Role", role, r); denied {
+	if ok, reason := decide(ctx, r, authz, claims, "iam:PassRole", "Role", role,
+		coarseThenDataPlane(ctx, r, cs, authz, claims, passRoleVerb, "iam.openinfra.dev", "roles", roleNS, role,
+			"iam:PassRole", "Role", role)); !ok {
 		return false, "not authorized to perform iam:PassRole on role " + role + ": " + reason
 	}
 	return true, ""

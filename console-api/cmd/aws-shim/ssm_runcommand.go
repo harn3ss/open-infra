@@ -251,17 +251,25 @@ func (h *ssmHandler) sendCommand(ctx context.Context, w http.ResponseWriter, r *
 		return
 	}
 	// Authorization: the document, then each instance (and, for a User, RBAC update on its VM).
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "ssm:SendCommand", "Document", ssmRunShellScript, r); denied {
+	if ok, reason := decide(ctx, r, h.authz, claims, "ssm:SendCommand", "Document", ssmRunShellScript,
+		dataPlaneOnly(ctx, r, h.authz, claims, "ssm:SendCommand", "Document", ssmRunShellScript)); !ok {
 		writeSSMError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "User: "+claims.PrincipalID()+" is not authorized to perform: ssm:SendCommand on resource: arn:aws:ssm:"+h.region+"::document/"+ssmRunShellScript+" ("+reason+")")
 		return
 	}
 	for _, id := range ids {
-		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "ssm:SendCommand", "Instance", id, r); denied {
+		// ssm:SendCommand on the instance (decide): in legacy the data-plane refinement, then — running a
+		// command changes the instance — RBAC update on its kind: VirtualMachine; in enforce IAM policy.
+		vm := visible[id].name
+		if ok, reason := decide(ctx, r, h.authz, claims, "ssm:SendCommand", "Instance", id, func() (bool, string) {
+			if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "ssm:SendCommand", "Instance", id, r); denied {
+				return false, reason
+			}
+			if allowed, reason := iam.CanDo(ctx, h.cs, claims, "update", "openinfra.dev", "virtualmachines", h.ec2.door.ns, vm); !allowed {
+				return false, "running a command changes the instance; it needs update on kind: VirtualMachine " + vm + ": " + reason
+			}
+			return true, ""
+		}); !ok {
 			writeSSMError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "User: "+claims.PrincipalID()+" is not authorized to perform: ssm:SendCommand on resource: "+h.instanceARN(id)+" ("+reason+")")
-			return
-		}
-		if allowed, reason := iam.CanDo(ctx, h.cs, claims, "update", "openinfra.dev", "virtualmachines", h.ec2.door.ns, visible[id].name); !allowed {
-			writeSSMError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "User: "+claims.PrincipalID()+" is not authorized to perform: ssm:SendCommand on resource: "+h.instanceARN(id)+" (running a command changes the instance; it needs update on kind: VirtualMachine "+visible[id].name+": "+reason+")")
 			return
 		}
 	}
@@ -384,8 +392,8 @@ func (h *ssmHandler) mayRead(ctx context.Context, r *http.Request, claims iam.Cl
 	if _, ok := visible[id]; !ok {
 		return false
 	}
-	denied, _ := dataPlaneDenied(ctx, h.authz, claims, action, "Instance", id, r)
-	return !denied
+	ok, _ := decide(ctx, r, h.authz, claims, action, "Instance", id, dataPlaneOnly(ctx, r, h.authz, claims, action, "Instance", id))
+	return ok
 }
 
 func elapsed(v ssmInvocation) string {
@@ -410,7 +418,8 @@ func (h *ssmHandler) getCommandInvocation(ctx context.Context, w http.ResponseWr
 		return
 	}
 	if _, ok := visible[iid]; ok {
-		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "ssm:GetCommandInvocation", "Instance", iid, r); denied {
+		if ok, reason := decide(ctx, r, h.authz, claims, "ssm:GetCommandInvocation", "Instance", iid,
+			dataPlaneOnly(ctx, r, h.authz, claims, "ssm:GetCommandInvocation", "Instance", iid)); !ok {
 			writeSSMError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "User: "+claims.PrincipalID()+" is not authorized to perform: ssm:GetCommandInvocation on resource: "+h.instanceARN(iid)+" ("+reason+")")
 			return
 		}
@@ -660,7 +669,8 @@ func (h *ssmHandler) listCommands(ctx context.Context, w http.ResponseWriter, r 
 // --- managed instances ---
 
 func (h *ssmHandler) describeInstanceInformation(ctx context.Context, w http.ResponseWriter, r *http.Request, body map[string]any, claims iam.Claims, visible map[string]ec2Instance, requestID string) {
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "ssm:DescribeInstanceInformation", "Instance", "", r); denied {
+	if ok, reason := decide(ctx, r, h.authz, claims, "ssm:DescribeInstanceInformation", "Instance", "",
+		dataPlaneOnly(ctx, r, h.authz, claims, "ssm:DescribeInstanceInformation", "Instance", "")); !ok {
 		writeSSMError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
 		return
 	}

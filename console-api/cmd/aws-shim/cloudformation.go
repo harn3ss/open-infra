@@ -266,8 +266,12 @@ func (h *cfnDoorway) authFailure(w http.ResponseWriter, _ *http.Request, request
 }
 
 // applierFor builds an Applier that impersonates the caller for resource ops (the authority seam).
+//
+// In enforce (IAM_AUTHZ) the stack's Kubernetes operations impersonate the caller's account-qualified
+// identity (openinfra:<account>:<user>, no groups), whose RBAC the IAM compiler generates from its IAM
+// policy; in legacy the identity they always did.
 func (h *cfnDoorway) applierFor(claims iam.Claims) (*impersonatingApplier, error) {
-	user, groups, ok := iam.Identity(claims)
+	user, groups, ok := iam.IdentityFor(claims, enforcing(context.Background(), h.authz, claims))
 	if !ok {
 		return nil, fmt.Errorf("no caller identity")
 	}
@@ -392,14 +396,16 @@ func (h *cfnDoorway) serveQuery(w http.ResponseWriter, r *http.Request, claims i
 	//     ListExports, ValidateTemplate, a DescribeStacks of every stack — is checked on Stack::* for every
 	//     caller, as AWS evaluates such a call on Resource "*": a policy that does not allow it there (or
 	//     denies it) refuses the call.
-	if verb := cfnVerb(action); verb != "" {
-		if allowed, reason := h.canDo(r.Context(), claims, verb, r.PostFormValue("StackName")); !allowed {
-			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
-			return
+	//   - in enforce, IAM policy alone (decide): cloudformation:<Action> on the stack, or on Stack::*.
+	scope := stackScope(r.PostFormValue("StackName"))
+	if ok, reason := decide(r.Context(), r, h.authz, claims, "cloudformation:"+action, "Stack", scope, func() (bool, string) {
+		if verb := cfnVerb(action); verb != "" {
+			if allowed, reason := h.canDo(r.Context(), claims, verb, r.PostFormValue("StackName")); !allowed {
+				return false, reason
+			}
 		}
-	}
-	if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "cloudformation:"+action, "Stack",
-		stackScope(r.PostFormValue("StackName")), r); denied {
+		return scopedDataPlaneOnly(r.Context(), r, h.authz, claims, "cloudformation:"+action, "Stack", scope)()
+	}); !ok {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
 		return
 	}
@@ -974,7 +980,8 @@ func (h *cfnDoorway) describeStacks(w http.ResponseWriter, r *http.Request, ap *
 		// (its outputs, parameters or status) here either.
 		claims := ap.callerClaims()
 		for _, rec := range h.allRecords(r.Context()) {
-			if denied, _ := deniedByDataPlane(r.Context(), h.authz, claims, "cloudformation:DescribeStacks", "Stack", rec.Name, r); !denied {
+			if ok, _ := decide(r.Context(), r, h.authz, claims, "cloudformation:DescribeStacks", "Stack", rec.Name,
+				scopedDataPlaneOnly(r.Context(), r, h.authz, claims, "cloudformation:DescribeStacks", "Stack", rec.Name)); ok {
 				recs = append(recs, rec)
 			}
 		}
@@ -1476,7 +1483,9 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 	// An UPDATE change set changes the stack as UpdateStack does, so it needs UpdateStack's verb as well
 	// as ExecuteChangeSet's (checked up front, in serve).
 	if !create {
-		if allowed, reason := h.canDo(r.Context(), ap.callerClaims(), "update", stack); !allowed {
+		caller := ap.callerClaims()
+		if allowed, reason := decide(r.Context(), r, h.authz, caller, "cloudformation:UpdateStack", "Stack", stack,
+			func() (bool, string) { return h.canDo(r.Context(), caller, "update", stack) }); !allowed {
 			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
 			return
 		}

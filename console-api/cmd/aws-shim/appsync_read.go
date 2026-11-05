@@ -46,13 +46,11 @@ func (h *appsyncHandler) serveRead(w http.ResponseWriter, r *http.Request, claim
 		h.listGraphqlApis(w, r, claims, requestID)
 		return
 	}
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "get", "openinfra.dev", "graphqlapis", p.ns, p.name); !allowed {
-		h.logger.Warn("appsync read denied", "user", claims.Sub, "api", p.apiID, "verb", verb, "reason", reason)
-		writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID, "not authorized to read this GraphQL API")
-		return
-	}
-	// Every caller: appsync:<Op> on the API — the whole authority of an assumed role, additive for a User.
-	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "appsync:"+verb, "GraphQLApi", p.apiID, r); denied {
+	// appsync:<Op> on the API (decide): in legacy the coarse check on the kind: GraphQLApi, then the
+	// data-plane check — the whole authority of an assumed role, additive for a User.
+	if ok, reason := decide(r.Context(), r, h.authz, claims, "appsync:"+verb, "GraphQLApi", p.apiID,
+		coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, "get", "openinfra.dev", "graphqlapis", p.ns, p.name,
+			"appsync:"+verb, "GraphQLApi", p.apiID)); !ok {
 		h.logger.Warn("appsync read denied (data plane)", "user", claims.Sub, "api", p.apiID, "verb", verb, "reason", reason)
 		writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID, "not authorized to read this GraphQL API")
 		return
@@ -137,7 +135,8 @@ func (h *appsyncHandler) serveRead(w http.ResponseWriter, r *http.Request, claim
 // those in namespaces the caller may list graphqlapis in.
 func (h *appsyncHandler) listGraphqlApis(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	ctx := r.Context()
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "appsync:ListGraphqlApis", "GraphQLApi", "", r); denied {
+	if ok, reason := decide(ctx, r, h.authz, claims, "appsync:ListGraphqlApis", "GraphQLApi", "",
+		dataPlaneOnly(ctx, r, h.authz, claims, "appsync:ListGraphqlApis", "GraphQLApi", "")); !ok {
 		h.logger.Warn("appsync ListGraphqlApis denied", "user", claims.Sub, "reason", reason)
 		writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID, "not authorized to list GraphQL APIs")
 		return
@@ -168,7 +167,11 @@ func (h *appsyncHandler) listGraphqlApis(w http.ResponseWriter, r *http.Request,
 		name, _ := md["name"].(string)
 		ok, seen := mayList[ns]
 		if !seen {
-			ok, _ = iam.CanDo(ctx, h.cs, claims, "list", "openinfra.dev", "graphqlapis", ns, "")
+			// In enforce IAM policy allowed appsync:ListGraphqlApis above: the account's APIs are listed.
+			ok = enforcing(ctx, h.authz, claims)
+			if !ok {
+				ok, _ = coarseOnly(ctx, h.cs, claims, "list", "openinfra.dev", "graphqlapis", ns, "")()
+			}
 			mayList[ns] = ok
 		}
 		if ok {

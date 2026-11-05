@@ -174,14 +174,12 @@ func (h *ecsDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 
 	// One policy world: coarse impersonated SubjectAccessReview on openinfra.dev/applications.
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, res); !allowed {
-		h.audit(ctx, op, res, "deny", reason)
-		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped when a resource is named; an assumed
-	// role is checked on every op (ListServices/ListClusters/… on Service::*).
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "ecs:"+op, "Service", res, r); denied {
+	// ecs:<Op> on the service (decide): in legacy the coarse SubjectAccessReview, then the data-plane
+	// refinement scoped when a resource is named (an assumed role is checked on every op,
+	// ListServices/ListClusters/… on Service::*).
+	if ok, reason := decide(ctx, r, h.authz, claims, "ecs:"+op, "Service", res,
+		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, res,
+			"ecs:"+op, "Service", res)); !ok {
 		h.audit(ctx, op, res, "deny", reason)
 		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
 		return

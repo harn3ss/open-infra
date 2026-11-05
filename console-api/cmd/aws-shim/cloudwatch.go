@@ -123,17 +123,22 @@ func (h *cwHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 	ns := r.PostFormValue("Namespace")
 
 	// Coarse SAR (namespace as the resource name). Alarm-list ops carry no namespace; they gate per-alarm.
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, ns); !allowed {
-		h.auditDeny(ctx, op, ns, reason)
-		writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
-		return
-	}
-	// Fine-grained Cedar at namespace granularity (the cross-tenant read/write fence). Ops with a namespace
+	// cloudwatch:<Op> at namespace granularity (the cross-tenant read/write fence). Ops with a namespace
 	// are gated here; namespace-less ops (DescribeAlarms/DeleteAlarms/SetAlarmState/GetMetricData) gate
-	// per-alarm / per-query inside the op. An assumed role is also gated here on every other op — a
-	// namespace-less ListMetrics (every namespace) is checked on Namespace::*.
-	if ns != "" || (claims.AssumedRole != "" && !cwPerItemOp(op)) {
-		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "cloudwatch:"+op, "Namespace", ns, r); denied {
+	// per-alarm / per-query inside the op. An assumed role (and, in enforce, everyone) is also gated here on
+	// every other op — a namespace-less ListMetrics (every namespace) is checked on Namespace::*. In legacy
+	// the coarse SubjectAccessReview (namespace as the resource name) runs first on every op.
+	enforce := enforcing(ctx, h.authz, claims)
+	if ns != "" || ((claims.AssumedRole != "" || enforce) && !cwPerItemOp(op)) {
+		if ok, reason := decide(ctx, r, h.authz, claims, "cloudwatch:"+op, "Namespace", ns,
+			coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, ns,
+				"cloudwatch:"+op, "Namespace", ns)); !ok {
+			h.auditDeny(ctx, op, ns, reason)
+			writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
+			return
+		}
+	} else if !enforce {
+		if ok, reason := coarseOnly(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, ns)(); !ok {
 			h.auditDeny(ctx, op, ns, reason)
 			writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
 			return
@@ -276,7 +281,8 @@ func (h *cwHandler) getMetricData(ctx context.Context, w http.ResponseWriter, r 
 			return
 		}
 		// per-query cross-tenant fence
-		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "cloudwatch:GetMetricData", "Namespace", ns, r); denied {
+		if ok, reason := decide(ctx, r, h.authz, claims, "cloudwatch:GetMetricData", "Namespace", ns,
+			scopedDataPlaneOnly(ctx, r, h.authz, claims, "cloudwatch:GetMetricData", "Namespace", ns)); !ok {
 			writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
 			return
 		}
@@ -410,7 +416,8 @@ func (h *cwHandler) describeAlarms(ctx context.Context, w http.ResponseWriter, r
 	items := make([]any, 0, len(alarms))
 	for _, a := range alarms {
 		// cross-tenant fence: only alarms whose namespace the principal may read
-		if denied, _ := deniedByDataPlane(ctx, h.authz, claims, "cloudwatch:DescribeAlarms", "Namespace", a.Namespace, r); denied {
+		if ok, _ := decide(ctx, r, h.authz, claims, "cloudwatch:DescribeAlarms", "Namespace", a.Namespace,
+			scopedDataPlaneOnly(ctx, r, h.authz, claims, "cloudwatch:DescribeAlarms", "Namespace", a.Namespace)); !ok {
 			continue
 		}
 		items = append(items, h.alarmJSON(a))
@@ -460,7 +467,8 @@ func (h *cwHandler) deleteAlarms(ctx context.Context, w http.ResponseWriter, r *
 			return
 		}
 		if ok {
-			if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "cloudwatch:DeleteAlarms", "Namespace", a.Namespace, r); denied {
+			if ok, reason := decide(ctx, r, h.authz, claims, "cloudwatch:DeleteAlarms", "Namespace", a.Namespace,
+				scopedDataPlaneOnly(ctx, r, h.authz, claims, "cloudwatch:DeleteAlarms", "Namespace", a.Namespace)); !ok {
 				writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
 				return
 			}
@@ -495,7 +503,8 @@ func (h *cwHandler) setAlarmState(ctx context.Context, w http.ResponseWriter, r 
 		writeCWError(w, http.StatusNotFound, "ResourceNotFound", requestID, "alarm "+name+" not found", cwXMLNamespace)
 		return
 	}
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "cloudwatch:SetAlarmState", "Namespace", a.Namespace, r); denied {
+	if ok, reason := decide(ctx, r, h.authz, claims, "cloudwatch:SetAlarmState", "Namespace", a.Namespace,
+		scopedDataPlaneOnly(ctx, r, h.authz, claims, "cloudwatch:SetAlarmState", "Namespace", a.Namespace)); !ok {
 		writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
 		return
 	}

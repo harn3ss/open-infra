@@ -204,7 +204,8 @@ func (h *vmCommandsHandler) identify(ctx context.Context, token string) (vmAgent
 // allowed runs the instance role's data-plane check for one of the SSM agent's actions on its instance.
 func (h *vmCommandsHandler) allowed(w http.ResponseWriter, r *http.Request, a vmAgent, actions ...string) bool {
 	for _, act := range actions {
-		if denied, reason := deniedByDataPlane(r.Context(), h.authz, a.claims, act, "Instance", a.instanceID, r); denied {
+		if ok, reason := decide(r.Context(), r, h.authz, a.claims, act, "Instance", a.instanceID,
+			scopedDataPlaneOnly(r.Context(), r, h.authz, a.claims, act, "Instance", a.instanceID)); !ok {
 			if h.logger != nil {
 				h.logger.Warn("vm-commands: the instance role does not allow "+act, "instance", a.instanceID, "role", a.namespace+"/"+a.role, "reason", reason)
 			}

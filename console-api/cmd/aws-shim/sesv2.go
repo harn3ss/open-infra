@@ -109,11 +109,9 @@ func (h *sesHandler) serveV2(w http.ResponseWriter, r *http.Request, claims iam.
 	case "SendEmail":
 		h.v2SendEmail(w, r, claims, requestID)
 	case "GetAccount":
-		if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "get", "openinfra.dev", "applications", h.authzNS, ""); !allowed {
-			sesV2Error(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
-		}
-		if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "ses:GetAccount", "Identity", "", r); denied {
+		if ok, reason := decide(r.Context(), r, h.authz, claims, "ses:GetAccount", "Identity", "",
+			coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, "get", "openinfra.dev", "applications", h.authzNS, "",
+				"ses:GetAccount", "Identity", "")); !ok {
 			sesV2Error(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 			return
 		}
@@ -191,9 +189,12 @@ func (h *sesHandler) v2SendEmail(w http.ResponseWriter, r *http.Request, claims 
 			"SendEmail needs a FromEmailAddress (or, for Raw content, a From header in the message).")
 		return
 	}
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "create", "openinfra.dev", "applications", h.authzNS, senders[0]); !allowed {
-		sesV2Error(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
+	// In legacy the coarse SubjectAccessReview first; in enforce IAM policy alone (identityDenied).
+	if !enforcing(r.Context(), h.authz, claims) {
+		if allowed, reason := coarseOnly(r.Context(), h.cs, claims, "create", "openinfra.dev", "applications", h.authzNS, senders[0])(); !allowed {
+			sesV2Error(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+			return
+		}
 	}
 	for _, s := range senders {
 		if denied, reason := h.identityDenied(r.Context(), claims, "ses:SendEmail", s, r); denied {

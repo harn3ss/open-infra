@@ -295,13 +295,11 @@ func (h *eksHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	// Implemented reads: the one policy world. Coarse impersonated SubjectAccessReview (resource-agnostic,
 	// as every front door) — both DescribeCluster and ListClusters are reads, so verb "get" scoped to the
 	// one cluster this shim fronts.
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, "get", "openinfra.dev", "applications", h.authzNS, h.clusterName); !allowed {
-		h.audit(ctx, req.op, h.clusterName, "deny", reason)
-		writeEKSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained Cedar dataPlane — additive, can only TIGHTEN. There is one cluster, always in scope.
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "eks:"+req.op, "Cluster", h.clusterName, r); denied {
+	// eks:<Op> on the one cluster, always in scope (decide): in legacy the coarse SubjectAccessReview, then
+	// the data-plane refinement (additive, can only tighten).
+	if ok, reason := decide(ctx, r, h.authz, claims, "eks:"+req.op, "Cluster", h.clusterName,
+		coarseThenScopedDataPlane(ctx, r, h.cs, h.authz, claims, "get", "openinfra.dev", "applications", h.authzNS, h.clusterName,
+			"eks:"+req.op, "Cluster", h.clusterName)); !ok {
 		h.audit(ctx, req.op, h.clusterName, "deny", reason)
 		writeEKSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return

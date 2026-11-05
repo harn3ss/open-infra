@@ -99,18 +99,22 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	// the function's code (with side effects — pointedly for async Event invokes), so it maps to `create`
 	// on functions, NOT `get`: read-only principals (openinfra:readers hold only get/list/watch) must not
 	// be able to run a function; powerusers/admins hold create. Applies to all invocation types.
-	if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "lambda:InvokeFunction", "Function", name, r); denied {
-		h.logger.Warn("lambda denied by data-plane policy", "user", claims.Sub, "function", name, "reason", reason)
-		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// The function is found by name where it lives (the Lambda API's namespace or a stack's), and the
-	// caller needs invoke rights there.
+	// lambda:InvokeFunction on the function (decide). In legacy the data-plane refinement, then the
+	// coarse check where the function lives (the Lambda API's namespace or a stack's); in enforce IAM
+	// policy alone.
 	ns := h.fns.namespaceOf(r.Context(), name, h.fnNS)
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "create", "openinfra.dev", "functions", ns, name); !allowed {
-		h.logger.Warn("lambda denied", "user", claims.Sub, "function", name, "reason", reason)
-		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID,
-			"not authorized to invoke function '"+name+"'")
+	if ok, reason := decide(r.Context(), r, h.authz, claims, "lambda:InvokeFunction", "Function", name, func() (bool, string) {
+		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "lambda:InvokeFunction", "Function", name, r); denied {
+			return false, reason
+		}
+		if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "create", "openinfra.dev", "functions", ns, name); !allowed {
+			h.logger.Warn("lambda denied", "user", claims.Sub, "function", name, "reason", reason)
+			return false, "not authorized to invoke function '" + name + "'"
+		}
+		return true, ""
+	}); !ok {
+		h.logger.Warn("lambda invoke denied", "user", claims.Sub, "function", name, "reason", reason)
+		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
 

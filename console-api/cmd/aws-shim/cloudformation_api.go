@@ -630,14 +630,17 @@ func (h *cfnDoorway) maySignal(r *http.Request, claims iam.Claims, rec *cfn.Stac
 				return true
 			}
 		}
-		denied, _ := deniedByDataPlane(r.Context(), h.authz, claims, "cloudformation:SignalResource", "Stack", rec.Name, r)
-		return !denied
+		ok, _ := decide(r.Context(), r, h.authz, claims, "cloudformation:SignalResource", "Stack", rec.Name,
+			scopedDataPlaneOnly(r.Context(), r, h.authz, claims, "cloudformation:SignalResource", "Stack", rec.Name))
+		return ok
 	}
-	if ok, _ := h.canDo(r.Context(), claims, "update", rec.Name); !ok {
-		return false
-	}
-	denied, _ := deniedByDataPlane(r.Context(), h.authz, claims, "cloudformation:SignalResource", "Stack", rec.Name, r)
-	return !denied
+	ok, _ := decide(r.Context(), r, h.authz, claims, "cloudformation:SignalResource", "Stack", rec.Name, func() (bool, string) {
+		if ok, why := h.canDo(r.Context(), claims, "update", rec.Name); !ok {
+			return false, why
+		}
+		return scopedDataPlaneOnly(r.Context(), r, h.authz, claims, "cloudformation:SignalResource", "Stack", rec.Name)()
+	})
+	return ok
 }
 
 // roleNameOf is the role name of an assumed-role identity (a bare name, or a role ARN's last segment).

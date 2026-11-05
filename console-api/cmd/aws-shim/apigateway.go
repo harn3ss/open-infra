@@ -122,13 +122,11 @@ func (h *apigwHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.
 	}
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, resID); !allowed {
-		h.auditDeny(ctx, op, resID, reason)
-		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// An assumed role's api-less ops (GetApis, CreateApi with no name) are checked on Api::*.
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "apigateway:"+op, "Api", scopeFor(claims, resID), r); denied {
+	// apigateway:<Op> on the API (decide): in legacy the coarse SubjectAccessReview, then the data-plane
+	// refinement (an assumed role's api-less ops, GetApis and CreateApi with no name, on Api::*).
+	if ok, reason := decide(ctx, r, h.authz, claims, "apigateway:"+op, "Api", resID,
+		coarseThenScopedDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, resID,
+			"apigateway:"+op, "Api", scopeFor(claims, resID))); !ok {
 		h.auditDeny(ctx, op, resID, reason)
 		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
@@ -308,10 +306,9 @@ func (h *apigwHandler) getRoutes(ctx context.Context, w http.ResponseWriter, req
 // apigateway-only principal could expose ANY function through a NONE-auth route and bypass the Lambda
 // doorway's lambda:InvokeFunction gate.
 func (h *apigwHandler) authorizeIntegrationTarget(ctx context.Context, r *http.Request, claims iam.Claims, fn string) (string, bool) {
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "lambda:InvokeFunction", "Function", fn, r); denied {
-		return reason, false
-	}
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, "create", "openinfra.dev", "functions", h.fns.namespaceOf(ctx, fn, h.fnNS), fn); !allowed {
+	if ok, reason := decide(ctx, r, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
+		scopedDataPlaneThenCoarse(ctx, r, h.cs, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
+			"create", "openinfra.dev", "functions", h.fns.namespaceOf(ctx, fn, h.fnNS), fn)); !ok {
 		return reason, false
 	}
 	return "", true

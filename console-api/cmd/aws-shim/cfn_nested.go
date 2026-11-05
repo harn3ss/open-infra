@@ -53,10 +53,12 @@ func (d *nestedDriver) CreateNested(ctx context.Context, req cfn.NestedStackRequ
 	}
 	claims, _ := callerClaimsOf(d.req)
 	// The caller creates the nested stack, as on AWS: it needs CreateStack on it as well as on its parent.
-	if ok, reason := h.canDo(ctx, claims, "create", req.Name); !ok {
-		return cfn.NestedStackResult{}, cfn.Unauthorized("not authorized to create nested stack " + req.Name + ": " + reason)
-	}
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "cloudformation:CreateStack", "Stack", req.Name, d.req); denied {
+	if ok, reason := decide(ctx, d.req, h.authz, claims, "cloudformation:CreateStack", "Stack", req.Name, func() (bool, string) {
+		if ok, reason := h.canDo(ctx, claims, "create", req.Name); !ok {
+			return false, reason
+		}
+		return scopedDataPlaneOnly(ctx, d.req, h.authz, claims, "cloudformation:CreateStack", "Stack", req.Name)()
+	}); !ok {
 		return cfn.NestedStackResult{}, cfn.Unauthorized("not authorized to create nested stack " + req.Name + ": " + reason)
 	}
 	body, err := h.readTemplateURLAt(ctx, d.req, req.TemplateURL)

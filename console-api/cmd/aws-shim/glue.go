@@ -177,17 +177,15 @@ func (h *glueHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.C
 	resType, res := h.glueResource(op, body)
 
 	// One policy world: the coarse impersonated SubjectAccessReview (resource-agnostic, as every front door).
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, res); !allowed {
-		h.audit(ctx, op, res, "deny", reason)
-		writeGlueError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained Cedar dataPlane — additive, can only tighten. Scoped to the resource when we have one; an
-	// assumed role is checked on every op (GetDatabases on Database::*).
+	// glue:<Op> on the resource (decide): in legacy the coarse SubjectAccessReview, then the data-plane
+	// refinement scoped to the resource when there is one (an assumed role is checked on every op,
+	// GetDatabases on Database::*).
 	if resType == "" {
 		resType = "Database"
 	}
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "glue:"+op, resType, res, r); denied {
+	if ok, reason := decide(ctx, r, h.authz, claims, "glue:"+op, resType, res,
+		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, res,
+			"glue:"+op, resType, res)); !ok {
 		h.audit(ctx, op, res, "deny", reason)
 		writeGlueError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
 		return

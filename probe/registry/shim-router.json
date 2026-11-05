@@ -153,8 +153,10 @@
       "actions": [
         "apigateway:CreateRestApi",
         "apigateway:DeleteRestApi",
+        "cloudformation:DeleteStack",
         "cloudformation:DescribeStacks",
         "cloudformation:SignalResource",
+        "cloudformation:UpdateStack",
         "lambda:InvokeFunction",
         "s3:GetObject"
       ],

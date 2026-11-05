@@ -139,9 +139,13 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	if len(senders) > 0 {
 		first = senders[0]
 	}
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, first); !allowed {
-		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, sesXMLNamespace)
-		return
+	// In legacy the coarse SubjectAccessReview first; in enforce IAM policy alone decides below.
+	enforce := enforcing(r.Context(), h.authz, claims)
+	if !enforce {
+		if allowed, reason := coarseOnly(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, first)(); !allowed {
+			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, sesXMLNamespace)
+			return
+		}
 	}
 	if len(senders) > 0 {
 		for _, s := range senders {
@@ -154,10 +158,11 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		// An assumed role is checked on every op: a Verify*Identity on the identity it names, the
 		// identity-less ops (GetSendQuota, ListIdentities, …) on Identity::*.
 		identity := ""
-		if claims.AssumedRole != "" {
+		if claims.AssumedRole != "" || enforce {
 			identity = formFirst(r, "EmailAddress", "Domain")
 		}
-		if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "ses:"+op, "Identity", identity, r); denied {
+		if ok, reason := decide(r.Context(), r, h.authz, claims, "ses:"+op, "Identity", identity,
+			dataPlaneOnly(r.Context(), r, h.authz, claims, "ses:"+op, "Identity", identity)); !ok {
 			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, sesXMLNamespace)
 			return
 		}
@@ -186,6 +191,9 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 // The permission boundary is not an explicit Deny: a boundary that covers only the domain identity
 // still lets a domain grant send.
 func (h *sesHandler) identityDenied(ctx context.Context, claims iam.Claims, action, addr string, r *http.Request) (bool, string) {
+	if enforcing(ctx, h.authz, claims) {
+		return h.identityDeniedIAM(ctx, claims, action, addr, r)
+	}
 	denied, explicit, reason := dataPlaneVerdict(ctx, h.authz, claims, action, "Identity", addr, r)
 	dom := identityDomain(addr)
 	if dom == "" || (denied && explicit) {
@@ -199,6 +207,24 @@ func (h *sesHandler) identityDenied(ctx context.Context, claims iam.Claims, acti
 		return false, ""
 	}
 	return true, reason + " — sending as " + addr + " needs " + action + " on its address identity or its domain identity (" + dom + ")"
+}
+
+// identityDeniedIAM is identityDenied in enforce: IAM policy on the address identity and on its domain
+// identity — an explicit Deny on either refuses, an allow on either sends.
+func (h *sesHandler) identityDeniedIAM(ctx context.Context, claims iam.Claims, action, addr string, r *http.Request) (bool, string) {
+	da := decision(ctx, r, h.authz, claims, action, "Identity", addr, nil)
+	dom := identityDomain(addr)
+	if dom == "" || da.ExplicitDeny {
+		return !da.Allowed, da.Reason
+	}
+	dd := decision(ctx, r, h.authz, claims, action, "Identity", dom, nil)
+	switch {
+	case dd.ExplicitDeny:
+		return true, dd.Reason
+	case da.Allowed || dd.Allowed:
+		return false, ""
+	}
+	return true, da.Reason + " — sending as " + addr + " needs " + action + " on its address identity or its domain identity (" + dom + ")"
 }
 
 // sendEmail — SES v1 SendEmail (structured Source/Destination/Message). Builds an RFC 5322 message and

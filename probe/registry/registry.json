@@ -282,8 +282,10 @@
     },
     "cloudformation": {
       "actions": [
+        "cloudformation:DeleteStack",
         "cloudformation:DescribeStacks",
-        "cloudformation:SignalResource"
+        "cloudformation:SignalResource",
+        "cloudformation:UpdateStack"
       ],
       "conditional": true,
       "deployableTypes": [

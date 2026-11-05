@@ -129,13 +129,12 @@ func (h *cognitoHandler) dispatch(w http.ResponseWriter, r *http.Request, reques
 		}
 		pool, _ := body["UserPoolId"].(string)
 		ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
-		if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, pool); !allowed {
-			writeCognitoError(w, http.StatusForbidden, "NotAuthorizedException", requestID, reason)
-			return
-		}
-		// Fine-grained, per pool; an assumed role is checked on every admin op (CreateUserPool/ListUserPools
-		// on UserPool::*).
-		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "cognito-idp:"+op, "UserPool", pool, r); denied {
+		// cognito-idp:<Op> on the pool (decide): in legacy the coarse SubjectAccessReview, then the
+		// data-plane refinement per pool (an assumed role is checked on every admin op,
+		// CreateUserPool/ListUserPools on UserPool::*).
+		if ok, reason := decide(ctx, r, h.authz, claims, "cognito-idp:"+op, "UserPool", pool,
+			coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, pool,
+				"cognito-idp:"+op, "UserPool", pool)); !ok {
 			writeCognitoError(w, http.StatusForbidden, "NotAuthorizedException", requestID, reason)
 			return
 		}

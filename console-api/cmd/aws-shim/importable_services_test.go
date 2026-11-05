@@ -114,10 +114,15 @@ func scanDataPlaneCalls(t *testing.T) []dataPlaneCall {
 		t.Fatal(err)
 	}
 	checks := map[string]bool{"deniedByDataPlane": true, "dataPlaneDenied": true, "dataPlaneVerdict": true, "allowedForAssumedRole": true}
+	// decided are the one decision (authz_decide.go) and its legacy halves, by the index of their action
+	// argument: decide(ctx, r, authz, claims, action, …), coarseThenDataPlane(ctx, r, cs, authz, claims,
+	// verb, group, resource, ns, name, action, …).
+	decided := map[string]int{"decide": 4, "decision": 4, "dataPlaneOnly": 4, "scopedDataPlaneOnly": 4,
+		"scopedDataPlaneThenCoarse": 5, "coarseThenDataPlane": 10, "coarseThenScopedDataPlane": 10}
 	fset := token.NewFileSet()
 	var out []dataPlaneCall
 	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") || f == "policycheck.go" {
+		if strings.HasSuffix(f, "_test.go") || f == "policycheck.go" || f == "authz_decide.go" {
 			continue
 		}
 		src, err := os.ReadFile(f)
@@ -155,8 +160,12 @@ func scanDataPlaneCalls(t *testing.T) []dataPlaneCall {
 			case *ast.SelectorExpr:
 				name, actionArg = fn.Sel.Name, 2
 			}
+			if i, ok := decided[name]; ok && actionArg == 3 {
+				actionArg = i
+			}
 			switch {
 			case checks[name] && actionArg == 3 && len(call.Args) >= 6:
+			case decided[name] == actionArg && len(call.Args) >= actionArg+3:
 			case passThrough[name] && actionArg == 2 && len(call.Args) >= 5:
 			default:
 				return true

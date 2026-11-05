@@ -133,15 +133,16 @@ func (h *sfnHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 
 	// Coarse authz: the caller must hold k8s RBAC on the openinfra.dev CRD (impersonated SAR) — the same
 	// RBAC the console's state-machine pages use.
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", resource, h.ns, ""); !allowed {
-		writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
+
 	// The data-plane check, states:<Op> on the state machine the op names (an execution resolves to its
 	// state machine, and the handler holds it to that one: boundExecution). An assumed role's authority is
 	// its data-plane policy alone (CanDo passes a role), default-deny on every op, ListStateMachines on
 	// StateMachine::*. A User's policy can only tighten the RBAC gate above, on an op naming a state machine.
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "states:"+op, "StateMachine", sfnStateMachine(op, body), r); denied {
+	// In enforce IAM policy alone decides (decide); in legacy the coarse check above runs first.
+	sm := sfnStateMachine(op, body)
+	if ok, reason := decide(ctx, r, h.authz, claims, "states:"+op, "StateMachine", sm,
+		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", resource, h.ns, "",
+			"states:"+op, "StateMachine", sm)); !ok {
 		writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}

@@ -141,12 +141,9 @@ func (h *kmsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	// (additive for a User; closed for an assumed role, which is checked on Key::* for an op naming no key).
 	// This is where kms:Encrypt is separable from kms:Decrypt for one principal on one key.
 	for _, c := range h.kmsKeyChecks(r.Context(), op, verb, body) {
-		if allowed, reason := iam.CanDo(ctx, h.cs, claims, c.verb, "openinfra.dev", "applications", h.authzNS, c.keyID); !allowed {
-			h.auditDeny(ctx, op, c.keyID, reason)
-			writeKMSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
-		}
-		if denied, reason := dataPlaneDenied(ctx, h.authz, claims, c.action, "Key", c.keyID, r); denied {
+		if ok, reason := decide(ctx, r, h.authz, claims, c.action, "Key", c.keyID,
+			coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, c.verb, "openinfra.dev", "applications", h.authzNS, c.keyID,
+				c.action, "Key", c.keyID)); !ok {
 			h.auditDeny(ctx, op, c.keyID, reason)
 			writeKMSError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 			return

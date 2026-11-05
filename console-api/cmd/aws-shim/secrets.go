@@ -132,15 +132,13 @@ func (h *secretsHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	// Coarse impersonated SubjectAccessReview. Secrets Manager has its OWN resource type ("secrets") so
 	// reading/writing secrets is a distinct grant from registry login/push (which gates on "repositories")
 	// — least privilege for one front door does not leak into the other (#345.6).
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "secrets", h.authzNS, secretName); !allowed {
-		h.auditDeny(ctx, op, secretName, reason)
-		writeSMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained Cedar dataPlane — additive, per-secret. This is where GetSecretValue is separable from
-	// DescribeSecret and where a principal scoped to secret A is denied secret B.
-	// An assumed role is checked on every op — ListSecrets/GetRandomPassword on Secret::*.
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "secretsmanager:"+op, "Secret", secretName, r); denied {
+	// secretsmanager:<Op> on the secret (decide). In legacy the coarse SubjectAccessReview, then the
+	// data-plane refinement per secret — where GetSecretValue is separable from DescribeSecret and a
+	// principal scoped to secret A is denied secret B; an assumed role is checked on every op
+	// (ListSecrets/GetRandomPassword on Secret::*).
+	if ok, reason := decide(ctx, r, h.authz, claims, "secretsmanager:"+op, "Secret", secretName,
+		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "secrets", h.authzNS, secretName,
+			"secretsmanager:"+op, "Secret", secretName)); !ok {
 		h.auditDeny(ctx, op, secretName, reason)
 		writeSMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return

@@ -178,7 +178,8 @@ func (h *cloudFrontHandler) serve(w http.ResponseWriter, r *http.Request, claims
 	// Authorization, as AWS evaluates it: cloudfront:<Action> on the distribution's ARN, before anything
 	// reveals whether it exists. For a User this is additive to the RBAC check below; for an assumed role it
 	// is the whole, default-deny authority.
-	if denied, reason := deniedByDataPlane(r.Context(), h.cfn.authz, claims, "cloudfront:"+rt.op, "Distribution", rt.distID, r); denied {
+	if ok, reason := decide(r.Context(), r, h.cfn.authz, claims, "cloudfront:"+rt.op, "Distribution", rt.distID,
+		scopedDataPlaneOnly(r.Context(), r, h.cfn.authz, claims, "cloudfront:"+rt.op, "Distribution", rt.distID)); !ok {
 		writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
 		return
 	}
@@ -202,9 +203,13 @@ func (h *cloudFrontHandler) serve(w http.ResponseWriter, r *http.Request, claims
 		writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, "CloudFront authorization is not configured on this shim")
 		return
 	}
-	if allowed, reason := iam.CanDo(r.Context(), h.cfn.cs, claims, verb, "openinfra.dev", "staticsites", d.ns, d.site); !allowed {
-		writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
-		return
+	// In legacy a User also needs the RBAC verb on the distribution's kind: StaticSite; in enforce IAM policy
+	// decided above.
+	if !enforcing(r.Context(), h.cfn.authz, claims) {
+		if allowed, reason := coarseOnly(r.Context(), h.cfn.cs, claims, verb, "openinfra.dev", "staticsites", d.ns, d.site)(); !allowed {
+			writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
+			return
+		}
 	}
 	switch rt.op {
 	case "CreateInvalidation":

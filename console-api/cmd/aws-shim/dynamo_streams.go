@@ -120,12 +120,12 @@ func (h *ddbStreamsHandler) serve(w http.ResponseWriter, r *http.Request, claims
 
 	// Authorize with the same impersonated SubjectAccessReview + data-plane policy the dynamodb
 	// front door uses — one policy world. All streams ops are reads ("get").
-	if allowed, reason := iam.CanDo(r.Context(), h.cs, claims, "get", "openinfra.dev", "applications", h.authzNS, table); !allowed {
-		writeStreamsError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained, per table; an assumed role is checked on every op (ListStreams with no table on Table::*).
-	if denied, reason := dataPlaneDenied(r.Context(), h.authz, claims, "dynamodb:"+op, "Table", table, r); denied {
+	// dynamodb:<Op> on the table (decide): in legacy the coarse check (all streams ops are reads), then
+	// the data-plane refinement per table (an assumed role is checked on every op, ListStreams with no
+	// table on Table::*).
+	if ok, reason := decide(r.Context(), r, h.authz, claims, "dynamodb:"+op, "Table", table,
+		coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, "get", "openinfra.dev", "applications", h.authzNS, table,
+			"dynamodb:"+op, "Table", table)); !ok {
 		writeStreamsError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}

@@ -115,13 +115,11 @@ func (h *kinesisHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	}
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, stream); !allowed {
-		h.auditDeny(ctx, op, stream, reason)
-		writeKinesisError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-		return
-	}
-	// Fine-grained, per stream; an assumed role is checked on every op (ListStreams on Stream::*).
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "kinesis:"+op, "Stream", stream, r); denied {
+	// kinesis:<Op> on the stream (decide): in legacy the coarse SubjectAccessReview, then the data-plane
+	// refinement per stream (an assumed role is checked on every op, ListStreams on Stream::*).
+	if ok, reason := decide(ctx, r, h.authz, claims, "kinesis:"+op, "Stream", stream,
+		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, stream,
+			"kinesis:"+op, "Stream", stream)); !ok {
 		h.auditDeny(ctx, op, stream, reason)
 		writeKinesisError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return

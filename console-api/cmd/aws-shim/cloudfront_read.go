@@ -145,7 +145,8 @@ func (h *cloudFrontHandler) serveRead(w http.ResponseWriter, r *http.Request, cl
 			writeCFError(w, http.StatusNotFound, "NoSuchDistribution", requestID, "The specified distribution does not exist.")
 			return
 		}
-		if denied, reason := deniedByDataPlane(ctx, h.cfn.authz, claims, "cloudfront:"+rt.op, "Distribution", rt.distID, r); denied {
+		if ok, reason := decide(ctx, r, h.cfn.authz, claims, "cloudfront:"+rt.op, "Distribution", rt.distID,
+			scopedDataPlaneOnly(ctx, r, h.cfn.authz, claims, "cloudfront:"+rt.op, "Distribution", rt.distID)); !ok {
 			writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
 			return
 		}
@@ -159,9 +160,11 @@ func (h *cloudFrontHandler) serveRead(w http.ResponseWriter, r *http.Request, cl
 			if d == nil {
 				continue
 			}
-			if allowed, reason := iam.CanDo(ctx, h.cfn.cs, claims, "get", "openinfra.dev", "staticsites", d.ns, d.site); !allowed {
-				writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
-				return
+			if !enforcing(ctx, h.cfn.authz, claims) {
+				if allowed, reason := coarseOnly(ctx, h.cfn.cs, claims, "get", "openinfra.dev", "staticsites", d.ns, d.site)(); !allowed {
+					writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
+					return
+				}
 			}
 			config := h.distributionConfigXML(rec, recs, rt.distID)
 			w.Header().Set("ETag", cfETag(config))
@@ -181,7 +184,8 @@ func (h *cloudFrontHandler) serveRead(w http.ResponseWriter, r *http.Request, cl
 		writeCFError(w, http.StatusNotFound, "NoSuch"+kind.elem, requestID, "The specified "+kind.elem+" does not exist.")
 		return
 	}
-	if denied, reason := deniedByDataPlane(ctx, h.cfn.authz, claims, "cloudfront:"+rt.op, kind.resType, rt.resID, r); denied {
+	if ok, reason := decide(ctx, r, h.cfn.authz, claims, "cloudfront:"+rt.op, kind.resType, rt.resID,
+		scopedDataPlaneOnly(ctx, r, h.cfn.authz, claims, "cloudfront:"+rt.op, kind.resType, rt.resID)); !ok {
 		writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
 		return
 	}
@@ -217,7 +221,8 @@ func (h *cloudFrontHandler) unavailable(w http.ResponseWriter, requestID string,
 // MaxItems (default and ceiling 100), keeping those whose StaticSite the caller may get.
 func (h *cloudFrontHandler) listDistributions(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	ctx := r.Context()
-	if denied, reason := dataPlaneDenied(ctx, h.cfn.authz, claims, "cloudfront:ListDistributions", "Distribution", "", r); denied {
+	if ok, reason := decide(ctx, r, h.cfn.authz, claims, "cloudfront:ListDistributions", "Distribution", "",
+		dataPlaneOnly(ctx, r, h.cfn.authz, claims, "cloudfront:ListDistributions", "Distribution", "")); !ok {
 		writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
 		return
 	}
@@ -256,9 +261,14 @@ func (h *cloudFrontHandler) listDistributions(w http.ResponseWriter, r *http.Req
 	sort.Slice(all, func(i, j int) bool { return all[i].d.id < all[j].d.id })
 	var items strings.Builder
 	n, last, truncated := 0, "", false
+	// In enforce IAM policy allowed cloudfront:ListDistributions above: the account's distributions are
+	// listed. In legacy only those whose StaticSite the caller may get.
+	enforce := enforcing(ctx, h.cfn.authz, claims)
 	for _, e := range all {
-		if allowed, _ := iam.CanDo(ctx, h.cfn.cs, claims, "get", "openinfra.dev", "staticsites", e.d.ns, e.d.site); !allowed {
-			continue
+		if !enforce {
+			if allowed, _ := coarseOnly(ctx, h.cfn.cs, claims, "get", "openinfra.dev", "staticsites", e.d.ns, e.d.site)(); !allowed {
+				continue
+			}
 		}
 		if n == max {
 			truncated = true

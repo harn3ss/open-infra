@@ -147,13 +147,6 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	}
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 
-	// Coarse authz: the caller must hold k8s RBAC on the iam.openinfra.dev CRD (impersonated SAR). IAM
-	// management is admin-level; this ties it to the same RBAC the console's IAM pages use.
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "iam.openinfra.dev", resource, h.usersNS, ""); !allowed {
-		h.audit(ctx, op, "", "deny", reason)
-		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, iamXMLNamespace)
-		return
-	}
 	// Every caller gets the data-plane check, iam:<Op> on the Role/Policy/User it names (the List* ops on
 	// <Type>::*). An assumed role's authority is its data-plane policy alone (CanDo passes a role), so IAM
 	// management — which writes with the shim's own identity — is default-deny for it; without this a role
@@ -164,7 +157,13 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	if resType == "User" && resID == "" && claims.AssumedRole == "" && iamActsOnCaller(op) {
 		resID = claims.PrincipalID()
 	}
-	if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "iam:"+op, resType, resID, r); denied {
+	// iam:<Op> on the principal or policy (decide). In legacy the coarse check first — the caller must hold
+	// k8s RBAC on the iam.openinfra.dev CRD (impersonated SAR; IAM management is admin-level, the RBAC the
+	// console's IAM pages use) — then the data-plane check above. In enforce IAM policy alone: AWS's
+	// PowerUserAccess, which excludes iam:*, may not manage IAM here either.
+	if ok, reason := decide(ctx, r, h.authz, claims, "iam:"+op, resType, resID,
+		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "iam.openinfra.dev", resource, h.usersNS, "",
+			"iam:"+op, resType, resID)); !ok {
 		h.audit(ctx, op, resID, "deny", reason)
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, iamXMLNamespace)
 		return
