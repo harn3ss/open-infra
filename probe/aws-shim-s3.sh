@@ -79,13 +79,19 @@ secret_name() { printf 'iam-ak-%s' "$(printf '%s' "$1" | sha256sum | cut -c1-40)
 # writes the iam-ak-<id> Secret the shim resolves, exactly as the console's mint path will.
 mint_key() {
   local owner="$1" group="$2"
+  # A principal minted with no group is policy-only: its own policies are all it has, decided by IAM
+  # policy alone (the canary label), as an AWS user with no group. A tier group (powerusers, admins)
+  # carries its AWS managed policy (PowerUserAccess, AdministratorAccess), which a scoped policy of the
+  # user's own only adds to, as on AWS — so a principal meant to be scoped has no group.
+  local groups="[\"${group}\"]" labels=""
+  [ -n "$group" ] || { groups="[]"; labels=', labels: { "openinfra.dev/iam-authz": "enforce" }'; }
   local ak="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
   local sk; sk="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
   cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: User
-metadata: { name: "${owner}", namespace: "${USERS_NS}" }
-spec: { displayName: "${owner}", groups: ["${group}"], source: local }
+metadata: { name: "${owner}", namespace: "${USERS_NS}"${labels} }
+spec: { displayName: "${owner}", groups: ${groups}, source: local }
 YAML
   CREATED_USERS+=("$owner")
   local name; name="$(secret_name "$ak")"
@@ -254,8 +260,8 @@ log "  ✓ reader read succeeded"
 # to every non-admin, whatever their grants.
 SCOPED_USER="probe-scoped-$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 SCOPED_POLICY="${SCOPED_USER}-s3"
-log "seeding a poweruser whose S3 policy grants only ${BUCKET}/scoped/*"
-mint_key "$SCOPED_USER" "powerusers"; SAK="$MK_AK"; SSK="$MK_SK"
+log "seeding a policy-only user whose S3 policy grants only ${BUCKET}/scoped/*"
+mint_key "$SCOPED_USER" ""; SAK="$MK_AK"; SSK="$MK_SK"
 [ -n "$SAK" ] && [ -n "$SSK" ] || inconclusive "failed to mint the scoped user's key"
 cat <<YAML | kubectl apply -f - >/dev/null || inconclusive "could not create the scoped data-plane Policy"
 apiVersion: iam.openinfra.dev/v1
