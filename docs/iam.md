@@ -1,380 +1,212 @@
-# IAM — users, roles and policies (design)
+# IAM: users, groups, policies, roles and accounts
 
-> AWS equivalent: IAM. This is the **plan of record**; today only part of it exists — see
-> [Status](#status). For what's actually shipped, read [`auth.md`](auth.md).
+open-infra's IAM works like AWS IAM. **An IAM policy is the only thing that grants access**, and the same
+policy decides the same way wherever a request comes from: the console, the AWS CLI and SDKs (through the
+AWS front door), and CloudFormation stacks. If you know AWS IAM, you know this; the differences are listed
+where they matter.
 
-## The governing principle
+Everything below is done from the console (**Security & Identity**) or with the AWS CLI pointed at the
+platform (`AWS_ENDPOINT_URL`). Nothing needs `kubectl`.
 
-**Kubernetes RBAC is the enforcement plane. open-infra's CRDs are a compiler front-end for it.**
+## Users
 
-The console must never be the thing that says no. It signs a user in, then proxies their calls
-with impersonation so the API server decides — which means a permission holds no matter how the
-action is attempted (console, `kubectl`, Terraform, Argo), and every decision lands in the audit
-log attributed to a person. Every mature platform on Kubernetes converged on this: Rancher
-compiles RoleTemplates to aggregated ClusterRoles, OpenShift's authorization objects *are* RBAC
-objects. Nobody reimplements authorization for cluster resources in app code.
+A user is a person or a program with its own credentials. Create one from **IAM → Users → Create user**,
+or:
 
-## The mapping
-
-| AWS IAM | open-infra | Enforced by |
-|---|---|---|
-| IAM user | `kind: User` → `Impersonate-User: openinfra:<name>` | k8s authn |
-| IAM group | `kind: Group` → `Impersonate-Group: openinfra:<name>` | k8s authn |
-| Role (attachable set) | `kind: Role` → aggregated ClusterRole | RBAC |
-| Managed policy | `kind: Policy` (Allow-only) → labelled ClusterRole | RBAC aggregation |
-| Attach policy → role | an aggregation label | RBAC controller |
-| Inline policy | `spec.inline` on a `kind: Role` | RBAC |
-| **Explicit `Deny`** | `kind: Policy` `dataPlane.statements` with `effect: Deny` | **Cedar engine** (shipped) |
-| **`Condition`** | `condition` on a Cedar statement (Source-IP / string-match / datetime) | **Cedar engine** (shipped) |
-| Permission boundary | the openinfra.dev product surface (Policies can grant nothing else) | RBAC + provider grant |
-| CloudTrail | k8s audit log (`impersonatedUser`) | already shipped |
-
-## The constraint that shapes everything
-
-**Kubernetes RBAC is purely additive. There are no deny rules.** It also has no conditions and
-cannot match on resource attributes (labels, spec fields). So:
-
-- The **`Allow` half** of an IAM-style policy maps cleanly onto RBAC rules.
-- The **`Deny` half and every `Condition` do not** — they are enforced by the **Cedar engine**
-  instead (shipped), where the requester's identity and the request context are both in scope.
-  See [policy-engine.md](policy-engine.md).
-
-Any design that pretends otherwise ships a policy editor that accepts JSON it cannot enforce.
-That is the single most important thing to get right here.
-
-Two further RBAC limits worth stating, because they look like they work and then don't:
-
-- **`resourceNames` cannot restrict `list`, `watch`, `create` or `deletecollection`.** "Read only
-  the VMs named X" is unachievable — `get` by name works, but the console lists constantly and
-  `list` is all-or-nothing. Per-object scoping must be a **namespace** boundary or an admission
-  condition, never `resourceNames`.
-- **No glob matching on names.** `resourceNames: ["prod-*"]` is exact-string equality, not a
-  pattern. Don't offer a wildcard field the backend can't honour.
-
-## Staged plan
-
-### Stage 0 — harden what exists
-- ✅ **Pin impersonation.** `impersonate` on groups with no `resourceNames` is effectively
-  cluster-admin (the holder can become `system:masters`). Pinned to the four `openinfra:*` groups.
-  User names are held to `openinfra:*` too, the only form the console and the aws-shim act as:
-  RBAC cannot express a name prefix, so the impersonator ClusterRoles carry
-  `openinfra.dev/impersonate-users: "openinfra:*"` and the control-plane Cedar corpus enforces it.
-  A stolen console or shim token therefore cannot act as a control-plane user such as
-  `system:kube-controller-manager`, which can mint any ServiceAccount's token. (While the authorization
-  webhook is down, RBAC alone decides, and RBAC still allows any user name.)
-- ✅ **SAR-gate the BFF's own endpoints.** Handlers that act as the ServiceAccount should issue a
-  `SubjectAccessReview` *as the impersonated user* before acting, and fail closed. This is the
-  documented way to defer an authorization decision, and it shrinks the one real hole in
-  [`auth.md`](auth.md).
-- ✅ **Guard role drift.** `open-infra-poweruser` enumerates kinds, so adding a `kind:` silently
-  leaves powerusers without access. AWS solves this with `NotAction`; RBAC has no such thing, and
-  a bare `resources: ["*"]` would be *worse* here because it would auto-grant future identity
-  CRDs. The fix is a CI test asserting every CRD is either listed or explicitly excluded.
-
-### Stage 1 — `kind: User` and `kind: Group` ✅
-Replaces the JSON blob in the `console-auth` Secret, so accounts become GitOps-managed like
-everything else.
-
-```yaml
-apiVersion: iam.openinfra.dev/v1
-kind: User
-metadata: { name: alice }
-spec:
-  displayName: Alice Example
-  groups: [powerusers]
-  source: local                 # local | ldap | oidc
-  passwordSecretRef: { name: user-alice, key: hash }   # bcrypt hash, never a password
+```sh
+aws iam create-user --user-name alice
+aws iam create-access-key --user-name alice            # programmatic access
+aws iam attach-user-policy --user-name alice --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
 ```
 
-**Put identity CRDs in a separate API group (`iam.openinfra.dev`), not `openinfra.dev`.** The
-existing `open-infra-readonly` role grants `openinfra.dev: ["*"]`, and because RBAC is additive a
-wildcard *grants* new kinds the moment they exist — a reader would silently gain read access to
-the identity objects. A separate group makes that boundary structural instead of a list someone
-must remember to maintain.
+- **Console access** is an option on the create form (a password the console stores hashed). Access keys
+  are created and rotated from the user's page or with `create-access-key` / `update-access-key` /
+  `delete-access-key`.
+- **A user with no policy can do nothing**, as on AWS: it can sign in and see who it is, and every page
+  and API call answers access denied. Changing its own password needs `iam:ChangePassword` on itself (as
+  AWS's `IAMUserChangePassword` grants).
+- **The name `root` is reserved** for the account's root user, which is not an IAM user (see
+  [The root user](#the-root-user)).
 
-The local `root` account stays in the Secret as documented break-glass.
+## Groups
 
-**Sign-in order is Secret first, then `kind: User`.** That ordering is the whole point of
-break-glass: if the CRDs are missing, a Composition is broken, or someone deletes their own
-User, `root` still works. Losing the console because the thing that defines who may use the
-console is broken would be the worst possible failure mode.
+A group is a **container for policies**, as on AWS: its members get the policies attached to it. It is not
+a permission tier.
 
-A User's `spec.groups` become the `Impersonate-Group` values **directly** — they are not
-re-derived from a role keyword. The session still carries a role, but only for display and
-for the read-only write gate on the BFF's own endpoints. Empty `spec.groups` therefore means
-"can sign in, authorized for nothing" rather than defaulting to a role: forgetting to set
-groups fails closed. Every name is `openinfra:`-prefixed, so a User asking for
-`system:masters` gets the inert `openinfra:system:masters`.
-
-#### The ceiling on group names (read this before creating a `kind: Group`)
-
-Stage 0 pinned the impersonator ClusterRole's `resourceNames` to the four built-in groups,
-because `impersonate` on groups without that pin is effectively cluster-admin. That pin is
-also a hard ceiling on `kind: Group`: **a Group whose name is not in that list has no
-effect.** Its ClusterRoleBinding is created, the user signs in fine, and then every API call
-fails, because the console is not allowed to assert the group in the first place.
-
-The console rewrites that 403 into an actionable message naming the group and the
-ClusterRole, rather than passing through the API server's version, which blames the console's
-ServiceAccount and reads like a bug.
-
-So:
-
-* Prefer the built-in groups — `admins`, `powerusers`, `readers` — and vary what they mean by
-  pointing `spec.clusterRole` at a different ClusterRole.
-* A genuinely new group name requires an operator to add `openinfra:<name>` to
-  `open-infra-console-impersonator` in `platform/console/manifests/rbac-roles.yaml`. That is a
-  deliberate, reviewable act, not something the console can do for you — anything able to widen
-  its own impersonation list could grant itself `system:masters`.
-
-### Stage 2 — `kind: Policy` (Allow-only) and `kind: Role`
-Where the AWS-like UX actually appears, restricted to the half RBAC can enforce.
-
-```yaml
-apiVersion: iam.openinfra.dev/v1
-kind: Policy
-metadata: { name: VirtualMachineFullAccess }
-spec:
-  statements:
-    - effect: Allow
-      actions: ["virtualmachines:*", "volumes:Get", "volumes:List"]
-      resources: ["*"]
+```sh
+aws iam create-group --group-name developers
+aws iam attach-group-policy --group-name developers --policy-arn arn:aws:iam::aws:policy/PowerUserAccess
+aws iam add-user-to-group --group-name developers --user-name alice
+aws iam put-group-policy --group-name developers --policy-name s3-team --policy-document file://s3-team.json
 ```
 
-Each `Allow` compiles to a **labelled ClusterRole**; `kind: Role` is an **aggregated ClusterRole**
-selecting those labels. Attaching or detaching a policy in the UI is adding or removing a label.
-This is exactly how Kubernetes' own `admin`/`edit`/`view` are built, and the approach Rancher also uses.
+## Policies
 
-**Solve the escalation problem before writing the composition:** you cannot create a Role granting
-verbs you don't hold unless you hold `escalate`. Whatever renders these ClusterRoles must hold a
-superset of anything it can emit — there is no third option. Document the choice honestly.
+Policies are AWS IAM policy documents (`Version`, `Statement` with `Effect`, `Action` / `NotAction`,
+`Resource` / `NotResource`, `Condition`), stored as written. Attach them to users, groups and roles, or
+embed them inline.
 
-#### What is built
+```sh
+aws iam create-policy --policy-name s3-team --policy-document file://s3-team.json
+```
 
-`kind: Policy`, `kind: Role`, the permission boundary, the BFF endpoints and the console UI are
-all live and verified end-to-end. How it actually works:
+### AWS managed policies
 
-- **`kind: Policy`** — an attachable document of Allow statements over the openinfra.dev surface.
-  The boundary is enforced two ways: the composition **hardcodes `apiGroups: [openinfra.dev]`**
-  into every rule and **whitelists the 15 product resources**, so a policy naming `secrets` (or a
-  typo) has that rule *dropped* rather than poisoning the whole role; and the rendering
-  ServiceAccount holds *exactly* the openinfra.dev surface, so the API server independently refuses
-  anything beyond it. The BFF also rejects an out-of-boundary action up front with a clear 400.
-  Proven live: `secrets:Get` in a policy → 400 from the BFF; forced in at the CR level → compiled
-  to an openinfra.dev-only ClusterRole with the bad rule gone.
-- **`kind: Role`** — a named bundle of policies, compiled to an *aggregated* ClusterRole that
-  unions them by label. Aggregation is where the escalation problem arises: Kubernetes
-  requires `escalate` to create **any** ClusterRole carrying an `aggregationRule`, which the
-  boundary does not satisfy. The rendering ServiceAccount is therefore granted `escalate` on
-  clusterroles — **bounded-harmless**, because the `bind` verb stays `resourceName`-fenced to the
-  three built-in roles and the SA holds no secrets/RBAC, so even with escalate it can *create* a
-  powerful ClusterRole but can never *bind* one exceeding the boundary to a user. Escalate widens
-  what can be created, never what can be granted to a person — verified live: a member of a group
-  bound to a role built from a `virtualmachines:*, volumes:Get/List` policy could delete VMs and
-  get volumes, but not delete volumes, not read secrets, not touch applications.
-- **Console UI + BFF** — Policies and Roles pages under Security & Identity; `/api/iam/policies`
-  and `/api/iam/roles` are SAR-gated on `iam.openinfra.dev` exactly like Users/Groups (admins only;
-  a read-only user is 403'd on both list and create). A Role becomes effective by pointing a
-  Group's `clusterRole` at `openinfra-role-<name>` — subject to the same impersonation ceiling as
-  any group, which the UI surfaces.
+The platform ships AWS's managed policies under their AWS names and ARNs
+(`arn:aws:iam::aws:policy/<Name>`), each with AWS's document limited to the services the platform serves
+(each policy's description says what it leaves out). The job-function policies:
 
-**Invariant to preserve:** never add a privileged role to the provider's `bind` `resourceNames`,
-and never grant the provider SA secrets/RBAC verbs. Those two fences — not the absence of
-`escalate` — are what bound the whole system.
+| Policy | What it allows |
+|---|---|
+| `AdministratorAccess` | everything |
+| `PowerUserAccess` | everything except IAM, Organizations and Account management (it can still list roles and create service-linked roles, as AWS's document allows) |
+| `ReadOnlyAccess` | every served service's read actions (`Describe*`, `Get*`, `List*` and the like) |
+| `ViewOnlyAccess` | list and describe, no data reads |
 
-### `Deny` and conditions — via the Cedar engine (shipped)
-`effect: Deny` statements and `Condition`s are expressed as **Cedar**: `kind: Policy`
-`dataPlane.statements` carry `effect: Deny` (AWS-style precedence — an explicit Deny overrides
-Allow) plus request-context conditions — Source-IP CIDR, string-match, and datetime windows (the
-`aws:SourceIp` / `aws:username` / `aws:CurrentTime` equivalents the AWS policy importer maps). They
-are enforced by the Cedar engine at the **aws-shim data plane** for AWS-API calls, and the
-**control-plane Cedar enforce is live** — RBAC is the Allow base and Cedar only tightens, fail-closed
-with an RBAC-fallback on a corpus miss. This superseded the earlier plan to compile `Deny` to a
-ValidatingAdmissionPolicy. See [policy-engine.md](policy-engine.md).
+and the service ones the AWS estates we have seen use most: `AmazonS3FullAccess` /
+`AmazonS3ReadOnlyAccess`, `IAMFullAccess`, `AWSLambdaBasicExecutionRole`,
+`AWSLambdaVPCAccessExecutionRole`, `AmazonSQSFullAccess`, `AmazonDynamoDBFullAccess`,
+`AWSStepFunctionsFullAccess`, `AmazonRDSFullAccess`, `CloudWatchFullAccess`, `AmazonSSMFullAccess`,
+`AWSCloudFormationFullAccess`, `AmazonCognitoPowerUser`, `SecretsManagerReadWrite`,
+`AmazonSSMManagedInstanceCore`, the ECR policies and more; the console's **Policies** page lists them all.
+A managed policy for a service the platform does not serve can be attached; it grants nothing, and says
+so.
 
-**Be explicit in the UI that `Deny` is enforced by the engine, not RBAC authorization.** It will not
-appear in `SelfSubjectRulesReview`, so a denied action's button looks enabled and fails on use.
-Surface the policy's message verbatim. The alternative — duplicating deny logic in the UI — is the
-drift anti-pattern.
+### How a request is decided
+
+AWS's evaluation logic:
+
+1. An explicit `Deny` in any applicable policy wins.
+2. Otherwise an `Allow` from an identity policy (the user's own, its groups', or the role's) or from the
+   resource's policy (a bucket, queue, topic, key, function or repository policy) allows it — within the
+   same account, either is enough; across accounts, both sides must allow it.
+3. A permissions boundary and a session policy (an assumed role's) narrow what identity policies allow.
+4. Anything not allowed is denied.
+
+**Conditions** supported: `aws:SourceIp` (`IpAddress` / `NotIpAddress`), string conditions such as
+`aws:username` (`StringEquals`, `StringLike` and their negations), and `aws:CurrentTime` windows
+(`DateGreaterThan` / `DateLessThan`). A statement whose condition the platform cannot evaluate is never
+read more broadly than written: an `Allow` with it grants nothing, and a `Deny` with it applies
+unconditionally. The policy's page reports which statements that affected.
+
+**One difference from AWS:** the platform has an operator surface (its Kubernetes objects: workloads,
+nodes, Secrets) that AWS has no service for. Its actions are `openinfra-operator:*`. A policy grants them
+only by naming them or with `"Action": "*"` (as `AdministratorAccess` does); an "everything except …"
+`NotAction` allow (as `PowerUserAccess` is) never reaches them.
+
+**When access is denied** the answer is AWS's: `AccessDenied` / `AccessDeniedException` (EC2:
+`UnauthorizedOperation`), with a message naming the action and the resource ARN — `You are not authorized
+to perform: s3:DeleteBucket on resource: arn:aws:s3:::reports`.
+
+## Roles
+
+A role is assumed for temporary credentials, by a user, another role, a workload or a web identity:
+
+```sh
+aws iam create-role --role-name deployer --assume-role-policy-document file://trust.json
+aws iam attach-role-policy --role-name deployer --policy-arn arn:aws:iam::aws:policy/PowerUserAccess
+aws sts assume-role --role-arn arn:aws:iam::<account>:role/deployer --role-session-name ci
+```
+
+- **Trust** entries name principals by ARN (`arn:aws:iam::<account>:user/alice`, `…:role/…`,
+  `…:root` for a whole account) or a federated provider for `AssumeRoleWithWebIdentity`.
+- Sessions last up to the role's `MaxSessionDuration` (1 hour by default, at most 12).
+- **Instance roles:** a virtual machine's role (`IamInstanceProfile` in a stack, the VM's role in the
+  console) gives the guest credentials through the instance metadata service, as on EC2.
+- "Revoke active sessions" on a role's page ends every session issued before that moment, as AWS's does.
 
 ### Passing a role (`iam:PassRole`)
-Naming a `kind: Role` on something that later acts with that Role's credentials needs permission to
-pass the Role, as on AWS:
 
-| Where a Role is named | Checked by | As |
-|---|---|---|
-| `VirtualMachine` `spec.instanceRole` | admission policy `openinfra-pass-role` | the requester (the console and the CloudFormation front door write as the user) |
-| ServiceAccount annotation `openinfra.dev/instance-role` (what the VM credentials endpoint trusts) | admission policy `openinfra-instance-role-binding` | the requester; the VM composition sets it through provider-kubernetes |
-| `StateMachine` `roleArn` (CreateStateMachine / UpdateStateMachine) | the aws-shim | the caller; StartExecution also requires the Role's trust to name the caller |
-| `Execution` `credentialsSecret` (the role session a run uses) | admission policy `openinfra-execution-credentials` + the statemachine controller | set only by the aws-shim at StartExecution, never changed; the controller uses only a Secret the Execution owns |
+Naming a role on something that later acts with that role's credentials — a VM's instance role
+(`IamInstanceProfile`), a state machine's `RoleArn` — needs `iam:PassRole` on the role, as on AWS.
+`AdministratorAccess` includes it; `PowerUserAccess` does not, so a power user launches such a resource
+only once someone grants `iam:PassRole` on that role:
 
-Each applies when the Role is set or changed. `Application` `spec.assumeRole` needs no PassRole: as with
-IRSA, the Role's trust names the workload's ServiceAccount, and only that identity can assume it.
-
-The permission is the RBAC verb `passrole` on `roles.iam.openinfra.dev` (an assumed role needs
-`iam:PassRole` on `Role::<name>` in its policies instead):
-
-- **Admins** (`openinfra:admins`) hold it on every Role.
-- **provider-kubernetes** holds it, to write the per-VM ServiceAccount from a claim already checked. It
-  runs as the fixed ServiceAccount `crossplane-system/provider-kubernetes`, and its grants are bound to
-  that name only — no other identity in `crossplane-system` (reconcilers, Crossplane function pods)
-  holds `passrole` or the provider's role.
-- **Power users do not.** This matches AWS's PowerUserAccess, which excludes `iam:PassRole`. A power
-  user can launch a VM or a state machine that names a Role only after an admin grants `passrole` on
-  that Role:
-
-  ```sh
-  kubectl -n <ns> create role pass-<role> --verb=passrole --resource=roles.iam.openinfra.dev --resource-name=<role>
-  kubectl -n <ns> create rolebinding pass-<role> --role=pass-<role> --group=openinfra:<group>
-  ```
-
-  then regenerate the control-plane Cedar corpus ([authz-webhook.md](authz-webhook.md)), which decides
-  the check in enforce mode. `kind: Policy` cannot grant it: `iam.openinfra.dev` is outside every
-  Policy's boundary.
-
-### Roles and policies outside the home namespace
-Users, Groups, the managed Policy library and the Roles STS can assume live in the IAM home
-namespace (`open-infra-console`). A Role elsewhere (a VM's instance role in the VM's namespace, a
-stack's Role in the CloudFormation namespace) is a separate principal, `<namespace>/<name>`, so a
-same-named Role in another namespace never shares its policies or its "Revoke sessions" cutoff:
-
-- A Role's `spec.policies` entry resolves to its own namespace's Policy first, then the home
-  namespace's (the managed library). `<namespace>/<name>` names one explicitly; a Role outside home
-  may name only its own namespace or home.
-- A Policy outside home governs only principals of its own namespace through `appliesTo`: `Role::<name>`
-  means that namespace's Role and `*` everyone in that namespace. A home Policy may name
-  `Role::<namespace>/<name>`.
-- Write `<namespace>/<name>` wherever a trust policy or `appliesTo` must name a Role outside home.
-
-## Deliberately NOT building
-
-- **Permission boundaries / SCPs.** Intersection semantics have no Kubernetes analogue; pure cost
-  at this scale.
-- **Resource-based policies.** No resource-side ACLs; one direction only.
-- **A policy evaluation engine in the BFF.** No Allow/Deny resolution, no condition interpreter.
-  The BFF compiles and displays; the API server decides. App-code checks bind to the HTTP route,
-  not the resource — anyone with a kubeconfig walks around them, and the decisions never reach the
-  audit log.
-- **`resourceNames`-based per-object grants** (see the constraint above).
-- **A `kind: Project`/tenancy abstraction** unless real multi-tenancy arrives.
-
-The one legitimate exception is **product-feature gating** — may this user see the Cost page, open
-a VNC console — which genuinely isn't a Kubernetes authorization question. Keep it small, in app
-code, and *named* as a separate layer so it never grows into a shadow RBAC.
-
-## UX (from the AWS console)
-
-Ranked by value-for-effort, for whenever the Users/Roles screens get built:
-
-1. **One permissions table per user, with an "Attached via" column** (Directly / Group: dba /
-   Boundary). Never split direct vs inherited across tabs — inherited authority is what people
-   forget. Make destructive buttons say what they'll do ("this removes you from `dba`, which also
-   removes X and Y").
-2. **Access-level grouping of verbs** — List / Read / Write / Delete / **Permissions management**.
-   `get,list,watch` → Read; `create,update,patch` → Write; `bind,escalate,impersonate` →
-   Permissions management, flagged in a warning colour everywhere. One ~40-line lookup table makes
-   every other screen better.
-3. **Summary view with a Summary | YAML toggle**, including a "show remaining kinds" expander that
-   reveals what is *not* granted, and inline warnings for rules that grant nothing.
-4. **Full-screen 3-step create-user wizard**, with "copy permissions from an existing user" (cheap
-   to build, the most-used real-world path) and a one-time credential screen.
-5. **Live validation with three severities** — errors block save; security warnings for `*` and
-   `escalate`; suggestions for typo'd kinds validated against live API discovery.
-6. **Last-used data** on bindings, surfaced *inside* the removal flow.
-
-**Anti-patterns to avoid**, learned from AWS's scars: don't let a visual editor silently rewrite
-hand-authored documents (AWS's own docs warn "you should not compare JSON policy documents as
-strings"); don't hide inherited permissions on a second tab; don't let a policy that grants nothing
-save silently; don't put the correctness-checking tool on a different page from the editor.
-
-## `kind: Grant` — temporal (just-in-time) access
-
-A `Grant` binds a subject (a `kind: User` or `kind: Group`) to a ClusterRole **for a bounded time**, then
-revokes itself — open-infra's answer to standing privilege, and the analog of AWS STS AssumeRole with a
-session duration. It renders one `ClusterRoleBinding` of `openinfra:<subject>` to the role, plus a clock.
-A Grant is a **request, not an entitlement**: it confers nothing until a second party approves it (see
-[Approval](#approval-second-party-authorization) below).
-
-```yaml
-apiVersion: iam.openinfra.dev/v1
-kind: Grant
-metadata: { name: jit-alice, namespace: platform }
-spec:
-  subject: { kind: User, name: alice }
-  clusterRole: open-infra-poweruser   # or openinfra-role-<yourRole>
-  duration: 4h                         # Go duration; hard-capped at 24h
-  reason: "oncall incident 1234"       # recorded for audit (AC-2(2))
-  # requestedBy is stamped by the console from the authenticated requester; approval is set by a
-  # DIFFERENT admin via the approve action — never in the create request.
+```json
+{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "iam:PassRole",
+  "Resource": "arn:aws:iam::<account>:role/deployer"}]}
 ```
 
-### Approval (second-party authorization)
+## Accounts and Organizations
 
-A Grant does not confer access on its own — that would be self-service elevation with no oversight
-(AC-2(2), AC-6(2)/(5)), and it would collapse separation of duties (AC-5). Instead:
+Each install is an organization, and its **management account** is the install's own account (its id is
+in every ARN the platform has handed out). Member accounts are separate accounts: their own IAM, their own
+resources, their own account id in their ARNs, and isolation from other accounts.
 
-- **Request** (console → Security & Identity → Grants → *Request grant*, or `POST /api/iam/grants`) creates
-  the Grant with `spec.requestedBy` stamped from the authenticated requester. The composition renders **no
-  binding** — `status.phase: AwaitingApproval` — so it confers nothing.
-- **Approve** (the grant's *Approve* tab, or `POST /api/iam/grants/{name}/approve`) is a distinct,
-  SAR-gated action that records the approver in `spec.approval.approvedBy`/`approvedAt` from the
-  authenticated session and **refuses if the approver equals the requester** (HTTP 409). Only then does the
-  composition render the `ClusterRoleBinding` — `status.phase: Active`.
+```sh
+aws organizations describe-organization
+aws organizations list-accounts
+aws organizations create-account --email team-a@example.com --account-name team-a
+aws organizations describe-create-account-status --create-account-request-id car-…
+```
 
-Separation of duties is enforced in **two** places: the BFF rejects a self-approval, and the composition is
-a fail-safe — it renders no binding when `approvedBy` is empty or `approvedBy == requestedBy`, so even a
-Grant edited directly with `kubectl` cannot self-approve into a binding. (The residual: a party with direct
-`create` on `grants` could forge `requestedBy` to frame a two-party approval; that is an IAM-admin-level
-capability already, and `requestedBy` is authoritative when the console sets it from the session.)
+- A new member account gets an `OrganizationAccountAccessRole` that trusts the management account and
+  holds `AdministratorAccess`, as AWS creates it.
+- **Switch role:** the console's account menu switches into a member account's role (and back), as the
+  AWS console does. From the CLI it is `sts assume-role` into that role's ARN.
+- **Across accounts**, access works as on AWS: a role's trust policy names the other account (or a
+  principal in it), or a resource policy grants it, and the other side's identity policy must allow it
+  too.
+- Organizations is served to the management account only; a member account's caller is denied.
 
-**What a Grant may confer (the ceiling).** Unlike `kind: Group` — a permanent, admin-only act that can bind
-any role — a Grant is restricted to a deliberately narrow allowlist: a `kind: Role` (`openinfra-role-*`, itself
-bounded by the [Policy permission boundary](#kind-policy--the-permission-boundary)) or one of the two bounded
-built-in console roles (`open-infra-readonly`, `open-infra-poweruser`). It may **not** name `open-infra-console`
-(full console admin) or any provider/setup ClusterRole. This matters because the Crossplane provider that
-creates the binding holds broad permissions itself, and Kubernetes' RBAC "cover" rule would otherwise let it
-bind a subject to a secrets/RBAC-bearing role *without* the fenced `bind` verb — a temporal path to cluster-wide
-secrets. The composition enforces the allowlist by rendering **no binding at all** for a disallowed role (the
-Grant then confers nothing and says so in `status.message`); a render test guards it.
+## The root user
 
-Expiry is enforced by a reconciler (`platform/security/grant-reconciler.yaml`, a once-a-minute CronJob whose
-only power is get/list/**delete** on `grants`): when `approvedAt + duration` has passed — the access clock
-starts at approval, not at creation, so a grant waiting for approval does not silently burn its window (a
-never-approved grant falls back to `creationTimestamp + duration`, so it is still bounded) — or the duration
-is invalid/over the 24h cap, it deletes the Grant, and Crossplane tears down the binding, so access ends with
-no one having to remember to revoke it. All time math runs in `jq` (`now` / `fromdateiso8601`) and
-the duration must match a strict integer Go-duration form; anything unparseable, non-positive, over-cap, or
-with an unreadable timestamp is **revoked, not kept** (fail-safe). The binding's create and delete both land in
-the audit log, and the reason rides as an annotation.
+The account's root user is the console's break-glass sign-in, created with the install. It is not an IAM
+user and has every permission in its account; no policy can lock it out. Keep its password offline, use
+IAM users and roles for daily work, and use root only when IAM itself needs repair.
 
-**The reconciler is the single enforcement point for expiry**, so it is monitored: a `PrometheusRule`
-(`platform/observability/grant-reconciler-alerts.yaml`) fires `GrantReconcilerNotRunning` if it stops
-completing — until then, treat active grants as standing privilege. Teardown is also asynchronous (delete
-Grant → Crossplane removes the binding), so a binding can outlive its Grant by the provider's reconcile lag,
-and indefinitely if the provider is unhealthy; the same alerting is the backstop.
+## Temporary access: grants
 
-Government control mapping: **AC-2(2)** (temporary accounts), **AC-6(2)/(5)** (least privilege + elevation),
-**AU** (the grant is audited). Like the other IAM kinds it is deliberately not in the Terraform provider
-(identity is console/GitOps-managed — see [`terraform.md`]).
+A **grant** gives a user another set of permissions for a bounded time (at most 24 hours) and then
+revokes itself — just-in-time access instead of standing privilege. A grant is a request: it gives
+nothing until a second person approves it, and a requester cannot approve their own (**Security &
+Identity → Grants**). Every grant, approval and revocation is in the audit trail.
 
-## Status
+---
 
-| Stage | State |
+## Running the cutover (operators)
+
+*Operator-facing: this section is Kubernetes-shaped by design.*
+
+The platform moved from Kubernetes RBAC tiers (`admins`, `powerusers`, `readers`) to IAM policy as the
+only authority. How far IAM policy decides is a switch, `IAM_AUTHZ`, read from an out-of-git ConfigMap
+`openinfra-iam` in each component's namespace (so ArgoCD's self-heal never undoes a step):
+
+| `IAM_AUTHZ` | The console and the AWS front door |
 |---|---|
-| Impersonation pinned to `openinfra:*` groups | ✅ shipped |
-| Audit logging with `impersonatedUser` | ✅ shipped |
-| SAR-gating BFF-native endpoints | ✅ shipped (verified live: readonly 403s, root passes) |
-| Poweruser drift guard | ✅ shipped (CI test, mutation-tested) |
-| `kind: User` / `kind: Group` | ✅ shipped — sign-in reads Users; `root` stays in the Secret as break-glass |
-| Custom group names beyond the built-in four | ⬜ needs an operator edit to the impersonator ClusterRole (see above) |
-| `kind: Policy` + permission boundary | ✅ shipped — BFF + console UI; boundary proven live (out-of-boundary action → 400; forced rule dropped) |
-| `kind: Role` (aggregated) | ✅ shipped — decision A (provider holds `escalate`, bounded by the bind fence); effective grant = boundary, verified live |
-| Policies / Roles UI | ✅ shipped — Security & Identity → Policies / Roles (author, attach/detach, admins-only via SAR) |
-| `Deny` + conditions (Cedar) | ✅ shipped — `kind: Policy` `dataPlane.statements`: `effect: Deny` with AWS precedence + Source-IP / string / datetime conditions, enforced by the Cedar engine; see [policy-engine.md](policy-engine.md) |
-| Users/Groups UI | ✅ shipped — Security & Identity → Users/Groups (create/edit/delete, password reset, group membership; admins-only via SAR) |
-| `kind: Grant` (temporal / JIT access) | ✅ shipped — time-bounded binding, self-revoking reconciler (jq-based expiry + strict 24h cap, verified against the runtime image), role allowlist enforced in the composition, reconciler-liveness alert; console UI is a follow-up (creatable via GitOps/kubectl/BFF) |
+| `legacy` (unset) | decide as before (RBAC tiers) |
+| `shadow` | decide as before, and log the IAM decision next to it (`iam-shadow allow|deny …`); a User or Role labelled `openinfra.dev/iam-authz: enforce` is decided by IAM policy (a canary) |
+| `enforce` | IAM policy decides for every principal |
+
+The compiler (`iam-compiler`, `IAM_COMPILER_MODE` `report` or `apply` in the same ConfigMap in
+`open-infra-authz`) turns IAM policy into what Kubernetes still enforces: generated RBAC (labelled
+`openinfra.dev/generated-by: iam-compiler`) and the IAM corpus the authorization webhook reads. RBAC is
+generated, never hand-written; a CI check (`test/render/rbac_user_authority_test.go`) fails on any
+hand-written grant to a user.
+
+`hack/iam-cutover.sh <step> [--rollback] [--yes]` runs the cutover one reversible step at a time. Each
+step first proves the break-glass root (SubjectAccessReviews for its floor, then a console sign-in as root
+that writes IAM and creates a resource — set `ROOT_PASSWORD`), shows what it will change, applies,
+verifies and prints its rollback. State is kept in `~/.local/state/openinfra-iam-cutover`.
+
+| Step | Does | Rollback |
+|---|---|---|
+| 0 | the webhook's root floor; a corpus regen; console and front door in `shadow` | back to `legacy` |
+| 1 | `hack/iam-migrate --apply`: each tier's AWS managed policy attached to its group, documents next to the old forms (additive) | restores every changed object from its snapshot, deletes what it created |
+| 2 | the IAM probes as canaries: `probe/iam-parity.sh`, `probe/iam-no-policy.sh`, `probe/iam-managed-policies.sh` (`PRINCIPAL_MODE=canary`); optionally `CANARY_USER` | unlabel the canary user |
+| 3 | the compiler in `apply` (generated RBAC + IAM corpus), the RBAC corpus without user principals, then `enforce`; the probes again for every principal | `shadow`, compiler `report`, generated RBAC deleted, the full RBAC corpus back |
+| 4 | checks nothing names the implicit `openinfra:users` group; the impersonation ceilings are a commit | revert that commit |
+| 5 | the estate mirror's namespace becomes its own member account (`MIRROR_NAMESPACE`, `MIRROR_ACCOUNT_ID` to override the discovered namespace and derived id), with its claims checked as Ready as before | delete the account and unlabel the namespace |
+| 6 | after 24 h clean: `hack/iam-migrate --drop-legacy`, then the repo changes it prints (legacy bindings, the kebab-case alias policies) | none — roll back step 3 before this |
+
+The probes run on their own too (`SHIM_ENDPOINT` to reach the AWS front door; the console is reached
+through a port-forward unless `CONSOLE_ENDPOINT` is set); `probe/aws-shim-organizations.sh` proves the
+Organizations front door. Exit 0 is a pass, 1 a failure, 42 inconclusive (for instance IAM policy not yet
+deciding for the probe's principals).
 
 ## See also
 
-- [`auth.md`](auth.md) — what authentication and authorization actually do today.
-- [`architecture.md`](architecture.md) — how the console and BFF fit together.
+- [policy-engine.md](policy-engine.md) — the policy engine underneath.
+- [authz-webhook.md](authz-webhook.md) — the control-plane corpora and the root floor.
+- [auth.md](auth.md) — console sign-in (local, LDAP, OIDC).
+- [aws-shim.md](aws-shim.md) — the AWS front door and the services it serves.

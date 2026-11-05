@@ -230,7 +230,7 @@ Babelfish image, for instance, ships at 0 fixable CVEs).
 Delivered so far:
 
 - **`kind: Grant`** — temporal, auto-expiring access grants with a second-party **approval workflow**
-  (AC-2(2)/AC-5/AC-6 just-in-time). See [`iam.md`](iam.md#kind-grant--temporal-just-in-time-access).
+  (AC-2(2)/AC-5/AC-6 just-in-time). See [`iam.md`](iam.md#temporary-access-grants).
 - **Audit off-siting** — hash-chained, WORM (object-lock) tamper-evident copy of the audit log,
   verifiable from the console, with an optional external sink (AU-9/AU-9(2)/AU-9(3)/AU-11). See
   [`audit-offsite.md`](audit-offsite.md).
