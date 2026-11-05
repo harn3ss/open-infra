@@ -256,7 +256,9 @@
         "DescribeSecurityGroups",
         "DescribeSubnets",
         "DescribeVolumes",
-        "DescribeVpcs"
+        "DescribeVpcs",
+        "StartInstances",
+        "StopInstances"
       ],
       "conditional": true
     },

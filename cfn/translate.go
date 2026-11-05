@@ -1359,10 +1359,14 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	// After the key that encrypts them: a kept volume is Ready only once its encrypted disk is bound.
 	m.Extra = append(m.Extra, keptVols...)
 
-	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "PrivateIpAddress", "SourceDestCheck", "DisableApiTermination"} {
+	for _, p := range []string{"AvailabilityZone", "Monitoring", "EbsOptimized", "PrivateIpAddress", "SourceDestCheck"} {
 		if _, ok := props[p]; ok {
 			cav = append(cav, p+" dropped — no open-infra equivalent")
 		}
+	}
+	if s, ok := concrete(props["DisableApiTermination"]); ok && strings.EqualFold(s, "true") {
+		cav = append(cav, "DisableApiTermination kept as the instance's AWS view: the aws-shim's TerminateInstances refuses the "+
+			"instance while it is set (OperationNotPermitted), as EC2 does; deleting its stack still deletes it (on AWS that delete fails)")
 	}
 	cav = append(cav, awsViewCaveats(props, "Tags")...)
 	m.Caveats = cav

@@ -175,6 +175,12 @@ rules:
   - apiGroups: [kubevirt.io]
     resources: [virtualmachineinstances]
     verbs: [get]
+  # EC2 RebootInstances: restart a VM in place through KubeVirt's restart subresource. Only once the caller
+  # has proven it may change the instance (ec2:RebootInstances on it, and the reboot recorded on its claim
+  # with the CALLER's own authority); stopping, starting and terminating change the claim as the caller.
+  - apiGroups: [subresources.kubevirt.io]
+    resources: [virtualmachines/restart]
+    verbs: [update]
   # S3 DeleteBucket and CloudFormation teardown: find the kind: Bucket a bucket is (its composite
   # reports the bucket in status.bucket). Read-only; the claim itself is deleted with the CALLER's
   # authority, never the shim's.

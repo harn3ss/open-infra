@@ -125,6 +125,15 @@ if as "$WAK" "$WSK" ec2 describe-instances --instance-ids i-00000000000000000 >/
 grep -q "InvalidInstanceID.NotFound" "$TMP/nf" || fail "an unknown instance id gave the wrong error: $(cat "$TMP/nf")"
 if as "$WAK" "$WSK" ec2 describe-instances --instance-ids not-an-instance >/dev/null 2>"$TMP/mf"; then fail "a name was taken as an instance id"; fi
 grep -q "InvalidInstanceID.Malformed" "$TMP/mf" || fail "a malformed id gave the wrong error: $(cat "$TMP/mf")"
+# The instance state operations are served (their state changes are unit-tested on a VM): an unknown id is
+# InvalidInstanceID.NotFound for each, a malformed one Malformed, and nothing is changed.
+for op in stop-instances start-instances reboot-instances terminate-instances; do
+  if as "$WAK" "$WSK" ec2 "$op" --instance-ids i-00000000000000000 >/dev/null 2>"$TMP/st"; then fail "ec2 $op of an unknown instance succeeded"; fi
+  grep -q "InvalidInstanceID.NotFound" "$TMP/st" || fail "ec2 $op of an unknown instance gave the wrong error: $(cat "$TMP/st")"
+done
+if as "$WAK" "$WSK" ec2 stop-instances --instance-ids not-an-instance >/dev/null 2>"$TMP/st"; then fail "stop-instances took a name"; fi
+grep -q "InvalidInstanceID.Malformed" "$TMP/st" || fail "stop-instances of a malformed id gave the wrong error: $(cat "$TMP/st")"
+log "  ✓ stop/start/reboot/terminate-instances are served: an unknown id is InvalidInstanceID.NotFound"
 
 # --- 5. key pairs -----------------------------------------------------------------------------
 log "import-key-pair (ed25519) reports AWS's fingerprint; duplicate refused; create-key-pair; delete"

@@ -513,7 +513,9 @@
         "DescribeSecurityGroups",
         "DescribeSubnets",
         "DescribeVolumes",
-        "DescribeVpcs"
+        "DescribeVpcs",
+        "StartInstances",
+        "StopInstances"
       ],
       "probes": [
         "ec2"
@@ -1390,7 +1392,7 @@
     "excRead": 8,
     "excepted": 8,
     "flattened": 0,
-    "operations": 549,
+    "operations": 551,
     "planOnly": 11,
     "refused": 11,
     "services": 30,

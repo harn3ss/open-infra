@@ -132,3 +132,25 @@ func TestDeploy_AWSViewAnnotationApplied(t *testing.T) {
 		t.Fatalf("the deployed VM's sshKey = %v", f.liveSpecs["VirtualMachine/s-web"]["sshKey"])
 	}
 }
+
+// DisableApiTermination is kept as the instance's AWS view (the EC2 API's TerminateInstances honours it),
+// not dropped; an instance without it records nothing for it.
+func TestTranslate_EC2Instance_DisableApiTerminationInView(t *testing.T) {
+	tmpl := strings.Replace(keyNameTmpl, "      InstanceType: t3.small\n", "      InstanceType: t3.small\n      DisableApiTermination: true\n", 1)
+	ctx := ctxWithParams(t, tmpl, nil)
+	ctx.caps.KeyPairs = map[string]string{"ops": opsKey}
+	m, _ := translatorFor("AWS::EC2::Instance")("Web", ecsResolvedService(t, ctx, "Web"), ctx)
+	if v := ParseAWSView(m.Annotations); !v.DisableApiTermination {
+		t.Fatalf("DisableApiTermination must be in the instance's AWS view: %+v", v)
+	}
+	cav := strings.Join(m.Caveats, " | ")
+	if strings.Contains(cav, "DisableApiTermination dropped") || !strings.Contains(cav, "TerminateInstances refuses") {
+		t.Errorf("the caveat must say DisableApiTermination is honoured by TerminateInstances: %s", cav)
+	}
+	ctx = ctxWithParams(t, keyNameTmpl, nil)
+	ctx.caps.KeyPairs = map[string]string{"ops": opsKey}
+	m, _ = translatorFor("AWS::EC2::Instance")("Web", ecsResolvedService(t, ctx, "Web"), ctx)
+	if ParseAWSView(m.Annotations).DisableApiTermination {
+		t.Error("an instance without DisableApiTermination must not record it")
+	}
+}

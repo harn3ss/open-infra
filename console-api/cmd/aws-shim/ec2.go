@@ -14,8 +14,9 @@
 //
 // Writes: the key pairs (ImportKeyPair, CreateKeyPair, DescribeKeyPairs, DeleteKeyPair; ec2_keypairs.go),
 // which an instance's KeyName carries into its VM's spec.sshKey, and DeleteVolume, for a volume an
-// instance kept (DeleteOnTermination: false), refused with AWS's VolumeInUse while a VM still has it.
-// Launching, stopping and terminating instances stay CloudFormation's (an unserved operation answers
+// instance kept (DeleteOnTermination: false), refused with AWS's VolumeInUse while a VM still has it; and
+// the instance state operations StartInstances, StopInstances, RebootInstances and TerminateInstances
+// (ec2_instances.go). Launching instances stays CloudFormation's (an unserved operation answers
 // NotImplemented in EC2's error shape).
 //
 // Authorization, as AWS evaluates it: ec2:<Action> on the resource (Instance::<id>, Volume::<id>,
@@ -72,12 +73,18 @@ var ec2Ops = map[string]ec2Op{
 	"CreateKeyPair":             {"KeyPair", "create"},
 	"DeleteKeyPair":             {"KeyPair", "delete"},
 	"DeleteVolume":              {"Volume", "delete"},
+	"StartInstances":            {"Instance", "update"},
+	"StopInstances":             {"Instance", "update"},
+	"RebootInstances":           {"Instance", "update"},
+	"TerminateInstances":        {"Instance", "delete"},
 }
 
 type ec2Handler struct {
 	door   *cfnDoorway  // the account namespace, the caller's and the shim's clients, authorization
 	keys   *ec2KeyStore // nil: the key-pair store is not configured (key pair operations answer so)
 	logger *slog.Logger
+	// restartVM restarts a VM in place (RebootInstances); nil: KubeVirt's restart subresource, as the shim.
+	restartVM func(ctx context.Context, namespace, name string) error
 }
 
 func newEC2Handler(door *cfnDoorway, keys *ec2KeyStore, logger *slog.Logger) *ec2Handler {
@@ -126,13 +133,19 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	spec, ok := ec2Ops[op]
 	if !ok {
 		writeEC2Error(w, http.StatusNotImplemented, "NotImplemented", requestID,
-			"EC2 "+op+" is not served by the open-infra shim (served: "+ec2ServedOps()+"); instances are launched, changed and terminated through CloudFormation")
+			"EC2 "+op+" is not served by the open-infra shim (served: "+ec2ServedOps()+"); instances are launched and changed through CloudFormation")
 		return
 	}
 	resID := ec2ScopeName(op, r.Form)
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 	if h.door == nil {
 		writeEC2Error(w, http.StatusServiceUnavailable, "Unavailable", requestID, "EC2 needs the CloudFormation front door's account namespace, which is not configured on this shim")
+		return
+	}
+	if ec2InstanceStateOp(op) {
+		// Authorized on each named instance (an assumed role's grant on one instance is enough for it, as on
+		// AWS), then DryRun answered, inside (ec2_instances.go).
+		h.instanceStateOp(ctx, w, r, claims, op, requestID)
 		return
 	}
 	// ec2:<Op> on the resource (decide): in legacy the data-plane refinement here, and the coarse RBAC check

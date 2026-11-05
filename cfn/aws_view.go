@@ -25,6 +25,9 @@ type AWSView struct {
 	GroupDescription string            `json:"groupDescription,omitempty"`
 	CidrBlock        string            `json:"cidrBlock,omitempty"`
 	VolumeType       string            `json:"volumeType,omitempty"`
+	// DisableApiTermination is an instance's termination protection: the aws-shim's TerminateInstances
+	// refuses the instance while it is set (OperationNotPermitted), as EC2 does.
+	DisableApiTermination bool `json:"disableApiTermination,omitempty"`
 }
 
 // ParseAWSView reads an object's AWSViewAnnotation (the zero view when it has none or it does not parse).
@@ -38,7 +41,7 @@ func ParseAWSView(annotations map[string]string) AWSView {
 
 // awsViewProps are, per EC2 type, the properties its view keeps (each under its AWSView field).
 var awsViewProps = map[string][]string{
-	"AWS::EC2::Instance":      {"InstanceType", "KeyName"},
+	"AWS::EC2::Instance":      {"InstanceType", "KeyName", "DisableApiTermination"},
 	"AWS::EC2::Volume":        {"VolumeType"},
 	"AWS::EC2::SecurityGroup": {"GroupName", "GroupDescription"},
 	"AWS::EC2::VPC":           {"CidrBlock"},
@@ -103,10 +106,12 @@ func awsViewJSON(typ, id string, props map[string]any, ctx *stackCtx) string {
 			v.GroupDescription = s
 		case "CidrBlock":
 			v.CidrBlock = s
+		case "DisableApiTermination":
+			v.DisableApiTermination = strings.EqualFold(s, "true")
 		}
 	}
 	if len(v.Tags) == 0 && v.InstanceType == "" && v.KeyName == "" && v.GroupName == "" &&
-		v.GroupDescription == "" && v.CidrBlock == "" && v.VolumeType == "" {
+		v.GroupDescription == "" && v.CidrBlock == "" && v.VolumeType == "" && !v.DisableApiTermination {
 		return ""
 	}
 	b, err := json.Marshal(v)

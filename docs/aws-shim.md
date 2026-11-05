@@ -326,7 +326,7 @@ create on its own API's front door):
 | Cognito | `cognito-idp` | 20: AdminConfirmSignUp, AdminCreateUser, AdminGetUser, AdminInitiateAuth, AdminSetUserPassword, ConfirmForgotPassword, ConfirmSignUp, CreateUserPool, CreateUserPoolClient, DeleteUserPool, DescribeUserPool, DescribeUserPoolClient, ForgotPassword, GetUser, GlobalSignOut, InitiateAuth, ListUserPoolClients, ResendConfirmationCode, RespondToAuthChallenge, SignUp | 2 |
 | DynamoDB | `dynamodb` | 19: BatchGetItem, BatchWriteItem, CreateTable, DeleteItem, DeleteTable, DescribeContinuousBackups, DescribeTable, DescribeTimeToLive, GetItem, ListTables, PutItem, Query, RestoreTableToPointInTime, Scan, TransactGetItems, TransactWriteItems, UpdateContinuousBackups, UpdateItem, UpdateTimeToLive | 1 |
 | DynamoDB | `dynamodbstreams` | 4: DescribeStream, GetRecords, GetShardIterator, ListStreams | 0 |
-| EC2 | `ec2` | 13: CreateKeyPair, DeleteKeyPair, DeleteVolume, DescribeAddresses, DescribeAvailabilityZones, DescribeImages, DescribeInstances, DescribeKeyPairs, DescribeRegions, DescribeSecurityGroups, DescribeSubnets, DescribeVolumes, DescribeVpcs | 17 |
+| EC2 | `ec2` | 15: CreateKeyPair, DeleteKeyPair, DeleteVolume, DescribeAddresses, DescribeAvailabilityZones, DescribeImages, DescribeInstances, DescribeKeyPairs, DescribeRegions, DescribeSecurityGroups, DescribeSubnets, DescribeVolumes, DescribeVpcs, StartInstances, StopInstances | 17 |
 | ECR | `ecr` | 37: BatchCheckLayerAvailability, BatchDeleteImage, BatchGetImage, BatchGetImageScanFindings, CompleteLayerUpload, CreatePullThroughCacheRule, CreateRepository, DeleteLifecyclePolicy, DeletePullThroughCacheRule, DeleteRepository, DeleteRepositoryPolicy, DescribeImageScanFindings, DescribeImages, DescribePullThroughCacheRules, DescribeRegistry, DescribeRepositories, GetAuthorizationToken, GetDownloadUrlForLayer, GetLifecyclePolicy, GetLifecyclePolicyPreview, GetRegistryPolicy, GetRepositoryPolicy, InitiateLayerUpload, ListImages, ListTagsForResource, PutImage, PutImageScanningConfiguration, PutImageTagMutability, PutLifecyclePolicy, PutRegistryPolicy, PutReplicationConfiguration, SetRepositoryPolicy, StartImageScan, StartLifecyclePolicyPreview, TagResource, UntagResource, UploadLayerPart | 1 |
 | ECS | `ecs` | 13: CreateCluster, CreateService, DeleteCluster, DeleteService, DeregisterTaskDefinition, DescribeClusters, DescribeServices, DescribeTaskDefinition, ListClusters, ListServices, RegisterTaskDefinition, RunTask, UpdateService | 3 |
 | EKS | `eks` | 5: DescribeCluster, DescribeIdentityProviderConfig, DescribeNodegroup, ListClusters, ListNodegroups; recognized and refused: CreateCluster, CreateNodegroup, DeleteCluster, DeleteNodegroup, UpdateAddon, UpdateClusterConfig, UpdateClusterVersion | 0 |
@@ -2092,11 +2092,22 @@ returned once, never kept), `DescribeKeyPairs` and `DeleteKeyPair`, in the shim'
 `KeyName` carries the named key into its VM's `spec.sshKey`, which cloud-init authorizes for the image's
 login user on first boot; a `KeyName` the account does not hold fails the stack (`InvalidKeyPair.NotFound`).
 `DeleteVolume` deletes a `kind: Volume` (one an instance kept with `DeleteOnTermination: false`), refused
-with `VolumeInUse` while a VM still has it and for a VM's own disk. Authorization: `ec2:<Action>` on the
-resource (`Instance::`, `Volume::`, `KeyPair::`; a Describe on `*`), additive for a User and default-deny for
-an assumed role; key pairs also take the coarse RBAC check. Launching, stopping and terminating instances
-stay CloudFormation's: an unserved EC2 operation answers `NotImplemented`. Inside a VM guest,
-`ec2.<region>.amazonaws.com` resolves to the shim. `probe/aws-shim-ec2.sh` proves it.
+with `VolumeInUse` while a VM still has it and for a VM's own disk.
+
+Instance state: `StopInstances` and `StartInstances` stop and start a VM with its disks kept, as an
+EBS-backed instance (`stopping` / `pending` in the answer, then `stopped` / `running`); stopping a stopped
+instance or starting a running one is EC2's no-op. `RebootInstances` restarts a running VM in place.
+`TerminateInstances` deletes the VM (`shutting-down`), its root and data disks with it and its attached
+volumes kept, and is refused with `OperationNotPermitted` while the instance's `DisableApiTermination` is
+set. An instance a stack made can be terminated, as on AWS; the stack then drifts. Every named instance is
+checked before any is changed: an unknown id is `InvalidInstanceID.NotFound`, one in a state the operation
+cannot leave is `IncorrectInstanceState`, and `DryRun` answers `DryRunOperation` once authorized.
+
+Authorization: `ec2:<Action>` on the resource (`Instance::`, `Volume::`, `KeyPair::`; a Describe on `*`;
+each named instance for the state operations), additive for a User and default-deny for an assumed role;
+the VM is changed with the caller's own authority, and key pairs also take the coarse RBAC check.
+Launching instances stays CloudFormation's: an unserved EC2 operation answers `NotImplemented`. Inside a
+VM guest, `ec2.<region>.amazonaws.com` resolves to the shim. `probe/aws-shim-ec2.sh` proves it.
 
 ## The compatibility probe
 
