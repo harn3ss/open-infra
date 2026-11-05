@@ -29,14 +29,14 @@ import {
 } from "@/components/common/states";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useListFilter } from "@/hooks/use-list-filter";
-import { useNamespace } from "@/lib/namespace-context";
+import { withoutNamespaceColumns } from "@/lib/account-scope";
 import type { K8sObject } from "@/types/k8s";
 
 export interface ResourceTablePageProps<T extends K8sObject> {
   icon: ReactNode;
   title: string;
   description: string;
-  /** List-path builder (namespace-scoped when a namespace is selected). */
+  /** List-path builder; called with no namespace — the list is the caller's account's (scope=account). */
   listPath: (ns?: string) => string;
   columns: ColumnDef<T, unknown>[];
   search: (item: T) => (string | undefined)[];
@@ -89,7 +89,7 @@ export function ResourceTablePage<T extends K8sObject>({
   title,
   description,
   listPath,
-  columns,
+  columns: allColumns,
   search,
   filter,
   singular,
@@ -106,10 +106,12 @@ export function ResourceTablePage<T extends K8sObject>({
   preferencesStorageKey,
   columnLabels,
 }: ResourceTablePageProps<T>) {
-  const { scoped } = useNamespace();
+  // The account's resources, across its namespaces (the server keeps it to the caller's account); a user
+  // view shows no namespace — the resource's YAML does.
   const { items: allItems, isLoading, isError, error, live, refetch } =
-    useK8sWatch<T>(listPath(scoped));
+    useK8sWatch<T>(listPath(undefined), { accountScope: true });
   const items = filter ? allItems.filter(filter) : allItems;
+  const columns = useMemo(() => withoutNamespaceColumns(allColumns), [allColumns]);
 
   // Global text search (topbar) → property-filter tokens.
   const { filtered: textFiltered } = useListFilter(items, search);

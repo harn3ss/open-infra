@@ -9,7 +9,8 @@ import { Label } from "@/components/ui/label";
 import { k8sCreate, getEncryptionKeys } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { useK8sWatch, watchQueryKey } from "@/hooks/use-k8s-watch";
-import { useNamespace } from "@/lib/namespace-context";
+import { useAuth } from "@/lib/auth";
+import { createNamespace } from "@/lib/account-scope";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION, type K8sObject } from "@/types/k8s";
 import { RDS_INSTANCE_CLASS_GROUPS, RDS_INSTANCE_CLASSES, formatRdsInstanceClass } from "@/lib/rds-instance-classes";
 
@@ -33,7 +34,8 @@ function engineDefaultStorageGiB(engine: string): number {
 export function CreateDatabasePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { scoped } = useNamespace();
+  const { user } = useAuth();
+  const scoped = createNamespace(user, undefined); // a new resource lands in the account's home
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
   const namespaces = useMemo(
     () => nsWatch.items.map((n) => n.metadata.name).filter(Boolean).sort() as string[],

@@ -24,7 +24,8 @@ import {
 } from "@/components/ui/select";
 import { useFlash } from "@/components/common/flashbar";
 import { useK8sWatch, watchQueryKey } from "@/hooks/use-k8s-watch";
-import { useNamespace } from "@/lib/namespace-context";
+import { useAuth } from "@/lib/auth";
+import { createNamespace } from "@/lib/account-scope";
 import { ApiError, k8sCreate, k8sDelete } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION, type K8sObject } from "@/types/k8s";
@@ -145,7 +146,8 @@ export function CreateVpcAndMorePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const flash = useFlash();
-  const { scoped } = useNamespace();
+  const { user } = useAuth();
+  const scoped = createNamespace(user, undefined); // a new resource lands in the account's home
 
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
   const namespaces = useMemo(

@@ -14,7 +14,6 @@ import { Waypoints } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { LoadingState, ErrorState, EmptyState } from "@/components/common/states";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
-import { useNamespace } from "@/lib/namespace-context";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { ElasticIp, NatGateway, Subnet, Vpc } from "@/types/k8s";
 import {
@@ -208,13 +207,14 @@ function buildGraph(
 }
 
 function MapInner() {
-  const { scoped } = useNamespace();
+  const scoped = undefined; // the account's, across its namespaces (scope=account)
+  const acct = { accountScope: true };
   const navigate = useNavigate();
 
-  const vpcs = useK8sWatch<Vpc>(openinfraPaths.vpcs(scoped));
-  const subnets = useK8sWatch<Subnet>(openinfraPaths.subnets(scoped));
-  const nats = useK8sWatch<NatGateway>(openinfraPaths.natgateways(scoped));
-  const eips = useK8sWatch<ElasticIp>(openinfraPaths.elasticips(scoped));
+  const vpcs = useK8sWatch<Vpc>(openinfraPaths.vpcs(scoped), acct);
+  const subnets = useK8sWatch<Subnet>(openinfraPaths.subnets(scoped), acct);
+  const nats = useK8sWatch<NatGateway>(openinfraPaths.natgateways(scoped), acct);
+  const eips = useK8sWatch<ElasticIp>(openinfraPaths.elasticips(scoped), acct);
 
   const { nodes: baseNodes, edges: baseEdges } = useMemo(
     () => buildGraph(vpcs.items, subnets.items, nats.items, eips.items),

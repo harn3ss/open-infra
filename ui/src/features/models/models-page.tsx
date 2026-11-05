@@ -9,7 +9,6 @@ import { Button } from "@/components/ui/button";
 import { modelHealth, modelDesiredReplicas } from "@/lib/resource-health";
 import { useNodeHealth } from "@/hooks/use-node-health";
 import { usePodNodeIndex, type PodNodeIndex } from "@/hooks/use-pod-node-index";
-import { useNamespace } from "@/lib/namespace-context";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import { type Model } from "@/types/k8s";
@@ -30,7 +29,7 @@ function modelStatus(
 
 export function ModelsPage() {
   const navigate = useNavigate();
-  const { scoped } = useNamespace();
+  const scoped = undefined; // the account's, across its namespaces
   const { offlineNodes } = useNodeHealth();
   const podIndex = usePodNodeIndex(scoped);
   const columns = useMemo<ColumnDef<Model, unknown>[]>(

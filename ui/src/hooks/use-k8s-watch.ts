@@ -5,6 +5,7 @@ import {
   type QueryKey,
 } from "@tanstack/react-query";
 import { k8sList, watchUrl } from "@/lib/api";
+import { withAccountScope } from "@/lib/account-scope";
 import type { K8sList, K8sObject, WatchEvent } from "@/types/k8s";
 
 export interface UseK8sWatchResult<T extends K8sObject> {
@@ -40,22 +41,29 @@ function uidOf(obj: K8sObject): string {
  * 3. On an `expired` event (HTTP 410 / compacted resourceVersion), we relist.
  *
  * `path` is a k8s list path (without the /api/k8s prefix), e.g. /api/v1/pods.
- * Pass `enabled = false` to skip entirely.
+ * Pass `enabled = false` to skip entirely. `accountScope` lists an
+ * all-namespaces path for the caller's account only (lib/account-scope.ts):
+ * what a user view lists.
  */
 export function useK8sWatch<T extends K8sObject = K8sObject>(
   path: string,
-  options?: { enabled?: boolean },
+  options?: { enabled?: boolean; accountScope?: boolean },
 ): UseK8sWatchResult<T> {
   const enabled = options?.enabled ?? true;
+  const accountScope = options?.accountScope ?? false;
   const queryClient = useQueryClient();
   // Stable across renders for the same path so the watch effect isn't torn
-  // down and recreated each render.
-  const key = useMemo<QueryKey>(() => watchQueryKey(path), [path]);
+  // down and recreated each render. The account-scoped list is its own entry
+  // (a create invalidates both: watchQueryKey(path) is a prefix of it).
+  const key = useMemo<QueryKey>(
+    () => (accountScope ? [...watchQueryKey(path), "account"] : watchQueryKey(path)),
+    [path, accountScope],
+  );
   const [live, setLive] = useState(false);
 
   const query = useQuery<K8sList<T>>({
     queryKey: key,
-    queryFn: () => k8sList<T>(path),
+    queryFn: () => k8sList<T>(accountScope ? withAccountScope(path) : path),
     enabled,
   });
 
@@ -125,7 +133,7 @@ export function useK8sWatch<T extends K8sObject = K8sObject>(
 
     const connect = (rv: string) => {
       if (cancelled) return;
-      source = new EventSource(watchUrl(path, rv));
+      source = new EventSource(watchUrl(path, rv, { accountScope }));
 
       source.onopen = () => {
         attempts = 0;
@@ -181,7 +189,7 @@ export function useK8sWatch<T extends K8sObject = K8sObject>(
       if (reconnectTimer) clearTimeout(reconnectTimer);
       source?.close();
     };
-  }, [enabled, hasInitialList, path, queryClient, key]);
+  }, [enabled, hasInitialList, path, queryClient, key, accountScope]);
 
   return {
     items: query.data?.items ?? [],

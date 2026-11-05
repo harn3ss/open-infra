@@ -12,6 +12,7 @@ import {
 } from "@/features/workloads/columns";
 import { appsPaths, corePaths, resourcePaths } from "@/lib/k8s-paths";
 import { useNamespace } from "@/lib/namespace-context";
+import { NamespaceSwitcher } from "@/components/layout/namespace-switcher";
 import { useNodeHealth } from "@/hooks/use-node-health";
 import type { Deployment, Pod, Service } from "@/types/k8s";
 
@@ -71,6 +72,7 @@ export function WorkloadsPage() {
         icon={<Network />}
         title="Workloads"
         description="Live view of the core Kubernetes objects backing your apps."
+        actions={<NamespaceSwitcher />}
       />
 
       <Tabs defaultValue="pods">

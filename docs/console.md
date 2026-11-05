@@ -13,6 +13,13 @@ time, so the same image runs in any cluster.
 
 ## Navigation
 
+The top bar shows the account the session acts in and its region (the platform serves one region,
+`us-east-1`), as the AWS console does; the account menu beside it switches into a role in another
+account. Every list is the account's resources: everything of that kind in this account, with no
+namespace to choose. A new resource lands in the account's home; when the account has more than one
+namespace, a create page's **Advanced** section can place it in another of the account's own. Namespaces
+appear only on the Platform operations views and in a resource's YAML.
+
 The sidebar is grouped like a cloud console:
 
 - **Dashboard** — counts + health for every resource type, plus recent events.

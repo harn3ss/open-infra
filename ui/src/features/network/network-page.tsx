@@ -12,6 +12,7 @@ import {
 } from "@/features/network/columns";
 import { corePaths, networkingPaths } from "@/lib/k8s-paths";
 import { useNamespace } from "@/lib/namespace-context";
+import { NamespaceSwitcher } from "@/components/layout/namespace-switcher";
 import type { Ingress, NetworkPolicy, Service } from "@/types/k8s";
 
 export function NetworkPage() {
@@ -57,6 +58,7 @@ export function NetworkPage() {
         icon={<Globe />}
         title="Network"
         description="Load balancers (MetalLB), ingress routes (Traefik + TLS), and network policies."
+        actions={<NamespaceSwitcher />}
       />
 
       <Tabs defaultValue="loadbalancers">

@@ -19,7 +19,6 @@ import { VirtualDataTable } from "@/components/common/virtual-data-table";
 import { EmptyState, ErrorState, LoadingState } from "@/components/common/states";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useListFilter } from "@/hooks/use-list-filter";
-import { useNamespace } from "@/lib/namespace-context";
 import { kindDocsUrl } from "@/lib/kind-docs";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
@@ -71,9 +70,10 @@ interface ModelGroup {
  *  (the approve → deploy view). */
 export function ModelPackagesPage() {
   const navigate = useNavigate();
-  const { scoped } = useNamespace();
+  const scoped = undefined; // the account's, across its namespaces (scope=account)
   const { items, isLoading, isError, error, live, refetch } = useK8sWatch<ModelPackage>(
     openinfraPaths.modelpackages(scoped),
+    { accountScope: true },
   );
 
   // Topbar global search filters at the version (package) level; groups reflect

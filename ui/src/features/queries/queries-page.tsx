@@ -42,7 +42,8 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
-import { useNamespace } from "@/lib/namespace-context";
+import { useAuth } from "@/lib/auth";
+import { createNamespace } from "@/lib/account-scope";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import {
   k8sCreate,
@@ -153,8 +154,9 @@ interface QueryTab {
 let tabSeq = 2;
 
 export function QueriesPage() {
-  const { scoped } = useNamespace();
-  const ns = scoped || "default";
+  const scoped = undefined; // the account's, across its namespaces (scope=account)
+  const { user } = useAuth();
+  const ns = createNamespace(user, undefined); // a new query lands in the account's home
 
   const [view, setView] = useState<"editor" | "recent" | "saved">("editor");
   const saved = useSavedQueries();
@@ -183,7 +185,7 @@ export function QueriesPage() {
   };
 
   // history (kind: Query CRs)
-  const history = useK8sWatch<Query>(openinfraPaths.queries(scoped));
+  const history = useK8sWatch<Query>(openinfraPaths.queries(scoped), { accountScope: true });
   const recent = useMemo(
     () =>
       [...history.items].sort((a, b) =>
@@ -279,7 +281,7 @@ export function QueriesPage() {
           <RecentQueries
             queries={recent}
             ns={ns}
-            showNamespace={!scoped}
+            showNamespace={false}
             onOpenEditor={openInTab}
           />
         </TabsContent>

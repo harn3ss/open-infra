@@ -27,11 +27,11 @@ import { customWidgets } from "@/components/create/custom-widgets";
 import type { CredentialSpec, SectionSpec, SizingSpec } from "@/components/create/create-registry";
 import { findInstanceType } from "@/lib/instance-types";
 import { YamlViewer } from "@/components/common/yaml-viewer";
-import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { watchQueryKey } from "@/hooks/use-k8s-watch";
 import { useKindAvailability } from "@/hooks/use-capabilities";
 import { corePaths } from "@/lib/k8s-paths";
-import { useNamespace } from "@/lib/namespace-context";
+import { useAuth } from "@/lib/auth";
+import { createNamespace } from "@/lib/account-scope";
 import { ApiError, getCrdSchema, k8sCreate } from "@/lib/api";
 import { isValidName, rfc1123Error } from "@/lib/rfc1123";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION, type K8sObject } from "@/types/k8s";
@@ -81,12 +81,10 @@ export function CreatePage(cfg: CreatePageConfig) {
   const queryClient = useQueryClient();
   const formRef = useRef<Form<unknown, RJSFSchema> | null>(null);
 
-  const { scoped } = useNamespace();
-  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
-  const namespaces = useMemo(
-    () => (nsWatch.items ?? []).map((n) => n.metadata?.name ?? "").filter(Boolean).sort(),
-    [nsWatch.items],
-  );
+  // A new resource lands in the caller's account: its home namespace, or — under Advanced, when the
+  // account has more than one — another of the account's own. Never a namespace outside the account.
+  const { user } = useAuth();
+  const namespaces = useMemo(() => user?.namespaces ?? [], [user]);
 
   const creds = cfg.credentials ?? [];
   const sizing = cfg.sizing;
@@ -97,7 +95,7 @@ export function CreatePage(cfg: CreatePageConfig) {
   const avail = useKindAvailability(cfg.kind);
 
   const [name, setName] = useState("");
-  const [namespace, setNamespace] = useState(scoped ?? "default");
+  const [namespace, setNamespace] = useState(() => createNamespace(user, undefined));
   const [nameTouched, setNameTouched] = useState(false);
   const [formData, setFormData] = useState<Record<string, unknown>>({});
   const [passwords, setPasswords] = useState<Record<string, string>>({});
@@ -288,7 +286,7 @@ export function CreatePage(cfg: CreatePageConfig) {
       {/* Identity */}
       <div className="space-y-4 rounded-lg border border-border p-4">
         <h3 className="text-sm font-semibold">Identity</h3>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4">
           <div className="space-y-1.5">
             <Label htmlFor="oi-name">Name</Label>
             <Input
@@ -301,22 +299,32 @@ export function CreatePage(cfg: CreatePageConfig) {
             />
             {nameError ? <p className="text-xs text-destructive">{nameError}</p> : null}
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="oi-ns">Namespace</Label>
-            <Select value={namespace} onValueChange={setNamespace}>
-              <SelectTrigger id="oi-ns">
-                <SelectValue placeholder="Namespace" />
-              </SelectTrigger>
-              <SelectContent>
-                {(namespaces.length ? namespaces : [namespace]).map((ns) => (
-                  <SelectItem key={ns} value={ns}>
-                    {ns}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
         </div>
+        {namespaces.length > 1 ? (
+          <details className="text-sm [&_summary]:cursor-pointer">
+            <summary className="text-muted-foreground">Advanced</summary>
+            <div className="mt-3 space-y-1.5">
+              <Label htmlFor="oi-ns">Placement</Label>
+              <Select value={namespace} onValueChange={setNamespace}>
+                <SelectTrigger id="oi-ns">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {namespaces.map((ns) => (
+                    <SelectItem key={ns} value={ns}>
+                      {ns}
+                      {ns === user?.homeNamespace ? " (default)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Which of this account&apos;s namespaces holds the resource. The default is the account&apos;s
+                home.
+              </p>
+            </div>
+          </details>
+        ) : null}
       </div>
 
       {/* Untested on this cluster's arch — permitted (never blocked), but flagged honestly. */}

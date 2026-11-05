@@ -7,7 +7,6 @@ import { kindDocsUrl } from "@/lib/kind-docs";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Button } from "@/components/ui/button";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
-import { useNamespace } from "@/lib/namespace-context";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
@@ -29,12 +28,12 @@ function dirStatus(d: Directory): { label: string; tone: StatusTone } {
 }
 
 export function DirectoriesPage() {
-  const { scoped } = useNamespace();
+  const scoped = undefined; // the account's, across its namespaces (scope=account)
   const navigate = useNavigate();
 
   // The DC's reachable address comes from its Service (svc name == directory
   // name): the LAN LoadBalancer IP when exposed, else the in-cluster ClusterIP.
-  const svcWatch = useK8sWatch<SvcStatus>(corePaths.services(scoped));
+  const svcWatch = useK8sWatch<SvcStatus>(corePaths.services(scoped), { accountScope: true });
   const ipByName = useMemo(() => {
     const m = new Map<string, string>();
     for (const s of svcWatch.items) {

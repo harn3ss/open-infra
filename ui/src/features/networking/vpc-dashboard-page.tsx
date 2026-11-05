@@ -18,7 +18,6 @@ import { StatCard } from "@/features/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
-import { useNamespace } from "@/lib/namespace-context";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type {
   Condition,
@@ -46,15 +45,16 @@ const isReady = (conditions?: Condition[]) =>
  * lists — no BFF.
  */
 export function VpcDashboardPage() {
-  const { scoped } = useNamespace();
+  const scoped = undefined; // the account's, across its namespaces (scope=account)
+  const acct = { accountScope: true };
 
-  const vpcs = useK8sWatch<Vpc>(openinfraPaths.vpcs(scoped));
-  const subnets = useK8sWatch<Subnet>(openinfraPaths.subnets(scoped));
-  const nats = useK8sWatch<NatGateway>(openinfraPaths.natgateways(scoped));
-  const eips = useK8sWatch<ElasticIp>(openinfraPaths.elasticips(scoped));
-  const tgws = useK8sWatch<TransitGateway>(openinfraPaths.transitgateways(scoped));
-  const sgs = useK8sWatch<SecurityGroup>(openinfraPaths.securitygroups(scoped));
-  const flowlogs = useK8sWatch<FlowLog>(openinfraPaths.flowlogs(scoped));
+  const vpcs = useK8sWatch<Vpc>(openinfraPaths.vpcs(scoped), acct);
+  const subnets = useK8sWatch<Subnet>(openinfraPaths.subnets(scoped), acct);
+  const nats = useK8sWatch<NatGateway>(openinfraPaths.natgateways(scoped), acct);
+  const eips = useK8sWatch<ElasticIp>(openinfraPaths.elasticips(scoped), acct);
+  const tgws = useK8sWatch<TransitGateway>(openinfraPaths.transitgateways(scoped), acct);
+  const sgs = useK8sWatch<SecurityGroup>(openinfraPaths.securitygroups(scoped), acct);
+  const flowlogs = useK8sWatch<FlowLog>(openinfraPaths.flowlogs(scoped), acct);
 
   const readyVpcs = vpcs.items.filter((v) => isReady(v.status?.conditions)).length;
   const readySubnets = subnets.items.filter((s) => isReady(s.status?.conditions)).length;

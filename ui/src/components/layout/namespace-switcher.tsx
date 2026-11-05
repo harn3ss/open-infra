@@ -13,7 +13,10 @@ import { corePaths } from "@/lib/k8s-paths";
 import { ALL_NAMESPACES, useNamespace } from "@/lib/namespace-context";
 import type { K8sObject } from "@/types/k8s";
 
-/** Top-bar namespace scope selector, backed by a live namespace list. */
+/**
+ * The operator's namespace scope selector (the cluster views under Platform operations), backed by a
+ * live namespace list. User views have none: they list the account's resources (account-scope.ts).
+ */
 export function NamespaceSwitcher() {
   const { namespace, setNamespace } = useNamespace();
   const { items, isError } = useK8sWatch<K8sObject>(corePaths.namespaces());

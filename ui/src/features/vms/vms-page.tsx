@@ -8,7 +8,6 @@ import { kindDocsUrl } from "@/lib/kind-docs";
 import { Button } from "@/components/ui/button";
 import { CreateButton } from "@/components/create/create-button";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
-import { useNamespace } from "@/lib/namespace-context";
 import { cdiPaths, kubevirtPaths, openinfraPaths } from "@/lib/k8s-paths";
 import { age } from "@/lib/format";
 import {
@@ -22,10 +21,10 @@ import { EC2_INSTANCE_TYPES } from "@/lib/instance-types";
 
 export function VmsPage() {
   const navigate = useNavigate();
-  const { scoped } = useNamespace();
+  const scoped = undefined; // the account's, across its namespaces (scope=account)
 
   // Live guest status (IP, phase) keyed by namespace/name.
-  const vmiWatch = useK8sWatch<Vmi>(kubevirtPaths.vmis(scoped));
+  const vmiWatch = useK8sWatch<Vmi>(kubevirtPaths.vmis(scoped), { accountScope: true });
   const vmiByKey = useMemo(() => {
     const m = new Map<string, Vmi>();
     for (const v of vmiWatch.items)
@@ -35,7 +34,7 @@ export function VmsPage() {
 
   // Root-disk DataVolumes, so a stuck/failed clone surfaces as an error on the
   // VM's status instead of an endless "Provisioning". Keyed by ns/<vm>-root.
-  const dvWatch = useK8sWatch<DataVolume>(cdiPaths.datavolumes(scoped));
+  const dvWatch = useK8sWatch<DataVolume>(cdiPaths.datavolumes(scoped), { accountScope: true });
   const dvByKey = useMemo(() => {
     const m = new Map<string, DataVolume>();
     for (const d of dvWatch.items)

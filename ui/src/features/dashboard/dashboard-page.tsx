@@ -16,7 +16,6 @@ import {
   corePaths,
   openinfraPaths,
 } from "@/lib/k8s-paths";
-import { useNamespace } from "@/lib/namespace-context";
 import { useConfig } from "@/lib/config-context";
 import type {
   Application,
@@ -36,17 +35,18 @@ import type {
  * onto AWS's widgets rather than being faked.
  */
 export function DashboardPage() {
-  const { scoped } = useNamespace();
+  const scoped = undefined; // the account's, across its namespaces (scope=account)
+  const acct = { accountScope: true };
   const config = useConfig();
 
   // Health + events widgets need live cluster state; the emptiness check gates
   // the first-run Getting started card (AWS's welcome panel).
-  const apps = useK8sWatch<Application>(openinfraPaths.applications(scoped));
-  const fns = useK8sWatch<OpenInfraFunction>(openinfraPaths.functions(scoped));
-  const models = useK8sWatch<Model>(openinfraPaths.models(scoped));
-  const databases = useK8sWatch<CnpgCluster>(cnpgPaths.clusters(scoped));
-  const pods = useK8sWatch<Pod>(corePaths.pods(scoped));
-  const deployments = useK8sWatch<Deployment>(appsPaths.deployments(scoped));
+  const apps = useK8sWatch<Application>(openinfraPaths.applications(scoped), acct);
+  const fns = useK8sWatch<OpenInfraFunction>(openinfraPaths.functions(scoped), acct);
+  const models = useK8sWatch<Model>(openinfraPaths.models(scoped), acct);
+  const databases = useK8sWatch<CnpgCluster>(cnpgPaths.clusters(scoped), acct);
+  const pods = useK8sWatch<Pod>(corePaths.pods(scoped), acct);
+  const deployments = useK8sWatch<Deployment>(appsPaths.deployments(scoped), acct);
   const nodes = useK8sWatch<Node>(corePaths.nodes());
   const bucketsQuery = useQuery({ queryKey: ["buckets"], queryFn: listBuckets });
   const queuesQuery = useQuery({ queryKey: ["queues"], queryFn: listQueues });

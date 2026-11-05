@@ -8,7 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState } from "@/components/common/states";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
-import { useNamespace } from "@/lib/namespace-context";
+import { useAuth } from "@/lib/auth";
+import { createNamespace } from "@/lib/account-scope";
 import { useConfig } from "@/lib/config-context";
 import { k8sCreate } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
@@ -37,7 +38,8 @@ export function CreateFaultInjectionPage() {
 
 function CreateFaultInjectionInner() {
   const navigate = useNavigate();
-  const { scoped } = useNamespace();
+  const { user } = useAuth();
+  const scoped = createNamespace(user, undefined); // the account's home
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
   const namespaces = useMemo(
     () => nsWatch.items.map((n) => n.metadata.name).filter(Boolean).sort() as string[],

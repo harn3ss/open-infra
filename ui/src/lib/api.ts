@@ -157,6 +157,12 @@ export interface CurrentUser {
    * openinfra-operator:*), for whom the cluster views under Platform operations appear.
    */
   capabilities?: { operator?: boolean };
+  /** The region the session acts in (the platform serves one). */
+  region?: string;
+  /** The account's namespaces: where its resources are listed from (the platform's placement, not shown). */
+  namespaces?: string[];
+  /** The account's home namespace: where a new resource lands. */
+  homeNamespace?: string;
 }
 
 /** Change the signed-in user's own password, proving the old one (AWS's "Change password"). */
@@ -287,9 +293,10 @@ export function getCrdSchema(name: string): Promise<Record<string, unknown>> {
 }
 
 /** Build the SSE watch URL the BFF exposes for a given k8s list path. */
-export function watchUrl(path: string, resourceVersion?: string): string {
+export function watchUrl(path: string, resourceVersion?: string, opts?: { accountScope?: boolean }): string {
   const params = new URLSearchParams({ path });
   if (resourceVersion) params.set("resourceVersion", resourceVersion);
+  if (opts?.accountScope) params.set("scope", "account"); // the caller's account only (account-scope.ts)
   return `${API_BASE}/watch?${params.toString()}`;
 }
 

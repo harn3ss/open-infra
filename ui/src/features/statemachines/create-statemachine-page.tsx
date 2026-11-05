@@ -10,7 +10,8 @@ import { Button } from "@/components/ui/button";
 import { k8sCreate } from "@/lib/api";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { useK8sWatch, watchQueryKey } from "@/hooks/use-k8s-watch";
-import { useNamespace } from "@/lib/namespace-context";
+import { useAuth } from "@/lib/auth";
+import { createNamespace } from "@/lib/account-scope";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION, type K8sObject } from "@/types/k8s";
 
 const RFC1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
@@ -57,7 +58,8 @@ function validateAsl(text: string): string {
 export function CreateStateMachinePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { scoped } = useNamespace();
+  const { user } = useAuth();
+  const scoped = createNamespace(user, undefined); // a new resource lands in the account's home
   const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
   const namespaces = useMemo(
     () => nsWatch.items.map((n) => n.metadata.name).filter(Boolean).sort() as string[],
