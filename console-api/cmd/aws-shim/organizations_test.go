@@ -217,8 +217,9 @@ func TestOrganizations_Authorization(t *testing.T) {
 	wantOrgError(t, w, out, "AccessDeniedException")
 
 	h, _ = orgTestHandler(t, true, nil)
-	h.accountOf = func(iam.Claims) string { return "912345678901" }
-	w, out = orgCall(t, h, orgAdmin, "DescribeOrganization", map[string]any{})
+	member := orgAdmin
+	member.Account = "912345678901" // a principal of a member account
+	w, out = orgCall(t, h, member, "DescribeOrganization", map[string]any{})
 	wantOrgError(t, w, out, "AccessDeniedException")
 	if !strings.Contains(out["Message"].(string), "management account") {
 		t.Errorf("message %v should say why", out)

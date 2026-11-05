@@ -76,6 +76,10 @@ services:
     tier: proven
     sigv4: [eks]
     probes: [eks]
+  - name: Organizations
+    cell: "the install's accounts (`kind: Account`): the management account, member accounts by `CreateAccount`, each its own namespaces"
+    tier: gated
+    sigv4: [organizations]
   - name: EC2
     cell: "`Describe*` over the platform's VMs, volumes, groups, VPCs and subnets (the guest's i- ids); key pairs an instance's `KeyName` carries"
     tier: proven

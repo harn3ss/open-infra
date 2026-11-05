@@ -25,6 +25,9 @@ kind: CompositeResourceDefinition
 metadata:
   name: accounts.organizations.openinfra.dev
   annotations:
+    # Composite-only and cluster-scoped on purpose (no claim): an account contains namespaces, so it lives
+    # in none, and it is the management account's to create, never a tenant-grantable kind.
+    openinfra.dev/composite-only: "true"
     openinfra.dev/chaos-role: "none"
     openinfra.dev/chaos-offers: ""
     openinfra.dev/chaos-accepts: ""

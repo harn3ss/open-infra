@@ -996,6 +996,26 @@
       "service": "CloudWatch",
       "tier": "proven"
     },
+    "organizations": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [],
+      "handler": "organizationsHandler",
+      "namespaces": [],
+      "operations": [
+        "CreateAccount",
+        "DescribeAccount",
+        "DescribeCreateAccountStatus",
+        "DescribeOrganization",
+        "ListAccounts",
+        "ListAccountsForParent",
+        "ListRoots"
+      ],
+      "probes": [],
+      "refused": [],
+      "service": "Organizations",
+      "tier": "gated"
+    },
     "rds": {
       "actions": [
         "rds:CreateDBSnapshot"
@@ -1338,11 +1358,11 @@
     "excRead": 8,
     "excepted": 8,
     "flattened": 0,
-    "operations": 514,
+    "operations": 521,
     "planOnly": 11,
     "refused": 11,
-    "services": 29,
-    "signingNames": 31,
+    "services": 30,
+    "signingNames": 32,
     "violations": 0
   },
   "types": {

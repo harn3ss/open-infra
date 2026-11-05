@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/accounts"
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -60,8 +61,8 @@ type organizationsHandler struct {
 	authz      *dataplaneauthz.Checker
 	authzNS    string
 	management string // the install's account id: the organization's management account
-	// accountOf is the account a caller acts in. Until the front doors resolve a caller's account, every
-	// caller is in the management account.
+	// accountOf is the account a caller acts in: its Claims' account, the management account when they
+	// carry none.
 	accountOf func(iam.Claims) string
 	// namespaceExists reports whether a namespace of that name exists (CreateAccount picks a free home).
 	namespaceExists func(ctx context.Context, name string) (bool, error)
@@ -73,7 +74,12 @@ func newOrganizationsHandler(cs kubernetes.Interface, cfg *rest.Config, authzNS 
 	management string, logger *slog.Logger) *organizationsHandler {
 	h := &organizationsHandler{cs: cs, authz: authz, authzNS: authzNS, management: management, logger: logger,
 		now: time.Now}
-	h.accountOf = func(iam.Claims) string { return h.management }
+	h.accountOf = func(c iam.Claims) string {
+		if c.Account == "" {
+			return h.management
+		}
+		return c.Account
+	}
 	if cfg != nil {
 		h.callerDyn = func(user string, groups []string) (dynamic.Interface, error) {
 			icfg := rest.CopyConfig(cfg)
@@ -97,6 +103,7 @@ func (h *organizationsHandler) authFailure(w http.ResponseWriter, _ *http.Reques
 }
 
 func writeOrgError(w http.ResponseWriter, status int, code, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(status)

@@ -29,6 +29,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -122,8 +123,12 @@ type Directory struct {
 	suspended map[string]bool     // account id -> suspended
 }
 
-// NewDirectory is an empty directory whose management account is management (the install's ACCOUNT_ID).
+// NewDirectory is an empty directory whose management account is management (the install's ACCOUNT_ID;
+// "" = iam.ManagementAccount).
 func NewDirectory(management string) *Directory {
+	if management == "" {
+		management = iam.ManagementAccount
+	}
 	return &Directory{management: management, byNS: map[string]string{}, homes: map[string]string{},
 		members: map[string][]string{}, suspended: map[string]bool{}}
 }

@@ -205,6 +205,9 @@ func allXRDClaimPlurals(t *testing.T) []string {
 			t.Fatalf("read %s: %v", m, err)
 		}
 		var xrd struct {
+			Metadata struct {
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
 			Spec struct {
 				ClaimNames struct {
 					Plural string `json:"plural"`
@@ -213,6 +216,11 @@ func allXRDClaimPlurals(t *testing.T) []string {
 		}
 		if err := yaml.Unmarshal(raw, &xrd); err != nil {
 			t.Fatalf("parse %s: %v", m, err)
+		}
+		// A composite-only kind (kind: Account) has no namespaced claim a tenant could be granted, so it is
+		// outside the boundary by construction — marked explicitly, so a forgotten claimNames still fails.
+		if xrd.Metadata.Annotations["openinfra.dev/composite-only"] == "true" {
+			continue
 		}
 		if p := xrd.Spec.ClaimNames.Plural; p != "" {
 			plurals = append(plurals, p)
