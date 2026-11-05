@@ -514,6 +514,78 @@ func TestSwitchRole_AccountHome(t *testing.T) {
 }
 
 // The gate reads a create's resource from the body and gives it back intact to the handler.
+// A route whose handler takes its resource from the query string or the body is authorized on that
+// resource's ARN, as AWS authorizes the API call: deleting or restoring a snapshot is decided on the
+// snapshot, so a policy that allows it on one snapshot does not reach another, and one that allows only
+// reads (rds:DescribeDBSnapshots) is denied the delete.
+func TestConsoleRoutes_SnapshotRoutesAreDecidedOnTheSnapshot(t *testing.T) {
+	cfg := &rest.Config{Host: "http://127.0.0.1:1"}
+	host, _ := url.Parse(cfg.Host)
+	var ci kubernetes.Interface = kubernetes.NewForConfigOrDie(cfg)
+	client := &k8s.Client{Config: cfg, Transport: http.DefaultTransport, Host: host, Clientset: &ci}
+	prev := consoleIAM
+	t.Cleanup(func() { consoleIAM = prev })
+	_, z := buildRouter(client, &authStore{mode: "local", sessionKey: []byte("k")}, testLogger())
+	z.cs = fake.NewSimpleClientset() // the namespaces carry no account label: the management account's
+	routes := map[string]awsaction.Route{}
+	for _, rt := range z.reg.Routes() {
+		routes[rt.Method+" "+rt.Path] = rt
+	}
+	for _, tc := range []struct {
+		route, action string
+		req           *http.Request
+		want          string
+	}{
+		{"DELETE /api/snapshots", "rds:DeleteDBSnapshot",
+			httptest.NewRequest(http.MethodDelete, "/api/snapshots?namespace=default&name=orders&id=snap-1", nil),
+			"arn:aws:rds:us-east-1:000000000000:snapshot:snap-1"},
+		{"POST /api/snapshots/restore", "rds:RestoreDBInstanceFromDBSnapshot",
+			httptest.NewRequest(http.MethodPost, "/api/snapshots/restore", strings.NewReader(`{"namespace":"default","id":"snap-1","target":"orders-2"}`)),
+			"arn:aws:rds:us-east-1:000000000000:snapshot:snap-1"},
+		{"DELETE /api/vm-snapshots", "ec2:DeleteSnapshot",
+			httptest.NewRequest(http.MethodDelete, "/api/vm-snapshots?namespace=default&id=snap-1", nil),
+			"arn:aws:ec2:us-east-1:000000000000:snapshot/snap-1"},
+	} {
+		rt, ok := routes[tc.route]
+		if !ok || rt.Action != tc.action {
+			t.Errorf("%s: route %+v, want action %s", tc.route, rt, tc.action)
+			continue
+		}
+		if rt.ARN == nil {
+			t.Errorf("%s: authorized on \"*\", want %s", tc.route, tc.want)
+			continue
+		}
+		if got := rt.ARN(tc.req); got != tc.want {
+			t.Errorf("%s: ARN %s, want %s", tc.route, got, tc.want)
+		}
+	}
+
+	// Decided on that ARN, in enforce.
+	snap1 := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"rds:DeleteDBSnapshot","Resource":"arn:aws:rds:us-east-1:000000000000:snapshot:snap-1"}]}`
+	reads := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"rds:DescribeDBSnapshots","Resource":"*"}]}`
+	w := testWorld(t, map[string]string{"snap1": snap1, "reads": reads},
+		map[string][]string{"User::owner": {"snap1"}, "User::reader": {"reads"}})
+	ez := newTestAuthz(t, iamauthz.ModeEnforce, w, true)
+	ok := func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }
+	r := chi.NewRouter()
+	r.Route("/api", func(api chi.Router) {
+		ez.handle(api, apiPrefix, http.MethodDelete, "/snapshots", 0, "rds:DeleteDBSnapshot", ez.snapshotARN("rds", false), ok)
+	})
+	del := func(c sessionClaims, id string) *httptest.ResponseRecorder {
+		return serve(r, as(httptest.NewRequest(http.MethodDelete, "/api/snapshots?namespace=default&name=orders&id="+id, nil), c))
+	}
+	if got := del(userClaims("owner"), "snap-1"); got.Code != 200 {
+		t.Errorf("deleting the snapshot the policy names: %d %s", got.Code, got.Body)
+	}
+	if got := del(userClaims("owner"), "snap-2"); got.Code != 403 || errorCode(t, got) != "AccessDeniedException" ||
+		!strings.Contains(got.Body.String(), "rds:DeleteDBSnapshot on resource: arn:aws:rds:us-east-1:000000000000:snapshot:snap-2") {
+		t.Errorf("deleting another snapshot: %d %s, want AccessDenied on its ARN", got.Code, got.Body)
+	}
+	if got := del(userClaims("reader"), "snap-1"); got.Code != 403 || errorCode(t, got) != "AccessDeniedException" {
+		t.Errorf("a reader deleting a snapshot: %d %s, want 403 AccessDeniedException", got.Code, got.Body)
+	}
+}
+
 func TestPeekBodyRestoresTheBody(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"reports","x":1}`))
 	if got := peekBody(r, "name"); got != "reports" {

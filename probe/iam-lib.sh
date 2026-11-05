@@ -10,6 +10,9 @@
 # Decisions are IAM decisions, read so a downstream refusal can't pass for one:
 #   console: denied when the gate answers 403 naming the action it was asked (its AccessDenied body has
 #            the action); anything else — 200, 404 for a probe's made-up resource, a 400 — is allowed.
+#            Every request is sent as the console UI sends it (its X-Openinfra-Console header, which the
+#            console requires of a mutation before it asks IAM policy); a refusal made before the gate (that
+#            header missing, a password change due) decides nothing, so it is unknown, never an allow.
 #   shim:    denied when the call fails with AWS's denial codes; a success or a NotFound for a made-up
 #            resource is allowed.
 #
@@ -140,11 +143,16 @@ iamp_login() {
 console_decision() {
   local jar="$1" method="$2" path="$3" action="$4" code
   code="$(curl -s -m 30 -b "$jar" -X "$method" -o "$PROBE_TMP/c.out" -w '%{http_code}' \
-    -H 'Content-Type: application/json' ${CONSOLE_BODY:+-d "$CONSOLE_BODY"} "$CONSOLE$path")"
+    -H 'Content-Type: application/json' -H 'X-Openinfra-Console: 1' ${CONSOLE_BODY:+-d "$CONSOLE_BODY"} "$CONSOLE$path")"
   case "$code" in
     401) echo "the console session expired during the probe" > "$PROBE_TMP/why"; echo unknown; return ;;
     000) echo "the console did not answer $method $path" > "$PROBE_TMP/why"; echo unknown; return ;;
   esac
+  # Refused before the IAM gate was asked: no decision at all.
+  if [ "$code" = 403 ] && grep -qE '"error": *"missing X-Openinfra-Console"|"code": *"PasswordResetRequired"' "$PROBE_TMP/c.out"; then
+    echo "the console refused $method $path before asking IAM policy: $(head -c 200 "$PROBE_TMP/c.out")" > "$PROBE_TMP/why"
+    echo unknown; return
+  fi
   if [ "$code" = 403 ] && python3 - "$PROBE_TMP/c.out" "$action" <<'PY'
 import json, sys
 try:

@@ -106,15 +106,15 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	// RDS snapshots and backtrack.
 	h(post, "/databases/{namespace}/{name}/snapshot", s20, "rds:CreateDBSnapshot", z.rdsARN("db"), handleSnapshotCreate(cs, auth, logger))
 	h(get, "/snapshots", s20, "rds:DescribeDBSnapshots", nil, handleSnapshotList(cs, logger))
-	h(post, "/snapshots/restore", s20, "rds:RestoreDBInstanceFromDBSnapshot", nil, handleSnapshotRestore(cs, auth, logger))
+	h(post, "/snapshots/restore", s20, "rds:RestoreDBInstanceFromDBSnapshot", z.snapshotARN("rds", true), handleSnapshotRestore(cs, auth, logger))
 	h(post, "/databases/{namespace}/{name}/backtrack", s20, "rds:BacktrackDBCluster", z.rdsARN("cluster"), handleBacktrack(cs, auth, logger))
-	h(del, "/snapshots", s20, "rds:DeleteDBSnapshot", nil, handleSnapshotDelete(cs, auth, logger))
+	h(del, "/snapshots", s20, "rds:DeleteDBSnapshot", z.snapshotARN("rds", false), handleSnapshotDelete(cs, auth, logger))
 
 	// EC2 snapshots of a VM's root disk.
 	h(post, "/vms/{namespace}/{name}/snapshot", s20, "ec2:CreateSnapshots", z.kindARN("VirtualMachine"), handleVMSnapshotCreate(cs, auth, logger))
 	h(get, "/vm-snapshots", s20, "ec2:DescribeSnapshots", nil, handleVMSnapshotList(cs, logger))
 	h(post, "/vm-snapshots/restore", s20, "ec2:RunInstances", nil, handleVMSnapshotRestore(cs, auth, logger))
-	h(del, "/vm-snapshots", s20, "ec2:DeleteSnapshot", nil, handleVMSnapshotDelete(cs, auth, logger))
+	h(del, "/vm-snapshots", s20, "ec2:DeleteSnapshot", z.snapshotARN("ec2", false), handleVMSnapshotDelete(cs, auth, logger))
 
 	// SageMaker jobs: register, logs (CloudWatch Logs), metrics, model-monitor reports.
 	h(post, "/trainingjobs/{namespace}/{name}/register", s20, "sagemaker:CreateModelPackage", nil, handleTrainingJobRegister(cs, auth, logger))
@@ -305,6 +305,28 @@ func peekRaw(r *http.Request) ([]byte, bool) {
 		return nil, false
 	}
 	return b, true
+}
+
+// snapshotARN is the ARN of the snapshot a route names in its query string (?namespace=&id=, a delete) or
+// its JSON body ({"namespace","id"}, a restore), in the namespace's account: an RDS DB snapshot
+// (arn:aws:rds:<region>:<account>:snapshot:<id>) or an EC2 one (arn:aws:ec2:<region>:<account>:snapshot/<id>),
+// as AWS authorizes rds:DeleteDBSnapshot, ec2:DeleteSnapshot and a restore on the snapshot; "*" when the
+// request names none (the handler then refuses it).
+func (z *consoleAuthz) snapshotARN(service string, fromBody bool) arnFunc {
+	return func(r *http.Request) string {
+		ns, id := r.URL.Query().Get("namespace"), r.URL.Query().Get("id")
+		if fromBody {
+			ns, id = peekBody(r, "namespace"), peekBody(r, "id")
+		}
+		if id == "" {
+			return "*"
+		}
+		acct := z.namespaceAccount(r.Context(), ns)
+		if service == "ec2" {
+			return "arn:aws:ec2:" + awsaction.DefaultRegion + ":" + acct + ":snapshot/" + id
+		}
+		return "arn:aws:rds:" + awsaction.DefaultRegion + ":" + acct + ":snapshot:" + id
+	}
 }
 
 // rdsARN is the RDS ARN (db or cluster) of the {namespace}/{name} database, in its namespace's account.

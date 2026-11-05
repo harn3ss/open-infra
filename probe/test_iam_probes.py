@@ -88,6 +88,23 @@ class ConsoleDecision(unittest.TestCase):
         self.assertEqual(self.decide(401, "{}"), "unknown")
         self.assertEqual(self.decide("000", ""), "unknown")
 
+    def test_a_request_carries_the_console_header(self):
+        # The console refuses a mutation without X-Openinfra-Console before its IAM gate runs: a probe that
+        # left it off read that refusal as an allow (the cutover canary's rds:DeleteDBSnapshot).
+        gate = json.dumps({"errorCode": "AccessDeniedException", "action": "rds:DeleteDBSnapshot"})
+        curl = (
+            'out=""; hdr=no; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;;'
+            ' -H) [ "$2" = "X-Openinfra-Console: 1" ] && hdr=yes; shift 2;; *) shift;; esac; done\n'
+            f'if [ $hdr = yes ]; then printf %s {json.dumps(gate)} > "$out"; else printf %s \'{{"error":"missing X-Openinfra-Console"}}\' > "$out"; fi\n'
+            'printf 403\n'
+        )
+        out, _ = run_lib('console_decision /dev/null DELETE "/api/snapshots?id=x" rds:DeleteDBSnapshot', {"curl": curl})
+        self.assertEqual(out, "deny")
+
+    def test_a_refusal_before_the_gate_is_unknown(self):
+        self.assertEqual(self.decide(403, '{"error":"missing X-Openinfra-Console"}'), "unknown")
+        self.assertEqual(self.decide(403, '{"code":"PasswordResetRequired","error":"you must change your password"}'), "unknown")
+
 
 class ShimDecision(unittest.TestCase):
     def decide(self, rc, stderr):
