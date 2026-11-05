@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/loginprofile"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 )
@@ -41,6 +42,9 @@ type crdUserSpec struct {
 	PasswordSecretRef struct {
 		Name string `json:"name"`
 		Key  string `json:"key"`
+		// Namespace is "" for the console's own namespace, or the credential store's for a login
+		// profile (internal/loginprofile).
+		Namespace string `json:"namespace,omitempty"`
 	} `json:"passwordSecretRef"`
 }
 
@@ -101,6 +105,19 @@ func (a *authStore) crdPasswordHash(ctx context.Context, u crdUser) (string, boo
 	ref := u.Spec.PasswordSecretRef
 	if ref.Name == "" {
 		return "", false
+	}
+	if ref.Namespace != "" && ref.Namespace != a.ns {
+		// A login profile in the credential store: only the user's own profile is read (its name and
+		// labels name this user), and no other namespace is ever read for a password.
+		store := a.loginStore()
+		if ref.Namespace != store.NS || ref.Name != loginprofile.SecretName(a.ns, u.Metadata.Name) {
+			return "", false
+		}
+		h, err := store.CurrentHash(ctx, a.ns, u.Metadata.Name)
+		if err != nil || h == "" {
+			return "", false
+		}
+		return h, true
 	}
 	key := ref.Key
 	if key == "" {

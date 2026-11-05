@@ -5,6 +5,7 @@ import { HelpProvider } from "@/components/help/help-context";
 import { HelpPanel } from "@/components/help/help-panel";
 import { FlashProvider, Flashbar } from "@/components/common/flashbar";
 import { BootError, BootLoading } from "@/components/layout/boot-screen";
+import { ChangePasswordPage } from "@/features/auth/change-password-page";
 import { LoginPage } from "@/features/auth/login-page";
 import { getConfig } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -24,6 +25,7 @@ export function App() {
 
   if (loading) return <BootLoading />;
   if (!user) return <LoginPage />;
+  if (user.passwordResetRequired) return <ChangePasswordPage />;
   return <AuthenticatedApp />;
 }
 

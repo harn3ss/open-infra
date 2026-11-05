@@ -150,6 +150,16 @@ export interface CurrentUser {
   principalType?: "User" | "Root" | "Role" | "Service";
   /** How far IAM policy decides this principal's access: legacy, shadow or enforce. */
   iamAuthz?: "legacy" | "shadow" | "enforce";
+  /** The sign-in must set a new password before anything else (PasswordResetRequired, or expired). */
+  passwordResetRequired?: boolean;
+}
+
+/** Change the signed-in user's own password, proving the old one (AWS's "Change password"). */
+export function changeOwnPassword(oldPassword: string, newPassword: string): Promise<{ user: string }> {
+  return request("/auth/change-password", {
+    method: "POST",
+    body: JSON.stringify({ oldPassword, newPassword }),
+  });
 }
 
 /** Switch the console session to a role in an account (the AWS console's Switch role). */

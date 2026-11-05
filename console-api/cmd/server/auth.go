@@ -270,6 +270,9 @@ func (a *authStore) verifyLocal(ctx context.Context, user, pass string) (string,
 type sessionClaims struct {
 	iam.Claims
 	Exp int64 `json:"exp"`
+	// PwReset marks a session that may only change its password (PasswordResetRequired, or an expired
+	// password): requireAuth refuses everything else (login_profile.go).
+	PwReset bool `json:"pwReset,omitempty"`
 }
 
 func (a *authStore) issue(user, role string, groups []string) (string, error) {
@@ -278,10 +281,15 @@ func (a *authStore) issue(user, role string, groups []string) (string, error) {
 
 // issueClaims signs a session for claims (a switched role's session carries its account and role).
 func (a *authStore) issueClaims(claims iam.Claims) (string, error) {
+	return a.issueSession(claims, false)
+}
+
+// issueSession signs a session; pwReset makes it a change-your-password-only session.
+func (a *authStore) issueSession(claims iam.Claims, pwReset bool) (string, error) {
 	if !rootSessionValid(claims) {
 		return "", errors.New("the name root is reserved for the account's root user")
 	}
-	c, err := json.Marshal(sessionClaims{Claims: claims, Exp: time.Now().Add(sessionTTL).Unix()})
+	c, err := json.Marshal(sessionClaims{Claims: claims, Exp: time.Now().Add(sessionTTL).Unix(), PwReset: pwReset})
 	if err != nil {
 		return "", err
 	}
@@ -355,6 +363,12 @@ func (a *authStore) requireAuth(next http.Handler) http.Handler {
 		}
 		// Attribute this request to a person in the access log.
 		noteIdentity(r, claims.Sub, claims.Role)
+		if claims.PwReset {
+			// A sign-in that must change its password first reaches nothing but /api/auth/*.
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "PasswordResetRequired",
+				"error": "you must change your password before you continue"})
+			return
+		}
 
 		// CSRF: state-changing requests must carry the console's header. SameSite=Lax
 		// already blocks cross-site form posts; this stops the simple-request bypass.
@@ -465,14 +479,28 @@ func handleLogin(a *authStore) http.HandlerFunc {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid username or password"})
 			return
 		}
-		tok, err := a.issue(in.Username, role, groups)
+		// An IAM user's login profile can require a new password first (PasswordResetRequired, or past the
+		// account policy's MaxPasswordAge), or, with HardExpiry, refuse the expired password outright.
+		mustChange := false
+		if _, secretAccount := a.users(r.Context())[in.Username]; !secretAccount {
+			if u, ok := a.crdUserByName(r.Context(), in.Username); ok {
+				var refuse string
+				mustChange, refuse = a.signInGate(r.Context(), u)
+				if refuse != "" {
+					a.logger.Warn("console login refused", "user", in.Username, "reason", refuse)
+					writeJSON(w, http.StatusForbidden, map[string]string{"code": "PasswordExpired", "error": refuse})
+					return
+				}
+			}
+		}
+		tok, err := a.issueSession(iam.Claims{Sub: in.Username, Role: role, Groups: groups}, mustChange)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not start session"})
 			return
 		}
 		a.setCookie(w, r, tok, sessionTTL)
-		a.logger.Info("console login", "user", in.Username, "role", role)
-		writeJSON(w, http.StatusOK, map[string]string{"user": in.Username, "role": role})
+		a.logger.Info("console login", "user", in.Username, "role", role, "passwordResetRequired", mustChange)
+		writeJSON(w, http.StatusOK, map[string]any{"user": in.Username, "role": role, "passwordResetRequired": mustChange})
 	}
 }
 
@@ -516,6 +544,7 @@ func handleMe(a *authStore) http.HandlerFunc {
 			"user": claims.Sub, "role": claims.Role,
 			"account": acct, "accountAlias": getenv("ACCOUNT_ALIAS", ""),
 			"arn": p.ARN(), "principalType": string(p.Type), "iamAuthz": string(mode),
+			"passwordResetRequired": claims.PwReset,
 		})
 	}
 }

@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/harn3ss/open-infra/console-api/internal/loginprofile"
 	"golang.org/x/crypto/bcrypt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -310,10 +312,6 @@ func handleIAMUserCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name must be a lowercase DNS label (a-z, 0-9, -)"})
 			return
 		}
-		if in.Password != "" && len(in.Password) < 8 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters"})
-			return
-		}
 		warnings, msg := checkInline(in.InlinePolicies)
 		if msg != "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg, "errorCode": "MalformedPolicyDocument"})
@@ -352,27 +350,36 @@ func handleIAMUserCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 		if len(in.InlinePolicies) > 0 {
 			spec["inlinePolicies"] = inlineSpec(in.InlinePolicies)
 		}
-		secretName := ""
+		var undoPassword func()
+		meta := map[string]any{"name": in.Name, "namespace": auth.ns}
 		if in.Password != "" {
-			secretName = iamPasswordSecretName(in.Name)
-			if err := auth.writePasswordSecret(r.Context(), secretName, in.Name, in.Password); err != nil {
+			pol, why := auth.checkConsolePassword(r.Context(), in.Password)
+			if why != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"code": "PasswordPolicyViolation", "error": why})
+				return
+			}
+			ref, undo, err := auth.storePassword(r.Context(), in.Name, in.Password, pol.PasswordReusePrevention)
+			if err != nil {
 				logger.Error("iam: create password secret", "user", in.Name, "error", err.Error())
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not store password"})
 				return
 			}
-			spec["passwordSecretRef"] = map[string]any{"name": secretName, "key": iamPasswordKey}
+			undoPassword = undo
+			spec["passwordSecretRef"] = ref
+			now := time.Now().UTC().Format(time.RFC3339)
+			meta["annotations"] = map[string]any{loginprofile.AnnCreated: now, loginprofile.AnnPasswordLastChanged: now}
 		}
 
 		body := map[string]any{
 			"apiVersion": "iam.openinfra.dev/v1",
 			"kind":       "User",
-			"metadata":   map[string]any{"name": in.Name, "namespace": auth.ns},
+			"metadata":   meta,
 			"spec":       spec,
 		}
 		if err := auth.postCR(r.Context(), usersAbsPath(auth.ns), body); err != nil {
-			// Roll back the orphaned Secret so a retry with the same name isn't blocked.
-			if secretName != "" {
-				_ = cs.CoreV1().Secrets(auth.ns).Delete(r.Context(), secretName, metav1.DeleteOptions{})
+			// Roll back the orphaned password so a retry with the same name isn't blocked.
+			if undoPassword != nil {
+				undoPassword()
 			}
 			logger.Error("iam: create user", "user", in.Name, "error", err.Error())
 			writeIAMErr(w, err)
@@ -484,8 +491,8 @@ func handleIAMUserPassword(cs kubernetes.Interface, auth *authStore, logger *slo
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 			return
 		}
-		if len(in.Password) < 8 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters"})
+		if in.Password == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password is required"})
 			return
 		}
 		// A password reset mutates the user and writes a Secret — gate on both.
@@ -500,28 +507,30 @@ func handleIAMUserPassword(cs kubernetes.Interface, auth *authStore, logger *slo
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such user"})
 			return
 		}
-		// Write to the Secret the User already references; only fall back to the derived
-		// name when it points nowhere, and repoint the User at it.
-		secretName := u.Spec.PasswordSecretRef.Name
-		repoint := false
-		if secretName == "" {
-			secretName = iamPasswordSecretName(name)
-			repoint = true
+		pol, why := auth.checkConsolePassword(r.Context(), in.Password)
+		if why != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "PasswordPolicyViolation", "error": why})
+			return
 		}
-		if err := auth.writePasswordSecret(r.Context(), secretName, name, in.Password); err != nil {
+		// The password goes to the credential store (the IAM login profile), and the User points at it.
+		ref, _, err := auth.storePassword(r.Context(), name, in.Password, pol.PasswordReusePrevention)
+		if err != nil {
 			logger.Error("iam: reset password", "user", name, "error", err.Error())
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not store password"})
 			return
 		}
-		if repoint {
-			patch := map[string]any{"spec": map[string]any{
-				"passwordSecretRef": map[string]any{"name": secretName, "key": iamPasswordKey},
-			}}
-			if err := auth.patchCR(r.Context(), usersAbsPath(auth.ns)+"/"+name, patch); err != nil {
-				logger.Error("iam: repoint passwordSecretRef", "user", name, "error", err.Error())
-				writeIAMErr(w, err)
-				return
-			}
+		patch := map[string]any{
+			"metadata": map[string]any{"annotations": map[string]any{loginprofile.AnnPasswordLastChanged: time.Now().UTC().Format(time.RFC3339)}},
+			"spec":     map[string]any{"passwordSecretRef": ref},
+		}
+		if err := auth.patchCR(r.Context(), usersAbsPath(auth.ns)+"/"+name, patch); err != nil {
+			logger.Error("iam: repoint passwordSecretRef", "user", name, "error", err.Error())
+			writeIAMErr(w, err)
+			return
+		}
+		// A password the console kept in its own namespace is replaced by the store's.
+		if old := u.Spec.PasswordSecretRef; old.Name != "" && old.Namespace == "" && ref["namespace"] != nil {
+			_ = cs.CoreV1().Secrets(auth.ns).Delete(r.Context(), old.Name, metav1.DeleteOptions{})
 		}
 		logger.Info("iam: password reset", "user", name, "by", subjectOf(r))
 		writeJSON(w, http.StatusOK, map[string]string{"name": name})
@@ -553,8 +562,12 @@ func handleIAMUserDelete(cs kubernetes.Interface, auth *authStore, logger *slog.
 		}
 		// Best-effort Secret cleanup — deleting the User already removed the account, so a
 		// left-behind Secret is untidy, not dangerous.
-		if ref := u.Spec.PasswordSecretRef.Name; ref != "" {
-			_ = cs.CoreV1().Secrets(auth.ns).Delete(r.Context(), ref, metav1.DeleteOptions{})
+		if ref := u.Spec.PasswordSecretRef; ref.Name != "" {
+			if ref.Namespace != "" && ref.Namespace != auth.ns {
+				_ = auth.loginStore().Delete(r.Context(), auth.ns, name) // the user's own profile only
+			} else {
+				_ = cs.CoreV1().Secrets(auth.ns).Delete(r.Context(), ref.Name, metav1.DeleteOptions{})
+			}
 		}
 		logger.Info("iam: user deleted", "user", name, "by", subjectOf(r))
 		writeJSON(w, http.StatusOK, map[string]string{"name": name})

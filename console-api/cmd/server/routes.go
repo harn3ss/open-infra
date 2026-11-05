@@ -40,6 +40,11 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	z.public(post, "/api/auth/login", "sign-in")
 	z.public(post, "/api/auth/logout", "sign-out")
 	z.public(get, "/api/auth/me", "who am I: the UI renders for any signed-in principal, policy or not")
+	// A signed-in user's own password, proven by the old one: the forced change a PasswordResetRequired
+	// sign-in must make before anything else, so it cannot wait on IAM policy (AWS lets a user change its
+	// own password at that prompt). It checks its own session and CSRF header.
+	api.Post("/auth/change-password", handleChangeOwnPassword(auth))
+	z.public(post, "/api/auth/change-password", "a signed-in user changes its own password, proving the old one (the forced change at sign-in)")
 	// Runtime config: read from env on every request so a redeploy or ConfigMap change is picked up
 	// without rebuilding the SPA.
 	api.Get("/config", handleConfig)
