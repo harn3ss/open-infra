@@ -15,6 +15,8 @@ import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState, Spinner } from "@/components/common/states";
 import { useFlash } from "@/components/common/flashbar";
 import {
+  ApiError,
+  type InlinePolicy,
   deleteIamUser,
   getIamConfig,
   getIamUser,
@@ -31,12 +33,15 @@ import { AccessKeysPanel } from "./access-keys-panel";
 import { TagsTab } from "./tags-tab";
 import { AttachPolicyPicker, ManagedBadge } from "./attach-policy-picker";
 import { policyType } from "./policy-type";
+import { InlinePoliciesPanel, PermissionBoundaryCard } from "./inline-policies-panel";
+import { useAuth } from "@/lib/auth";
 
 export function UserDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
   const navigate = useNavigate();
   const qc = useQueryClient();
   const flash = useFlash();
+  const { user: me } = useAuth();
 
   const cfg = useQuery({ queryKey: ["iam", "config"], queryFn: getIamConfig });
   const groups = useQuery({ queryKey: ["iam", "groups"], queryFn: listIamGroups });
@@ -80,6 +85,24 @@ export function UserDetailPage() {
       invalidateUser();
       flash.success(`Updated attached policies for ${name}.`);
     },
+  });
+
+  const saveBoundary = useMutation({
+    mutationFn: (policy: string) => updateIamUser(name, { permissionBoundary: policy }),
+    onSuccess: (_r, policy) => {
+      invalidateUser();
+      flash.success(policy ? `Set ${policy} as the permissions boundary of ${name}.` : `Removed the permissions boundary of ${name}.`);
+    },
+    onError: (e) => flash.error(e instanceof ApiError ? e.message : "Failed to update the permissions boundary."),
+  });
+
+  const saveInline = useMutation({
+    mutationFn: (next: InlinePolicy[]) => updateIamUser(name, { inlinePolicies: next }),
+    onSuccess: () => {
+      invalidateUser();
+      flash.success(`Updated inline policies for ${name}.`);
+    },
+    onError: (e) => flash.error(e instanceof ApiError ? e.message : "Failed to update inline policies."),
   });
 
   const toggleDisabled = useMutation({
@@ -168,6 +191,17 @@ export function UserDetailPage() {
                 ),
               },
               { label: "Display name", value: user.displayName || "" },
+              {
+                label: "ARN",
+                value: user.arn ? (
+                  <span className="inline-flex items-center gap-1 break-all">
+                    <code className="text-xs">{user.arn}</code>
+                    <CopyButton value={user.arn} label="Copy ARN" />
+                  </span>
+                ) : (
+                  "—"
+                ),
+              },
               { label: "Source", value: user.source || "local" },
               {
                 label: "Console access",
@@ -228,6 +262,18 @@ export function UserDetailPage() {
         </TabsList>
 
         <TabsContent value="permissions" className="space-y-4 pt-4">
+          <PermissionBoundaryCard
+            boundary={user.permissionBoundary}
+            policies={policies.data ?? []}
+            onSave={(policy) => saveBoundary.mutate(policy)}
+            saving={saveBoundary.isPending}
+          />
+          <InlinePoliciesPanel
+            policies={user.inlinePolicies ?? []}
+            onSave={(next) => saveInline.mutate(next)}
+            subjectLabel={`user ${user.name}`}
+            saving={saveInline.isPending}
+          />
           {/* Directly-attached policies (spec.policies) — parity with a Role's attach flow. These
               confer this user's DATA-PLANE authority at the aws-shim (S3/DynamoDB/Lambda) via each
               policy's dataPlane block; control-plane (Kubernetes) access still comes only from groups
@@ -238,9 +284,9 @@ export function UserDetailPage() {
                 <div className="space-y-1">
                   <h3 className="text-sm font-semibold">Attached policies</h3>
                   <p className="text-sm text-muted-foreground">
-                    Policies attached directly to this user. Their data-service (S3 / DynamoDB /
-                    Lambda) statements confer the user's data-plane authority at the aws-shim.
-                    Control-plane access still comes from the user's groups.
+                    {me?.iamAuthz === "enforce"
+                      ? "Policies attached directly to this user. The user gets their permissions, plus those of its groups' policies."
+                      : "Policies attached directly to this user. Their data-service (S3 / DynamoDB / Lambda) statements confer the user's data-plane authority at the aws-shim. Control-plane access still comes from the user's groups until IAM policy decides console access."}
                   </p>
                 </div>
                 <Button variant="outline" className="shrink-0" onClick={() => setPolicyPickerOpen(true)}>

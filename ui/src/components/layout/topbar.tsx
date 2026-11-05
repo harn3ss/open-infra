@@ -4,6 +4,7 @@ import { GlobalSearch } from "@/components/layout/global-search";
 import { openCommandPalette } from "@/components/layout/command-palette";
 import { NamespaceSwitcher } from "@/components/layout/namespace-switcher";
 import { SettingsMenu } from "@/components/layout/settings-menu";
+import { AccountMenu } from "@/components/layout/account-menu";
 import { Separator } from "@/components/ui/separator";
 import { useConfig } from "@/lib/config-context";
 
@@ -46,6 +47,7 @@ export function Topbar() {
         <GlobalSearch className="hidden w-56 sm:block lg:w-48" />
         <NamespaceSwitcher />
         <Separator orientation="vertical" className="h-6" />
+        <AccountMenu />
         <SettingsMenu />
       </div>
     </header>

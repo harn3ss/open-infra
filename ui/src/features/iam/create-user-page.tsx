@@ -23,6 +23,7 @@ import {
   listIamUsers,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/lib/auth";
 import { GroupPicker } from "./group-picker";
 import { AttachPolicyPicker, ManagedBadge } from "./attach-policy-picker";
 import { policyType } from "./policy-type";
@@ -55,6 +56,12 @@ export function CreateUserPage() {
   const [name, setName] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  // AWS's "Provide user access to the console": without it the user has no console password (it uses
+  // access keys), as an AWS user without a login profile.
+  const [consoleAccess, setConsoleAccess] = useState(true);
+  const [boundary, setBoundary] = useState("");
+  const { user: me } = useAuth();
+  const iamDecides = me?.iamAuthz === "enforce";
   const [permMode, setPermMode] = useState<PermMode>("group");
   const [selected, setSelected] = useState<string[]>([]);
   const [copyFrom, setCopyFrom] = useState<string>("");
@@ -87,11 +94,15 @@ export function CreateUserPage() {
     mutationFn: () =>
       // Direct mode grants the data plane via spec.policies (no groups); group/copy mode grants
       // the control plane via group membership (no direct policies).
-      createIamUser(
-        permMode === "direct"
-          ? { name, displayName, groups: [], policies: directPolicies, password }
-          : { name, displayName, groups: resultingGroups, policies: [], password },
-      ),
+      createIamUser({
+        name,
+        displayName,
+        ...(permMode === "direct"
+          ? { groups: [], policies: directPolicies }
+          : { groups: resultingGroups, policies: [] }),
+        ...(consoleAccess ? { password } : {}),
+        ...(boundary ? { permissionBoundary: boundary } : {}),
+      }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["iam", "users"] });
       flash.success(`Created user ${name}.`);
@@ -104,7 +115,7 @@ export function CreateUserPage() {
     if (i === 0) {
       if (!name.trim()) e.name = "A user name is required.";
       else if (!RFC1123.test(name)) e.name = "Lowercase letters, digits and dashes only (a DNS label).";
-      if (password.length < 8) e.password = "At least 8 characters.";
+      if (consoleAccess && password.length < 8) e.password = "At least 8 characters.";
     }
     setErrors(e);
     return Object.keys(e).length === 0;
@@ -122,7 +133,7 @@ export function CreateUserPage() {
   const steps: WizardStep[] = [
     {
       title: "Specify user details",
-      description: "Name the user and set an initial console password.",
+      description: "Name the user and choose whether it can sign in to the console.",
       info: {
         title: "Console users",
         body: (
@@ -162,28 +173,45 @@ export function CreateUserPage() {
               />
             </div>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="u-pw">Password</Label>
-            <Input
-              id="u-pw"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="At least 8 characters"
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={consoleAccess}
+              onChange={(e) => setConsoleAccess(e.target.checked)}
             />
-            <p className="text-xs text-muted-foreground">
-              Stored as a bcrypt hash. The user can change it later; an admin can reset it from the
-              user's Security credentials tab.
-            </p>
-            {errors.password ? <p className="text-xs text-destructive">{errors.password}</p> : null}
-          </div>
+            <span>
+              <span className="font-medium">Provide user access to the console</span>
+              <span className="block text-xs text-muted-foreground">
+                Without it the user has no console password and works through access keys only.
+              </span>
+            </span>
+          </label>
+          {consoleAccess ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="u-pw">Console password</Label>
+              <Input
+                id="u-pw"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="At least 8 characters"
+              />
+              <p className="text-xs text-muted-foreground">
+                Stored as a bcrypt hash. The user can change it later; an admin can reset it from the
+                user's Security credentials tab.
+              </p>
+              {errors.password ? <p className="text-xs text-destructive">{errors.password}</p> : null}
+            </div>
+          ) : null}
         </div>
       ),
     },
     {
       title: "Set permissions",
-      description:
-        "Choose how this user gets its access. Group membership grants control-plane (console / kubectl) access; attaching policies directly grants data-plane access.",
+      description: iamDecides
+        ? "Choose how this user gets its permissions: from the policies of groups it joins, or from policies attached to it directly."
+        : "Choose how this user gets its access. Group membership grants control-plane (console / kubectl) access; attaching policies directly grants data-plane access.",
       content: (
         <div className="space-y-4">
           <PermCard
@@ -191,7 +219,7 @@ export function CreateUserPage() {
             onSelect={() => setPermMode("group")}
             icon={<UsersRound className="size-4" />}
             title="Add user to group"
-            hint="Recommended. Membership grants the union of each group's ClusterRole."
+            hint="Recommended. The user gets the permissions of each group's policies."
           >
             {permMode === "group" ? (
               <div className="space-y-3 pt-1">
@@ -252,21 +280,21 @@ export function CreateUserPage() {
             onSelect={() => setPermMode("direct")}
             icon={<FileText className="size-4" />}
             title="Attach policies directly"
-            hint="Grant policies' data-plane access directly to this user."
+            hint="Attach managed or customer policies to this user."
           >
             {permMode === "direct" ? (
               <div className="space-y-3 pt-1">
-                <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
-                  <Info className="mt-0.5 size-4 shrink-0" />
-                  <span>
-                    Attaching a policy to the user directly grants that policy's{" "}
-                    <b className="text-foreground">data-plane</b> permissions (object storage, tables,
-                    functions) to this user. A policy's{" "}
-                    <b className="text-foreground">control-plane</b> permissions (console / kubectl)
-                    take effect only through group membership — so for console access, also add this
-                    user to a group (you can do both from the user's page after creating).
-                  </span>
-                </div>
+                {iamDecides ? null : (
+                  <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                    <Info className="mt-0.5 size-4 shrink-0" />
+                    <span>
+                      Until IAM policy decides console access (IAM_AUTHZ=enforce), a policy attached
+                      directly grants its <b className="text-foreground">data-plane</b> permissions
+                      (object storage, tables, functions); console access still comes from group
+                      membership.
+                    </span>
+                  </div>
+                )}
 
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm text-muted-foreground">
@@ -340,6 +368,26 @@ export function CreateUserPage() {
             </div>
           ) : null}
 
+          <div className="space-y-1.5 rounded-lg border border-border p-4">
+            <Label>Set permissions boundary - optional</Label>
+            <p className="text-xs text-muted-foreground">
+              A boundary caps the most this user's policies can grant: it gets only what both allow.
+            </p>
+            <Select value={boundary || "__none__"} onValueChange={(v) => setBoundary(v === "__none__" ? "" : v)}>
+              <SelectTrigger aria-label="Permissions boundary" className="w-72">
+                <SelectValue placeholder="No boundary" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">No boundary</SelectItem>
+                {(policiesQ.data ?? []).map((p) => (
+                  <SelectItem key={p.name} value={p.name}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           <AttachPolicyPicker
             open={pickerOpen}
             onOpenChange={setPickerOpen}
@@ -363,7 +411,8 @@ export function CreateUserPage() {
               pairs: [
                 { label: "User name", value: name || "—" },
                 { label: "Display name", value: displayName || "—" },
-                { label: "Console access", value: "Enabled (password set)" },
+                { label: "Console access", value: consoleAccess ? "Enabled (password set)" : "Disabled (access keys only)" },
+                { label: "Permissions boundary", value: boundary || "None" },
               ],
             },
             {

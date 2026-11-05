@@ -26,12 +26,13 @@ import { cn } from "@/lib/utils";
 type GroupStatus = "Ready" | "Provisioning" | "Inert";
 
 function groupStatus(g: IamGroup): GroupStatus {
-  if (!g.impersonable) return "Inert";
-  return g.ready ? "Ready" : "Provisioning";
+  // Only a legacy permission tier can be inert; a group of policies grants what its policies grant.
+  if (g.clusterRole && !g.impersonable) return "Inert";
+  return g.ready || !g.clusterRole ? "Ready" : "Provisioning";
 }
 
 /** A group row enriched with its live member count (membership lives on the User CRs). */
-interface GroupRow extends IamGroup {
+interface GroupRow extends Omit<IamGroup, "members"> {
   members: number;
   status: GroupStatus;
 }
@@ -73,7 +74,7 @@ export function GroupsPage() {
   const filterDefs = useMemo<FilterPropertyDef<GroupRow>[]>(
     () => [
       { key: "name", label: "Name", getValue: (g) => g.name },
-      { key: "clusterRole", label: "Grants (ClusterRole)", getValue: (g) => g.clusterRole },
+      { key: "policies", label: "Attached policy", getValue: (g) => (g.policies ?? []).join(" ") },
       { key: "description", label: "Description", getValue: (g) => g.description },
       {
         key: "status",
@@ -148,7 +149,7 @@ export function GroupsPage() {
       <PageHeader
         icon={<UsersRound />}
         title={data.length ? `Groups (${data.length})` : "Groups"}
-        description="Permission sets. A group binds its members to a ClusterRole — the only thing that grants access — and takes effect only if its name is in the impersonation ceiling."
+        description="Collections of users. Every member gets the permissions of the policies attached to the group."
         actions={createButton}
       />
 
@@ -160,7 +161,7 @@ export function GroupsPage() {
         <EmptyState
           icon={<UsersRound />}
           title="No groups yet"
-          description="The built-in admins / powerusers / readers groups work without being created here. Create a Group to bind members to a specific ClusterRole."
+          description="Create a group, attach policies to it, and add users: they get its permissions."
           action={createButton}
         />
       ) : (
@@ -197,7 +198,7 @@ export function GroupsPage() {
                   <thead>
                     <tr className="border-b text-left text-muted-foreground">
                       <SortHeader label="Name" col="name" />
-                      <th className="p-3 font-medium">Grants (ClusterRole)</th>
+                      <th className="p-3 font-medium">Attached policies</th>
                       <th className="p-3 font-medium">Description</th>
                       <SortHeader label="Users" col="members" />
                       <SortHeader label="Status" col="status" />
@@ -213,8 +214,14 @@ export function GroupsPage() {
                         }
                       >
                         <td className="p-3 font-medium text-primary">{g.name}</td>
-                        <td className="p-3">
-                          <code className="text-xs text-muted-foreground">{g.clusterRole}</code>
+                        <td className="p-3 text-muted-foreground">
+                          {(g.policies ?? []).length > 0 ? (g.policies ?? []).join(", ") : g.clusterRole ? (
+                            <span title="Legacy permission tier (deprecated)">
+                              <code className="text-xs">{g.clusterRole}</code> (legacy)
+                            </span>
+                          ) : (
+                            "—"
+                          )}
                         </td>
                         <td className="p-3 text-muted-foreground">{g.description || "—"}</td>
                         <td className="p-3 text-muted-foreground">

@@ -23,6 +23,7 @@ import {
   updateIamRole,
   updateIamRoleTags,
   k8sList,
+  type InlinePolicy,
 } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import type { IdentityProvider } from "@/types/k8s";
@@ -31,6 +32,7 @@ import { AccessAdvisorTab } from "./access-advisor-tab";
 import { TagsTab } from "./tags-tab";
 import { AttachPolicyPicker, ManagedBadge } from "./attach-policy-picker";
 import { policyType } from "./policy-type";
+import { InlinePoliciesPanel, PermissionBoundaryCard } from "./inline-policies-panel";
 
 export function RoleDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
@@ -54,7 +56,7 @@ export function RoleDetailPage() {
   });
 
   const clusterRole = role?.clusterRole || `openinfra-role-${name}`;
-  const roleArn = `arn:openinfra:iam::open-infra:role/${name}`;
+  const roleArn = role?.arn ?? `arn:aws:iam::000000000000:role/${name}`;
   const usedByGroups = (groups.data ?? []).filter((g) => g.clusterRole === clusterRole);
 
   const [attached, setAttached] = useState<string[]>([]);
@@ -83,6 +85,24 @@ export function RoleDetailPage() {
         policies: role?.policies ?? [],
         trust,
       }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["iam", "role", name] });
+      void qc.invalidateQueries({ queryKey: ["iam", "roles"] });
+    },
+  });
+
+  const saveBoundary = useMutation({
+    mutationFn: (policy: string) =>
+      updateIamRole(name, { description: role?.description ?? "", policies: role?.policies ?? [], permissionBoundary: policy }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["iam", "role", name] });
+      void qc.invalidateQueries({ queryKey: ["iam", "roles"] });
+    },
+  });
+
+  const saveInline = useMutation({
+    mutationFn: (next: InlinePolicy[]) =>
+      updateIamRole(name, { description: role?.description ?? "", policies: role?.policies ?? [], inlinePolicies: next }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["iam", "role", name] });
       void qc.invalidateQueries({ queryKey: ["iam", "roles"] });
@@ -203,6 +223,22 @@ export function RoleDetailPage() {
 
         {/* Permissions — attached policies (the aggregated union), managed via the Add-permissions picker. */}
         <TabsContent value="permissions" className="space-y-4 pt-4">
+          {role ? (
+            <>
+              <PermissionBoundaryCard
+                boundary={role.permissionBoundary}
+                policies={policies.data ?? []}
+                onSave={(policy) => saveBoundary.mutate(policy)}
+                saving={saveBoundary.isPending}
+              />
+              <InlinePoliciesPanel
+                policies={role.inlinePolicies ?? []}
+                onSave={(next) => saveInline.mutate(next)}
+                subjectLabel={`role ${role.name}`}
+                saving={saveInline.isPending}
+              />
+            </>
+          ) : null}
           <Card>
             <CardContent className="space-y-4 p-5">
               <div className="flex items-start justify-between gap-3">

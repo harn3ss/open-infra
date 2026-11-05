@@ -22,14 +22,25 @@ export class ApiError extends Error {
   readonly body: unknown;
   /** k8s Status `reason`, when the BFF forwards a k8s error object. */
   readonly reason?: string;
+  /** The AWS error code the BFF answers with (`errorCode`), e.g. AccessDeniedException. */
+  readonly code?: string;
 
-  constructor(message: string, status: number, body: unknown, reason?: string) {
+  constructor(message: string, status: number, body: unknown, reason?: string, code?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
     this.reason = reason;
+    this.code = code;
   }
+}
+
+/** The action and resource an AccessDeniedException names (IAM's own words), when it is one. */
+export function accessDenied(e: unknown): { action?: string; resource?: string; message: string } | null {
+  if (!(e instanceof ApiError) || e.status !== 403) return null;
+  if (e.code !== "AccessDeniedException" && e.code !== "AccessDenied") return null;
+  const b = (e.body ?? {}) as { action?: string; resource?: string };
+  return { action: b.action, resource: b.resource, message: e.message };
 }
 
 const API_BASE = "/api";
@@ -98,13 +109,22 @@ async function request<T>(
     }
     let message = `Request failed (${res.status})`;
     let reason: string | undefined;
-    if (isK8sStatus(body)) {
+    let code: string | undefined;
+    const errBody = (typeof body === "object" && body !== null ? body : {}) as {
+      error?: unknown;
+      errorCode?: unknown;
+    };
+    if (typeof errBody.errorCode === "string") code = errBody.errorCode;
+    if (typeof errBody.error === "string" && errBody.error) {
+      // The BFF's own answers ({error, errorCode}): AWS-shaped text and code.
+      message = errBody.error;
+    } else if (isK8sStatus(body)) {
       message = body.message ?? message;
       reason = body.reason;
     } else if (typeof body === "string" && body) {
       message = body;
     }
-    throw new ApiError(message, res.status, body, reason);
+    throw new ApiError(message, res.status, body, reason, code);
   }
 
   return body as T;
@@ -120,6 +140,26 @@ export interface CurrentUser {
   role: string;
   /** true when the server runs with AUTH_MODE=none (no authentication). */
   authDisabled?: boolean;
+  /** The 12-digit account the session acts in. */
+  account?: string;
+  /** The account's alias, when one is set. */
+  accountAlias?: string;
+  /** The principal's ARN: arn:aws:iam::<acct>:user/<name>, …:root, or an assumed-role session. */
+  arn?: string;
+  /** User, Root or Role (a switched-role session). */
+  principalType?: "User" | "Root" | "Role" | "Service";
+  /** How far IAM policy decides this principal's access: legacy, shadow or enforce. */
+  iamAuthz?: "legacy" | "shadow" | "enforce";
+}
+
+/** Switch the console session to a role in an account (the AWS console's Switch role). */
+export function switchRole(account: string, roleName: string): Promise<{ account: string; role: string; arn: string }> {
+  return request("/sts/switch-role", { method: "POST", body: JSON.stringify({ account, roleName }) });
+}
+
+/** Return the console session to the signed-in user. */
+export function switchBack(): Promise<{ user: string }> {
+  return request("/sts/switch-back", { method: "POST", body: JSON.stringify({}) });
 }
 
 export function getCurrentUser(): Promise<CurrentUser> {
@@ -828,6 +868,12 @@ export interface IamUser {
    * the aws-shim; control-plane authority still comes only from groups. Always an array from the BFF.
    */
   policies: string[];
+  /** The policy capping what the user's identity-based policies can grant ("" = none). */
+  permissionBoundary?: string;
+  /** The user's own inline policies (AWS JSON documents). */
+  inlinePolicies?: InlinePolicy[];
+  /** The user's IAM ARN. */
+  arn?: string;
   /** false when no usable password Secret is referenced — the user can't sign in locally. */
   hasPassword: boolean;
   /** Groups that will NOT take effect because they're outside the impersonation ceiling. */
@@ -840,11 +886,30 @@ export interface IamUser {
 export interface IamGroup {
   name: string;
   description: string;
+  /** The legacy permission tier, if the group still carries one (deprecated: groups hold policies). */
   clusterRole: string;
   boundTo: string;
   ready: boolean;
-  /** false when openinfra:<name> is outside the impersonator ceiling → the group is inert. */
+  /** false when openinfra:<name> is outside the impersonator ceiling → a legacy tier is inert. */
   impersonable: boolean;
+  /** Managed and customer policies attached to the group (AWS AttachGroupPolicy). */
+  policies?: string[];
+  /** The group's own inline policies. */
+  inlinePolicies?: InlinePolicy[];
+  /** Users in the group (detail view only). */
+  members?: string[];
+  /** The group's IAM ARN. */
+  arn?: string;
+}
+
+/** An inline policy: a name and its AWS JSON policy document. */
+export interface InlinePolicy {
+  name: string;
+  document: string;
+}
+
+export function getIamGroup(name: string): Promise<IamGroup> {
+  return request<IamGroup>(`/iam/groups/${encodeURIComponent(name)}`);
 }
 
 export interface IamConfig {
@@ -876,8 +941,12 @@ export function createIamUser(body: {
   // Optional kind: Policy names attached directly to the user (spec.policies) at create time —
   // grants the user's data-plane authority (§3). Control-plane authority still comes via groups.
   policies?: string[];
-  password: string;
-}): Promise<{ name: string }> {
+  /** The policy that caps the user's identity-based policies (AWS permissions boundary). */
+  permissionBoundary?: string;
+  inlinePolicies?: InlinePolicy[];
+  /** Console password (AWS's login profile). Optional: without one the user has no console access. */
+  password?: string;
+}): Promise<{ name: string; warnings?: string[]; arn?: string }> {
   return request("/iam/users", { method: "POST", body: JSON.stringify(body) });
 }
 
@@ -885,8 +954,16 @@ export function updateIamUser(
   name: string,
   // `policies` left out (undefined) leaves the stored spec.policies untouched on the BFF; send []
   // to detach everything. Mirrors the BFF's "apply only when present" pointer semantics.
-  body: { displayName?: string; groups?: string[]; policies?: string[]; disabled?: boolean },
-): Promise<{ name: string }> {
+  body: {
+    displayName?: string;
+    groups?: string[];
+    policies?: string[];
+    /** "" clears the boundary. */
+    permissionBoundary?: string;
+    inlinePolicies?: InlinePolicy[];
+    disabled?: boolean;
+  },
+): Promise<{ name: string; warnings?: string[] }> {
   return request(`/iam/users/${encodeURIComponent(name)}`, {
     method: "PATCH",
     body: JSON.stringify(body),
@@ -970,15 +1047,23 @@ export function listIamGroups(): Promise<IamGroup[]> {
 export function createIamGroup(body: {
   name: string;
   description: string;
-  clusterRole: string;
-}): Promise<{ name: string }> {
+  /** Legacy permission tier (deprecated; optional). */
+  clusterRole?: string;
+  policies?: string[];
+  inlinePolicies?: InlinePolicy[];
+}): Promise<{ name: string; warnings?: string[]; arn?: string }> {
   return request("/iam/groups", { method: "POST", body: JSON.stringify(body) });
 }
 
 export function updateIamGroup(
   name: string,
-  body: { description?: string; clusterRole?: string },
-): Promise<{ name: string }> {
+  body: {
+    description?: string;
+    clusterRole?: string;
+    policies?: string[];
+    inlinePolicies?: InlinePolicy[];
+  },
+): Promise<{ name: string; warnings?: string[] }> {
   return request(`/iam/groups/${encodeURIComponent(name)}`, {
     method: "PATCH",
     body: JSON.stringify(body),
@@ -1036,6 +1121,10 @@ export interface CedarBlock {
 export interface IamPolicy {
   name: string;
   description: string;
+  /** The AWS JSON policy document (absent for a policy still written in the native form). */
+  document?: string;
+  /** The policy's ARN: arn:aws:iam::aws:policy/<Name> for an AWS managed policy. */
+  arn?: string;
   statements: PolicyStatement[];
   /**
    * Cedar data-plane block (aws-shim S3/DynamoDB/Lambda: Allow/Deny + conditions). Absent for a
@@ -1075,6 +1164,12 @@ export interface IamRole {
    * aws-shim; new assumes are unaffected. Absent ⇒ no cutoff (nothing revoked).
    */
   revokeSessionsBefore?: string;
+  /** The policy capping the role's policies ("" = none). */
+  permissionBoundary?: string;
+  /** The role's own inline policies. */
+  inlinePolicies?: InlinePolicy[];
+  /** The role's IAM ARN. */
+  arn?: string;
   /** Free-form key/value tags (the AWS Tags tab). Always a map (never null) from the BFF. */
   tags: Record<string, string>;
 }
@@ -1088,6 +1183,8 @@ export function getIamPolicy(name: string): Promise<IamPolicy> {
 export function createIamPolicy(body: {
   name: string;
   description: string;
+  /** The AWS JSON policy document. */
+  document?: string;
   statements: PolicyStatement[];
   /** Optional Cedar data-plane block (S3/DynamoDB/Lambda Allow/Deny + conditions). */
   dataPlane?: CedarBlock;
@@ -1102,6 +1199,8 @@ export function updateIamPolicy(
   // block ({ appliesTo: [], statements: [] }) to clear one. This mirrors the BFF's pointer semantics.
   body: {
     description: string;
+    /** The AWS JSON policy document; "" removes it. */
+    document?: string;
     statements: PolicyStatement[];
     dataPlane?: CedarBlock;
     controlPlane?: CedarBlock;
@@ -1130,6 +1229,8 @@ export function createIamRole(body: {
   policies: string[];
   /** AssumeRole trust principals ("alice", "*"). Omitted/[] ⇒ assumable by no one (fail closed). */
   trust?: string[];
+  permissionBoundary?: string;
+  inlinePolicies?: InlinePolicy[];
 }): Promise<{ name: string }> {
   return request("/iam/roles", { method: "POST", body: JSON.stringify(body) });
 }
@@ -1137,7 +1238,14 @@ export function updateIamRole(
   name: string,
   // trust left out (undefined) leaves the stored trust untouched on the BFF; send [] to clear it —
   // mirrors the BFF's "apply trust only when present" semantics so an old client can't wipe it.
-  body: { description: string; policies: string[]; trust?: string[] },
+  body: {
+    description: string;
+    policies: string[];
+    trust?: string[];
+    /** "" clears the boundary. */
+    permissionBoundary?: string;
+    inlinePolicies?: InlinePolicy[];
+  },
 ): Promise<{ name: string }> {
   return request(`/iam/roles/${encodeURIComponent(name)}`, {
     method: "PATCH",

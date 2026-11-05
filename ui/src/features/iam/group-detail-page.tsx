@@ -1,18 +1,9 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  UsersRound,
-  AlertTriangle,
-  Check,
-  UserPlus,
-  X,
-  ShieldCheck,
-  FileText,
-} from "lucide-react";
+import { UsersRound, AlertTriangle, Check, UserPlus, X, FileText, Plus } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { KeyValuePairs } from "@/components/common/key-value-pairs";
 import { CopyButton } from "@/components/common/copy-button";
@@ -24,32 +15,24 @@ import { useFlash } from "@/components/common/flashbar";
 import {
   ApiError,
   deleteIamGroup,
-  listIamGroups,
+  getIamGroup,
   listIamPolicies,
-  listIamRoles,
   listIamUsers,
+  updateIamGroup,
   updateIamUser,
+  type InlinePolicy,
   type IamUser,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { AccessAdvisorTab } from "./access-advisor-tab";
+import { AttachPolicyPicker, ManagedBadge } from "./attach-policy-picker";
+import { InlinePoliciesPanel } from "./inline-policies-panel";
 
-/** What the three shipped console ClusterRoles confer, for the Permissions tab. */
-const BUILTIN_ROLES: Record<string, { label: string; blurb: string }> = {
-  "open-infra-console": {
-    label: "Full access",
-    blurb: "Manage everything, including identities, secrets and RBAC.",
-  },
-  "open-infra-poweruser": {
-    label: "Power user",
-    blurb: "Manage product resources, but not secrets or cluster RBAC.",
-  },
-  "open-infra-readonly": {
-    label: "Read-only",
-    blurb: "View resources across the console; no changes.",
-  },
-};
-
+/**
+ * A group, as AWS IAM has it: a container of policies. Its members get every policy attached to it
+ * (and its inline policies), on top of their own. A group still carrying a legacy permission tier
+ * shows it, marked deprecated, until it is migrated to the equivalent managed policy.
+ */
 export function GroupDetailPage() {
   const { name } = useParams({ strict: false }) as { name: string };
   const navigate = useNavigate();
@@ -57,18 +40,17 @@ export function GroupDetailPage() {
   const flash = useFlash();
   const [forcePrompt, setForcePrompt] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [attaching, setAttaching] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
 
-  const { data: groups, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ["iam", "groups"],
-    queryFn: listIamGroups,
+  const { data: group, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ["iam", "groups", name],
+    queryFn: () => getIamGroup(name),
     refetchInterval: 5000,
   });
   const users = useQuery({ queryKey: ["iam", "users"], queryFn: listIamUsers });
-  const roles = useQuery({ queryKey: ["iam", "roles"], queryFn: listIamRoles });
   const policies = useQuery({ queryKey: ["iam", "policies"], queryFn: listIamPolicies });
 
-  const group = groups?.find((g) => g.name === name);
   const members = useMemo(
     () => (users.data ?? []).filter((u) => (u.groups ?? []).includes(name)),
     [users.data, name],
@@ -77,27 +59,49 @@ export function GroupDetailPage() {
     () => (users.data ?? []).filter((u) => !(u.groups ?? []).includes(name)),
     [users.data, name],
   );
-
-  // Resolve what the bound ClusterRole grants: a built-in, or a kind: Role we manage.
-  const boundRole = useMemo(
+  const attached = group?.policies ?? [];
+  const attachedPolicies = useMemo(
     () =>
-      (roles.data ?? []).find(
-        (r) =>
-          r.clusterRole === group?.clusterRole ||
-          `openinfra-role-${r.name}` === group?.clusterRole,
+      attached.map(
+        (pn) =>
+          (policies.data ?? []).find((p) => p.name === pn) ?? {
+            name: pn,
+            description: "",
+            managed: false,
+            category: undefined,
+          },
       ),
-    [roles.data, group?.clusterRole],
+    [attached, policies.data],
   );
-  const builtin = group ? BUILTIN_ROLES[group.clusterRole] : undefined;
-  const rolePolicies = useMemo(
-    () => (boundRole?.policies ?? []).map((pn) => (policies.data ?? []).find((p) => p.name === pn) ?? { name: pn, ruleCount: 0, description: "" }),
-    [boundRole, policies.data],
-  );
+
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: ["iam", "groups"] });
+  };
+
+  const savePolicies = useMutation({
+    mutationFn: (next: string[]) => updateIamGroup(name, { description: group?.description, policies: next }),
+    onSuccess: () => {
+      invalidate();
+      flash.success(`Permissions of ${name} updated.`);
+    },
+    onError: (e) => flash.error(e instanceof ApiError ? e.message : "Failed to update the group's policies."),
+  });
+
+  const saveInline = useMutation({
+    mutationFn: (next: InlinePolicy[]) =>
+      updateIamGroup(name, { description: group?.description, inlinePolicies: next }),
+    onSuccess: (r) => {
+      invalidate();
+      flash.success(`Inline policies of ${name} updated.`);
+      for (const w of r.warnings ?? []) flash.info?.(w);
+    },
+    onError: (e) => flash.error(e instanceof ApiError ? e.message : "Failed to update inline policies."),
+  });
 
   const del = useMutation({
     mutationFn: (force: boolean) => deleteIamGroup(name, force),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["iam", "groups"] });
+      invalidate();
       flash.success(`Group ${name} deleted.`);
       navigate({ to: "/groups" });
     },
@@ -114,15 +118,12 @@ export function GroupDetailPage() {
           }),
         ),
       );
-      const failed = targets
-        .filter((_, i) => results[i]?.status === "rejected")
-        .map((u) => u.name);
+      const failed = targets.filter((_, i) => results[i]?.status === "rejected").map((u) => u.name);
       return { added: targets.length - failed.length, failed };
     },
     onSuccess: ({ added, failed }) => {
       void qc.invalidateQueries({ queryKey: ["iam", "users"] });
-      if (added > 0)
-        flash.success(`Added ${added} user${added === 1 ? "" : "s"} to ${name}.`);
+      if (added > 0) flash.success(`Added ${added} user${added === 1 ? "" : "s"} to ${name}.`);
       if (failed.length > 0) flash.error(`Couldn't add: ${failed.join(", ")}.`);
       setAdding(false);
       setPicked([]);
@@ -131,8 +132,7 @@ export function GroupDetailPage() {
   });
 
   const removeUser = useMutation({
-    mutationFn: (u: IamUser) =>
-      updateIamUser(u.name, { groups: (u.groups ?? []).filter((g) => g !== name) }),
+    mutationFn: (u: IamUser) => updateIamUser(u.name, { groups: (u.groups ?? []).filter((g) => g !== name) }),
     onSuccess: (_d, u) => {
       void qc.invalidateQueries({ queryKey: ["iam", "users"] });
       flash.success(`Removed ${u.name} from ${name}.`);
@@ -144,8 +144,8 @@ export function GroupDetailPage() {
   if (isError) return <ErrorState error={error} onRetry={refetch} />;
   if (!group) return <ErrorState error={new Error(`Group "${name}" not found`)} />;
 
-  const togglePick = (n: string) =>
-    setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n]));
+  const togglePick = (n: string) => setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n]));
+  const legacyTier = group.clusterRole;
 
   return (
     <DetailShell
@@ -153,48 +153,29 @@ export function GroupDetailPage() {
       backLabel="Groups"
       icon={<UsersRound className="size-5" />}
       title={group.name}
-      subtitle={group.description || "Permission group"}
-      status={
-        group.impersonable
-          ? group.ready
-            ? { label: "Ready", tone: "success" }
-            : { label: "Provisioning", tone: "warning" }
-          : { label: "Inert", tone: "warning" }
-      }
+      subtitle={group.description || "User group"}
     >
-      {/* Summary — AWS shows the group's facts above the tab strip, then leads with Users. */}
-      {!group.impersonable ? <InertWarning name={group.name} /> : null}
       <Card>
         <CardContent className="p-5">
           <KeyValuePairs
             columns={2}
             items={[
-              { label: "Name", value: group.name },
+              { label: "User group name", value: group.name },
               { label: "Description", value: group.description || "—" },
               {
-                label: "Grants (ClusterRole)",
-                value: (
-                  <span className="inline-flex items-center gap-1">
-                    <code className="text-xs">{group.clusterRole}</code>
-                    <CopyButton value={group.clusterRole} />
+                label: "ARN",
+                value: group.arn ? (
+                  <span className="inline-flex items-center gap-1 break-all">
+                    <code className="text-xs">{group.arn}</code>
+                    <CopyButton value={group.arn} />
                   </span>
+                ) : (
+                  "—"
                 ),
-              },
-              {
-                label: "Bound to",
-                value: <code className="text-xs">{group.boundTo || `openinfra:${group.name}`}</code>,
               },
               { label: "Users", value: String(members.length) },
-              {
-                label: "Status",
-                value: group.impersonable ? (
-                  <Badge variant={group.ready ? "success" : "secondary"}>
-                    {group.ready ? "Ready" : "Provisioning"}
-                  </Badge>
-                ) : (
-                  <Badge variant="warning">Inert</Badge>
-                ),
-              },
+              { label: "Attached policies", value: String(attached.length) },
+              { label: "Inline policies", value: String(group.inlinePolicies?.length ?? 0) },
             ]}
           />
         </CardContent>
@@ -205,124 +186,103 @@ export function GroupDetailPage() {
           <TabsTrigger value="users">Users ({members.length})</TabsTrigger>
           <TabsTrigger value="permissions">Permissions</TabsTrigger>
           <TabsTrigger value="advisor">Access Advisor</TabsTrigger>
-          <TabsTrigger
-            value="danger"
-            className="text-destructive data-[state=active]:text-destructive"
-          >
+          <TabsTrigger value="danger" className="text-destructive data-[state=active]:text-destructive">
             Danger Zone
           </TabsTrigger>
         </TabsList>
 
         {/* ------------------------------------------------------- Permissions */}
-        <TabsContent value="permissions" className="pt-4 space-y-4">
-          {!group.impersonable ? <InertWarning name={group.name} /> : null}
+        <TabsContent value="permissions" className="space-y-4 pt-4">
           <p className="text-sm text-muted-foreground">
-            These permissions are conferred to members <b>via this group</b>&apos;s bound
-            ClusterRole. A group binds exactly one ClusterRole — that binding is the only thing
-            that grants access.
+            Every member of this group gets the permissions of its attached and inline policies, in addition
+            to their own.
           </p>
+          {legacyTier ? <LegacyTierNotice tier={legacyTier} impersonable={group.impersonable} /> : null}
 
-          {builtin ? (
-            <Card>
-              <CardContent className="flex items-start gap-3 p-4">
-                <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" />
-                <div>
-                  <div className="text-sm font-medium">
-                    {builtin.label}{" "}
-                    <code className="text-xs text-muted-foreground">({group.clusterRole})</code>
-                  </div>
-                  <p className="text-sm text-muted-foreground">{builtin.blurb}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Built-in console role — its rules are shipped, not editable here.
-                  </p>
+          <Card>
+            <CardContent className="p-0">
+              <div className="flex items-center justify-between border-b p-4">
+                <div className="text-sm font-medium">Attached policies ({attached.length})</div>
+                <Button variant="outline" size="sm" onClick={() => setAttaching(true)} disabled={savePolicies.isPending}>
+                  <Plus className="size-4" /> Attach policies
+                </Button>
+              </div>
+              {attachedPolicies.length === 0 ? (
+                <div className="p-4 text-sm text-muted-foreground">
+                  No policies are attached, so this group grants nothing.
                 </div>
-              </CardContent>
-            </Card>
-          ) : boundRole ? (
-            <Card>
-              <CardContent className="p-0">
-                <div className="flex items-center justify-between border-b p-4">
-                  <div className="flex items-center gap-2 text-sm">
-                    <ShieldCheck className="size-4 text-primary" />
-                    <span className="text-muted-foreground">Role</span>
-                    <Link
-                      to="/roles/$name"
-                      params={{ name: boundRole.name }}
-                      className="font-medium text-primary hover:underline"
-                    >
-                      {boundRole.name}
-                    </Link>
-                  </div>
-                  <span className="text-xs text-muted-foreground">
-                    {rolePolicies.length} attached polic{rolePolicies.length === 1 ? "y" : "ies"}
-                  </span>
-                </div>
-                {rolePolicies.length === 0 ? (
-                  <div className="p-4 text-sm text-muted-foreground">
-                    This role has no attached policies, so it grants nothing yet.
-                  </div>
-                ) : (
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b text-left text-muted-foreground">
-                        <th className="p-3 font-medium">Policy</th>
-                        <th className="p-3 font-medium">Description</th>
-                        <th className="p-3 font-medium">Rules</th>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="p-3 font-medium">Policy name</th>
+                      <th className="p-3 font-medium">Type</th>
+                      <th className="p-3 font-medium">Description</th>
+                      <th className="p-3 text-right font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {attachedPolicies.map((p) => (
+                      <tr key={p.name} className="border-b last:border-0">
+                        <td className="p-3">
+                          <Link
+                            to="/policies/$name"
+                            params={{ name: p.name }}
+                            className="inline-flex items-center gap-1.5 font-medium text-primary hover:underline"
+                          >
+                            <FileText className="size-3.5" />
+                            {p.name}
+                          </Link>
+                        </td>
+                        <td className="p-3">
+                          <ManagedBadge managed={!!p.managed} category={p.category} />
+                        </td>
+                        <td className="p-3 text-muted-foreground">{p.description || "—"}</td>
+                        <td className="p-3 text-right">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-muted-foreground hover:text-destructive"
+                            disabled={savePolicies.isPending}
+                            onClick={() => savePolicies.mutate(attached.filter((n) => n !== p.name))}
+                          >
+                            <X className="size-4" /> Detach
+                          </Button>
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {rolePolicies.map((p) => (
-                        <tr key={p.name} className="border-b last:border-0">
-                          <td className="p-3">
-                            <Link
-                              to="/policies/$name"
-                              params={{ name: p.name }}
-                              className="inline-flex items-center gap-1.5 font-medium text-primary hover:underline"
-                            >
-                              <FileText className="size-3.5" />
-                              {p.name}
-                            </Link>
-                          </td>
-                          <td className="p-3 text-muted-foreground">{p.description || "—"}</td>
-                          <td className="p-3 text-muted-foreground">{p.ruleCount ?? "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </CardContent>
-            </Card>
-          ) : (
-            <Card>
-              <CardContent className="flex items-start gap-3 p-4 text-sm text-muted-foreground">
-                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
-                <span>
-                  This group binds <code className="text-xs">{group.clusterRole}</code>, a
-                  ClusterRole that isn&apos;t a built-in console role and isn&apos;t managed as a{" "}
-                  <Link to="/roles" className="text-primary hover:underline">
-                    Role
-                  </Link>{" "}
-                  here. Its rules are defined outside the console.
-                </span>
-              </CardContent>
-            </Card>
-          )}
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </CardContent>
+          </Card>
+
+          <InlinePoliciesPanel
+            policies={group.inlinePolicies ?? []}
+            onSave={(next) => saveInline.mutate(next)}
+            subjectLabel={`group ${group.name}`}
+            saving={saveInline.isPending}
+          />
+
+          <AttachPolicyPicker
+            open={attaching}
+            onOpenChange={setAttaching}
+            policies={policies.data ?? []}
+            attached={attached}
+            onConfirm={(next) => {
+              savePolicies.mutate(next);
+              setAttaching(false);
+            }}
+            subjectLabel={`group ${group.name}`}
+          />
         </TabsContent>
 
         {/* ------------------------------------------------------------- Users */}
-        <TabsContent value="users" className="pt-4 space-y-4">
+        <TabsContent value="users" className="space-y-4 pt-4">
           <div className="flex items-center justify-between gap-2">
-            <p className="text-xs text-muted-foreground">
-              Membership is stored on each User (<code>spec.groups</code>), not on the group —
-              adding a user here patches that User.
-            </p>
+            <p className="text-xs text-muted-foreground">Members get this group&apos;s permissions.</p>
             {!adding ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setAdding(true)}
-                disabled={nonMembers.length === 0}
-              >
+              <Button variant="outline" size="sm" onClick={() => setAdding(true)} disabled={nonMembers.length === 0}>
                 <UserPlus className="size-4" /> Add users
               </Button>
             ) : null}
@@ -333,9 +293,7 @@ export function GroupDetailPage() {
               <CardContent className="space-y-3 p-4">
                 <div className="text-sm font-medium">Add users to {group.name}</div>
                 {nonMembers.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">
-                    Every user is already a member.
-                  </p>
+                  <p className="text-sm text-muted-foreground">Every user is already a member.</p>
                 ) : (
                   <div className="flex flex-wrap gap-2">
                     {nonMembers.map((u) => {
@@ -360,11 +318,7 @@ export function GroupDetailPage() {
                   </div>
                 )}
                 <div className="flex items-center gap-2 pt-1">
-                  <Button
-                    size="sm"
-                    onClick={() => addUsers.mutate(picked)}
-                    disabled={picked.length === 0 || addUsers.isPending}
-                  >
+                  <Button size="sm" onClick={() => addUsers.mutate(picked)} disabled={picked.length === 0 || addUsers.isPending}>
                     {addUsers.isPending ? <Spinner className="text-current" /> : null}
                     Add {picked.length > 0 ? `${picked.length} ` : ""}user
                     {picked.length === 1 ? "" : "s"}
@@ -388,27 +342,21 @@ export function GroupDetailPage() {
           <Card>
             <CardContent className="p-0">
               {members.length === 0 ? (
-                <div className="p-4 text-sm text-muted-foreground">
-                  No users are in this group yet.
-                </div>
+                <div className="p-4 text-sm text-muted-foreground">No users are in this group yet.</div>
               ) : (
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b text-left text-muted-foreground">
                       <th className="p-3 font-medium">User</th>
                       <th className="p-3 font-medium">Display name</th>
-                      <th className="p-3 font-medium text-right">Actions</th>
+                      <th className="p-3 text-right font-medium">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {members.map((u) => (
                       <tr key={u.name} className="border-b last:border-0">
                         <td className="p-3">
-                          <Link
-                            to="/users/$name"
-                            params={{ name: u.name }}
-                            className="font-medium text-primary hover:underline"
-                          >
+                          <Link to="/users/$name" params={{ name: u.name }} className="font-medium text-primary hover:underline">
                             {u.name}
                           </Link>
                         </td>
@@ -452,10 +400,9 @@ export function GroupDetailPage() {
             }}
             confirmDescription={
               <>
-                Delete group <span className="font-medium text-foreground">{group.name}</span> and
-                its ClusterRoleBinding.{" "}
+                Delete group <span className="font-medium text-foreground">{group.name}</span>.{" "}
                 {members.length > 0
-                  ? `${members.length} user(s) are still in it and will lose whatever it granted.`
+                  ? `${members.length} user(s) are still in it and will lose what its policies granted.`
                   : "It has no members."}
               </>
             }
@@ -469,10 +416,10 @@ export function GroupDetailPage() {
             onConfirm={() => del.mutate(true)}
             description={
               <>
-                <span className="font-medium text-foreground">{members.length}</span> user(s) still
-                reference <span className="font-medium text-foreground">{group.name}</span>. Deleting
-                it leaves them pointing at a group that grants nothing. Their User objects are not
-                changed — remove the group from them afterward.
+                <span className="font-medium text-foreground">{members.length}</span> user(s) still reference{" "}
+                <span className="font-medium text-foreground">{group.name}</span>. Deleting it leaves them in a
+                group that no longer exists. Their User objects are not changed — remove the group from them
+                afterward.
               </>
             }
           />
@@ -482,17 +429,17 @@ export function GroupDetailPage() {
   );
 }
 
-/** The load-bearing "this group grants nothing" ceiling warning (shown on Overview + Permissions). */
-function InertWarning({ name }: { name: string }) {
+/** A group that still carries a legacy permission tier: shown, marked deprecated, until migrated. */
+function LegacyTierNotice({ tier, impersonable }: { tier: string; impersonable: boolean }) {
   return (
-    <Card className="mb-4 border-amber-500/40">
+    <Card className="border-amber-500/40">
       <CardContent className="flex items-start gap-2 p-4 text-sm text-amber-600 dark:text-amber-400">
         <AlertTriangle className="mt-0.5 size-4 shrink-0" />
         <span>
-          This group is <b>inert</b>: <code>openinfra:{name}</code> is not in the impersonator
-          ClusterRole&apos;s allow-list, so members gain nothing from it. An operator must add it to{" "}
-          <code>open-infra-console-impersonator</code> — this is a deliberate ceiling that stops the
-          console impersonating privileged groups.
+          This group also carries the legacy permission tier <code className="text-xs">{tier}</code>
+          {impersonable ? "" : " (inert: outside the console's impersonation ceiling)"}. Tiers are deprecated:
+          attach the equivalent managed policy (AdministratorAccess, PowerUserAccess or ReadOnlyAccess)
+          instead. With IAM policy deciding, only policies grant access.
         </span>
       </CardContent>
     </Card>

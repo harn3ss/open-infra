@@ -24,6 +24,7 @@ import {
 } from "@/lib/api";
 import { VisualEditor } from "./visual-editor";
 import { JsonEditor } from "./json-editor";
+import { EMPTY_POLICY_DOCUMENT, checkPolicyDocument } from "@/lib/policy-document";
 import { PermissionsSummary } from "./permissions-summary";
 import { ImportPolicyDialog } from "./import-policy-dialog";
 import {
@@ -94,7 +95,13 @@ function Editor({
         })
       : emptyModel(),
   );
-  const [view, setView] = useState<"visual" | "json">("visual");
+  // "aws" is the AWS JSON policy document (spec.document), the source of truth IAM evaluates; "visual"
+  // and "json" edit the native form a policy written before documents carries.
+  const [view, setView] = useState<"aws" | "visual" | "json">(
+    !isEdit || initial?.document ? "aws" : "visual",
+  );
+  const [awsDoc, setAwsDoc] = useState<string>(initial?.document || EMPTY_POLICY_DOCUMENT);
+  const awsError = useMemo(() => checkPolicyDocument(awsDoc), [awsDoc]);
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
@@ -125,6 +132,18 @@ function Editor({
   const save = useMutation({
     mutationFn: () => {
       const doc = modelToDoc(model);
+      if (view === "aws") {
+        // The document is written as authored; the native form, if the policy has one, is left as it
+        // was (it still decides where IAM policy does not, until it is migrated).
+        if (isEdit) {
+          return updateIamPolicy(name, {
+            description: doc.description,
+            document: awsDoc,
+            statements: doc.statements,
+          });
+        }
+        return createIamPolicy({ name, description: doc.description, document: awsDoc, statements: [] });
+      }
       if (isEdit) {
         return updateIamPolicy(name, {
           description: doc.description,
@@ -149,8 +168,17 @@ function Editor({
   });
 
   // Tab switching keeps the two views bound to one model (lossless, unlike AWS's "restructure").
-  const switchTo = (next: "visual" | "json") => {
+  const switchTo = (next: "aws" | "visual" | "json") => {
     if (next === view) return;
+    if (next === "aws" || view === "aws") {
+      // The AWS document and the native form are separate; switching between them converts nothing.
+      setView(next);
+      if (next === "json") {
+        setJsonText(modelToJson(model));
+        setJsonError(null);
+      }
+      return;
+    }
     if (next === "json") {
       setJsonText(modelToJson(model));
       setJsonError(null);
@@ -183,13 +211,21 @@ function Editor({
 
   const submit = () => {
     setTouched(true);
+    if (view === "aws") {
+      if (awsError || !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)) return;
+      save.mutate();
+      return;
+    }
     if (view === "json" && jsonError) return;
     if (validation.errors.length > 0) return;
     save.mutate();
   };
 
   const doc = modelToDoc(model);
-  const dirty = (!isEdit && name.length > 0) || modelToJson(model) !== baseline;
+  const dirty =
+    (!isEdit && name.length > 0) ||
+    modelToJson(model) !== baseline ||
+    awsDoc !== (initial?.document || EMPTY_POLICY_DOCUMENT);
 
   return (
     <CreateShell
@@ -233,11 +269,12 @@ function Editor({
 
       {/* Policy editor: Visual | JSON */}
       <div className="space-y-3">
-        <Tabs value={view} onValueChange={(v) => switchTo(v as "visual" | "json")}>
+        <Tabs value={view} onValueChange={(v) => switchTo(v as "aws" | "visual" | "json")}>
           <div className="flex items-center justify-between gap-3">
             <TabsList>
-              <TabsTrigger value="visual">Visual editor</TabsTrigger>
-              <TabsTrigger value="json">JSON</TabsTrigger>
+              <TabsTrigger value="aws">Policy document (JSON)</TabsTrigger>
+              <TabsTrigger value="visual">Native visual editor</TabsTrigger>
+              <TabsTrigger value="json">Native JSON</TabsTrigger>
             </TabsList>
             <div className="flex items-center gap-3">
               {view === "json" ? (
@@ -261,6 +298,15 @@ function Editor({
             </div>
           </div>
 
+          <TabsContent value="aws" className="space-y-2 pt-3">
+            <p className="text-xs text-muted-foreground">
+              An AWS IAM policy document: <code>Version</code> and <code>Statement</code>, each with
+              Effect, Action or NotAction, Resource or NotResource, and an optional Condition — exactly as
+              IAM reads it.
+            </p>
+            <JsonEditor value={awsDoc} onChange={setAwsDoc} error={touched ? awsError : null} />
+          </TabsContent>
+
           <TabsContent value="visual" className="pt-3">
             <VisualEditor
               model={model}
@@ -277,9 +323,10 @@ function Editor({
       </div>
 
       {/* Live validation (three severities). Errors block submit; the button stays enabled per AWS rule. */}
-      {(validation.errors.length > 0 && touched) ||
-      validation.warnings.length > 0 ||
-      validation.suggestions.length > 0 ? (
+      {view !== "aws" &&
+      ((validation.errors.length > 0 && touched) ||
+        validation.warnings.length > 0 ||
+        validation.suggestions.length > 0) ? (
         <div className="space-y-2">
           {touched
             ? validation.errors.map((m, i) => (
@@ -301,7 +348,8 @@ function Editor({
         </div>
       ) : null}
 
-      {/* Live permissions summary (AWS's review table, always visible). */}
+      {/* Live permissions summary (AWS's review table) of the native form. */}
+      {view === "aws" ? null : (
       <Card>
         <CardContent className="p-0">
           <div className="flex items-center gap-2 border-b border-border p-3">
@@ -311,6 +359,7 @@ function Editor({
           <PermissionsSummary doc={doc} />
         </CardContent>
       </Card>
+      )}
 
       <ImportPolicyDialog open={importOpen} onOpenChange={setImportOpen} onImport={onImport} />
     </CreateShell>
