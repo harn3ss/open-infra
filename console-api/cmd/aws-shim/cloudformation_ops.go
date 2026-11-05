@@ -521,6 +521,33 @@ func (h *cfnDoorway) refuseOp(w http.ResponseWriter, requestID string, err error
 	writeQueryError(w, http.StatusBadRequest, code, requestID, msg, cfnXMLNamespace)
 }
 
+// beginCreate begins a create of stack. A stack whose delete has completed — its record is gone, so
+// DescribeStacks no longer finds it — may still hold its operation for a moment while the delete finishes
+// its bookkeeping (the kept copy of the deleted stack, and the change sets, events and signals stored under
+// its name, which must be gone before the name is reused). As on AWS the name is free once the stack is
+// deleted, so a create waits that out, briefly, instead of answering AlreadyExists. It never waits while a
+// stack of that name exists.
+func (h *cfnDoorway) beginCreate(ctx context.Context, ap *impersonatingApplier, stack string) error {
+	deadline := time.Now().Add(createAfterDeleteWait)
+	for {
+		err := h.ops.begin(stack)
+		if err == nil || !errors.Is(err, errCFNStackBusy) || time.Now().After(deadline) {
+			return err
+		}
+		if _, found, gerr := ap.GetStack(ctx, stack); gerr != nil || found {
+			return err // a stack of that name is in use
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// createAfterDeleteWait bounds how long a create waits for a just-deleted stack of its name to finish.
+var createAfterDeleteWait = 30 * time.Second
+
 // notUpdatable is AWS's refusal for UpdateStack / an UPDATE change set on a stack that cannot be updated
 // now: one with an operation in progress, or one an interrupted create/update left rolled back or failed.
 func (h *cfnDoorway) notUpdatable(stack, status string) string {

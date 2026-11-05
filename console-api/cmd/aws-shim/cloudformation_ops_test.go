@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -756,5 +757,44 @@ func TestRecordedCallerUsable(t *testing.T) {
 		if got := tc.c.usable(); got != tc.want {
 			t.Errorf("usable(%+v) = %v, want %v", tc.c, got, tc.want)
 		}
+	}
+}
+
+// A create of a just-deleted stack's name waits out the delete's bookkeeping (its record is gone, its
+// operation is still live) instead of answering AlreadyExists; it never waits while the stack exists.
+func TestCFNBeginCreate_WaitsForAFinishingDelete(t *testing.T) {
+	fa := newFakeAPI()
+	h := opsDoorway(t, fa, "aws-shim-new/0002")
+	ap, _ := h.applierForIdentity(alice.User, alice.Groups)
+	prev := createAfterDeleteWait
+	createAfterDeleteWait = 5 * time.Second
+	defer func() { createAfterDeleteWait = prev }()
+
+	// The delete's record is gone; its operation ends a moment later.
+	if err := h.ops.begin("gone"); err != nil {
+		t.Fatal(err)
+	}
+	go func() { time.Sleep(400 * time.Millisecond); h.ops.end("gone") }()
+	start := time.Now()
+	if err := h.beginCreate(context.Background(), ap, "gone"); err != nil {
+		t.Fatalf("a create after a completed delete must wait for its operation, got %v", err)
+	}
+	if time.Since(start) < 300*time.Millisecond {
+		t.Error("beginCreate must have waited for the delete's operation to end")
+	}
+	h.ops.end("gone")
+
+	// A stack of that name exists (a live operation on it): refused at once, as AlreadyExists is.
+	seedStack(fa, cfn.StackRecord{Name: "here", Status: "UPDATE_IN_PROGRESS"}, nil)
+	if err := h.ops.begin("here"); err != nil {
+		t.Fatal(err)
+	}
+	defer h.ops.end("here")
+	start = time.Now()
+	if err := h.beginCreate(context.Background(), ap, "here"); !errors.Is(err, errCFNStackBusy) {
+		t.Fatalf("an existing stack's name must be refused, got %v", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Error("beginCreate must not wait while the stack exists")
 	}
 }

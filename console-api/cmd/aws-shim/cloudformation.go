@@ -748,7 +748,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		alreadyExists()
 		return
 	}
-	if err := h.ops.begin(name); err != nil {
+	if err := h.beginCreate(ctx, ap, name); err != nil {
 		h.refuseOp(w, requestID, err, "AlreadyExistsException", "Stack ["+name+"] already exists.")
 		return
 	}
@@ -1509,7 +1509,11 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
-	if err := h.ops.begin(stack); err != nil {
+	begin := h.ops.begin
+	if create {
+		begin = func(stack string) error { return h.beginCreate(ctx, ap, stack) }
+	}
+	if err := begin(stack); err != nil {
 		h.refuseOp(w, requestID, err, "ValidationError", "Stack ["+stack+"] is being changed by another operation; retry once it settles.")
 		return
 	}
