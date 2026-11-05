@@ -1011,10 +1011,12 @@
         "ListAccountsForParent",
         "ListRoots"
       ],
-      "probes": [],
+      "probes": [
+        "organizations"
+      ],
       "refused": [],
       "service": "Organizations",
-      "tier": "gated"
+      "tier": "proven"
     },
     "rds": {
       "actions": [
