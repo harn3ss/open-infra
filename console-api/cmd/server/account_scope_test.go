@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/harn3ss/open-infra/console-api/internal/accounts"
@@ -78,12 +79,15 @@ func listItem(ns, name string) map[string]any {
 // namespace's own, each with its own resourceVersion. It records the paths asked.
 type fakeK8s struct {
 	clusterWide bool
+	mu          sync.Mutex // the account list fans out: requests arrive concurrently
 	asked       []string
 }
 
 func (f *fakeK8s) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, k8sPrefix)
+	f.mu.Lock()
 	f.asked = append(f.asked, path+"?"+r.URL.RawQuery)
+	f.mu.Unlock()
 	all := map[string][]string{"default": {"d1"}, "open-infra-console": {"c1"}, "team-a": {"a1", "a2"},
 		"team-a-data": {"ad1"}, "team-b": {"b1"}}
 	rvs := map[string]string{"team-a": "120", "team-a-data": "95"}
