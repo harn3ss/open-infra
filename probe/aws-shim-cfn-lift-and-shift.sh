@@ -397,8 +397,9 @@ if [ "${CFN_V1:-}" = 1 ]; then
   cat > "$TMP/v1-params.json" <<JSON
 {"commands": [
   "set -u",
-  "if ! command -v cfn-get-metadata >/dev/null; then aws --region $REGION s3 cp s3://$APPB/aws-cfn-bootstrap.tar.gz /tmp/cfn-bootstrap.tar.gz >/dev/null && { pip3 install -q /tmp/cfn-bootstrap.tar.gz >/dev/null 2>&1 || pip3 install -q --break-system-packages /tmp/cfn-bootstrap.tar.gz >/dev/null 2>&1; }; fi",
-  "command -v cfn-get-metadata >/dev/null || { echo NO-BOOTSTRAP; exit 0; }",
+  "command -v pip3 >/dev/null || { export DEBIAN_FRONTEND=noninteractive; apt-get update -q >/tmp/v1-pip.log 2>&1; apt-get install -y -q python3-pip >>/tmp/v1-pip.log 2>&1; }",
+  "if ! command -v cfn-get-metadata >/dev/null; then aws --region $REGION s3 cp s3://$APPB/aws-cfn-bootstrap.tar.gz /tmp/cfn-bootstrap.tar.gz >>/tmp/v1-pip.log 2>&1 && { pip3 install -q /tmp/cfn-bootstrap.tar.gz >>/tmp/v1-pip.log 2>&1 || pip3 install -q --break-system-packages /tmp/cfn-bootstrap.tar.gz >>/tmp/v1-pip.log 2>&1; }; fi",
+  "command -v cfn-get-metadata >/dev/null || { echo NO-BOOTSTRAP \$(tail -c 300 /tmp/v1-pip.log | tr '\\\\n' ' '); exit 0; }",
   "if cfn-get-metadata --stack $STACK --resource AppInstance --region $REGION >/tmp/v1-own.out 2>&1 || grep -q 'does not specify any metadata' /tmp/v1-own.out; then echo OWN-OK; else echo OWN-FAIL \$(tr '\\\\n' ' ' < /tmp/v1-own.out | cut -c1-300); fi",
   "if cfn-get-metadata --stack $OTHER --resource AppInstance --region $REGION >/tmp/v1-other.out 2>&1; then echo OTHER-ALLOWED; else grep -q AccessDenied /tmp/v1-other.out && echo OTHER-DENIED || echo OTHER-FAIL \$(tr '\\\\n' ' ' < /tmp/v1-other.out | cut -c1-300); fi",
   "cfn-signal --success true --stack $STACK --resource AppInstance --region $REGION >/tmp/v1-sig.out 2>&1; if grep -q 'cannot be signaled' /tmp/v1-sig.out; then echo SIGNAL-REACHED; elif grep -q AccessDenied /tmp/v1-sig.out; then echo SIGNAL-DENIED; else echo SIGNAL-OTHER \$(tr '\\\\n' ' ' < /tmp/v1-sig.out | cut -c1-300); fi"
@@ -409,7 +410,7 @@ JSON
     || fail "aws ssm send-command (CFN_V1) failed: $(tr '\n' ' ' < "$TMP/rc.err")"
   "${A[@]}" ssm wait command-executed --command-id "$V1CMD" --instance-id "$IID" 2>/dev/null || true
   V1_OUT="$("${A[@]}" ssm get-command-invocation --command-id "$V1CMD" --instance-id "$IID" --query StandardOutputContent --output text)"
-  case "$V1_OUT" in *NO-BOOTSTRAP*) inconclusive "aws-cfn-bootstrap did not install in the instance (pip, or its dependencies from PyPI)";; esac
+  case "$V1_OUT" in *NO-BOOTSTRAP*) inconclusive "aws-cfn-bootstrap did not install in the instance (pip, or its dependencies from PyPI): $(grep -o 'NO-BOOTSTRAP.*' <<<"$V1_OUT" | cut -c14-320)";; esac
   grep -q '^OWN-OK' <<<"$V1_OUT" || fail "cfn-get-metadata with no credentials (CFN_V1) on its own stack: $(grep '^OWN' <<<"$V1_OUT")"
   grep -q '^OTHER-DENIED' <<<"$V1_OUT" || fail "cfn-get-metadata (CFN_V1) on another stack must be AccessDenied: $(grep '^OTHER' <<<"$V1_OUT")"
   grep -q '^SIGNAL-REACHED' <<<"$V1_OUT" || fail "cfn-signal with no credentials (CFN_V1): $(grep '^SIGNAL' <<<"$V1_OUT")"
