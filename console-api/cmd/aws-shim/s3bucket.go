@@ -106,6 +106,10 @@ func decodeTarget(method, bucket, key string, q url.Values) (s3op, bool) {
 			return s3op{kind: "get-bucket-encryption", bucket: bucket}, true
 		case sub == "ownershipControls" && method == http.MethodGet:
 			return s3op{kind: "get-bucket-ownership-controls", bucket: bucket}, true
+		case sub == "ownershipControls" && method == http.MethodPut:
+			return s3op{kind: "put-bucket-ownership-controls", bucket: bucket, write: true}, true
+		case sub == "ownershipControls" && method == http.MethodDelete:
+			return s3op{kind: "delete-bucket-ownership-controls", bucket: bucket, write: true}, true
 		case sub == "policy" && method == http.MethodGet:
 			return s3op{kind: "get-bucket-policy", bucket: bucket}, true
 		case sub == "uploads" && method == http.MethodGet:
@@ -178,6 +182,8 @@ func (op s3op) action() string {
 		return "s3:GetEncryptionConfiguration"
 	case "get-bucket-ownership-controls":
 		return "s3:GetBucketOwnershipControls"
+	case "put-bucket-ownership-controls", "delete-bucket-ownership-controls": // AWS authorizes the delete as the put
+		return "s3:PutBucketOwnershipControls"
 	case "get-bucket-policy":
 		return "s3:GetBucketPolicy"
 	case "get-object-tagging":

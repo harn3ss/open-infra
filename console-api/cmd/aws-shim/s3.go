@@ -160,6 +160,10 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		h.getBucketEncryption(w, r, op, requestID)
 	case "get-bucket-ownership-controls":
 		h.getBucketOwnershipControls(w, r, op, requestID)
+	case "put-bucket-ownership-controls":
+		h.putBucketOwnershipControls(w, r, op, requestID)
+	case "delete-bucket-ownership-controls":
+		h.deleteBucketOwnershipControls(w, r, op, requestID)
 	case "get-bucket-policy":
 		h.getBucketPolicy(w, r, op, requestID)
 	case "get-object-tagging":

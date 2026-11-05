@@ -206,7 +206,12 @@ log "  ✓ listed, then aborted (NoSuchUpload)"
 
 OWN="$(awsq "$WAK" "$WSK" get-bucket-ownership-controls --bucket "$BUCKET" --query 'OwnershipControls.Rules[0].ObjectOwnership' --output text 2>&1 || true)"
 [ "$OWN" = BucketOwnerEnforced ] || fail "get-bucket-ownership-controls: want BucketOwnerEnforced, got: $OWN"
-log "  ✓ ownership controls: BucketOwnerEnforced"
+awsq "$WAK" "$WSK" put-bucket-ownership-controls --bucket "$BUCKET" \
+  --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]' >/dev/null 2>"$WORK/oc.err" \
+  || fail "put-bucket-ownership-controls BucketOwnerEnforced failed: $(cat "$WORK/oc.err")"
+ERR="$(awsq "$WAK" "$WSK" put-bucket-ownership-controls --bucket "$BUCKET" --ownership-controls 'Rules=[{ObjectOwnership=ObjectWriter}]' 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q NotImplemented || fail "ObjectWriter (ACLs) must be refused as NotImplemented, got: $ERR"
+log "  ✓ ownership controls: BucketOwnerEnforced (put accepted; an ACL-enabling ObjectWriter refused)"
 
 # --- 5. NEGATIVE: valid key ID, WRONG secret → SignatureDoesNotMatch ---------------------------
 log "negative: valid key ID with a WRONG secret must be rejected"

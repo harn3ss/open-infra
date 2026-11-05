@@ -373,6 +373,8 @@ func TestS3Decode_MultipartAndCopy(t *testing.T) {
 		{"GET", "/b?uploads&prefix=k", "", true, "list-multipart-uploads", false},
 		{"PUT", "/b/k", "/src/obj", true, "copy-object", true},
 		{"GET", "/b?ownershipControls", "", true, "get-bucket-ownership-controls", false},
+		{"PUT", "/b?ownershipControls", "", true, "put-bucket-ownership-controls", true},
+		{"DELETE", "/b?ownershipControls", "", true, "delete-bucket-ownership-controls", true},
 		// a pre-signed UploadPart URL is still an UploadPart
 		{"PUT", "/b/k?partNumber=1&uploadId=u1&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc", "", true, "upload-part", true},
 		// not served: a part GET (GetObject ?partNumber) and a POST ?uploads on a bucket
@@ -398,15 +400,17 @@ func TestS3Decode_MultipartAndCopy(t *testing.T) {
 
 func TestS3OpAction_MultipartAndCopy(t *testing.T) {
 	cases := map[string]string{
-		"create-multipart-upload":       "s3:PutObject",
-		"upload-part":                   "s3:PutObject",
-		"upload-part-copy":              "s3:PutObject",
-		"complete-multipart-upload":     "s3:PutObject",
-		"copy-object":                   "s3:PutObject",
-		"abort-multipart-upload":        "s3:AbortMultipartUpload",
-		"list-parts":                    "s3:ListMultipartUploadParts",
-		"list-multipart-uploads":        "s3:ListBucketMultipartUploads",
-		"get-bucket-ownership-controls": "s3:GetBucketOwnershipControls",
+		"create-multipart-upload":          "s3:PutObject",
+		"upload-part":                      "s3:PutObject",
+		"upload-part-copy":                 "s3:PutObject",
+		"complete-multipart-upload":        "s3:PutObject",
+		"copy-object":                      "s3:PutObject",
+		"abort-multipart-upload":           "s3:AbortMultipartUpload",
+		"list-parts":                       "s3:ListMultipartUploadParts",
+		"list-multipart-uploads":           "s3:ListBucketMultipartUploads",
+		"get-bucket-ownership-controls":    "s3:GetBucketOwnershipControls",
+		"put-bucket-ownership-controls":    "s3:PutBucketOwnershipControls",
+		"delete-bucket-ownership-controls": "s3:PutBucketOwnershipControls",
 	}
 	for kind, want := range cases {
 		if got := (s3op{kind: kind}).action(); got != want {
@@ -739,5 +743,50 @@ func TestS3GetBucketOwnershipControls(t *testing.T) {
 	h.getBucketOwnershipControls(w, httptest.NewRequest("GET", "/nope?ownershipControls", nil), s3op{bucket: "nope"}, "r")
 	if w.Code != 404 || !strings.Contains(w.Body.String(), "NoSuchBucket") {
 		t.Fatalf("GetBucketOwnershipControls of a missing bucket = %d %s", w.Code, w.Body)
+	}
+}
+
+// PutBucketOwnershipControls accepts BucketOwnerEnforced (already in force) and refuses the modes that
+// enable ACLs, with the reason; DeleteBucketOwnershipControls (re-enabling ACLs on AWS) is refused. Both
+// are authorized as s3:PutBucketOwnershipControls on the bucket, a write.
+func TestS3PutDeleteBucketOwnershipControls(t *testing.T) {
+	f := newFakeS3()
+	f.buckets["data"] = true
+	h := &s3Handler{mc: fakeMinio(t, f), logger: discardLogger()}
+	body := func(own string) io.Reader {
+		return strings.NewReader(`<OwnershipControls xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule><ObjectOwnership>` + own + `</ObjectOwnership></Rule></OwnershipControls>`)
+	}
+	put := func(bucket, own string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.putBucketOwnershipControls(w, httptest.NewRequest("PUT", "/"+bucket+"?ownershipControls", body(own)), s3op{bucket: bucket}, "r")
+		return w
+	}
+	if w := put("data", "BucketOwnerEnforced"); w.Code != 200 {
+		t.Fatalf("Put BucketOwnerEnforced = %d %s", w.Code, w.Body)
+	}
+	for _, own := range []string{"BucketOwnerPreferred", "ObjectWriter"} {
+		if w := put("data", own); w.Code != 501 || !strings.Contains(w.Body.String(), "ACLs") {
+			t.Fatalf("Put %s = %d %s, want 501 naming ACLs", own, w.Code, w.Body)
+		}
+	}
+	if w := put("data", "Bogus"); w.Code != 400 || !strings.Contains(w.Body.String(), "MalformedXML") {
+		t.Fatalf("Put of an unknown ownership = %d %s", w.Code, w.Body)
+	}
+	if w := put("nope", "BucketOwnerEnforced"); w.Code != 404 {
+		t.Fatalf("Put on a missing bucket = %d %s", w.Code, w.Body)
+	}
+	w := httptest.NewRecorder()
+	h.deleteBucketOwnershipControls(w, httptest.NewRequest("DELETE", "/data?ownershipControls", nil), s3op{bucket: "data"}, "r")
+	if w.Code != 501 || !strings.Contains(w.Body.String(), "ACLs") {
+		t.Fatalf("DeleteBucketOwnershipControls = %d %s", w.Code, w.Body)
+	}
+	for method, kind := range map[string]string{"PUT": "put-bucket-ownership-controls", "DELETE": "delete-bucket-ownership-controls"} {
+		op, ok := (&s3Handler{}).decode(httptest.NewRequest(method, "/data?ownershipControls", nil))
+		if !ok || op.kind != kind || !op.write {
+			t.Fatalf("%s ?ownershipControls decoded as %+v (ok=%v), want %s (a write)", method, op, ok, kind)
+		}
+		if op.action() != "s3:PutBucketOwnershipControls" || op.onObject() {
+			t.Fatalf("%s is authorized as %s (onObject=%v), want s3:PutBucketOwnershipControls on the bucket", kind, op.action(), op.onObject())
+		}
 	}
 }

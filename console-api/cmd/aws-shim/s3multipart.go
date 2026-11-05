@@ -544,6 +544,69 @@ func (h *s3Handler) getBucketOwnershipControls(w http.ResponseWriter, r *http.Re
 	writeXML(w, http.StatusOK, requestID, out)
 }
 
+// ---- PutBucketOwnershipControls / DeleteBucketOwnershipControls ----
+
+// ownershipControlsIn is PutBucketOwnershipControls' body: one Rule, as AWS requires.
+type ownershipControlsIn struct {
+	XMLName xml.Name `xml:"OwnershipControls"`
+	Rules   []struct {
+		ObjectOwnership string `xml:"ObjectOwnership"`
+	} `xml:"Rule"`
+}
+
+// aclsNotSupported is why a bucket's object ownership can be nothing but BucketOwnerEnforced here.
+const aclsNotSupported = "S3 ACLs are not supported on this platform, so object ownership is always BucketOwnerEnforced (ACLs disabled), AWS's default for new buckets"
+
+// putBucketOwnershipControls sets a bucket's object ownership. BucketOwnerEnforced is accepted: it is
+// already in force. BucketOwnerPreferred and ObjectWriter enable ACLs, which this platform does not
+// implement, so they are refused with the reason, never accepted and ignored.
+func (h *s3Handler) putBucketOwnershipControls(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {
+	var in ownershipControlsIn
+	if err := xml.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil || len(in.Rules) != 1 {
+		writeS3Error(w, "MalformedXML", requestID, r.URL.Path)
+		return
+	}
+	own := in.Rules[0].ObjectOwnership
+	switch own {
+	case "BucketOwnerEnforced", "BucketOwnerPreferred", "ObjectWriter":
+	default:
+		writeS3Error(w, "MalformedXML", requestID, r.URL.Path)
+		return
+	}
+	exists, err := h.mc.BucketExists(r.Context(), op.bucket)
+	if err != nil {
+		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
+		return
+	}
+	if !exists {
+		writeS3Error(w, "NoSuchBucket", requestID, r.URL.Path)
+		return
+	}
+	if own != "BucketOwnerEnforced" {
+		writeS3ErrorFull(w, "NotImplemented", http.StatusNotImplemented, requestID,
+			"ObjectOwnership "+own+" enables S3 ACLs: "+aclsNotSupported+".", r.URL.Path)
+		return
+	}
+	w.Header().Set("x-amz-request-id", requestID)
+	w.WriteHeader(http.StatusOK)
+}
+
+// deleteBucketOwnershipControls is refused: on AWS removing the controls lets the bucket use ACLs again,
+// which this platform does not implement.
+func (h *s3Handler) deleteBucketOwnershipControls(w http.ResponseWriter, r *http.Request, op s3op, requestID string) {
+	exists, err := h.mc.BucketExists(r.Context(), op.bucket)
+	if err != nil {
+		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
+		return
+	}
+	if !exists {
+		writeS3Error(w, "NoSuchBucket", requestID, r.URL.Path)
+		return
+	}
+	writeS3ErrorFull(w, "NotImplemented", http.StatusNotImplemented, requestID,
+		"Removing a bucket's ownership controls would enable S3 ACLs: "+aclsNotSupported+".", r.URL.Path)
+}
+
 // requestSigningRegion is the region the request was signed for (its SigV4 credential scope, from the
 // Authorization header or a pre-signed URL's X-Amz-Credential), or "" when it carries neither.
 func requestSigningRegion(r *http.Request) string {
