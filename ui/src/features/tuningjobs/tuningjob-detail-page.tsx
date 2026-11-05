@@ -58,7 +58,7 @@ export function TuningJobDetailPage() {
       backLabel="Tuning Jobs"
       icon={<Target className="size-5" />}
       title={name}
-      subtitle={`Tuning job · ${namespace}`}
+      subtitle="Tuning job"
       status={{ label: st?.phase ?? "Pending", tone: tuningTone(st?.phase) }}
     >
       <Tabs defaultValue="overview">

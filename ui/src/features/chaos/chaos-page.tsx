@@ -42,7 +42,7 @@ function targetSummary(f: FaultInjection): string {
   const sel = Object.entries(t.labelSelector ?? {})
     .map(([k, v]) => `${k}=${v}`)
     .join(",");
-  return `${t.namespace ?? f.metadata.namespace}/${sel || "*"}`;
+  return sel || "*"; // within the account (the namespace is the platform's placement)
 }
 
 // Chaos is a privileged, non-essential capability (NIST CM-7): if the deployment hasn't
@@ -133,7 +133,7 @@ function ChaosPageInner() {
       <ResourceTablePage<FaultInjection>
         icon={<Bomb />}
         title="Chaos"
-        description="Fault injection — open-infra's Fault Injection Simulator (Chaos Mesh). Inject pod kills, network faults, resource stress, clock skew, or disk-IO latency to prove the platform's resilience. Every experiment is scoped to a namespace + label selector (blast radius enforced) and time-boxed."
+        description="Fault injection — open-infra's Fault Injection Simulator (Chaos Mesh). Inject pod kills, network faults, resource stress, clock skew, or disk-IO latency to prove the platform's resilience. Every experiment is scoped to a label selector in this account (blast radius enforced) and time-boxed."
         listPath={openinfraPaths.faultinjections}
         columns={columns}
         onRowClick={(f) =>
@@ -149,7 +149,7 @@ function ChaosPageInner() {
         singular="Fault Injection"
         plural="Fault Injections"
         emptyTitle="No experiments yet"
-        emptyDescription="Run a fault injection scoped to a namespace + label selector."
+        emptyDescription="Run a fault injection scoped to a label selector in this account."
         docsHref={kindDocsUrl("FaultInjection")}
         headerActions={
           <Button onClick={() => navigate({ to: "/chaos/new" })}>

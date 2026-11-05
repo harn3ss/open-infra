@@ -63,7 +63,7 @@ export function TransitGatewayDetailPage() {
       backLabel="Transit Gateways"
       icon={<Share2 className="size-5" />}
       title={name}
-      subtitle={`Transit Gateway · ${namespace}`}
+      subtitle="Transit Gateway"
       status={status}
     >
       <Tabs defaultValue="overview">
@@ -80,7 +80,6 @@ export function TransitGatewayDetailPage() {
               <KeyValuePairs
                 columns={3}
                 items={[
-                  { label: "Namespace", value: namespace },
                   { label: "Attachments", value: attachments.length },
                   {
                     label: "Spokes",

@@ -65,7 +65,7 @@ export function ParameterDetailPage() {
       backLabel="Parameters"
       icon={<SlidersHorizontal className="size-5" />}
       title={name}
-      subtitle={`Parameter · ${namespace}`}
+      subtitle="Parameter"
       status={status}
     >
       <Tabs defaultValue="overview">
@@ -139,7 +139,7 @@ export function ParameterDetailPage() {
               <Info className="mt-0.5 size-4 shrink-0" />
               <span>
                 This is a <span className="font-medium text-foreground">SecureString</span> — its value is stored encrypted
-                (Vault-backed) and materialized into a namespace Secret for workloads to consume. The plaintext is never
+                (Vault-backed) and delivered to the workloads that consume it. The plaintext is never
                 displayed in the console, including in the YAML tab. Read it from an application via <code className="text-xs">spec.secrets</code>.
               </span>
             </div>

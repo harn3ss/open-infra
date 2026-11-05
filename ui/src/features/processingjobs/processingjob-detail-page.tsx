@@ -79,7 +79,7 @@ export function ProcessingJobDetailPage() {
       backLabel="Processing Jobs"
       icon={<FlaskConical className="size-5" />}
       title={name}
-      subtitle={`Processing job · ${namespace}`}
+      subtitle="Processing job"
       status={run}
     >
       <Tabs defaultValue="overview">

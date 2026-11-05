@@ -85,7 +85,7 @@ export function ModelPackageDetailPage() {
       backLabel="Model Registry"
       icon={<Package className="size-5" />}
       title={name}
-      subtitle={`${s?.modelName} · v${s?.version ?? "1"} · ${namespace}`}
+      subtitle={`${s?.modelName} · v${s?.version ?? "1"}`}
       status={{ label: status, tone: approvalTone(status) }}
     >
       <Tabs defaultValue="overview">

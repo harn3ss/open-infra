@@ -16,9 +16,11 @@ time, so the same image runs in any cluster.
 The top bar shows the account the session acts in and its region (the platform serves one region,
 `us-east-1`), as the AWS console does; the account menu beside it switches into a role in another
 account. Every list is the account's resources: everything of that kind in this account, with no
-namespace to choose. A new resource lands in the account's home; when the account has more than one
-namespace, a create page's **Advanced** section can place it in another of the account's own. Namespaces
-appear only on the Platform operations views and in a resource's YAML.
+namespace to choose. A new resource lands in the account's home, with no namespace field on a create
+page; for the platform operator, whose account holds more than one namespace, a create page's
+**Advanced** section can place it in another of the account's own. Namespaces appear only to the
+operator (the Platform operations views, and the few namespace-level settings on other pages) and in a
+resource's YAML.
 
 The sidebar is grouped like a cloud console:
 
@@ -66,7 +68,7 @@ row opens a **full-page detail view** with AWS-style tabs and actions:
 | **Audit** (CloudTrail) | Who did what — every mutation + authorization decision, attributed to a person (console, kubectl, Terraform, Argo), filterable by user / resource / time. Merges the k3s API-server audit log (shipped to Loki) with the console's own IAM logs. Admin-only. Reads are omitted; the full record stays on the control-plane node |
 | **Node** | CPU/memory/pod capacity, **GPU** (count + model), conditions, YAML |
 | **Chaos** (FIS) | List/create/delete `kind: FaultInjection` experiments (type, blast-radius target, duration, status); blast radius shown before you launch. See [chaos.md](chaos.md) · create / delete |
-| **Cost Explorer** (Cost Explorer) | "What AWS would've charged" — prices live cluster capacity (compute / GPU / EBS / load balancers) against AWS list rates, showing monthly & annual vs your actual **$0**, plus a by-namespace compute breakdown. See [cost.md](cost.md) |
+| **Cost Explorer** (Cost Explorer) | "What AWS would've charged" — prices live cluster capacity (compute / GPU / EBS / load balancers) against AWS list rates, showing monthly & annual vs your actual **$0**, plus (for the platform operator) a by-namespace compute breakdown. See [cost.md](cost.md) |
 
 ## How it works
 

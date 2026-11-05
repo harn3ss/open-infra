@@ -99,7 +99,7 @@ export function HttpApiDetailPage() {
       backLabel="HTTP APIs"
       icon={<Webhook className="size-5" />}
       title={name}
-      subtitle={`HTTP API · ${namespace}`}
+      subtitle="HTTP API"
       status={status}
     >
       <Tabs defaultValue="overview">

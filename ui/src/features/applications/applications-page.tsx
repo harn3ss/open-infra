@@ -76,11 +76,6 @@ export function ApplicationsPage() {
   const filterProperties = useMemo<FilterPropertyDef<Application>[]>(
     () => [
       { key: "name", label: "Name", getValue: (a) => a.metadata.name },
-      {
-        key: "namespace",
-        label: "Namespace",
-        getValue: (a) => a.metadata.namespace,
-      },
       { key: "image", label: "Image", getValue: (a) => a.spec?.image },
       {
         key: "status",
@@ -116,7 +111,6 @@ export function ApplicationsPage() {
       enablePagination
       columnLabels={{
         name: "Name",
-        namespace: "Namespace",
         image: "Image",
         status: "Status",
         age: "Age",

@@ -41,7 +41,7 @@ export function FeatureGroupDetailPage() {
       backLabel="Feature Store"
       icon={<Table2 className="size-5" />}
       title={name}
-      subtitle={`Feature group · ${namespace}`}
+      subtitle="Feature group"
       status={claimHealth(fg, "featuregroup")}
     >
       <Tabs defaultValue="overview">

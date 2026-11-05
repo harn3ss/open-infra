@@ -189,7 +189,7 @@ export function DatabaseDetailPage() {
       backLabel="Databases"
       icon={<Database className="size-5" />}
       title={name}
-      subtitle={`Managed PostgreSQL · ${namespace}`}
+      subtitle="Managed PostgreSQL"
       status={phase ? { label: phase, tone: dbTone(phase) } : null}
     >
       <Tabs defaultValue="overview" onValueChange={(v) => setPeekOpen(v === "peek")}>

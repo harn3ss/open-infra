@@ -80,7 +80,7 @@ export function FileShareDetailPage() {
       backLabel="File Shares"
       icon={<FolderTree className="size-5" />}
       title={name}
-      subtitle={`File Share · ${namespace}`}
+      subtitle="File Share"
     >
       <Tabs defaultValue="overview">
         <TabsList>
@@ -98,7 +98,6 @@ export function FileShareDetailPage() {
         <TabsContent value="overview" className="pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
-              <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Size">{fs.spec?.size ?? "—"}</DetailRow>
               <DetailRow label="SMB endpoint">
                 {ip ? (

@@ -205,7 +205,7 @@ export function VmDetailPage() {
       backLabel="Virtual Machines"
       icon={<Monitor className="size-5" />}
       title={name}
-      subtitle={`${osLabel(spec?.os)} · ${namespace}`}
+      subtitle={osLabel(spec?.os)}
       status={status}
       actions={
         running ? (
@@ -275,7 +275,6 @@ export function VmDetailPage() {
                   "—"
                 )}
               </DetailRow>
-              <DetailRow label="Namespace">{namespace}</DetailRow>
             </CardContent>
           </Card>
         </TabsContent>

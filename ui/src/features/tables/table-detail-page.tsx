@@ -63,7 +63,7 @@ export function TableDetailPage() {
       backLabel="Tables"
       icon={<Table2 className="size-5" />}
       title={tableName}
-      subtitle={`Table · ${namespace}`}
+      subtitle="Table"
       status={status}
     >
       <Tabs defaultValue="overview">

@@ -76,9 +76,6 @@ export function ApplicationsWidget({
                     <div className="truncate text-sm font-medium">
                       {app.metadata.name}
                     </div>
-                    <div className="truncate text-xs text-muted-foreground">
-                      {app.metadata.namespace}
-                    </div>
                   </div>
                   <StatusBadge status={health.label} tone={health.tone} />
                 </Link>

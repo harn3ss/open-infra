@@ -13,6 +13,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { LiveIndicator } from "@/components/common/live-indicator";
 import { ErrorState, LoadingState } from "@/components/common/states";
 import { getCost, type CostResponse } from "@/lib/api";
+import { useNavCapabilities } from "@/lib/auth";
 
 const usd = (n: number) =>
   new Intl.NumberFormat("en-US", {
@@ -40,6 +41,8 @@ function Stat({
 }
 
 export function CostPage() {
+  // The by-namespace breakdown spans the platform's namespaces, every account's: its operator's view.
+  const { operator } = useNavCapabilities();
   const { data, isLoading, isError, error, isFetching } = useQuery<CostResponse>(
     {
       queryKey: ["cost"],
@@ -185,8 +188,8 @@ export function CostPage() {
             </Card>
           </div>
 
-          {/* By namespace */}
-          {data.byNamespace.length > 0 && (
+          {/* By namespace — the operator's */}
+          {operator && data.byNamespace.length > 0 && (
             <Card>
               <CardContent className="p-5">
                 <div className="pb-3 text-sm font-semibold">

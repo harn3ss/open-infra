@@ -113,7 +113,7 @@ export function TrainingJobDetailPage() {
       backLabel="Training Jobs"
       icon={<BrainCog className="size-5" />}
       title={name}
-      subtitle={`Training job · ${namespace}`}
+      subtitle="Training job"
       status={run}
     >
       <Tabs defaultValue="overview">

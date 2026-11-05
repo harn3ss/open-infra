@@ -232,7 +232,7 @@ export function ManagedDatabaseDetailPage() {
       backLabel="Databases"
       icon={<Database className="size-5" />}
       title={db?.name ?? name}
-      subtitle={`${e.label} · ${namespace}`}
+      subtitle={e.label}
       status={health}
     >
       <Tabs defaultValue="overview" onValueChange={(v) => setPeekOpen(v === "peek")}>
@@ -290,7 +290,6 @@ export function ManagedDatabaseDetailPage() {
                 </div>
               </DetailRow>
               <DetailRow label="Database">{db?.name ?? "—"}</DetailRow>
-              <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Application">{name}</DetailRow>
               <DetailRow label="High availability">
                 <div className="flex items-center gap-2">

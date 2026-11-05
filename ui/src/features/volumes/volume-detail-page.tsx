@@ -98,7 +98,7 @@ export function VolumeDetailPage() {
       backLabel="Volumes"
       icon={<HardDrive className="size-5" />}
       title={name}
-      subtitle={`Volume · ${namespace}`}
+      subtitle="Volume"
       actions={
         <Button onClick={() => snapshot.mutate()} disabled={snapshot.isPending}>
           <Camera className="size-4" /> Snapshot
@@ -121,7 +121,6 @@ export function VolumeDetailPage() {
         <TabsContent value="overview" className="pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
-              <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Size">{vol.spec?.size ?? "—"}</DetailRow>
               <DetailRow label="Type">
                 {migratable

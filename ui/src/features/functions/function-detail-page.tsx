@@ -211,7 +211,7 @@ export function FunctionDetailPage() {
       backLabel="Functions"
       icon={<Zap className="size-5" />}
       title={name}
-      subtitle={`Serverless function · ${namespace}`}
+      subtitle="Serverless function"
       status={claimHealth(fn, "function")}
     >
       <Tabs defaultValue="code">

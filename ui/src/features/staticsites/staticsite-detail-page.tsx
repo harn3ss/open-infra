@@ -58,7 +58,7 @@ export function StaticSiteDetailPage() {
       backLabel="Static Sites"
       icon={<AppWindow className="size-5" />}
       title={name}
-      subtitle={`Static site · ${namespace}`}
+      subtitle="Static site"
       status={status}
     >
       <Tabs defaultValue="overview">

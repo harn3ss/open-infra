@@ -50,3 +50,15 @@ export function createNamespace(
   if (asked && (names.length === 0 || names.includes(asked))) return asked;
   return account?.homeNamespace || names[0] || asked || fallback;
 }
+
+/**
+ * The namespaces a create page may offer for placing a new resource: none for an AWS user, who has no such
+ * choice on AWS (the resource lands in the account's home — createNamespace); the platform's operator,
+ * whose account holds several, may choose another of the account's own. Never one outside the account.
+ */
+export function placementChoices(
+  account: { namespaces?: string[]; capabilities?: { operator?: boolean } } | null | undefined,
+): string[] {
+  const names = account?.namespaces ?? [];
+  return account?.capabilities?.operator === true && names.length > 1 ? names : [];
+}

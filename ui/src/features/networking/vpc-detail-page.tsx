@@ -10,6 +10,7 @@ import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
+import { useNavCapabilities } from "@/lib/auth";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import type { Subnet, Vpc } from "@/types/k8s";
 import { RouteTableEditor } from "./route-table-editor";
@@ -21,6 +22,7 @@ export function VpcDetailPage() {
     name: string;
   };
   const navigate = useNavigate();
+  const { operator } = useNavCapabilities(); // namespace bindings are the platform's, shown to its operator
   const path = openinfraPaths.vpc(namespace, name);
 
   const { data: vpc, isLoading, isError, error, refetch } = useQuery({
@@ -47,7 +49,7 @@ export function VpcDetailPage() {
       backLabel="VPCs"
       icon={<Network className="size-5" />}
       title={name}
-      subtitle={`VPC · ${namespace}`}
+      subtitle="VPC"
     >
       <Tabs defaultValue="overview">
         <TabsList>
@@ -62,13 +64,15 @@ export function VpcDetailPage() {
         <TabsContent value="overview" className="pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
-              <DetailRow label="Bound namespaces">
-                {vpc.spec?.namespaces?.length ? (
-                  <code className="text-xs">{vpc.spec.namespaces.join(", ")}</code>
-                ) : (
-                  <span className="text-muted-foreground">none</span>
-                )}
-              </DetailRow>
+              {operator ? (
+                <DetailRow label="Bound namespaces">
+                  {vpc.spec?.namespaces?.length ? (
+                    <code className="text-xs">{vpc.spec.namespaces.join(", ")}</code>
+                  ) : (
+                    <span className="text-muted-foreground">none</span>
+                  )}
+                </DetailRow>
+              ) : null}
               <DetailRow label="Subnets">{inVpc.length}</DetailRow>
             </CardContent>
           </Card>

@@ -7,14 +7,19 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { PlacementField } from "@/components/create/placement-field";
 import { k8sCreate } from "@/lib/api";
+import { useAuth, useNavCapabilities } from "@/lib/auth";
+import { createNamespace } from "@/lib/account-scope";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION, type Vpc } from "@/types/k8s";
 
 export function CreateVpcPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const { operator } = useNavCapabilities();
   const [name, setName] = useState("");
-  const [namespace, setNamespace] = useState("default");
+  const [namespace, setNamespace] = useState(() => createNamespace(user, undefined)); // the account's home
   const [namespaces, setNamespaces] = useState("");
 
   const create = useMutation({
@@ -39,21 +44,18 @@ export function CreateVpcPage() {
     <DetailShell backTo="/vpcs" backLabel="VPCs" icon={<Network className="size-5" />} title="New VPC" subtitle="An isolated network domain (kube-ovn)">
       <Card>
         <CardContent className="space-y-4 p-6">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="name">Name</Label>
-              <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="prod-vpc" />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="ns">Namespace</Label>
-              <Input id="ns" value={namespace} onChange={(e) => setNamespace(e.target.value)} />
-            </div>
-          </div>
           <div className="space-y-1.5">
-            <Label htmlFor="nslist">Bound namespaces (optional)</Label>
-            <Input id="nslist" value={namespaces} onChange={(e) => setNamespaces(e.target.value)} placeholder="team-a, team-b" />
-            <p className="text-xs text-muted-foreground">Namespaces whose default subnet lives in this VPC. Subnets also reference it via their VPC field.</p>
+            <Label htmlFor="name">Name</Label>
+            <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="prod-vpc" />
           </div>
+          {operator ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="nslist">Bound namespaces (optional)</Label>
+              <Input id="nslist" value={namespaces} onChange={(e) => setNamespaces(e.target.value)} placeholder="team-a, team-b" />
+              <p className="text-xs text-muted-foreground">Namespaces whose default subnet lives in this VPC. Subnets also reference it via their VPC field.</p>
+            </div>
+          ) : null}
+          <PlacementField value={namespace} onChange={setNamespace} />
           {create.isError ? (
             <p className="text-sm text-destructive">{(create.error as Error)?.message ?? "Create failed"}</p>
           ) : null}

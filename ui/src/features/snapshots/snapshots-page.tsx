@@ -63,16 +63,14 @@ function RestoreDialog({
           <p className="text-sm text-muted-foreground">
             {isVolume ? (
               <>
-                Creates a <b>new</b> {snap.engine} database in{" "}
-                <span className="font-mono">{snap.namespace}</span> from{" "}
+                Creates a <b>new</b> {snap.engine} database from{" "}
                 <span className="font-medium">{snap.id}</span> — its disk is restored from
                 the snapshot and it comes up with its own fresh credentials. Just pick a name.
               </>
             ) : (
               <>
                 Streams <span className="font-medium">{snap.id}</span> into an{" "}
-                <b>existing, empty</b> Postgres database in{" "}
-                <span className="font-mono">{snap.namespace}</span>. Create the target
+                <b>existing, empty</b> Postgres database. Create the target
                 database first (New Database), then restore into it — the restore
                 replaces its contents.
               </>
@@ -122,8 +120,7 @@ function VmRestoreDialog({ snap, onClose }: { snap: VmSnapshot; onClose: () => v
       description={
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            Creates a <b>new</b> {snap.os} VM in{" "}
-            <span className="font-mono">{snap.namespace}</span> from{" "}
+            Creates a <b>new</b> {snap.os} VM from{" "}
             <span className="font-medium">{snap.id}</span> — its root disk is restored from the
             snapshot and it comes up stopped, ready to start. Just pick a name.
           </p>
@@ -214,7 +211,6 @@ export function SnapshotsPage() {
                       <div className="flex items-center gap-2">
                         <Database className="size-4 text-muted-foreground" />
                         <span className="font-medium">{s.sourceName}</span>
-                        <span className="text-muted-foreground">· {s.namespace}</span>
                       </div>
                     </td>
                     <td className="p-3">
@@ -290,7 +286,6 @@ export function SnapshotsPage() {
                       <div className="flex items-center gap-2">
                         <Server className="size-4 text-muted-foreground" />
                         <span className="font-medium">{s.sourceName}</span>
-                        <span className="text-muted-foreground">· {s.namespace}</span>
                       </div>
                     </td>
                     <td className="p-3">
