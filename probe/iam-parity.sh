@@ -52,7 +52,7 @@ log "principal $USER: no group, one inline policy allowing $(printf '%s\n' "$CAS
 iamp_user "$USER" "" "$DOC"
 JAR="$PROBE_TMP/jar"
 iamp_login "$USER" "$U_PW" "$JAR"
-sleep "${KEY_SETTLE_SECONDS:-15}"   # the shim's key and policy caches pick the new principal up
+iamp_settle   # the shim's policy world picks the new principal up
 
 failures=0
 check() { # <service> <kind> <action> <want> <console method+path> <shim args>

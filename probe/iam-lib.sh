@@ -25,6 +25,9 @@ USERS_NS="${USERS_NS:-open-infra-console}"
 ENDPOINT="${SHIM_ENDPOINT:-http://aws-shim.${SHIM_NS}.svc.cluster.local:4566}"
 CONSOLE="${CONSOLE_ENDPOINT:-}"
 REGION="${AWS_REGION:-us-east-1}"
+# How long a new principal takes to reach every door: the console's and the shim's IAM policy worlds each
+# reload within 30 s of a change, with margin for the shim's key lookup (KEY_SETTLE_SECONDS: the older name).
+IAM_SETTLE_SECONDS="${IAM_SETTLE_SECONDS:-${KEY_SETTLE_SECONDS:-35}}"
 ACCOUNT="${ACCOUNT_ID:-000000000000}"
 SFX="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 PROBE_TMP="$(mktemp -d)"
@@ -114,6 +117,7 @@ print(json.dumps({"apiVersion": "iam.openinfra.dev/v1", "kind": "User",
 PY
   kubectl apply -f "$PROBE_TMP/user-$name.json" >/dev/null || inconclusive "could not create User $name"
   CREATED_USERS+=("$name")
+  IAMP_SETTLED_AT=$(( $(date +%s) + IAM_SETTLE_SECONDS ))
   U_AK="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
   U_SK="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
   local keysec; keysec="iam-ak-$(printf '%s' "$U_AK" | sha256sum | cut -c1-40)"
@@ -132,10 +136,26 @@ iamp_login() {
     sleep 2   # the console reads Users through an informer: a new one takes a moment
   done
   [ "$code" = 200 ] || inconclusive "console sign-in as $name answered $code: $(head -c 200 "$PROBE_TMP/login.out")"
-  mode="$(curl -s -m 10 -b "$jar" "$CONSOLE/api/auth/me" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("iamAuthz",""))' 2>/dev/null)"
+  # The mode is the principal's own (a canary-labelled User is in enforce while the platform is in shadow),
+  # read from a policy world each door caches for 30 s: a User made a moment ago reads as the platform's
+  # mode until the cache reloads, so ask until it has (IAMP_SETTLED_AT), not once.
+  while :; do
+    mode="$(curl -s -m 10 -b "$jar" "$CONSOLE/api/auth/me" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("iamAuthz",""))' 2>/dev/null)"
+    [ "$mode" = enforce ] && break
+    [ "$(date +%s)" -lt "${IAMP_SETTLED_AT:-0}" ] || break
+    sleep 2
+  done
   if [ "$mode" != enforce ]; then
-    inconclusive "IAM policy does not decide for $name yet (iamAuthz=${mode:-unknown}): run with the console and shim in IAM_AUTHZ=shadow and PRINCIPAL_MODE=canary, or after the cutover's enforce step"
+    inconclusive "IAM policy does not decide for $name (iamAuthz=${mode:-unknown}, ${IAM_SETTLE_SECONDS}s after it was made): run with the console and shim in IAM_AUTHZ=shadow and PRINCIPAL_MODE=canary, or after the cutover's enforce step"
   fi
+}
+
+# iamp_settle: wait until every principal made so far is in the shim's policy world too (it reloads at
+# most 30 s after a change; the console's answer above says nothing of the shim's copy).
+iamp_settle() {
+  local left=$(( ${IAMP_SETTLED_AT:-0} - $(date +%s) ))
+  [ "$left" -gt 0 ] && sleep "$left"
+  return 0
 }
 
 # console_decision <cookiejar> <method> <path> <action>: prints allow or deny (the IAM gate's answer), or

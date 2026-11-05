@@ -37,7 +37,7 @@ for who in poweruser readonly admin; do
   AK[$who]="$U_AK"; SK[$who]="$U_SK"; JARS[$who]="$PROBE_TMP/jar-$who"
   iamp_login "$name" "$U_PW" "${JARS[$who]}"
 done
-sleep "${KEY_SETTLE_SECONDS:-15}"
+iamp_settle   # the shim's policy world picks the new principals up
 PU_NAME="iam-mp-poweruser-$SFX"
 
 failures=0; checked=0

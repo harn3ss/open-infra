@@ -99,6 +99,38 @@ func TestMe_OperatorCapabilityOutsideEnforceIsTheLegacyRole(t *testing.T) {
 	}
 }
 
+// /api/auth/me's iamAuthz is the session principal's own mode, which the IAM probes read to know IAM policy
+// decides for them: a canary-labelled User is in enforce while the platform is in shadow; any other User,
+// and the platform's mode, read shadow.
+func TestMe_IAMAuthzIsThePrincipalsMode(t *testing.T) {
+	w := testWorld(t, map[string]string{"s3-read": s3ReadDoc}, map[string][]string{"User::canary": {"s3-read"}})
+	w.Enforce["User::canary"] = true
+	z := newTestAuthz(t, iamauthz.ModeShadow, w, true)
+	z.auth.sessionKey = []byte("test-session-key")
+	mode := func(name string) string {
+		t.Helper()
+		tok, err := z.auth.issueClaims(iam.Claims{Sub: name, Role: "poweruser"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: tok})
+		rec := httptest.NewRecorder()
+		handleMe(z.auth)(rec, r)
+		var body struct {
+			IAMAuthz string `json:"iamAuthz"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return body.IAMAuthz
+	}
+	if got := mode("canary"); got != "enforce" {
+		t.Errorf("a canary-labelled User: iamAuthz %q, want enforce", got)
+	}
+	if got := mode("alice"); got != "shadow" {
+		t.Errorf("any other User: iamAuthz %q, want shadow", got)
+	}
+}
+
 // With no evaluator (IAM not wired) the legacy role decides; with authentication off everyone is.
 func TestMe_OperatorCapabilityWithoutEvaluatorOrAuth(t *testing.T) {
 	prev := consoleIAM

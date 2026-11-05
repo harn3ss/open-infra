@@ -31,7 +31,7 @@ log "principal $USER: no group, no policy${PRINCIPAL_MODE:+ (PRINCIPAL_MODE=$PRI
 iamp_user "$USER" "" ""
 JAR="$PROBE_TMP/jar"
 iamp_login "$USER" "$U_PW" "$JAR"
-sleep "${KEY_SETTLE_SECONDS:-15}"
+iamp_settle   # the shim's policy world picks the new principals up
 
 failures=0; checked=0
 

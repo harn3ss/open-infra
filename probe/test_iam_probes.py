@@ -138,6 +138,46 @@ class Decided(unittest.TestCase):
         self.assertEqual((out, rc), ("after", 0))
 
 
+class LoginWaitsForThePrincipalsMode(unittest.TestCase):
+    """iamp_login reads the session's own mode from /api/auth/me. A User made a moment ago reads as the
+    platform's mode until the console's 30 s policy cache reloads, so it asks until IAMP_SETTLED_AT — the
+    canary's no-policy and managed-policy probes asked once and ended inconclusive on that."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.counter = os.path.join(self.tmp.name, "n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def curl(self, modes):
+        # sign-in: 200 to -o; /api/auth/me: the next mode of `modes` on stdout (a counter file keeps state).
+        return (
+            'out=""; url=""; while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;;'
+            ' -c|-b|-m|-w|-d|-H|-X) shift 2;; *) url="$1"; shift;; esac; done\n'
+            'case "$url" in\n'
+            '  */api/auth/login) printf "{}" > "$out"; printf 200;;\n'
+            f'  */api/auth/me) n=$(cat "{self.counter}" 2>/dev/null || echo 0); modes=({" ".join(modes)});'
+            f' m=${{modes[$n]:-${{modes[-1]}}}}; echo $((n+1)) > "{self.counter}"; printf \'{{"iamAuthz":"%s"}}\' "$m";;\n'
+            'esac\n'
+        )
+
+    def test_it_waits_for_enforce(self):
+        out, rc = run_lib('IAMP_SETTLED_AT=$(( $(date +%s) + 20 )); iamp_login u pw /dev/null; echo signed-in',
+                          {"curl": self.curl(["shadow", "shadow", "enforce"]), "sleep": "exit 0\n"})
+        self.assertEqual((out, rc), ("signed-in", 0))
+
+    def test_past_the_settle_time_it_is_inconclusive(self):
+        _, rc = run_lib('IAMP_SETTLED_AT=0; iamp_login u pw /dev/null; echo signed-in',
+                        {"curl": self.curl(["shadow"]), "sleep": "exit 0\n"})
+        self.assertEqual(rc, 42)
+
+    def test_settle_waits_out_the_shims_cache(self):
+        out, rc = run_lib('IAMP_SETTLED_AT=$(( $(date +%s) + 7 )); iamp_settle; echo settled',
+                          {"sleep": 'echo "slept $1" >&2; exit 0\n'})
+        self.assertEqual((out, rc), ("settled", 0))
+
+
 class ConsoleRoutes(unittest.TestCase):
     def test_every_fixed_action_route_parses(self):
         routes = os.path.join(REPO, "console-api", "cmd", "server", "routes.go")
