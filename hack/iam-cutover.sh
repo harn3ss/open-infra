@@ -296,6 +296,10 @@ step3() {
   verify_root
   say "step 3: the compiler applies (generated RBAC + the IAM corpus)"
   kubectl apply -f "$REPO/platform/security/manifests/iam-compiler-apply.yaml" >/dev/null || die "could not grant the compiler its apply rights"
+  # The webhook decides the compiler's ServiceAccount from the RBAC corpus: its new rights reach the
+  # control plane only once the corpus carries them, so regenerate it before the compiler writes.
+  say "the RBAC corpus with the compiler's apply rights"
+  corpus_regen
   cm_set "$AUTHZ_NS" IAM_COMPILER_MODE=apply
   restart "$AUTHZ_NS" iam-compiler
   local n
@@ -305,15 +309,20 @@ step3() {
     sleep 10
   done
   kubectl -n "$AUTHZ_NS" get configmap iam-corpus >/dev/null 2>&1 || die "the compiler wrote no iam-corpus (roll back: hack/iam-cutover.sh 3 --rollback)"
+  [ "$n" -gt 0 ] || die "the compiler wrote no generated RBAC (roll back: hack/iam-cutover.sh 3 --rollback)"
   ok "iam-corpus written; $n generated ClusterRole(s)"
-  say "the RBAC corpus without user principals (they are the IAM corpus's now)"
-  corpus_regen -skip-iam-principals
   say "enforce: IAM policy decides for every principal at the console and the aws-shim"
   echo "    $CONSOLE_NS/openinfra-iam IAM_AUTHZ=enforce (proxy identity: the account identity); $SHIM_NS/openinfra-iam IAM_AUTHZ=enforce"
   confirm
   cm_set "$CONSOLE_NS" IAM_AUTHZ=enforce IAM_PROXY_IDENTITY=
   cm_set "$SHIM_NS" IAM_AUTHZ=enforce
   restart "$CONSOLE_NS" console; restart "$SHIM_NS" aws-shim
+  verify_root
+  # Only now, with the console and the aws-shim acting as account identities (decided by the IAM corpus),
+  # do the legacy user identities leave the RBAC corpus: before, a principal still acting as its legacy
+  # identity would have been denied in between.
+  say "the RBAC corpus without user principals (they are the IAM corpus's now)"
+  corpus_regen -skip-iam-principals
   verify_root
   say "the IAM probes, now for every principal (no canary label)"
   local port=$(( 40000 + RANDOM % 20000 )) pf_shim rc=0

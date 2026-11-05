@@ -256,7 +256,7 @@ verifies and prints its rollback. State is kept in `~/.local/state/openinfra-iam
 | 0 | the webhook's root floor; a corpus regen; console and front door in `shadow` | back to `legacy` |
 | 1 | `hack/iam-migrate --apply`: each tier's AWS managed policy attached to its group, documents next to the old forms (additive) | restores every changed object from its snapshot, deletes what it created |
 | 2 | the IAM probes as canaries: `probe/iam-parity.sh`, `probe/iam-no-policy.sh`, `probe/iam-managed-policies.sh` (`PRINCIPAL_MODE=canary`); optionally `CANARY_USER` | unlabel the canary user |
-| 3 | the compiler in `apply` (generated RBAC + IAM corpus), the RBAC corpus without user principals, then `enforce`; the probes again for every principal | `shadow`, compiler `report`, generated RBAC deleted, the full RBAC corpus back |
+| 3 | the compiler's apply rights (and the RBAC corpus that carries them), the compiler in `apply` (generated RBAC + IAM corpus), then `enforce`, and only then the RBAC corpus without user principals; the probes again for every principal | `shadow`, compiler `report`, generated RBAC deleted, the full RBAC corpus back |
 | 4 | checks nothing names the implicit `openinfra:users` group; the impersonation ceilings are a commit | revert that commit |
 | 5 | the estate mirror's namespace becomes its own member account (`MIRROR_NAMESPACE`, `MIRROR_ACCOUNT_ID` to override the discovered namespace and derived id), with its claims checked as Ready as before | delete the account and unlabel the namespace |
 | 6 | after 24 h clean: `hack/iam-migrate --drop-legacy`, then the repo changes it prints (legacy bindings, the kebab-case alias policies) | none — roll back step 3 before this |
