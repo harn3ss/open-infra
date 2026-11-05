@@ -28,6 +28,7 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -123,6 +124,27 @@ func (g Gate) allow(ctx context.Context, c iam.Claims, q Request, reqCtx map[str
 	if IsPlatformBucket(q.Bucket) && !IsAdmin(c) {
 		return false, "bucket " + q.Bucket + " is owned by the platform: only an administrator can reach it"
 	}
+	ev := g.Authz.IAM()
+	if ev.Mode() == iamauthz.ModeLegacy {
+		return g.legacy(ctx, c, q, reqCtx, coarse)
+	}
+	// Shadow or enforce (iamauthz.Evaluator.Decide): the request is evaluated as AWS evaluates it — the
+	// caller's policies alone, default deny — on the resource it acts on.
+	res := "Bucket::" + q.ResourceID()
+	if q.Bucket == "" {
+		res = "Bucket::*"
+	}
+	d := ev.Decide(ctx, iamauthz.PrincipalFromClaims(c, ""), q.Action, res, reqCtx, func() (bool, string) {
+		return g.legacy(ctx, c, q, reqCtx, coarse)
+	})
+	return d.Allowed, d.Reason
+}
+
+// legacy is the decision before IAM policy became the one authorization plane: for an assumed role its
+// data-plane policies alone; for a User the coarse SubjectAccessReview, tightened by its data-plane
+// policies where one governs S3.
+func (g Gate) legacy(ctx context.Context, c iam.Claims, q Request, reqCtx map[string]any,
+	coarse func(verb string) (bool, string)) (bool, string) {
 	res := q.ResourceID()
 	if c.PrincipalType() == "Role" {
 		// An assumed role's authority is exactly its data-plane policies, default deny (an ungoverned role is

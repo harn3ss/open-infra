@@ -1,227 +1,28 @@
 package dataplaneauthz
 
 import (
-	"context"
-
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"github.com/harn3ss/open-infra/policyengine"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 )
 
+// The IAM kinds the loader lists (it needs list on each).
 var (
 	policyGVR = schema.GroupVersionResource{Group: "iam.openinfra.dev", Version: "v1", Resource: "policies"}
-	// The principal kinds that carry a spec.policies managed-attachment list. Role has it today;
-	// User gains it (user-xrd.yaml); Group has no such field yet, so it simply contributes nothing.
-	roleGVR  = schema.GroupVersionResource{Group: "iam.openinfra.dev", Version: "v1", Resource: "roles"}
-	userGVR  = schema.GroupVersionResource{Group: "iam.openinfra.dev", Version: "v1", Resource: "users"}
-	groupGVR = schema.GroupVersionResource{Group: "iam.openinfra.dev", Version: "v1", Resource: "groups"}
+	roleGVR   = schema.GroupVersionResource{Group: "iam.openinfra.dev", Version: "v1", Resource: "roles"}
+	userGVR   = schema.GroupVersionResource{Group: "iam.openinfra.dev", Version: "v1", Resource: "users"}
+	groupGVR  = schema.GroupVersionResource{Group: "iam.openinfra.dev", Version: "v1", Resource: "groups"}
 )
 
-// K8sLoader reads the whole data-plane policy world from the cluster: every kind: Policy's
-// spec.dataPlane block (statements + its own appliesTo, name-tagged so it can be attached), plus the
-// managed-attachment index — each kind: Role/User/Group's spec.policies. A principal's attached
-// Policies confer their dataPlane authority, the same one policy world as the inline appliesTo axis.
-//
-// It fails CLOSED on any list error (the Checker then denies governed traffic), exactly as before —
-// so the shim's ServiceAccount must be granted list on policies AND roles/users/groups in
-// iam.openinfra.dev. Policies with no dataPlane block are ignored.
-func K8sLoader(dc dynamic.Interface) Loader { return K8sLoaderIn(dc, DefaultHomeNamespace) }
+// K8sLoader reads the IAM policy world from the cluster (iamauthz.K8sLoader). It fails CLOSED on any list
+// error, so the caller's ServiceAccount must be granted list on policies AND roles/users/groups in
+// iam.openinfra.dev.
+func K8sLoader(dc dynamic.Interface) Loader { return iamauthz.K8sLoader(dc) }
 
-// K8sLoaderIn is K8sLoader with an explicit IAM home namespace. Every principal key and Policy name it
-// produces is canonical (principal.go): bare in home, "<namespace>/<name>" elsewhere, so objects of the
-// same name in two namespaces never share policies.
-func K8sLoaderIn(dc dynamic.Interface, home string) Loader {
-	return func(ctx context.Context) (Snapshot, error) {
-		list, err := dc.Resource(policyGVR).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return Snapshot{}, err
-		}
-		var docs []PolicyDoc
-		defined := map[string]bool{} // every Policy's canonical name, dataPlane or not
-		for i := range list.Items {
-			defined[QualifiedName(home, list.Items[i].GetNamespace(), list.Items[i].GetName())] = true
-		}
-		for i := range list.Items {
-			spec, _ := list.Items[i].Object["spec"].(map[string]any)
-			dp, _ := spec["dataPlane"].(map[string]any)
-			if dp == nil {
-				continue
-			}
-			ns := list.Items[i].GetNamespace()
-			doc := PolicyDoc{Name: QualifiedName(home, ns, list.Items[i].GetName()),
-				AppliesTo: canonAppliesTo(home, ns, toStrings(dp["appliesTo"]))}
-			for _, s := range toSlice(dp["statements"]) {
-				sm, _ := s.(map[string]any)
-				if sm == nil {
-					continue
-				}
-				doc.Statements = append(doc.Statements, policyengine.Statement{
-					Effect:         policyengine.Effect(str(sm["effect"])),
-					Actions:        toStrings(sm["actions"]),
-					NotActions:     toStrings(sm["notActions"]),
-					Resources:      toStrings(sm["resources"]),
-					NotResources:   toStrings(sm["notResources"]),
-					Condition:      toStringMap(sm["condition"]),
-					IPConditions:   toIPConditions(sm["ipConditions"]),
-					LikeConditions: toLikeConditions(sm["likeConditions"]),
-					TimeConditions: toTimeConditions(sm["timeConditions"]),
-				})
-			}
-			if len(doc.Statements) > 0 {
-				docs = append(docs, doc)
-			}
-		}
+// K8sLoaderIn is K8sLoader with an explicit IAM home namespace (iamauthz.K8sLoaderIn).
+func K8sLoaderIn(dc dynamic.Interface, home string) Loader { return iamauthz.K8sLoaderIn(dc, home) }
 
-		attach := map[string][]string{}
-		boundary := map[string]string{}
-		for _, k := range []struct {
-			gvr  schema.GroupVersionResource
-			kind string
-		}{{roleGVR, "Role"}, {userGVR, "User"}, {groupGVR, "Group"}} {
-			if err := loadAttachments(ctx, dc, home, k.gvr, k.kind, func(n string) bool { return defined[n] }, attach, boundary); err != nil {
-				return Snapshot{}, err // fail closed, unchanged
-			}
-		}
-		return Snapshot{Docs: docs, Attach: attach, Boundary: boundary}, nil
-	}
-}
+func toLikeConditions(v any) []policyengine.LikeCondition { return iamauthz.ToLikeConditions(v) }
 
-// unresolvableBoundary stands in for a permission boundary that names a Policy the principal may not
-// use. It is never a Policy name, so it compiles to the deny-all ceiling, exactly as a typo'd name does.
-const unresolvableBoundary = "\x00unresolvable"
-
-// loadAttachments lists one principal kind and records each object's spec.policies under
-// "<kind>::<canonical name>" in the attach index, and its spec.permissionBoundary (Role/User) in the
-// boundary index, each Policy reference resolved to a canonical Policy name (resolvePolicyRef). A list
-// error propagates (fail closed). Groups carry no permissionBoundary field, so it is simply absent for
-// them.
-func loadAttachments(ctx context.Context, dc dynamic.Interface, home string, gvr schema.GroupVersionResource, kind string,
-	defined func(string) bool, attach map[string][]string, boundary map[string]string) error {
-	list, err := dc.Resource(gvr).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		spec, _ := list.Items[i].Object["spec"].(map[string]any)
-		ns := list.Items[i].GetNamespace()
-		if ns == "" {
-			ns = home
-		}
-		key := kind + "::" + QualifiedName(home, ns, list.Items[i].GetName())
-		var names []string
-		for _, ref := range toStrings(spec["policies"]) {
-			if n := resolvePolicyRef(home, ns, ref, defined); n != "" {
-				names = append(names, n)
-			}
-		}
-		if len(names) > 0 {
-			attach[key] = names
-		}
-		if pb := str(spec["permissionBoundary"]); pb != "" {
-			if n := resolvePolicyRef(home, ns, pb, defined); n != "" {
-				boundary[key] = n
-			} else {
-				boundary[key] = unresolvableBoundary
-			}
-		}
-	}
-	return nil
-}
-
-// toIPConditions parses a statement's ipConditions array (the aws:SourceIp-style CIDR conditions the
-// AWS importer emits) into policyengine.IPConditions. Entries missing a key or cidr are skipped.
-func toIPConditions(v any) []policyengine.IPCondition {
-	items, _ := v.([]any)
-	var out []policyengine.IPCondition
-	for _, it := range items {
-		m, ok := it.(map[string]any)
-		if !ok {
-			continue
-		}
-		key, cidr := str(m["key"]), str(m["cidr"])
-		if key == "" || cidr == "" {
-			continue
-		}
-		neg, _ := m["negate"].(bool)
-		out = append(out, policyengine.IPCondition{Key: key, CIDR: cidr, Negate: neg})
-	}
-	return out
-}
-
-// toLikeConditions parses a statement's likeConditions array (the aws:username StringLike/StringNotLike
-// wildcard conditions the AWS importer emits) into policyengine.LikeConditions. Entries missing a key or
-// pattern are skipped.
-func toLikeConditions(v any) []policyengine.LikeCondition {
-	items, _ := v.([]any)
-	var out []policyengine.LikeCondition
-	for _, it := range items {
-		m, ok := it.(map[string]any)
-		if !ok {
-			continue
-		}
-		key, pattern := str(m["key"]), str(m["pattern"])
-		if key == "" || pattern == "" {
-			continue
-		}
-		neg, _ := m["negate"].(bool)
-		out = append(out, policyengine.LikeCondition{Key: key, Pattern: pattern, Negate: neg})
-	}
-	return out
-}
-
-// toTimeConditions parses a statement's timeConditions array (the aws:CurrentTime Date* datetime-window
-// conditions the AWS importer emits) into policyengine.TimeConditions. Entries missing a key, op, or
-// target are skipped.
-func toTimeConditions(v any) []policyengine.TimeCondition {
-	items, _ := v.([]any)
-	var out []policyengine.TimeCondition
-	for _, it := range items {
-		m, ok := it.(map[string]any)
-		if !ok {
-			continue
-		}
-		key, op, target := str(m["key"]), str(m["op"]), str(m["target"])
-		if key == "" || op == "" || target == "" {
-			continue
-		}
-		out = append(out, policyengine.TimeCondition{Key: key, Op: op, Target: target})
-	}
-	return out
-}
-
-func toSlice(v any) []any { s, _ := v.([]any); return s }
-
-func str(v any) string { s, _ := v.(string); return s }
-
-func toStrings(v any) []string {
-	items, _ := v.([]any)
-	out := make([]string, 0, len(items))
-	for _, it := range items {
-		if s, ok := it.(string); ok {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-func toStringMap(v any) map[string]string {
-	m, _ := v.(map[string]any)
-	if len(m) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, val := range m {
-		switch x := val.(type) {
-		case string:
-			out[k] = x
-		case bool:
-			if x {
-				out[k] = "true"
-			} else {
-				out[k] = "false"
-			}
-		}
-	}
-	return out
-}
+func toTimeConditions(v any) []policyengine.TimeCondition { return iamauthz.ToTimeConditions(v) }

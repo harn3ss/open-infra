@@ -41,7 +41,15 @@ type Claims struct {
 	// SessionExpiry is when an assumed-role session's credentials expire; zero for long-term keys. A
 	// credential minted from the session (an ECR authorization token) expires no later.
 	SessionExpiry time.Time `json:"-"`
+	// Account is the 12-digit account the principal belongs to; empty is the install's management
+	// account. It qualifies the principal's identity (AccountIdentity) and its ARNs.
+	Account string `json:"account,omitempty"`
 }
+
+// UsersGroup is the implicit group every principal carried before IAM policy became the one
+// authorization plane. Membership in it confers nothing in enforce mode (MemberGroups, RoleMemberGroups,
+// AccountIdentity never add it); GroupsFromSpec and RoleGroups still append it for the legacy mode.
+const UsersGroup = "users"
 
 // PrincipalType is the data-plane principal type the policy engine evaluates: "Role" for an
 // assumed-role session (so the role's kind: Policy dataPlane governs it), else "User".
@@ -67,7 +75,13 @@ func (c Claims) PrincipalID() string {
 // truth for that mapping, shared by the console (kind: User sign-in) and the shim (resolving an
 // access key's owning User) so the two can never derive a principal's groups differently.
 func GroupsFromSpec(specGroups []string) []string {
-	out := make([]string, 0, len(specGroups)+1)
+	return append(MemberGroups(specGroups), "openinfra:"+UsersGroup)
+}
+
+// MemberGroups is GroupsFromSpec without the implicit users group: a principal's groups are exactly the
+// ones it is a member of, so a principal with none is in none (enforce mode; IAM policy is the authority).
+func MemberGroups(specGroups []string) []string {
+	out := make([]string, 0, len(specGroups))
 	for _, g := range specGroups {
 		g = strings.TrimSpace(g)
 		// Drop any entry containing a comma. Group values are carried to the engine in a comma-joined
@@ -80,7 +94,7 @@ func GroupsFromSpec(specGroups []string) []string {
 			out = append(out, "openinfra:"+g)
 		}
 	}
-	return append(out, "openinfra:users")
+	return out
 }
 
 // RoleGroups maps a console role to the Kubernetes groups it acts as. Console principals are
@@ -93,14 +107,51 @@ func GroupsFromSpec(specGroups []string) []string {
 //
 // Every principal also gets openinfra:users, for rules that apply to everyone.
 func RoleGroups(role string) []string {
+	return append(RoleMemberGroups(role), "openinfra:"+UsersGroup)
+}
+
+// RoleMemberGroups is RoleGroups without the implicit users group (enforce mode).
+func RoleMemberGroups(role string) []string {
 	switch strings.ToLower(role) {
 	case "root", "admin":
-		return []string{"openinfra:admins", "openinfra:users"}
+		return []string{"openinfra:admins"}
 	case "poweruser":
-		return []string{"openinfra:powerusers", "openinfra:users"}
+		return []string{"openinfra:powerusers"}
 	default: // readonly and anything unrecognised — least privilege
-		return []string{"openinfra:readers", "openinfra:users"}
+		return []string{"openinfra:readers"}
 	}
+}
+
+// ManagementAccount is the install's management account id: the account of every principal whose
+// Claims carry none.
+const ManagementAccount = "000000000000"
+
+// AccountIdentity is the Kubernetes identity a principal acts as once IAM policy is the authority:
+// "openinfra:<account>:<user>" (an assumed role: "openinfra:<account>:role/<role>"), with NO group
+// impersonation — the RBAC that still enforces underneath is generated per principal from its IAM
+// policies and binds this user subject directly. The account defaults to the management account.
+func AccountIdentity(c Claims) (user string, ok bool) {
+	if c.Sub == "" {
+		return "", false
+	}
+	acct := c.Account
+	if acct == "" {
+		acct = ManagementAccount
+	}
+	if c.AssumedRole != "" {
+		return "openinfra:" + acct + ":role/" + c.AssumedRole, true
+	}
+	return "openinfra:" + acct + ":" + c.Sub, true
+}
+
+// IdentityFor is the identity a request acts as in a given mode: Identity (user + groups, the legacy
+// ClusterRole tiers) unless enforce, then AccountIdentity with no groups.
+func IdentityFor(c Claims, enforce bool) (user string, groups []string, ok bool) {
+	if !enforce {
+		return Identity(c)
+	}
+	user, ok = AccountIdentity(c)
+	return user, nil, ok
 }
 
 // Identity maps Claims to the Kubernetes identity they act as. This is the SINGLE definition of
