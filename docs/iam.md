@@ -28,6 +28,35 @@ aws iam attach-user-policy --user-name alice --policy-arn arn:aws:iam::aws:polic
 - **The name `root` is reserved** for the account's root user, which is not an IAM user (see
   [The root user](#the-root-user)).
 
+### Console passwords (login profiles)
+
+A user's console password is its login profile. Manage it from the user's page, or with the IAM API:
+
+```sh
+aws iam create-login-profile --user-name alice --password '…' --password-reset-required
+aws iam get-login-profile    --user-name alice
+aws iam update-login-profile --user-name alice --password '…'    # an administrator sets a new one
+aws iam delete-login-profile --user-name alice                   # no more console sign-in
+aws iam change-password --old-password '…' --new-password '…'    # the user, as itself
+```
+
+- **Password reset required**: the user's next sign-in can only change the password. Every other page
+  answers `PasswordResetRequired` until it does.
+- **The account password policy** (`get-`, `update-` and `delete-account-password-policy`) governs every
+  password in the account: length, character classes, reuse (`PasswordReusePrevention`) and maximum age
+  (`MaxPasswordAge`). Past that age the user must choose a new password at sign-in; with `HardExpiry` it
+  cannot sign in until an administrator sets one. Until you set a policy, AWS's default applies: at least
+  8 characters, three of uppercase, lowercase, numbers and symbols, and not the account name. Each account
+  has its own.
+- **Changing your own password** is allowed when the account policy sets `AllowUsersToChangePassword`, or
+  when a policy grants `iam:ChangePassword` on the user itself. An explicit deny wins either way. Only an
+  IAM user can call it: not a role session, and not root.
+- Login profiles are for local users. A user from a directory (LDAP, Active Directory, OIDC) signs in
+  with the directory's password.
+- Only a bcrypt hash is kept, in the platform's credential store beside the access keys. It is never kept
+  in the console's namespace, where the root user's credentials live; an admission policy holds the AWS
+  front door to that.
+
 ## Groups
 
 A group is a **container for policies**, as on AWS: its members get the policies attached to it. It is not

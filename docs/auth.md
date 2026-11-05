@@ -71,8 +71,9 @@ handle one. From the user's page you can change the password, disable the user, 
 access keys.
 
 **With the AWS CLI** (through the aws-shim): `aws iam create-user --user-name alice`, then
-`aws iam create-access-key --user-name alice` for programmatic access. Console passwords are set in the
-console; `aws iam create-login-profile` is not served yet.
+`aws iam create-access-key --user-name alice` for programmatic access, and
+`aws iam create-login-profile --user-name alice --password '…' --password-reset-required` for a console
+password she must change at first sign-in. See [Console passwords](iam.md#console-passwords-login-profiles).
 
 ### As code (operators, GitOps)
 
@@ -172,7 +173,8 @@ Two things make this real rather than cosmetic:
   new BFF endpoint is only covered once it is wired up.
 - Sessions are stateless: signing out clears the cookie, but a stolen token stays valid until it
   expires (12h). Rotating the Secret's `sessionKey` invalidates all sessions.
-- `local` mode has no password policy, lockout, or MFA.
+- `local` mode has no lockout or MFA. Passwords follow the account password policy (AWS's default until
+  one is set with `aws iam update-account-password-policy`).
 - The console **Users** and **Groups** pages (Security & Identity) manage `kind: User` /
   `kind: Group` and passwords, gated so only admins can (a `SubjectAccessReview` per action).
   The break-glass `root` account is still edited in the Secret, not there.
