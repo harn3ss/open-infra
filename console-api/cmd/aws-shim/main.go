@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -516,6 +517,13 @@ func run(logger *slog.Logger) error {
 	rdsH.authz = authzChecker
 	cwlH := newCWLHandler(cs, authzNS, account, region, cwlSt, logger)
 	cwlH.authz = authzChecker
+	// The groups AWS keeps a service's own logs in (/aws/lambda/<fn>, /aws/sagemaker/…, /ecs/<app>), read
+	// from the platform's log store (cloudwatchlogs_loki.go). LOKI_URL=off turns them off; its retention is
+	// the groups' retentionInDays (LOKI_RETENTION_DAYS, the store's retention_period).
+	if lokiURL := getenv("LOKI_URL", "http://loki.monitoring.svc.cluster.local:3100"); lokiURL != "off" {
+		retention, _ := strconv.Atoi(getenv("LOKI_RETENTION_DAYS", "7"))
+		cwlH.derived = newCWLDerived(lokiURL, dyn, cs, fns, account, retention)
+	}
 	// SSM Parameter Store reuses the SAME Vault Transit client as KMS (role aws-shim-kms): SecureString
 	// values are encrypted under the transit key kms-aws-ssm, so no separate Vault policy is needed.
 	ssmH := newSSMHandler(cs, authzNS, account, region, kmsTransit, ssmSt, logger)

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,9 @@ type cwlHandler struct {
 	store   *cwlStore // nil => data layer not configured (honest 501)
 	authz   *dataplaneauthz.Checker
 	logger  *slog.Logger
+	// derived serves the groups AWS keeps a service's own logs in (/aws/lambda/<fn> …) from the platform's
+	// log store (cloudwatchlogs_loki.go); nil => none.
+	derived *cwlDerived
 }
 
 func newCWLHandler(cs kubernetes.Interface, authzNS, account, region string, store *cwlStore, logger *slog.Logger) *cwlHandler {
@@ -121,6 +125,35 @@ func (h *cwlHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeCWLError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
+	acct := claims.Account
+	if acct == "" {
+		acct = h.account
+	}
+	ctx = context.WithValue(ctx, cwlAccountKey{}, acct)
+	if h.derived != nil {
+		if op == "DescribeLogGroups" {
+			h.describeLogGroups(ctx, w, requestID, body, claims)
+			return
+		}
+		// A service's own group (/aws/lambda/<fn> …): read from the log store, and read-only.
+		if g, ok := h.derived.resolve(ctx, claims, group); ok {
+			switch op {
+			case "DescribeLogStreams":
+				h.derivedDescribeStreams(ctx, w, requestID, g, body)
+			case "GetLogEvents":
+				h.derivedGetEvents(ctx, w, requestID, g, body)
+			case "FilterLogEvents":
+				h.derivedFilterEvents(ctx, w, requestID, g, body)
+			case "CreateLogGroup":
+				writeCWLError(w, http.StatusBadRequest, "ResourceAlreadyExistsException", requestID, "The specified log group already exists.")
+			default:
+				writeCWLError(w, http.StatusBadRequest, "InvalidParameterException", requestID,
+					"log group "+group+" holds the logs its "+derivedOwner(g)+" writes, read from the platform's log store: it is read-only here, and its retention is the log store's ("+strconv.Itoa(h.derived.retention)+" days).")
+			}
+			h.audit(ctx, op, group, "allow", "log store")
+			return
+		}
+	}
 	if h.store == nil {
 		writeCWLError(w, http.StatusNotImplemented, "ServiceUnavailableException", requestID,
 			"the CloudWatch Logs data layer is not configured on this shim (set SQS_PG_URI)")
@@ -135,7 +168,7 @@ func (h *cwlHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "PutLogEvents":
 		h.putLogEvents(ctx, w, requestID, body)
 	case "DescribeLogGroups":
-		h.describeLogGroups(ctx, w, requestID, body)
+		h.describeLogGroups(ctx, w, requestID, body, claims)
 	case "DescribeLogStreams":
 		h.describeLogStreams(ctx, w, requestID, body)
 	case "PutRetentionPolicy":
@@ -275,25 +308,60 @@ func (h *cwlHandler) putLogEvents(ctx context.Context, w http.ResponseWriter, re
 	writeCWLJSON(w, requestID, out)
 }
 
-func (h *cwlHandler) describeLogGroups(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+// describeLogGroups lists the groups SDKs created (the store) and the services' own groups (the log store),
+// by name, as AWS does; a service's group shadows a stored group of the same name.
+func (h *cwlHandler) describeLogGroups(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, claims iam.Claims) {
 	prefix, _ := body["logGroupNamePrefix"].(string)
-	groups, err := h.store.listGroups(ctx, prefix)
-	if err != nil {
-		h.internal(w, requestID, err)
-		return
+	entries := map[string]map[string]any{}
+	if h.store != nil {
+		groups, err := h.store.listGroups(ctx, prefix)
+		if err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+		for _, g := range groups {
+			e := map[string]any{
+				"logGroupName": g.Name, "arn": g.Arn,
+				"creationTime": g.Created.UnixMilli(), "storedBytes": 0,
+			}
+			if g.RetentionDays.Valid {
+				e["retentionInDays"] = g.RetentionDays.Int64
+			}
+			entries[g.Name] = e
+		}
 	}
-	out := make([]any, 0, len(groups))
-	for _, g := range groups {
-		e := map[string]any{
-			"logGroupName": g.Name, "arn": g.Arn,
-			"creationTime": g.Created.UnixMilli(), "storedBytes": 0,
+	if h.derived != nil {
+		acct := h.accountOf(ctx)
+		for _, g := range h.derived.groups(ctx, claims, prefix) {
+			entries[g.Name] = map[string]any{
+				"logGroupName": g.Name, "arn": h.groupARNIn(acct, g.Name), "creationTime": g.Created.UnixMilli(),
+				"storedBytes": 0, "retentionInDays": h.derived.retention, "logGroupClass": "STANDARD",
+			}
 		}
-		if g.RetentionDays.Valid {
-			e["retentionInDays"] = g.RetentionDays.Int64
-		}
-		out = append(out, e)
+	}
+	names := make([]string, 0, len(entries))
+	for n := range entries {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]any, 0, len(names))
+	for _, n := range names {
+		out = append(out, entries[n])
 	}
 	writeCWLJSON(w, requestID, map[string]any{"logGroups": out})
+}
+
+// derivedOwner names what writes a service's group.
+func derivedOwner(g derivedGroup) string {
+	switch g.Kind {
+	case "lambda":
+		return "function"
+	case "training":
+		return "training jobs"
+	case "processing":
+		return "processing jobs"
+	}
+	return "application"
 }
 
 func (h *cwlHandler) describeLogStreams(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {

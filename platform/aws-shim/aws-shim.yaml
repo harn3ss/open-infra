@@ -446,6 +446,42 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# CloudWatch Logs (cloudwatchlogs_loki.go): the log groups AWS keeps a service's own logs in —
+# /aws/sagemaker/TrainingJobs and ProcessingJobs, /ecs/<application> (and /aws/lambda/<function>, through
+# the functions grant above) — exist while their resource does. Reading which ones exist: get and list
+# only, in the same two namespaces; the events are read from the log store, and the caller's logs:* right
+# is checked on each group.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-infra-aws-shim-log-sources
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [applications, trainingjobs, processingjobs]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-log-sources
+  namespace: default
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-log-sources }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-log-sources
+  namespace: open-infra-cfn
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-log-sources }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # ACM (acm.go): a stack's certificate is its distribution's site TLS, issued by cert-manager as the
 # Certificate staticsite-<site>-tls in the stack namespace. DescribeCertificate reads that Certificate's
 # status, and GetCertificate the issued certificate and chain from its CertificateRequest's status — read
