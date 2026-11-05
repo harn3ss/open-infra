@@ -221,7 +221,7 @@ func TestManagedPolicies_JobFunctionsMeanWhatAWSDocuments(t *testing.T) {
 			{"s3:PutObject", object, false}, {"dynamodb:PutItem", table, false}, {"iam:CreateUser", user, false},
 			{"iam:GetUser", user, true}, {"secretsmanager:GetSecretValue", policyengine.Resource{Type: "Secret", ID: "s"}, false},
 		},
-		"ViewOnlyAccess": {{"s3:ListBucket", bucket, true}, {"s3:GetObject", object, false}, {"dynamodb:Query", table, false}},
+		"ViewOnlyAccess":         {{"s3:ListBucket", bucket, true}, {"s3:GetObject", object, false}, {"dynamodb:Query", table, false}},
 		"AmazonS3ReadOnlyAccess": {{"s3:GetObject", object, true}, {"s3:PutObject", object, false}},
 	}
 	for name, checks := range cases {
