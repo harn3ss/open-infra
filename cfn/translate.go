@@ -1293,7 +1293,11 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	}
 	// #347 1.6: an in-stack AWS::EC2::EIP associated with this instance folds onto the VM's LAN IP
 	// (spec.expose + spec.ports derived from its SecurityGroups) — translate_ec2eip.go.
-	cav = append(cav, eipExposeVM(id, spec, ctx)...)
+	eipCav := eipExposeVM(id, spec, ctx)
+	cav = append(cav, eipCav...)
+	if eipCav == nil { // no Elastic IP: an auto-assigned public address publishes the same way
+		cav = append(cav, publicIPExposeVM(id, spec, ctx)...)
+	}
 	if eip, ok := spec["elasticIp"].(map[string]any); ok {
 		if alloc, _ := eip["allocationId"].(string); alloc != "" && !ctx.inStackAllocation(alloc) {
 			// Another stack's allocation must exist (an AWS account's allocation ids have the same shape).

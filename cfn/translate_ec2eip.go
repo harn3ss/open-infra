@@ -596,6 +596,67 @@ func eipExposeVM(instID string, spec map[string]any, ctx *stackCtx) []string {
 	return cav
 }
 
+// publicIPExposeVM gives an instance with no Elastic IP the public address AWS would auto-assign: its
+// primary interface's AssociatePublicIpAddress, or, when the interface doesn't say, an in-stack subnet
+// with MapPublicIpOnLaunch. That address is the VM's LAN IP (spec.expose) and, as with an Elastic IP,
+// publishes the ports the instance's security groups admit from a CIDR, not the access port alone.
+func publicIPExposeVM(instID string, spec map[string]any, ctx *stackCtx) []string {
+	if ctx == nil || ctx.template == nil {
+		return nil
+	}
+	if exp, _ := spec["expose"].(bool); !exp {
+		if !launchesIntoPublicSubnet(instID, ctx) {
+			return nil
+		}
+		spec["expose"] = true
+	}
+	accessPort, accessName := 22, "SSH 22"
+	if os, _ := spec["os"].(string); strings.HasPrefix(os, "windows") {
+		accessPort, accessName = 3389, "RDP 3389"
+	}
+	ports, published, pcav := eipPortsFromSGs(instID, accessPort, ctx)
+	if len(ports) > 0 {
+		spec["ports"] = mergeVMPorts(spec["ports"], ports)
+	}
+	cav := []string{"the instance's public IPv4 address maps onto its VM's LAN IP (spec.expose — a MetalLB LoadBalancer carrying the access port, " + accessName + ", plus spec.ports). It is a LAN address, NOT a public internet IP, and like an AWS auto-assigned address it changes if the instance is replaced"}
+	if len(published) > 0 {
+		cav = append(cav, "ports published on the LAN IP are those the instance's SecurityGroups allow inbound from a CIDR (TCP/UDP): "+strings.Join(published, ", ")+" — each port's reachability is still enforced by the attached kind: SecurityGroups")
+	}
+	return append(cav, pcav...)
+}
+
+// launchesIntoPublicSubnet reports whether an instance gets a public address from its subnet: its primary
+// interface (or the instance) names an in-stack AWS::EC2::Subnet with MapPublicIpOnLaunch true, and the
+// interface does not set AssociatePublicIpAddress (false there overrides the subnet, as on AWS).
+func launchesIntoPublicSubnet(instID string, ctx *stackCtx) bool {
+	raw, ok := ctx.rawProps(instID)
+	if !ok {
+		return false
+	}
+	subnetRef := raw["SubnetId"]
+	if nis, ok := listEntries(raw["NetworkInterfaces"], ctx); ok && len(nis) > 0 {
+		nis, _ = nicEntries(instID, nis, ctx)
+		if ni0 := primaryNIC(nis); ni0 != nil {
+			if _, has := ni0["AssociatePublicIpAddress"]; has {
+				return false // the interface decides; true already set expose
+			}
+			if s, has := ni0["SubnetId"]; has {
+				subnetRef = s
+			}
+		}
+	}
+	t, ok := getAttTarget(subnetRef)
+	if !ok || !ctx.includedType(t, "AWS::EC2::Subnet") {
+		return false
+	}
+	props, ok := ctx.resolveProps(t)
+	if !ok {
+		return false
+	}
+	pub, ok := cfnBoolValue(props["MapPublicIpOnLaunch"])
+	return ok && pub
+}
+
 // vmPort is one TCP/UDP port published on a VM's LAN IP.
 type vmPort struct {
 	port  int
@@ -633,6 +694,7 @@ func eipPortsFromSGs(instID string, accessPort int, ctx *stackCtx) (ports []any,
 	addList(raw["SecurityGroupIds"])
 	addList(raw["SecurityGroups"])
 	if nis, _ := listEntries(raw["NetworkInterfaces"], ctx); len(nis) > 0 {
+		nis, _ = nicEntries(instID, nis, ctx) // an Fn::If entry is the interface its condition picks
 		if ni0 := primaryNIC(nis); ni0 != nil {
 			addList(ni0["GroupSet"])
 		}
