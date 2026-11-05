@@ -471,7 +471,7 @@ export function CreateVpcAndMorePage() {
             </Field>
             <Field label="Number of private subnets" htmlFor="w-priv">
               <CountSelect id="w-priv" value={privateCount} onChange={setPrivateCount} />
-              <p className="text-xs text-muted-foreground">Private = OVN-isolated by default (private: true).</p>
+              <p className="text-xs text-muted-foreground">Private subnets are isolated by default.</p>
             </Field>
           </div>
 

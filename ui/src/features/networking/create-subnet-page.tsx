@@ -47,7 +47,7 @@ export function CreateSubnetPage() {
   const valid = name.trim() !== "" && /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(cidr.trim());
 
   return (
-    <DetailShell backTo="/subnets" backLabel="Subnets" icon={<LayoutGrid className="size-5" />} title="New Subnet" subtitle="A topologically-isolated network segment (kube-ovn)">
+    <DetailShell backTo="/subnets" backLabel="Subnets" icon={<LayoutGrid className="size-5" />} title="New Subnet" subtitle="A range of IP addresses in a VPC">
       <Card>
         <CardContent className="space-y-4 p-6">
           <div className="space-y-1.5">
@@ -67,7 +67,7 @@ export function CreateSubnetPage() {
             <Label>Isolation</Label>
             <div className="flex gap-4 text-sm">
               <label className="flex items-center gap-2">
-                <input type="radio" checked={priv} onChange={() => setPriv(true)} /> Private (OVN-isolated — default)
+                <input type="radio" checked={priv} onChange={() => setPriv(true)} /> Private (isolated — default)
               </label>
               <label className="flex items-center gap-2">
                 <input type="radio" checked={!priv} onChange={() => setPriv(false)} /> Public

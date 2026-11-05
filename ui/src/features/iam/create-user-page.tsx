@@ -465,7 +465,7 @@ export function CreateUserPage() {
                       )}
                     </div>
                   )}
-                  {permMode === "direct" && directPolicies.length > 0 ? (
+                  {!iamDecides && permMode === "direct" && directPolicies.length > 0 ? (
                     <p className="text-xs text-muted-foreground">
                       Grants data-plane access only. For console / kubectl access, add this user to a
                       group from its page after creating.

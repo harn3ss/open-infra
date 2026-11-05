@@ -138,7 +138,7 @@ export function SecurityGroupDetailPage() {
         deleting={del.isPending}
         onConfirm={() => del.mutate()}
         confirmDescription={
-          <>Permanently delete security group <span className="font-medium text-foreground">{name}</span> and its NetworkPolicy. Detach it from resources first.</>
+          <>Permanently delete security group <span className="font-medium text-foreground">{name}</span>. Detach it from resources first.</>
         }
       />
         </TabsContent>

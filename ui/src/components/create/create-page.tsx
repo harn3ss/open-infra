@@ -382,7 +382,7 @@ export function CreatePage(cfg: CreatePageConfig) {
           <div>
             <h3 className="text-sm font-semibold">Credentials</h3>
             <p className="text-xs text-muted-foreground">
-              Passwords are written to Kubernetes Secrets; the resource references them, never the plaintext.
+              Passwords are stored as secrets; the resource references them, never the plaintext.
             </p>
           </div>
           {creds.map((c) => (

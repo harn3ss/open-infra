@@ -363,8 +363,10 @@ export function UserDetailPage() {
             subjectLabel={`user ${user.name}`}
           />
 
-          {/* The effective (control-plane) permissions, resolved from the user's groups. */}
-          <UserPermissionsTab user={user} />
+          {/* The effective (control-plane) permissions, resolved from the user's groups — while Kubernetes
+              RBAC still decides console access. Once IAM policy decides, the policies above and the
+              user's groups' policies are its permissions, as on AWS, and there is no RBAC to show. */}
+          {me?.iamAuthz === "enforce" ? null : <UserPermissionsTab user={user} />}
         </TabsContent>
 
         <TabsContent value="groups" className="space-y-4 pt-4">

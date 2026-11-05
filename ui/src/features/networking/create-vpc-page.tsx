@@ -41,7 +41,7 @@ export function CreateVpcPage() {
   const valid = name.trim() !== "";
 
   return (
-    <DetailShell backTo="/vpcs" backLabel="VPCs" icon={<Network className="size-5" />} title="New VPC" subtitle="An isolated network domain (kube-ovn)">
+    <DetailShell backTo="/vpcs" backLabel="VPCs" icon={<Network className="size-5" />} title="New VPC" subtitle="A logically isolated virtual network">
       <Card>
         <CardContent className="space-y-4 p-6">
           <div className="space-y-1.5">
