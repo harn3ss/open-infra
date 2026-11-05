@@ -170,7 +170,7 @@ func (h *s3Handler) createBucket(w http.ResponseWriter, r *http.Request, claims 
 		writeS3Error(w, "BucketAlreadyExists", requestID, r.URL.Path)
 		return
 	}
-	user, groups, ok := iam.Identity(claims)
+	user, groups, ok := callerIdentity(ctx, h.authz, claims)
 	if !ok {
 		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
 		return

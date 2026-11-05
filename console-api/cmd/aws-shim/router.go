@@ -210,7 +210,8 @@ func (rt *serviceRouter) withAccount(r *http.Request, claims iam.Claims) *http.R
 		return r
 	}
 	home, _ := rt.auth.dir.HomeOf(claims.Account)
-	return r.WithContext(awsidentity.WithIdentity(r.Context(), awsidentity.Current().ForAccount(claims.Account, home)))
+	ctx := withAccountHome(r.Context(), home)
+	return r.WithContext(awsidentity.WithIdentity(ctx, awsidentity.Current().ForAccount(claims.Account, home)))
 }
 
 // isWebIdentityAssume reports whether this is an unauthenticated sts:AssumeRoleWithWebIdentity POST

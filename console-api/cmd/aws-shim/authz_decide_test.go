@@ -74,8 +74,39 @@ func TestEnforce_EveryFrontDoorIsIAMPolicyAlone(t *testing.T) {
 			}
 			expect("role with no policy", checkerInMode(t, "enforce"), role, true)
 			expect("role with "+tc.action+" on *", checkerInMode(t, "enforce", roleDoc(dpAllow([]string{tc.action}, "*"))), role, false)
+			// Root is allowed by IAM policy everywhere in its account; where the door then writes as the
+			// caller (CloudFormation's impersonating applier) the shim refuses to act as root, whose
+			// identities its impersonation ceiling denies (root has no access keys).
+			if tc.door == "cloudformation" {
+				w := tc.call(t, checkerInMode(t, "enforce"), rootClaims)
+				if !strings.Contains(w.Body.String(), "never acts as the account") {
+					t.Errorf("CloudFormation must not act as root: status %d, body %.300s", w.Code, w.Body.String())
+				}
+				return
+			}
 			expect("the account's root user, no policy", checkerInMode(t, "enforce"), rootClaims, false)
 		})
+	}
+}
+
+// The shim never impersonates root: neither of its names (openinfra:root, openinfra:<account>:root) is
+// ever an identity the shim writes as, in any mode or case; a role named root is a role.
+func TestCallerIdentity_NeverRoot(t *testing.T) {
+	for _, mode := range []string{"legacy", "enforce"} {
+		authz := checkerInMode(t, mode)
+		for _, c := range []iam.Claims{rootClaims, {Sub: "root", Groups: []string{"openinfra:admins"}}, {Sub: "ROOT"},
+			{Sub: "root", Account: testMgmt}, {Sub: "Root", Account: testMember}} {
+			if user, _, ok := callerIdentity(context.Background(), authz, c); ok {
+				t.Errorf("%s: %+v acts as %s, want no identity", mode, c, user)
+			}
+		}
+		if user, _, ok := callerIdentity(context.Background(), authz, iam.Claims{Sub: "alice"}); !ok || user == "" {
+			t.Errorf("%s: alice must have an identity", mode)
+		}
+	}
+	if user, _, ok := callerIdentity(context.Background(), checkerInMode(t, "enforce"),
+		iam.Claims{Sub: "root/s1", AssumedRole: "root"}); !ok || user != "openinfra:"+iam.ManagementAccount+":role/root" {
+		t.Errorf("a role named root is a role: %q %v", user, ok)
 	}
 }
 
@@ -147,10 +178,11 @@ func TestEnforce_PowerUserAccessIsDeniedIAMWrites(t *testing.T) {
 
 // Across accounts, IAM policy needs both sides, as AWS: a member account's user with an identity grant is
 // denied a management-account queue unless the queue's own policy names its account, and a resource
-// policy alone does not let it in.
+// policy alone does not let it in. The member's user is its home's (memberHome/bob), and a member
+// account's principal is decided by IAM policy whatever the mode.
 func TestEnforce_CrossAccountNeedsTheResourcePolicyToo(t *testing.T) {
 	member := iam.Claims{Sub: "bob", Account: testMember, Groups: []string{"openinfra:users"}}
-	grant := dataplaneauthz.PolicyDoc{Name: "bob-sqs", AppliesTo: []string{"User::bob"},
+	grant := dataplaneauthz.PolicyDoc{Name: "bob-sqs", AppliesTo: []string{"User::" + memberHome + "/bob"},
 		Statements: []policyengine.Statement{dpAllow([]string{"sqs:SendMessage"}, "*")}}
 	queuePolicy := func(acct string) []iamauthz.RequestOption {
 		stmts, _, err := iamauthz.ParseResourcePolicy(`{"Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::` + acct +
@@ -161,7 +193,7 @@ func TestEnforce_CrossAccountNeedsTheResourcePolicyToo(t *testing.T) {
 		return []iamauthz.RequestOption{iamauthz.WithResourcePolicy(stmts), iamauthz.WithResourceAccount(testMgmt)}
 	}
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
-	ctx := context.Background()
+	ctx := withAccountHome(context.Background(), memberHome)
 	check := func(name string, authz *dataplaneauthz.Checker, opts []iamauthz.RequestOption, want bool) {
 		t.Helper()
 		opts = append(opts, iamauthz.WithResourceAccount(testMgmt))
@@ -174,6 +206,34 @@ func TestEnforce_CrossAccountNeedsTheResourcePolicyToo(t *testing.T) {
 	check("identity grant, the queue's policy names the member account", withGrant, queuePolicy(testMember), true)
 	check("identity grant, the queue's policy names another account", withGrant, queuePolicy("955555555555"), false)
 	check("no identity grant, the queue's policy names the member account", checkerInMode(t, "enforce"), queuePolicy(testMember), false)
+	check("in legacy, identity grant, the queue's policy names the member account", checkerInMode(t, "legacy", grant), queuePolicy(testMember), true)
+	check("in legacy, identity grant, no resource policy", checkerInMode(t, "legacy", grant), nil, false)
+}
+
+// A member account's user is never the management account's user of the same name: the management
+// account's bob's grant does not reach the member's bob, in its own account or any other, and a member
+// account's principal with no home on the request is no principal any policy names.
+func TestEnforce_MemberUserIsNotTheManagementUserOfItsName(t *testing.T) {
+	mgmtBob := dataplaneauthz.PolicyDoc{Name: "bob-admin", AppliesTo: []string{"User::bob"},
+		Statements: []policyengine.Statement{dpAllow([]string{"*"}, "*")}}
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+	member := iam.Claims{Sub: "bob", Account: testMember}
+	authz := checkerInMode(t, "enforce", mgmtBob)
+	for _, ctx := range []context.Context{withAccountHome(context.Background(), memberHome), context.Background()} {
+		if ok, why := decide(ctx, r, authz, member, "sqs:SendMessage", "Queue", "jobs", nil); ok {
+			t.Errorf("the member account's bob was allowed by the management account's bob's policy (%s)", why)
+		}
+	}
+	if ok, why := decide(context.Background(), r, authz, iam.Claims{Sub: "bob"}, "sqs:SendMessage", "Queue", "jobs", nil); !ok {
+		t.Errorf("the management account's bob must keep its own policy: %s", why)
+	}
+	group := dataplaneauthz.PolicyDoc{Name: "devs", AppliesTo: []string{"Group::" + memberHome + "/devs"},
+		Statements: []policyengine.Statement{dpAllow([]string{"sqs:SendMessage"}, "*")}}
+	inGroup := iam.Claims{Sub: "bob", Account: testMember, Groups: []string{"openinfra:devs"}}
+	if ok, why := decide(withAccountHome(context.Background(), memberHome), r, checkerInMode(t, "enforce", group), inGroup,
+		"sqs:SendMessage", "Queue", "jobs", nil); !ok {
+		t.Errorf("a member account's group in its home must apply to its members: %s", why)
+	}
 }
 
 // The denial a caller sees in enforce is AWS's: who, what, on what.

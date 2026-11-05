@@ -161,7 +161,8 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	// field-level SAR would impersonate a raw sub, and a sub equal to a privileged cluster identity (e.g.
 	// a kube-system ServiceAccount) would pass field gates the real caller must fail. Groups are already
 	// namespaced + comma-free (iam.GroupsFromSpec), so the comma-joined header round-trips losslessly.
-	if user, groups, ok := iam.Identity(claims); ok {
+	// In enforce the identity is the account-qualified one (callerIdentity), whose RBAC IAM policy compiles.
+	if user, groups, ok := callerIdentity(r.Context(), h.authz, claims); ok {
 		req.Header.Set("X-OpenInfra-User", user)
 		if len(groups) > 0 {
 			req.Header.Set("X-OpenInfra-Groups", strings.Join(groups, ","))

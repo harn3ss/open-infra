@@ -271,9 +271,9 @@ func (h *cfnDoorway) authFailure(w http.ResponseWriter, _ *http.Request, request
 // identity (openinfra:<account>:<user>, no groups), whose RBAC the IAM compiler generates from its IAM
 // policy; in legacy the identity they always did.
 func (h *cfnDoorway) applierFor(claims iam.Claims) (*impersonatingApplier, error) {
-	user, groups, ok := iam.IdentityFor(claims, enforcing(context.Background(), h.authz, claims))
+	user, groups, ok := callerIdentity(context.Background(), h.authz, claims)
 	if !ok {
-		return nil, fmt.Errorf("no caller identity")
+		return nil, noCallerIdentity(claims)
 	}
 	ap, err := h.applierForIdentity(user, groups)
 	if err != nil {

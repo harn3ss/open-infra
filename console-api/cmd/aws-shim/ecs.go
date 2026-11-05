@@ -96,11 +96,12 @@ func (h *ecsDoorway) authFailure(w http.ResponseWriter, _ *http.Request, request
 }
 
 // applierFor builds an Applier that impersonates the caller for resource ops (the authority seam —
-// VERBATIM the CloudFormation doorway's, so ECS provisions with exactly the caller's authority).
+// VERBATIM the CloudFormation doorway's, so ECS provisions with exactly the caller's authority: in
+// enforce its account-qualified identity, callerIdentity).
 func (h *ecsDoorway) applierFor(claims iam.Claims) (*impersonatingApplier, error) {
-	user, groups, ok := iam.Identity(claims)
+	user, groups, ok := callerIdentity(context.Background(), h.authz, claims)
 	if !ok {
-		return nil, fmt.Errorf("no caller identity")
+		return nil, noCallerIdentity(claims)
 	}
 	icfg := rest.CopyConfig(h.cfg)
 	icfg.Impersonate = rest.ImpersonationConfig{UserName: user, Groups: groups}

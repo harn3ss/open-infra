@@ -40,7 +40,6 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
-	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -144,7 +143,7 @@ func (h *ssmHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	// inside the op instead, so here the coarse check alone gates it (and in enforce, each name is checked
 	// there). An assumed role is checked on every non-batch op — DescribeParameters on Parameter::*.
 	if ssmBatchOp(op) {
-		if h.authz.IAM().ModeFor(ctx, principalOf(claims)) != iamauthz.ModeEnforce {
+		if !enforcing(ctx, h.authz, claims) {
 			if ok, reason := coarseOnly(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, resName)(); !ok {
 				h.auditDeny(ctx, op, resName, reason)
 				writeSSMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)

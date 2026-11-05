@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"strings"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
@@ -23,7 +26,9 @@ import (
 //     policy, opts) allow.
 //
 // A principal whose User or Role carries the canary label is in enforce while the platform is in shadow.
-// A nil checker has no IAM policy world: legacy decides, whatever the mode.
+// A principal of a member account is always in enforce: accounts exist only in the IAM policy world, and
+// no legacy check knows one account's principals from another's. A nil checker has no IAM policy world:
+// legacy decides, whatever the mode (and a member account's principal is denied).
 func decide(ctx context.Context, r *http.Request, authz *dataplaneauthz.Checker, claims iam.Claims,
 	action, resType, resID string, legacy func() (bool, string), opts ...iamauthz.RequestOption) (bool, string) {
 	d := decision(ctx, r, authz, claims, action, resType, resID, legacy, opts...)
@@ -34,7 +39,7 @@ func decide(ctx context.Context, r *http.Request, authz *dataplaneauthz.Checker,
 // enforce-mode denial's reason is AWS's message: who, which action, which resource, and why.
 func decision(ctx context.Context, r *http.Request, authz *dataplaneauthz.Checker, claims iam.Claims,
 	action, resType, resID string, legacy func() (bool, string), opts ...iamauthz.RequestOption) iamauthz.Decision {
-	p := principalOf(claims)
+	p := principalOf(ctx, claims)
 	res := typedResource(resType, resID)
 	var reqCtx map[string]any
 	if r != nil {
@@ -42,7 +47,13 @@ func decision(ctx context.Context, r *http.Request, authz *dataplaneauthz.Checke
 	} else {
 		reqCtx = map[string]any{"authenticated": "true", "username": claims.PrincipalID()}
 	}
-	d := authz.IAM().Decide(ctx, p, action, res, reqCtx, legacy, opts...)
+	var d iamauthz.Decision
+	if memberAccount(claims) {
+		d = authz.IAM().Authorize(ctx, p, action, res, reqCtx, opts...)
+		d.Mode = iamauthz.ModeEnforce
+	} else {
+		d = authz.IAM().Decide(ctx, p, action, res, reqCtx, legacy, opts...)
+	}
 	if !d.Allowed && d.Mode == iamauthz.ModeEnforce {
 		d.Reason = notAuthorized(p, action, res, d.Reason)
 	}
@@ -68,9 +79,40 @@ func resourcePolicyOpt(authz *dataplaneauthz.Checker, fetch func() string) []iam
 	return []iamauthz.RequestOption{iamauthz.WithResourcePolicy(stmts)}
 }
 
-// principalOf is the principal claims are evaluated as, in the caller's account.
-func principalOf(claims iam.Claims) iamauthz.Principal {
-	return iamauthz.PrincipalFromClaims(claims, claims.Account)
+// principalOf is the principal claims are evaluated as, in the caller's account. A member account's users
+// and groups live in its home namespace, where the IAM policy world names them "<home>/<name>"
+// (iamauthz.QualifiedName), so a member account's user is qualified by the home the router put on ctx
+// (withAccountHome): its bob is never the management account's bob. Without a home it is qualified by
+// none that exists, and no policy applies to it. A role session's id is already qualified.
+func principalOf(ctx context.Context, claims iam.Claims) iamauthz.Principal {
+	p := iamauthz.PrincipalFromClaims(claims, claims.Account)
+	if p.Type != iamauthz.User || !memberAccount(claims) {
+		return p
+	}
+	home, _ := ctx.Value(accountHomeKey{}).(string)
+	if home == "" {
+		home = "\x00no-home"
+	}
+	p.ID = home + "/" + p.ID
+	groups := make([]string, len(p.Groups))
+	for i, g := range p.Groups {
+		groups[i] = home + "/" + g
+	}
+	p.Groups = groups
+	return p
+}
+
+// memberAccount reports whether claims are a principal of a member account (not the management
+// account, the install's own).
+func memberAccount(claims iam.Claims) bool {
+	return claims.Account != "" && !awsidentity.Current().IsManagement(claims.Account)
+}
+
+type accountHomeKey struct{}
+
+// withAccountHome carries the home namespace of the member account the caller belongs to (principalOf).
+func withAccountHome(ctx context.Context, home string) context.Context {
+	return context.WithValue(ctx, accountHomeKey{}, home)
 }
 
 // typedResource is the evaluator's resource for resType::resID: "<Type>::*" for an operation that names no
@@ -144,9 +186,42 @@ func scopedDataPlaneThenCoarse(ctx context.Context, r *http.Request, cs kubernet
 	}
 }
 
-// enforcing reports whether IAM policy alone decides for the caller (its mode is enforce).
+// enforcing reports whether IAM policy alone decides for the caller (its mode is enforce, or it is a
+// member account's principal).
 func enforcing(ctx context.Context, authz *dataplaneauthz.Checker, claims iam.Claims) bool {
-	return authz.IAM().ModeFor(ctx, principalOf(claims)) == iamauthz.ModeEnforce
+	return memberAccount(claims) || authz.IAM().ModeFor(ctx, principalOf(ctx, claims)) == iamauthz.ModeEnforce
+}
+
+// callerIdentity is the Kubernetes identity the shim acts as where it writes as the caller (an
+// impersonating client): the identity of the caller's mode (iam.IdentityFor) — in enforce the
+// account-qualified openinfra:<account>:<user>, whose RBAC the IAM compiler generates from its IAM policy,
+// with no groups; in legacy the user and its groups, as always. The break-glass root's names are never
+// one: root has no access keys, so a caller named root is a principal borrowing its name (the shim's
+// impersonation ceiling denies both of root's identities too).
+func callerIdentity(ctx context.Context, authz *dataplaneauthz.Checker, claims iam.Claims) (string, []string, bool) {
+	user, groups, ok := iam.IdentityFor(claims, enforcing(ctx, authz, claims))
+	if !ok || reservedRootIdentity(user) {
+		return "", nil, false
+	}
+	return user, groups, true
+}
+
+// noCallerIdentity is why callerIdentity found no identity for claims.
+func noCallerIdentity(claims iam.Claims) error {
+	if user, _, ok := iam.Identity(claims); ok && reservedRootIdentity(user) {
+		return errors.New("the shim never acts as the account's root user (root has no access keys)")
+	}
+	return errors.New("no caller identity")
+}
+
+// reservedRootIdentity reports whether a Kubernetes user name is root's: openinfra:root or an
+// account-qualified openinfra:<account>:root, in any case.
+func reservedRootIdentity(user string) bool {
+	name := strings.TrimPrefix(user, "openinfra:")
+	if i := strings.LastIndexByte(name, ':'); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.EqualFold(name, "root")
 }
 
 // coarseOnly is the legacy decision of a check that ran the coarse SubjectAccessReview alone.
