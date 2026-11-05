@@ -77,9 +77,26 @@ type costResponse struct {
 
 const gpuResource = corev1.ResourceName("nvidia.com/gpu")
 
-func handleCost(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+// costScopeFunc answers which namespaces a caller's by-namespace breakdown may show: nil for every one (the
+// platform's operator or the account's root user, or no authorization configured), else the caller's
+// account's own — as AWS Cost Explorer shows an account its own usage, never another account's.
+type costScopeFunc func(r *http.Request) func(namespace string) bool
+
+// costScope is the console's: the caller's account's namespaces unless it may see the whole cluster.
+func (z *consoleAuthz) costScope(r *http.Request) func(string) bool {
+	if z == nil || z.auth == nil || z.auth.mode == "none" || z.unrestrictedWatcher(r) {
+		return nil
+	}
+	return z.inAccount(callerAccount(r))
+}
+
+func handleCost(cs kubernetes.Interface, scope costScopeFunc, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		var visible func(string) bool
+		if scope != nil {
+			visible = scope(r)
+		}
 		p := loadCostPrices()
 		var resp costResponse
 		resp.Currency = "USD"
@@ -149,7 +166,7 @@ func handleCost(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
 		ns := map[string]*costByNamespace{}
 		if pods, err := cs.CoreV1().Pods("").List(ctx, metav1.ListOptions{}); err == nil {
 			for _, pod := range pods.Items {
-				if pod.Status.Phase != corev1.PodRunning {
+				if pod.Status.Phase != corev1.PodRunning || (visible != nil && !visible(pod.Namespace)) {
 					continue
 				}
 				e := ns[pod.Namespace]

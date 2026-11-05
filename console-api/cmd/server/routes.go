@@ -102,7 +102,7 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	h(get, "/catalog/tables", s15, "glue:GetTables", nil, handleCatalogTables(logger))
 
 	// Cost Explorer, and the operator's node view.
-	h(get, "/cost", s15, "ce:GetCostAndUsage", nil, handleCost(cs, logger))
+	h(get, "/cost", s15, "ce:GetCostAndUsage", nil, handleCost(cs, z.costScope, logger))
 	h(get, "/nodes/disk", s12, "openinfra-operator:ListNodes", nil, handleNodeDisk(cs, auth, logger))
 
 	// RDS snapshots and backtrack.
