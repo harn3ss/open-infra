@@ -29,6 +29,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -658,11 +659,26 @@ type lokiClient struct {
 	http *http.Client
 }
 
+// lokiMaxEntries is the most lines one store query asks for: the store's max_entries_limit_per_query
+// (LOKI_MAX_ENTRIES, default Loki's 5000).
+var lokiMaxEntries = func() int {
+	if n, err := strconv.Atoi(os.Getenv("LOKI_MAX_ENTRIES")); err == nil && n > 0 {
+		return n
+	}
+	return 5000
+}()
+
 // queryRange is the store's lines for a selector (a LogQL query), at most limit, oldest first when forward.
 func (c *lokiClient) queryRange(ctx context.Context, query string, start, end int64, limit int, forward bool) ([]lokiEntry, error) {
 	dir := "backward"
 	if forward {
 		dir = "forward"
+	}
+	// The store refuses a query for more lines than its max_entries_limit_per_query (Loki's default 5000)
+	// with a 400; CloudWatch's own default page is larger (FilterLogEvents: 10,000 events). Ask for at most
+	// the store's limit: the caller pages on with nextToken, as it does on CloudWatch.
+	if limit > lokiMaxEntries {
+		limit = lokiMaxEntries
 	}
 	q := url.Values{"query": {query}, "start": {strconv.FormatInt(start, 10)}, "end": {strconv.FormatInt(end, 10)},
 		"limit": {strconv.Itoa(limit)}, "direction": {dir}}

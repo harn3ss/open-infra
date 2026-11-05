@@ -370,3 +370,21 @@ func TestCWLDerived_RetentionWindowBoundsTheStore(t *testing.T) {
 		t.Error("a function with no claim has no group, even if old lines remain")
 	}
 }
+
+// A query never asks the store for more lines than its per-query limit (Loki answers 400 above it);
+// a caller asking for CloudWatch's larger page still gets its events, paged on.
+func TestCWLDerived_StoreQueryLimitIsCapped(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Query().Get("limit"))
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"streams","result":[]}}`))
+	}))
+	defer srv.Close()
+	c := &lokiClient{base: srv.URL, http: srv.Client()}
+	if _, err := c.queryRange(t.Context(), `{namespace="default"}`, 0, 1, 10000, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 1 || asked[0] != strconv.Itoa(lokiMaxEntries) {
+		t.Fatalf("asked the store for limit %v, want at most %d", asked, lokiMaxEntries)
+	}
+}
