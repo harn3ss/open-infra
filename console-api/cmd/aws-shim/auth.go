@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/accounts"
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
 	"github.com/harn3ss/open-infra/console-api/internal/awssig"
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
@@ -39,6 +40,60 @@ type authenticator struct {
 	// home is the IAM home namespace (ROLES_NAMESPACE): a session for a Role there acts as the bare
 	// role name; one for a Role elsewhere as "<namespace>/<name>". "" means the default home.
 	home string
+	// dir maps namespaces to accounts (internal/accounts); nil puts every principal in the management
+	// account, as before accounts existed.
+	dir *accounts.Directory
+	// resolveIn resolves a key's owner that lives in a member account's home namespace (ns). nil: a key
+	// recording a member account does not authenticate.
+	resolveIn func(ctx context.Context, ns, owner string) (groups []string, ok bool)
+}
+
+// accountOfNamespace is the account namespace ns belongs to, "" for the management account (and for an
+// authenticator with no directory).
+func (a *authenticator) accountOfNamespace(ns string) string {
+	if a.dir == nil {
+		return ""
+	}
+	if acct := a.dir.AccountOf(ns); acct != "" && !a.dir.IsManagement(acct) {
+		return acct
+	}
+	return ""
+}
+
+// memberAccount reports whether acct names a member account ("" and the management account do not).
+func (a *authenticator) memberAccount(acct string) bool {
+	return acct != "" && a.dir != nil && !a.dir.IsManagement(acct)
+}
+
+// keyClaims is the identity an access key acts as: its owner, in the account the key records (a key
+// minted before accounts: the account of the namespace its owner lives in, the IAM home's). A principal
+// of a suspended account, or of an account the directory does not know, does not authenticate.
+func (a *authenticator) keyClaims(ctx context.Context, key awskeys.Key) (iam.Claims, bool) {
+	acct := key.Account
+	var groups []string
+	var ok bool
+	if a.memberAccount(acct) {
+		home, known := a.dir.HomeOf(acct)
+		if !known || a.resolveIn == nil {
+			return iam.Claims{}, false
+		}
+		groups, ok = a.resolveIn(ctx, home, key.Owner)
+	} else {
+		groups, ok = a.resolve(ctx, key.Owner)
+		acct = a.accountOfNamespace(a.ownerNamespace())
+	}
+	if !ok || (a.dir != nil && acct != "" && a.dir.Suspended(acct)) {
+		return iam.Claims{}, false
+	}
+	return iam.Claims{Sub: key.Owner, Groups: groups, Account: acct}, true
+}
+
+// ownerNamespace is where a management-account key's owner (a kind: User) lives: the IAM home.
+func (a *authenticator) ownerNamespace() string {
+	if a.home == "" {
+		return dataplaneauthz.DefaultHomeNamespace
+	}
+	return a.home
 }
 
 // sessionClaims is the identity a verified assumed-role session acts as. Its data-plane principal is
@@ -58,11 +113,25 @@ func (a *authenticator) sessionClaims(ctx context.Context, sess awssts.Session) 
 			return iam.Claims{}, false
 		}
 	}
+	// The session acts in the account of the role it assumed: the one its token records, else (a token
+	// minted before accounts) the account of the namespace the role lives in.
+	acct := sess.Account
+	if !a.memberAccount(acct) {
+		roleNS := sess.Namespace
+		if roleNS == "" {
+			roleNS = home
+		}
+		acct = a.accountOfNamespace(roleNS)
+	}
+	if a.dir != nil && acct != "" && a.dir.Suspended(acct) {
+		return iam.Claims{}, false
+	}
 	return iam.Claims{
 		Sub:           "assumed-role/" + sess.RoleName + "/" + sess.SessionName,
 		Groups:        sess.Groups,
 		AssumedRole:   principal,
 		SessionExpiry: sess.Expiry,
+		Account:       acct,
 	}, true
 }
 
@@ -114,11 +183,11 @@ func (a *authenticator) authenticate(ctx context.Context, r *http.Request) (iam.
 	if err := awssig.Verify(r, cred, key.SecretKey); err != nil {
 		return iam.Claims{}, errAuth
 	}
-	groups, ok := a.resolve(ctx, key.Owner)
+	claims, ok := a.keyClaims(ctx, key)
 	if !ok {
 		return iam.Claims{}, errAuth
 	}
-	return iam.Claims{Sub: key.Owner, Groups: groups}, nil
+	return claims, nil
 }
 
 // authenticatePresigned is the query-string (presigned URL) analog of authenticate: same identity
@@ -155,9 +224,9 @@ func (a *authenticator) authenticatePresigned(ctx context.Context, r *http.Reque
 	if err := awssig.VerifyPresigned(r, p, key.SecretKey, now); err != nil {
 		return iam.Claims{}, errAuth
 	}
-	groups, ok := a.resolve(ctx, key.Owner)
+	claims, ok := a.keyClaims(ctx, key)
 	if !ok {
 		return iam.Claims{}, errAuth
 	}
-	return iam.Claims{Sub: key.Owner, Groups: groups}, nil
+	return claims, nil
 }

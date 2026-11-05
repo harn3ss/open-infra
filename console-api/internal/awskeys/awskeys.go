@@ -47,6 +47,7 @@ const (
 	dataAccessKeyID = "accessKeyId"
 	dataSecretKey   = "secretKey"
 	dataOwner       = "owner"
+	dataAccount     = "account"  // the owner's 12-digit account; absent on keys minted before accounts
 	dataDisabled    = "disabled" // "true" revokes a key without deleting the Secret
 )
 
@@ -55,6 +56,9 @@ type Key struct {
 	AccessKeyID string
 	SecretKey   string
 	Owner       string
+	// Account is the owning principal's 12-digit account, recorded when the key is minted. Empty on a key
+	// minted before accounts: its account is then the owner's (the account of the namespace it lives in).
+	Account string
 }
 
 // Meta is a key's PUBLIC metadata — everything the console may show, and deliberately NOT the
@@ -64,6 +68,7 @@ type Key struct {
 type Meta struct {
 	AccessKeyID string
 	Owner       string
+	Account     string
 	Disabled    bool
 	Created     time.Time
 }
@@ -108,7 +113,8 @@ func (s *Store) Lookup(ctx context.Context, accessKeyID string) (Key, bool) {
 	if secret == "" {
 		return Key{}, false
 	}
-	return Key{AccessKeyID: accessKeyID, SecretKey: secret, Owner: string(sec.Data[dataOwner])}, true
+	return Key{AccessKeyID: accessKeyID, SecretKey: secret, Owner: string(sec.Data[dataOwner]),
+		Account: string(sec.Data[dataAccount])}, true
 }
 
 // Put creates or updates the Secret for a key (used by the console when minting/importing a key).
@@ -129,6 +135,9 @@ func (s *Store) Put(ctx context.Context, k Key) error {
 			dataSecretKey:   []byte(k.SecretKey),
 			dataOwner:       []byte(k.Owner),
 		},
+	}
+	if k.Account != "" {
+		sec.Data[dataAccount] = []byte(k.Account)
 	}
 	_, err := s.cs.CoreV1().Secrets(s.ns).Create(ctx, sec, metav1.CreateOptions{})
 	if err == nil {
@@ -230,6 +239,7 @@ func metaFromSecret(sec *corev1.Secret) Meta {
 	return Meta{
 		AccessKeyID: string(sec.Data[dataAccessKeyID]),
 		Owner:       string(sec.Data[dataOwner]),
+		Account:     string(sec.Data[dataAccount]),
 		Disabled:    strings.EqualFold(string(sec.Data[dataDisabled]), "true"),
 		Created:     sec.CreationTimestamp.Time,
 	}

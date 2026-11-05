@@ -31,6 +31,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
+	"github.com/harn3ss/open-infra/console-api/internal/accounts"
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
@@ -299,7 +300,27 @@ func run(logger *slog.Logger) error {
 	auth := &authenticator{
 		keys:    awskeys.NewStore(cs, keysNS),
 		resolve: newOwnerResolver(cs, usersNS),
+		resolveIn: func(ctx context.Context, ns, owner string) ([]string, bool) {
+			return newOwnerResolver(cs, ns)(ctx, owner)
+		},
 	}
+	// Accounts (kind: Account labels namespaces with the account they belong to): a caller acts in its
+	// key's or session's account. The directory follows the labels; until its first listing every
+	// principal is the management account's, exactly as before accounts.
+	acctDir := accounts.NewDirectory(awsidentity.Current().AccountID)
+	if err := accounts.Watch(context.Background(), cs, acctDir, 15*time.Second); err != nil {
+		logger.Warn("account directory unavailable — a member account's principals cannot authenticate until it lists", slog.String("err", err.Error()))
+		go func() {
+			for {
+				time.Sleep(30 * time.Second)
+				if accounts.Watch(context.Background(), cs, acctDir, 15*time.Second) == nil {
+					logger.Info("account directory listing")
+					return
+				}
+			}
+		}()
+	}
+	auth.dir = acctDir
 
 	// sts:AssumeRole (faithful STS temporary credentials). The AES-256 key that seals/opens the
 	// stateless session tokens is Vault-custodied: the shim logs into Vault with its OWN SA token
@@ -544,7 +565,7 @@ func run(logger *slog.Logger) error {
 	services := map[string]awsService{
 		"s3": newS3Handler(cs, mc, dyn, kc.Config, authzNS, authzChecker, logger,
 			splitSuffixes(getenv("S3_INTERNAL_VHOST_SUFFIXES", ""), getenv("S3_VHOST_SUFFIXES", ""))),
-		"sts":             &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, logger: logger},
+		"sts":             &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, accounts: acctDir, logger: logger},
 		"lambda":          lambdaH,
 		"appsync":         appsyncH,
 		"dynamodb":        dynamoH,

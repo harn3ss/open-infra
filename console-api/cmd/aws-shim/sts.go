@@ -30,6 +30,19 @@ type roleResolver interface {
 	Resolve(ctx context.Context, roleName string) (resolvedRole, bool)
 }
 
+// roleResolverIn resolves a role in a given namespace: another account's home, for a cross-account
+// AssumeRole. A resolver without it cannot assume across accounts.
+type roleResolverIn interface {
+	ResolveIn(ctx context.Context, ns, roleName string) (resolvedRole, bool)
+}
+
+// accountHomes maps a member account to its home namespace (internal/accounts.Directory).
+type accountHomes interface {
+	HomeOf(account string) (string, bool)
+	IsManagement(account string) bool
+	Suspended(account string) bool
+}
+
 // resolvedRole is what assuming a role needs to know about it.
 type resolvedRole struct {
 	trust  []string
@@ -90,7 +103,27 @@ type stsHandler struct {
 	roles     roleResolver   // resolves a role's trust policy + session groups; nil disables AssumeRole
 	webID     tokenReviewer  // verifies workload SA tokens (IRSA path); nil disables that path
 	oidcWebID oidcVerifier   // verifies EXTERNAL OIDC tokens vs registered kind: IdentityProvider; nil disables
-	logger    *slog.Logger
+	// accounts maps member accounts to their home namespaces; nil means every role is the management
+	// account's (a RoleArn naming another account is AccessDenied).
+	accounts accountHomes
+	logger   *slog.Logger
+}
+
+// callerAccount is the 12-digit account a caller acts in.
+func (h *stsHandler) callerAccount(c iam.Claims) string {
+	if c.Account != "" {
+		return c.Account
+	}
+	return h.account
+}
+
+// identIn is the identity ARNs are built in for account acct.
+func (h *stsHandler) identIn(acct string) awsidentity.Identity {
+	id := h.ident()
+	if acct != "" {
+		id.AccountID = acct
+	}
+	return id
 }
 
 // ident is the identity the handler's ARNs are built in: its account, the install's region.
@@ -137,7 +170,24 @@ func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims i
 			"AssumeRole requires RoleArn and RoleSessionName", stsXMLNamespace)
 		return
 	}
-	role, ok := h.roles.Resolve(r.Context(), roleName)
+	// The role's account: the one its ARN names (a bare name, or an ARN with no account, is the management
+	// account's role). Another account's role lives in that account's home namespace.
+	roleAcct := awsidentity.AccountOfARN(r.PostFormValue("RoleArn"))
+	if roleAcct == "" {
+		roleAcct = h.account
+	}
+	var role resolvedRole
+	var ok bool
+	roleNS := "" // the IAM home namespace
+	if roleAcct == h.account || (h.accounts != nil && h.accounts.IsManagement(roleAcct)) {
+		roleAcct = h.account
+		role, ok = h.roles.Resolve(r.Context(), roleName)
+	} else if in, can := h.roles.(roleResolverIn); can && h.accounts != nil && !h.accounts.Suspended(roleAcct) {
+		if home, known := h.accounts.HomeOf(roleAcct); known {
+			roleNS = home
+			role, ok = in.ResolveIn(r.Context(), home, roleName)
+		}
+	}
 	if !ok {
 		// AWS returns AccessDenied (not "not found") so a caller can't probe which roles exist.
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
@@ -145,6 +195,7 @@ func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims i
 		return
 	}
 	who := callerTrust(claims)
+	who.account = h.callerAccount(claims)
 	if !trusted(who, role.trust) {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
 			who.String()+" is not authorized to assume role "+roleName+" (not named by its trust policy)", stsXMLNamespace)
@@ -156,12 +207,20 @@ func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims i
 		return
 	}
 	caller := callerName(claims)
-	akid, sk, token, exp, err := h.minter.Mint(roleName, role.groups, sessionName, caller, ttl)
+	var akid, sk, token string
+	var exp time.Time
+	var err error
+	if roleAcct == h.account {
+		akid, sk, token, exp, err = h.minter.Mint(roleName, role.groups, sessionName, caller, ttl)
+	} else {
+		// A session of another account's role acts in that account (its token records it).
+		akid, sk, token, exp, err = h.minter.MintInAccount(roleAcct, roleNS, roleName, role.groups, sessionName, caller, ttl)
+	}
 	if err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not mint credentials", stsXMLNamespace)
 		return
 	}
-	h.writeAssumeRole(w, roleName, sessionName, akid, sk, token, exp, requestID)
+	h.writeAssumeRoleIn(w, roleAcct, roleName, sessionName, akid, sk, token, exp, requestID)
 }
 
 // assumeRoleWithWebIdentity implements a faithful sts:AssumeRoleWithWebIdentity — the workload
@@ -261,6 +320,8 @@ type trustCaller struct {
 	kind    string // "User", "Role" (a session of that role: role chaining), "ServiceAccount" or "OIDC"
 	name    string // the User's name, the Role's name, the ServiceAccount username, or the IdentityProvider's name
 	subject string // OIDC: the token's subject
+	// account is the caller's 12-digit account, matched by an ARN trust entry; "" matches none.
+	account string
 }
 
 // callerTrust is a SigV4 caller as a trust policy names it: a User, or an assumed role's session.
@@ -291,12 +352,22 @@ func (c trustCaller) String() string {
 //	"system:serviceaccount:<ns>:<sa>"  that workload's projected ServiceAccount token
 //	"OIDC::<provider>"                 any token that kind: IdentityProvider issued
 //	"OIDC::<provider>:<subject>"       that provider's token for that one subject
+//	"arn:aws:iam::<acct>:root"         any principal of that account (AWS delegates to the account: its
+//	                                   own policies must still allow sts:AssumeRole on the role)
+//	"arn:aws:iam::<acct>:user/<name>"  that user of that account
+//	"arn:aws:iam::<acct>:role/<name>"  a session of that role of that account (role chaining)
 //
 // "vm" is the VM instance principal: only the instance-credentials path matches it (vmcreds.go).
 func trusted(c trustCaller, trust []string) bool {
 	for _, t := range trust {
 		if t == "*" {
 			return true
+		}
+		if strings.HasPrefix(t, "arn:") {
+			if trustedARN(c, t) {
+				return true
+			}
+			continue
 		}
 		switch {
 		case strings.HasPrefix(t, "User::"):
@@ -331,6 +402,41 @@ func trusted(c trustCaller, trust []string) bool {
 		}
 	}
 	return false
+}
+
+// trustedARN reports whether an ARN trust entry names the caller: its account's root (every principal of
+// that account), or the user or role of that account. A caller with no account matches none.
+func trustedARN(c trustCaller, arn string) bool {
+	if c.account == "" || (c.kind != "User" && c.kind != "Role") {
+		return false
+	}
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) != 6 || parts[2] != "iam" || parts[4] != c.account {
+		return false
+	}
+	res := parts[5]
+	if res == "root" {
+		return true
+	}
+	name := c.name
+	if i := strings.LastIndexByte(name, '/'); i >= 0 {
+		name = name[i+1:] // a role outside the IAM home is "<namespace>/<name>": its ARN names the role alone
+	}
+	switch {
+	case c.kind == "User" && strings.HasPrefix(res, "user/"):
+		return lastSegment(res) == name
+	case c.kind == "Role" && strings.HasPrefix(res, "role/"):
+		return lastSegment(res) == name
+	}
+	return false
+}
+
+// lastSegment is the name at the end of an IAM resource path (user/path/name -> name).
+func lastSegment(res string) string {
+	if i := strings.LastIndexByte(res, '/'); i >= 0 {
+		return res[i+1:]
+	}
+	return res
 }
 
 func (h *stsHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
@@ -385,12 +491,17 @@ type assumeRoleResponse struct {
 }
 
 func (h *stsHandler) writeAssumeRole(w http.ResponseWriter, role, session, akid, sk, token string, exp time.Time, requestID string) {
+	h.writeAssumeRoleIn(w, h.account, role, session, akid, sk, token, exp, requestID)
+}
+
+// writeAssumeRoleIn is writeAssumeRole for a role of account acct: the session's ARN is that account's.
+func (h *stsHandler) writeAssumeRoleIn(w http.ResponseWriter, acct, role, session, akid, sk, token string, exp time.Time, requestID string) {
 	var resp assumeRoleResponse
 	resp.Result.Credentials.AccessKeyId = akid
 	resp.Result.Credentials.SecretAccessKey = sk
 	resp.Result.Credentials.SessionToken = token
 	resp.Result.Credentials.Expiration = exp.UTC().Format(time.RFC3339)
-	resp.Result.AssumedRoleUser.Arn = h.ident().STSARN("assumed-role/" + role + "/" + session)
+	resp.Result.AssumedRoleUser.Arn = h.identIn(acct).STSARN("assumed-role/" + role + "/" + session)
 	resp.Result.AssumedRoleUser.AssumedRoleId = role + ":" + session
 	resp.ResponseMetadata.RequestId = requestID
 	out, err := xml.Marshal(resp)
@@ -455,13 +566,14 @@ func (h *stsHandler) writeCallerIdentity(w http.ResponseWriter, claims iam.Claim
 	// AWS's ARN forms, in the install's account: an assumed-role session is arn:aws:sts::<acct>:
 	// assumed-role/<role>/<session> (claims.Sub is "assumed-role/<role>/<sess>"), a user is
 	// arn:aws:iam::<acct>:user/<name>.
+	acct := h.callerAccount(claims)
 	if claims.AssumedRole != "" {
-		resp.Result.Arn = h.ident().STSARN(claims.Sub)
+		resp.Result.Arn = h.identIn(acct).STSARN(claims.Sub)
 	} else {
-		resp.Result.Arn = h.ident().IAMARN("user/" + claims.Sub)
+		resp.Result.Arn = h.identIn(acct).IAMARN("user/" + claims.Sub)
 	}
 	resp.Result.UserId = claims.Sub
-	resp.Result.Account = h.account
+	resp.Result.Account = acct
 	resp.ResponseMetadata.RequestId = requestID
 
 	out, err := xml.Marshal(resp)

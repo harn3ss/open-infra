@@ -7,6 +7,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awssig"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
@@ -189,6 +190,7 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		svc.authFailure(w, r, requestID)
 		return
 	}
+	r = rt.withAccount(r, claims)
 	// DynamoDB Streams shares the "dynamodb" SigV4 signing name but carries a DynamoDBStreams_
 	// X-Amz-Target, so it arrives under the dynamodb service; route it to its own front door.
 	if cred.Service == "dynamodb" && strings.HasPrefix(r.Header.Get("X-Amz-Target"), "DynamoDBStreams_") {
@@ -198,6 +200,17 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	svc.serve(w, r, claims, requestID)
+}
+
+// withAccount puts the identity of the account the caller acts in on the request's context
+// (awsidentity.WithIdentity): the ARNs, StackIds and AWS::AccountId built for this request follow the
+// caller's account. The management account's identity is the install's own, so nothing changes for it.
+func (rt *serviceRouter) withAccount(r *http.Request, claims iam.Claims) *http.Request {
+	if claims.Account == "" || rt.auth == nil || !rt.auth.memberAccount(claims.Account) {
+		return r
+	}
+	home, _ := rt.auth.dir.HomeOf(claims.Account)
+	return r.WithContext(awsidentity.WithIdentity(r.Context(), awsidentity.Current().ForAccount(claims.Account, home)))
 }
 
 // isWebIdentityAssume reports whether this is an unauthenticated sts:AssumeRoleWithWebIdentity POST

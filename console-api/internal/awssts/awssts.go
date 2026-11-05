@@ -42,7 +42,10 @@ type Session struct {
 	// Namespace is the Role's namespace when it is not the IAM home namespace (a VM instance role lives
 	// in its VM's namespace). Empty for a Role in the home namespace, and in every token minted before
 	// sessions carried it; the data-plane principal is then the bare role name, as it always was.
-	Namespace   string    `json:"ns,omitempty"`
+	Namespace string `json:"ns,omitempty"`
+	// Account is the 12-digit account the session acts in: the account of the role it assumed. Empty for
+	// the management account, and in every token minted before sessions carried it.
+	Account     string    `json:"acct,omitempty"`
 	Groups      []string  `json:"groups"` // impersonation groups the session acts as
 	SessionName string    `json:"sess"`   // RoleSessionName (audit/ARN)
 	Caller      string    `json:"caller"` // the principal that assumed the role (audit)
@@ -143,6 +146,12 @@ func (m *Minter) Mint(role string, groups []string, sessionName, caller string, 
 
 // MintIn is Mint for a Role in namespace ns ("" = the IAM home namespace).
 func (m *Minter) MintIn(ns, role string, groups []string, sessionName, caller string, ttl time.Duration) (accessKeyID, secretKey, sessionToken string, expiry time.Time, err error) {
+	return m.MintInAccount("", ns, role, groups, sessionName, caller, ttl)
+}
+
+// MintInAccount is MintIn for a Role of account acct ("" = the management account): the session acts in
+// that account, as an AssumeRole into another account's role does on AWS.
+func (m *Minter) MintInAccount(acct, ns, role string, groups []string, sessionName, caller string, ttl time.Duration) (accessKeyID, secretKey, sessionToken string, expiry time.Time, err error) {
 	if ttl <= 0 {
 		ttl = DefaultDuration
 	}
@@ -166,7 +175,7 @@ func (m *Minter) MintIn(ns, role string, groups []string, sessionName, caller st
 	issuedAt := time.Now().UTC()
 	expiry = issuedAt.Add(ttl)
 	sess := Session{
-		RoleName: role, Namespace: ns, Groups: groups, SessionName: sessionName, Caller: caller,
+		RoleName: role, Namespace: ns, Account: acct, Groups: groups, SessionName: sessionName, Caller: caller,
 		AccessKeyID: accessKeyID, SecretKey: secretKey, IssuedAt: issuedAt, Expiry: expiry,
 	}
 	sessionToken, err = m.seal(sess)

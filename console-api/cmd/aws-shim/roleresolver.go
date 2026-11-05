@@ -25,9 +25,27 @@ type dynRoleResolver struct {
 var roleGVR = schema.GroupVersionResource{Group: "iam.openinfra.dev", Version: "v1", Resource: "roles"}
 
 func (r *dynRoleResolver) Resolve(ctx context.Context, roleName string) (resolvedRole, bool) {
-	u, err := r.dyn.Resource(roleGVR).Namespace(r.ns).Get(ctx, roleName, metav1.GetOptions{})
+	return r.ResolveIn(ctx, r.ns, roleName)
+}
+
+// awsNameAnnotation carries a kind: Role's AWS name where it is not a valid Kubernetes object name (AWS
+// role names are mixed case: OrganizationAccountAccessRole is the object organizationaccountaccessrole).
+const awsNameAnnotation = "openinfra.dev/aws-name"
+
+// ResolveIn is Resolve for a Role in namespace ns (another account's home, for a cross-account
+// AssumeRole). A role named in AWS's mixed case resolves to the object of its lower-cased name that
+// carries that name in openinfra.dev/aws-name.
+func (r *dynRoleResolver) ResolveIn(ctx context.Context, ns, roleName string) (resolvedRole, bool) {
+	u, err := r.dyn.Resource(roleGVR).Namespace(ns).Get(ctx, roleName, metav1.GetOptions{})
 	if err != nil {
-		return resolvedRole{}, false
+		lower := strings.ToLower(roleName)
+		if lower == roleName {
+			return resolvedRole{}, false
+		}
+		u, err = r.dyn.Resource(roleGVR).Namespace(ns).Get(ctx, lower, metav1.GetOptions{})
+		if err != nil || u.GetAnnotations()[awsNameAnnotation] != roleName {
+			return resolvedRole{}, false
+		}
 	}
 	trust, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "trust")
 	// The session acts as openinfra:users at the control plane (least privilege); the role's real
