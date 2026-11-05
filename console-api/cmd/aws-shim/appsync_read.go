@@ -52,7 +52,7 @@ func (h *appsyncHandler) serveRead(w http.ResponseWriter, r *http.Request, claim
 		coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, "get", "openinfra.dev", "graphqlapis", p.ns, p.name,
 			"appsync:"+verb, "GraphQLApi", p.apiID)); !ok {
 		h.logger.Warn("appsync read denied (data plane)", "user", claims.Sub, "api", p.apiID, "verb", verb, "reason", reason)
-		writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID, "not authorized to read this GraphQL API")
+		writeMgmtDenied(r.Context(), w, requestID, claims, "appsync:"+verb, p.apiID, reason)
 		return
 	}
 	obj, err := h.apis.Get(r.Context(), p.ns, p.name)
@@ -138,7 +138,7 @@ func (h *appsyncHandler) listGraphqlApis(w http.ResponseWriter, r *http.Request,
 	if ok, reason := decide(ctx, r, h.authz, claims, "appsync:ListGraphqlApis", "GraphQLApi", "",
 		dataPlaneOnly(ctx, r, h.authz, claims, "appsync:ListGraphqlApis", "GraphQLApi", "")); !ok {
 		h.logger.Warn("appsync ListGraphqlApis denied", "user", claims.Sub, "reason", reason)
-		writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID, "not authorized to list GraphQL APIs")
+		writeMgmtDenied(ctx, w, requestID, claims, "appsync:ListGraphqlApis", "", reason)
 		return
 	}
 	q := r.URL.Query()

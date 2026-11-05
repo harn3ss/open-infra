@@ -73,8 +73,7 @@ func (h *appsyncHandler) serveManagement(w http.ResponseWriter, r *http.Request,
 		coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, "update", "openinfra.dev", "graphqlapis", p.ns, p.name,
 			"appsync:"+verb, "GraphQLApi", p.apiID)); !ok {
 		h.logger.Warn("appsync management denied (data plane)", "user", claims.Sub, "api", p.apiID, "verb", verb, "reason", reason)
-		writeMgmtError(w, http.StatusForbidden, "UnauthorizedException", requestID,
-			"not authorized to manage this GraphQL API")
+		writeMgmtDenied(r.Context(), w, requestID, claims, "appsync:"+verb, p.apiID, reason)
 		return
 	}
 
@@ -351,6 +350,18 @@ func writeMgmtJSON(w http.ResponseWriter, status int, requestID string, body map
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// writeMgmtDenied answers a management call its authorization refused as AWS's AppSync control plane does:
+// 403 AccessDeniedException, "User: <arn> is not authorized to perform: appsync:<Op> on resource: <api>"
+// (an enforce-mode reason is already that sentence; a legacy one is said inside it). The GraphQL data plane
+// keeps its own dialect (UnauthorizedException, writeAppsyncError).
+func writeMgmtDenied(ctx context.Context, w http.ResponseWriter, requestID string, claims iam.Claims, action, apiID, reason string) {
+	msg := reason
+	if !strings.Contains(reason, " is not authorized to perform: ") {
+		msg = notAuthorized(principalOf(ctx, claims), action, typedResource("GraphQLApi", apiID), reason)
+	}
+	writeMgmtError(w, http.StatusForbidden, "AccessDeniedException", requestID, msg)
 }
 
 func writeMgmtError(w http.ResponseWriter, status int, errorType, requestID, message string) {

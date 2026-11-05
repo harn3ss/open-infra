@@ -348,7 +348,7 @@ func roleDoorCases() []roleDoorCase {
 				h.authz = a
 				return serveWith(h, httptest.NewRequest(http.MethodPost, "http://shim/graphql", strings.NewReader(`{"query":"{a}"}`)), c)
 			}},
-		{door: "appsync", op: "GetResolver", action: "appsync:GetResolver", resType: "GraphQLApi", resName: "team-a.notes", denyCode: "not authorized to manage",
+		{door: "appsync", op: "GetResolver", action: "appsync:GetResolver", resType: "GraphQLApi", resName: "team-a.notes", denyCode: "AccessDeniedException",
 			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
 				h := newAppsyncHandler(csWithSAR(true), "http://127.0.0.1:1", "default", discardLogger())
 				h.authz = a

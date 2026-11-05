@@ -209,6 +209,40 @@ func TestManagement_DeniedDoesNotPatch(t *testing.T) {
 	}
 }
 
+// A management call its authorization refuses is AWS's AppSync control-plane denial — 403
+// AccessDeniedException, "User: <arn> is not authorized to perform: appsync:<Op> on resource: …" — whether
+// or not the API exists, in enforce and in legacy alike; the GraphQL data plane keeps its own dialect.
+func TestManagement_DenialIsAWSAccessDenied(t *testing.T) {
+	user := iam.Claims{Sub: "tester"}
+	for _, tc := range []struct {
+		name, method, path, action string
+		legacyGated                bool // in legacy the coarse RBAC check refuses it (ListGraphqlApis has none)
+	}{
+		{"GetGraphqlApi (no such API)", "GET", "/v1/apis/nope", "appsync:GetGraphqlApi", true},
+		{"ListGraphqlApis", "GET", "/v1/apis", "appsync:ListGraphqlApis", false},
+		{"GetResolver (no such API)", "GET", "/v1/apis/nope/types/Query/resolvers/f", "appsync:GetResolver", true},
+		{"DeleteDataSource (no such API)", "DELETE", "/v1/apis/nope/datasources/d", "appsync:DeleteDataSource", true},
+	} {
+		for _, mode := range []string{"enforce", "legacy"} {
+			if mode == "legacy" && !tc.legacyGated {
+				continue
+			}
+			// enforce: the SubjectAccessReview allows, IAM policy (no grant of the action) refuses; legacy:
+			// the SubjectAccessReview refuses.
+			h := newAppsyncHandler(csWithSAR(mode == "enforce"), "http://unused", "default", discardLogger())
+			h.apis = newFakeAPIStore()
+			h.authz = checkerInMode(t, mode, userDoc(dpAllow([]string{"appsync:NotTheOperationUnderTest"}, "*")))
+			w := httptest.NewRecorder()
+			h.serve(w, httptest.NewRequest(tc.method, "http://appsync"+tc.path, nil), user, "r")
+			if w.Code != 403 || w.Header().Get("x-amzn-ErrorType") != "AccessDeniedException" ||
+				!strings.Contains(w.Body.String(), " is not authorized to perform: "+tc.action+" on resource: ") {
+				t.Errorf("%s %s: %d %s %s, want 403 AccessDeniedException naming %s", mode, tc.name, w.Code,
+					w.Header().Get("x-amzn-ErrorType"), w.Body.String(), tc.action)
+			}
+		}
+	}
+}
+
 // An unhandled management verb answers an honest NotImplemented (per-verb graduation), not a fake 200.
 func TestManagement_UnhandledVerbIsNotImplemented(t *testing.T) {
 	h := newAppsyncHandler(csWithSAR(true), "http://unused", "default", discardLogger())
