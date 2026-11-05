@@ -63,6 +63,29 @@ spec:
             {{- $isMgmt := eq $acct $mgmt }}
             {{- $state := "ACTIVE" }}{{- if $spec.suspended }}{{- $state = "SUSPENDED" }}{{- end }}
             {{- $isolation := $spec.isolation | default "baseline" }}
+            {{- /* The account's applied Service Quotas: the platform's defaults (AWS's quota codes and names;
+                   kept in step with the aws-shim's Service Quotas table by a test) with spec.serviceQuotas
+                   over them, an operator's approved increases. */}}
+            {{- $over := dict }}
+            {{- range $q := ($spec.serviceQuotas | default list) }}
+            {{-   $_ := set $over (printf "%s/%s" $q.serviceCode $q.quotaCode) $q.value }}
+            {{- end }}
+            {{- $defaults := list
+                  (dict "s" "ec2" "c" "L-1216C47A" "n" "Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances" "v" 64)
+                  (dict "s" "ec2" "c" "L-0263D0A3" "n" "EC2-VPC Elastic IPs" "v" 5)
+                  (dict "s" "lambda" "c" "L-B99A9384" "n" "Concurrent executions" "v" 1000)
+                  (dict "s" "cloudformation" "c" "L-0485CB21" "n" "Stacks" "v" 2000)
+                  (dict "s" "s3" "c" "L-DC2B2D3D" "n" "General purpose buckets" "v" 10000)
+                  (dict "s" "dynamodb" "c" "L-F98FE922" "n" "Maximum number of tables" "v" 2500) }}
+            {{- $applied := list }}
+            {{- $concurrency := 1000 }}
+            {{- range $d := $defaults }}
+            {{-   $k := printf "%s/%s" $d.s $d.c }}
+            {{-   $v := $d.v }}
+            {{-   if hasKey $over $k }}{{- $v = index $over $k }}{{- end }}
+            {{-   if eq $k "lambda/L-B99A9384" }}{{- $concurrency = $v }}{{- end }}
+            {{-   $applied = append $applied (dict "ServiceCode" $d.s "QuotaCode" $d.c "QuotaName" $d.n "Unit" "None" "Value" $v) }}
+            {{- end }}
             {{- range $i, $ns := $nss }}
             {{- if not $isMgmt }}
             ---
@@ -85,6 +108,10 @@ spec:
                     labels:
                       openinfra.dev/account-id: {{ $acct | toJson }}
                       openinfra.dev/account-status: {{ $state | toJson }}
+                      # Lambda's concurrent executions (Service Quotas L-B99A9384): the function-concurrency
+                      # policy (the compliance component) turns it into a ResourceQuota on this namespace's
+                      # burstable function pods.
+                      openinfra.dev/function-concurrency: {{ printf "%d" (int $concurrency) | toJson }}
                       {{- if eq $i 0 }}
                       openinfra.dev/account-home: "true"
                       {{- end }}
@@ -140,8 +167,8 @@ spec:
             {{- end }}
             {{- if not $isMgmt }}
             ---
-            # Service Quotas defaults for the account (AWS's applied quotas for a new account), read by the
-            # platform's quota checks and its Service Quotas front door. Values are this platform's defaults.
+            # The account's applied Service Quotas (the defaults with spec.serviceQuotas over them), as the
+            # aws-shim's Service Quotas front door answers GetServiceQuota: a readable copy in its home.
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -157,14 +184,7 @@ spec:
                     namespace: {{ $home | toJson }}
                     labels: { openinfra.dev/account-id: {{ $acct | toJson }} }
                   data:
-                    quotas.json: |
-                      [
-                        {"ServiceCode": "ec2", "QuotaCode": "L-1216C47A", "QuotaName": "Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances", "Unit": "None", "Value": 64},
-                        {"ServiceCode": "lambda", "QuotaCode": "L-B99A9384", "QuotaName": "Concurrent executions", "Unit": "None", "Value": 1000},
-                        {"ServiceCode": "cloudformation", "QuotaCode": "L-0485CB21", "QuotaName": "Stack count", "Unit": "None", "Value": 2000},
-                        {"ServiceCode": "s3", "QuotaCode": "L-DC2B2D3D", "QuotaName": "General purpose buckets", "Unit": "None", "Value": 100},
-                        {"ServiceCode": "dynamodb", "QuotaCode": "L-F98FE922", "QuotaName": "Maximum number of tables", "Unit": "None", "Value": 2500}
-                      ]
+                    quotas.json: {{ $applied | toJson | toJson }}
             ---
             # OrganizationAccountAccessRole: the role the management account assumes into this account
             # ("Switch role"), with AdministratorAccess, as AWS Organizations creates in every member account.

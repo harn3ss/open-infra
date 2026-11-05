@@ -1,6 +1,7 @@
 package render
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -160,6 +161,49 @@ func TestAccount_MemberGetsBaselineQuotasAndAccessRole(t *testing.T) {
 	st := k["Account"][0]
 	if fmt.Sprint(mget(st, "status", "management")) != "false" || mstr(st, "status", "accessRoleArn") != "arn:aws:iam::912345678901:role/OrganizationAccountAccessRole" {
 		t.Errorf("member status %v", st["status"])
+	}
+}
+
+// A member account's applied Service Quotas are the defaults (AWS's codes and names) with spec.serviceQuotas
+// over them, and Lambda's concurrent executions becomes the function-concurrency label on every namespace
+// of the account (the policy that caps its function pods reads it).
+func TestAccount_ServiceQuotasAppliedAndConcurrencyEnforced(t *testing.T) {
+	quotasOf := func(k map[string][]map[string]any) map[string]float64 {
+		t.Helper()
+		var qs []map[string]any
+		if err := json.Unmarshal([]byte(mstr(k["ConfigMap"][0], "data", "quotas.json")), &qs); err != nil {
+			t.Fatalf("quotas.json: %v", err)
+		}
+		out := map[string]float64{}
+		for _, q := range qs {
+			out[fmt.Sprint(q["ServiceCode"], "/", q["QuotaCode"])], _ = q["Value"].(float64)
+			if q["QuotaCode"] == "L-0485CB21" && q["QuotaName"] != "Stacks" {
+				t.Errorf("CloudFormation's L-0485CB21 is named Stacks, as AWS names it: %v", q["QuotaName"])
+			}
+		}
+		return out
+	}
+	k := byKind(accountDocs(t, map[string]any{"accountId": "912345678901",
+		"namespaces": []any{"team-a", "team-a-data"}}, "000000000000"))
+	q := quotasOf(k)
+	if q["lambda/L-B99A9384"] != 1000 || q["s3/L-DC2B2D3D"] != 10000 || q["dynamodb/L-F98FE922"] != 2500 || len(q) != 6 {
+		t.Errorf("default quotas %v", q)
+	}
+	for _, ns := range k["Namespace"] {
+		if got := mstr(ns, "metadata", "labels", "openinfra.dev/function-concurrency"); got != "1000" {
+			t.Errorf("%s: function-concurrency %q, want the Lambda quota 1000", mstr(ns, "metadata", "name"), got)
+		}
+	}
+
+	k = byKind(accountDocs(t, map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a"},
+		"serviceQuotas": []any{map[string]any{"serviceCode": "lambda", "quotaCode": "L-B99A9384", "value": 50},
+			map[string]any{"serviceCode": "dynamodb", "quotaCode": "L-F98FE922", "value": 3000}}}, "000000000000"))
+	q = quotasOf(k)
+	if q["lambda/L-B99A9384"] != 50 || q["dynamodb/L-F98FE922"] != 3000 || q["s3/L-DC2B2D3D"] != 10000 {
+		t.Errorf("an approved quota must be applied over the default: %v", q)
+	}
+	if got := mstr(k["Namespace"][0], "metadata", "labels", "openinfra.dev/function-concurrency"); got != "50" {
+		t.Errorf("function-concurrency %q, want the account's Lambda quota 50", got)
 	}
 }
 

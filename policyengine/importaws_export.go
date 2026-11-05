@@ -163,6 +163,8 @@ func ResourceARN(res string) (string, bool) {
 		return arn("appsync", "apis/"+id)
 	case "Certificate":
 		return arn("acm", "certificate/"+id)
+	case "Quota":
+		return arn("servicequotas", id)
 	case "UserPool":
 		return arn("cognito-idp", "userpool/"+id)
 	case "Database":

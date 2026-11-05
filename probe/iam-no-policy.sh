@@ -87,6 +87,7 @@ declare -A CALL=(
   [rds]="rds describe-db-instances"
   [s3]="s3api list-buckets"
   [secretsmanager]="secretsmanager list-secrets"
+  [servicequotas]="service-quotas list-services"
   [ses]="ses list-identities"
   [sns]="sns list-topics"
   [sqs]="sqs list-queues"

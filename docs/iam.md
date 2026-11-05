@@ -178,6 +178,39 @@ aws organizations describe-create-account-status --create-account-request-id car
   too.
 - Organizations is served to the management account only; a member account's caller is denied.
 
+### Service Quotas
+
+Each account has quotas under AWS's own service and quota codes, read and raised with Service Quotas as on
+AWS:
+
+```sh
+aws service-quotas list-services
+aws service-quotas list-service-quotas --service-code lambda
+aws service-quotas get-service-quota --service-code lambda --quota-code L-B99A9384
+aws service-quotas get-aws-default-service-quota --service-code lambda --quota-code L-B99A9384
+aws service-quotas request-service-quota-increase --service-code lambda --quota-code L-B99A9384 --desired-value 2000
+aws service-quotas list-requested-service-quota-change-history
+```
+
+| Service | Quota | Code | Default here |
+|---|---|---|---|
+| `lambda` | Concurrent executions | `L-B99A9384` | 1,000 (enforced) |
+| `ec2` | Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances | `L-1216C47A` | 64 vCPUs |
+| `ec2` | EC2-VPC Elastic IPs | `L-0263D0A3` | 5 |
+| `cloudformation` | Stacks | `L-0485CB21` | 2,000 |
+| `s3` | General purpose buckets | `L-DC2B2D3D` | 10,000 (account-wide) |
+| `dynamodb` | Maximum number of tables | `L-F98FE922` | 2,500 |
+
+- `get-service-quota` answers the account's applied value; `get-aws-default-service-quota` answers AWS's
+  own default.
+- An increase request is `PENDING` until an operator approves it, then reads `APPROVED` (or `DENIED`).
+  One request per quota may be pending at a time, and the value asked must be above the current one.
+- Lambda's concurrent executions is enforced where the platform's compliance component runs: in each of
+  the account's namespaces, its burstable functions (`spec.burstable`) together run at most that many
+  instances. The other quotas are reported as the account's quotas, not enforced.
+- Calls are authorized as `servicequotas:<Operation>`; a request's resource is the quota's ARN,
+  `arn:aws:servicequotas:<region>:<account>:<service-code>/<quota-code>`.
+
 ## The root user
 
 The account's root user is the console's break-glass sign-in, created with the install. It is not an IAM
@@ -232,6 +265,31 @@ The probes run on their own too (`SHIM_ENDPOINT` to reach the AWS front door; th
 through a port-forward unless `CONSOLE_ENDPOINT` is set); `probe/aws-shim-organizations.sh` proves the
 Organizations front door. Exit 0 is a pass, 1 a failure, 42 inconclusive (for instance IAM policy not yet
 deciding for the probe's principals).
+
+## Approving a quota increase (operators)
+
+*Operator-facing: this section is Kubernetes-shaped by design.*
+
+A request from `request-service-quota-increase` is recorded in the ConfigMap `servicequota-requests` in
+the AWS front door's namespace, one key per account (`<account-id>.json`). To approve it, set the value
+on the account's `kind: Account`; the request then reads `APPROVED`:
+
+```yaml
+apiVersion: organizations.openinfra.dev/v1
+kind: Account
+metadata: { name: "<account-id>" }
+spec:
+  serviceQuotas:
+    - { serviceCode: lambda, quotaCode: L-B99A9384, value: 2000 }
+```
+
+To deny it, set that request's `Status` to `DENIED` in the ConfigMap. The applied quotas are also written
+to each member account's `openinfra-service-quotas` ConfigMap, and Lambda's concurrent executions becomes
+the `openinfra.dev/function-concurrency` label on each of the account's namespaces. That label is what the
+`compliance` component's `function-concurrency-quota` policy turns into a ResourceQuota on the namespace's
+burstable function pods (see [function-admission.md](function-admission.md)); the account's value replaces
+any value set on the namespace by hand. The management account's namespaces are the install's own, so
+their label, if any, is set in the install's manifests rather than from its `kind: Account`.
 
 ## See also
 

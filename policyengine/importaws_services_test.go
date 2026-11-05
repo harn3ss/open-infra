@@ -22,6 +22,8 @@ func TestImportAWS_ControlServicesMapToTheShimsResources(t *testing.T) {
 		"arn:aws:appsync:us-east-1:123456789012:apis/abcdefghijklmnopqrstuvwxyz":     "GraphQLApi::abcdefghijklmnopqrstuvwxyz",
 		"arn:aws:appsync:us-east-1:123456789012:apis/*":                              "GraphQLApi::*",
 		"arn:aws:acm:us-east-1:123456789012:certificate/0123abcd-0000-0000-0000-000": "Certificate::0123abcd-0000-0000-0000-000",
+		"arn:aws:servicequotas:us-east-1:123456789012:lambda/L-B99A9384":             "Quota::lambda/L-B99A9384",
+		"arn:aws:servicequotas:us-east-1:123456789012:ec2/*":                         "Quota::ec2/*",
 		"arn:aws:cloudfront::123456789012:cache-policy/658327ea":                     "CachePolicy::658327ea",
 		"arn:aws:cloudfront::123456789012:origin-request-policy/216adef6":            "OriginRequestPolicy::216adef6",
 		"arn:aws:cloudfront::123456789012:response-headers-policy/67f7725c":          "ResponseHeadersPolicy::67f7725c",

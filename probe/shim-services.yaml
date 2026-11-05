@@ -85,6 +85,12 @@ services:
     tier: proven
     sigv4: [organizations]
     probes: [organizations]
+  - name: Service Quotas
+    cell: "each account's quotas (AWS's codes and names), an operator's approved increases (`spec.serviceQuotas`), increase requests; Lambda concurrency capped on burstable functions"
+    tier: gated
+    sigv4: [servicequotas]
+    note: "Each account's quotas under AWS's codes and names, increase requests an operator approves (`kind: Account` `spec.serviceQuotas`), and Lambda's concurrent executions enforced on a member account's burstable functions, per namespace; served, not yet proven by a live probe run."
+    probes: []
   - name: EC2
     cell: "`Describe*` over the platform's VMs, volumes, groups, VPCs and subnets (the guest's i- ids); key pairs an instance's `KeyName` carries"
     tier: proven

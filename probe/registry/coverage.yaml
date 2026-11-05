@@ -53,6 +53,7 @@ noResourceTypes:
   sts: "STS issues credentials; CloudFormation has no STS resource type."
   dynamodbstreams: "A table's stream is a property of AWS::DynamoDB::Table (StreamSpecification), not a resource."
   organizations: "Accounts are created with organizations:CreateAccount (or as a kind: Account); the CloudFormation engine translates no AWS::Organizations type, so a stack creates none."
+  servicequotas: "Quotas are an account's limits, set by an operator approving a request (kind: Account spec.serviceQuotas); the CloudFormation engine translates no Service Quotas type, so a stack creates none."
 
 # The calls that read a resource type, where the default does not find them. The default: any served
 # operation that starts with Describe/Get/List/Head and the type's own name (AWS::SQS::Queue ->

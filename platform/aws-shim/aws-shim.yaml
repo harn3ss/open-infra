@@ -114,6 +114,11 @@ rules:
   - apiGroups: [""]
     resources: [namespaces]
     verbs: [get, list, watch]
+  # Service Quotas: an account's applied quotas are its kind: Account's spec.serviceQuotas (an operator's
+  # approved increases), which any caller of GetServiceQuota may read for its own account. Read only.
+  - apiGroups: [organizations.openinfra.dev]
+    resources: [accounts]
+    verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -254,6 +259,34 @@ metadata:
   name: aws-shim-idp
   namespace: open-infra-aws-shim
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-idp }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+# Service Quotas increase requests (servicequotas:RequestServiceQuotaIncrease): recorded in one ConfigMap,
+# servicequota-requests, in the shim's own namespace, for an operator to approve by setting the account's
+# spec.serviceQuotas. Create (the first request makes it) and read-modify-write of that one ConfigMap only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-servicequotas
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [servicequota-requests]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-servicequotas
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-servicequotas }
 subjects:
   - kind: ServiceAccount
     name: aws-shim

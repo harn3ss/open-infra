@@ -709,6 +709,20 @@
         "UpdateSecretVersionStage"
       ]
     },
+    "servicequotas": {
+      "handler": "serviceQuotasHandler",
+      "operations": [
+        "GetAWSDefaultServiceQuota",
+        "GetRequestedServiceQuotaChange",
+        "GetServiceQuota",
+        "ListAWSDefaultServiceQuotas",
+        "ListRequestedServiceQuotaChangeHistory",
+        "ListRequestedServiceQuotaChangeHistoryByQuota",
+        "ListServiceQuotas",
+        "ListServices",
+        "RequestServiceQuotaIncrease"
+      ]
+    },
     "ses": {
       "handler": "sesHandler",
       "operations": [

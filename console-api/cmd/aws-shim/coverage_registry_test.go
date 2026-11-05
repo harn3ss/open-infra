@@ -45,7 +45,7 @@ var (
 	opNameRe = regexp.MustCompile(`^(Abort|Add|Admin|Assume|Attach|Batch|Cancel|Change|Complete|Confirm|Copy|` +
 		`Create|Decrease|Delete|Deregister|Describe|Detach|Detect|Disable|Enable|Encrypt|Decrypt|Execute|Filter|` +
 		`Forgot|Generate|Get|Global|Head|Increase|Initiate|Invoke|Label|List|Modify|Publish|Purge|Put|Re|Receive|` +
-		`Query|Register|Remove|Resend|Respond|Restore|Rotate|Run|Scan|Schedule|Send|Set|Sign|Simulate|Start|Stop|` +
+		`Query|Register|Remove|Request|Resend|Respond|Restore|Rotate|Run|Scan|Schedule|Send|Set|Sign|Simulate|Start|Stop|` +
 		`Subscribe|Tag|Test|Transact|Unsubscribe|Untag|Update|Upload|Validate|Verify)([A-Z0-9][A-Za-z0-9]*)?$`)
 	iamActionRe  = regexp.MustCompile(`^[a-z0-9-]+:[A-Z][A-Za-z0-9]+$`) // sqs:SendMessage
 	kebabOpRe    = regexp.MustCompile(`^[a-z]+(-[a-z0-9]+)*$`)          // list-buckets (S3's decoded kind)

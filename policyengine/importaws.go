@@ -24,6 +24,7 @@ var SupportedServices = map[string]bool{
 	"ses": true, "apigateway": true, "cloudwatch": true, "cloudfront": true,
 	"iam": true, "states": true, "cloudformation": true, "appsync": true, "acm": true,
 	"cognito-idp": true, "glue": true, "athena": true, "eks": true, "events": true,
+	"servicequotas": true,
 }
 
 // SupportedActions are the actions of a service the aws-shim enforces only in part: just these import
@@ -512,6 +513,10 @@ func arnToResource(arn string) (string, bool) {
 		}
 	case "acm": // arn:aws:acm:<r>:<acct>:certificate/<id>
 		return cut("certificate/", "Certificate")
+	case "servicequotas": // arn:aws:servicequotas:<r>:<acct>:<service-code>/<quota-code> (a quota code or *)
+		if svc, code, has := strings.Cut(tail, "/"); has && svc != "" && code != "" && !strings.Contains(code, "/") {
+			return "Quota::" + svc + "/" + code, true
+		}
 	case "cognito-idp": // arn:aws:cognito-idp:<r>:<acct>:userpool/<id>
 		return cut("userpool/", "UserPool")
 	case "glue": // database/<db>, table/<db>/<table> (the shim's Table::<db>/<table>); the catalog has no resource here

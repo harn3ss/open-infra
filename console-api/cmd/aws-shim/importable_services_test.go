@@ -90,6 +90,7 @@ var exampleArn = map[string]string{
 	"Role": "arn:aws:iam::1:role/r", "User": "arn:aws:iam::1:user/u", "Policy": "arn:aws:iam::1:policy/p",
 	"StateMachine": "arn:aws:states:us-east-1:1:stateMachine:m", "Stack": "arn:aws:cloudformation:us-east-1:1:stack/s/*",
 	"GraphQLApi": "arn:aws:appsync:us-east-1:1:apis/a", "Certificate": "arn:aws:acm:us-east-1:1:certificate/c",
+	"Quota":       "arn:aws:servicequotas:us-east-1:1:lambda/L-B99A9384",
 	"CachePolicy": "arn:aws:cloudfront::1:cache-policy/c", "OriginRequestPolicy": "arn:aws:cloudfront::1:origin-request-policy/o",
 	"ResponseHeadersPolicy": "arn:aws:cloudfront::1:response-headers-policy/r", "OriginAccessControl": "arn:aws:cloudfront::1:origin-access-control/o",
 	"OriginAccessIdentity": "arn:aws:cloudfront::1:origin-access-identity/o", "UserPool": "arn:aws:cognito-idp:us-east-1:1:userpool/p",

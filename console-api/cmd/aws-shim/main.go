@@ -593,7 +593,8 @@ func run(logger *slog.Logger) error {
 	if iamH != nil {
 		services["iam"] = iamH
 	}
-	services["organizations"] = newOrganizationsHandler(cs, kc.Config, authzNS, authzChecker, account, logger) // organizations.go
+	services["organizations"] = newOrganizationsHandler(cs, kc.Config, authzNS, authzChecker, account, logger)                 // organizations.go
+	services["servicequotas"] = newServiceQuotasHandler(cs, dyn, keysNS, authzNS, authzChecker, account, ident.Region, logger) // servicequotas.go
 	// SES (ses.* / email.*) over the in-cluster SMTP relay — the kind: EmailSender substrate
 	// (platform/mail/relay.yaml). SES_SMTP_RELAY (host:port) names the relay; the shim's manifest sets the
 	// platform relay's address, and the doorway answers as not fronted while that name does not resolve

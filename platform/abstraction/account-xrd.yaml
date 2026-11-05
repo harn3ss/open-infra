@@ -128,6 +128,32 @@ spec:
                     Suspend the account (AWS's SUSPENDED state): its namespaces are labeled
                     openinfra.dev/account-status=SUSPENDED, and the platform's front doors refuse its
                     principals. Unsuspend by setting it false.
+                serviceQuotas:
+                  type: array
+                  maxItems: 100
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [serviceCode, quotaCode]
+                  description: >-
+                    The account's applied Service Quotas where they differ from the platform's defaults
+                    (AWS's GetServiceQuota answers these). An operator sets an entry to approve an increase
+                    an account requested with servicequotas:RequestServiceQuotaIncrease. Lambda's concurrent
+                    executions (L-B99A9384) is enforced: every namespace of a member account is labeled
+                    openinfra.dev/function-concurrency with it, which the compliance component's
+                    function-concurrency-quota policy turns into a ResourceQuota on that namespace's
+                    burstable function pods.
+                  items:
+                    type: object
+                    required: [serviceCode, quotaCode, value]
+                    properties:
+                      serviceCode:
+                        type: string
+                        pattern: '^[a-z0-9-]{1,63}$'
+                      quotaCode:
+                        type: string
+                        pattern: '^L-[0-9A-F]{8}$'
+                      value:
+                        type: number
+                        minimum: 0
             status:
               type: object
               properties:
