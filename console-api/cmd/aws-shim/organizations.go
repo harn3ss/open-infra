@@ -58,6 +58,7 @@ const (
 type organizationsHandler struct {
 	cs         kubernetes.Interface
 	callerDyn  func(user string, groups []string) (dynamic.Interface, error)
+	shimDyn    dynamic.Interface // the shim's own client: reads accounts (get, list), never writes them
 	authz      *dataplaneauthz.Checker
 	authzNS    string
 	management string // the install's account id: the organization's management account
@@ -81,6 +82,9 @@ func newOrganizationsHandler(cs kubernetes.Interface, cfg *rest.Config, authzNS 
 		return c.Account
 	}
 	if cfg != nil {
+		if d, err := dynamic.NewForConfig(cfg); err == nil {
+			h.shimDyn = d
+		}
 		h.callerDyn = func(user string, groups []string) (dynamic.Interface, error) {
 			icfg := rest.CopyConfig(cfg)
 			icfg.Impersonate = rest.ImpersonationConfig{UserName: user, Groups: groups}
@@ -162,17 +166,26 @@ func (h *organizationsHandler) serve(w http.ResponseWriter, r *http.Request, cla
 	case "CreateAccount":
 		verb = "create"
 	}
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, gvrAccounts.Group, gvrAccounts.Resource, "", ""); !allowed {
+	action := "organizations:" + op
+	named := ""
+	if resID != "*" {
+		named = resID
+	}
+	allowed, reason := decide(ctx, r, h.authz, claims, action, "Account", named, func() (bool, string) {
+		if ok, why := iam.CanDo(ctx, h.cs, claims, verb, gvrAccounts.Group, gvrAccounts.Resource, "", ""); !ok {
+			return false, why
+		}
+		if denied, why := deniedByDataPlane(ctx, h.authz, claims, action, "Account", resID, r); denied {
+			return false, why
+		}
+		return true, ""
+	})
+	if !allowed {
 		h.audit(ctx, op, resID, "deny", reason)
 		writeOrgError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "You don't have permissions to access this resource.")
 		return
 	}
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "organizations:"+op, "Account", resID, r); denied {
-		h.audit(ctx, op, resID, "deny", reason)
-		writeOrgError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "You don't have permissions to access this resource.")
-		return
-	}
-	dyn, err := h.caller(claims)
+	dyn, err := h.client(ctx, claims, op)
 	if err != nil {
 		writeOrgError(w, http.StatusInternalServerError, "ServiceException", requestID, "Organizations is not available on this shim.")
 		return
@@ -200,8 +213,19 @@ func (h *organizationsHandler) serve(w http.ResponseWriter, r *http.Request, cla
 	h.audit(ctx, op, resID, "allow", "")
 }
 
-func (h *organizationsHandler) caller(claims iam.Claims) (dynamic.Interface, error) {
-	user, groups, ok := iam.Identity(claims)
+// client is the cluster client an allowed call is made with. In legacy a call acts with the caller's
+// Kubernetes authority, its RBAC being its permission. In enforce IAM policy has already decided the call:
+// a read is what it allowed, made with the shim's own read-only client — the caller's RBAC (generated
+// from the same policy by the IAM compiler, and not there before it runs) is never a second decision on
+// a read IAM policy allowed — and CreateAccount still acts as the caller, in its account identity.
+func (h *organizationsHandler) client(ctx context.Context, claims iam.Claims, op string) (dynamic.Interface, error) {
+	if op != "CreateAccount" && enforcing(ctx, h.authz, claims) {
+		if h.shimDyn == nil {
+			return nil, fmt.Errorf("the shim's client is not configured")
+		}
+		return h.shimDyn, nil
+	}
+	user, groups, ok := callerIdentity(ctx, h.authz, claims)
 	if !ok || h.callerDyn == nil {
 		return nil, fmt.Errorf("no caller identity or client")
 	}

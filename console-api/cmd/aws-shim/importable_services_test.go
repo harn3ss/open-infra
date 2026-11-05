@@ -57,6 +57,7 @@ var dynamicServices = map[string][]string{
 	"dynamo.go":         {"dynamodb"},
 	"kms.go":            {"kms"},
 	"lambda_read.go":    {"lambda"},
+	"organizations.go":  {"organizations"},
 	"rds.go":            {"rds"},
 	"s3.go":             {"s3"},
 	"ses.go":            {"ses"},

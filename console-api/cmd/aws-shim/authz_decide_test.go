@@ -269,7 +269,6 @@ func TestEveryLegacyCheckRunsOnlyAsALegacyDecision(t *testing.T) {
 	allowedFiles := map[string]string{
 		"authz_decide.go":   "the shared legacy closures themselves",
 		"policycheck.go":    "the legacy data-plane refinement itself",
-		"organizations.go":  "the Organizations front door is owned by the accounts track; it moves onto decide next",
 		"s3.go":             "S3 authorizes through internal/s3authz, which decides through iamauthz itself",
 		"cfn_authz_test.go": "",
 	}

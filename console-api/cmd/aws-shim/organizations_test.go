@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +11,9 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/accounts"
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -237,4 +240,39 @@ func TestHomeNamespaceBase(t *testing.T) {
 			t.Errorf("homeNamespaceBase(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// In enforce, Organizations is IAM policy alone, as every front door is: the coarse RBAC grant (the
+// SubjectAccessReview allows everything here) no longer counts, a principal its policy allows the read
+// is answered from the shim's own client (its RBAC, which the IAM compiler generates, may not exist yet),
+// and a policy that allows reads does not allow CreateAccount.
+func TestOrganizations_EnforceIsIAMPolicyAlone(t *testing.T) {
+	stmts, _, err := iamauthz.CompileDocument(`{"Version":"2012-10-17","Statement":[
+	  {"Effect":"Allow","Action":["organizations:Describe*","organizations:List*"],"Resource":"*"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := iam.Claims{Sub: "tester"}
+	h, _ := orgTestHandler(t, true, nil, orgAccountObj("912345678901", "team-a", "a@example.com", "team-a", false))
+	h.authz = checkerInMode(t, "enforce", dataplaneauthz.PolicyDoc{Name: "OrgRead", AppliesTo: []string{"User::tester"}, Statements: stmts})
+	h.callerDyn = func(string, []string) (dynamic.Interface, error) {
+		t.Error("an enforce-mode read acted as the caller")
+		return nil, errors.New("no caller client in enforce")
+	}
+	h.shimDyn = dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{gvrAccounts: "AccountList"}, orgAccountObj("912345678901", "team-a", "a@example.com", "team-a", false))
+
+	w, out := orgCall(t, h, reader, "ListAccounts", map[string]any{})
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListAccounts allowed by policy: %d %v", w.Code, out)
+	}
+	if w, out = orgCall(t, h, reader, "DescribeAccount", map[string]any{"AccountId": "912345678901"}); w.Code != http.StatusOK {
+		t.Fatalf("DescribeAccount allowed by policy: %d %v", w.Code, out)
+	}
+	w, out = orgCall(t, h, reader, "CreateAccount", map[string]any{"AccountName": "x", "Email": "x@example.com"})
+	wantOrgError(t, w, out, "AccessDeniedException")
+
+	// No policy: denied, though RBAC would allow.
+	w, out = orgCall(t, h, iam.Claims{Sub: "nobody"}, "DescribeOrganization", map[string]any{})
+	wantOrgError(t, w, out, "AccessDeniedException")
 }
