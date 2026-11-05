@@ -900,6 +900,41 @@ if [ "$(yget networking.lanExpose.enabled)" != "true" ] && [ -n "$KOURIER_DOMAIN
   fi
 fi
 
+# ── 4b2. the management account (kind: Account) ──
+# The install's own AWS account is its organization's management account: the account every ARN, StackId
+# and queue URL it has handed out carries (openinfra-aws-identity ACCOUNT_ID, 000000000000 unless set).
+# Its Account labels the console's IAM home and the namespaces the aws-shim keeps its resources in
+# (console-api/internal/accounts ManagementNamespaces) — a no-op relabel. Member accounts are created
+# later with organizations:CreateAccount. Skipped until the Account kind has synced; re-run install.sh.
+MGMT_ACCOUNT="$($KUBECTL -n open-infra-aws-shim get configmap openinfra-aws-identity -o jsonpath='{.data.ACCOUNT_ID}' 2>/dev/null)"
+MGMT_ACCOUNT="${MGMT_ACCOUNT:-000000000000}"
+if [ "$DRY_RUN" = 1 ]; then
+  printf '  + apply Account %s (the management account: open-infra-console + the shim service namespaces)\n' "$MGMT_ACCOUNT"
+elif ! $KUBECTL get crd accounts.organizations.openinfra.dev >/dev/null 2>&1; then
+  WARN "the Account kind has not synced yet — skipping the management account. Re-run install.sh once it has."
+elif ! printf '%s' "$MGMT_ACCOUNT" | grep -Eq '^[0-9]{12}$'; then
+  WARN "ACCOUNT_ID $MGMT_ACCOUNT is not a 12-digit account id — not creating the management account."
+else
+  LOG "management account $MGMT_ACCOUNT"
+  cat <<EOF | $KUBECTL apply -f - >/dev/null
+apiVersion: organizations.openinfra.dev/v1
+kind: Account
+metadata:
+  name: "$MGMT_ACCOUNT"
+spec:
+  accountId: "$MGMT_ACCOUNT"
+  isolation: none
+  namespaces:
+    - open-infra-console
+    - open-infra-cfn
+    - open-infra-ecr
+    - open-infra-ecs
+    - open-infra-open-appsync
+    - open-infra-rds
+    - open-infra-s3
+EOF
+fi
+
 # ── 4c. validated certificate domains (certificates.validatedDomains) ──
 # ACM issues a trusted certificate only for a domain whose ownership it validated; the operator's
 # equivalent is this list of domains it owns (a site value, never in the repo). For them the platform

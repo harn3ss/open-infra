@@ -1,5 +1,7 @@
-// Package awsidentity is the one AWS identity an open-infra install presents: a 12-digit account id,
-// a region and the `aws` partition. The aws-shim reports it (STS, ARNs, queue URLs, the StackId), the
+// Package awsidentity is the AWS identity an open-infra install presents: a 12-digit account id, a region
+// and the `aws` partition. The install's own account is the management account; a member account
+// (kind: Account, console-api/internal/accounts) presents the same region and partition with its own id
+// (Identity.ForAccount), carried per request on a context (WithIdentity / FromContext). The aws-shim reports it (STS, ARNs, queue URLs, the StackId), the
 // CloudFormation engine resolves the pseudo-parameters from it (AWS::AccountId, AWS::Region,
 // AWS::Partition, AWS::URLSuffix, AWS::StackId), and the VM composition gives the guest's instance
 // metadata the same values, so an ARN a template builds with ${AWS::AccountId} and ${AWS::Region}
@@ -11,6 +13,7 @@
 package awsidentity
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -131,6 +134,60 @@ func Current() Identity {
 	mu.RLock()
 	defer mu.RUnlock()
 	return current
+}
+
+// ForAccount is the identity of account accountID within this install: the install's region, partition
+// and public DNS suffix, with accountID as the account and homeNamespace (the account's home, where its
+// stacks are kept) as the stack namespace. The install's own account — the management account — is i
+// unchanged, so its ARNs, StackIds and stack namespace are exactly what they were before accounts. An empty
+// accountID is the management account; an empty homeNamespace keeps i's stack namespace.
+func (i Identity) ForAccount(accountID, homeNamespace string) Identity {
+	if accountID == "" || accountID == i.AccountID {
+		return i
+	}
+	out := i
+	out.AccountID = accountID
+	if homeNamespace != "" {
+		out.StackNamespace = homeNamespace
+	}
+	return out
+}
+
+// IsManagement reports whether accountID is this identity's own account (the install's, the management
+// account), or empty.
+func (i Identity) IsManagement(accountID string) bool {
+	return accountID == "" || accountID == i.AccountID
+}
+
+// AccountOfARN is the account field of an ARN (arn:<partition>:<service>:<region>:<account>:<resource>), or
+// "" when s is not an ARN or carries no account (an S3 bucket ARN, an AWS managed policy's "aws").
+func AccountOfARN(s string) string {
+	if !strings.HasPrefix(s, "arn:") {
+		return ""
+	}
+	parts := strings.SplitN(s, ":", 6)
+	if len(parts) < 6 || !accountRe.MatchString(parts[4]) {
+		return ""
+	}
+	return parts[4]
+}
+
+type ctxKey struct{}
+
+// WithIdentity carries id on ctx: the identity of the account a request acts in (the caller's). Code that
+// builds ARNs or resolves pseudo-parameters for that request reads it with FromContext.
+func WithIdentity(ctx context.Context, id Identity) context.Context {
+	return context.WithValue(ctx, ctxKey{}, id)
+}
+
+// FromContext is the identity WithIdentity put on ctx, else Current (the management account).
+func FromContext(ctx context.Context) Identity {
+	if ctx != nil {
+		if id, ok := ctx.Value(ctxKey{}).(Identity); ok {
+			return id
+		}
+	}
+	return Current()
 }
 
 // ARN builds arn:aws:<service>:<region>:<account>:<resource>. region is "" for a global service (IAM,

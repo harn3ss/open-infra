@@ -53,6 +53,7 @@ var servedHostForms = map[string][]string{
 	"athena":          {"athena.{r}"},
 	"eks":             {"eks.{r}"},
 	"ec2":             {"ec2.{r}"},
+	"organizations":   {"organizations.{r}"},
 }
 
 type rewriteRule struct {

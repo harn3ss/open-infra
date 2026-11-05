@@ -107,6 +107,12 @@ rules:
       - roles
       - grants
     verbs: [get, list, watch, create, update, patch, delete]
+  # The organization's accounts (kind: Account, AWS Organizations): the management account's, like IAM,
+  # so in their own group, which no wildcard reaches.
+  - apiGroups: [organizations.openinfra.dev]
+    resources:
+      - accounts
+    verbs: [get, list, watch, create, update, patch, delete]
   # Read the compiled ClusterRoles so the console can show what a Policy grants and what a
   # Role aggregates (read-only — the provider, not the console, writes them).
   - apiGroups: [rbac.authorization.k8s.io]

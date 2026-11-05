@@ -2406,6 +2406,9 @@ func TestConsoleRoles_NoKindDrift(t *testing.T) {
 		// An IdentityProvider registers an external OIDC issuer the platform trusts for
 		// AssumeRoleWithWebIdentity — admin-gated like userpools, not a poweruser knob.
 		"identityproviders": true,
+		// The organization's accounts are the management account's (AWS's PowerUserAccess excludes
+		// organizations:*), admin-only like the identity kinds.
+		"accounts": true,
 	}
 
 	roleBytes, err := os.ReadFile("../../platform/console/manifests/rbac-roles.yaml")

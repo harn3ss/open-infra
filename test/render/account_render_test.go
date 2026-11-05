@@ -1,0 +1,229 @@
+package render
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+)
+
+// kind: Account (platform/abstraction/account-composition.yaml): a namespace is labeled into its account;
+// a member account also gets the isolation baseline, Service Quotas defaults and its
+// OrganizationAccountAccessRole; the management account (the install's own) gets the labels only.
+
+func accountCtx(spec map[string]any, managementAccount string) map[string]any {
+	ctx := map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+		"apiVersion": "organizations.openinfra.dev/v1", "kind": "Account",
+		"metadata": map[string]any{"name": spec["accountId"], "uid": "00000000-0000-0000-0000-00000000acc7"},
+		"spec":     spec,
+	}}}}
+	if managementAccount != "" {
+		ctx["context"] = map[string]any{"apiextensions.crossplane.io/environment": map[string]any{"awsAccountId": managementAccount}}
+	}
+	return ctx
+}
+
+func accountDocs(t *testing.T, spec map[string]any, mgmt string) []map[string]any {
+	t.Helper()
+	out := render(t, extractInlineTemplate(t, "../../platform/abstraction/account-composition.yaml"), accountCtx(spec, mgmt))
+	docs, err := parseYAMLDocs(out)
+	if err != nil {
+		t.Fatalf("parse rendered account: %v\n%s", err, out)
+	}
+	return docs
+}
+
+// byKind collects the manifests the rendered Objects carry, and the composite status, by kind.
+func byKind(docs []map[string]any) map[string][]map[string]any {
+	out := map[string][]map[string]any{}
+	for _, d := range docs {
+		if d["kind"] == "Object" {
+			if m, ok := mget(d, "spec", "forProvider", "manifest").(map[string]any); ok {
+				out[mstr(m, "kind")] = append(out[mstr(m, "kind")], m)
+			}
+			continue
+		}
+		out[mstr(d, "kind")] = append(out[mstr(d, "kind")], d)
+	}
+	return out
+}
+
+func objectFor(docs []map[string]any, kind, name string) map[string]any {
+	for _, d := range docs {
+		if d["kind"] == "Object" && mstr(d, "spec", "forProvider", "manifest", "kind") == kind &&
+			mstr(d, "spec", "forProvider", "manifest", "metadata", "name") == name {
+			return d
+		}
+	}
+	return nil
+}
+
+func TestAccount_ManagementAccountOnlyLabels(t *testing.T) {
+	docs := accountDocs(t, map[string]any{"accountId": "000000000000",
+		"namespaces": []any{"open-infra-console", "open-infra-cfn"}}, "000000000000")
+	k := byKind(docs)
+	if len(k["Namespace"]) != 2 || len(k["NetworkPolicy"]) != 0 || len(k["ConfigMap"]) != 0 || len(k["Role"]) != 0 {
+		t.Fatalf("the management account renders only its namespaces' labels, got %v", keys(k))
+	}
+	home := k["Namespace"][0]
+	if mstr(home, "metadata", "name") != "open-infra-console" || mstr(home, "metadata", "labels", "openinfra.dev/account-id") != "000000000000" ||
+		mstr(home, "metadata", "labels", "openinfra.dev/account-home") != "true" || mstr(home, "metadata", "labels", "openinfra.dev/account-status") != "ACTIVE" {
+		t.Errorf("home namespace %v", home)
+	}
+	if other := k["Namespace"][1]; mget(other, "metadata", "labels", "openinfra.dev/account-home") != nil {
+		t.Errorf("only the first namespace is the home: %v", other)
+	}
+	st := k["Account"][0]
+	if fmt.Sprint(mget(st, "status", "management")) != "true" || mget(st, "status", "accessRoleArn") != nil {
+		t.Errorf("management status %v", st["status"])
+	}
+}
+
+// A namespace is labeled through an Object that never deletes it: closing an account keeps its data.
+func TestAccount_NamespacesAreNeverDeleted(t *testing.T) {
+	docs := accountDocs(t, map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a"}}, "000000000000")
+	o := objectFor(docs, "Namespace", "team-a")
+	if o == nil {
+		t.Fatal("no namespace Object")
+	}
+	if mstr(o, "spec", "deletionPolicy") != "Orphan" {
+		t.Errorf("deletionPolicy %q, want Orphan", mstr(o, "spec", "deletionPolicy"))
+	}
+	for _, p := range mget(o, "spec", "managementPolicies").([]any) {
+		if p == "Delete" || p == "*" {
+			t.Errorf("the namespace Object may delete the namespace: %v", mget(o, "spec", "managementPolicies"))
+		}
+	}
+}
+
+func TestAccount_MemberGetsBaselineQuotasAndAccessRole(t *testing.T) {
+	docs := accountDocs(t, map[string]any{"accountId": "912345678901",
+		"namespaces": []any{"team-a", "team-a-data"}}, "000000000000")
+	k := byKind(docs)
+	if len(k["Namespace"]) != 2 || len(k["NetworkPolicy"]) != 2 || len(k["ConfigMap"]) != 1 || len(k["Role"]) != 1 {
+		t.Fatalf("member account renders %v", keys(k))
+	}
+	for _, np := range k["NetworkPolicy"] {
+		from := mget(np, "spec", "ingress").([]any)[0].(map[string]any)["from"].([]any)
+		sameAccount := false
+		for _, peer := range from {
+			pm := peer.(map[string]any)
+			if mstr(pm, "namespaceSelector", "matchLabels", "openinfra.dev/account-id") == "912345678901" {
+				sameAccount = true
+			}
+			if sel, ok := pm["namespaceSelector"].(map[string]any); ok && len(sel) == 0 {
+				t.Errorf("an empty namespaceSelector admits every namespace: %v", pm)
+			}
+		}
+		if !sameAccount || mget(np, "spec", "podSelector") == nil {
+			t.Errorf("baseline must select every pod and admit the account's own namespaces: %v", np)
+		}
+	}
+	cm := k["ConfigMap"][0]
+	if mstr(cm, "metadata", "namespace") != "team-a" || !strings.Contains(mstr(cm, "data", "quotas.json"), "L-B99A9384") {
+		t.Errorf("quotas %v", cm)
+	}
+	role := k["Role"][0]
+	trust := mget(role, "spec", "trust").([]any)
+	if mstr(role, "metadata", "namespace") != "team-a" || mstr(role, "metadata", "annotations", "openinfra.dev/aws-name") != "OrganizationAccountAccessRole" ||
+		len(trust) != 1 || trust[0] != "arn:aws:iam::000000000000:root" {
+		t.Errorf("OrganizationAccountAccessRole %v", role)
+	}
+	st := k["Account"][0]
+	if fmt.Sprint(mget(st, "status", "management")) != "false" || mstr(st, "status", "accessRoleArn") != "arn:aws:iam::912345678901:role/OrganizationAccountAccessRole" {
+		t.Errorf("member status %v", st["status"])
+	}
+}
+
+// The role trusts the install's management account, whatever its id; without the environment it is the
+// default account.
+func TestAccount_AccessRoleTrustsTheManagementAccount(t *testing.T) {
+	docs := accountDocs(t, map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a"}}, "123456789012")
+	if trust := mget(byKind(docs)["Role"][0], "spec", "trust").([]any); trust[0] != "arn:aws:iam::123456789012:root" {
+		t.Errorf("trust %v", trust)
+	}
+	// An account whose id is the configured management account's is the management account.
+	if k := byKind(accountDocs(t, map[string]any{"accountId": "123456789012", "namespaces": []any{"x"}}, "123456789012")); len(k["Role"]) != 0 {
+		t.Error("the management account must not get an access role")
+	}
+	if trust := mget(byKind(accountDocs(t, map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a"}}, ""))["Role"][0], "spec", "trust").([]any); trust[0] != "arn:aws:iam::000000000000:root" {
+		t.Errorf("without the environment the management account is 000000000000, got %v", trust)
+	}
+}
+
+func TestAccount_IsolationNoneAndSuspended(t *testing.T) {
+	k := byKind(accountDocs(t, map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a"},
+		"isolation": "none", "suspended": true}, "000000000000"))
+	if len(k["NetworkPolicy"]) != 0 {
+		t.Error("isolation none renders no baseline")
+	}
+	if mstr(k["Namespace"][0], "metadata", "labels", "openinfra.dev/account-status") != "SUSPENDED" || mstr(k["Account"][0], "status", "state") != "SUSPENDED" {
+		t.Errorf("a suspended account labels its namespaces SUSPENDED: %v / %v", k["Namespace"][0], k["Account"][0]["status"])
+	}
+}
+
+func TestAccount_RefusesAMalformedAccount(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/account-composition.yaml")
+	for _, spec := range []map[string]any{
+		{"accountId": "12", "namespaces": []any{"a"}},
+		{"accountId": "912345678901", "namespaces": []any{}},
+	} {
+		if err := renderErr(tmpl, accountCtx(spec, "000000000000")); err == nil {
+			t.Errorf("spec %v rendered; want a fail guard", spec)
+		}
+	}
+}
+
+// The file's admission keeps an id and a namespace's account unique, and the providers hold what the
+// composition needs (and the RBAC it adds grants no tenant anything).
+func TestAccount_AdmissionAndProviderRBAC(t *testing.T) {
+	raw, err := os.ReadFile("../../platform/abstraction/account-composition.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs, err := parseYAMLDocs(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vap := map[string]map[string]any{}
+	bound := map[string]bool{}
+	for _, d := range docs {
+		switch d["kind"] {
+		case "ValidatingAdmissionPolicy":
+			vap[mstr(d, "metadata", "name")] = d
+		case "ValidatingAdmissionPolicyBinding":
+			bound[mstr(d, "spec", "policyName")] = true
+		case "ClusterRoleBinding":
+			for _, s := range mget(d, "subjects").([]any) {
+				sm := s.(map[string]any)
+				if sm["kind"] != "ServiceAccount" || sm["namespace"] != "crossplane-system" {
+					t.Errorf("%s binds %v: only the composition's own providers belong here", mstr(d, "metadata", "name"), sm)
+				}
+			}
+		}
+	}
+	idRule := vap["openinfra-account-named-by-id"]
+	if idRule == nil || !strings.Contains(mstr(mget(idRule, "spec", "validations").([]any)[0], "expression"), "object.metadata.name == object.spec.accountId") {
+		t.Error("no admission naming an Account by its id")
+	}
+	owner := vap["openinfra-account-namespace-owner"]
+	if owner == nil || !strings.Contains(mstr(mget(owner, "spec", "validations").([]any)[0], "expression"), "system:masters") {
+		t.Error("no admission keeping a namespace in its account")
+	}
+	for name := range vap {
+		if !bound[name] {
+			t.Errorf("ValidatingAdmissionPolicy %s has no binding, so it enforces nothing", name)
+		}
+		if mstr(vap[name], "spec", "failurePolicy") != "Fail" {
+			t.Errorf("%s must fail closed", name)
+		}
+	}
+}
+
+func keys(m map[string][]map[string]any) map[string]int {
+	out := map[string]int{}
+	for k, v := range m {
+		out[k] = len(v)
+	}
+	return out
+}

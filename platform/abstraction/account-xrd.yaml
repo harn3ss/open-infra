@@ -1,0 +1,143 @@
+# kind: Account — an AWS account (AWS Organizations' member account), the boundary every principal,
+# resource and ARN belongs to.
+#
+# An account owns one or more namespaces. Its composition labels each of them
+# openinfra.dev/account-id=<accountId> (the first, its home, also openinfra.dev/account-home=true): the
+# aws-shim, the console and the CloudFormation engine read the labels (console-api/internal/accounts) to
+# resolve a caller's account, build its ARNs with that account's id, and keep its resources in its
+# namespaces. Its IAM (Users, Groups, Roles, Policies) lives in its home namespace.
+#
+# The management account is the install's own account (openinfra-aws-identity, ACCOUNT_ID — 000000000000
+# unless configured): every ARN, StackId and queue URL an install has already handed out keeps its id, and a
+# namespace no account claims belongs to it. install.sh creates its Account. A member account is created
+# with organizations:CreateAccount through the aws-shim, or as this object; it gets, as on AWS:
+#   - an isolation baseline (spec.isolation): ingress to its namespaces only from its own namespaces and the
+#     platform's data path, so one account's workloads cannot reach another's;
+#   - Service Quotas defaults in its home namespace;
+#   - OrganizationAccountAccessRole in its home namespace, which the management account may assume
+#     ("Switch role" in the console), with AdministratorAccess.
+#
+# Cluster-scoped and composite-only (no claim): an account is the container of namespaces, so it lives in
+# none. The object is named by its account id — admission requires metadata.name == spec.accountId (the
+# ValidatingAdmissionPolicy in account-composition.yaml) — so an id is unique by construction.
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: accounts.organizations.openinfra.dev
+  annotations:
+    openinfra.dev/chaos-role: "none"
+    openinfra.dev/chaos-offers: ""
+    openinfra.dev/chaos-accepts: ""
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  group: organizations.openinfra.dev
+  names:
+    kind: Account
+    plural: accounts
+  defaultCompositionRef:
+    name: account
+  versions:
+    - name: v1
+      served: true
+      referenceable: true
+      additionalPrinterColumns:
+        - { name: ALIAS, type: string, jsonPath: .spec.alias }
+        - { name: HOME, type: string, jsonPath: ".spec.namespaces[0]" }
+        - { name: STATUS, type: string, jsonPath: .status.state }
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [accountId, namespaces]
+              x-kubernetes-validations:
+                - rule: "self.accountId == oldSelf.accountId"
+                  message: an account's id never changes
+                - rule: "self.namespaces[0] == oldSelf.namespaces[0]"
+                  message: an account's home namespace (the first in namespaces) never changes
+                # Platform-internal namespaces are never an account's. Kept in step with
+                # console-api/internal/accounts PlatformNamespaces/PlatformPrefixes by a test.
+                - rule: >-
+                    self.namespaces.all(n, !(n in ['argocd', 'cdi', 'cert-manager', 'chaos-mesh', 'cnpg-system',
+                    'crossplane-system', 'dcgm-exporter', 'gpu-operator', 'keda', 'kourier-system', 'kubevirt',
+                    'kyverno', 'lakehouse', 'longhorn-system', 'mail', 'mariadb-operator', 'metallb-system', 'minio',
+                    'monitoring', 'nats', 'nvidia-device-plugin', 'open-infra-authz', 'open-infra-aws-shim',
+                    'open-infra-prepull', 'redis', 'sealed-secrets', 'vault', 'velero']) &&
+                    !n.startsWith('kube-') && !n.startsWith('knative-') && !n.startsWith('openinfra-'))
+                  message: a platform namespace (the cluster's own machinery) cannot belong to an account
+              properties:
+                accountId:
+                  type: string
+                  pattern: '^[0-9]{12}$'
+                  description: >-
+                    The account's 12-digit id, in every ARN of its principals and resources. The management
+                    account's is the install's ACCOUNT_ID. A new account's is given here (an imported estate
+                    keeps its real id), or derived by CreateAccount: 9 followed by 11 digits of its home
+                    namespace's SHA-256. The object's name must equal it.
+                alias:
+                  type: string
+                  pattern: '^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])?$'
+                  description: >-
+                    The account alias (AWS's iam:CreateAccountAlias): 3–63 lowercase letters, digits and
+                    hyphens, shown in the console and as the account's name in Organizations.
+                email:
+                  type: string
+                  maxLength: 64
+                  pattern: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$'
+                  description: The account's email address, as AWS Organizations records it.
+                namespaces:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  x-kubernetes-list-type: set
+                  description: >-
+                    The namespaces the account owns. The first is its home: its IAM objects live there and
+                    the aws-shim creates its resources there. A namespace belongs to one account at most
+                    (admission refuses moving one that another account holds, except to a cluster
+                    administrator). Removing a namespace from the list leaves the namespace and its label.
+                  items:
+                    type: string
+                    maxLength: 63
+                    pattern: '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
+                parent:
+                  type: string
+                  pattern: '^(r-[0-9a-z]{4,32}|ou-[0-9a-z]{4,32}-[a-z0-9]{8,32})$'
+                  description: >-
+                    The Organizations root (r-…) or organizational unit (ou-…) the account sits under. Unset:
+                    the organization's root.
+                isolation:
+                  type: string
+                  enum: [baseline, none]
+                  default: baseline
+                  description: >-
+                    baseline (the default for a member account): ingress to the account's pods only from its
+                    own namespaces and the platform's data path (the Functions gateway, the ingress
+                    controller and host-network traffic, the console, the aws-shim, the AppSync engine,
+                    Prometheus and the database operators). Policies a workload carries itself (an
+                    Application's, a VM's security groups) still admit what they admit. none: no account
+                    policy. The management account never gets one.
+                suspended:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Suspend the account (AWS's SUSPENDED state): its namespaces are labeled
+                    openinfra.dev/account-status=SUSPENDED, and the platform's front doors refuse its
+                    principals. Unsuspend by setting it false.
+            status:
+              type: object
+              properties:
+                state:
+                  type: string
+                  description: ACTIVE or SUSPENDED (AWS Organizations' account status).
+                management:
+                  type: boolean
+                  description: Whether this is the management account (the install's own).
+                homeNamespace:
+                  type: string
+                accessRoleArn:
+                  type: string
+                  description: The ARN of the account's OrganizationAccountAccessRole (a member account only).
+                ready:
+                  type: boolean

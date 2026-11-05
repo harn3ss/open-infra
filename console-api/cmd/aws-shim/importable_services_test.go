@@ -28,6 +28,10 @@ type dataPlaneCall struct {
 var notImportable = map[string]string{
 	"ec2messages": "the SSM agent's channel; only its named actions import (policyengine.SupportedActions)",
 	"ec2":         "the EC2 front door serves part of EC2; only its named actions import (policyengine.SupportedActions)",
+	// Organizations (organizations.go) is the management account's; until the importer maps its ARNs
+	// (arn:aws:organizations::<management>:account/o-…/<id>) an imported organizations statement is refused
+	// (never widened), and a native data-plane policy grants it.
+	"organizations": "the management account's front door; its ARN forms are not mapped by the importer yet, so imported statements refuse",
 }
 
 // dynamicResourceTypes are the resource types of the checks whose type is a variable, per file (read from
@@ -99,6 +103,7 @@ var exampleArn = map[string]string{
 // notImportableTypes are resource types the shim checks that no AWS ARN names, each with why.
 var notImportableTypes = map[string]string{
 	"Namespace": "CloudWatch metrics and alarms are authorized per namespace, which AWS policies scope with a condition (cloudwatch:namespace), not an ARN; Resource \"*\" imports",
+	"Account":   "Organizations accounts (organizations.go); the importer does not map organizations ARNs yet, so the service is not importable (notImportable)",
 }
 
 // scanDataPlaneCalls parses the shim's non-test sources and returns every data-plane check.

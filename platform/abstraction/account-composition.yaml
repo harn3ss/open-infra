@@ -1,0 +1,323 @@
+# The account compiler: one kind: Account -> its namespaces labeled into the account, and, for a member
+# account, the isolation baseline, Service Quotas defaults and OrganizationAccountAccessRole.
+#
+# The management account (the install's own, openinfra-aws-identity awsAccountId) only labels its
+# namespaces: nothing about how they work changes, so creating its Account is a no-op relabel.
+#
+# A namespace is labeled through a provider-kubernetes Object with no Delete in its managementPolicies and
+# deletionPolicy Orphan: closing an account (deleting its Account) never deletes a namespace or its data.
+#
+# Synced after the XRD (sync-wave 3). Also here: the admission that keeps an account id and a namespace's
+# account unique, and the RBAC the composition's providers need for namespaces and Roles.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: account
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  compositeTypeRef:
+    apiVersion: organizations.openinfra.dev/v1
+    kind: Account
+  mode: Pipeline
+  pipeline:
+    # The install's AWS identity (platform/aws-shim/aws-identity.yaml): its account is the management
+    # account. Optional: without it the management account is 000000000000.
+    - step: environment
+      functionRef:
+        name: crossplane-contrib-function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          policy:
+            resolution: Optional
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: openinfra-aws-identity
+    - step: render-resources
+      functionRef:
+        name: crossplane-contrib-function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: Inline
+        inline:
+          template: |
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $mgmt := index $envCfg "awsAccountId" | default "000000000000" }}
+            {{- $acct := $spec.accountId | default "" }}
+            {{- if not (regexMatch "^[0-9]{12}$" $acct) }}
+            {{-   fail "kind: Account needs spec.accountId, 12 digits" }}
+            {{- end }}
+            {{- $nss := $spec.namespaces | default list }}
+            {{- if eq (len $nss) 0 }}
+            {{-   fail "kind: Account needs at least one namespace in spec.namespaces (the first is its home)" }}
+            {{- end }}
+            {{- $home := index $nss 0 }}
+            {{- $isMgmt := eq $acct $mgmt }}
+            {{- $state := "ACTIVE" }}{{- if $spec.suspended }}{{- $state = "SUSPENDED" }}{{- end }}
+            {{- $isolation := $spec.isolation | default "baseline" }}
+            {{- range $i, $ns := $nss }}
+            ---
+            # Namespace {{ $ns }} into account {{ $acct }}. Observe/Create/Update only and orphaned on delete:
+            # an Account never deletes a namespace. Create covers a new account's home (CreateAccount).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: {{ printf "ns-%s" $ns | toJson }}
+            spec:
+              managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+              deletionPolicy: Orphan
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Namespace
+                  metadata:
+                    name: {{ $ns | toJson }}
+                    labels:
+                      openinfra.dev/account-id: {{ $acct | toJson }}
+                      openinfra.dev/account-status: {{ $state | toJson }}
+                      {{- if eq $i 0 }}
+                      openinfra.dev/account-home: "true"
+                      {{- end }}
+            {{- if and (not $isMgmt) (eq $isolation "baseline") }}
+            ---
+            # The account's isolation baseline in {{ $ns }}: ingress only from the account's own namespaces and
+            # the platform's data path. Additive with the policies a workload carries itself (an Application's,
+            # a Function's, a VM's security groups), which still admit what they admit; the baseline closes
+            # what had no policy at all. Kubelet probes come from the pod's own node, which kube-ovn admits.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: {{ printf "isolation-%s" $ns | toJson }}
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: openinfra-account-isolation
+                    namespace: {{ $ns | toJson }}
+                    labels: { openinfra.dev/isolation: account, openinfra.dev/account-id: {{ $acct | toJson }} }
+                  spec:
+                    podSelector: {}
+                    policyTypes: [Ingress]
+                    ingress:
+                      - from:
+                          # the account's own namespaces
+                          - namespaceSelector: { matchLabels: { openinfra.dev/account-id: {{ $acct | toJson }} } }
+                          # Knative's data path: the gateway, the activator and the autoscaler
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+                          # the ingress controller on the pod network, and host-sourced traffic (host-network
+                          # Traefik, NodePort and LoadBalancer Services), which arrives as a node's join IP
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: traefik } }
+                          - ipBlock: { cidr: 100.64.0.0/16 }
+                          # the console (database stats, point-in-time restore) and the aws-shim's front doors
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-console } }
+                            podSelector: { matchLabels: { app: console } }
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-aws-shim } }
+                            podSelector: { matchLabels: { app: aws-shim } }
+                          # the AppSync engine (a GraphQL API's data sources)
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-open-appsync } }
+                          # Prometheus, scraping metrics
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                            podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+                          # the database operators (instance status, backups, failover; users and grants)
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: cnpg-system } }
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: mariadb-operator } }
+            {{- end }}
+            {{- end }}
+            {{- if not $isMgmt }}
+            ---
+            # Service Quotas defaults for the account (AWS's applied quotas for a new account), read by the
+            # platform's quota checks and its Service Quotas front door. Values are this platform's defaults.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: service-quotas
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: openinfra-service-quotas
+                    namespace: {{ $home | toJson }}
+                    labels: { openinfra.dev/account-id: {{ $acct | toJson }} }
+                  data:
+                    quotas.json: |
+                      [
+                        {"ServiceCode": "ec2", "QuotaCode": "L-1216C47A", "QuotaName": "Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances", "Unit": "None", "Value": 64},
+                        {"ServiceCode": "lambda", "QuotaCode": "L-B99A9384", "QuotaName": "Concurrent executions", "Unit": "None", "Value": 1000},
+                        {"ServiceCode": "cloudformation", "QuotaCode": "L-0485CB21", "QuotaName": "Stack count", "Unit": "None", "Value": 2000},
+                        {"ServiceCode": "s3", "QuotaCode": "L-DC2B2D3D", "QuotaName": "General purpose buckets", "Unit": "None", "Value": 100},
+                        {"ServiceCode": "dynamodb", "QuotaCode": "L-F98FE922", "QuotaName": "Maximum number of tables", "Unit": "None", "Value": 2500}
+                      ]
+            ---
+            # OrganizationAccountAccessRole: the role the management account assumes into this account
+            # ("Switch role"), with AdministratorAccess, as AWS Organizations creates in every member account.
+            # The Kubernetes name is the AWS name lowercased; openinfra.dev/aws-name carries the AWS name.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: access-role
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: iam.openinfra.dev/v1
+                  kind: Role
+                  metadata:
+                    name: organizationaccountaccessrole
+                    namespace: {{ $home | toJson }}
+                    labels: { openinfra.dev/account-id: {{ $acct | toJson }} }
+                    annotations: { openinfra.dev/aws-name: OrganizationAccountAccessRole }
+                  spec:
+                    description: The management account's administrator access into this account (AWS Organizations).
+                    trust: [{{ printf "arn:aws:iam::%s:root" $mgmt | toJson }}]
+                    policies: ["arn:aws:iam::aws:policy/AdministratorAccess"]
+            {{- end }}
+            ---
+            apiVersion: organizations.openinfra.dev/v1
+            kind: Account
+            status:
+              state: {{ $state | toJson }}
+              management: {{ $isMgmt }}
+              homeNamespace: {{ $home | toJson }}
+              {{- if not $isMgmt }}
+              accessRoleArn: {{ printf "arn:aws:iam::%s:role/OrganizationAccountAccessRole" $acct | toJson }}
+              {{- end }}
+              ready: true
+    - step: ready
+      functionRef:
+        name: crossplane-contrib-function-auto-ready
+---
+# An account is named by its account id, so two accounts can never share one: the API server refuses a
+# second object of the same name.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-account-named-by-id
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["organizations.openinfra.dev"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["accounts"]
+  validations:
+    - expression: "has(object.spec.accountId) && object.metadata.name == object.spec.accountId"
+      message: an Account is named by its account id (metadata.name must equal spec.accountId)
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-account-named-by-id
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  policyName: openinfra-account-named-by-id
+  validationActions: [Deny]
+---
+# A namespace belongs to one account: once labeled into an account, its account label is not changed or
+# removed, except by a cluster administrator (system:masters) moving it on purpose. So a second Account
+# listing a namespace another holds fails to apply, and says why, instead of taking it over.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-account-namespace-owner
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["namespaces"]
+  matchConditions:
+    # only a namespace already in an account; every other namespace update is untouched
+    - name: in-an-account
+      expression: "has(oldObject.metadata.labels) && 'openinfra.dev/account-id' in oldObject.metadata.labels && oldObject.metadata.labels['openinfra.dev/account-id'] != ''"
+  validations:
+    - expression: >-
+        (has(object.metadata.labels) && 'openinfra.dev/account-id' in object.metadata.labels &&
+        object.metadata.labels['openinfra.dev/account-id'] == oldObject.metadata.labels['openinfra.dev/account-id'])
+        || 'system:masters' in request.userInfo.groups
+      messageExpression: >-
+        'namespace ' + object.metadata.name + ' belongs to account ' +
+        oldObject.metadata.labels['openinfra.dev/account-id'] +
+        ': only a cluster administrator moves a namespace between accounts'
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-account-namespace-owner
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  policyName: openinfra-account-namespace-owner
+  validationActions: [Deny]
+---
+# What the account composition's providers need: Crossplane reads and writes Accounts (a new API group, so
+# the group-wide grant the other kinds' groups have does not cover it), and provider-kubernetes labels
+# namespaces (creating a new account's home) and writes the account's OrganizationAccountAccessRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crossplane:openinfra-organizations-access
+rules:
+  - apiGroups: ["organizations.openinfra.dev"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crossplane:openinfra-organizations-access
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: crossplane:openinfra-organizations-access
+subjects:
+  - kind: ServiceAccount
+    name: crossplane
+    namespace: crossplane-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: provider-kubernetes:openinfra-accounts
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["iam.openinfra.dev"]
+    resources: ["roles"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: provider-kubernetes:openinfra-accounts
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: provider-kubernetes:openinfra-accounts
+subjects:
+  - kind: ServiceAccount
+    name: provider-kubernetes
+    namespace: crossplane-system

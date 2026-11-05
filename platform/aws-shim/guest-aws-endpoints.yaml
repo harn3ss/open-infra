@@ -464,7 +464,7 @@ data:
         # A registry by its ECR name.
         rewrite stop name regex ^[0-9]{12}\.dkr\.ecr\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ ecr-registry-aws.open-infra-ecr.svc.cluster.local. answer auto
         # The regional endpoints of the services the aws-shim serves.
-        rewrite stop name regex ^(acm|api\.ecr|athena|apigateway|appsync|cloudformation|cognito-idp|dynamodb|ec2|ecr|ecs|eks|email|events|glue|kinesis|kms|lambda|logs|monitoring|rds|s3|secretsmanager|sns|sqs|ssm|states|streams\.dynamodb|sts|sync-states)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        rewrite stop name regex ^(acm|api\.ecr|athena|apigateway|appsync|cloudformation|cognito-idp|dynamodb|ec2|ecr|ecs|eks|email|events|glue|kinesis|kms|lambda|logs|monitoring|organizations|rds|s3|secretsmanager|sns|sqs|ssm|states|streams\.dynamodb|sts|sync-states)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
         # An API's invoke name, an AppSync API's, a bucket's (regional or global).
         rewrite stop name regex ^[a-z0-9]+\.(execute-api|appsync-api)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
         rewrite stop name regex ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3(\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+)?\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto

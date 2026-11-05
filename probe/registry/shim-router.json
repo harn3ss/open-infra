@@ -578,6 +578,18 @@
         "sns:Publish"
       ]
     },
+    "organizations": {
+      "handler": "organizationsHandler",
+      "operations": [
+        "CreateAccount",
+        "DescribeAccount",
+        "DescribeCreateAccountStatus",
+        "DescribeOrganization",
+        "ListAccounts",
+        "ListAccountsForParent",
+        "ListRoots"
+      ]
+    },
     "rds": {
       "handler": "rdsHandler",
       "operations": [
