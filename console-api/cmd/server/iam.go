@@ -57,7 +57,13 @@ func iamPasswordSecretName(user string) string { return "iam-pw-" + user }
 
 type crdGroupSpec struct {
 	Description string `json:"description"`
+	// ClusterRole is the legacy permission tier (deprecated: a Group is a container of policies, as on
+	// AWS). Kept readable so existing groups still show what they grant until they are migrated.
 	ClusterRole string `json:"clusterRole"`
+	// Policies are the managed and customer policies attached to the group (AWS AttachGroupPolicy).
+	Policies []string `json:"policies,omitempty"`
+	// InlinePolicies are the group's own inline policies (AWS PutGroupPolicy).
+	InlinePolicies []inlinePolicyCR `json:"inlinePolicies,omitempty"`
 }
 
 type crdGroup struct {
@@ -121,6 +127,12 @@ type iamUserView struct {
 	// "managed policies attached to a user" analog. They confer the user's data-plane authority at
 	// the aws-shim; control-plane authority still comes only from Groups. Always a non-nil array.
 	Policies []string `json:"policies"`
+	// PermissionBoundary is the policy capping the user's identity-based policies ("" = none).
+	PermissionBoundary string `json:"permissionBoundary"`
+	// InlinePolicies are the user's own inline policies. Always an array.
+	InlinePolicies []inlinePolicy `json:"inlinePolicies"`
+	// ARN is the user's IAM ARN (arn:aws:iam::<account>:user/<name>).
+	ARN string `json:"arn"`
 	// HasPassword is false for a User whose passwordSecretRef points nowhere usable —
 	// a directory user, or one created before its Secret existed. The UI shows it so an
 	// admin isn't surprised that someone can't sign in.
@@ -136,12 +148,51 @@ type iamUserView struct {
 type iamGroupView struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// ClusterRole is the legacy permission tier, if the group still carries one (deprecated).
 	ClusterRole string `json:"clusterRole"`
 	BoundTo     string `json:"boundTo"`
 	Ready       bool   `json:"ready"`
 	// Impersonable is false when openinfra:<name> is outside the impersonator ceiling, so
-	// the group is inert until an operator widens it. The UI warns on these.
+	// the group is inert until an operator widens it. The UI warns on these (legacy tiers only).
 	Impersonable bool `json:"impersonable"`
+	// Policies are the policies attached to the group; InlinePolicies its own. Always arrays.
+	Policies       []string       `json:"policies"`
+	InlinePolicies []inlinePolicy `json:"inlinePolicies"`
+	// Members are the users in the group (only on the detail view).
+	Members []string `json:"members,omitempty"`
+	// ARN is the group's IAM ARN (arn:aws:iam::<account>:group/<name>).
+	ARN string `json:"arn"`
+}
+
+func groupView(r *http.Request, g crdGroup) iamGroupView {
+	return iamGroupView{
+		Name:           g.Metadata.Name,
+		Description:    g.Spec.Description,
+		ClusterRole:    g.Spec.ClusterRole,
+		BoundTo:        g.Status.BoundTo,
+		Ready:          g.Status.Ready,
+		Impersonable:   isBuiltinGroup(g.Metadata.Name),
+		Policies:       groupList(g.Spec.Policies),
+		InlinePolicies: inlineViews(g.Spec.InlinePolicies),
+		ARN:            iamEntityARN("group", callerAccount(r), g.Metadata.Name),
+	}
+}
+
+func userView(r *http.Request, u crdUser, hasPw bool) iamUserView {
+	return iamUserView{
+		Name:               u.Metadata.Name,
+		DisplayName:        u.Spec.DisplayName,
+		Source:             u.Spec.Source,
+		Disabled:           u.Spec.Disabled,
+		Groups:             groupList(u.Spec.Groups),
+		Policies:           groupList(u.Spec.Policies),
+		PermissionBoundary: u.Spec.PermissionBoundary,
+		InlinePolicies:     inlineViews(u.Spec.InlinePolicies),
+		ARN:                iamEntityARN("user", callerAccount(r), u.Metadata.Name),
+		HasPassword:        hasPw,
+		UnboundGroups:      unboundGroups(u.Spec.Groups),
+		Tags:               tagsFromAnnotations(u.Metadata.Annotations),
+	}
 }
 
 func isBuiltinGroup(name string) bool {
@@ -201,17 +252,7 @@ func handleIAMUsersList(cs kubernetes.Interface, auth *authStore, logger *slog.L
 		out := make([]iamUserView, 0, len(users))
 		for _, u := range users {
 			_, hasPw := auth.crdPasswordHash(r.Context(), u)
-			out = append(out, iamUserView{
-				Name:          u.Metadata.Name,
-				DisplayName:   u.Spec.DisplayName,
-				Source:        u.Spec.Source,
-				Disabled:      u.Spec.Disabled,
-				Groups:        groupList(u.Spec.Groups),
-				Policies:      groupList(u.Spec.Policies),
-				HasPassword:   hasPw,
-				UnboundGroups: unboundGroups(u.Spec.Groups),
-				Tags:          tagsFromAnnotations(u.Metadata.Annotations),
-			})
+			out = append(out, userView(r, u, hasPw))
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
@@ -231,17 +272,7 @@ func handleIAMUserGet(cs kubernetes.Interface, auth *authStore, logger *slog.Log
 			return
 		}
 		_, hasPw := auth.crdPasswordHash(r.Context(), u)
-		writeJSON(w, http.StatusOK, iamUserView{
-			Name:          u.Metadata.Name,
-			DisplayName:   u.Spec.DisplayName,
-			Source:        u.Spec.Source,
-			Disabled:      u.Spec.Disabled,
-			Groups:        u.Spec.Groups,
-			Policies:      groupList(u.Spec.Policies),
-			HasPassword:   hasPw,
-			UnboundGroups: unboundGroups(u.Spec.Groups),
-			Tags:          tagsFromAnnotations(u.Metadata.Annotations),
-		})
+		writeJSON(w, http.StatusOK, userView(r, u, hasPw))
 	}
 }
 
@@ -254,7 +285,13 @@ type createUserReq struct {
 	// at the aws-shim (§3); CONTROL-plane authority still comes only through Groups. Mirrors the
 	// update path (handleIAMUserUpdate) so create is no longer the gap.
 	Policies []string `json:"policies"`
-	Password string   `json:"password"`
+	// PermissionBoundary names the policy that caps the user's identity-based policies ("" = none).
+	PermissionBoundary string `json:"permissionBoundary"`
+	// InlinePolicies are the user's own inline policies (AWS JSON documents).
+	InlinePolicies []inlinePolicy `json:"inlinePolicies"`
+	// Password is the console password (AWS's login profile). Optional, as on AWS: a user without one
+	// has no console access and uses access keys.
+	Password string `json:"password"`
 }
 
 func handleIAMUserCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -269,48 +306,77 @@ func handleIAMUserCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name must be a lowercase DNS label (a-z, 0-9, -)"})
 			return
 		}
-		if len(in.Password) < 8 {
+		if in.Password != "" && len(in.Password) < 8 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters"})
 			return
 		}
-		// Creating a User needs create on users AND on secrets (the hash lives in one).
-		// Check both, so a caller who could make the User but not its Secret is refused up
-		// front rather than leaving a passwordless User behind.
+		warnings, msg := checkInline(in.InlinePolicies)
+		if msg != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg, "errorCode": "MalformedPolicyDocument"})
+			return
+		}
+		// Creating a User needs create on users AND, with a password, on secrets (the hash lives in
+		// one). Check both, so a caller who could make the User but not its Secret is refused up front
+		// rather than leaving a passwordless User behind.
 		if !authorize(w, r, cs, auth, logger, "create", "iam.openinfra.dev", "users", auth.ns, in.Name) {
 			return
 		}
-		if !authorize(w, r, cs, auth, logger, "create", "", "secrets", auth.ns, "") {
+		groups, policies := cleanGroups(in.Groups), cleanGroups(in.Policies)
+		if in.Password != "" {
+			if !authorize(w, r, cs, auth, logger, "create", "", "secrets", auth.ns, "") {
+				return
+			}
+			if !consoleIAM.require(w, r, "iam:CreateLoginProfile", iamEntityARN("user", callerAccount(r), in.Name)) {
+				return
+			}
+		}
+		if !requireChange(w, r, attachmentChange{kind: "user", name: in.Name,
+			policiesAdded: len(policies) > 0, groupsAdded: groups,
+			boundarySet: strings.TrimSpace(in.PermissionBoundary) != "", inlinePut: len(in.InlinePolicies) > 0}) {
 			return
 		}
 
-		secretName := iamPasswordSecretName(in.Name)
-		if err := auth.writePasswordSecret(r.Context(), secretName, in.Name, in.Password); err != nil {
-			logger.Error("iam: create password secret", "user", in.Name, "error", err.Error())
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not store password"})
-			return
+		spec := map[string]any{
+			"displayName": in.DisplayName,
+			"source":      "local",
+			"groups":      groups,
+			"policies":    policies,
+		}
+		if pb := strings.TrimSpace(in.PermissionBoundary); pb != "" {
+			spec["permissionBoundary"] = pb
+		}
+		if len(in.InlinePolicies) > 0 {
+			spec["inlinePolicies"] = inlineSpec(in.InlinePolicies)
+		}
+		secretName := ""
+		if in.Password != "" {
+			secretName = iamPasswordSecretName(in.Name)
+			if err := auth.writePasswordSecret(r.Context(), secretName, in.Name, in.Password); err != nil {
+				logger.Error("iam: create password secret", "user", in.Name, "error", err.Error())
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not store password"})
+				return
+			}
+			spec["passwordSecretRef"] = map[string]any{"name": secretName, "key": iamPasswordKey}
 		}
 
 		body := map[string]any{
 			"apiVersion": "iam.openinfra.dev/v1",
 			"kind":       "User",
 			"metadata":   map[string]any{"name": in.Name, "namespace": auth.ns},
-			"spec": map[string]any{
-				"displayName":       in.DisplayName,
-				"source":            "local",
-				"groups":            cleanGroups(in.Groups),
-				"policies":          cleanGroups(in.Policies),
-				"passwordSecretRef": map[string]any{"name": secretName, "key": iamPasswordKey},
-			},
+			"spec":       spec,
 		}
 		if err := auth.postCR(r.Context(), usersAbsPath(auth.ns), body); err != nil {
 			// Roll back the orphaned Secret so a retry with the same name isn't blocked.
-			_ = cs.CoreV1().Secrets(auth.ns).Delete(r.Context(), secretName, metav1.DeleteOptions{})
+			if secretName != "" {
+				_ = cs.CoreV1().Secrets(auth.ns).Delete(r.Context(), secretName, metav1.DeleteOptions{})
+			}
 			logger.Error("iam: create user", "user", in.Name, "error", err.Error())
 			writeIAMErr(w, err)
 			return
 		}
 		logger.Info("iam: user created", "user", in.Name, "by", subjectOf(r))
-		writeJSON(w, http.StatusCreated, map[string]string{"name": in.Name})
+		writeJSON(w, http.StatusCreated, map[string]any{"name": in.Name, "warnings": nonNil(warnings),
+			"arn": iamEntityARN("user", callerAccount(r), in.Name)})
 	}
 }
 
@@ -322,7 +388,11 @@ type updateUserReq struct {
 	// explicit [] detaches everything. The §3 backend makes spec.policies govern the user's data
 	// plane, so this is how "attach a policy to a user" actually takes effect.
 	Policies *[]string `json:"policies"`
-	Disabled *bool     `json:"disabled"`
+	// PermissionBoundary sets ("<policy>") or clears ("") the user's boundary when present.
+	PermissionBoundary *string `json:"permissionBoundary"`
+	// InlinePolicies replaces the user's inline policies when present ([] removes them all).
+	InlinePolicies *[]inlinePolicy `json:"inlinePolicies"`
+	Disabled       *bool           `json:"disabled"`
 }
 
 func handleIAMUserUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -336,22 +406,55 @@ func handleIAMUserUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.
 		if !authorize(w, r, cs, auth, logger, "update", "iam.openinfra.dev", "users", auth.ns, name) {
 			return
 		}
+		var warnings []string
+		if in.InlinePolicies != nil {
+			ws, msg := checkInline(*in.InlinePolicies)
+			if msg != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg, "errorCode": "MalformedPolicyDocument"})
+				return
+			}
+			warnings = ws
+		}
+		cur, _ := auth.rawUser(r.Context(), name)
+		change := attachmentChange{kind: "user", name: name}
 		spec := map[string]any{}
 		if in.DisplayName != nil {
 			spec["displayName"] = *in.DisplayName
 		}
 		if in.Groups != nil {
-			spec["groups"] = cleanGroups(*in.Groups)
+			g := cleanGroups(*in.Groups)
+			spec["groups"] = g
+			change.groupsAdded, change.groupsRemoved = setDiff(cur.Spec.Groups, g)
 		}
 		if in.Policies != nil {
 			// cleanGroups trims + dedupes; the same tidy applied to a role's spec.policies.
-			spec["policies"] = cleanGroups(*in.Policies)
+			p := cleanGroups(*in.Policies)
+			spec["policies"] = p
+			added, removed := setDiff(cur.Spec.Policies, p)
+			change.policiesAdded, change.policiesRemoved = len(added) > 0, len(removed) > 0
+		}
+		if in.PermissionBoundary != nil {
+			pb := strings.TrimSpace(*in.PermissionBoundary)
+			if pb == "" {
+				spec["permissionBoundary"] = nil
+				change.boundaryDeleted = cur.Spec.PermissionBoundary != ""
+			} else {
+				spec["permissionBoundary"] = pb
+				change.boundarySet = pb != cur.Spec.PermissionBoundary
+			}
+		}
+		if in.InlinePolicies != nil {
+			spec["inlinePolicies"] = inlineSpec(*in.InlinePolicies)
+			change.inlinePut, change.inlineDeleted = inlineDiff(cur.Spec.InlinePolicies, *in.InlinePolicies)
 		}
 		if in.Disabled != nil {
 			spec["disabled"] = *in.Disabled
 		}
 		if len(spec) == 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing to update"})
+			return
+		}
+		if !requireChange(w, r, change) {
 			return
 		}
 		patch := map[string]any{"spec": spec}
@@ -361,7 +464,7 @@ func handleIAMUserUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.
 			return
 		}
 		logger.Info("iam: user updated", "user", name, "by", subjectOf(r))
-		writeJSON(w, http.StatusOK, map[string]string{"name": name})
+		writeJSON(w, http.StatusOK, map[string]any{"name": name, "warnings": nonNil(warnings)})
 	}
 }
 
@@ -464,23 +567,40 @@ func handleIAMGroupsList(cs kubernetes.Interface, auth *authStore, logger *slog.
 		groups := auth.listCRDGroups(r.Context())
 		out := make([]iamGroupView, 0, len(groups))
 		for _, g := range groups {
-			out = append(out, iamGroupView{
-				Name:         g.Metadata.Name,
-				Description:  g.Spec.Description,
-				ClusterRole:  g.Spec.ClusterRole,
-				BoundTo:      g.Status.BoundTo,
-				Ready:        g.Status.Ready,
-				Impersonable: isBuiltinGroup(g.Metadata.Name),
-			})
+			out = append(out, groupView(r, g))
 		}
 		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// handleIAMGroupGet is one group with its policies and members (AWS GetGroup).
+func handleIAMGroupGet(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := chi.URLParam(r, "name")
+		if !authorize(w, r, cs, auth, logger, "get", "iam.openinfra.dev", "groups", auth.ns, name) {
+			return
+		}
+		g, ok := auth.crdGroupByName(r.Context(), name)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such group", "errorCode": "NoSuchEntity"})
+			return
+		}
+		v := groupView(r, g)
+		v.Members = groupList(usersInGroup(auth.listCRDUsers(r.Context()), name))
+		writeJSON(w, http.StatusOK, v)
 	}
 }
 
 type groupReq struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// ClusterRole is the legacy permission tier (deprecated). Optional: a group is a container of
+	// policies, and grants what its policies grant.
 	ClusterRole string `json:"clusterRole"`
+	// Policies attaches managed or customer policies to the group (applied when present).
+	Policies *[]string `json:"policies"`
+	// InlinePolicies replaces the group's inline policies when present.
+	InlinePolicies *[]inlinePolicy `json:"inlinePolicies"`
 }
 
 func handleIAMGroupCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -495,18 +615,39 @@ func handleIAMGroupCreate(cs kubernetes.Interface, auth *authStore, logger *slog
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name must be a lowercase DNS label (a-z, 0-9, -)"})
 			return
 		}
-		if strings.TrimSpace(in.ClusterRole) == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "clusterRole is required — it is the only field that grants anything"})
-			return
+		var warnings []string
+		if in.InlinePolicies != nil {
+			ws, msg := checkInline(*in.InlinePolicies)
+			if msg != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg, "errorCode": "MalformedPolicyDocument"})
+				return
+			}
+			warnings = ws
 		}
 		if !authorize(w, r, cs, auth, logger, "create", "iam.openinfra.dev", "groups", auth.ns, in.Name) {
+			return
+		}
+		spec := map[string]any{"description": in.Description}
+		if cr := strings.TrimSpace(in.ClusterRole); cr != "" {
+			spec["clusterRole"] = cr
+		}
+		change := attachmentChange{kind: "group", name: in.Name}
+		if in.Policies != nil && len(*in.Policies) > 0 {
+			spec["policies"] = cleanGroups(*in.Policies)
+			change.policiesAdded = true
+		}
+		if in.InlinePolicies != nil && len(*in.InlinePolicies) > 0 {
+			spec["inlinePolicies"] = inlineSpec(*in.InlinePolicies)
+			change.inlinePut = true
+		}
+		if !requireChange(w, r, change) {
 			return
 		}
 		body := map[string]any{
 			"apiVersion": "iam.openinfra.dev/v1",
 			"kind":       "Group",
 			"metadata":   map[string]any{"name": in.Name, "namespace": auth.ns},
-			"spec":       map[string]any{"description": in.Description, "clusterRole": in.ClusterRole},
+			"spec":       spec,
 		}
 		if err := auth.postCR(r.Context(), groupsAbsPath(auth.ns), body); err != nil {
 			logger.Error("iam: create group", "group", in.Name, "error", err.Error())
@@ -514,7 +655,8 @@ func handleIAMGroupCreate(cs kubernetes.Interface, auth *authStore, logger *slog
 			return
 		}
 		logger.Info("iam: group created", "group", in.Name, "by", subjectOf(r))
-		writeJSON(w, http.StatusCreated, map[string]string{"name": in.Name})
+		writeJSON(w, http.StatusCreated, map[string]any{"name": in.Name, "warnings": nonNil(warnings),
+			"arn": iamEntityARN("group", callerAccount(r), in.Name)})
 	}
 }
 
@@ -529,9 +671,33 @@ func handleIAMGroupUpdate(cs kubernetes.Interface, auth *authStore, logger *slog
 		if !authorize(w, r, cs, auth, logger, "update", "iam.openinfra.dev", "groups", auth.ns, name) {
 			return
 		}
+		var warnings []string
+		if in.InlinePolicies != nil {
+			ws, msg := checkInline(*in.InlinePolicies)
+			if msg != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg, "errorCode": "MalformedPolicyDocument"})
+				return
+			}
+			warnings = ws
+		}
+		cur, _ := auth.crdGroupByName(r.Context(), name)
 		spec := map[string]any{"description": in.Description}
 		if cr := strings.TrimSpace(in.ClusterRole); cr != "" {
 			spec["clusterRole"] = cr
+		}
+		change := attachmentChange{kind: "group", name: name}
+		if in.Policies != nil {
+			p := cleanGroups(*in.Policies)
+			spec["policies"] = p
+			added, removed := setDiff(cur.Spec.Policies, p)
+			change.policiesAdded, change.policiesRemoved = len(added) > 0, len(removed) > 0
+		}
+		if in.InlinePolicies != nil {
+			spec["inlinePolicies"] = inlineSpec(*in.InlinePolicies)
+			change.inlinePut, change.inlineDeleted = inlineDiff(cur.Spec.InlinePolicies, *in.InlinePolicies)
+		}
+		if !requireChange(w, r, change) {
+			return
 		}
 		if err := auth.patchCR(r.Context(), groupsAbsPath(auth.ns)+"/"+name, map[string]any{"spec": spec}); err != nil {
 			logger.Error("iam: update group", "group", name, "error", err.Error())
@@ -539,7 +705,7 @@ func handleIAMGroupUpdate(cs kubernetes.Interface, auth *authStore, logger *slog
 			return
 		}
 		logger.Info("iam: group updated", "group", name, "by", subjectOf(r))
-		writeJSON(w, http.StatusOK, map[string]string{"name": name})
+		writeJSON(w, http.StatusOK, map[string]any{"name": name, "warnings": nonNil(warnings)})
 	}
 }
 

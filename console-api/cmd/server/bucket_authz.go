@@ -9,6 +9,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
 	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 )
 
 // bucketAuthz authorizes the console's bucket browser as the signed-in user, with the aws-shim's own
@@ -28,18 +29,31 @@ type bucketAuthz struct {
 // console's ServiceAccount already lists the IAM objects); if the dynamic client cannot be built the
 // checker is nil, which leaves Users to the coarse review — as the aws-shim does without an engine.
 func newBucketAuthz(client *k8s.Client, auth *authStore, logger *slog.Logger) *bucketAuthz {
-	var checker *dataplaneauthz.Checker
-	if dyn, err := dynamic.NewForConfig(client.Config); err != nil {
-		logger.Warn("bucket browser: data-plane policies not enforced (no dynamic client)", slog.String("error", err.Error()))
-	} else {
-		home := getenv("USERS_NAMESPACE", dataplaneauthz.DefaultHomeNamespace)
-		checker = dataplaneauthz.New(dataplaneauthz.K8sLoaderIn(dyn, home), 30*time.Second)
-	}
+	return newBucketAuthzWith(*client.Clientset, auth, newPolicyChecker(client, logger), logger)
+}
+
+// newBucketAuthzWith builds the gate over an existing policy checker, so the bucket browser and the
+// console's route gate (iam_authz.go) read one cached policy world.
+func newBucketAuthzWith(cs kubernetes.Interface, auth *authStore, checker *dataplaneauthz.Checker, logger *slog.Logger) *bucketAuthz {
 	return &bucketAuthz{
-		gate:   s3authz.Gate{CS: *client.Clientset, Authz: checker, NS: getenv("AUTHZ_NAMESPACE", "default")},
+		gate:   s3authz.Gate{CS: cs, Authz: checker, NS: getenv("AUTHZ_NAMESPACE", "default")},
 		auth:   auth,
 		logger: logger,
 	}
+}
+
+// newPolicyChecker reads the IAM policy world (Policies, Users, Groups, Roles) from the cluster with the
+// console's ServiceAccount, which already lists the IAM objects. When the dynamic client cannot be built
+// the checker is nil: no IAM evaluator, so every decision stays legacy (the SubjectAccessReviews), as the
+// aws-shim does without an engine.
+func newPolicyChecker(client *k8s.Client, logger *slog.Logger) *dataplaneauthz.Checker {
+	dyn, err := dynamic.NewForConfig(client.Config)
+	if err != nil {
+		logger.Warn("IAM policies not evaluated (no dynamic client); legacy authorization only", slog.String("error", err.Error()))
+		return nil
+	}
+	home := getenv("USERS_NAMESPACE", dataplaneauthz.DefaultHomeNamespace)
+	return dataplaneauthz.New(dataplaneauthz.K8sLoaderIn(dyn, home), 30*time.Second)
 }
 
 // allow reports whether the signed-in user may make the request, writing the refusal when not. With

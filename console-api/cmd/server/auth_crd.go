@@ -30,9 +30,14 @@ type crdUserSpec struct {
 	// dataPlane blocks confer the user's DATA-PLANE authority at the aws-shim front doors — the
 	// AWS "attach a managed policy to a user" analog. Control-plane authority still comes only
 	// from spec.groups; an attached policy's control-plane statements are not conferred here.
-	Policies          []string `json:"policies"`
-	Source            string   `json:"source"`
-	Disabled          bool     `json:"disabled"`
+	Policies []string `json:"policies"`
+	// PermissionBoundary names the managed or customer policy that caps what the user's identity-based
+	// policies can grant (AWS's permissions boundary); "" = none.
+	PermissionBoundary string `json:"permissionBoundary,omitempty"`
+	// InlinePolicies are the user's own inline policies (AWS PutUserPolicy).
+	InlinePolicies    []inlinePolicyCR `json:"inlinePolicies,omitempty"`
+	Source            string           `json:"source"`
+	Disabled          bool             `json:"disabled"`
 	PasswordSecretRef struct {
 		Name string `json:"name"`
 		Key  string `json:"key"`

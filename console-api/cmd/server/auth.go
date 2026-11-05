@@ -402,6 +402,12 @@ func requireWrite(a *authStore, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// With IAM policy deciding, a write is an IAM action like any other (ReadOnlyAccess simply grants
+		// none); the "readonly" tier no longer exists to gate on.
+		if consoleIAM.enforced(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
 			c, ok := claimsFrom(r)

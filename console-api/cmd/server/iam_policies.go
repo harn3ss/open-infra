@@ -123,7 +123,11 @@ type crdPolicy struct {
 		Labels map[string]string `json:"labels,omitempty"`
 	} `json:"metadata"`
 	Spec struct {
-		Description  string            `json:"description"`
+		Description string `json:"description"`
+		// Document is the AWS JSON policy document (stored as written, as text or an object) — the
+		// policy's source of truth once written; the native blocks below are its legacy forms.
+		Document     json.RawMessage   `json:"document,omitempty"`
+		ARN          string            `json:"arn,omitempty"`
 		Statements   []policyStatement `json:"statements"`
 		DataPlane    *cedarBlock       `json:"dataPlane,omitempty"`
 		ControlPlane *cedarBlock       `json:"controlPlane,omitempty"`
@@ -146,6 +150,9 @@ type crdRole struct {
 		Policies             []string `json:"policies"`
 		Trust                []string `json:"trust"`
 		RevokeSessionsBefore string   `json:"revokeSessionsBefore,omitempty"`
+		// PermissionBoundary caps what the role's policies can grant; InlinePolicies are its own.
+		PermissionBoundary string           `json:"permissionBoundary,omitempty"`
+		InlinePolicies     []inlinePolicyCR `json:"inlinePolicies,omitempty"`
 	} `json:"spec"`
 	Status struct {
 		Ready       bool   `json:"ready"`
@@ -225,9 +232,14 @@ func (a *authStore) crdRoleByName(ctx context.Context, name string) (crdRole, bo
 // ── Views ──────────────────────────────────────────────────────────────────────
 
 type iamPolicyView struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Statements  []policyStatement `json:"statements"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// Document is the AWS JSON policy document ("" for a policy still written in the native form).
+	Document string `json:"document,omitempty"`
+	// ARN is the policy's ARN: AWS's own for a managed policy (arn:aws:iam::aws:policy/<Name>), the
+	// account's for a customer policy.
+	ARN        string            `json:"arn"`
+	Statements []policyStatement `json:"statements"`
 	// DataPlane/ControlPlane carry the Cedar blocks (Allow/Deny + conditions) so the visual/JSON
 	// editor can read and write them. Omitted (pointer nil) for a policy that has neither, so the
 	// existing control-plane-only shape is unchanged for old consumers.
@@ -257,6 +269,11 @@ type iamRoleView struct {
 	Trust       []string `json:"trust"`
 	ClusterRole string   `json:"clusterRole"`
 	Ready       bool     `json:"ready"`
+	// PermissionBoundary is the role's boundary ("" = none); InlinePolicies its own (always an array).
+	PermissionBoundary string         `json:"permissionBoundary"`
+	InlinePolicies     []inlinePolicy `json:"inlinePolicies"`
+	// ARN is the role's IAM ARN (arn:aws:iam::<account>:role/<name>).
+	ARN string `json:"arn"`
 	// RevokeSessionsBefore is the "Revoke sessions" cutoff (RFC3339): assumed-role sessions issued
 	// before it are revoked at the shim. Empty means no cutoff (nothing revoked). The console shows
 	// it and the "Revoke sessions" action sets it to now.
@@ -267,8 +284,13 @@ type iamRoleView struct {
 }
 
 func policyView(p crdPolicy) iamPolicyView {
+	arn := p.Spec.ARN
+	if arn == "" {
+		arn = iamEntityARN("policy", iamManagementAccount, p.Metadata.Name)
+	}
 	return iamPolicyView{
 		Name: p.Metadata.Name, Description: p.Spec.Description, Statements: p.Spec.Statements,
+		Document: documentString(p.Spec.Document), ARN: arn,
 		DataPlane: p.Spec.DataPlane, ControlPlane: p.Spec.ControlPlane,
 		ClusterRole: p.Status.ClusterRole, RuleCount: p.Status.RuleCount, Ready: p.Status.Ready,
 		Managed:  isManagedPolicy(p.Metadata.Labels),
@@ -280,6 +302,8 @@ func policyView(p crdPolicy) iamPolicyView {
 func roleView(r crdRole) iamRoleView {
 	return iamRoleView{
 		Name: r.Metadata.Name, Description: r.Spec.Description, Policies: r.Spec.Policies,
+		PermissionBoundary: r.Spec.PermissionBoundary, InlinePolicies: inlineViews(r.Spec.InlinePolicies),
+		ARN:         iamEntityARN("role", iamManagementAccount, r.Metadata.Name),
 		Trust:       groupList(r.Spec.Trust),
 		ClusterRole: r.Status.ClusterRole, Ready: r.Status.Ready,
 		RevokeSessionsBefore: r.Spec.RevokeSessionsBefore,
@@ -454,9 +478,12 @@ func handleIAMPolicyGet(cs kubernetes.Interface, auth *authStore, logger *slog.L
 }
 
 type policyReq struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Statements  []policyStatement `json:"statements"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// Document is the AWS JSON policy document (as on IAM's CreatePolicy). On update it is applied only
+	// when present; "" removes it.
+	Document   *string           `json:"document,omitempty"`
+	Statements []policyStatement `json:"statements"`
 	// DataPlane/ControlPlane are optional Cedar blocks. A nil pointer means "not provided" — on
 	// update the stored block is then left untouched (backward-compatible with the old client that
 	// only knew about statements); send an empty block ({appliesTo:[],statements:[]}) to clear one.
@@ -468,6 +495,12 @@ type policyReq struct {
 // against the permission boundary (when present), Cedar blocks for shape, and the requirement that
 // a policy carry at least one rule somewhere. Returns "" when valid.
 func validatePolicyReq(in policyReq) string {
+	if in.Document != nil && strings.TrimSpace(*in.Document) != "" {
+		if _, msg := checkDocument(*in.Document); msg != "" {
+			return msg
+		}
+		return ""
+	}
 	if len(in.Statements) > 0 {
 		if msg := validateStatements(in.Statements); msg != "" {
 			return msg
@@ -498,13 +531,16 @@ func handleIAMPolicyCreate(cs kubernetes.Interface, auth *authStore, logger *slo
 			return
 		}
 		if msg := validatePolicyReq(in); msg != "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+			writeJSON(w, http.StatusBadRequest, policyErr(msg))
 			return
 		}
 		if !authorize(w, r, cs, auth, logger, "create", "iam.openinfra.dev", "policies", auth.ns, in.Name) {
 			return
 		}
 		spec := map[string]any{"description": in.Description, "statements": normStatements(in.Statements)}
+		if in.Document != nil && strings.TrimSpace(*in.Document) != "" {
+			spec["document"] = *in.Document
+		}
 		if in.DataPlane != nil {
 			spec["dataPlane"] = normCedar(in.DataPlane)
 		}
@@ -536,7 +572,7 @@ func handleIAMPolicyUpdate(cs kubernetes.Interface, auth *authStore, logger *slo
 			return
 		}
 		if msg := validatePolicyReq(in); msg != "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+			writeJSON(w, http.StatusBadRequest, policyErr(msg))
 			return
 		}
 		if !authorize(w, r, cs, auth, logger, "update", "iam.openinfra.dev", "policies", auth.ns, name) {
@@ -549,6 +585,13 @@ func handleIAMPolicyUpdate(cs kubernetes.Interface, auth *authStore, logger *slo
 			return
 		}
 		spec := map[string]any{"description": in.Description, "statements": normStatements(in.Statements)}
+		if in.Document != nil {
+			if strings.TrimSpace(*in.Document) == "" {
+				spec["document"] = nil
+			} else {
+				spec["document"] = *in.Document
+			}
+		}
 		// Only touch a Cedar plane when the request carries it (pointer non-nil): a client that
 		// doesn't know about dataPlane leaves an existing block intact; sending an empty block
 		// clears one.
@@ -636,6 +679,10 @@ type roleReq struct {
 	// when present in the request body (a non-nil slice — an explicit [] clears it, an absent key
 	// leaves the stored trust untouched, so an old client that doesn't send trust cannot wipe it).
 	Trust []string `json:"trust"`
+	// PermissionBoundary sets ("<policy>") or clears ("") the role's boundary when present.
+	PermissionBoundary *string `json:"permissionBoundary"`
+	// InlinePolicies replaces the role's inline policies when present.
+	InlinePolicies *[]inlinePolicy `json:"inlinePolicies"`
 }
 
 func handleIAMRoleCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -650,20 +697,39 @@ func handleIAMRoleCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name must be a lowercase DNS label (a-z, 0-9, -)"})
 			return
 		}
+		if in.InlinePolicies != nil {
+			if _, msg := checkInline(*in.InlinePolicies); msg != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg, "errorCode": "MalformedPolicyDocument"})
+				return
+			}
+		}
 		if !authorize(w, r, cs, auth, logger, "create", "iam.openinfra.dev", "roles", auth.ns, in.Name) {
+			return
+		}
+		spec := map[string]any{
+			"description": in.Description,
+			"policies":    cleanGroups(in.Policies),
+			// nil trust normalises to [] — a role starts assumable by no one (fail closed),
+			// exactly as an AWS role needs an explicit trust policy.
+			"trust": cleanGroups(in.Trust),
+		}
+		change := attachmentChange{kind: "role", name: in.Name, policiesAdded: len(cleanGroups(in.Policies)) > 0}
+		if in.PermissionBoundary != nil && strings.TrimSpace(*in.PermissionBoundary) != "" {
+			spec["permissionBoundary"] = strings.TrimSpace(*in.PermissionBoundary)
+			change.boundarySet = true
+		}
+		if in.InlinePolicies != nil && len(*in.InlinePolicies) > 0 {
+			spec["inlinePolicies"] = inlineSpec(*in.InlinePolicies)
+			change.inlinePut = true
+		}
+		if !requireChange(w, r, change) {
 			return
 		}
 		body := map[string]any{
 			"apiVersion": "iam.openinfra.dev/v1",
 			"kind":       "Role",
 			"metadata":   map[string]any{"name": in.Name, "namespace": auth.ns},
-			"spec": map[string]any{
-				"description": in.Description,
-				"policies":    cleanGroups(in.Policies),
-				// nil trust normalises to [] — a role starts assumable by no one (fail closed),
-				// exactly as an AWS role needs an explicit trust policy.
-				"trust": cleanGroups(in.Trust),
-			},
+			"spec":       spec,
 		}
 		if err := auth.postCR(r.Context(), rolesAbsPath(auth.ns), body); err != nil {
 			logger.Error("iam: create role", "role", in.Name, "error", err.Error())
@@ -686,11 +752,41 @@ func handleIAMRoleUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.
 		if !authorize(w, r, cs, auth, logger, "update", "iam.openinfra.dev", "roles", auth.ns, name) {
 			return
 		}
-		spec := map[string]any{"description": in.Description, "policies": cleanGroups(in.Policies)}
+		if in.InlinePolicies != nil {
+			if _, msg := checkInline(*in.InlinePolicies); msg != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg, "errorCode": "MalformedPolicyDocument"})
+				return
+			}
+		}
+		cur, _ := auth.crdRoleByName(r.Context(), name)
+		policies := cleanGroups(in.Policies)
+		spec := map[string]any{"description": in.Description, "policies": policies}
+		change := attachmentChange{kind: "role", name: name}
+		added, removed := setDiff(cur.Spec.Policies, policies)
+		change.policiesAdded, change.policiesRemoved = len(added) > 0, len(removed) > 0
 		// Apply trust only when the request carries it, so an old client (which never sends trust)
 		// leaves the stored trust policy intact rather than silently clearing it.
 		if in.Trust != nil {
-			spec["trust"] = cleanGroups(in.Trust)
+			t := cleanGroups(in.Trust)
+			spec["trust"] = t
+			ta, tr := setDiff(cur.Spec.Trust, t)
+			change.trustChanged = len(ta) > 0 || len(tr) > 0
+		}
+		if in.PermissionBoundary != nil {
+			if pb := strings.TrimSpace(*in.PermissionBoundary); pb == "" {
+				spec["permissionBoundary"] = nil
+				change.boundaryDeleted = cur.Spec.PermissionBoundary != ""
+			} else {
+				spec["permissionBoundary"] = pb
+				change.boundarySet = pb != cur.Spec.PermissionBoundary
+			}
+		}
+		if in.InlinePolicies != nil {
+			spec["inlinePolicies"] = inlineSpec(*in.InlinePolicies)
+			change.inlinePut, change.inlineDeleted = inlineDiff(cur.Spec.InlinePolicies, *in.InlinePolicies)
+		}
+		if !requireChange(w, r, change) {
+			return
 		}
 		patch := map[string]any{"spec": spec}
 		if err := auth.patchCR(r.Context(), rolesAbsPath(auth.ns)+"/"+name, patch); err != nil {

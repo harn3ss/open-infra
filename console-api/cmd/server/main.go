@@ -33,9 +33,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/crd"
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
-	"github.com/harn3ss/open-infra/console-api/internal/proxy"
 	"github.com/harn3ss/open-infra/console-api/internal/tracing"
-	"github.com/harn3ss/open-infra/console-api/internal/watch"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -146,6 +144,13 @@ func run(logger *slog.Logger) error {
 
 // newRouter assembles the chi router with middleware and all routes.
 func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Handler {
+	r, _ := buildRouter(client, auth, logger)
+	return r
+}
+
+// buildRouter is newRouter, also returning the console's IAM gate (its route registry), so a test can
+// check that every route the router serves has an IAM action.
+func buildRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) (*chi.Mux, *consoleAuthz) {
 	r := chi.NewRouter()
 
 	// Standard middleware: request id, structured access logging via slog,
@@ -156,7 +161,15 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 	r.Use(requestLogger(logger))
 	r.Use(middleware.Recoverer)
 
+	// One policy world: the bucket browser's object-storage check and every route's IAM gate read the
+	// same IAM policy cache (iam_authz.go).
+	checker := newPolicyChecker(client, logger)
+	z := newConsoleAuthz(*client.Clientset, auth, checker, logger)
+	consoleIAM = z
+	logger.Info("console authorization", slog.String("iam_authz", string(z.eval.Mode())))
+
 	// --- Health ---
+	z.public(http.MethodGet, "/healthz", "liveness probe")
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -170,258 +183,12 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 		// using the pod's ServiceAccount to any anonymous caller.
 		api.Use(auth.requireAuth)
 
-		// Read-only users may not invoke the BFF's own mutating endpoints. (The
-		// k8s proxy below is governed by real RBAC via impersonation instead.)
+		// Read-only users may not invoke the BFF's own mutating endpoints (legacy and shadow; with IAM
+		// policy deciding, writes are IAM actions like any other).
 		api.Use(func(next http.Handler) http.Handler { return requireWrite(auth, next) })
 
-		api.Post("/auth/login", handleLogin(auth))
-		api.Post("/auth/logout", handleLogout(auth))
-		api.Get("/auth/me", handleMe(auth))
-
-		// Runtime config: read from env on every request so a redeploy or
-		// ConfigMap change is picked up without rebuilding the SPA.
-		api.Get("/config", handleConfig)
-
-		// Grafana dashboard list (server-side proxy to Grafana's /api/search) so
-		// the SPA can populate a dashboard picker without hitting CORS. Read-only.
-		api.With(middleware.Timeout(15*time.Second)).
-			Get("/grafana/dashboards", handleGrafanaDashboards(logger))
-
-		// CRD schema (short-lived): wrap with a request timeout.
-		api.With(middleware.Timeout(15*time.Second)).
-			Get("/crd-schema", handleCRDSchema(crd.New(client.Host, client.Transport), logger))
-
-		// MinIO object storage (S3 browser) + NATS JetStream (queues). These talk
-		// to in-cluster MinIO/NATS rather than the k8s API, so they're their own
-		// endpoints (not the /k8s proxy).
-		// The bucket browser authorizes each call as the signed-in user with the aws-shim's own
-		// object-storage check (bucket_authz.go): one policy world, whichever door.
-		buckets := newBucketAuthz(client, auth, logger)
-		api.With(middleware.Timeout(15*time.Second)).
-			Get("/buckets", handleBuckets(*client.Clientset, buckets, logger))
-		api.With(middleware.Timeout(20*time.Second)).
-			Get("/buckets/{bucket}/objects", handleBucketObjects(*client.Clientset, buckets, logger))
-		api.With(middleware.Timeout(10*time.Second)).
-			Get("/queues", handleQueues(logger))
-
-		// Resource interactions: bucket/object writes, model chat (playground),
-		// queue publish/purge. Upload/download have no request timeout (large
-		// transfers); chat allows a long timeout for generation.
-		api.With(middleware.Timeout(10*time.Second)).
-			Post("/buckets", handleCreateBucket(*client.Clientset, buckets, logger))
-		api.With(middleware.Timeout(10*time.Second)).
-			Delete("/buckets/{bucket}", handleDeleteBucket(*client.Clientset, buckets, logger))
-		api.Put("/buckets/{bucket}/object", handleUploadObject(*client.Clientset, buckets, logger))
-		api.Get("/buckets/{bucket}/object", handleDownloadObject(*client.Clientset, buckets, logger))
-		api.With(middleware.Timeout(10*time.Second)).
-			Delete("/buckets/{bucket}/object", handleDeleteObject(*client.Clientset, buckets, logger))
-		api.With(middleware.Timeout(125*time.Second)).
-			Post("/models/{namespace}/{name}/chat", handleModelChat(*client.Clientset, logger))
-		api.With(middleware.Timeout(30*time.Second)).
-			Get("/functions/{namespace}/{name}/routes", handleFunctionRoutes(*client.Clientset, logger))
-		// Code tab: the function's source (inline ConfigMap, unpacked .zip package,
-		// or an honest "not viewable" for a container image). Reads the package from
-		// MinIO, so give it room beyond the default request timeout.
-		api.With(middleware.Timeout(30*time.Second)).
-			Get("/functions/{namespace}/{name}/code", handleFunctionCode(*client.Clientset, logger))
-		api.With(middleware.Timeout(65*time.Second)).
-			Post("/functions/{namespace}/{name}/invoke", handleFunctionInvoke(*client.Clientset, logger))
-		api.With(middleware.Timeout(35*time.Second)).
-			Post("/graphqlapis/{namespace}/{name}/test-resolver", handleGraphQLTestResolver(*client.Clientset, logger))
-		api.With(middleware.Timeout(10*time.Second)).
-			Post("/queues/publish", handleQueuePublish(logger))
-		api.With(middleware.Timeout(10*time.Second)).
-			Get("/queues/{stream}/messages", handleQueuePeek(logger))
-		api.With(middleware.Timeout(15*time.Second)).
-			Post("/queues/{stream}/purge", handleQueuePurge(logger))
-
-		// DMS wizard: discover a source's tables (connects to the source DB directly).
-		api.With(middleware.Timeout(15*time.Second)).
-			Post("/migrations/discover", handleMigrationDiscover(logger))
-		// DMS observability: live apply-pipeline status (JetStream lag, per-table
-		// counts, dead-letter) the browser can't read from NATS directly.
-		api.With(middleware.Timeout(15*time.Second)).
-			Get("/migrations/{namespace}/{name}/status", handleMigrationStatus(logger))
-		api.With(middleware.Timeout(15*time.Second)).
-			Get("/replications/{namespace}/{name}/status", handleReplicationStatus(logger))
-		// DataFlow canvas: per-edge live status for an arbitrary topology. POST
-		// because the edge list (which the UI already has from the loaded CR) is
-		// the input — the server maps each edge to its stream(s)/durable(s).
-		api.With(middleware.Timeout(15*time.Second)).
-			Post("/dataflows/{namespace}/{name}/status", handleDataFlowStatus(logger))
-		// Live database-engine internals (top queries, connections, replication-slot
-		// lag) for a Data Flow database node / RDS detail page. Reads the node's
-		// credential Secret server-side, connects read-only. (issue #56)
-		api.With(middleware.Timeout(15*time.Second)).
-			Post("/db-stats", handleDBStats(*client.Clientset, client.Host, client.Transport, logger))
-		api.With(middleware.Timeout(15*time.Second)).
-			Post("/databases/{namespace}/{name}/stats", handleManagedDBStats(*client.Clientset, logger))
-		// Read-only AD Explorer for kind: Directory — LDAP search only, creds resolved
-		// from the directory's own Secret server-side (never client-supplied).
-		api.With(middleware.Timeout(15*time.Second)).
-			Post("/directories/{namespace}/{name}/ldap", handleDirectoryLDAP(*client.Clientset, logger))
-		// Athena: read a kind: Query's state + result rows from MinIO (the query
-		// engine writes results there; the console never runs SQL itself).
-		api.With(middleware.Timeout(15*time.Second)).
-			Get("/queries/{namespace}/{name}/result", handleQueryResult(*client.Clientset, logger))
-		// Iceberg catalog (schemas → tables) for the Query editor's Data tree when
-		// the Trino engine is selected. Read from the always-on REST catalog.
-		api.With(middleware.Timeout(15*time.Second)).
-			Get("/catalog/tables", handleCatalogTables(logger))
-
-		// Cost Explorer — "what AWS would have charged": price live cluster capacity
-		// (nodes/PVCs/LBs/GPUs) against AWS list rates. Read-only estimate.
-		api.With(middleware.Timeout(15*time.Second)).
-			Get("/cost", handleCost(*client.Clientset, logger))
-
-		// Node disk usage — live root-filesystem utilization per node, from Prometheus
-		// (node-exporter). The Node object has capacity but not usage; this fills the
-		// Nodes page's disk row. Keyed by node IP; fails soft to {} if Prometheus is down.
-		api.With(middleware.Timeout(12*time.Second)).
-			Get("/nodes/disk", handleNodeDisk(*client.Clientset, auth, logger))
-
-		// Architecture capability (#41 Phase 3) — fuses the declared per-kind arch registry
-		// (kind-architectures.yaml) with the cluster's live node arches so create surfaces can
-		// disable-with-reason instead of silently hiding kinds. Read-only; fails open.
-		api.With(middleware.Timeout(15*time.Second)).
-			Get("/capabilities", handleCapabilities(*client.Clientset, logger))
-
-		// Database snapshots — "final snapshot before you deprovision" (RDS-style): a
-		// pg_dump to MinIO that survives the DB's deletion, restorable into a new DB.
-		api.With(middleware.Timeout(20*time.Second)).
-			Post("/databases/{namespace}/{name}/snapshot", handleSnapshotCreate(*client.Clientset, auth, logger))
-		api.With(middleware.Timeout(20*time.Second)).Get("/snapshots", handleSnapshotList(*client.Clientset, logger))
-		api.With(middleware.Timeout(20*time.Second)).Post("/snapshots/restore", handleSnapshotRestore(*client.Clientset, auth, logger))
-		api.With(middleware.Timeout(20*time.Second)).Post("/databases/{namespace}/{name}/backtrack", handleBacktrack(*client.Clientset, auth, logger))
-		api.With(middleware.Timeout(20*time.Second)).Delete("/snapshots", handleSnapshotDelete(*client.Clientset, auth, logger))
-
-		// VM snapshots — same "final snapshot before deprovision", for Longhorn-rooted VMs: a
-		// durable longhorn-backup of the root disk, restorable into a new VM (existingRootClaim).
-		api.With(middleware.Timeout(20*time.Second)).
-			Post("/vms/{namespace}/{name}/snapshot", handleVMSnapshotCreate(*client.Clientset, auth, logger))
-		api.With(middleware.Timeout(20*time.Second)).Get("/vm-snapshots", handleVMSnapshotList(*client.Clientset, logger))
-		api.With(middleware.Timeout(20*time.Second)).Post("/vm-snapshots/restore", handleVMSnapshotRestore(*client.Clientset, auth, logger))
-		api.With(middleware.Timeout(20*time.Second)).Delete("/vm-snapshots", handleVMSnapshotDelete(*client.Clientset, auth, logger))
-
-		// ML: register a finished TrainingJob as a ModelPackage — the one manual hop in the
-		// train→serve loop. Authorized AS the signed-in user (create modelpackages); the package
-		// is born PendingManualApproval, so serving still needs a human approval and a separately
-		// gated Deploy→Model. A train-capable, serve-incapable user cannot promote through it.
-		api.With(middleware.Timeout(20*time.Second)).
-			Post("/trainingjobs/{namespace}/{name}/register", handleTrainingJobRegister(*client.Clientset, auth, logger))
-
-		// ML/batch job observability — kill the "kubectl logs -n … job/…" dead-end on the SageMaker
-		// job family (TrainingJob / ProcessingJob / BatchTransform). {name} is the backing batch/v1
-		// Job. Logs: NO request timeout (output can be large; the client ctx bounds it), like the
-		// object up/download routes. Metrics: best-effort Prometheus range query (fails soft to
-		// available:false), 15s.
-		api.Get("/jobs/{namespace}/{name}/logs", handleJobLogs(*client.Clientset, logger))
-		api.With(middleware.Timeout(15*time.Second)).
-			Get("/jobs/{namespace}/{name}/metrics", handleJobMetrics(*client.Clientset, logger))
-
-		// ModelMonitor drift reports (SageMaker Model Monitor) — read the latest report JSON +
-		// prior runs from the bucket/prefix named in the CR's OWN spec (never a client param), via
-		// the scoped console MinIO client. Honest-empty when no report has been written yet. 20s.
-		api.With(middleware.Timeout(20*time.Second)).
-			Get("/modelmonitors/{namespace}/{name}/report", handleModelMonitorReport(*client.Clientset, logger))
-
-		// IAM: manage kind: User / kind: Group from the console instead of kubectl.
-		// Every handler authorizes the signed-in user with a SubjectAccessReview against
-		// iam.openinfra.dev (see authz.go), so this is exactly as restricted as kubectl —
-		// only admins get through. /config is static metadata and needs no gate.
-		cs := *client.Clientset
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/config", handleIAMConfig(auth))
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/users", handleIAMUsersList(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Post("/iam/users", handleIAMUserCreate(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/users/{name}", handleIAMUserGet(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/users/{name}", handleIAMUserUpdate(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Post("/iam/users/{name}/password", handleIAMUserPassword(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/users/{name}", handleIAMUserDelete(cs, auth, logger))
-		// Tags (the AWS "Tags" tab) — free-form key/value pairs stored as openinfra.dev/tag-*
-		// annotations on the CR. PUT replaces the whole set. Same admin SAR as the resource's
-		// other writes (see iam_tags.go).
-		api.With(middleware.Timeout(15*time.Second)).Put("/iam/users/{name}/tags", handleIAMTagsUpdate(cs, auth, logger, "users", "user", usersAbsPath))
-		// Access keys (the AWS "Security credentials" surface) — the aws-shim SigV4 sub-resource of a
-		// User. A user manages their OWN keys; managing another's needs the same admin SAR as the
-		// endpoints above (see iam_accesskeys.go). The secret is returned ONCE, by create, and never
-		// again. Keys live in the shim's KEYS_NAMESPACE, kept in step with the shim's own default.
-		keysNS := getenv("KEYS_NAMESPACE", "open-infra-aws-shim")
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/users/{name}/access-keys", handleIAMAccessKeysList(cs, auth, keysNS, logger))
-		api.With(middleware.Timeout(15*time.Second)).Post("/iam/users/{name}/access-keys", handleIAMAccessKeyCreate(cs, auth, keysNS, logger))
-		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/users/{name}/access-keys/{id}", handleIAMAccessKeyUpdate(cs, auth, keysNS, logger))
-		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/users/{name}/access-keys/{id}", handleIAMAccessKeyDelete(cs, auth, keysNS, logger))
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/groups", handleIAMGroupsList(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Post("/iam/groups", handleIAMGroupCreate(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/groups/{name}", handleIAMGroupUpdate(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/groups/{name}", handleIAMGroupDelete(cs, auth, logger))
-		// Policies + Roles (stage 2). Same SAR gate on iam.openinfra.dev — admins only.
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/policies", handleIAMPoliciesList(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Post("/iam/policies", handleIAMPolicyCreate(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/policies/{name}", handleIAMPolicyGet(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/policies/{name}", handleIAMPolicyUpdate(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/policies/{name}", handleIAMPolicyDelete(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Put("/iam/policies/{name}/tags", handleIAMTagsUpdate(cs, auth, logger, "policies", "policy", policiesAbsPath))
-		// Policy revision — the honest "Policy versions" answer (current generation; history lives in git).
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/policies/{name}/revision", handleIAMPolicyRevision(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/roles", handleIAMRolesList(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Post("/iam/roles", handleIAMRoleCreate(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/roles/{name}", handleIAMRoleGet(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Patch("/iam/roles/{name}", handleIAMRoleUpdate(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/roles/{name}", handleIAMRoleDelete(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Post("/iam/roles/{name}/revoke-sessions", handleIAMRoleRevokeSessions(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Put("/iam/roles/{name}/tags", handleIAMTagsUpdate(cs, auth, logger, "roles", "role", rolesAbsPath))
-		// Policy simulator — a what-if over the current policies (control plane via SAR, data plane
-		// via the Cedar engine). Same SAR gate (list policies) as the endpoints above.
-		api.With(middleware.Timeout(15*time.Second)).Post("/iam/simulate", handleIAMSimulate(cs, auth, logger))
-		// Dry-run AWS-policy import preview ("Actions ▾ → Import policy"): translate a pasted AWS IAM
-		// policy and report Translated / Refused-with-reason / Needs-review. Writes nothing.
-		api.With(middleware.Timeout(15*time.Second)).Post("/iam/import", handleIAMImport(cs, auth, logger))
-		// Temporal Grants (JIT access) with a second-party approval workflow — AC-2(2)/AC-5/AC-6(2).
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/grants", handleIAMGrantsList(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Post("/iam/grants", handleIAMGrantCreate(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Get("/iam/grants/{name}", handleIAMGrantGet(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Post("/iam/grants/{name}/approve", handleIAMGrantApprove(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Delete("/iam/grants/{name}", handleIAMGrantDelete(cs, auth, logger))
-		// Audit trail — the CloudTrail view. Admin-gated (same as IAM); queries Loki.
-		api.With(middleware.Timeout(20*time.Second)).Get("/audit", handleAudit(cs, auth, logger))
-		// Audit integrity — the last automated verification of the tamper-evident off-site chain.
-		api.With(middleware.Timeout(15*time.Second)).Get("/audit/integrity", handleAuditIntegrity(cs, auth, logger))
-		// Data-classification compliance — labelled workloads vs their class's handling requirements.
-		api.With(middleware.Timeout(20*time.Second)).Get("/compliance/classification", handleClassificationCompliance(cs, auth, logger))
-		// Encryption keys — customer-owned Vault Transit keys (kind: EncryptionKey) and their state.
-		api.With(middleware.Timeout(15*time.Second)).Get("/encryption/keys", handleEncryptionKeys(cs, auth, logger))
-		// Crypto-erase requests (kind: Destruction) and their certificates.
-		api.With(middleware.Timeout(15*time.Second)).Get("/encryption/destructions", handleDestructions(cs, auth, logger))
-		// Certificate Authorities (kind: CertificateAuthority) — list from the spec+state ConfigMaps.
-		api.With(middleware.Timeout(15*time.Second)).Get("/ca", handleCertificateAuthorities(cs, auth, logger))
-		// Issue / revoke a leaf cert: SAR-gated, then reverse-proxied to the ca-issuer (the console SA never touches Vault).
-		api.With(middleware.Timeout(15*time.Second)).Post("/ca/{namespace}/{name}/issue", handleCAIssue(cs, auth, logger))
-		api.With(middleware.Timeout(15*time.Second)).Post("/ca/{namespace}/{name}/revoke", handleCARevoke(cs, auth, logger))
-		// Data lineage — provenance of data movement (DataFlow/Migration/Replication/Stream topology).
-		api.With(middleware.Timeout(20*time.Second)).Get("/lineage", handleLineage(cs, auth, logger))
-		// Compliance attestation — live control-coverage report (the signed copies live in the WORM store).
-		api.With(middleware.Timeout(20*time.Second)).Get("/compliance/attestation", handleAttestation(cs, auth, logger))
-		// Access-recertification report — standing access per principal, mapped to activity + review flags (AC-2/AC-6).
-		api.With(middleware.Timeout(25*time.Second)).Get("/iam/access-review", handleAccessReview(cs, auth, logger))
-		// Access Advisor — per-principal "services last accessed" (write activity), the AWS least-privilege surface.
-		api.With(middleware.Timeout(25*time.Second)).Get("/iam/access-advisor", handleIAMAccessAdvisor(cs, auth, logger))
-
-		// Watch (long-lived SSE): NO request timeout — the stream must stay open.
-		api.Get("/watch", watch.New(client.Host, client.Transport, logger).ServeHTTP)
-
-		// Kubernetes reverse proxy (CRUD). Mounted under /api/k8s and stripped
-		// before forwarding. No write timeout so large applies / log follows are
-		// not cut off; the SA's RBAC is the authorization.
-		api.Handle("/k8s", proxy.New(client.Host, client.Transport, k8sPrefix, logger,
-			func(r *http.Request) (proxy.Identity, bool) {
-				u, g, ok := identityFor(r)
-				return proxy.Identity{User: u, Groups: g}, ok
-			}))
-		api.Handle("/k8s/*", proxy.New(client.Host, client.Transport, k8sPrefix, logger,
-			func(r *http.Request) (proxy.Identity, bool) {
-				u, g, ok := identityFor(r)
-				return proxy.Identity{User: u, Groups: g}, ok
-			}))
+		// Every route, with the IAM action it is and the resource it acts on (routes.go).
+		registerAPIRoutes(api, z, client, auth, newBucketAuthzWith(*client.Clientset, auth, checker, logger), logger)
 	})
 
 	// --- Grafana reverse proxy (same-origin embedding) ---
@@ -435,12 +202,15 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 	// unauthenticated caller on an internet-exposed one — could read every
 	// dashboard/metric/log here. A session check (not full requireAuth) so Grafana's
 	// own POST /api/ds/query panel calls, which lack our CSRF header, still work.
+	// With IAM policy deciding, it is CloudWatch's read surface: cloudwatch:GetDashboard.
 	if gt := getenv("GRAFANA_PROXY_TARGET", ""); gt != "" {
 		if gp, err := newGrafanaProxy(gt, logger); err != nil {
 			logger.Error("invalid GRAFANA_PROXY_TARGET", slog.String("error", err.Error()))
 		} else {
-			r.With(auth.requireSignedIn).Handle("/grafana", gp)
-			r.With(auth.requireSignedIn).Handle("/grafana/*", gp)
+			z.perRequest(allMethods, "/grafana", "cloudwatch:GetDashboard (the dashboards proxy)")
+			z.perRequest(allMethods, "/grafana/*", "cloudwatch:GetDashboard (the dashboards proxy)")
+			r.With(auth.requireSignedIn, z.grafanaGate).Handle("/grafana", gp)
+			r.With(auth.requireSignedIn, z.grafanaGate).Handle("/grafana/*", gp)
 			logger.Info("grafana reverse proxy enabled (auth-gated)", slog.String("target", gt))
 		}
 	}
@@ -454,7 +224,7 @@ func newRouter(client *k8s.Client, auth *authStore, logger *slog.Logger) http.Ha
 	}
 	r.NotFound(spa.ServeHTTP)
 
-	return r
+	return r, z
 }
 
 // configResponse is the runtime configuration handed to the browser.

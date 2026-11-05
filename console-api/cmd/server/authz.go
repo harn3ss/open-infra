@@ -16,11 +16,10 @@ import (
 // calling POST /api/databases/x/snapshot would execute with the ServiceAccount's rights —
 // the authorization decision and the actual access would diverge.
 //
-// Fix: before doing the work, ask the API server whether the SIGNED-IN user could perform the
-// equivalent action, via a SubjectAccessReview, and fail closed. The check itself lives in the
-// shared authorization core (internal/iam.CanDo) so the console and the AWS-shim enforce through
-// exactly the same impersonated SubjectAccessReview — one policy world. It also means the check
-// appears in the audit log against a person rather than being an invisible `if` in Go.
+// Fix: before doing the work, ask whether the SIGNED-IN user could perform the equivalent action, and
+// fail closed. In legacy mode that is a SubjectAccessReview as the user (internal/iam.CanDo, the same
+// impersonated review the AWS-shim runs); with IAM policy deciding (iam_authz.go) it is the shared
+// evaluator, which the route's own IAM gate has usually already asked with the route's AWS action.
 //
 // Snapshot endpoints map onto the verb you'd need on the underlying resource:
 //
@@ -41,7 +40,13 @@ func authorize(w http.ResponseWriter, r *http.Request, cs kubernetes.Interface, 
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not signed in"})
 		return false
 	}
-	allowed, reason := iam.CanDo(r.Context(), cs, c.Claims, verb, group, resource, namespace, name)
+	var allowed bool
+	var reason string
+	if consoleIAM != nil {
+		allowed, reason = consoleIAM.authorizeKubernetesVerb(r, cs, c, verb, group, resource, namespace, name)
+	} else {
+		allowed, reason = iam.CanDo(r.Context(), cs, c.Claims, verb, group, resource, namespace, name)
+	}
 	if !allowed {
 		logger.Warn("denied BFF action",
 			"user", c.Sub, "role", c.Role, "verb", verb, "resource", resource,
