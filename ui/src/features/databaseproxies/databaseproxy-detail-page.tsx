@@ -55,7 +55,7 @@ export function DatabaseProxyDetailPage() {
       backLabel="Database Proxies"
       icon={<DatabaseZap className="size-5" />}
       title={name}
-      subtitle={`Database proxy · ${namespace}`}
+      subtitle="Database proxy"
       status={status}
     >
       <Tabs defaultValue="overview">

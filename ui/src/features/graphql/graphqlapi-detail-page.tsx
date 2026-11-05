@@ -233,7 +233,7 @@ export function GraphQLApiDetailPage() {
       backLabel="GraphQL APIs"
       icon={<Waypoints className="size-5" />}
       title={name}
-      subtitle={`GraphQL API · ${namespace}`}
+      subtitle="GraphQL API"
       status={claimHealth(api)}
     >
       <Tabs defaultValue="test">

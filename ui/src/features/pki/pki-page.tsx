@@ -170,7 +170,7 @@ export function CertificateAuthorityDetailPage() {
   if (!ca) {
     return (
       <ErrorState
-        error={new Error(`Certificate authority ${namespace}/${name} not found.`)}
+        error={new Error(`Certificate authority ${name} not found.`)}
         onRetry={refetch}
       />
     );
@@ -182,7 +182,7 @@ export function CertificateAuthorityDetailPage() {
       backLabel="Certificate Authorities"
       icon={<ShieldCheck className="size-5" />}
       title={ca.name}
-      subtitle={`CertificateAuthority · ${namespace}`}
+      subtitle="CertificateAuthority"
     >
       <Tabs defaultValue="overview">
         <TabsList>

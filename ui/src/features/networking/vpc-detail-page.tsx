@@ -49,7 +49,7 @@ export function VpcDetailPage() {
       backLabel="VPCs"
       icon={<Network className="size-5" />}
       title={name}
-      subtitle={`VPC · ${namespace}`}
+      subtitle="VPC"
     >
       <Tabs defaultValue="overview">
         <TabsList>

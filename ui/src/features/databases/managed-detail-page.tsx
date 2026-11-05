@@ -232,7 +232,7 @@ export function ManagedDatabaseDetailPage() {
       backLabel="Databases"
       icon={<Database className="size-5" />}
       title={db?.name ?? name}
-      subtitle={`${e.label} · ${namespace}`}
+      subtitle={e.label}
       status={health}
     >
       <Tabs defaultValue="overview" onValueChange={(v) => setPeekOpen(v === "peek")}>

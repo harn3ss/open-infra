@@ -65,7 +65,7 @@ export function ParameterDetailPage() {
       backLabel="Parameters"
       icon={<SlidersHorizontal className="size-5" />}
       title={name}
-      subtitle={`Parameter · ${namespace}`}
+      subtitle="Parameter"
       status={status}
     >
       <Tabs defaultValue="overview">

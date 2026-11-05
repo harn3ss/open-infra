@@ -55,7 +55,7 @@ export function ElasticIpDetailPage() {
       backLabel="Elastic IPs"
       icon={<Globe className="size-5" />}
       title={name}
-      subtitle={`Elastic IP · ${namespace}`}
+      subtitle="Elastic IP"
       status={status}
     >
       <Tabs defaultValue="overview">

@@ -42,7 +42,7 @@ function targetSummary(f: FaultInjection): string {
   const sel = Object.entries(t.labelSelector ?? {})
     .map(([k, v]) => `${k}=${v}`)
     .join(",");
-  return `${t.namespace ?? f.metadata.namespace}/${sel || "*"}`;
+  return sel || "*"; // within the account (the namespace is the platform's placement)
 }
 
 // Chaos is a privileged, non-essential capability (NIST CM-7): if the deployment hasn't

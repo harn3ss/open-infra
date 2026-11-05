@@ -27,7 +27,6 @@ function FlowCard({ flow }: { flow: LineageFlow }) {
         <CardTitle className="flex items-center gap-2 text-sm">
           <span className={`rounded px-2 py-0.5 text-xs font-medium ${kindTone(flow.kind)}`}>{flow.kind}</span>
           <span className="font-medium">{flow.name}</span>
-          <span className="text-xs text-muted-foreground">· {flow.namespace}</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">

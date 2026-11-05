@@ -48,7 +48,7 @@ export function IdentityProviderDetailPage() {
       backLabel="Identity Providers"
       icon={<Fingerprint className="size-5" />}
       title={name}
-      subtitle={`Identity provider · ${namespace}`}
+      subtitle="Identity provider"
       status={status}
     >
       <Tabs defaultValue="overview">

@@ -58,7 +58,7 @@ export function SubnetDetailPage() {
       backLabel="Subnets"
       icon={<LayoutGrid className="size-5" />}
       title={name}
-      subtitle={`Subnet · ${namespace}`}
+      subtitle="Subnet"
     >
       <Tabs defaultValue="overview">
         <TabsList>

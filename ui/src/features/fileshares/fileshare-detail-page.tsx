@@ -80,7 +80,7 @@ export function FileShareDetailPage() {
       backLabel="File Shares"
       icon={<FolderTree className="size-5" />}
       title={name}
-      subtitle={`File Share · ${namespace}`}
+      subtitle="File Share"
     >
       <Tabs defaultValue="overview">
         <TabsList>

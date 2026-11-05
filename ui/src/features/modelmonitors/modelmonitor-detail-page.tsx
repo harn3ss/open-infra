@@ -83,7 +83,7 @@ export function ModelMonitorDetailPage() {
       backLabel="Model Monitors"
       icon={<Gauge className="size-5" />}
       title={name}
-      subtitle={`Model monitor · ${namespace}`}
+      subtitle="Model monitor"
       status={claimHealth(mm, "modelmonitor")}
     >
       <Tabs defaultValue="overview">

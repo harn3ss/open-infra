@@ -97,7 +97,7 @@ export function StreamDetailPage() {
       backLabel="Streams"
       icon={<Radio className="size-5" />}
       title={name}
-      subtitle={`CDC Stream · ${namespace}`}
+      subtitle="CDC Stream"
       status={status}
     >
       <Tabs defaultValue="overview">

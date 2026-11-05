@@ -60,7 +60,7 @@ export function AutoScalingGroupDetailPage() {
       backLabel="Auto Scaling Groups"
       icon={<CopyPlus className="size-5" />}
       title={name}
-      subtitle={`Auto scaling group · ${namespace}`}
+      subtitle="Auto scaling group"
       status={claimHealth(asg)}
     >
       <Tabs defaultValue="overview">

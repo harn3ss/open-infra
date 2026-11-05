@@ -67,7 +67,7 @@ export function UserPoolDetailPage() {
       backLabel="User Pools"
       icon={<IdCard className="size-5" />}
       title={name}
-      subtitle={`User pool · ${namespace}`}
+      subtitle="User pool"
       status={status}
     >
       <Tabs defaultValue="overview">

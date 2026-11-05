@@ -63,7 +63,7 @@ export function BatchTransformDetailPage() {
       backLabel="Batch Transform"
       icon={<Layers className="size-5" />}
       title={name}
-      subtitle={`Batch transform · ${namespace}`}
+      subtitle="Batch transform"
       status={run}
     >
       <Tabs defaultValue="overview">

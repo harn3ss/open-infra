@@ -98,7 +98,7 @@ export function VolumeDetailPage() {
       backLabel="Volumes"
       icon={<HardDrive className="size-5" />}
       title={name}
-      subtitle={`Volume · ${namespace}`}
+      subtitle="Volume"
       actions={
         <Button onClick={() => snapshot.mutate()} disabled={snapshot.isPending}>
           <Camera className="size-4" /> Snapshot

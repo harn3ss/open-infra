@@ -69,7 +69,7 @@ export function ScheduledJobDetailPage() {
       backLabel="Scheduled Jobs"
       icon={<CalendarClock className="size-5" />}
       title={name}
-      subtitle={`Scheduled job · ${namespace}`}
+      subtitle="Scheduled job"
       status={claimHealth(sj, "scheduledjob")}
     >
       <Tabs defaultValue="overview">

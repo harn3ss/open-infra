@@ -72,7 +72,7 @@ export function ApplicationDetailPage() {
       backLabel="Applications"
       icon={<Boxes className="size-5" />}
       title={name}
-      subtitle={`Application · ${namespace}`}
+      subtitle="Application"
       status={health}
     >
       <Tabs defaultValue="overview">

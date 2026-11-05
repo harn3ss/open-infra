@@ -75,7 +75,7 @@ export function ExecutionDetailPage() {
       backLabel="State Machines"
       icon={<Activity className="size-5" />}
       title={name}
-      subtitle={`Execution · ${namespace}`}
+      subtitle="Execution"
       status={{ label: st?.phase ?? "Pending", tone: execTone(st?.phase) }}
     >
       <Tabs defaultValue="graph">

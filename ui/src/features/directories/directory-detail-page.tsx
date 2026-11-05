@@ -82,7 +82,7 @@ export function DirectoryDetailPage() {
       backLabel="Active Directory"
       icon={<Building2 className="size-5" />}
       title={name}
-      subtitle={`Directory · ${namespace}`}
+      subtitle="Directory"
     >
       <Tabs defaultValue="overview">
         <TabsList>

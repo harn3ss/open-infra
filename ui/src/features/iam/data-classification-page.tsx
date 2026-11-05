@@ -95,7 +95,7 @@ export function DataClassificationPage() {
                         <td className="p-3">
                           <div className="font-medium">{res.name}</div>
                           <div className="text-xs text-muted-foreground">
-                            {res.kind} · {res.namespace}
+                            {res.kind}
                           </div>
                         </td>
                         <td className="p-3">

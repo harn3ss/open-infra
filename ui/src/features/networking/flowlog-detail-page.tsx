@@ -55,7 +55,7 @@ export function FlowLogDetailPage() {
       backLabel="Flow Logs"
       icon={<ScrollText className="size-5" />}
       title={name}
-      subtitle={`Flow Log · ${namespace}`}
+      subtitle="Flow Log"
       status={status}
     >
       <Tabs defaultValue="overview">

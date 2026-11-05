@@ -60,7 +60,7 @@ export function NatGatewayDetailPage() {
       backLabel="NAT Gateways"
       icon={<Waypoints className="size-5" />}
       title={name}
-      subtitle={`NAT gateway · ${namespace}`}
+      subtitle="NAT gateway"
       status={status}
     >
       <Tabs defaultValue="overview">

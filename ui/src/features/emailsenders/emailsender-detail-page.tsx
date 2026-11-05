@@ -54,7 +54,7 @@ export function EmailSenderDetailPage() {
       backLabel="Email Senders"
       icon={<Mail className="size-5" />}
       title={name}
-      subtitle={`Email sender · ${namespace}`}
+      subtitle="Email sender"
       status={status}
     >
       <Tabs defaultValue="overview">

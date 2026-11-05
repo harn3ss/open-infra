@@ -71,7 +71,7 @@ export function makeSimpleDetailPage(cfg: SimpleDetailConfig) {
         backLabel={cfg.backLabel}
         icon={cfg.icon}
         title={name}
-        subtitle={`${cfg.kindLabel} · ${namespace}`}
+        subtitle={cfg.kindLabel}
       >
         <Tabs defaultValue="overview">
           <TabsList>

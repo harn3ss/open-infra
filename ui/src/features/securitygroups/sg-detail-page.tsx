@@ -71,7 +71,7 @@ export function SecurityGroupDetailPage() {
       backLabel="Security Groups"
       icon={<Shield className="size-5" />}
       title={name}
-      subtitle={`Security group · ${namespace}`}
+      subtitle="Security group"
       actions={
         <span className="flex gap-2">
           <Button variant="outline" onClick={() => setCopy(true)}>
