@@ -1198,10 +1198,12 @@
         "ListServices",
         "RequestServiceQuotaIncrease"
       ],
-      "probes": [],
+      "probes": [
+        "servicequotas"
+      ],
       "refused": [],
       "service": "Service Quotas",
-      "tier": "gated"
+      "tier": "proven"
     },
     "ses": {
       "actions": [
