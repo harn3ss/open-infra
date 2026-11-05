@@ -29,6 +29,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -43,6 +44,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 )
 
 const ec2XMLNS = "http://ec2.amazonaws.com/doc/2016-11-15/"
@@ -157,7 +159,7 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 	// The shim's own state (key pairs, the catalog, the region, the account's addresses) takes the coarse
-	// RBAC check in legacy; the kinds are read with the caller's authority below.
+	// RBAC check in legacy; the kinds are read for the caller below (listForCaller).
 	if ec2StoreOp(op) && !enforcing(ctx, h.door.authz, claims) {
 		if h.door.cs == nil && claims.AssumedRole == "" {
 			writeEC2Error(w, http.StatusForbidden, "UnauthorizedOperation", requestID, "EC2 authorization is not configured on this shim")
@@ -432,16 +434,29 @@ func xtags(tags map[string]string) string {
 
 func ec2Time(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
-// --- reading the kinds, as the caller ---
+// --- reading the kinds, for the caller ---
 
-// listAsCaller lists a kind in the account namespace with the caller's Kubernetes authority. denied
-// reports that RBAC refused it.
-func (h *ec2Handler) listAsCaller(ctx context.Context, claims iam.Claims, gvr schema.GroupVersionResource) (items []unstructured.Unstructured, denied bool, err error) {
-	ap, err := h.door.applierFor(claims)
-	if err != nil {
-		return nil, true, err
+// listForCaller lists a kind in the account namespace for a caller the front door has authorized. In
+// legacy the read is made with the caller's Kubernetes authority, its RBAC being its read permission
+// (denied reports that RBAC refused it). In enforce IAM policy has already decided the call, and the read
+// is what it allowed: it is made with the shim's own client, in the account namespace alone — the caller's
+// RBAC (generated from the same policy by the IAM compiler, and not there before it runs) is never a second
+// decision on a read IAM policy allowed. A write still acts as the caller (applierFor).
+func (h *ec2Handler) listForCaller(ctx context.Context, claims iam.Claims, gvr schema.GroupVersionResource) (items []unstructured.Unstructured, denied bool, err error) {
+	var cli dynamic.Interface
+	if enforcing(ctx, h.door.authz, claims) {
+		if h.door.shimDyn == nil {
+			return nil, false, errors.New("the shim's client is not configured")
+		}
+		cli = h.door.shimDyn
+	} else {
+		ap, err := h.door.applierFor(claims)
+		if err != nil {
+			return nil, true, err
+		}
+		cli = ap.caller
 	}
-	l, err := ap.caller.Resource(gvr).Namespace(h.door.ns).List(ctx, metav1.ListOptions{})
+	l, err := cli.Resource(gvr).Namespace(h.door.ns).List(ctx, metav1.ListOptions{})
 	switch {
 	case apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err):
 		return nil, true, err

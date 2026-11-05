@@ -62,14 +62,14 @@ func ec2State(power string, running, deleting bool) (code int, name string) {
 	return 0, "pending" // Provisioning, Starting, WaitingForVolumeBinding, an error state, or not reported yet
 }
 
-// instancesAsCaller describes the account's VMs the caller may read. VPCs come from the VMs' subnets.
-func (h *ec2Handler) instancesAsCaller(ctx context.Context, claims iam.Claims) ([]ec2Instance, bool, error) {
-	vms, denied, err := h.listAsCaller(ctx, claims, vmClaimGVR)
+// instancesForCaller describes the account's VMs the caller may read. VPCs come from the VMs' subnets.
+func (h *ec2Handler) instancesForCaller(ctx context.Context, claims iam.Claims) ([]ec2Instance, bool, error) {
+	vms, denied, err := h.listForCaller(ctx, claims, vmClaimGVR)
 	if err != nil {
 		return nil, denied, err
 	}
 	subnetVPC := map[string]string{}
-	if subs, _, serr := h.listAsCaller(ctx, claims, subnetGVR); serr == nil {
+	if subs, _, serr := h.listForCaller(ctx, claims, subnetGVR); serr == nil {
 		for i := range subs {
 			v, _, _ := unstructured.NestedString(subs[i].Object, "spec", "vpc")
 			subnetVPC[subs[i].GetName()] = v
@@ -246,7 +246,7 @@ func (h *ec2Handler) describeInstances(ctx context.Context, w http.ResponseWrite
 		writeEC2Error(w, http.StatusBadRequest, "InvalidParameterCombination", requestID, "The parameter instancesSet cannot be used with the parameter maxResults")
 		return
 	}
-	all, denied, err := h.instancesAsCaller(ctx, claims)
+	all, denied, err := h.instancesForCaller(ctx, claims)
 	if err != nil {
 		h.readFailed(w, requestID, "instances", denied, err)
 		return
@@ -370,14 +370,14 @@ func sizeGiB(q string) int64 {
 	return int64(math.Ceil(float64(v.Value()) / (1 << 30)))
 }
 
-// volumesAsCaller describes the account's volumes the caller may read: each kind: Volume (in-use while a VM
+// volumesForCaller describes the account's volumes the caller may read: each kind: Volume (in-use while a VM
 // has it in spec.volumes), and each VM's root and data disks (in-use, deleted with the VM).
-func (h *ec2Handler) volumesAsCaller(ctx context.Context, claims iam.Claims) ([]ec2Volume, bool, error) {
-	vols, denied, err := h.listAsCaller(ctx, claims, volumeGVR)
+func (h *ec2Handler) volumesForCaller(ctx context.Context, claims iam.Claims) ([]ec2Volume, bool, error) {
+	vols, denied, err := h.listForCaller(ctx, claims, volumeGVR)
 	if err != nil {
 		return nil, denied, err
 	}
-	insts, denied, err := h.instancesAsCaller(ctx, claims)
+	insts, denied, err := h.instancesForCaller(ctx, claims)
 	if err != nil {
 		return nil, denied, err
 	}
@@ -458,7 +458,7 @@ func (h *ec2Handler) describeVolumes(ctx context.Context, w http.ResponseWriter,
 		writeEC2Error(w, http.StatusBadRequest, "InvalidParameterValue", requestID, msg)
 		return
 	}
-	all, denied, err := h.volumesAsCaller(ctx, claims)
+	all, denied, err := h.volumesForCaller(ctx, claims)
 	if err != nil {
 		h.readFailed(w, requestID, "volumes", denied, err)
 		return
@@ -513,7 +513,7 @@ func (h *ec2Handler) deleteVolume(ctx context.Context, w http.ResponseWriter, r 
 		writeEC2Error(w, http.StatusBadRequest, "MissingParameter", requestID, "The request must contain the parameter VolumeId")
 		return
 	}
-	all, denied, err := h.volumesAsCaller(ctx, claims)
+	all, denied, err := h.volumesForCaller(ctx, claims)
 	if err != nil {
 		h.readFailed(w, requestID, "volumes", denied, err)
 		return
@@ -623,7 +623,7 @@ func (h *ec2Handler) describeSecurityGroups(ctx context.Context, w http.Response
 		writeEC2Error(w, http.StatusBadRequest, "InvalidParameterValue", requestID, msg)
 		return
 	}
-	sgs, denied, err := h.listAsCaller(ctx, claims, securityGroupGVR)
+	sgs, denied, err := h.listForCaller(ctx, claims, securityGroupGVR)
 	if err != nil {
 		h.readFailed(w, requestID, "security groups", denied, err)
 		return
@@ -690,7 +690,7 @@ func (h *ec2Handler) describeVpcs(ctx context.Context, w http.ResponseWriter, r 
 		writeEC2Error(w, http.StatusBadRequest, "InvalidParameterValue", requestID, msg)
 		return
 	}
-	vpcs, denied, err := h.listAsCaller(ctx, claims, vpcGVR)
+	vpcs, denied, err := h.listForCaller(ctx, claims, vpcGVR)
 	if err != nil {
 		h.readFailed(w, requestID, "VPCs", denied, err)
 		return
@@ -751,7 +751,7 @@ func (h *ec2Handler) describeSubnets(ctx context.Context, w http.ResponseWriter,
 		writeEC2Error(w, http.StatusBadRequest, "InvalidParameterValue", requestID, msg)
 		return
 	}
-	subs, denied, err := h.listAsCaller(ctx, claims, subnetGVR)
+	subs, denied, err := h.listForCaller(ctx, claims, subnetGVR)
 	if err != nil {
 		h.readFailed(w, requestID, "subnets", denied, err)
 		return
@@ -943,7 +943,7 @@ func (h *ec2Handler) describeAddresses(ctx context.Context, w http.ResponseWrite
 	}
 	// VM name -> instance, for the instance each allocation's address is on.
 	byName := map[string]ec2Instance{}
-	if insts, _, ierr := h.instancesAsCaller(ctx, claims); ierr == nil {
+	if insts, _, ierr := h.instancesForCaller(ctx, claims); ierr == nil {
 		for _, in := range insts {
 			byName[in.name] = in
 		}

@@ -86,8 +86,8 @@ func (h *ssmHandler) serveRunCommand(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 	_ = h.store.sweep(ctx)
-	// The instances the caller may see (RBAC on the VMs, as the caller).
-	insts, denied, err := h.ec2.instancesAsCaller(ctx, claims)
+	// The instances the caller may see (listForCaller: in legacy its RBAC on the VMs; in enforce the account's).
+	insts, denied, err := h.ec2.instancesForCaller(ctx, claims)
 	if err != nil {
 		if denied {
 			writeSSMError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "not authorized to read the account's instances: "+err.Error())

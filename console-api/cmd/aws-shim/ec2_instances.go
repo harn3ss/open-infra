@@ -87,7 +87,7 @@ func (h *ec2Handler) instanceStateOp(ctx context.Context, w http.ResponseWriter,
 			return
 		}
 	}
-	all, denied, err := h.instancesAsCaller(ctx, claims)
+	all, denied, err := h.instancesForCaller(ctx, claims)
 	if err != nil {
 		h.readFailed(w, requestID, "instances", denied, err)
 		return

@@ -138,6 +138,44 @@ func TestEC2_AuthorizationRefusals(t *testing.T) {
 	}
 }
 
+// In enforce, IAM policy alone decides a read: once it has allowed ec2:Describe*, the kinds are read with the
+// shim's own client in the account namespace, so a caller whose Kubernetes identity has no RBAC (the IAM
+// compiler has not generated it yet) still reads exactly what its policy allows. In legacy the caller's RBAC
+// still is its read permission. A write acts as the caller in both, so it needs the caller's RBAC.
+func TestEC2_EnforceReadsWhatIAMPolicyAllowed(t *testing.T) {
+	forbidden := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		vmClaimGVR: "VirtualMachineList", volumeGVR: "VolumeList", subnetGVR: "SubnetList", vpcGVR: "VpcList"})
+	forbidden.PrependReactor("*", "*", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: a.GetResource().Group, Resource: a.GetResource().Resource}, "", errors.New("no RBAC"))
+	})
+	vol := ec2Obj("Volume", "s-kept", map[string]any{"size": "20Gi"}, map[string]any{"phase": "Bound"}, nil)
+	setup := func(mode string, stmts ...policyengine.Statement) *ec2Handler {
+		h, _ := ec2Fixture(t, ec2Web(), vol)
+		h.door.callerDyn = func(string, []string) (dynamic.Interface, error) { return forbidden, nil }
+		h.door.authz = checkerInMode(t, mode, userDoc(stmts...))
+		return h
+	}
+	user := iam.Claims{Sub: "tester"}
+	h := setup("enforce", dpAllow([]string{"ec2:DescribeInstances", "ec2:DescribeVolumes"}, "*"))
+	if w := ec2Call(h, user, url.Values{"Action": {"DescribeInstances"}}); w.Code != 200 || !strings.Contains(w.Body.String(), "<instanceId>i-0123456789abcdef0</instanceId>") {
+		t.Errorf("enforce: DescribeInstances IAM policy allows must read the account's instances: %d %.300s", w.Code, w.Body.String())
+	}
+	if w := ec2Call(h, user, url.Values{"Action": {"DescribeVolumes"}}); w.Code != 200 || !strings.Contains(w.Body.String(), "<volumeId>s-kept</volumeId>") {
+		t.Errorf("enforce: DescribeVolumes IAM policy allows must read the account's volumes: %d %.300s", w.Code, w.Body.String())
+	}
+	if w := ec2Call(h, user, url.Values{"Action": {"DescribeVpcs"}}); w.Code != 403 || !strings.Contains(w.Body.String(), "UnauthorizedOperation") {
+		t.Errorf("enforce: a Describe IAM policy does not allow is refused: %d %.300s", w.Code, w.Body.String())
+	}
+	h = setup("enforce", dpAllow([]string{"ec2:DescribeVolumes", "ec2:DeleteVolume"}, "*"))
+	if w := ec2Call(h, user, url.Values{"Action": {"DeleteVolume"}, "VolumeId": {"s-kept"}}); w.Code != 403 {
+		t.Errorf("enforce: a delete still acts as the caller, whose RBAC refuses it: %d %.300s", w.Code, w.Body.String())
+	}
+	h = setup("legacy")
+	if w := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstances"}}); w.Code != 403 || !strings.Contains(w.Body.String(), "UnauthorizedOperation") {
+		t.Errorf("legacy: the caller's RBAC is its read permission: %d %.300s", w.Code, w.Body.String())
+	}
+}
+
 // DeleteVolume removes a volume an instance kept, and refuses one a VM still has (VolumeInUse) or a VM's own disk.
 func TestEC2_DeleteVolume(t *testing.T) {
 	h, dyn := ec2Fixture(t, ec2Web(),
