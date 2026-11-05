@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/harn3ss/open-infra/console-api/internal/accounts"
 	"github.com/harn3ss/open-infra/console-api/internal/awsaction"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -57,9 +58,6 @@ type nsAccountEntry struct {
 	account string
 	at      time.Time
 }
-
-// accountLabel is the namespace label naming the account a namespace belongs to.
-const accountLabel = "openinfra.dev/account-id"
 
 // consoleIAM is the router's gate, read by authorize (authz.go) so the handlers' own checks follow the
 // same mode. Set once by newRouter.
@@ -254,8 +252,9 @@ func (z *consoleAuthz) namespaceAccount(ctx context.Context, ns string) string {
 	}
 	z.nsMu.Unlock()
 	acct := iam.ManagementAccount
-	if obj, err := z.cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); err == nil {
-		if v := strings.TrimSpace(obj.Labels[accountLabel]); v != "" {
+	// A platform namespace is never an account's, whatever its labels say (as the accounts directory).
+	if obj, err := z.cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); err == nil && !accounts.IsPlatformNamespace(ns) {
+		if v := strings.TrimSpace(obj.Labels[accounts.LabelAccountID]); v != "" {
 			acct = v
 		}
 	}

@@ -11,12 +11,15 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/harn3ss/open-infra/console-api/internal/accounts"
 	"github.com/harn3ss/open-infra/console-api/internal/awsaction"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
 	"github.com/harn3ss/open-infra/console-api/internal/proxy"
 	authzv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
@@ -483,6 +486,27 @@ func TestSwitchRole_AccountHome(t *testing.T) {
 	}
 	if _, ok := accountHome(context.Background(), fake.NewSimpleClientset(), auth, "900000000001"); ok {
 		t.Error("an account with no home namespace has no roles to switch to")
+	}
+	home := func(name, account string, extra ...string) *corev1.Namespace {
+		l := map[string]string{accounts.LabelAccountID: account, accounts.LabelAccountHome: "true"}
+		for i := 0; i+1 < len(extra); i += 2 {
+			l[extra[i]] = extra[i+1]
+		}
+		return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: l}}
+	}
+	cs := fake.NewSimpleClientset(
+		home("team-b", "900000000002"),
+		home("team-c", "900000000003", accounts.LabelAccountStatus, accounts.StatusSuspended),
+		home("kube-system", "900000000004"),
+	)
+	if h, ok := accountHome(context.Background(), cs, auth, "900000000002"); !ok || h != "team-b" {
+		t.Errorf("a member account's home is its labelled home namespace: %q %v", h, ok)
+	}
+	if _, ok := accountHome(context.Background(), cs, auth, "900000000003"); ok {
+		t.Error("a suspended account's roles must not be assumable")
+	}
+	if _, ok := accountHome(context.Background(), cs, auth, "900000000004"); ok {
+		t.Error("a platform namespace is no account's home")
 	}
 }
 

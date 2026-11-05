@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/harn3ss/open-infra/console-api/internal/accounts"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,11 +25,6 @@ import (
 // checks treat an assumed-role session as the role's own policies' business (iam.CanDo), so a role
 // session outside enforce would pass them. For the same reason the gate refuses any request from a role
 // session that is no longer in enforce (a rollback to legacy ends role sessions; the user switches back).
-
-// accountHomeLabel marks the namespace that is an account's IAM home (its users, groups, roles).
-const accountHomeLabel = "openinfra.dev/account-home"
-
-var accountID = regexp.MustCompile(`^[0-9]{12}$`)
 
 type switchRoleReq struct {
 	Account string `json:"account"`
@@ -65,12 +60,17 @@ func accountHome(ctx context.Context, cs kubernetes.Interface, auth *authStore, 
 		return auth.ns, true
 	}
 	list, err := cs.CoreV1().Namespaces().List(ctx, metav1.ListOptions{
-		LabelSelector: accountLabel + "=" + account + "," + accountHomeLabel + "=true",
+		LabelSelector: accounts.LabelAccountID + "=" + account + "," + accounts.LabelAccountHome + "=true",
 	})
 	if err != nil || len(list.Items) != 1 {
 		return "", false
 	}
-	return list.Items[0].Name, true
+	home := list.Items[0]
+	// A suspended account's roles cannot be assumed (as on AWS), and a platform namespace is no account.
+	if home.Labels[accounts.LabelAccountStatus] == accounts.StatusSuspended || accounts.IsPlatformNamespace(home.Name) {
+		return "", false
+	}
+	return home.Name, true
 }
 
 // trusts reports whether a role's trust entries admit the caller: anyone ("*"), the caller by name or
@@ -107,7 +107,7 @@ func handleSwitchRole(cs kubernetes.Interface, auth *authStore, logger *slog.Log
 		if in.Account == "" {
 			in.Account = callerAccount(r)
 		}
-		if !accountID.MatchString(in.Account) || !validName(in.Role) {
+		if !accounts.ValidAccountID(in.Account) || !validName(in.Role) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "an account is a 12-digit id and a role a lowercase name", "errorCode": "ValidationError"})
 			return
 		}
