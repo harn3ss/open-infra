@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"golang.org/x/crypto/bcrypt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -257,8 +258,12 @@ type sessionClaims struct {
 }
 
 func (a *authStore) issue(user, role string, groups []string) (string, error) {
-	c, err := json.Marshal(sessionClaims{Claims: iam.Claims{Sub: user, Role: role, Groups: groups},
-		Exp: time.Now().Add(sessionTTL).Unix()})
+	return a.issueClaims(iam.Claims{Sub: user, Role: role, Groups: groups})
+}
+
+// issueClaims signs a session for claims (a switched role's session carries its account and role).
+func (a *authStore) issueClaims(claims iam.Claims) (string, error) {
+	c, err := json.Marshal(sessionClaims{Claims: claims, Exp: time.Now().Add(sessionTTL).Unix()})
 	if err != nil {
 		return "", err
 	}
@@ -475,6 +480,21 @@ func handleMe(a *authStore) http.HandlerFunc {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "session expired"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"user": claims.Sub, "role": claims.Role})
+		// The account header: who the principal is to IAM (its ARN), the account it signed in to, and
+		// how far IAM policy decides (so the UI can say why a page is denied).
+		acct := claims.Account
+		if acct == "" {
+			acct = iam.ManagementAccount
+		}
+		p := iamauthz.PrincipalFromClaims(claims.Claims, acct)
+		mode := iamauthz.ModeLegacy
+		if consoleIAM != nil && consoleIAM.eval != nil {
+			mode = consoleIAM.eval.ModeFor(r.Context(), p)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user": claims.Sub, "role": claims.Role,
+			"account": acct, "accountAlias": getenv("ACCOUNT_ALIAS", ""),
+			"arn": p.ARN(), "principalType": string(p.Type), "iamAuthz": string(mode),
+		})
 	}
 }

@@ -431,6 +431,61 @@ func TestConsoleIAM_DocumentsAreValidatedAsIAMDoes(t *testing.T) {
 	}
 }
 
+// A role's trust admits the caller by name, ARN, typed name, its account, or anyone — nothing else.
+func TestSwitchRole_TrustNamesTheCaller(t *testing.T) {
+	alice := iamauthz.Principal{Type: iamauthz.User, ID: "alice"}
+	for _, trust := range [][]string{{"*"}, {"alice"}, {"User::alice"}, {"arn:aws:iam::000000000000:user/alice"},
+		{"arn:aws:iam::000000000000:root"}, {"000000000000"}} {
+		if !trusts(trust, alice, "alice") {
+			t.Errorf("trust %v must admit alice", trust)
+		}
+	}
+	for _, trust := range [][]string{{}, {"bob"}, {"arn:aws:iam::900000000001:root"}, {"Role::alice"}} {
+		if trusts(trust, alice, "alice") {
+			t.Errorf("trust %v must not admit alice", trust)
+		}
+	}
+	root := iamauthz.Principal{Type: iamauthz.Root}
+	if !trusts([]string{"arn:aws:iam::000000000000:root"}, root, "root") || trusts([]string{"root"}, root, "root") {
+		t.Error("root is admitted by its account, not by a user name")
+	}
+}
+
+// A console role session is only valid while IAM policy decides it: after a rollback to legacy every
+// check refuses it (the legacy checks would otherwise pass an assumed-role session).
+func TestSwitchRole_RoleSessionEndsOutsideEnforce(t *testing.T) {
+	role := userClaims("alice")
+	role.AssumedRole, role.Account = "ops", "000000000000"
+	for _, mode := range []iamauthz.Mode{iamauthz.ModeLegacy, iamauthz.ModeShadow} {
+		z := newTestAuthz(t, mode, testWorld(t, nil, nil), true)
+		r := as(httptest.NewRequest(http.MethodGet, "/", nil), role)
+		if ok, _ := z.decide(r, "s3:ListAllMyBuckets", "*", allowLegacy); ok {
+			t.Errorf("%s: a role session passed the gate", mode)
+		}
+		if ok, _ := z.authorizeKubernetesVerb(r, z.cs, role, "get", "", "pods", "x", ""); ok {
+			t.Errorf("%s: a role session passed a handler check", mode)
+		}
+	}
+	w := testWorld(t, map[string]string{"admin": adminDoc}, map[string][]string{"Role::ops": {"admin"}})
+	z := newTestAuthz(t, iamauthz.ModeEnforce, w, false)
+	if ok, why := z.decide(as(httptest.NewRequest(http.MethodGet, "/", nil), role), "s3:ListAllMyBuckets", "*", allowLegacy); !ok {
+		t.Errorf("enforce: the role's own policy decides its session: %s", why)
+	}
+	if p := z.principal(role); p.Type != iamauthz.Role || p.ARN() != "arn:aws:sts::000000000000:assumed-role/ops/alice" {
+		t.Errorf("the session is the role's: %+v %s", p, p.ARN())
+	}
+}
+
+func TestSwitchRole_AccountHome(t *testing.T) {
+	auth := &authStore{ns: "open-infra-console"}
+	if home, ok := accountHome(context.Background(), fake.NewSimpleClientset(), auth, "000000000000"); !ok || home != "open-infra-console" {
+		t.Errorf("the management account's home is the console namespace: %q %v", home, ok)
+	}
+	if _, ok := accountHome(context.Background(), fake.NewSimpleClientset(), auth, "900000000001"); ok {
+		t.Error("an account with no home namespace has no roles to switch to")
+	}
+}
+
 // The gate reads a create's resource from the body and gives it back intact to the handler.
 func TestPeekBodyRestoresTheBody(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"reports","x":1}`))

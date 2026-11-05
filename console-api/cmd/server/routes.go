@@ -190,6 +190,11 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	h(get, "/lineage", s20, "datazone:GetLineageNode", nil, handleLineage(cs, auth, logger))
 	h(get, "/compliance/attestation", s20, "auditmanager:GetAssessment", nil, handleAttestation(cs, auth, logger))
 
+	// Switch role (the AWS console's): sts:AssumeRole on the role, whose trust must name the caller.
+	z.handleDynamic(api, apiPrefix, post, "/sts/switch-role", s15, "sts:AssumeRole on the role", switchRoleQuestion, handleSwitchRole(cs, auth, logger))
+	z.public(post, "/api/sts/switch-back", "returns the session to the signed-in user (drops the assumed role)")
+	api.With(middleware.Timeout(s15)).Post("/sts/switch-back", handleSwitchBack(auth, logger))
+
 	// Watch (long-lived SSE): NO request timeout — the stream must stay open. Authorized per request by
 	// the resource it watches.
 	z.perRequest([]string{get}, "/api/watch", "the watched resource's list action (awsaction.ForKubernetes)")

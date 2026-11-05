@@ -113,6 +113,9 @@ func (z *consoleAuthz) decide(r *http.Request, action, arn string, legacy func()
 	if !ok {
 		return false, "not signed in"
 	}
+	if z.roleSessionOutsideEnforce(r, c) {
+		return false, "this role session ended because IAM policy no longer decides it; switch back"
+	}
 	if z.eval == nil {
 		if legacy == nil {
 			return false, "no decision"
@@ -445,6 +448,9 @@ func (z *consoleAuthz) authorizeKubernetesVerb(r *http.Request, cs kubernetes.In
 	verb, group, resource, namespace, name string) (bool, string) {
 	legacy := func() (bool, string) {
 		return iam.CanDo(r.Context(), cs, c.Claims, verb, group, resource, namespace, name)
+	}
+	if z.roleSessionOutsideEnforce(r, c) {
+		return false, "this role session ended because IAM policy no longer decides it; switch back"
 	}
 	if z == nil || z.eval == nil {
 		return legacy()
