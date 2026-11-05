@@ -69,13 +69,18 @@ the bucket stays a `kind: Bucket`, the distribution's `Aliases` become `domain`/
 becomes `responseHeaders`, and the ACM certificate is replaced by cert-manager TLS. There is no edge
 cache: the CloudFront features beyond a single-origin static site refuse at plan with their reason.
 
-> **Where to run the upload.** `MINIO_ENDPOINT` in the `<name>-minio` secret is the **cluster-internal**
-> MinIO address (`minio.minio.svc.cluster.local:9000`), so the `s3 sync` above works from **inside the
-> cluster** — a CI runner that deploys in-cluster (see the per-PR recipe below), or a one-shot Job/pod.
-> From a **developer laptop** off the cluster, either run it through a `kubectl port-forward`
-> (`kubectl -n minio port-forward svc/minio 9000:9000`, then `--endpoint-url http://localhost:9000`), or,
-> once a LAN-reachable TLS S3 endpoint is in place, point `--endpoint-url` at that. A first-class
-> LAN-reachable publish endpoint is the open item (it shares the routed-ingress exposure work).
+> **Where to run the upload.** From anywhere on your network: a laptop or a CI runner uploads through the
+> platform's S3 endpoint with your own access key, as it would to S3.
+>
+> ```sh
+> export AWS_ENDPOINT_URL=https://s3.<your open-infra domain>
+> export AWS_CA_BUNDLE=$PWD/openinfra-root-ca.crt     # the platform root CA (see the aws-shim guide)
+> aws s3 sync ./dist/ "s3://<site bucket>/" --delete
+> aws cloudfront create-invalidation --distribution-id <id> --paths '/*'
+> ```
+>
+> The key needs `s3:PutObject` and `s3:DeleteObject` on the site's bucket. Inside the cluster, the
+> `MINIO_ENDPOINT` in the `<name>-minio` secret is the bucket's direct address, for platform jobs.
 
 ## Managed build (`spec.build`) — the Amplify analog
 
@@ -114,8 +119,68 @@ entirely to keep uploading assets yourself (above).
 ## Per-PR preview environments (a CI recipe, not a controller)
 
 Previews are a **CI pattern**, not a platform controller — deliberately, so the preview lifecycle
-lives with your pipeline. Render one `StaticSite` per pull request and tear it down on close. Using
-the published `harn3ss/open-infra` action (the same one `examples/hello-web` deploys with):
+lives with your pipeline. Deploy one stack per pull request, upload the build to its bucket, and
+delete the stack on close: the same AWS CLI steps you would run against AWS, against the platform's
+endpoint. The stack is the standard SPA template, a private bucket behind a CloudFront distribution:
+
+```yaml
+# preview.yaml
+Parameters:
+  SiteDomain: { Type: String }
+Resources:
+  SiteBucket:
+    Type: AWS::S3::Bucket
+  SiteOriginAccess:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-site"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  SiteCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties: { DomainName: !Ref SiteDomain, ValidationMethod: DNS }
+  SiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Aliases: [!Ref SiteDomain]
+        DefaultRootObject: index.html
+        Origins:
+          - Id: site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            S3OriginConfig: { OriginAccessIdentity: "" }
+            OriginAccessControlId: !GetAtt SiteOriginAccess.Id
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6   # CachingOptimized
+        CustomErrorResponses:
+          - { ErrorCode: 403, ResponseCode: 200, ResponsePagePath: /index.html }
+          - { ErrorCode: 404, ResponseCode: 200, ResponsePagePath: /index.html }
+        ViewerCertificate:
+          AcmCertificateArn: !Ref SiteCertificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${SiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${SiteDistribution}"
+Outputs:
+  Bucket: { Value: !Ref SiteBucket }
+  DistributionId: { Value: !Ref SiteDistribution }
+```
 
 ```yaml
 # .github/workflows/preview.yml
@@ -125,27 +190,33 @@ on:
 jobs:
   preview:
     runs-on: ubuntu-latest
+    env:
+      AWS_ENDPOINT_URL: https://s3.<your open-infra domain>
+      AWS_CA_BUNDLE: openinfra-root-ca.crt          # committed, or fetched from /v1/ca-bundle
+      AWS_ACCESS_KEY_ID: ${{ secrets.OPENINFRA_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.OPENINFRA_SECRET }}
+      AWS_REGION: us-east-1
+      STACK: preview-pr-${{ github.event.number }}
     steps:
       - uses: actions/checkout@v4
       - run: npm ci && npm run build          # produces ./dist
 
-      # On open/update: apply a per-PR StaticSite and upload the build.
+      # On open/update: deploy the stack, upload the build, invalidate.
       - if: github.event.action != 'closed'
-        uses: harn3ss/open-infra/action@v1
-        with:
-          manifest: |
-            apiVersion: openinfra.dev/v1
-            kind: StaticSite
-            metadata: { name: pr-${{ github.event.number }}, namespace: previews }
-            spec: { domain: pr-${{ github.event.number }}.preview.example.com, spa: true }
-      - if: github.event.action != 'closed'
-        run: aws --endpoint-url "$MINIO_ENDPOINT" s3 sync ./dist/ "s3://pr-${{ github.event.number }}-site/" --delete
+        run: |
+          aws cloudformation deploy --stack-name "$STACK" --template-file preview.yaml \
+            --parameter-overrides SiteDomain=pr-${{ github.event.number }}.preview.example.com
+          out() { aws cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
+          aws s3 sync ./dist/ "s3://$(out Bucket)/" --delete
+          aws cloudfront create-invalidation --distribution-id "$(out DistributionId)" --paths '/*'
 
-      # On close: empty the site's bucket, then delete the StaticSite for that PR (its bucket goes with it).
+      # On close: empty the bucket (a non-empty bucket can't be deleted, as on AWS), then delete the stack.
       - if: github.event.action == 'closed'
         run: |
-          aws --endpoint-url "$MINIO_ENDPOINT" s3 rm "s3://pr-${{ github.event.number }}-site/" --recursive
-          kubectl delete staticsite pr-${{ github.event.number }} -n previews --ignore-not-found
+          b=$(aws cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].Outputs[?OutputKey=='Bucket'].OutputValue" --output text)
+          aws s3 rm "s3://$b/" --recursive
+          aws cloudformation delete-stack --stack-name "$STACK"
+          aws cloudformation wait stack-delete-complete --stack-name "$STACK"
 ```
 
 A platform-native preview controller (auto-provisioning environments from Git state) is a separate,

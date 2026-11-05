@@ -165,7 +165,8 @@ user network segmentation on top — **supported, not required**.
 
 > **You need:** one or more Linux boxes (a single box is fine for `dev` mode),
 > a non-root user with sudo, and ~10 minutes. See
-> [`docs/quickstart.md`](docs/quickstart.md) for the full walkthrough.
+> [`docs/quickstart.md`](docs/quickstart.md) for the full walkthrough. Every guide, split into using
+> open-infra and running it: [`docs/README.md`](docs/README.md).
 
 ```bash
 git clone https://github.com/harn3ss/open-infra

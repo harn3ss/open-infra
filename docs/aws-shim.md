@@ -55,11 +55,17 @@ export AWS_SECRET_ACCESS_KEY=<your open-infra secret>
 aws s3api put-object --bucket my-bucket --key hello.txt --body ./hello.txt
 ```
 
-From a LAN workstation, use the shim's LAN TLS endpoint instead, and trust the platform root CA:
+From a LAN workstation, use the shim's LAN TLS endpoint instead, and trust the platform root CA. The
+root CA's certificate is public: the shim serves it to anyone at `/v1/ca-bundle`, with no credentials.
+Download it once, and compare its fingerprint with the one your administrator gives you (the download
+itself can't be verified yet, which is why the first `curl` skips the check):
 
 ```sh
+curl -fsSk https://s3.<your open-infra domain>/v1/ca-bundle -o openinfra-root-ca.crt
+openssl x509 -in openinfra-root-ca.crt -noout -fingerprint -sha256
+
 export AWS_ENDPOINT_URL=https://s3.<your open-infra domain>
-export AWS_CA_BUNDLE=$PWD/openinfra-root-ca.crt   # kubectl get environmentconfig openinfra-platform-ca -o jsonpath='{.data.platformRootCA}'
+export AWS_CA_BUNDLE=$PWD/openinfra-root-ca.crt
 ```
 
 Prefer `AWS_ENDPOINT_URL` to `--endpoint-url`. The flag redirects only the service the command

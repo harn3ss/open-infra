@@ -62,6 +62,7 @@ logs.
   distances (PSI, KS), model-quality monitoring against labels, and bias/explainability
   (SageMaker Clarify) are not implemented.
 - Run it now (instead of waiting for the schedule):
-  `kubectl create job --from=cronjob/<name>-monitor run-1 -n <namespace>`.
+  an operator can trigger one (`kubectl create job --from=cronjob/<name>-monitor run-1 -n <namespace>`);
+  the schedule itself has no run-now, as a SageMaker monitoring schedule has none.
 - Wire it up by having your endpoint or pipeline log recent records/predictions to the
   `current` location (SageMaker's data-capture equivalent is left to your pipeline).

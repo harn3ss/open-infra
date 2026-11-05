@@ -423,8 +423,9 @@ the site owns. For them `install.sh` keeps an ACM-style certificate authority, t
 those domains, so it can vouch for no other name. Then:
 
 - A distribution whose every Alias is one of those domains or under one gets its certificate from
-  `openinfra-acm`. A client that trusts the platform root (its certificate:
-  `kubectl get environmentconfig openinfra-platform-ca -o jsonpath='{.data.platformRootCA}'`) trusts the site, as browsers trust ACM's certificates.
+  `openinfra-acm`. A client that trusts the platform root trusts the site, as browsers trust ACM's
+  certificates. The root's certificate is public: `curl -fsSk https://s3.<your open-infra domain>/v1/ca-bundle`
+  downloads it (see [the aws-shim guide](aws-shim.md)).
 - An Alias outside them is refused at plan and deploy: on AWS that certificate would stay
   `PENDING_VALIDATION` and the distribution could not use it.
 - With no validated domains, sites keep a self-signed certificate (ClusterIssuer `openinfra-issuer`),

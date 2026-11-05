@@ -530,12 +530,13 @@ or `existingRootClaim`, and `rootDisk` is fixed at creation.
   before Run Command takes part after its next boot.
 - **Windows** — RDP as `Administrator` with a generated password (revealable on
   the VM page). Connect with `mstsc /v:<host>:3389`.
-- **`expose: true`** publishes a `LoadBalancer` (MetalLB) so workstations on the
-  LAN can reach SSH (22) / RDP (3389) directly. Otherwise use
-  `kubectl port-forward svc/<name> <port>:<port>`. Once MetalLB assigns the address,
-  the VM reports it as **`status.lanIp`**
-  (`kubectl get virtualmachines.openinfra.dev <name> -o jsonpath='{.status.lanIp}'`);
-  it is empty while unassigned and when the VM is not exposed.
+- **`expose: true`** gives the instance an address on your network (the analog of a public IPv4
+  address), so workstations reach SSH (22) / RDP (3389) directly. The address is on the instance's page
+  in the console and is its `PublicIpAddress` in `aws ec2 describe-instances`. It is empty while it is
+  being assigned and when the instance is not exposed. An unexposed instance is reachable from inside
+  its VPC; from outside, run commands on it with `aws ssm send-command`, or expose it.
+  *(Operators: the address is `status.lanIp` on the claim, published by a MetalLB `LoadBalancer`;
+  `kubectl port-forward svc/<name> <port>:<port>` reaches an unexposed instance.)*
 - **`elasticIp: { allocationId: eipalloc-… }`** gives an exposed VM the address an Elastic IP
   allocation holds, instead of one of its own: a CloudFormation `AWS::EC2::EIP` allocated by another
   stack (see [CloudFormation](cloudformation.md), "An address kept in its own stack"). The allocation is a
@@ -550,13 +551,13 @@ stopped. `status.powerState` is the VM's state as KubeVirt reports it (`Running`
 started from an earlier spec: a change to its CPU, memory, user data or disks takes effect
 when it is stopped and started (a CloudFormation update does that itself).
 
-Delete: deleting a VM through the console (or `kubectl delete virtualmachines.openinfra.dev
-<name>`) removes the whole stack — the KubeVirt VM, the disk (DataVolume/PVC), and any
-**LAN `LoadBalancer`**, so the pool IP is released. ⚠️ The kind name `VirtualMachine` exists
-in **both** `openinfra.dev` (the claim) and `kubevirt.io` (the composed VM), so a bare
-`kubectl delete vm <name>` is ambiguous and may hit the kubevirt.io VM — which Crossplane
-then recreates (and the LB is *not* released). Always delete via the console or the
-fully-qualified `virtualmachines.openinfra.dev`.
+Terminate: terminating an instance in the console, or deleting the CloudFormation stack that launched
+it (`aws cloudformation delete-stack`), removes the instance, its root volume and its network address,
+which is released. (`aws ec2 terminate-instances` is not served yet.)
+*(Operators: the console deletes the `virtualmachines.openinfra.dev` claim. The kind name
+`VirtualMachine` exists in **both** `openinfra.dev` (the claim) and `kubevirt.io` (the composed VM), so a
+bare `kubectl delete vm <name>` is ambiguous and may hit the kubevirt.io VM, which Crossplane then
+recreates, without releasing the address. Delete the fully-qualified `virtualmachines.openinfra.dev`.)*
 
 > Web (in-browser) console is intentionally **not** provided — access is native
 > SSH / RDP, so there is no extra in-cluster console dependency to run.

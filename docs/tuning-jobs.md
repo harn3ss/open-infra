@@ -69,7 +69,7 @@ Training Job.
 ## Notes
 
 - Like `kind: Execution`, a TuningJob is a **run** whose status the controller owns — it's
-  started from the console or `kubectl`, not Terraform. Deleting it garbage-collects its
+  started from the console, not Terraform. Deleting it garbage-collects its
   trial Training Jobs (they're owner-referenced).
 - v1 does **grid search**. Bayesian/random search and early-stopping are not implemented.
 - The tuning controller reads each trial's metric from its pod logs, so keep the training

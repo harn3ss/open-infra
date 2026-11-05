@@ -6,7 +6,7 @@ model artifacts back to it. It is the training-loop counterpart to `kind: Model`
 (Bedrock-style inference) — open-infra's equivalent of SageMaker Training Jobs.
 
 A TrainingJob is **run-once**: creating one starts a training run; its status is the
-underlying batch Job's (the console shows the phase, and `kubectl logs` shows output).
+underlying batch Job's (the console shows the phase, and the job's **Logs** tab its output).
 
 ## A first training run
 

@@ -65,8 +65,20 @@ Like AWS root, this account is for break-glass and initial setup, not daily work
 
 ## Adding users (local mode)
 
-The normal way is a **`kind: User`**, so accounts are GitOps-managed like everything else.
-The password is never in the resource — it points at a Secret holding a bcrypt hash:
+**In the console:** Security & Identity → Users → **Create user**. Name the user, set an initial console
+password, and choose their access. The console stores only a bcrypt hash of the password; you never
+handle one. From the user's page you can change the password, disable the user, and create or rotate
+access keys.
+
+**With the AWS CLI** (through the aws-shim): `aws iam create-user --user-name alice`, then
+`aws iam create-access-key --user-name alice` for programmatic access. Console passwords are set in the
+console; `aws iam create-login-profile` is not served yet.
+
+### As code (operators, GitOps)
+
+To keep accounts in Git alongside the rest of the platform, declare a **`kind: User`**. The password is
+never in the resource: it points at a Secret holding a bcrypt hash. This path is Kubernetes-shaped by
+design, for whoever runs the platform; the console and the IAM API above are the way for everyone else.
 
 ```yaml
 apiVersion: iam.openinfra.dev/v1

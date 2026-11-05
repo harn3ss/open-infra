@@ -57,7 +57,7 @@ outputs — the same freedom (and contract) as `kind: TrainingJob`.
 ## Notes
 
 - Run-once and immutable — to re-run (or with changes), delete and recreate, or use a
-  new name. Status is the underlying batch Job's (`kubectl logs -n <ns> job/<name>-transform`).
+  new name. Its output is on the job's **Logs** tab in the console.
 - It runs **your** container; there's no first-party inference image. open-infra provides
   the GPU placement, the object-store wiring, and the lifecycle.
 - Batch vs live: `kind: BatchTransform` scores a dataset once; `kind: Model` `serve`

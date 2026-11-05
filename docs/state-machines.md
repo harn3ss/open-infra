@@ -157,7 +157,7 @@ where AWS would not retain one.
 
 - Executions are runtime objects, not declared infrastructure, so — like AWS —
   `kind: StateMachine` is a Terraform resource but you start executions from the
-  console or `kubectl`, not from Terraform.
+  console or the Step Functions API (`aws stepfunctions start-execution`), not from Terraform.
 - A single cluster-wide controller runs every state machine's executions; deleting a
   `StateMachine` stops new executions from starting (the definition is gone), and its
   past `Execution` objects remain until you delete them.

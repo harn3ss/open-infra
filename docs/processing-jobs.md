@@ -62,5 +62,5 @@ wiring but a different purpose:
 ## Notes
 
 - Run-once and immutable — to re-run (or with changes), delete and recreate, or use a new
-  name. Status is the underlying batch Job's (`kubectl logs -n <ns> job/<name>-proc`).
+  name. Its output is on the job's **Logs** tab in the console.
 - It runs **your** container; there's no first-party processing image.

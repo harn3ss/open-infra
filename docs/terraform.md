@@ -131,7 +131,7 @@ that touches the resource corrects it.
 
 **Identity is deliberately absent.** `kind: User` and `kind: Group` (`iam.openinfra.dev`) have
 no Terraform resources. Managing who may log in from the same config that manages
-infrastructure invites an accident with no undo. Use the console or `kubectl` — see
+infrastructure invites an accident with no undo. Use the console or the IAM API — see
 [`iam.md`](iam.md).
 
 **Some resources are jobs, not desired state.** Changing a `openinfra_query`'s `sql` runs a
