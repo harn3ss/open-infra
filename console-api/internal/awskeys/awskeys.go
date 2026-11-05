@@ -82,6 +82,9 @@ type Store struct {
 // NewStore binds a Store to a clientset and the namespace access-key Secrets live in.
 func NewStore(cs kubernetes.Interface, ns string) *Store { return &Store{cs: cs, ns: ns} }
 
+// Namespace is the credential store namespace the keys live in.
+func (s *Store) Namespace() string { return s.ns }
+
 // SecretName is the deterministic, DNS-1123-safe Secret name for an access key ID: a lowercase
 // hex prefix of its SHA-256. Deterministic so Lookup is a single Get (no list/scan), and the raw
 // ID is re-checked from the Secret data on read to defeat the (astronomically unlikely) collision.

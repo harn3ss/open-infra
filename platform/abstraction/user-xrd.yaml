@@ -128,6 +128,13 @@ spec:
                     key:
                       type: string
                       default: hash
+                    namespace:
+                      type: string
+                      description: >-
+                        Where the Secret is: omitted for the console's own namespace, or the IAM credential
+                        store's (the aws-shim's KEYS_NAMESPACE) for a login profile set through the IAM API
+                        (CreateLoginProfile). A sign-in accepts a store Secret only if it is this user's own
+                        login profile; any other namespace is refused.
                   required: [name]
                 disabled:
                   type: boolean

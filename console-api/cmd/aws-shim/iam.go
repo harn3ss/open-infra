@@ -99,6 +99,16 @@ func verbForIAMOp(op string) (verb, resource string, ok bool) {
 		return "get", "groups", true
 	case "DeleteGroup", "DeleteGroupPolicy":
 		return "delete", "groups", true
+	// Login profiles and the account password policy (iam_loginprofile.go). ChangePassword is a user's own
+	// self-service action, authorized in changePassword, not by this gate.
+	case "CreateLoginProfile", "UpdateLoginProfile", "UpdateAccountPasswordPolicy":
+		return "create", "users", true
+	case "GetLoginProfile", "GetAccountPasswordPolicy":
+		return "get", "users", true
+	case "DeleteLoginProfile", "DeleteAccountPasswordPolicy":
+		return "delete", "users", true
+	case "ChangePassword":
+		return "update", "users", true
 	}
 	return "", "", false
 }
@@ -140,7 +150,8 @@ func iamResource(op string, r *http.Request) (string, string) {
 // access-key operations and GetUser default to the caller).
 func iamActsOnCaller(op string) bool {
 	switch op {
-	case "CreateAccessKey", "UpdateAccessKey", "DeleteAccessKey", "ListAccessKeys", "GetUser":
+	case "CreateAccessKey", "UpdateAccessKey", "DeleteAccessKey", "ListAccessKeys", "GetUser",
+		"CreateLoginProfile", "GetLoginProfile", "UpdateLoginProfile", "DeleteLoginProfile":
 		return true
 	}
 	return false
@@ -162,6 +173,10 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
+	if op == "ChangePassword" {
+		h.changePassword(ctx, w, r, claims, requestID) // a user's own password: authorized there
+		return
+	}
 
 	// iam:<Op> on the Role/Policy/User/Group it names (the List* ops on <Type>::*); a User's access-key or
 	// GetUser op that names no user acts on the caller, as on AWS. A group is authorized on its ARN
@@ -269,6 +284,9 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.updateAccessKey(ctx, w, r, requestID, claims)
 	case "SimulatePrincipalPolicy":
 		h.simulatePrincipalPolicy(ctx, w, r, requestID, claims)
+	case "CreateLoginProfile", "GetLoginProfile", "UpdateLoginProfile", "DeleteLoginProfile",
+		"GetAccountPasswordPolicy", "UpdateAccountPasswordPolicy", "DeleteAccountPasswordPolicy":
+		h.serveLoginProfile(ctx, w, r, op, requestID, claims)
 	default:
 		writeQueryError(w, http.StatusBadRequest, "InvalidAction", requestID, "IAM "+op+" is recognized but not implemented.", iamXMLNamespace)
 	}
