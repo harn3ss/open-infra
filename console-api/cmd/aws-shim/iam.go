@@ -177,9 +177,14 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	// (impersonated SAR; IAM management is admin-level, the RBAC the console's IAM pages use) — then the
 	// data-plane check (an assumed role's authority is its policy alone). In enforce IAM policy alone:
 	// AWS's PowerUserAccess, which excludes iam:*, may not manage IAM here either.
+	// A member account's IAM entities are its own (iamScope): the resource is in the caller's account.
+	var inAccount []iamauthz.RequestOption
+	if sc := h.scope(ctx); sc.ns != h.usersNS {
+		inAccount = append(inAccount, iamauthz.WithResourceAccount(sc.account))
+	}
 	if ok, reason := decide(ctx, r, h.authz, claims, "iam:"+op, resType, resID,
 		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "iam.openinfra.dev", resource, h.usersNS, "",
-			"iam:"+op, resType, resID)); !ok {
+			"iam:"+op, resType, resID), inAccount...); !ok {
 		h.audit(ctx, op, resID, "deny", reason)
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, iamXMLNamespace)
 		return

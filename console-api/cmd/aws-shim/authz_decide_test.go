@@ -235,8 +235,14 @@ func TestEnforce_MemberUserIsNotTheManagementUserOfItsName(t *testing.T) {
 		Statements: []policyengine.Statement{dpAllow([]string{"sqs:SendMessage"}, "*")}}
 	inGroup := iam.Claims{Sub: "bob", Account: testMember, Groups: []string{"openinfra:devs"}}
 	if ok, why := decide(withAccountHome(context.Background(), memberHome), r, checkerInMode(t, "enforce", group), inGroup,
-		"sqs:SendMessage", "Queue", "jobs", nil); !ok {
+		"sqs:SendMessage", "Queue", "jobs", nil, iamauthz.WithResourceAccount(testMember)); !ok {
 		t.Errorf("a member account's group in its home must apply to its members: %s", why)
+	}
+	// A door's resource is the management account's unless the door names its account: a member
+	// account's identity grant alone does not reach it.
+	if ok, _ := decide(withAccountHome(context.Background(), memberHome), r, checkerInMode(t, "enforce", group), inGroup,
+		"sqs:SendMessage", "Queue", "jobs", nil); ok {
+		t.Error("a member account's principal reached a management-account queue on its identity policy alone")
 	}
 }
 

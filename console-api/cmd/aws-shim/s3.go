@@ -206,7 +206,11 @@ func (h *s3Handler) allowed(r *http.Request, claims iam.Claims, op s3op) bool {
 func (h *s3Handler) allowedIn(b *s3authz.Batch, r *http.Request, claims iam.Claims, op s3op) bool {
 	var ok bool
 	var reason string
-	if b != nil {
+	if memberAccount(claims) {
+		// The buckets here are the management account's, and the object-storage gate knows no account:
+		// a member account's principal is refused rather than evaluated as a management principal.
+		ok, reason = false, "a member account's principal is not served by object storage yet"
+	} else if b != nil {
 		ok, reason = b.Allow(r.Context(), claims, op.authzRequest(), requestContext(claims, r))
 	} else {
 		ok, reason = h.gate().Allow(r.Context(), claims, op.authzRequest(), requestContext(claims, r))

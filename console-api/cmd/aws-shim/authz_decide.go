@@ -49,6 +49,11 @@ func decision(ctx context.Context, r *http.Request, authz *dataplaneauthz.Checke
 	}
 	var d iamauthz.Decision
 	if memberAccount(claims) {
+		// The front doors' resources are the management account's (the doors keep one account's
+		// resources), unless the door names the resource's account (the IAM front door, whose entities are
+		// the caller's account's): a member account's principal reaches them as AWS reaches another
+		// account's resource — its identity policy and the resource's own policy must both allow.
+		opts = append([]iamauthz.RequestOption{iamauthz.WithResourceAccount(awsidentity.Current().AccountID)}, opts...)
 		d = authz.IAM().Authorize(ctx, p, action, res, reqCtx, opts...)
 		d.Mode = iamauthz.ModeEnforce
 	} else {
