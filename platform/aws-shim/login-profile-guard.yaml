@@ -1,0 +1,92 @@
+# The guard on IAM login profiles (console-api/internal/loginprofile).
+#
+# A local User's console password is a bcrypt hash in the credential store namespace (open-infra-aws-shim,
+# the aws-shim's KEYS_NAMESPACE, beside the access keys) — never in the console namespace, where root's
+# console-auth Secret lives. RBAC cannot hold writes to a name prefix, so admission does:
+#
+#   1. The aws-shim's ServiceAccount writes no Secret in the console namespace — not console-auth, not
+#      anything. (It holds no Secret rights there either; this holds even if someone grants them.)
+#   2. In the credential store namespace a login profile is exactly a Secret named iam-login-* labelled
+#      openinfra.dev/login-profile: "true" that names its user (openinfra.dev/iam-user and
+#      openinfra.dev/iam-user-namespace): the prefix and the label come together or not at all, so nothing
+#      else passes for a profile and no profile hides under another name. An account's password policy
+#      is likewise exactly iam-password-policy-<account>, labelled openinfra.dev/password-policy: "true"
+#      and openinfra.dev/account-id: <account>.
+#   3. An update never moves a profile to another user (its user labels are fixed once set).
+#
+# A cluster administrator (system:masters) is not held, so a broken profile can always be repaired.
+# Pinned by test/admission (each rule evaluated against its cases) and test/render (the objects, scope).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-login-profile-guard
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["secrets"]
+  matchConditions:
+    - name: console-or-credential-store
+      expression: "request.namespace == 'open-infra-console' || request.namespace == 'open-infra-aws-shim'"
+    - name: not-cluster-admin
+      expression: "!('system:masters' in request.userInfo.groups)"
+  variables:
+    # The Secret as it is (create, update) or was (delete).
+    - name: s
+      expression: "request.operation == 'DELETE' ? oldObject : object"
+    - name: name
+      expression: "variables.s.metadata.name"
+    - name: profileLabel
+      expression: "has(variables.s.metadata.labels) && 'openinfra.dev/login-profile' in variables.s.metadata.labels ? variables.s.metadata.labels['openinfra.dev/login-profile'] : ''"
+    - name: user
+      expression: "has(variables.s.metadata.labels) && 'openinfra.dev/iam-user' in variables.s.metadata.labels ? variables.s.metadata.labels['openinfra.dev/iam-user'] : ''"
+    - name: userNS
+      expression: "has(variables.s.metadata.labels) && 'openinfra.dev/iam-user-namespace' in variables.s.metadata.labels ? variables.s.metadata.labels['openinfra.dev/iam-user-namespace'] : ''"
+    - name: policyLabel
+      expression: "has(variables.s.metadata.labels) && 'openinfra.dev/password-policy' in variables.s.metadata.labels ? variables.s.metadata.labels['openinfra.dev/password-policy'] : ''"
+    - name: account
+      expression: "has(variables.s.metadata.labels) && 'openinfra.dev/account-id' in variables.s.metadata.labels ? variables.s.metadata.labels['openinfra.dev/account-id'] : ''"
+    - name: oldUser
+      expression: "request.operation == 'UPDATE' && has(oldObject.metadata.labels) && 'openinfra.dev/iam-user' in oldObject.metadata.labels ? oldObject.metadata.labels['openinfra.dev/iam-user'] : ''"
+    - name: oldUserNS
+      expression: "request.operation == 'UPDATE' && has(oldObject.metadata.labels) && 'openinfra.dev/iam-user-namespace' in oldObject.metadata.labels ? oldObject.metadata.labels['openinfra.dev/iam-user-namespace'] : ''"
+    - name: isProfile
+      expression: "variables.name.startsWith('iam-login-')"
+    - name: isPolicy
+      expression: "variables.name.startsWith('iam-password-policy-')"
+    - name: inStore
+      expression: "request.namespace == 'open-infra-aws-shim'"
+  validations:
+    - expression: "!(request.namespace == 'open-infra-console' && request.userInfo.username == 'system:serviceaccount:open-infra-aws-shim:aws-shim')"
+      message: "the aws-shim writes no Secret in the console namespace: login profiles live in the credential store"
+      reason: Forbidden
+    - expression: "!variables.inStore || variables.isProfile == (variables.profileLabel == 'true')"
+      message: "a login profile is a Secret named iam-login-* labelled openinfra.dev/login-profile: \"true\", both or neither"
+      reason: Forbidden
+    - expression: "!variables.inStore || !variables.isProfile || (variables.user != '' && variables.userNS != '')"
+      message: "a login profile names its user (openinfra.dev/iam-user and openinfra.dev/iam-user-namespace)"
+      reason: Forbidden
+    - expression: "!variables.inStore || variables.isPolicy == (variables.policyLabel == 'true')"
+      message: "a password policy is a Secret named iam-password-policy-* labelled openinfra.dev/password-policy: \"true\", both or neither"
+      reason: Forbidden
+    - expression: "!variables.inStore || !variables.isPolicy || (variables.account != '' && variables.name == 'iam-password-policy-' + variables.account)"
+      message: "a password policy is named for its account: iam-password-policy-<openinfra.dev/account-id>"
+      reason: Forbidden
+    - expression: "request.operation != 'UPDATE' || !variables.inStore || !variables.isProfile || (variables.oldUser == variables.user && variables.oldUserNS == variables.userNS)"
+      message: "a login profile cannot be moved to another user"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-login-profile-guard
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  policyName: openinfra-login-profile-guard
+  validationActions: [Deny]

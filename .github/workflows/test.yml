@@ -27,6 +27,7 @@ on:
       - "platform/storage/longhorn*.yaml" # volume_render_test.go pins the Volume's classes to Immediate binding
       - "platform/security/volume-crypto.yaml" # crypto_reconcilers_test.go runs these reconciler scripts
       - "platform/security/encryptionkey-reconciler.yaml"
+      - "platform/aws-shim/**" # the login-profile guard (test/admission) and the shim's RBAC (test/render)
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
       - "open-appsync/**" # the VTL engine + resolver probe
@@ -54,6 +55,7 @@ on:
       - "platform/storage/longhorn*.yaml" # volume_render_test.go pins the Volume's classes to Immediate binding
       - "platform/security/volume-crypto.yaml" # crypto_reconcilers_test.go runs these reconciler scripts
       - "platform/security/encryptionkey-reconciler.yaml"
+      - "platform/aws-shim/**" # the login-profile guard (test/admission) and the shim's RBAC (test/render)
       - "ui/**" # console SPA — typecheck + build (catches UI dependency-bump breakage)
       - "chaos/**" # the lottery draw engine — chaos-draw job guards replay/gating invariants
       - "open-appsync/**" # the VTL engine + resolver probe
@@ -92,6 +94,7 @@ jobs:
           - dynamodb # the shared Dynamo-shaped store (executor + expression evaluator), used by open-appsync + the aws-shim
           - console-api # BFF handlers (crd, proxy)
           - test/render # composition-render assertions (hibernation, HA)
+          - test/admission # admission policies' CEL evaluated case by case (login-profile guard)
           - tools/chaosdoc # chaos-scenario gallery generator + drift-guard
           - tools/chainforge # chaos chain grammar: validate corpus + generate chains
           - open-appsync # the VTL engine + $util + the docs-anchored resolver probe
