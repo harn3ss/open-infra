@@ -1,0 +1,50 @@
+
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: policy-clusterrole
+spec:
+  forProvider:
+    manifest:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: openinfra-policy-vm-ops
+        labels:
+          rbac.openinfra.dev/managed: policy
+          rbac.openinfra.dev/policy-vm-ops: "true"
+          openinfra.dev/iam-policy: vm-ops
+      rules:
+                    - apiGroups:
+                        - openinfra.dev
+                      resources:
+                        - virtualmachines
+                      verbs:
+                        - get
+                    - apiGroups:
+                        - openinfra.dev
+                      resources:
+                        - volumes
+                      verbs:
+                        - get
+                        - list
+                        - watch
+                        - create
+                        - update
+                        - patch
+                        - delete
+                    - apiGroups:
+                        - openinfra.dev
+                      resources:
+                        - secrets
+                      verbs:
+                        - get
+---
+apiVersion: iam.openinfra.dev/v1
+kind: XPolicy
+status:
+  ready: true
+  clusterRole: openinfra-policy-vm-ops
+  ruleCount: 3

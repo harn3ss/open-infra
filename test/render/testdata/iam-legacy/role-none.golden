@@ -1,0 +1,27 @@
+
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: role-clusterrole
+spec:
+  forProvider:
+    manifest:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: openinfra-role-anchor
+        labels:
+          rbac.openinfra.dev/managed: role
+          openinfra.dev/iam-role: anchor
+      # An empty clusterRoleSelectors matches nothing, so a role with no
+      # policies attached grants nothing until one is added.
+      aggregationRule:
+        clusterRoleSelectors: []
+---
+apiVersion: iam.openinfra.dev/v1
+kind: XRole
+status:
+  ready: true
+  clusterRole: openinfra-role-anchor

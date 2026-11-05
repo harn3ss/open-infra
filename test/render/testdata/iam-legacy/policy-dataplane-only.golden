@@ -1,0 +1,26 @@
+
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: policy-clusterrole
+spec:
+  forProvider:
+    manifest:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: openinfra-policy-reader
+        labels:
+          rbac.openinfra.dev/managed: policy
+          rbac.openinfra.dev/policy-reader: "true"
+          openinfra.dev/iam-policy: reader
+      rules: []
+---
+apiVersion: iam.openinfra.dev/v1
+kind: XPolicy
+status:
+  ready: true
+  clusterRole: openinfra-policy-reader
+  ruleCount: 0
