@@ -21,6 +21,9 @@ RUN go mod download
 COPY console-api/ ./
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /authz-webhook ./cmd/authz-webhook
+# The iam-compiler ships in the same image: it writes the iam-corpus this webhook reads, from the same
+# module, so they always move together. Its Deployment runs /iam-compiler (platform/security/iam-compiler.yaml).
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /iam-compiler ./cmd/iam-compiler
 
 FROM gcr.io/distroless/static-debian12
 ARG OPENINFRA_FIPS=true
@@ -29,4 +32,5 @@ LABEL openinfra.dev/fips=${OPENINFRA_FIPS}
 EXPOSE 8443
 USER 65532:65532
 COPY --from=build /authz-webhook /authz-webhook
+COPY --from=build /iam-compiler /iam-compiler
 ENTRYPOINT ["/authz-webhook"]

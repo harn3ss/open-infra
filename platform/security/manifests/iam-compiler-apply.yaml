@@ -1,0 +1,26 @@
+# The iam-compiler's APPLY-mode rights, granted at the IAM cutover (kubectl apply, a deliberate step:
+# under manifests/ so ArgoCD does not sync it). Writing generated RBAC needs these: create/update/delete
+# on ClusterRoles, ClusterRoleBindings and RoleBindings, and escalate/bind, because the RBAC it writes
+# grants what IAM policy grants — rights the compiler does not hold itself. That makes this
+# ServiceAccount as powerful as the IAM policies it compiles, which is the point; it writes only objects
+# labelled openinfra.dev/generated-by: iam-compiler and never touches hand-written RBAC.
+#
+# After applying: set IAM_COMPILER_MODE=apply on deploy/iam-compiler (platform/security/iam-compiler.yaml).
+# Rollback: set it back to report (the generated objects stay until deleted:
+# kubectl delete clusterrole,clusterrolebinding,rolebinding -A -l openinfra.dev/generated-by=iam-compiler).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: openinfra-iam-compiler-apply }
+rules:
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles, clusterrolebindings, rolebindings]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [escalate, bind]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: openinfra-iam-compiler-apply }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-iam-compiler-apply }
+subjects: [{ kind: ServiceAccount, name: iam-compiler, namespace: open-infra-authz }]

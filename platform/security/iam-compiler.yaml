@@ -1,0 +1,78 @@
+# The iam-compiler: compiles IAM policy (kind: Policy documents attached to Users, Groups and Roles) into
+# what Kubernetes still enforces underneath — the iam-corpus the authorization webhook decides
+# account-qualified principals (openinfra:<account>:<principal>) with, and generated RBAC (label
+# openinfra.dev/generated-by: iam-compiler). Never widened: what RBAC cannot express exactly is dropped
+# and reported (the iam-compiler-report ConfigMap beside the corpus).
+#
+# Shipped in REPORT mode: it reads the IAM world and writes only its report, so nothing it compiles
+# enforces yet. The IAM cutover switches IAM_COMPILER_MODE to apply and grants the RBAC-write rights in
+# manifests/iam-compiler-apply.yaml (not synced by ArgoCD: those rights let it write any RBAC).
+# Platform-internal: its own RBAC below is hand-written and binds a ServiceAccount, never a user.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: iam-compiler, namespace: open-infra-authz }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: { name: openinfra-iam-compiler-read }
+rules:
+  # The IAM world: who has which policies.
+  - { apiGroups: [iam.openinfra.dev], resources: [users, roles, groups, policies], verbs: [get, list, watch] }
+  # status.compiled, written only where the kind's schema declares it (read from its CRD).
+  - { apiGroups: [iam.openinfra.dev], resources: [users/status, roles/status, policies/status], verbs: [patch] }
+  - { apiGroups: [apiextensions.k8s.io], resources: [customresourcedefinitions], verbs: [get] }
+  # Which account each namespace belongs to (label openinfra.dev/account-id).
+  - { apiGroups: [""], resources: [namespaces], verbs: [get, list, watch] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: openinfra-iam-compiler-read }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-iam-compiler-read }
+subjects: [{ kind: ServiceAccount, name: iam-compiler, namespace: open-infra-authz }]
+---
+# Its report and (in apply mode) the iam-corpus, beside the control-plane corpus; its leader-election Lease.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: iam-compiler, namespace: open-infra-authz }
+rules:
+  - { apiGroups: [""], resources: [configmaps], verbs: [get, update], resourceNames: [iam-corpus, iam-compiler-report] }
+  - { apiGroups: [""], resources: [configmaps], verbs: [create] }
+  - { apiGroups: [coordination.k8s.io], resources: [leases], verbs: [get, update], resourceNames: [iam-compiler] }
+  - { apiGroups: [coordination.k8s.io], resources: [leases], verbs: [create] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: iam-compiler, namespace: open-infra-authz }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: iam-compiler }
+subjects: [{ kind: ServiceAccount, name: iam-compiler, namespace: open-infra-authz }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: iam-compiler, namespace: open-infra-authz, labels: { app: iam-compiler } }
+spec:
+  replicas: 1   # leader-elected (Lease iam-compiler): a second replica would only stand by
+  selector: { matchLabels: { app: iam-compiler } }
+  template:
+    metadata: { labels: { app: iam-compiler } }
+    spec:
+      serviceAccountName: iam-compiler
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: iam-compiler
+          # Ships in the authorization webhook's image (the webhook reads what this writes).
+          image: ghcr.io/harn3ss/open-infra-authz-webhook:latest
+          imagePullPolicy: Always
+          command: ["/iam-compiler"]
+          env:
+            - { name: IAM_COMPILER_MODE, value: "report" }   # the IAM cutover sets apply
+            - { name: IAM_COMPILER_INTERVAL, value: "60s" }
+            - { name: POD_NAMESPACE, valueFrom: { fieldRef: { fieldPath: metadata.namespace } } }
+            - { name: GOMEMLIMIT, value: "230MiB" }
+          ports: [{ containerPort: 8080, name: health }]
+          readinessProbe: { httpGet: { path: /healthz, port: health }, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /healthz, port: health }, periodSeconds: 30 }
+          resources: { requests: { cpu: 20m, memory: 64Mi }, limits: { cpu: 500m, memory: 256Mi } }
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
