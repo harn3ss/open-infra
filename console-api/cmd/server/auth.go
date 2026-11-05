@@ -550,7 +550,7 @@ func handleMe(a *authStore) http.HandlerFunc {
 			"account": acct, "accountAlias": getenv("ACCOUNT_ALIAS", ""),
 			"arn": p.ARN(), "principalType": string(p.Type), "iamAuthz": string(mode),
 			"passwordResetRequired": claims.PwReset,
-			"capabilities": map[string]bool{"operator": consoleIAM.isOperator(r, claims, p, mode)},
+			"capabilities":          map[string]bool{"operator": consoleIAM.isOperator(r, claims, p, mode)},
 		}
 		consoleIAM.addAccountContext(r.Context(), body, acct)
 		writeJSON(w, http.StatusOK, body)
