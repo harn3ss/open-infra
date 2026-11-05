@@ -51,7 +51,8 @@ var dynamicResourceTypes = map[string][]string{
 // dynamicServices are the services of checks whose action is a variable, per file.
 var dynamicServices = map[string][]string{
 	"acm.go":            {"acm"},
-	"athena.go":         {"glue"}, // the per-table checks: glue:GetTable / glue:UpdateTable
+	"athena.go":         {"glue"},       // the per-table checks: glue:GetTable / glue:UpdateTable
+	"cloudwatch.go":     {"cloudwatch"}, // decideAlarm: an alarm op on one named alarm
 	"ecr_token.go":      {"ecr"},
 	"dynamo.go":         {"dynamodb"},
 	"kms.go":            {"kms"},

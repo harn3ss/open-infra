@@ -72,6 +72,17 @@ func ssmDocument(s string) string {
 	return s
 }
 
+// ssmDenied answers a Run Command call its authorization refused, as AWS's SSM does: AccessDeniedException,
+// "User: <arn> is not authorized to perform: <action> on resource: <arn>" (an enforce-mode reason is that
+// sentence already; a legacy one is said inside it).
+func ssmDenied(w http.ResponseWriter, requestID string, claims iam.Claims, action, resourceARN, reason string) {
+	msg := reason
+	if !strings.Contains(reason, " is not authorized to perform: ") {
+		msg = "User: " + claims.PrincipalID() + " is not authorized to perform: " + action + " on resource: " + resourceARN + " (" + reason + ")"
+	}
+	writeSSMError(w, http.StatusBadRequest, "AccessDeniedException", requestID, msg)
+}
+
 func (h *ssmHandler) instanceARN(id string) string {
 	return "arn:aws:ec2:" + h.region + ":" + h.account + ":instance/" + id
 }
@@ -121,10 +132,18 @@ func (h *ssmHandler) serveRunCommand(ctx context.Context, w http.ResponseWriter,
 func (h *ssmHandler) sendCommand(ctx context.Context, w http.ResponseWriter, r *http.Request, body map[string]any, claims iam.Claims, visible map[string]ec2Instance, requestID string) {
 	bad := func(code, msg string) { writeSSMError(w, http.StatusBadRequest, code, requestID, msg) }
 	doc := ssmDocument(strFromBody(body, "DocumentName"))
-	switch {
-	case doc == "":
+	if doc == "" {
 		bad("ValidationException", "1 validation error detected: Value null at 'documentName' failed to satisfy constraint: Member must not be null")
 		return
+	}
+	// Authorization first, as AWS's: ssm:SendCommand on the document named — so a caller not allowed it is
+	// denied whether or not the document exists — and then on each instance, below, before any is looked at.
+	if ok, reason := decide(ctx, r, h.authz, claims, "ssm:SendCommand", "Document", doc,
+		dataPlaneOnly(ctx, r, h.authz, claims, "ssm:SendCommand", "Document", doc)); !ok {
+		ssmDenied(w, requestID, claims, "ssm:SendCommand", "arn:aws:ssm:"+h.region+"::document/"+doc, reason)
+		return
+	}
+	switch {
 	case doc == "AWS-RunPowerShellScript":
 		bad("InvalidDocument", "Document AWS-RunPowerShellScript is not served: Windows guests run no metadata agent on open-infra; use AWS-RunShellScript on a Linux instance")
 		return
@@ -233,6 +252,29 @@ func (h *ssmHandler) sendCommand(ctx context.Context, w http.ResponseWriter, r *
 		bad("ValidationException", "A command takes at most 50 instance ids")
 		return
 	}
+	// Each instance (and, in legacy, for a User, RBAC update on its VM), before whether it can run a
+	// command is looked at: a caller not allowed an instance is denied whether or not it exists.
+	for _, id := range ids {
+		// ssm:SendCommand on the instance (decide): in legacy the data-plane refinement, then — running a
+		// command changes the instance — RBAC update on its kind: VirtualMachine (an instance the caller
+		// cannot see is refused just below); in enforce IAM policy.
+		in, seen := visible[id]
+		if ok, reason := decide(ctx, r, h.authz, claims, "ssm:SendCommand", "Instance", id, func() (bool, string) {
+			if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "ssm:SendCommand", "Instance", id, r); denied {
+				return false, reason
+			}
+			if !seen {
+				return true, ""
+			}
+			if allowed, reason := iam.CanDo(ctx, h.cs, claims, "update", "openinfra.dev", "virtualmachines", h.ec2.door.ns, in.name); !allowed {
+				return false, "running a command changes the instance; it needs update on kind: VirtualMachine " + in.name + ": " + reason
+			}
+			return true, ""
+		}); !ok {
+			ssmDenied(w, requestID, claims, "ssm:SendCommand", h.instanceARN(id), reason)
+			return
+		}
+	}
 	managed, err := h.store.managedInstances(ctx)
 	if err != nil {
 		writeSSMError(w, http.StatusInternalServerError, "InternalServerError", requestID, "the SSM store is unavailable; retry")
@@ -249,29 +291,6 @@ func (h *ssmHandler) sendCommand(ctx context.Context, w http.ResponseWriter, r *
 	if len(invalid) > 0 {
 		bad("InvalidInstanceId", "Instances [["+strings.Join(invalid, ", ")+"]] not in a valid state for account "+h.account)
 		return
-	}
-	// Authorization: the document, then each instance (and, for a User, RBAC update on its VM).
-	if ok, reason := decide(ctx, r, h.authz, claims, "ssm:SendCommand", "Document", ssmRunShellScript,
-		dataPlaneOnly(ctx, r, h.authz, claims, "ssm:SendCommand", "Document", ssmRunShellScript)); !ok {
-		writeSSMError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "User: "+claims.PrincipalID()+" is not authorized to perform: ssm:SendCommand on resource: arn:aws:ssm:"+h.region+"::document/"+ssmRunShellScript+" ("+reason+")")
-		return
-	}
-	for _, id := range ids {
-		// ssm:SendCommand on the instance (decide): in legacy the data-plane refinement, then — running a
-		// command changes the instance — RBAC update on its kind: VirtualMachine; in enforce IAM policy.
-		vm := visible[id].name
-		if ok, reason := decide(ctx, r, h.authz, claims, "ssm:SendCommand", "Instance", id, func() (bool, string) {
-			if denied, reason := dataPlaneDenied(ctx, h.authz, claims, "ssm:SendCommand", "Instance", id, r); denied {
-				return false, reason
-			}
-			if allowed, reason := iam.CanDo(ctx, h.cs, claims, "update", "openinfra.dev", "virtualmachines", h.ec2.door.ns, vm); !allowed {
-				return false, "running a command changes the instance; it needs update on kind: VirtualMachine " + vm + ": " + reason
-			}
-			return true, ""
-		}); !ok {
-			writeSSMError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "User: "+claims.PrincipalID()+" is not authorized to perform: ssm:SendCommand on resource: "+h.instanceARN(id)+" ("+reason+")")
-			return
-		}
 	}
 	maxConc, maxErr := strFromBody(body, "MaxConcurrency"), strFromBody(body, "MaxErrors")
 	if maxConc == "" {
@@ -417,12 +436,12 @@ func (h *ssmHandler) getCommandInvocation(ctx context.Context, w http.ResponseWr
 		writeSSMError(w, http.StatusBadRequest, "InvalidPluginName", requestID, "The plugin name "+p+" is not valid for document "+ssmRunShellScript+" ("+ssmPluginName+")")
 		return
 	}
-	if _, ok := visible[iid]; ok {
-		if ok, reason := decide(ctx, r, h.authz, claims, "ssm:GetCommandInvocation", "Instance", iid,
-			dataPlaneOnly(ctx, r, h.authz, claims, "ssm:GetCommandInvocation", "Instance", iid)); !ok {
-			writeSSMError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "User: "+claims.PrincipalID()+" is not authorized to perform: ssm:GetCommandInvocation on resource: "+h.instanceARN(iid)+" ("+reason+")")
-			return
-		}
+	// Authorized on the instance before anything about it or the command is looked at: a caller not
+	// allowed it is denied whether or not either exists.
+	if ok, reason := decide(ctx, r, h.authz, claims, "ssm:GetCommandInvocation", "Instance", iid,
+		dataPlaneOnly(ctx, r, h.authz, claims, "ssm:GetCommandInvocation", "Instance", iid)); !ok {
+		ssmDenied(w, requestID, claims, "ssm:GetCommandInvocation", h.instanceARN(iid), reason)
+		return
 	}
 	invs, err := h.store.invocations(ctx, cid, iid)
 	if err != nil {

@@ -141,13 +141,15 @@ func (h *cloudFrontHandler) serveRead(w http.ResponseWriter, r *http.Request, cl
 		h.listDistributions(w, r, claims, requestID)
 		return
 	case "GetDistribution", "GetDistributionConfig":
-		if !cfDistributionIDRe.MatchString(rt.distID) {
-			writeCFError(w, http.StatusNotFound, "NoSuchDistribution", requestID, "The specified distribution does not exist.")
-			return
-		}
+		// Authorized before anything about the id is looked at, as AWS does: a caller not allowed the
+		// action is denied whether or not the distribution exists, or could.
 		if ok, reason := decide(ctx, r, h.cfn.authz, claims, "cloudfront:"+rt.op, "Distribution", rt.distID,
 			scopedDataPlaneOnly(ctx, r, h.cfn.authz, claims, "cloudfront:"+rt.op, "Distribution", rt.distID)); !ok {
 			writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
+			return
+		}
+		if !cfDistributionIDRe.MatchString(rt.distID) {
+			writeCFError(w, http.StatusNotFound, "NoSuchDistribution", requestID, "The specified distribution does not exist.")
 			return
 		}
 		recs, err := h.stackRecords(ctx)
@@ -180,13 +182,13 @@ func (h *cloudFrontHandler) serveRead(w http.ResponseWriter, r *http.Request, cl
 		return
 	}
 	kind := cfReadKinds[rt.op]
-	if !cfResourceIDRe.MatchString(rt.resID) {
-		writeCFError(w, http.StatusNotFound, "NoSuch"+kind.elem, requestID, "The specified "+kind.elem+" does not exist.")
-		return
-	}
 	if ok, reason := decide(ctx, r, h.cfn.authz, claims, "cloudfront:"+rt.op, kind.resType, rt.resID,
 		scopedDataPlaneOnly(ctx, r, h.cfn.authz, claims, "cloudfront:"+rt.op, kind.resType, rt.resID)); !ok {
 		writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
+		return
+	}
+	if !cfResourceIDRe.MatchString(rt.resID) {
+		writeCFError(w, http.StatusNotFound, "NoSuch"+kind.elem, requestID, "The specified "+kind.elem+" does not exist.")
 		return
 	}
 	recs, err := h.stackRecords(ctx)

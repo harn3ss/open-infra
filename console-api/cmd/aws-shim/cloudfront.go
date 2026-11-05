@@ -171,16 +171,16 @@ func (h *cloudFrontHandler) serve(w http.ResponseWriter, r *http.Request, claims
 		h.serveRead(w, r, claims, requestID, rt)
 		return
 	}
-	if !cfDistributionIDRe.MatchString(rt.distID) {
-		writeCFError(w, http.StatusNotFound, "NoSuchDistribution", requestID, "The specified distribution does not exist.")
-		return
-	}
 	// Authorization, as AWS evaluates it: cloudfront:<Action> on the distribution's ARN, before anything
-	// reveals whether it exists. For a User this is additive to the RBAC check below; for an assumed role it
-	// is the whole, default-deny authority.
+	// reveals whether it exists — even that its id could not be one. For a User this is additive to the
+	// RBAC check below; for an assumed role it is the whole, default-deny authority.
 	if ok, reason := decide(r.Context(), r, h.cfn.authz, claims, "cloudfront:"+rt.op, "Distribution", rt.distID,
 		scopedDataPlaneOnly(r.Context(), r, h.cfn.authz, claims, "cloudfront:"+rt.op, "Distribution", rt.distID)); !ok {
 		writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
+		return
+	}
+	if !cfDistributionIDRe.MatchString(rt.distID) {
+		writeCFError(w, http.StatusNotFound, "NoSuchDistribution", requestID, "The specified distribution does not exist.")
 		return
 	}
 	d, found, err := h.findDistribution(r.Context(), rt.distID)

@@ -461,17 +461,14 @@ func (h *cwHandler) deleteAlarms(ctx context.Context, w http.ResponseWriter, r *
 	}
 	// per-alarm namespace fence
 	for _, n := range names {
-		a, ok, err := h.store.getAlarm(ctx, n)
+		a, found, err := h.store.getAlarm(ctx, n)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
-		if ok {
-			if ok, reason := decide(ctx, r, h.authz, claims, "cloudwatch:DeleteAlarms", "Namespace", a.Namespace,
-				scopedDataPlaneOnly(ctx, r, h.authz, claims, "cloudwatch:DeleteAlarms", "Namespace", a.Namespace)); !ok {
-				writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
-				return
-			}
+		if ok, reason := h.decideAlarm(ctx, r, claims, "cloudwatch:DeleteAlarms", a, found); !ok {
+			writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
+			return
 		}
 	}
 	if _, err := h.store.deleteAlarms(ctx, names); err != nil {
@@ -494,18 +491,17 @@ func (h *cwHandler) setAlarmState(ctx context.Context, w http.ResponseWriter, r 
 		writeCWError(w, http.StatusBadRequest, "InvalidParameterValue", requestID, "StateValue must be OK, ALARM or INSUFFICIENT_DATA.", cwXMLNamespace)
 		return
 	}
-	a, ok, err := h.store.getAlarm(ctx, name)
+	a, found, err := h.store.getAlarm(ctx, name)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
-	if !ok {
-		writeCWError(w, http.StatusNotFound, "ResourceNotFound", requestID, "alarm "+name+" not found", cwXMLNamespace)
+	if ok, reason := h.decideAlarm(ctx, r, claims, "cloudwatch:SetAlarmState", a, found); !ok {
+		writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
 		return
 	}
-	if ok, reason := decide(ctx, r, h.authz, claims, "cloudwatch:SetAlarmState", "Namespace", a.Namespace,
-		scopedDataPlaneOnly(ctx, r, h.authz, claims, "cloudwatch:SetAlarmState", "Namespace", a.Namespace)); !ok {
-		writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
+	if !found {
+		writeCWError(w, http.StatusNotFound, "ResourceNotFound", requestID, "alarm "+name+" not found", cwXMLNamespace)
 		return
 	}
 	prev := a.State
@@ -684,6 +680,18 @@ func writeCWJSON(w http.ResponseWriter, requestID string, obj any) {
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(obj)
+}
+
+// decideAlarm is the authorization of action on one alarm the caller named: on the alarm's namespace,
+// or — an alarm that does not exist has no namespace — on Namespace::*, so a caller not allowed the action
+// is denied whether or not the alarm exists, as on AWS, and only an allowed one learns it does not.
+func (h *cwHandler) decideAlarm(ctx context.Context, r *http.Request, claims iam.Claims, action string, a cwAlarm, found bool) (bool, string) {
+	if !found {
+		return decide(ctx, r, h.authz, claims, action, "Namespace", "",
+			dataPlaneOnly(ctx, r, h.authz, claims, action, "Namespace", ""))
+	}
+	return decide(ctx, r, h.authz, claims, action, "Namespace", a.Namespace,
+		scopedDataPlaneOnly(ctx, r, h.authz, claims, action, "Namespace", a.Namespace))
 }
 
 func (h *cwHandler) internal(w http.ResponseWriter, requestID string, err error) {
