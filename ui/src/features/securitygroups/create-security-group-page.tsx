@@ -1,20 +1,14 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Shield, AlertTriangle } from "lucide-react";
 import { CreateShell } from "@/components/create/create-shell";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { PlacementField } from "@/components/create/placement-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { k8sCreate } from "@/lib/api";
-import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
-import { useK8sWatch, watchQueryKey } from "@/hooks/use-k8s-watch";
+import { openinfraPaths } from "@/lib/k8s-paths";
+import { watchQueryKey } from "@/hooks/use-k8s-watch";
 import { useAuth } from "@/lib/auth";
 import { createNamespace } from "@/lib/account-scope";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION, type K8sObject } from "@/types/k8s";
@@ -33,11 +27,6 @@ export function CreateSecurityGroupPage() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const scoped = createNamespace(user, undefined); // a new resource lands in the account's home
-  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
-  const namespaces = useMemo(
-    () => nsWatch.items.map((n) => n.metadata.name).filter(Boolean).sort() as string[],
-    [nsWatch.items],
-  );
 
   const [name, setName] = useState("");
   const [namespace, setNamespace] = useState(scoped ?? "default");
@@ -98,20 +87,8 @@ export function CreateSecurityGroupPage() {
             />
             {nameError ? <p className="text-xs text-destructive">{nameError}</p> : null}
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="sg-ns">Namespace</Label>
-            <Select value={namespace} onValueChange={setNamespace}>
-              <SelectTrigger id="sg-ns">
-                <SelectValue placeholder="Namespace" />
-              </SelectTrigger>
-              <SelectContent>
-                {(namespaces.length ? namespaces : [namespace]).map((ns) => (
-                  <SelectItem key={ns} value={ns}>{ns}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
         </div>
+        <PlacementField value={namespace} onChange={setNamespace} />
       </div>
 
       <div className="space-y-4 rounded-lg border border-border p-4">

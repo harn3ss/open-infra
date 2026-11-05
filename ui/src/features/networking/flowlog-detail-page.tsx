@@ -12,6 +12,7 @@ import { LoadingState, ErrorState } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status-badge";
 import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
+import { useNavCapabilities } from "@/lib/auth";
 import type { StatusTone } from "@/lib/format";
 import type { FlowLog } from "@/types/k8s";
 import { awsState } from "@/lib/aws-states";
@@ -27,6 +28,7 @@ export function FlowLogDetailPage() {
     name: string;
   };
   const navigate = useNavigate();
+  const { operator } = useNavCapabilities(); // where the collector runs is the platform's, shown to its operator
   const path = openinfraPaths.flowlog(namespace, name);
 
   const { data: flowLog, isLoading, isError, error, refetch } = useQuery({
@@ -74,12 +76,16 @@ export function FlowLogDetailPage() {
                     label: "Sampling rate",
                     value: `1:${flowLog.spec?.samplingRate ?? 64}`,
                   },
-                  {
-                    label: "Collector namespace",
-                    value: (
-                      <code className="text-xs">{flowLog.spec?.namespace ?? "kube-system"}</code>
-                    ),
-                  },
+                  ...(operator
+                    ? [
+                        {
+                          label: "Collector namespace",
+                          value: (
+                            <code className="text-xs">{flowLog.spec?.namespace ?? "kube-system"}</code>
+                          ),
+                        },
+                      ]
+                    : []),
                   {
                     label: "Node selector",
                     value: nodeEntries.length ? (

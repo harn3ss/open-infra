@@ -148,7 +148,6 @@ export function ApplicationDetailPage() {
                       ""
                     ),
                   },
-                  { label: "Namespace", value: namespace },
                   {
                     label: "Created",
                     value: app.metadata.creationTimestamp ? (

@@ -290,7 +290,6 @@ export function ManagedDatabaseDetailPage() {
                 </div>
               </DetailRow>
               <DetailRow label="Database">{db?.name ?? "—"}</DetailRow>
-              <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Application">{name}</DetailRow>
               <DetailRow label="High availability">
                 <div className="flex items-center gap-2">

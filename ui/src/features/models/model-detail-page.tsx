@@ -213,7 +213,6 @@ export function ModelDetailPage() {
                   </span>
                 )}
               </DetailRow>
-              <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Node">
                 {nodes.length === 0 ? (
                   <span className="text-muted-foreground">

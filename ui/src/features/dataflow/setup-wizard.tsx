@@ -20,11 +20,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useK8sWatch } from "@/hooks/use-k8s-watch";
+import { PlacementField } from "@/components/create/placement-field";
 import { ApiError, k8sCreate } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { createNamespace } from "@/lib/account-scope";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION } from "@/types/k8s";
-import type { K8sObject } from "@/types/k8s";
 
 const ENGINES = ["postgres", "mysql", "mariadb", "sqlserver"];
 const ENGINE_LABEL: Record<string, string> = { postgres: "PostgreSQL", mysql: "MySQL", mariadb: "MariaDB", sqlserver: "SQL Server" };
@@ -62,17 +63,12 @@ export function SetupWizard({
   defaultNs?: string;
 }) {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [step, setStep] = useState(1);
   const [name, setName] = useState("");
-  const [namespace, setNamespace] = useState(defaultNs ?? "default");
+  const [namespace, setNamespace] = useState(() => createNamespace(user, defaultNs)); // the account's home
   const [tables, setTables] = useState("");
   const [dbs, setDbs] = useState<DbEntry[]>([emptyDb("east"), emptyDb("west")]);
-
-  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
-  const namespaces = nsWatch.items
-    .map((n) => n.metadata.name)
-    .filter((n): n is string => Boolean(n))
-    .sort((x, y) => x.localeCompare(y));
 
   function patch(i: number, p: Partial<DbEntry>) {
     setDbs((ds) => ds.map((d, j) => (j === i ? { ...d, ...p } : d)));
@@ -161,25 +157,17 @@ export function SetupWizard({
 
         {step === 1 ? (
           <div className="grid max-h-[60vh] gap-3 overflow-y-auto pr-1">
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <Label className="text-xs">Name</Label>
                 <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="customers-sync" />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Namespace</Label>
-                <Select value={namespace} onValueChange={setNamespace}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {namespaces.map((ns) => <SelectItem key={ns} value={ns}>{ns}</SelectItem>)}
-                  </SelectContent>
-                </Select>
               </div>
               <div className="space-y-1">
                 <Label className="text-xs">Tables to sync</Label>
                 <Input value={tables} onChange={(e) => setTables(e.target.value)} placeholder="customers, orders" />
               </div>
             </div>
+            <PlacementField value={namespace} onChange={setNamespace} />
 
             {dbs.map((d, i) => (
               <div key={i} className="space-y-2 rounded-md border p-3">

@@ -80,7 +80,6 @@ export function TransitGatewayDetailPage() {
               <KeyValuePairs
                 columns={3}
                 items={[
-                  { label: "Namespace", value: namespace },
                   { label: "Attachments", value: attachments.length },
                   {
                     label: "Spokes",

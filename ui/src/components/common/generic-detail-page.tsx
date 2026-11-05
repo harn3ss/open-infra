@@ -88,7 +88,6 @@ export function makeSimpleDetailPage(cfg: SimpleDetailConfig) {
           <TabsContent value="overview" className="pt-4">
             <Card>
               <CardContent className="divide-y divide-border p-0">
-                <DetailRow label="Namespace">{namespace}</DetailRow>
                 {(cfg.fields ?? []).map((f) => (
                   <DetailRow key={f.label} label={f.label}>
                     {f.value(data)}

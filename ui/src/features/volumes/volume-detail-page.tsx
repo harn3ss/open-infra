@@ -121,7 +121,6 @@ export function VolumeDetailPage() {
         <TabsContent value="overview" className="pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
-              <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Size">{vol.spec?.size ?? "—"}</DetailRow>
               <DetailRow label="Type">
                 {migratable

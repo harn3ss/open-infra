@@ -200,7 +200,6 @@ export function CertificateAuthorityDetailPage() {
         <TabsContent value="overview" className="pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
-              <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Common name">
                 <code className="text-xs">{ca.commonName || "—"}</code>
               </DetailRow>

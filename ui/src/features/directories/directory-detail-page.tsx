@@ -101,7 +101,6 @@ export function DirectoryDetailPage() {
         <TabsContent value="overview" className="pt-4">
           <Card>
             <CardContent className="divide-y divide-border p-0">
-              <DetailRow label="Namespace">{namespace}</DetailRow>
               <DetailRow label="Domain">
                 <code className="text-xs">{domain || "—"}</code>
               </DetailRow>

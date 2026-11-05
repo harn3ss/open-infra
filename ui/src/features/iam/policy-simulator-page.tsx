@@ -16,6 +16,7 @@ import {
 import { ErrorState, LoadingState } from "@/components/common/states";
 import { InfoLink } from "@/components/help/info-link";
 import { getIamConfig, simulatePolicy, type DraftPolicyInput, type SimulateRequest } from "@/lib/api";
+import { useNavCapabilities } from "@/lib/auth";
 import { CEDAR_CONDITION_KEYS } from "@/lib/iam-cedar-vocab";
 import { PrincipalPicker, type PrincipalValue } from "./simulator/principal-picker";
 import { ActionPicker } from "./simulator/action-picker";
@@ -31,6 +32,7 @@ import { ResultTable } from "./simulator/result-table";
  */
 export function PolicySimulatorPage() {
   const cfg = useQuery({ queryKey: ["iam", "config"], queryFn: getIamConfig });
+  const { operator } = useNavCapabilities(); // the control-plane check's namespace is the operator's to set
 
   const [mode, setMode] = useState<"principal" | "custom">("principal");
   const [principal, setPrincipal] = useState<PrincipalValue>({ type: "User", name: "" });
@@ -258,18 +260,20 @@ export function PolicySimulatorPage() {
                     </p>
                   </div>
 
-                  <div className="space-y-1.5">
-                    <Label htmlFor="sim-namespace">Namespace (optional)</Label>
-                    <Input
-                      id="sim-namespace"
-                      value={namespace}
-                      onChange={(e) => setNamespace(e.target.value)}
-                      placeholder={cfg.data?.namespace ?? "console namespace"}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Control-plane SAR namespace. Defaults to the console namespace.
-                    </p>
-                  </div>
+                  {operator ? (
+                    <div className="space-y-1.5">
+                      <Label htmlFor="sim-namespace">Namespace (optional)</Label>
+                      <Input
+                        id="sim-namespace"
+                        value={namespace}
+                        onChange={(e) => setNamespace(e.target.value)}
+                        placeholder={cfg.data?.namespace ?? "console namespace"}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Control-plane SAR namespace. Defaults to the console namespace.
+                      </p>
+                    </div>
+                  ) : null}
 
                   <div className="space-y-2">
                     <Label>Request context (optional)</Label>

@@ -275,7 +275,6 @@ export function VmDetailPage() {
                   "—"
                 )}
               </DetailRow>
-              <DetailRow label="Namespace">{namespace}</DetailRow>
             </CardContent>
           </Card>
         </TabsContent>

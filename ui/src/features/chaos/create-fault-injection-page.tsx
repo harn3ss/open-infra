@@ -1,18 +1,18 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMutation } from "@tanstack/react-query";
 import { Bomb } from "lucide-react";
 import { CreateShell } from "@/components/create/create-shell";
+import { PlacementField, usePlacementChoices } from "@/components/create/placement-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState } from "@/components/common/states";
-import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { useAuth } from "@/lib/auth";
 import { createNamespace } from "@/lib/account-scope";
 import { useConfig } from "@/lib/config-context";
 import { k8sCreate } from "@/lib/api";
-import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
+import { openinfraPaths } from "@/lib/k8s-paths";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION, type FaultInjectionType, type K8sObject } from "@/types/k8s";
 import { TYPES } from "./chaos-page";
 
@@ -40,11 +40,7 @@ function CreateFaultInjectionInner() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const scoped = createNamespace(user, undefined); // the account's home
-  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
-  const namespaces = useMemo(
-    () => nsWatch.items.map((n) => n.metadata.name).filter(Boolean).sort() as string[],
-    [nsWatch.items],
-  );
+  const placing = usePlacementChoices().length > 0; // the operator may target another of the account's own
 
   const [name, setName] = useState("");
   const [namespace, setNamespace] = useState(scoped ?? "default");
@@ -106,7 +102,7 @@ function CreateFaultInjectionInner() {
     <CreateShell
       icon={<Bomb className="size-6 text-primary" />}
       title="Create Fault Injection"
-      description="Inject a fault into a scoped set of pods to test resilience. It only ever touches pods matching the label selector in the chosen namespace, for the duration below."
+      description="Inject a fault into a scoped set of pods to test resilience. It only ever touches pods in this account matching the label selector, for the duration below."
       onCancel={() => navigate({ to: "/chaos" })}
       onSubmit={submit}
       submitLabel="Inject fault"
@@ -139,20 +135,10 @@ function CreateFaultInjectionInner() {
       <div className="space-y-4 rounded-lg border border-border p-4">
         <h3 className="text-sm font-semibold">Target (blast radius)</h3>
         <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-          This experiment only affects pods matching <code>{selKey || "key"}={selVal || "value"}</code> in namespace <code>{namespace}</code>.
+          This experiment only affects pods matching <code>{selKey || "key"}={selVal || "value"}</code>{" "}
+          {placing ? <>in namespace <code>{namespace}</code></> : "in this account"}.
         </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="fi-ns">Namespace</Label>
-            <Select value={namespace} onValueChange={setNamespace}>
-              <SelectTrigger id="fi-ns"><SelectValue placeholder="Namespace" /></SelectTrigger>
-              <SelectContent>
-                {(namespaces.length ? namespaces : [namespace]).map((ns) => (
-                  <SelectItem key={ns} value={ns}>{ns}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="fi-selk">Selector key</Label>
             <Input id="fi-selk" value={selKey} onChange={(e) => setSelKey(e.target.value)} placeholder="app" />
@@ -163,6 +149,11 @@ function CreateFaultInjectionInner() {
             {touched && !selVal ? <p className="text-xs text-destructive">Required.</p> : null}
           </div>
         </div>
+        <PlacementField
+          value={namespace}
+          onChange={setNamespace}
+          help="Which of this account's namespaces the experiment runs in and targets. The default is the account's home."
+        />
       </div>
 
       <div className="space-y-4 rounded-lg border border-border p-4">

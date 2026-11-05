@@ -23,7 +23,7 @@ provisioned. The BFF (`/api/cost`) reads:
 Compute is priced against **node capacity** ("what renting these boxes as EC2 would
 cost"), so the estimate doesn't depend on whether workloads set resource requests. A
 secondary **by-namespace** breakdown uses running pod requests to show *where* the
-compute goes. Hours/month = 730.
+compute goes; the console shows it to the platform operator only. Hours/month = 730.
 
 ## Tuning the prices
 

@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { Wizard, WizardReview, type WizardStep } from "@/components/create/wizard";
 import { ExpandableSection } from "@/components/create/expandable-section";
+import { PlacementField, usePlacementChoices } from "@/components/create/placement-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -23,11 +24,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useFlash } from "@/components/common/flashbar";
-import { useK8sWatch, watchQueryKey } from "@/hooks/use-k8s-watch";
+import { watchQueryKey } from "@/hooks/use-k8s-watch";
 import { useAuth } from "@/lib/auth";
 import { createNamespace } from "@/lib/account-scope";
 import { ApiError, k8sCreate, k8sDelete } from "@/lib/api";
-import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
+import { openinfraPaths } from "@/lib/k8s-paths";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION, type K8sObject } from "@/types/k8s";
 import { cn } from "@/lib/utils";
 import { VpcWizardPreview, type VpcPreviewModel } from "./vpc-wizard-preview";
@@ -148,12 +149,7 @@ export function CreateVpcAndMorePage() {
   const flash = useFlash();
   const { user } = useAuth();
   const scoped = createNamespace(user, undefined); // a new resource lands in the account's home
-
-  const nsWatch = useK8sWatch<K8sObject>(corePaths.namespaces());
-  const namespaces = useMemo(
-    () => nsWatch.items.map((n) => n.metadata.name).filter(Boolean).sort() as string[],
-    [nsWatch.items],
-  );
+  const placing = usePlacementChoices().length > 0; // the operator may place it in another of the account's own
 
   // ── form state ─────────────────────────────────────────────────────────────
   const [step, setStep] = useState(0);
@@ -216,7 +212,6 @@ export function CreateVpcAndMorePage() {
       if (!prefix.trim()) e.prefix = "A name prefix is required.";
       else if (!RFC1123.test(prefix)) e.prefix = "Lowercase letters, numbers and hyphens; must start/end alphanumeric.";
       else if (prefix.length > 40) e.prefix = "Keep the prefix short (≤ 40 chars) — it prefixes every child name.";
-      if (!namespace) e.namespace = "Choose a namespace.";
       if (!cidrValid(planningCidr)) e.cidr = "Enter a valid IPv4 CIDR, e.g. 10.0.0.0/16.";
     }
     if (i === 1) {
@@ -441,19 +436,11 @@ export function CreateVpcAndMorePage() {
             )}
           </Field>
 
-          <Field label="Namespace" htmlFor="w-ns" error={errors.namespace}>
-            <Select value={namespace} onValueChange={setNamespace}>
-              <SelectTrigger id="w-ns">
-                <SelectValue placeholder="Namespace" />
-              </SelectTrigger>
-              <SelectContent>
-                {(namespaces.length ? namespaces : [namespace]).map((ns) => (
-                  <SelectItem key={ns} value={ns}>{ns}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">All created objects share this namespace.</p>
-          </Field>
+          <PlacementField
+            value={namespace}
+            onChange={setNamespace}
+            help="Which of this account's namespaces holds every resource this wizard creates. The default is the account's home."
+          />
 
           <Field label="IPv4 CIDR block" htmlFor="w-cidr" error={errors.cidr}>
             <Input
@@ -644,7 +631,7 @@ export function CreateVpcAndMorePage() {
                 pairs: [
                   { label: "Name prefix", value: prefix || "—" },
                   { label: "VPC name", value: vpcName || "—" },
-                  { label: "Namespace", value: namespace },
+                  ...(placing ? [{ label: "Namespace", value: namespace }] : []),
                   { label: "Planning CIDR", value: planningCidr },
                 ],
               },

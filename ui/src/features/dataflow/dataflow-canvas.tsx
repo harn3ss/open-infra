@@ -50,7 +50,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PlacementField } from "@/components/create/placement-field";
 import { ApiError, k8sGet, k8sCreate, getDataFlowStatus, getDbStats, type DataFlowDirection } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { createNamespace } from "@/lib/account-scope";
 import { corePaths, openinfraPaths } from "@/lib/k8s-paths";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION } from "@/types/k8s";
 import type { DataFlow } from "@/types/k8s";
@@ -185,6 +188,7 @@ const nodeTypes = { node: RoleNode };
 function CanvasInner() {
   const params = useParams({ strict: false }) as { namespace?: string; name?: string };
   const navigate = useNavigate();
+  const { user } = useAuth();
   const editing = Boolean(params.name);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NodeData>>([]);
@@ -194,20 +198,12 @@ function CanvasInner() {
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const [peek, setPeek] = useState<string | null>(null);
   const [name, setName] = useState(params.name ?? "");
-  const [namespace, setNamespace] = useState(params.namespace ?? "default");
+  // A new flow lands in the account's home; an existing one stays where it is (set from the flow below).
+  const [namespace, setNamespace] = useState(() => params.namespace ?? createNamespace(user, undefined));
   const [tables, setTables] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [seq, setSeq] = useState(1);
-
-  const nsWatch = useQuery({
-    queryKey: ["namespaces-list"],
-    queryFn: () => k8sGet<{ items: { metadata: { name?: string } }[] }>(corePaths.namespaces()),
-  });
-  const namespaces = (nsWatch.data?.items ?? [])
-    .map((n) => n.metadata.name)
-    .filter((n): n is string => Boolean(n))
-    .sort((a, b) => a.localeCompare(b));
 
   const { data: df } = useQuery({
     queryKey: ["dataflow", params.namespace, params.name],
@@ -516,13 +512,7 @@ function CanvasInner() {
         ) : (
           <div className="text-sm font-medium">{name}</div>
         )}
-        <div className="space-y-1">
-          <Label className="text-xs">Namespace</Label>
-          <Select value={namespace} onValueChange={setNamespace} disabled={editing}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>{namespaces.map((ns) => <SelectItem key={ns} value={ns}>{ns}</SelectItem>)}</SelectContent>
-          </Select>
-        </div>
+        {!editing ? <PlacementField value={namespace} onChange={setNamespace} /> : null}
         <div className="space-y-1">
           <Label className="text-xs">Tables (comma-separated)</Label>
           <Input value={tables} onChange={(e) => setTables(e.target.value)} placeholder="customers, orders" />

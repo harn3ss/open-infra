@@ -22,6 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/common/states";
 import { ApiError, k8sCreate, k8sGet, k8sReplace } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
+import { useNavCapabilities } from "@/lib/auth";
 import { watchQueryKey } from "@/hooks/use-k8s-watch";
 import {
   OPENINFRA_GROUP,
@@ -164,19 +165,22 @@ export function NewSecurityGroupDialog({
               />
               {nameError ? <p className="text-xs text-destructive">{nameError}</p> : null}
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="sg-ns">Namespace</Label>
-              <Select value={namespace} onValueChange={setNamespace} disabled={isEdit}>
-                <SelectTrigger id="sg-ns">
-                  <SelectValue placeholder="Namespace" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(namespaces.length ? namespaces : [namespace]).map((ns) => (
-                    <SelectItem key={ns} value={ns}>{ns}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {/* The group stays beside the one it edits or copies; a choice is offered only when given one. */}
+            {namespaces.length > 1 ? (
+              <div className="space-y-1.5">
+                <Label htmlFor="sg-ns">Namespace</Label>
+                <Select value={namespace} onValueChange={setNamespace} disabled={isEdit}>
+                  <SelectTrigger id="sg-ns">
+                    <SelectValue placeholder="Namespace" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {namespaces.map((ns) => (
+                      <SelectItem key={ns} value={ns}>{ns}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
           </div>
 
           <RuleSection
@@ -246,6 +250,9 @@ export function RuleSection({
   const update = (id: string, patch: Partial<RuleRow>) =>
     onChange(rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   const peerLabel = dir === "from" ? "Source" : "Destination";
+  // A namespace peer is the platform's own (AWS has none): offered to the operator, and kept on a rule
+  // that already has one so it still reads and edits as stored.
+  const { operator } = useNavCapabilities();
 
   return (
     <div>
@@ -292,7 +299,7 @@ export function RuleSection({
                 <Select value={row.peerKind} onValueChange={(v) => update(row.id, { peerKind: v as RuleRow["peerKind"] })}>
                   <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {PEER_KINDS.map((k) => (
+                    {PEER_KINDS.filter((k) => k.id !== "namespace" || operator || row.peerKind === "namespace").map((k) => (
                       <SelectItem key={k.id} value={k.id}>{k.label}</SelectItem>
                     ))}
                   </SelectContent>

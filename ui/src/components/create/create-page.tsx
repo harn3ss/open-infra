@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { EmptyState, ErrorState, LoadingState, Spinner } from "@/components/common/states";
 import { ExpandableSection } from "@/components/create/expandable-section";
+import { PlacementField } from "@/components/create/placement-field";
 import { InfoLink } from "@/components/help/info-link";
 import { LearnMore } from "@/components/help/learn-more";
 import { kindDocsUrl } from "@/lib/kind-docs";
@@ -81,10 +82,9 @@ export function CreatePage(cfg: CreatePageConfig) {
   const queryClient = useQueryClient();
   const formRef = useRef<Form<unknown, RJSFSchema> | null>(null);
 
-  // A new resource lands in the caller's account: its home namespace, or — under Advanced, when the
-  // account has more than one — another of the account's own. Never a namespace outside the account.
+  // A new resource lands in the caller's account: its home namespace, or — for the operator, under
+  // Advanced (PlacementField) — another of the account's own. Never a namespace outside the account.
   const { user } = useAuth();
-  const namespaces = useMemo(() => user?.namespaces ?? [], [user]);
 
   const creds = cfg.credentials ?? [];
   const sizing = cfg.sizing;
@@ -300,31 +300,7 @@ export function CreatePage(cfg: CreatePageConfig) {
             {nameError ? <p className="text-xs text-destructive">{nameError}</p> : null}
           </div>
         </div>
-        {namespaces.length > 1 ? (
-          <details className="text-sm [&_summary]:cursor-pointer">
-            <summary className="text-muted-foreground">Advanced</summary>
-            <div className="mt-3 space-y-1.5">
-              <Label htmlFor="oi-ns">Placement</Label>
-              <Select value={namespace} onValueChange={setNamespace}>
-                <SelectTrigger id="oi-ns">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {namespaces.map((ns) => (
-                    <SelectItem key={ns} value={ns}>
-                      {ns}
-                      {ns === user?.homeNamespace ? " (default)" : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Which of this account&apos;s namespaces holds the resource. The default is the account&apos;s
-                home.
-              </p>
-            </div>
-          </details>
-        ) : null}
+        <PlacementField value={namespace} onChange={setNamespace} />
       </div>
 
       {/* Untested on this cluster's arch — permitted (never blocked), but flagged honestly. */}

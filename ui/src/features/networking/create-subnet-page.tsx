@@ -7,14 +7,18 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { PlacementField } from "@/components/create/placement-field";
 import { k8sCreate } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { createNamespace } from "@/lib/account-scope";
 import { openinfraPaths } from "@/lib/k8s-paths";
 import { OPENINFRA_GROUP, OPENINFRA_VERSION, type Subnet } from "@/types/k8s";
 
 export function CreateSubnetPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [name, setName] = useState("");
-  const [namespace, setNamespace] = useState("default");
+  const [namespace, setNamespace] = useState(() => createNamespace(user, undefined)); // the account's home
   const [cidr, setCidr] = useState("");
   const [vpc, setVpc] = useState("");
   const [priv, setPriv] = useState(true);
@@ -46,15 +50,9 @@ export function CreateSubnetPage() {
     <DetailShell backTo="/subnets" backLabel="Subnets" icon={<LayoutGrid className="size-5" />} title="New Subnet" subtitle="A topologically-isolated network segment (kube-ovn)">
       <Card>
         <CardContent className="space-y-4 p-6">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="name">Name</Label>
-              <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="app-tier" />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="ns">Namespace</Label>
-              <Input id="ns" value={namespace} onChange={(e) => setNamespace(e.target.value)} />
-            </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="name">Name</Label>
+            <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="app-tier" />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="cidr">CIDR</Label>
@@ -85,6 +83,7 @@ export function CreateSubnetPage() {
             <Label htmlFor="gw">Gateway (optional)</Label>
             <Input id="gw" value={gateway} onChange={(e) => setGateway(e.target.value)} placeholder="defaults to the first usable address" />
           </div>
+          <PlacementField value={namespace} onChange={setNamespace} />
           {create.isError ? (
             <p className="text-sm text-destructive">{(create.error as Error)?.message ?? "Create failed"}</p>
           ) : null}

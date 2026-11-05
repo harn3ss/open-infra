@@ -29,6 +29,8 @@ import { LearnMore } from "@/components/help/learn-more";
 import { ErrorState, LoadingState } from "@/components/common/states";
 import { StatCard } from "@/features/dashboard/stat-card";
 import { useConfig } from "@/lib/config-context";
+import { useAuth } from "@/lib/auth";
+import { formatAccountId } from "@/lib/policy-document";
 import { docsUrl } from "@/lib/kind-docs";
 import {
   getAccessReview,
@@ -106,6 +108,8 @@ function RecommendationRow({ rec }: { rec: Recommendation }) {
 
 export function IamDashboardPage() {
   const config = useConfig();
+  const { user } = useAuth();
+  const operator = user?.capabilities?.operator === true;
 
   const usersQ = useQuery({ queryKey: ["iam", "users"], queryFn: listIamUsers, refetchInterval: 30000 });
   const groupsQ = useQuery({ queryKey: ["iam", "groups"], queryFn: listIamGroups, refetchInterval: 30000 });
@@ -492,10 +496,16 @@ export function IamDashboardPage() {
                 },
                 { label: "Authentication mode", value: authModeLabel },
                 { label: "Cluster", value: config.clusterName || "—" },
-                {
-                  label: "IAM namespace",
-                  value: <code className="rounded bg-muted px-1 py-0.5 text-xs">{iamNamespace}</code>,
-                },
+                // AWS's IAM dashboard names the account; where IAM is kept is the platform's, for its operator.
+                { label: "Account ID", value: user?.account ? formatAccountId(user.account) : "—" },
+                ...(operator
+                  ? [
+                      {
+                        label: "IAM namespace",
+                        value: <code className="rounded bg-muted px-1 py-0.5 text-xs">{iamNamespace}</code>,
+                      },
+                    ]
+                  : []),
                 { label: "Break-glass root", value: "Enabled (out-of-band recovery)" },
               ]}
             />

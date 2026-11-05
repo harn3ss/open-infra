@@ -137,7 +137,6 @@ export function StreamDetailPage() {
                       label: "SSL",
                       value: src?.ssl ? "Enabled" : "Disabled",
                     },
-                    { label: "Namespace", value: namespace },
                   ]}
                 />
               </div>

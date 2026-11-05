@@ -2,10 +2,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import {
   createNamespace,
   isAccountScoped,
   isNamespaceColumn,
+  placementChoices,
   withAccountScope,
   withoutNamespaceColumns,
 } from "./account-scope.ts";
@@ -39,6 +41,30 @@ test("a new resource lands in the account: the one asked if it is the account's,
   assert.equal(createNamespace(acct, "kube-system"), "team-a"); // never outside the account
   assert.equal(createNamespace({}, "team-x"), "team-x"); // an older server: what was asked
   assert.equal(createNamespace(null, undefined), "default");
+});
+
+test("only the operator is offered a placement, and only among the account's own namespaces", () => {
+  const names = ["team-a", "team-a-data"];
+  assert.deepEqual(placementChoices({ namespaces: names, capabilities: { operator: true } }), names);
+  assert.deepEqual(placementChoices({ namespaces: names }), []); // an AWS user: no namespace field
+  assert.deepEqual(placementChoices({ namespaces: names, capabilities: { operator: false } }), []);
+  assert.deepEqual(placementChoices({ namespaces: ["team-a"], capabilities: { operator: true } }), []); // nothing to choose
+  assert.deepEqual(placementChoices(null), []);
+});
+
+test("no create page offers the cluster's namespaces; only the operator's switcher lists them", () => {
+  const root = new URL("../", import.meta.url);
+  const hits: string[] = [];
+  const walk = (dir: URL) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const u = new URL(e.name + (e.isDirectory() ? "/" : ""), dir);
+      if (e.isDirectory()) walk(u);
+      else if (/\.tsx?$/.test(e.name) && !/\.test\./.test(e.name) && readFileSync(u, "utf8").includes("corePaths.namespaces()"))
+        hits.push(u.pathname.slice(root.pathname.length));
+    }
+  };
+  walk(root);
+  assert.deepEqual(hits, ["components/layout/namespace-switcher.tsx"]);
 });
 
 test("the shared table lists the account and shows no namespace column", () => {

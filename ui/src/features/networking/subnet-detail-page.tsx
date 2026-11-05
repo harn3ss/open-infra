@@ -10,6 +10,7 @@ import { DangerZone } from "@/components/common/danger-zone";
 import { LoadingState, ErrorState } from "@/components/common/states";
 import { k8sDelete, k8sGet } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
+import { useNavCapabilities } from "@/lib/auth";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import type { Application, Subnet, VirtualMachine } from "@/types/k8s";
 import { NetworkAclEditor } from "./network-acl-editor";
@@ -20,6 +21,7 @@ export function SubnetDetailPage() {
     name: string;
   };
   const navigate = useNavigate();
+  const { operator } = useNavCapabilities(); // namespace bindings are the platform's, shown to its operator
   const path = openinfraPaths.subnet(namespace, name);
 
   const { data: sub, isLoading, isError, error, refetch } = useQuery({
@@ -93,13 +95,15 @@ export function SubnetDetailPage() {
               <DetailRow label="Gateway">
                 {spec.gateway ?? <span className="text-muted-foreground">first usable in CIDR</span>}
               </DetailRow>
-              <DetailRow label="Bound namespaces">
-                {spec.namespaces?.length ? (
-                  <code className="text-xs">{spec.namespaces.join(", ")}</code>
-                ) : (
-                  <span className="text-muted-foreground">none (join via a workload's subnet field)</span>
-                )}
-              </DetailRow>
+              {operator ? (
+                <DetailRow label="Bound namespaces">
+                  {spec.namespaces?.length ? (
+                    <code className="text-xs">{spec.namespaces.join(", ")}</code>
+                  ) : (
+                    <span className="text-muted-foreground">none (join via a workload's subnet field)</span>
+                  )}
+                </DetailRow>
+              ) : null}
             </CardContent>
           </Card>
         </TabsContent>
