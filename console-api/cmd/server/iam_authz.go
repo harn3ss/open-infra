@@ -190,7 +190,7 @@ func (z *consoleAuthz) public(method, path, reason string) { z.reg.Public(method
 // allMethods are the methods chi registers for a Handle (every one), each of which the registry must
 // cover.
 var allMethods = []string{http.MethodConnect, http.MethodDelete, http.MethodGet, http.MethodHead, http.MethodOptions,
-	http.MethodPatch, http.MethodPost, http.MethodPut, http.MethodTrace}
+	http.MethodPatch, http.MethodPost, http.MethodPut, http.MethodTrace, "QUERY"}
 
 // perRequest records a route whose action depends on the request and is decided inside its handler
 // (the Kubernetes proxy, the watch stream, the Grafana proxy, a password change on self or another).
