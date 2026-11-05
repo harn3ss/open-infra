@@ -57,6 +57,13 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { AppConfig } from "@/lib/api";
+import {
+  inheritGates,
+  navGateOpen,
+  type NavCapabilities,
+  type NavCapability,
+  type NavFlag,
+} from "@/lib/nav-visibility";
 
 /**
  * A leaf navigation destination — either the list/landing of a *flat* service, or
@@ -79,7 +86,12 @@ export interface NavItem {
    * Keeps non-essential/privileged surfaces (e.g. Chaos) hidden unless the
    * deployment explicitly enables them — least functionality (NIST CM-7).
    */
-  flag?: "chaosUiEnabled";
+  flag?: NavFlag;
+  /**
+   * A capability the signed-in principal must hold for this item to appear
+   * (/api/auth/me's capabilities): "operator" for the cluster views.
+   */
+  requires?: NavCapability;
 }
 
 /**
@@ -110,7 +122,9 @@ export interface Service {
    */
   routePrefixes?: string[];
   /** Config flag gate (as NavItem.flag) — e.g. Chaos → chaosUiEnabled. */
-  flag?: "chaosUiEnabled";
+  flag?: NavFlag;
+  /** Capability gate (as NavItem.requires) — the Platform operations views need "operator". */
+  requires?: NavCapability;
 }
 
 /** AWS-style categories, in launcher display order. Last is open-infra's own: the cluster, for operators. */
@@ -288,9 +302,10 @@ export const SERVICES: Service[] = [
   { label: "Chaos", icon: Bomb, category: "Management & Governance", to: "/chaos", flag: "chaosUiEnabled" }, // FIS (flag-gated)
 
   // ── Platform operations (open-infra native — the cluster under the platform, for its operators) ──
-  { label: "Workloads", icon: Layers, category: "Platform operations", to: "/workloads" },
-  { label: "Nodes", icon: Server, category: "Platform operations", to: "/nodes" },
-  { label: "Network", icon: Globe, category: "Platform operations", to: "/network" },
+  // Shown only to the platform's operator (IAM policy allows it openinfra-operator:*).
+  { label: "Workloads", icon: Layers, category: "Platform operations", to: "/workloads", requires: "operator" },
+  { label: "Nodes", icon: Server, category: "Platform operations", to: "/nodes", requires: "operator" },
+  { label: "Network", icon: Globe, category: "Platform operations", to: "/network", requires: "operator" },
 ];
 
 // ── Route matching / resolution ──────────────────────────────────────────────
@@ -359,16 +374,18 @@ export function isMultiService(svc: Service | undefined): boolean {
 // ── Visibility ───────────────────────────────────────────────────────────────
 
 /**
- * Whether a nav leaf is visible given runtime config. Items carrying a `flag`
- * (e.g. Chaos → chaosUiEnabled) appear only when that flag is true.
+ * Whether a nav leaf is visible given runtime config and the session's
+ * capabilities. Items carrying a `flag` (e.g. Chaos → chaosUiEnabled) appear
+ * only when that flag is true; items that `require` a capability (the
+ * operator's cluster views) only when the session holds it.
  */
-export function navItemVisible(item: NavItem, config: AppConfig): boolean {
-  return !item.flag || Boolean(config[item.flag]);
+export function navItemVisible(item: NavItem, config: AppConfig, caps?: NavCapabilities): boolean {
+  return navGateOpen(item, config, caps);
 }
 
-/** Whether a service is visible given runtime config (same flag rule). */
-export function serviceVisible(service: Service, config: AppConfig): boolean {
-  return !service.flag || Boolean(config[service.flag]);
+/** Whether a service is visible given runtime config and capabilities (same rules). */
+export function serviceVisible(service: Service, config: AppConfig, caps?: NavCapabilities): boolean {
+  return navGateOpen(service, config, caps);
 }
 
 // ── Flattened leaves (command palette + pin/recent store) ────────────────────
@@ -384,7 +401,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", to: "/", icon: LayoutDashboard },
   ...SERVICES.flatMap((svc) => {
     if (svc.children && svc.children.length > 0) {
-      return svc.children.map((child) => ({ ...child, section: svc.label }));
+      return svc.children.map((child) => inheritGates({ ...child, section: svc.label }, svc));
     }
     return [
       {
@@ -394,6 +411,7 @@ export const NAV_ITEMS: NavItem[] = [
         section: svc.category,
         matchPrefix: true,
         ...(svc.flag ? { flag: svc.flag } : {}),
+        ...(svc.requires ? { requires: svc.requires } : {}),
       } satisfies NavItem,
     ];
   }),

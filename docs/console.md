@@ -22,7 +22,11 @@ The sidebar is grouped like a cloud console:
 - **Storage** — Volumes, File Shares, Snapshots.
 - **Security & Identity** — Users, Groups, Policies, Roles (IAM), Grants, Security Groups, Active
   Directory, Data Classification, Encryption Keys, Audit, Attestation, Access Review.
-- **Cluster** — Workloads (pods/deployments), Nodes (with GPU capacity), Network.
+- **Platform operations** — Workloads (pods/deployments), Nodes (with GPU capacity), Network: the
+  cluster under the platform, shown only to its operators — principals whose IAM policy allows the whole
+  `openinfra-operator:*` surface (AdministratorAccess does; PowerUserAccess and ReadOnlyAccess do not).
+  Before IAM policy decides (`IAM_AUTHZ` legacy or shadow), the console's administrators. Hiding them is
+  not what protects them: each call those views make is authorized on its own.
 - **Observability** — Monitoring (embedded Grafana dashboards), **Chaos** (fault injection), Cost Explorer.
 
 ## Resource views & detail pages

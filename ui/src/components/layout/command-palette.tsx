@@ -4,6 +4,7 @@ import { Link } from "@tanstack/react-router";
 import { CornerDownLeft, Search } from "lucide-react";
 import { NAV_ITEMS, navItemVisible, type NavItem } from "@/components/layout/nav-items";
 import { useConfig } from "@/lib/config-context";
+import { useNavCapabilities } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 // Global command palette — jump to any destination by keyboard (⌘K / Ctrl+K).
@@ -21,6 +22,7 @@ function score(item: NavItem, q: string): boolean {
 
 export function CommandPalette() {
   const config = useConfig();
+  const caps = useNavCapabilities();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -47,8 +49,8 @@ export function CommandPalette() {
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return NAV_ITEMS.filter((i) => navItemVisible(i, config) && score(i, q));
-  }, [query, config]);
+    return NAV_ITEMS.filter((i) => navItemVisible(i, config, caps) && score(i, q));
+  }, [query, config, caps]);
 
   // reset selection as results change; clear query when closed
   useEffect(() => setIndex(0), [query, open]);

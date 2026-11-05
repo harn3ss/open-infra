@@ -16,8 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awsaction"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
+	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	"golang.org/x/crypto/bcrypt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -516,7 +518,8 @@ func handleLogout(a *authStore) http.HandlerFunc {
 func handleMe(a *authStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if a.mode == "none" {
-			writeJSON(w, http.StatusOK, map[string]any{"user": "anonymous", "role": "root", "authDisabled": true})
+			writeJSON(w, http.StatusOK, map[string]any{"user": "anonymous", "role": "root", "authDisabled": true,
+				"capabilities": map[string]bool{"operator": true}})
 			return
 		}
 		c, err := r.Cookie(sessionCookie)
@@ -545,6 +548,29 @@ func handleMe(a *authStore) http.HandlerFunc {
 			"account": acct, "accountAlias": getenv("ACCOUNT_ALIAS", ""),
 			"arn": p.ARN(), "principalType": string(p.Type), "iamAuthz": string(mode),
 			"passwordResetRequired": claims.PwReset,
+			"capabilities": map[string]bool{"operator": consoleIAM.isOperator(r, claims, p, mode)},
 		})
 	}
+}
+
+// operatorSurface is the platform's raw-Kubernetes surface (pods, nodes, Secrets, namespaces …) as one
+// question. Only an Allow that names all of it grants it — "*", as AdministratorAccess, or
+// "openinfra-operator:*" — and PowerUserAccess's NotAction reserves it (iamauthz's reserveOperator).
+const operatorSurface = awsaction.OperatorPrefix + ":*"
+
+// isOperator reports whether the principal is the platform's operator, for whom the console shows its
+// cluster views (Workloads, Nodes, Network under Platform operations). In enforce it is the evaluator's
+// answer to openinfra-operator:* (the question the route gate asks of those views' calls, which are still
+// authorized one by one); in legacy and shadow it is the legacy administrator role, as those modes
+// decide. Shadow does not log it: it chooses what the menu shows, not what a request may do. A role
+// session outside enforce is no one's operator (every request it makes is refused).
+func (z *consoleAuthz) isOperator(r *http.Request, c sessionClaims, p iamauthz.Principal, mode iamauthz.Mode) bool {
+	if z.roleSessionOutsideEnforce(r, c) {
+		return false
+	}
+	if z == nil || z.eval == nil || mode != iamauthz.ModeEnforce {
+		return c.Role == "admin" || c.Role == "root"
+	}
+	reqCtx := s3authz.RequestContext(c.Claims.PrincipalID(), r)
+	return z.eval.Authorize(r.Context(), p, operatorSurface, "*", reqCtx).Allowed
 }

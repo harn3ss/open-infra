@@ -152,6 +152,11 @@ export interface CurrentUser {
   iamAuthz?: "legacy" | "shadow" | "enforce";
   /** The sign-in must set a new password before anything else (PasswordResetRequired, or expired). */
   passwordResetRequired?: boolean;
+  /**
+   * What the console shows this principal. `operator`: the platform's operator (IAM policy allows it
+   * openinfra-operator:*), for whom the cluster views under Platform operations appear.
+   */
+  capabilities?: { operator?: boolean };
 }
 
 /** Change the signed-in user's own password, proving the old one (AWS's "Change password"). */

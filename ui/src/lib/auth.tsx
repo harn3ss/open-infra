@@ -13,6 +13,7 @@ import {
   type CurrentUser,
 } from "@/lib/api";
 import { queryClient } from "@/lib/query-client";
+import type { NavCapabilities } from "@/lib/nav-visibility";
 
 interface AuthState {
   user: CurrentUser | null;
@@ -71,4 +72,12 @@ export function useAuth(): AuthState {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used within <AuthProvider>");
   return ctx;
+}
+
+const NO_CAPABILITIES: NavCapabilities = {};
+
+/** The signed-in principal's capabilities (/api/auth/me), for gating navigation; none until signed in. */
+export function useNavCapabilities(): NavCapabilities {
+  const { user } = useAuth();
+  return user?.capabilities ?? NO_CAPABILITIES;
 }

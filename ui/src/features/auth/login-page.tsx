@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { BrandWordmark } from "@/components/layout/brand";
-import { login } from "@/lib/api";
+import { getCurrentUser, login } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 /** Full-screen sign-in. Rendered instead of the console shell when signed out. */
@@ -22,7 +22,8 @@ export function LoginPage() {
     setError(null);
     try {
       const u = await login(username.trim(), password);
-      setUser(u);
+      // The session as /auth/me reports it (account, ARN, capabilities); the login answer if that fails.
+      setUser(await getCurrentUser().catch(() => u));
     } catch (err) {
       setError((err as Error).message || "Sign-in failed");
     } finally {

@@ -3,8 +3,11 @@ import { useRouter, type AnyRouter } from "@tanstack/react-router";
 import {
   SERVICES,
   serviceForPath,
+  serviceVisible,
   type Service,
 } from "@/components/layout/nav-items";
+import { useConfig } from "@/lib/config-context";
+import { useNavCapabilities } from "@/lib/auth";
 
 /**
  * "Recently visited services" — the signature AWS Console Home widget.
@@ -88,12 +91,14 @@ function getSnapshot(): string[] {
 
 /**
  * Returns the recently-visited services, most-recent-first, resolved to live
- * `Service` objects (stale entries whose service no longer exists are dropped)
- * and capped to `limit`. Mount it on the dashboard; it also installs the global
- * recorder on first mount.
+ * `Service` objects (stale entries whose service no longer exists, or that this
+ * session may not see, are dropped) and capped to `limit`. Mount it on the
+ * dashboard; it also installs the global recorder on first mount.
  */
 export function useRecentlyVisited(limit = 6): Service[] {
   const router = useRouter();
+  const config = useConfig();
+  const caps = useNavCapabilities();
   useEffect(() => {
     ensureRecorder(router);
   }, [router]);
@@ -104,7 +109,7 @@ export function useRecentlyVisited(limit = 6): Service[] {
   const resolved: Service[] = [];
   for (const to of routes) {
     const svc = byRoute.get(to);
-    if (svc) resolved.push(svc);
+    if (svc && serviceVisible(svc, config, caps)) resolved.push(svc);
     if (resolved.length >= limit) break;
   }
   return resolved;

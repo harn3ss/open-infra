@@ -33,7 +33,9 @@ import {
   type Service,
 } from "@/components/layout/nav-items";
 import { useNavPrefs } from "@/lib/use-nav-prefs";
+import { inheritGates } from "@/lib/nav-visibility";
 import { useConfig } from "@/lib/config-context";
+import { useNavCapabilities } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 const STORE_KEY = "openinfra:nav:expanded";
@@ -59,6 +61,7 @@ export function Sidebar({
   onToggle: () => void;
 }) {
   const config = useConfig();
+  const caps = useNavCapabilities();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { pins, recents, togglePin, isPinned, recordVisit } = useNavPrefs();
 
@@ -93,14 +96,15 @@ export function Sidebar({
 
   const inServiceMode = !showAllServices && isMultiService(activeService);
 
-  // Visible services + which categories are non-empty (config-gated, e.g. Chaos).
+  // Visible services + which categories are non-empty (config-gated, e.g. Chaos; capability-gated, the
+  // operator's Platform operations).
   const servicesByCategory = useMemo(() => {
-    const visible = SERVICES.filter((s) => serviceVisible(s, config));
+    const visible = SERVICES.filter((s) => serviceVisible(s, config, caps));
     return CATEGORIES.map((name) => ({
       name,
       services: visible.filter((s) => s.category === name),
     })).filter((c) => c.services.length > 0);
-  }, [config]);
+  }, [config, caps]);
 
   const activeChildLeaf = useMemo(() => leafForPath(pathname), [pathname]);
 
@@ -108,8 +112,8 @@ export function Sidebar({
     () =>
       pins
         .map((p) => BY_PATH[p])
-        .filter((i): i is NavItem => i != null && navItemVisible(i, config)),
-    [pins, config],
+        .filter((i): i is NavItem => i != null && navItemVisible(i, config, caps)),
+    [pins, config, caps],
   );
   const recentItems = useMemo(
     () =>
@@ -117,10 +121,10 @@ export function Sidebar({
         .map((p) => BY_PATH[p])
         .filter(
           (i): i is NavItem =>
-            i != null && i.to !== activeLeaf?.to && navItemVisible(i, config),
+            i != null && i.to !== activeLeaf?.to && navItemVisible(i, config, caps),
         )
         .slice(0, 5),
-    [recents, activeLeaf, config],
+    [recents, activeLeaf, config, caps],
   );
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>(loadExpanded);
@@ -284,7 +288,7 @@ export function Sidebar({
 
   // ── Service mode: the rail is that service's own sub-nav ──────────────────────
   function renderServiceMode(svc: Service) {
-    const children = (svc.children ?? []).filter((c) => navItemVisible(c, config));
+    const children = (svc.children ?? []).filter((c) => navItemVisible(inheritGates(c, svc), config, caps));
     if (collapsed) {
       return (
         <>
@@ -336,7 +340,7 @@ export function Sidebar({
   // ── Launcher mode: all services grouped by category ──────────────────────────
   function renderLauncher() {
     if (collapsed) {
-      return SERVICES.filter((s) => serviceVisible(s, config)).map((svc) =>
+      return SERVICES.filter((s) => serviceVisible(s, config, caps)).map((svc) =>
         serviceRow(svc),
       );
     }

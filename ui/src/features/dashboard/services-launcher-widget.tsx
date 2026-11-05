@@ -7,18 +7,21 @@ import {
   serviceVisible,
 } from "@/components/layout/nav-items";
 import { useConfig } from "@/lib/config-context";
+import { useNavCapabilities } from "@/lib/auth";
 
 /**
  * Services launcher — AWS Console Home's "View all services". Every service,
  * grouped by category (same two-level model as the nav), so the home doubles as
- * a launcher. Flag-gated services (e.g. Chaos) appear only when enabled.
+ * a launcher. Flag-gated services (e.g. Chaos) appear only when enabled, and
+ * the cluster views under Platform operations only for the operator.
  */
 export function ServicesLauncherWidget({ className }: { className?: string }) {
   const config = useConfig();
+  const caps = useNavCapabilities();
   const groups = CATEGORIES.map((category) => ({
     category,
     services: SERVICES.filter(
-      (s) => s.category === category && serviceVisible(s, config),
+      (s) => s.category === category && serviceVisible(s, config, caps),
     ),
   })).filter((g) => g.services.length > 0);
 
