@@ -61,6 +61,7 @@ var dynamicServices = map[string][]string{
 	"rds.go":            {"rds"},
 	"s3.go":             {"s3"},
 	"ses.go":            {"ses"},
+	"sesv2.go":          {"ses"},
 	"ssm_runcommand.go": {"ssm"},
 	"vmcommands.go":     {"ssm", "ec2messages"},
 	"cfn_services.go":   {"sqs", "sns", "ssm", "kms", "ec2", "ecr", "events", "logs", "secretsmanager", "cloudwatch", "lambda"},

@@ -45,3 +45,18 @@ func TestAWSShim_FunctionLookupGrantIsReadOnlyInTwoNamespaces(t *testing.T) {
 		}
 	}
 }
+
+// EC2's enforce-mode reads (ec2.go listForCaller) are made with the shim's own client: get and list on the
+// five EC2 kinds, in the stack namespace only — no write, no watch, nothing cluster-wide.
+func TestAWSShim_EC2ReadGrantIsReadOnlyInTheStackNamespace(t *testing.T) {
+	const path = "../../platform/aws-shim/aws-shim.yaml"
+	role := yamlDoc(t, path, "Role", "aws-shim-ec2-reads")
+	mustContain(t, "aws-shim-ec2-reads", role,
+		"  namespace: open-infra-cfn\n",
+		"rules:\n  - apiGroups: [openinfra.dev]\n    resources: [virtualmachines, volumes, securitygroups, vpcs, subnets]\n    verbs: [get, list]")
+	if strings.Count(role, "verbs:") != 1 || strings.Count(role, "apiGroups:") != 1 {
+		t.Errorf("aws-shim-ec2-reads must hold one get/list rule, got:\n%s", role)
+	}
+	rb := yamlDoc(t, path, "RoleBinding", "aws-shim-ec2-reads")
+	mustContain(t, "aws-shim-ec2-reads binding", rb, "  namespace: open-infra-cfn\n", "kind: Role, name: aws-shim-ec2-reads }")
+}

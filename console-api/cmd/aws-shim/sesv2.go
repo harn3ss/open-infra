@@ -121,13 +121,47 @@ func (h *sesHandler) serveV2(w http.ResponseWriter, r *http.Request, claims iam.
 			"ProductionAccessEnabled": true,
 			"EnforcementStatus":       "HEALTHY",
 		})
-	case "CreateEmailIdentity":
-		sesV2Error(w, http.StatusBadRequest, "BadRequestException", requestID,
-			"SES identity verification is an operator concern (the sending domain's SPF/DKIM/DMARC records + the relay smarthost); this shim will not report a verified identity the DNS does not back.")
 	default:
+		// AWS authorizes before anything else: a caller its policy does not allow is AccessDenied whether or
+		// not the shim serves the operation.
+		if action, resID, verb, known := sesV2Authorized(op, r); known {
+			if ok, reason := decide(r.Context(), r, h.authz, claims, action, "Identity", resID,
+				coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, "",
+					action, "Identity", resID)); !ok {
+				sesV2Error(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+				return
+			}
+		}
+		if op == "CreateEmailIdentity" {
+			sesV2Error(w, http.StatusBadRequest, "BadRequestException", requestID,
+				"SES identity verification is an operator concern (the sending domain's SPF/DKIM/DMARC records + the relay smarthost); this shim will not report a verified identity the DNS does not back.")
+			return
+		}
 		sesV2Error(w, http.StatusBadRequest, "BadRequestException", requestID,
 			"SES v2 "+op+" is not implemented by the open-infra shim (SES v2 SendEmail and GetAccount are served).")
 	}
+}
+
+// sesV2Authorized is the IAM question of a v2 operation the shim knows but does not serve (beyond
+// SendEmail and GetAccount): its action, the identity it names ("" for none), and the coarse verb of its
+// legacy check. known is false for a route that is no SES v2 operation.
+func sesV2Authorized(op string, r *http.Request) (action, resID, verb string, known bool) {
+	switch op {
+	case "SendBulkEmail":
+		return "ses:SendBulkEmail", "", "create", true
+	case "CreateEmailIdentity":
+		return "ses:CreateEmailIdentity", "", "create", true
+	case "ListEmailIdentities":
+		return "ses:ListEmailIdentities", "", "get", true
+	case "GetEmailIdentity", "DeleteEmailIdentity":
+		id := strings.TrimPrefix(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, sesV2Prefix), "/"), "identities/")
+		verb = "get"
+		if op == "DeleteEmailIdentity" {
+			verb = "delete"
+		}
+		return "ses:" + op, id, verb, true
+	}
+	return "", "", "", false
 }
 
 // v2SendEmail — SES v2 SendEmail. Simple content is built into an RFC 5322 message as v1's SendEmail is;

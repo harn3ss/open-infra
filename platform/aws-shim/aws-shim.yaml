@@ -515,6 +515,32 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# EC2 (ec2_describe.go): once IAM policy decides (enforce, or a canary principal), a Describe* that policy
+# allowed is answered from the shim's own client — the caller's RBAC, which the IAM compiler generates from
+# the same policy, is never a second decision on a read. The account's instances, volumes, security groups,
+# VPCs and subnets are in the stack namespace: get and list there, nothing else (every write still acts as
+# the caller).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-ec2-reads
+  namespace: open-infra-cfn
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [virtualmachines, volumes, securitygroups, vpcs, subnets]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-ec2-reads
+  namespace: open-infra-cfn
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-ec2-reads }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # ACM (acm.go): a stack's certificate is its distribution's site TLS, issued by cert-manager as the
 # Certificate staticsite-<site>-tls in the stack namespace. DescribeCertificate reads that Certificate's
 # status, and GetCertificate the issued certificate and chain from its CertificateRequest's status — read

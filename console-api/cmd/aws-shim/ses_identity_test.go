@@ -258,6 +258,22 @@ func TestSESv2_OtherOperations(t *testing.T) {
 	if w := sesV2Call(none, ecrRoleClaims(), http.MethodGet, "/v2/email/account", nil); w.Code != 403 {
 		t.Fatalf("v2 GetAccount without a grant = %d %s", w.Code, w.Body)
 	}
+	// Nor is it told which operations are not served: AWS authorizes first, so a caller its policy does
+	// not allow is AccessDenied for every SES v2 operation, served or not.
+	for _, c := range []struct{ method, path string }{
+		{http.MethodGet, "/v2/email/identities"},
+		{http.MethodGet, "/v2/email/identities/" + sesDomain},
+		{http.MethodDelete, "/v2/email/identities/" + sesDomain},
+		{http.MethodPost, "/v2/email/identities"},
+		{http.MethodPost, "/v2/email/outbound-bulk-emails"},
+	} {
+		if w := sesV2Call(none, ecrRoleClaims(), c.method, c.path, map[string]any{}); w.Code != 403 || v2ErrorType(w) != "AccessDeniedException" {
+			t.Errorf("v2 %s %s without a grant = %d %s, want AccessDeniedException", c.method, c.path, w.Code, w.Body)
+		}
+	}
+	if w := sesV2Call(h, ecrRoleClaims(), http.MethodGet, "/v2/email/identities", nil); w.Code != 400 || !strings.Contains(w.Body.String(), "not implemented") {
+		t.Fatalf("v2 ListEmailIdentities with a grant = %d %s, want not implemented", w.Code, w.Body)
+	}
 	// With the relay off, v2 answers as not fronted — in its own dialect.
 	off := sesHandlerWith("smtp-relay.mail.svc.cluster.local:587", roleChecker(dpAllow([]string{"ses:*"}, "*")))
 	off.lookup = func(context.Context, string) ([]string, error) { return nil, errors.New("no such host") }

@@ -656,7 +656,10 @@
     },
     "email": {
       "actions": [
+        "ses:CreateEmailIdentity",
         "ses:GetAccount",
+        "ses:ListEmailIdentities",
+        "ses:SendBulkEmail",
         "ses:SendEmail"
       ],
       "conditional": true,
@@ -1207,7 +1210,10 @@
     },
     "ses": {
       "actions": [
+        "ses:CreateEmailIdentity",
         "ses:GetAccount",
+        "ses:ListEmailIdentities",
+        "ses:SendBulkEmail",
         "ses:SendEmail"
       ],
       "conditional": true,
