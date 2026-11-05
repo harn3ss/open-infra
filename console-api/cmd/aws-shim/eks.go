@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
@@ -72,6 +73,7 @@ func newEKSHandler(cs kubernetes.Interface, authzNS, account, region, clusterNam
 // --- error dialect (EKS restJson1: {"message": "..."} body + x-amzn-errortype header; mirrors apigateway.go) ---
 
 func writeEKSError(w http.ResponseWriter, status int, errType, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("x-amzn-RequestId", requestID)
 	if errType != "" {

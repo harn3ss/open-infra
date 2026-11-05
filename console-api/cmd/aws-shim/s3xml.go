@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/xml"
 	"net/http"
+
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 )
 
 // S3 wire encoding — the response and error shapes AWS SDKs parse. This is where most of the
@@ -81,10 +83,12 @@ func writeS3Error(w http.ResponseWriter, code, requestID, resource string) {
 // writeS3ErrorMsg writes an S3-shaped error with an explicit status and message (for codes not in
 // the s3Errors table, e.g. the router's NotImplemented for an un-fronted service).
 func writeS3ErrorMsg(w http.ResponseWriter, code string, status int, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	writeS3ErrorFull(w, code, status, requestID, message, "")
 }
 
 func writeS3ErrorFull(w http.ResponseWriter, code string, status int, requestID, message, resource string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	body := s3ErrorBody{Code: code, Message: message, Resource: resource, RequestID: requestID}
 	out, err := xml.Marshal(body)
 	if err != nil {

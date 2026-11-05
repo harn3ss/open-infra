@@ -36,6 +36,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -89,6 +90,7 @@ func (h *ec2Handler) authFailure(w http.ResponseWriter, _ *http.Request, request
 
 // writeEC2Error writes EC2's error shape: <Response><Errors><Error><Code/><Message/></Error></Errors><RequestID/>.
 func writeEC2Error(w http.ResponseWriter, status int, code, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "text/xml;charset=UTF-8")
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(status)

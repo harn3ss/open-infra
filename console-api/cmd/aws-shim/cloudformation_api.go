@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -69,7 +70,13 @@ func (h *cfnDoorway) stackEvents(ctx context.Context, rec *cfn.StackRecord) []cf
 		}
 	}
 	tmp := &cfn.StackRecord{Events: evs}
-	return cfn.EventsNewestFirst(tmp)
+	out := cfn.EventsNewestFirst(tmp)
+	// A resource's failure reason is often a Kubernetes or composition error (an admission denial, a
+	// render failure); it is said in AWS's terms, as CloudFormation states a resource's failure.
+	for i := range out {
+		out[i].Reason = awserr.Clean(out[i].Reason)
+	}
+	return out
 }
 
 func (h *cfnDoorway) describeStackEvents(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
@@ -285,7 +292,7 @@ func (h *cfnDoorway) provisionedResourceRows(ctx context.Context, rec *cfn.Stack
 			continue // a companion object (an inline policy) is part of its parent resource
 		}
 		row := resourceRow{logicalID: res.LogicalID, physicalID: res.PhysicalID, typ: res.Type, status: res.Status,
-			reason: res.StatusReason, timestamp: res.Timestamp}
+			reason: awserr.Clean(res.StatusReason), timestamp: res.Timestamp}
 		if row.physicalID == "" {
 			row.physicalID = res.Name
 		}
@@ -327,7 +334,7 @@ func (h *cfnDoorway) provisionedResourceRows(ctx context.Context, rec *cfn.Stack
 			continue // removed (or retained out of the stack) by an update: no longer the stack's, as on AWS
 		}
 		rows = append(rows, resourceRow{logicalID: id, physicalID: e.PhysicalID, typ: e.Type, status: e.Status,
-			reason: e.Reason, timestamp: e.Timestamp})
+			reason: awserr.Clean(e.Reason), timestamp: e.Timestamp})
 	}
 	return rows
 }

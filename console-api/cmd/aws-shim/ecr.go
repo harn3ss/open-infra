@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -92,6 +93,7 @@ func newECRHandler(cs kubernetes.Interface, authzNS, account, region, ns, regist
 // --- error dialect (AWS JSON 1.1). ECR surfaces the bare exception name in __type, like KMS. ---
 
 func writeECRError(w http.ResponseWriter, status int, code, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(status)

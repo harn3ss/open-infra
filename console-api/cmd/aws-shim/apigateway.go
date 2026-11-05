@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
@@ -75,6 +76,7 @@ func newAPIGWHandler(cs kubernetes.Interface, authzNS, account, region, fnNS, sv
 // --- error dialect (apigatewayv2 restJson1: {"message": "..."} + x-amzn-errortype) ---
 
 func writeAGWError(w http.ResponseWriter, status int, errType, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("x-amzn-RequestId", requestID)
 	if errType != "" {

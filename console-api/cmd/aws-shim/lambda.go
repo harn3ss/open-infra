@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	corev1 "k8s.io/api/core/v1"
@@ -264,6 +265,7 @@ func parseInvokePath(r *http.Request) (name, qualifier string, ok bool) {
 // writeLambdaError writes Lambda's JSON error dialect: the error class in the x-amzn-errortype
 // header (which the SDKs key off) and a JSON message body.
 func writeLambdaError(w http.ResponseWriter, status int, errorType, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("x-amzn-errortype", errorType)
 	w.Header().Set("x-amzn-RequestId", requestID)

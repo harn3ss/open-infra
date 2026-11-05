@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
@@ -43,6 +44,7 @@ func (h *ddbStreamsHandler) authFailure(w http.ResponseWriter, _ *http.Request, 
 }
 
 func writeStreamsError(w http.ResponseWriter, status int, errType, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "application/x-amz-json-1.0")
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(status)

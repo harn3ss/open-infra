@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
@@ -491,6 +492,7 @@ type queryError struct {
 
 // writeQueryError writes an AWS Query-protocol <ErrorResponse> with the given code/status.
 func writeQueryError(w http.ResponseWriter, status int, code, requestID, message, xmlns string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	body := errorResponse{Xmlns: xmlns, RequestId: requestID}
 	body.Error = queryError{Type: "Sender", Code: code, Message: message}
 	out, err := xml.Marshal(body)

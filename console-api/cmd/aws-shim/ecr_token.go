@@ -40,6 +40,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -253,6 +254,7 @@ func (s *ecrTokenSigner) verifyJWT(token string, claims any) error {
 // whose access claim is only what was granted.
 
 func writeDockerTokenError(w http.ResponseWriter, status int, code, msg string) {
+	msg = awserr.Clean(msg) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"errors": []any{map[string]any{"code": code, "message": msg}}})

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
 
@@ -356,6 +357,7 @@ func writeMgmtJSON(w http.ResponseWriter, status int, requestID string, body map
 }
 
 func writeMgmtError(w http.ResponseWriter, status int, errorType, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("x-amzn-ErrorType", errorType)
 	w.Header().Set("x-amzn-RequestId", requestID)

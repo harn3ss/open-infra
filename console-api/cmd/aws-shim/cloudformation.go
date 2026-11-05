@@ -42,6 +42,7 @@ import (
 
 	"github.com/harn3ss/open-infra/cfn"
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/minio/minio-go/v7"
@@ -1033,7 +1034,7 @@ func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {
 	}
 	switch {
 	case rec.Message != "":
-		b.WriteString("<StackStatusReason>" + xesc(rec.Message) + "</StackStatusReason>")
+		b.WriteString("<StackStatusReason>" + xesc(awserr.Clean(rec.Message)) + "</StackStatusReason>")
 	case rec.Fidelity != "":
 		// What the stack accepted that open-infra does not emulate as AWS does (#347 item D), where
 		// `aws cloudformation describe-stacks` shows it.
@@ -1135,7 +1136,7 @@ func (h *cfnDoorway) listStacks(w http.ResponseWriter, r *http.Request, ap *impe
 		}
 		b.WriteString("<StackStatus>" + xesc(rec.Status) + "</StackStatus>")
 		if rec.Message != "" {
-			b.WriteString("<StackStatusReason>" + xesc(rec.Message) + "</StackStatusReason>")
+			b.WriteString("<StackStatusReason>" + xesc(awserr.Clean(rec.Message)) + "</StackStatusReason>")
 		}
 		if rec.ParentID != "" {
 			b.WriteString("<ParentId>" + xesc(rec.ParentID) + "</ParentId><RootId>" + xesc(rec.RootID) + "</RootId>")

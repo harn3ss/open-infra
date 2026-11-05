@@ -34,6 +34,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
@@ -67,6 +68,7 @@ func newSecretsHandler(cs kubernetes.Interface, authzNS, account, region string,
 // --- error dialect (AWS JSON 1.1) ---
 
 func writeSMError(w http.ResponseWriter, status int, code, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(status)

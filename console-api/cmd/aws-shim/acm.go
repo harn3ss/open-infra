@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,6 +61,7 @@ func (h *acmHandler) authFailure(w http.ResponseWriter, _ *http.Request, request
 }
 
 func writeACMError(w http.ResponseWriter, status int, code, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(status)

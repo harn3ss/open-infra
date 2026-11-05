@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -117,6 +118,7 @@ func (h *cloudFrontHandler) authFailure(w http.ResponseWriter, _ *http.Request, 
 
 // writeCFError writes CloudFront's error shape (<ErrorResponse><Error>…</Error><RequestId>).
 func writeCFError(w http.ResponseWriter, status int, code, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("x-amz-request-id", requestID)
 	writeQueryError(w, status, code, requestID, message, cloudFrontXMLNS)
 }

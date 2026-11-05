@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
@@ -195,6 +196,7 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 // writeAppsyncError writes AppSync's error dialect: a GraphQL-style JSON `errors` array carrying an
 // AWS `errorType`, which both GraphQL clients and the AppSync SDK can parse.
 func writeAppsyncError(w http.ResponseWriter, status int, errorType, requestID, message string) {
+	message = awserr.Clean(message) // a Kubernetes error passed through is said in AWS's terms
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("x-amzn-ErrorType", errorType)
 	w.Header().Set("x-amzn-RequestId", requestID)
