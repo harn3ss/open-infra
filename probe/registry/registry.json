@@ -859,7 +859,8 @@
       "probes": [
         "iam",
         "iam-timecond",
-        "iam-username-like"
+        "iam-username-like",
+        "iam-login-profile"
       ],
       "refused": [],
       "service": "IAM",

@@ -46,8 +46,7 @@ services:
     cell: "roles/policies/users → AWS policy JSON → Cedar"
     tier: proven
     sigv4: [iam]
-    probes: [iam, iam-timecond, iam-username-like]
-    pending: [iam-login-profile] # login profiles + ChangePassword + the console sign-in
+    probes: [iam, iam-timecond, iam-username-like, iam-login-profile]
   - name: KMS
     cell: "→ Vault Transit"
     tier: proven
