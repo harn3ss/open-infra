@@ -545,6 +545,9 @@ func TestConsoleRoutes_SnapshotRoutesAreDecidedOnTheSnapshot(t *testing.T) {
 		{"DELETE /api/vm-snapshots", "ec2:DeleteSnapshot",
 			httptest.NewRequest(http.MethodDelete, "/api/vm-snapshots?namespace=default&id=snap-1", nil),
 			"arn:aws:ec2:us-east-1:000000000000:snapshot/snap-1"},
+		{"POST /api/vm-snapshots/restore", "ec2:RunInstances",
+			httptest.NewRequest(http.MethodPost, "/api/vm-snapshots/restore", strings.NewReader(`{"namespace":"default","id":"snap-1","target":"web-2"}`)),
+			"arn:aws:ec2:us-east-1:000000000000:snapshot/snap-1"},
 	} {
 		rt, ok := routes[tc.route]
 		if !ok || rt.Action != tc.action {
@@ -596,4 +599,50 @@ func TestPeekBodyRestoresTheBody(t *testing.T) {
 		t.Errorf("the handler must still read the body: %v %v", m, err)
 	}
 	_ = proxy.Request{}
+}
+
+// The gate reads a body's resource as the handler's decoder will, and refuses a body it cannot read
+// unambiguously: encoding/json matches keys ignoring case and the last match wins, so {"id":"a","ID":"b"}
+// would be decided on snap a and restored from snap b (and, with namespace, in another account), and a
+// body past maxPeek would be decided on "*" while the handler acted on the snapshot it names.
+func TestConsoleGate_ReadsTheBodyAsTheHandlerDoes(t *testing.T) {
+	snap1 := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:RunInstances","Resource":"arn:aws:ec2:us-east-1:000000000000:snapshot/snap-1"}]}`
+	w := testWorld(t, map[string]string{"snap1": snap1}, map[string][]string{"User::owner": {"snap1"}})
+	ez := newTestAuthz(t, iamauthz.ModeEnforce, w, true)
+	var restored string
+	h := func(w http.ResponseWriter, r *http.Request) {
+		var in struct{ ID, Namespace, Target string }
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		restored = in.ID
+		_, _ = w.Write([]byte("ok"))
+	}
+	rt := chi.NewRouter()
+	rt.Route("/api", func(api chi.Router) {
+		ez.handle(api, apiPrefix, http.MethodPost, "/vm-snapshots/restore", 0, "ec2:RunInstances", ez.snapshotARN("ec2", true), h)
+	})
+	post := func(body string) *httptest.ResponseRecorder {
+		restored = ""
+		return serve(rt, as(httptest.NewRequest(http.MethodPost, "/api/vm-snapshots/restore", strings.NewReader(body)), userClaims("owner")))
+	}
+
+	if got := post(`{"namespace":"default","id":"snap-1","target":"web-2"}`); got.Code != 200 || restored != "snap-1" {
+		t.Fatalf("restoring the snapshot the policy names: %d %s", got.Code, got.Body)
+	}
+	// The handler's decoder reads "ID" as id: so does the gate.
+	if got := post(`{"namespace":"default","ID":"snap-2","target":"web-2"}`); got.Code != 403 || restored != "" {
+		t.Errorf(`"ID" spelled differently: %d %s (restored %q), want AccessDenied on snap-2`, got.Code, got.Body, restored)
+	}
+	for _, body := range []string{
+		`{"namespace":"default","id":"snap-1","ID":"snap-2","target":"web-2"}`,
+		`{"namespace":"default","Id":"snap-1","id":"snap-2","target":"web-2"}`,
+		`{"namespace":"default","Namespace":"other","id":"snap-1","target":"web-2"}`,
+	} {
+		if got := post(body); got.Code != 400 || restored != "" {
+			t.Errorf("%s: %d %s (restored %q), want 400 and nothing restored", body, got.Code, got.Body, restored)
+		}
+	}
+	big := `{"namespace":"default","id":"snap-2","target":"web-2","pad":"` + strings.Repeat("x", maxPeek) + `"}`
+	if got := post(big); got.Code != 400 || restored != "" {
+		t.Errorf("a body past maxPeek: %d (restored %q), want 400 and nothing restored", got.Code, restored)
+	}
 }

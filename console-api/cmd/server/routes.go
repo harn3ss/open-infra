@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -113,7 +115,9 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	// EC2 snapshots of a VM's root disk.
 	h(post, "/vms/{namespace}/{name}/snapshot", s20, "ec2:CreateSnapshots", z.kindARN("VirtualMachine"), handleVMSnapshotCreate(cs, auth, logger))
 	h(get, "/vm-snapshots", s20, "ec2:DescribeSnapshots", nil, handleVMSnapshotList(cs, logger))
-	h(post, "/vm-snapshots/restore", s20, "ec2:RunInstances", nil, handleVMSnapshotRestore(cs, auth, logger))
+	// A VM restored from a snapshot is RunInstances from that snapshot: decided on the snapshot, as AWS
+	// decides RunInstances on the snapshot behind the image it launches.
+	h(post, "/vm-snapshots/restore", s20, "ec2:RunInstances", z.snapshotARN("ec2", true), handleVMSnapshotRestore(cs, auth, logger))
 	h(del, "/vm-snapshots", s20, "ec2:DeleteSnapshot", z.snapshotARN("ec2", false), handleVMSnapshotDelete(cs, auth, logger))
 
 	// SageMaker jobs: register, logs (CloudWatch Logs), metrics, model-monitor reports.
@@ -227,7 +231,12 @@ func (z *consoleAuthz) handleDynamic(rt chi.Router, prefix, method, path string,
 	}
 	mws = append(mws, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r, bc := withBodyCheck(r)
 			action, arn := question(r)
+			if bc.refused != "" {
+				writeBodyRefused(w, bc.refused)
+				return
+			}
 			if ok, reason := z.decide(r, action, arn, allowLegacy); !ok {
 				writeAccessDenied(w, action, arn, reason)
 				return
@@ -275,23 +284,50 @@ func iamBodyARN(kind string) func(r *http.Request, v string) string {
 // maxPeek bounds how much of a request body the gate reads to find the resource a create names.
 const maxPeek = 1 << 20
 
-// peekBody reads a string field of the request's JSON body and puts the body back for the handler. A
-// body that isn't a JSON object, or is larger than maxPeek, yields "".
+// peekBody reads a string field of the request's JSON body and puts the body back for the handler. It
+// reads the field as the handler's decoder will (encoding/json matches a key to a field ignoring case, and
+// the last match wins), so the gate never decides on one value while the handler acts on another: a body
+// that names the field more than once in any spelling ({"id":"a","ID":"b"}) is refused before anything is
+// decided, as is one too large for the gate to read (a resource named past maxPeek would be decided on
+// "*"). A body that isn't a JSON object yields "" (the handler refuses it).
 func peekBody(r *http.Request, field string) string {
 	b, ok := peekRaw(r)
 	if !ok {
 		return ""
 	}
-	var m map[string]any
-	if json.Unmarshal(b, &m) != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
 		return ""
 	}
-	s, _ := m[field].(string)
-	return strings.TrimSpace(s)
+	val, seen := "", 0
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		key, _ := t.(string)
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return ""
+		}
+		if !strings.EqualFold(key, field) {
+			continue
+		}
+		if seen++; seen > 1 {
+			refuseBody(r, fmt.Sprintf("the request body names %q more than once", field))
+			return ""
+		}
+		var str string
+		if json.Unmarshal(v, &str) == nil {
+			val = str
+		}
+	}
+	return strings.TrimSpace(val)
 }
 
 // peekRaw reads up to maxPeek bytes of the request body and puts the whole body back for the handler:
-// what was read, then the unread rest. ok is false when there is no body or it is larger than maxPeek.
+// what was read, then the unread rest. ok is false when there is no body or it is larger than maxPeek
+// (which, inside a gate, refuses the request: the resource it names cannot be read).
 func peekRaw(r *http.Request) ([]byte, bool) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil, false
@@ -302,9 +338,33 @@ func peekRaw(r *http.Request) ([]byte, bool) {
 		io.Closer
 	}{io.MultiReader(bytes.NewReader(b), r.Body), r.Body}
 	if err != nil || len(b) > maxPeek {
+		refuseBody(r, "the request body is too large for the resource it names to be read")
 		return nil, false
 	}
 	return b, true
+}
+
+// bodyCheck is a gate's record of a request body it could not read unambiguously. The gate puts one in
+// the request's context before it builds its question, and refuses the request when the question's
+// peek set it.
+type bodyCheck struct{ refused string }
+
+type ctxBodyCheck struct{}
+
+func withBodyCheck(r *http.Request) (*http.Request, *bodyCheck) {
+	bc := &bodyCheck{}
+	return r.WithContext(context.WithValue(r.Context(), ctxBodyCheck{}, bc)), bc
+}
+
+func refuseBody(r *http.Request, why string) {
+	if bc, ok := r.Context().Value(ctxBodyCheck{}).(*bodyCheck); ok && bc.refused == "" {
+		bc.refused = why
+	}
+}
+
+// writeBodyRefused answers a body the gate could not read unambiguously: AWS's 400 for a malformed request.
+func writeBodyRefused(w http.ResponseWriter, why string) {
+	writeJSON(w, http.StatusBadRequest, map[string]string{"errorCode": "ValidationException", "error": why, "message": why})
 }
 
 // snapshotARN is the ARN of the snapshot a route names in its query string (?namespace=&id=, a delete) or

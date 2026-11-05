@@ -160,9 +160,14 @@ func (z *consoleAuthz) gate(method, path, action string, arn arnFunc) func(http.
 	z.reg.Add(awsaction.Route{Method: method, Path: path, Action: action, ARN: arn})
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r, bc := withBodyCheck(r)
 			res := "*"
 			if arn != nil {
 				res = arn(r)
+			}
+			if bc.refused != "" {
+				writeBodyRefused(w, bc.refused)
+				return
 			}
 			ok, reason := z.decide(r, action, res, allowLegacy)
 			if !ok {
