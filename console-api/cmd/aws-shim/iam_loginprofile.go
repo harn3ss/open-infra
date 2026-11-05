@@ -30,7 +30,6 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
-	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/loginprofile"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -371,19 +370,25 @@ func (h *iamHandler) changePassword(ctx context.Context, w http.ResponseWriter, 
 		h.internal(w, requestID, err)
 		return
 	}
-	if denied, explicit, reason := dataPlaneVerdict(ctx, h.authz, claims, "iam:ChangePassword", "User", name, r); denied && explicit {
-		h.audit(ctx, "ChangePassword", name, "deny", reason)
-		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, iamXMLNamespace)
-		return
-	}
-	if !(custom && pol.AllowUsersToChangePassword) {
-		allowed, reason := h.mayChangeOwnPassword(ctx, claims, name, r)
-		if !allowed {
-			h.audit(ctx, "ChangePassword", name, "deny", reason)
-			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
-				"User: "+h.userArn(name)+" is not authorized to perform: iam:ChangePassword on resource: user "+name, iamXMLNamespace)
-			return
+	// The grant: IAM policy allowing iam:ChangePassword on the user itself, through the one evaluator in its
+	// mode (legacy: a user who may update its own User). An explicit Deny refuses even when the account
+	// password policy lets every user change their own password; without one, that policy is a grant.
+	explicitLegacy := false
+	d := decision(ctx, r, h.authz, claims, "iam:ChangePassword", "User", name, func() (bool, string) {
+		if denied, explicit, reason := dataPlaneVerdict(ctx, h.authz, claims, "iam:ChangePassword", "User", name, r); denied && explicit {
+			explicitLegacy = true
+			return false, reason
 		}
+		return iam.CanDo(ctx, h.cs, claims, "update", "iam.openinfra.dev", "users", h.usersNS, name)
+	})
+	if d.ExplicitDeny || explicitLegacy || (!d.Allowed && !(custom && pol.AllowUsersToChangePassword)) {
+		h.audit(ctx, "ChangePassword", name, "deny", d.Reason)
+		msg := d.Reason
+		if !d.ExplicitDeny && !explicitLegacy {
+			msg = "User: " + h.scope(ctx).arn("user/"+name) + " is not authorized to perform: iam:ChangePassword on resource: user " + name
+		}
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, msg, iamXMLNamespace)
+		return
 	}
 	oldPW, newPW := r.PostFormValue("OldPassword"), r.PostFormValue("NewPassword")
 	if oldPW == "" || newPW == "" {
@@ -436,25 +441,6 @@ func (h *iamHandler) changePassword(ctx context.Context, w http.ResponseWriter, 
 	}
 	h.audit(ctx, "ChangePassword", name, "allow", "")
 	h.writeResult(w, requestID, "ChangePassword", "")
-}
-
-// mayChangeOwnPassword is the grant half of ChangePassword (the account policy aside): IAM policy allowing
-// iam:ChangePassword on the user itself, through the one evaluator in its mode; legacy (RBAC tiers) lets a
-// user who may update its own User through.
-func (h *iamHandler) mayChangeOwnPassword(ctx context.Context, claims iam.Claims, name string, r *http.Request) (bool, string) {
-	legacy := func() (bool, string) {
-		return iam.CanDo(ctx, h.cs, claims, "update", "iam.openinfra.dev", "users", h.usersNS, name)
-	}
-	if h.authz == nil {
-		return legacy()
-	}
-	ev := h.authz.IAM()
-	if ev == nil {
-		return legacy()
-	}
-	d := ev.Decide(ctx, iamauthz.PrincipalFromClaims(claims, h.accountOf(claims)), "iam:ChangePassword", h.userArn(name),
-		requestContext(claims, r), legacy)
-	return d.Allowed, d.Reason
 }
 
 // --- the account password policy ---

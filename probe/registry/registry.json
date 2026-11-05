@@ -772,7 +772,9 @@
       "tier": "proven"
     },
     "iam": {
-      "actions": [],
+      "actions": [
+        "iam:ChangePassword"
+      ],
       "conditional": true,
       "deployableTypes": [
         "AWS::IAM::InstanceProfile",
@@ -790,15 +792,19 @@
         "AttachGroupPolicy",
         "AttachRolePolicy",
         "AttachUserPolicy",
+        "ChangePassword",
         "CreateAccessKey",
         "CreateGroup",
+        "CreateLoginProfile",
         "CreatePolicy",
         "CreatePolicyVersion",
         "CreateRole",
         "CreateUser",
         "DeleteAccessKey",
+        "DeleteAccountPasswordPolicy",
         "DeleteGroup",
         "DeleteGroupPolicy",
+        "DeleteLoginProfile",
         "DeletePolicy",
         "DeletePolicyVersion",
         "DeleteRole",
@@ -811,8 +817,10 @@
         "DetachRolePolicy",
         "DetachUserPolicy",
         "GetAccountAuthorizationDetails",
+        "GetAccountPasswordPolicy",
         "GetGroup",
         "GetGroupPolicy",
+        "GetLoginProfile",
         "GetPolicy",
         "GetPolicyVersion",
         "GetRole",
@@ -841,7 +849,9 @@
         "SetDefaultPolicyVersion",
         "SimulatePrincipalPolicy",
         "TagUser",
-        "UpdateAccessKey"
+        "UpdateAccessKey",
+        "UpdateAccountPasswordPolicy",
+        "UpdateLoginProfile"
       ],
       "probes": [
         "iam",
@@ -1393,7 +1403,7 @@
     "excRead": 8,
     "excepted": 8,
     "flattened": 0,
-    "operations": 551,
+    "operations": 559,
     "planOnly": 11,
     "refused": 11,
     "services": 30,
