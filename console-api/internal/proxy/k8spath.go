@@ -28,6 +28,19 @@ func (k Request) ResourcePath() string {
 	return k.Resource + "/" + k.Subresource
 }
 
+// CollectionPath is the API path of k's collection in namespace ns:
+// /api/v1/namespaces/<ns>/<resource> or /apis/<group>/<version>/namespaces/<ns>/<resource>.
+func (k Request) CollectionPath(ns string) string {
+	base := "/apis/" + k.Group + "/" + k.Version
+	if k.Group == "" {
+		base = "/api/" + k.Version
+	}
+	if ns == "" {
+		return base + "/" + k.Resource
+	}
+	return base + "/namespaces/" + url.PathEscape(ns) + "/" + k.Resource
+}
+
 // ParseRequest reads the Kubernetes request a method, API path and query make, the way the API server
 // does: /api/v1[/namespaces/<ns>]/<resource>[/<name>[/<sub>]] for the core group and
 // /apis/<group>/<version>[/namespaces/<ns>]/<resource>[/<name>[/<sub>]] for the others. A path that

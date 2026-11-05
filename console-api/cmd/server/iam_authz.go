@@ -52,6 +52,9 @@ type consoleAuthz struct {
 	// account). Cached: namespaces change account rarely, and every proxied request asks.
 	nsMu    sync.Mutex
 	nsCache map[string]nsAccountEntry
+
+	// acctNS resolves an account's namespaces (account_scope.go). Cached the same way.
+	acctNS accountNamespaceCache
 }
 
 type nsAccountEntry struct {
@@ -343,6 +346,10 @@ func (z *consoleAuthz) authorizeKubernetes(r *http.Request, k proxy.Request, leg
 // Kubernetes question it is, authorized by its AWS action, and forwarded as identity().
 func (z *consoleAuthz) proxyHandler(prefix string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && accountScoped(r) {
+			z.serveAccountList(w, r, prefix, next) // the caller's account's list (account_scope.go)
+			return
+		}
 		k, ok := proxy.ParseRequest(r.Method, strings.TrimPrefix(r.URL.Path, prefix), r.URL.Query())
 		if !ok {
 			if z.enforced(r) {
@@ -390,6 +397,10 @@ func proxyAccountIdentity() bool { return getenv("IAM_PROXY_IDENTITY", "account"
 // IAM policy on the list action.
 func (z *consoleAuthz) watchHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(r.URL.Query()["path"]) > 1 {
+			http.Error(w, "one path per watch", http.StatusBadRequest) // only the first would be authorized
+			return
+		}
 		path := r.URL.Query().Get("path")
 		q := r.URL.Query()
 		q.Set("watch", "true")
@@ -414,7 +425,7 @@ func (z *consoleAuthz) watchHandler(next http.Handler) http.Handler {
 			writeAccessDenied(w, action, arn, reason)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, z.withWatchScope(r, k)) // the caller's account only, where it applies (account_scope.go)
 	})
 }
 

@@ -18,6 +18,7 @@ package watch
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -43,6 +44,20 @@ func New(host *url.URL, transport http.RoundTripper, logger *slog.Logger) *Handl
 	return &Handler{host: host, transport: transport, logger: logger}
 }
 
+type namespaceFilterKey struct{}
+
+// WithNamespaceFilter returns ctx carrying keep: a stream served with it forwards only the events whose
+// object is in a namespace keep reports true for (an object with no namespace is in none). Bookmarks and
+// errors always pass: they carry the stream's position and its end, not an object.
+func WithNamespaceFilter(ctx context.Context, keep func(namespace string) bool) context.Context {
+	return context.WithValue(ctx, namespaceFilterKey{}, keep)
+}
+
+func namespaceFilter(ctx context.Context) func(string) bool {
+	keep, _ := ctx.Value(namespaceFilterKey{}).(func(string) bool)
+	return keep
+}
+
 // watchEnvelope is the minimal shape we need to parse out of each watch event.
 // Kubernetes emits {"type": "...", "object": {...}} per line; for ERROR events
 // the object is a metav1.Status carrying the HTTP-equivalent code.
@@ -52,6 +67,7 @@ type watchEnvelope struct {
 		Kind     string `json:"kind"`
 		Metadata struct {
 			ResourceVersion string `json:"resourceVersion"`
+			Namespace       string `json:"namespace"`
 		} `json:"metadata"`
 		// Status fields, present when Type == "ERROR" and Kind == "Status".
 		Code int32 `json:"code"`
@@ -139,6 +155,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+	keep := namespaceFilter(ctx)
 
 	for scanner.Scan() {
 		// Honor client disconnect promptly between events.
@@ -155,10 +172,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		var ev watchEnvelope
 		if err := json.Unmarshal(line, &ev); err != nil {
+			if keep != nil {
+				continue // a filtered stream forwards only what it can place in a namespace
+			}
 			// Forward the raw line anyway so the client isn't starved; just skip
 			// id/expiry handling we couldn't parse.
 			h.writeData(w, "", line)
 			flusher.Flush()
+			continue
+		}
+		if keep != nil && ev.Type != "BOOKMARK" && ev.Type != "ERROR" && !keep(ev.Object.Metadata.Namespace) {
 			continue
 		}
 

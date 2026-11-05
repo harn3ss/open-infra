@@ -518,8 +518,10 @@ func handleLogout(a *authStore) http.HandlerFunc {
 func handleMe(a *authStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if a.mode == "none" {
-			writeJSON(w, http.StatusOK, map[string]any{"user": "anonymous", "role": "root", "authDisabled": true,
-				"capabilities": map[string]bool{"operator": true}})
+			body := map[string]any{"user": "anonymous", "role": "root", "authDisabled": true,
+				"capabilities": map[string]bool{"operator": true}, "account": iam.ManagementAccount}
+			consoleIAM.addAccountContext(r.Context(), body, iam.ManagementAccount)
+			writeJSON(w, http.StatusOK, body)
 			return
 		}
 		c, err := r.Cookie(sessionCookie)
@@ -543,14 +545,35 @@ func handleMe(a *authStore) http.HandlerFunc {
 		if consoleIAM != nil && consoleIAM.eval != nil {
 			mode = consoleIAM.eval.ModeFor(r.Context(), p)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"user": claims.Sub, "role": claims.Role,
 			"account": acct, "accountAlias": getenv("ACCOUNT_ALIAS", ""),
 			"arn": p.ARN(), "principalType": string(p.Type), "iamAuthz": string(mode),
 			"passwordResetRequired": claims.PwReset,
 			"capabilities": map[string]bool{"operator": consoleIAM.isOperator(r, claims, p, mode)},
-		})
+		}
+		consoleIAM.addAccountContext(r.Context(), body, acct)
+		writeJSON(w, http.StatusOK, body)
 	}
+}
+
+// addAccountContext adds the session's account context to /api/auth/me: its region (the platform serves
+// one, awsaction.DefaultRegion), and the account's namespaces and home — where the console lists the
+// account's resources and creates new ones. The namespaces are left out when they cannot be read.
+func (z *consoleAuthz) addAccountContext(ctx context.Context, body map[string]any, acct string) {
+	body["region"] = awsaction.DefaultRegion
+	if z == nil || z.cs == nil {
+		return
+	}
+	names, home, err := z.accountNamespaces(ctx, acct)
+	if err != nil {
+		z.logger.Warn("account namespaces", "account", acct, "error", err)
+		return
+	}
+	if names == nil {
+		names = []string{}
+	}
+	body["namespaces"], body["homeNamespace"] = names, home
 }
 
 // operatorSurface is the platform's raw-Kubernetes surface (pods, nodes, Secrets, namespaces …) as one
