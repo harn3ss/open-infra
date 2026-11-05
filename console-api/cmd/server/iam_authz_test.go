@@ -158,6 +158,9 @@ func TestConsoleRoutes_EveryRouteHasAnIAMAction(t *testing.T) {
 	if gated < 88 {
 		t.Errorf("only %d routes carry a fixed IAM action; the table lost routes", gated)
 	}
+	perRequest := len(z.reg.Routes()) - gated
+	t.Logf("route table: %d served; %d with a fixed IAM action, %d decided per request (proxy, watch, Grafana, self-service), %d public",
+		len(served), gated, perRequest, len(served)-gated-perRequest)
 }
 
 // ── the route gate, per mode ─────────────────────────────────────────────────────
