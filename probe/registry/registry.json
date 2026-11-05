@@ -1181,6 +1181,28 @@
       "service": "Secrets Manager",
       "tier": "proven"
     },
+    "servicequotas": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [],
+      "handler": "serviceQuotasHandler",
+      "namespaces": [],
+      "operations": [
+        "GetAWSDefaultServiceQuota",
+        "GetRequestedServiceQuotaChange",
+        "GetServiceQuota",
+        "ListAWSDefaultServiceQuotas",
+        "ListRequestedServiceQuotaChangeHistory",
+        "ListRequestedServiceQuotaChangeHistoryByQuota",
+        "ListServiceQuotas",
+        "ListServices",
+        "RequestServiceQuotaIncrease"
+      ],
+      "probes": [],
+      "refused": [],
+      "service": "Service Quotas",
+      "tier": "gated"
+    },
     "ses": {
       "actions": [
         "ses:GetAccount",
@@ -1403,11 +1425,11 @@
     "excRead": 8,
     "excepted": 8,
     "flattened": 0,
-    "operations": 559,
+    "operations": 568,
     "planOnly": 11,
     "refused": 11,
-    "services": 30,
-    "signingNames": 32,
+    "services": 31,
+    "signingNames": 33,
     "violations": 0
   },
   "types": {

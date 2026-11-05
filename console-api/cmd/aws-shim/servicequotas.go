@@ -14,9 +14,9 @@
 // component turns into a ResourceQuota on that namespace's burstable function pods. The others are reported
 // as the account's quota.
 //
-// Authorized as every front door: the coarse impersonated SubjectAccessReview, then the data-plane policy
-// check as servicequotas:<Op> on Quota::<ServiceCode>/<QuotaCode> (Quota::* for an operation that names
-// none).
+// Authorized as every front door, by decide: servicequotas:<Op> on Quota::<ServiceCode>/<QuotaCode>
+// (Quota::* for an operation that names none), in the caller's own account; legacy is the coarse
+// impersonated SubjectAccessReview, then the data-plane refinement.
 package main
 
 import (
@@ -35,6 +35,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -184,8 +185,8 @@ func (h *serviceQuotasHandler) serve(w http.ResponseWriter, r *http.Request, cla
 			return
 		}
 	}
-	// The resource the call names: one quota, or every quota (Quota::*).
-	resID := "*"
+	// The resource the call names: one quota, or none (Quota::*, AWS's Resource "*").
+	resID := ""
 	switch op {
 	case "GetServiceQuota", "GetAWSDefaultServiceQuota", "RequestServiceQuotaIncrease",
 		"ListRequestedServiceQuotaChangeHistoryByQuota":
@@ -195,21 +196,26 @@ func (h *serviceQuotasHandler) serve(w http.ResponseWriter, r *http.Request, cla
 		}
 		resID = in.ServiceCode + "/" + in.QuotaCode
 	}
+	legacyRes := resID
+	if legacyRes == "" {
+		legacyRes = "*"
+	}
 	verb := "get"
 	if op == "RequestServiceQuotaIncrease" {
 		verb = "create"
 	}
-	if allowed, reason := iam.CanDo(ctx, h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, ""); !allowed {
-		h.audit(ctx, op, resID, "deny", reason)
-		writeSQError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "You don't have permissions to access this resource.")
-		return
-	}
-	if denied, reason := deniedByDataPlane(ctx, h.authz, claims, "servicequotas:"+op, "Quota", resID, r); denied {
-		h.audit(ctx, op, resID, "deny", reason)
-		writeSQError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "You don't have permissions to access this resource.")
-		return
-	}
 	acct := h.accountOf(claims)
+	// Legacy: the coarse SubjectAccessReview, then the data-plane refinement. The quotas are the caller's
+	// own account's, so IAM policy evaluates them in it (not as another account's resource).
+	legacy := coarseThenScopedDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications",
+		h.authzNS, "", "servicequotas:"+op, "Quota", legacyRes)
+	if allowed, reason := decide(ctx, r, h.authz, claims, "servicequotas:"+op, "Quota", resID, legacy,
+		iamauthz.WithResourceAccount(acct)); !allowed {
+		h.audit(ctx, op, legacyRes, "deny", reason)
+		writeSQError(w, http.StatusBadRequest, "AccessDeniedException", requestID, "You don't have permissions to access this resource.")
+		return
+	}
+	resID = legacyRes
 	switch op {
 	case "ListServices":
 		h.listServices(w, requestID, in)

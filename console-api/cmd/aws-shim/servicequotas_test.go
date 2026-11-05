@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/policyengine"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -42,10 +44,25 @@ func sqTestHandler(t *testing.T, sarAllowed bool, objs ...runtime.Object) (*serv
 	return h, cs
 }
 
+// sqMemberHome is the home namespace of a test member account (sqAccount's first namespace).
+func sqMemberHome(id string) string { return "team-" + id[:4] }
+
+// sqMemberAllowed is a policy world in which the member account's alice (in its home, as IAM names a
+// member account's users) may use Service Quotas: a member account's principal is always decided by IAM
+// policy.
+func sqMemberAllowed(t *testing.T, member string) *dataplaneauthz.Checker {
+	t.Helper()
+	return checkerInMode(t, "legacy", dataplaneauthz.PolicyDoc{Name: "sq", AppliesTo: []string{"User::" + sqMemberHome(member) + "/alice"},
+		Statements: []policyengine.Statement{dpAllow([]string{"servicequotas:*"}, "*")}})
+}
+
 func sqCall(t *testing.T, h *serviceQuotasHandler, claims iam.Claims, op string, body any) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
 	b, _ := json.Marshal(body)
 	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(b)))
+	if claims.Account != "" && claims.Account != orgMgmt {
+		r = r.WithContext(withAccountHome(r.Context(), sqMemberHome(claims.Account))) // as the router puts it
+	}
 	r.Header.Set("X-Amz-Target", serviceQuotasTargetPrefix+op)
 	w := httptest.NewRecorder()
 	h.serve(w, r, claims, "req-1")
@@ -58,6 +75,7 @@ func TestServiceQuotas_AppliedAndAWSDefaults(t *testing.T) {
 	member := "912345678901"
 	h, _ := sqTestHandler(t, true, sqAccount(member,
 		map[string]any{"serviceCode": "lambda", "quotaCode": "L-B99A9384", "value": float64(50)}))
+	h.authz = sqMemberAllowed(t, member)
 	alice := iam.Claims{Sub: "alice", Account: member}
 
 	_, out := sqCall(t, h, alice, "GetServiceQuota", map[string]any{"ServiceCode": "lambda", "QuotaCode": "L-B99A9384"})
@@ -124,6 +142,7 @@ func TestServiceQuotas_ListServicesAndQuotas(t *testing.T) {
 func TestServiceQuotas_RequestIncreaseLifecycle(t *testing.T) {
 	member := "912345678901"
 	h, _ := sqTestHandler(t, true, sqAccount(member))
+	h.authz = sqMemberAllowed(t, member)
 	alice := iam.Claims{Sub: "alice", Account: member}
 	body := map[string]any{"ServiceCode": "dynamodb", "QuotaCode": "L-F98FE922", "DesiredValue": 3000}
 
@@ -181,6 +200,20 @@ func TestServiceQuotas_Authorization(t *testing.T) {
 	}
 	if w, out = sqCall(t, h, testUser, "PutServiceQuotaIncreaseRequestIntoTemplate", map[string]any{}); out["__type"] != "UnsupportedAPIEndpointException" {
 		t.Fatalf("an unserved op %d %v", w.Code, out)
+	}
+	// A member account's principal is decided by IAM policy alone, on its own account's quotas: with
+	// none it is denied, and the management account's user of its name grants it nothing.
+	member := "912345678901"
+	h, _ = sqTestHandler(t, true, sqAccount(member))
+	h.authz = checkerInMode(t, "legacy", dataplaneauthz.PolicyDoc{Name: "mgmt-alice", AppliesTo: []string{"User::alice"},
+		Statements: []policyengine.Statement{dpAllow([]string{"servicequotas:*"}, "*")}})
+	if w, out = sqCall(t, h, iam.Claims{Sub: "alice", Account: member}, "ListServices", map[string]any{}); out["__type"] != "AccessDeniedException" {
+		t.Fatalf("a member account's alice with no policy of its own: %d %v", w.Code, out)
+	}
+	h.authz = sqMemberAllowed(t, member)
+	if w, out = sqCall(t, h, iam.Claims{Sub: "alice", Account: member}, "GetServiceQuota",
+		map[string]any{"ServiceCode": "lambda", "QuotaCode": "L-B99A9384"}); w.Code != http.StatusOK {
+		t.Fatalf("a member account's identity policy reaches its own account's quotas: %d %v", w.Code, out)
 	}
 }
 
