@@ -112,6 +112,8 @@ func compileStatement(st map[string]any) ([]policyengine.Statement, []string, er
 		base.NotActions = list(st["NotAction"])
 		if len(base.NotActions) == 0 {
 			base.NotActions, base.Actions = nil, []string{"*"}
+		} else if effect == policyengine.Allow {
+			base.NotActions = reserveOperator(base.NotActions)
 		}
 	} else {
 		base.Actions = list(st["Action"])
@@ -429,4 +431,20 @@ func list(v any) []string {
 		return out
 	}
 	return nil
+}
+
+// operatorActions are the platform's raw-Kubernetes operations (awsaction's openinfra-operator prefix:
+// pods, nodes, Secrets, namespaces …). AWS has no such service, so an Allow written as "every action
+// except …" (NotAction, as AWS's PowerUserAccess is) must not reach them: only an Allow that names them —
+// or "*", as AdministratorAccess does — grants the operator surface. A Deny's NotAction is left as written.
+const operatorActions = "openinfra-operator:*"
+
+// reserveOperator adds the operator actions to an Allow's NotAction set (narrower, never wider).
+func reserveOperator(notActions []string) []string {
+	for _, a := range notActions {
+		if a == operatorActions {
+			return notActions
+		}
+	}
+	return append(append([]string(nil), notActions...), operatorActions)
 }

@@ -118,6 +118,30 @@ func TestAuthorize_PowerUserAccessIsDeniedIAMWrites(t *testing.T) {
 		{name: "the listed iam read", p: p, action: "iam:ListRoles", resource: "*", allow: true},
 		{name: "everything else", p: p, action: "s3:PutObject", resource: "arn:aws:s3:::b/k", allow: true},
 		{name: "platform kinds", p: p, action: "openinfra:CreateDataFlow", resource: "*", allow: true},
+		// The operator surface (raw Kubernetes objects, Secrets among them) is no AWS service, so
+		// PowerUserAccess's "everything but IAM" does not reach it.
+		{name: "operator: secrets", p: p, action: "openinfra-operator:GetSecret", resource: "*"},
+		{name: "operator: pods", p: p, action: "openinfra-operator:ListPod", resource: "*"},
+	})
+}
+
+// Only an Allow that names the operator actions — or "*", as AdministratorAccess — grants them.
+func TestAuthorize_OperatorSurfaceNeedsAnAllowThatNamesIt(t *testing.T) {
+	w := World{Docs: []Policy{
+		mustDoc(t, "AdministratorAccess", `{"Statement":{"Effect":"Allow","Action":"*","Resource":"*"}}`),
+		mustDoc(t, "operator", `{"Statement":{"Effect":"Allow","Action":"openinfra-operator:*","Resource":"*"}}`),
+		mustDoc(t, "all-but-s3", `{"Statement":{"Effect":"Allow","NotAction":"s3:*","Resource":"*"}}`),
+		mustDoc(t, "deny-all-but-s3", `{"Statement":{"Effect":"Deny","NotAction":"s3:*","Resource":"*"}}`),
+	}, Attach: map[string][]string{
+		"User::admin": {"AdministratorAccess"}, "User::op": {"operator"}, "User::na": {"all-but-s3"},
+		"User::denied": {"AdministratorAccess", "deny-all-but-s3"},
+	}}
+	runChecks(t, evaluator(w), []check{
+		{name: "AdministratorAccess", p: user("admin"), action: "openinfra-operator:GetSecret", resource: "*", allow: true},
+		{name: "named", p: user("op"), action: "openinfra-operator:GetSecret", resource: "*", allow: true},
+		{name: "NotAction allow", p: user("na"), action: "openinfra-operator:GetSecret", resource: "*"},
+		{name: "NotAction allow, elsewhere", p: user("na"), action: "sqs:SendMessage", resource: "*", allow: true},
+		{name: "NotAction deny still applies", p: user("denied"), action: "openinfra-operator:GetSecret", resource: "*"},
 	})
 }
 

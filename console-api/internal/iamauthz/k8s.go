@@ -160,10 +160,14 @@ func StatementsFromSpec(v any) []policyengine.Statement {
 		if sm == nil {
 			continue
 		}
+		notActions := toStrings(sm["notActions"])
+		if len(notActions) > 0 && policyengine.Effect(str(sm["effect"])) == policyengine.Allow {
+			notActions = reserveOperator(notActions)
+		}
 		out = append(out, policyengine.Statement{
 			Effect:         policyengine.Effect(str(sm["effect"])),
 			Actions:        toStrings(sm["actions"]),
-			NotActions:     toStrings(sm["notActions"]),
+			NotActions:     notActions,
 			Resources:      toStrings(sm["resources"]),
 			NotResources:   toStrings(sm["notResources"]),
 			Condition:      toStringMap(sm["condition"]),
