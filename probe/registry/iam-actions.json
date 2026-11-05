@@ -1176,7 +1176,10 @@
    "ecr:UploadLayerPart"
   ],
   "email": [
+   "ses:CreateEmailIdentity",
    "ses:GetAccount",
+   "ses:ListEmailIdentities",
+   "ses:SendBulkEmail",
    "ses:SendEmail"
   ],
   "events": [
@@ -1212,7 +1215,10 @@
    "rds:CreateDBSnapshot"
   ],
   "ses": [
+   "ses:CreateEmailIdentity",
    "ses:GetAccount",
+   "ses:ListEmailIdentities",
+   "ses:SendBulkEmail",
    "ses:SendEmail"
   ],
   "sns": [
@@ -1529,6 +1535,7 @@
   "ses:GetEmailIdentity",
   "ses:ListEmailIdentities",
   "ses:PutEmailIdentityMailFromAttributes",
+  "ses:SendBulkEmail",
   "ses:SendEmail",
   "sns:CreateTopic",
   "sns:DeleteTopic",
