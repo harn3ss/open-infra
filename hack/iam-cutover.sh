@@ -56,9 +56,12 @@ done_mark() { date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/step-$1.done"; }
 cm_set() { # <namespace> KEY=VALUE…  (KEY= removes the key)
   local ns="$1"; shift
   kubectl -n "$ns" get configmap openinfra-iam -o json 2>/dev/null > "$TMP/cm.json" || echo '{}' > "$TMP/cm.json"
-  python3 - "$ns" "$@" < "$TMP/cm.json" > "$TMP/cm.new.json" <<'PY'
+  python3 - "$TMP/cm.json" "$ns" "$@" > "$TMP/cm.new.json" <<'PY'
 import json, sys
-cur = json.load(sys.stdin).get("data") or {}
+# The current ConfigMap is read from its file: the script itself arrives on stdin.
+raw = open(sys.argv[1]).read().strip()
+cur = (json.loads(raw).get("data") if raw else None) or {}
+sys.argv = [sys.argv[0]] + sys.argv[2:]
 for kv in sys.argv[2:]:
     k, v = kv.split("=", 1)
     if v:
