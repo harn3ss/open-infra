@@ -990,7 +990,8 @@
         "TagLogGroup"
       ],
       "probes": [
-        "cloudwatchlogs"
+        "cloudwatchlogs",
+        "logs-lambda"
       ],
       "refused": [],
       "service": "CloudWatch Logs",

@@ -153,10 +153,11 @@ services:
     sigv4: [monitoring]
     probes: [cloudwatch]
   - name: CloudWatch Logs
-    cell: "→ Postgres"
+    cell: "→ Postgres; a service's own groups (`/aws/lambda/<fn>`, SageMaker jobs, ECS) → the platform log store"
     tier: proven
     sigv4: [logs]
-    probes: [cloudwatchlogs]
+    # logs-lambda: what a function prints, in /aws/lambda/<fn> (cloudwatchlogs_loki.go)
+    probes: [cloudwatchlogs, logs-lambda]
 
   # --- workflow / provisioning ---
   - name: Step Functions
