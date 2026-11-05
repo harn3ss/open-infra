@@ -90,7 +90,8 @@ spec:
     kind: ClusterIssuer
     group: cert-manager.io
 ---
-# The ONLY cluster-scoped grant: ask the API server authorization questions (SubjectAccessReview).
+# The cluster-scoped grants: ask the API server authorization questions (SubjectAccessReview), and read
+# namespaces (their account labels).
 # This is exactly the console's authz-check grant — it decides nothing itself, it only asks, so the
 # real authority stays the RBAC compiled from kind: Policy/Role/Group, bounded by the boundary.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -107,6 +108,12 @@ rules:
   - apiGroups: [authentication.k8s.io]
     resources: [tokenreviews]
     verbs: [create]
+  # Accounts (kind: Account): a namespace's account is its openinfra.dev/account-id label, so the shim reads
+  # namespaces — their names and labels, nothing in them — to resolve the caller's account and its home,
+  # and Organizations CreateAccount checks a new account's home namespace is free.
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
