@@ -1,0 +1,1561 @@
+{
+ "generatedBy": "console-api/internal/awsaction (go test; UPDATE_REGISTRY=1 rewrites)",
+ "kinds": {
+  "Application": {
+   "group": "openinfra.dev",
+   "resource": "applications",
+   "service": "ecs",
+   "resourceType": "service",
+   "cfnType": "AWS::ECS::Service",
+   "arn": "arn:{partition}:ecs:{region}:{account}:service/default/{name}",
+   "actions": {
+    "create": "ecs:CreateService",
+    "delete": "ecs:DeleteService",
+    "get": "ecs:DescribeServices",
+    "list": "ecs:ListServices",
+    "update": "ecs:UpdateService"
+   },
+   "passRoleFields": [
+    "assumeRole"
+   ],
+   "note": "an Application is an ECS service; its database block is an RDS DB instance (alone, when it runs no image)",
+   "variants": [
+    {
+     "name": "database-only",
+     "replace": true,
+     "entry": {
+      "group": "openinfra.dev",
+      "resource": "applications",
+      "service": "rds",
+      "resourceType": "db",
+      "cfnType": "AWS::RDS::DBInstance",
+      "arn": "arn:{partition}:rds:{region}:{account}:db:{name}",
+      "actions": {
+       "create": "rds:CreateDBInstance",
+       "delete": "rds:DeleteDBInstance",
+       "get": "rds:DescribeDBInstances",
+       "list": "rds:DescribeDBInstances",
+       "update": "rds:ModifyDBInstance"
+      }
+     }
+    },
+    {
+     "name": "database",
+     "entry": {
+      "group": "openinfra.dev",
+      "resource": "applications",
+      "service": "rds",
+      "resourceType": "db",
+      "cfnType": "AWS::RDS::DBInstance",
+      "arn": "arn:{partition}:rds:{region}:{account}:db:{name}",
+      "actions": {
+       "create": "rds:CreateDBInstance",
+       "delete": "rds:DeleteDBInstance",
+       "get": "rds:DescribeDBInstances",
+       "list": "rds:DescribeDBInstances",
+       "update": "rds:ModifyDBInstance"
+      }
+     }
+    }
+   ]
+  },
+  "AutoScalingGroup": {
+   "group": "openinfra.dev",
+   "resource": "autoscalinggroups",
+   "service": "autoscaling",
+   "resourceType": "autoScalingGroup",
+   "cfnType": "AWS::AutoScaling::AutoScalingGroup",
+   "arn": "arn:{partition}:autoscaling:{region}:{account}:autoScalingGroup:{uuid}:autoScalingGroupName/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "autoscaling:CreateAutoScalingGroup",
+    "delete": "autoscaling:DeleteAutoScalingGroup",
+    "get": "autoscaling:DescribeAutoScalingGroups",
+    "list": "autoscaling:DescribeAutoScalingGroups",
+    "update": "autoscaling:UpdateAutoScalingGroup"
+   }
+  },
+  "BackupPlan": {
+   "group": "openinfra.dev",
+   "resource": "backupplans",
+   "service": "backup",
+   "resourceType": "backupPlan",
+   "cfnType": "AWS::Backup::BackupPlan",
+   "arn": "arn:{partition}:backup:{region}:{account}:backup-plan:{name}",
+   "actions": {
+    "create": "backup:CreateBackupPlan",
+    "delete": "backup:DeleteBackupPlan",
+    "get": "backup:GetBackupPlan",
+    "list": "backup:ListBackupPlans",
+    "update": "backup:UpdateBackupPlan"
+   }
+  },
+  "BackupVault": {
+   "group": "openinfra.dev",
+   "resource": "backupvaults",
+   "service": "backup",
+   "resourceType": "backupVault",
+   "cfnType": "AWS::Backup::BackupVault",
+   "arn": "arn:{partition}:backup:{region}:{account}:backup-vault:{name}",
+   "actions": {
+    "create": "backup:CreateBackupVault",
+    "delete": "backup:DeleteBackupVault",
+    "get": "backup:DescribeBackupVault",
+    "list": "backup:ListBackupVaults",
+    "update": "backup:PutBackupVaultAccessPolicy"
+   }
+  },
+  "BatchTransform": {
+   "group": "openinfra.dev",
+   "resource": "batchtransforms",
+   "service": "sagemaker",
+   "resourceType": "transform-job",
+   "arn": "arn:{partition}:sagemaker:{region}:{account}:transform-job/{name}",
+   "actions": {
+    "create": "sagemaker:CreateTransformJob",
+    "delete": "sagemaker:StopTransformJob",
+    "get": "sagemaker:DescribeTransformJob",
+    "list": "sagemaker:ListTransformJobs",
+    "update": "sagemaker:CreateTransformJob"
+   },
+   "note": "a job is immutable on AWS: changing one re-runs it (CreateTransformJob), and deleting one stops it"
+  },
+  "Bucket": {
+   "group": "openinfra.dev",
+   "resource": "buckets",
+   "service": "s3",
+   "resourceType": "bucket",
+   "cfnType": "AWS::S3::Bucket",
+   "arn": "arn:{partition}:s3:::{name}",
+   "nameField": "bucketName",
+   "actions": {
+    "create": "s3:CreateBucket",
+    "delete": "s3:DeleteBucket",
+    "get": "s3:GetBucketLocation",
+    "list": "s3:ListAllMyBuckets",
+    "update": "s3:PutBucketPolicy"
+   },
+   "fieldActions": {
+    "lifecycleRules": {
+     "actions": [
+      "s3:PutLifecycleConfiguration"
+     ]
+    },
+    "objectLock": {
+     "actions": [
+      "s3:PutBucketObjectLockConfiguration"
+     ]
+    },
+    "policy": {
+     "actions": [
+      "s3:PutBucketPolicy"
+     ]
+    },
+    "tags": {
+     "actions": [
+      "s3:PutBucketTagging"
+     ]
+    },
+    "versioning": {
+     "actions": [
+      "s3:PutBucketVersioning"
+     ]
+    }
+   },
+   "note": "an S3 bucket ARN carries no region or account; a change to a field S3 has no single action for takes s3:PutBucketPolicy, the broadest bucket-configuration right, so it never needs less"
+  },
+  "CertificateAuthority": {
+   "group": "openinfra.dev",
+   "resource": "certificateauthorities",
+   "service": "acm-pca",
+   "resourceType": "certificate-authority",
+   "cfnType": "AWS::ACMPCA::CertificateAuthority",
+   "arn": "arn:{partition}:acm-pca:{region}:{account}:certificate-authority/{name}",
+   "actions": {
+    "create": "acm-pca:CreateCertificateAuthority",
+    "delete": "acm-pca:DeleteCertificateAuthority",
+    "get": "acm-pca:DescribeCertificateAuthority",
+    "list": "acm-pca:ListCertificateAuthorities",
+    "update": "acm-pca:UpdateCertificateAuthority"
+   }
+  },
+  "ConfigRule": {
+   "group": "openinfra.dev",
+   "resource": "configrules",
+   "service": "config",
+   "resourceType": "ConfigRule",
+   "cfnType": "AWS::Config::ConfigRule",
+   "arn": "arn:{partition}:config:{region}:{account}:config-rule/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "config:PutConfigRule",
+    "delete": "config:DeleteConfigRule",
+    "get": "config:DescribeConfigRules",
+    "list": "config:DescribeConfigRules",
+    "update": "config:PutConfigRule"
+   }
+  },
+  "DataClassification": {
+   "group": "openinfra.dev",
+   "resource": "dataclassifications",
+   "service": "openinfra",
+   "resourceType": "data-classification",
+   "arn": "arn:{partition}:openinfra:{region}:{account}:data-classification/{name}",
+   "actions": {
+    "create": "openinfra:CreateDataClassification",
+    "delete": "openinfra:DeleteDataClassification",
+    "get": "openinfra:GetDataClassification",
+    "list": "openinfra:ListDataClassifications",
+    "update": "openinfra:UpdateDataClassification"
+   },
+   "note": "a data classification level has no AWS analog"
+  },
+  "DataFlow": {
+   "group": "openinfra.dev",
+   "resource": "dataflows",
+   "service": "openinfra",
+   "resourceType": "dataflow",
+   "arn": "arn:{partition}:openinfra:{region}:{account}:dataflow/{name}",
+   "actions": {
+    "create": "openinfra:CreateDataFlow",
+    "delete": "openinfra:DeleteDataFlow",
+    "get": "openinfra:GetDataFlow",
+    "list": "openinfra:ListDataFlows",
+    "update": "openinfra:UpdateDataFlow"
+   },
+   "note": "a cross-engine data flow graph has no single AWS analog"
+  },
+  "DatabaseProxy": {
+   "group": "openinfra.dev",
+   "resource": "databaseproxies",
+   "service": "rds",
+   "resourceType": "db-proxy",
+   "cfnType": "AWS::RDS::DBProxy",
+   "arn": "arn:{partition}:rds:{region}:{account}:db-proxy:{name}",
+   "actions": {
+    "create": "rds:CreateDBProxy",
+    "delete": "rds:DeleteDBProxy",
+    "get": "rds:DescribeDBProxies",
+    "list": "rds:DescribeDBProxies",
+    "update": "rds:ModifyDBProxy"
+   }
+  },
+  "Destruction": {
+   "group": "openinfra.dev",
+   "resource": "destructions",
+   "service": "kms",
+   "resourceType": "key",
+   "arn": "arn:{partition}:kms:{region}:{account}:key/{name}",
+   "nameField": "encryptionKey",
+   "actions": {
+    "create": "kms:ScheduleKeyDeletion",
+    "delete": "kms:CancelKeyDeletion",
+    "get": "kms:DescribeKey",
+    "list": "kms:ListKeys",
+    "update": "kms:ScheduleKeyDeletion"
+   },
+   "note": "a Destruction is KMS ScheduleKeyDeletion on its key, and deleting it before its date is CancelKeyDeletion"
+  },
+  "Directory": {
+   "group": "openinfra.dev",
+   "resource": "directories",
+   "service": "ds",
+   "resourceType": "directory",
+   "cfnType": "AWS::DirectoryService::MicrosoftAD",
+   "arn": "arn:{partition}:ds:{region}:{account}:directory/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ds:CreateMicrosoftAD",
+    "delete": "ds:DeleteDirectory",
+    "get": "ds:DescribeDirectories",
+    "list": "ds:DescribeDirectories",
+    "update": "ds:UpdateSettings"
+   }
+  },
+  "ElasticIp": {
+   "group": "openinfra.dev",
+   "resource": "elasticips",
+   "service": "ec2",
+   "resourceType": "elastic-ip",
+   "cfnType": "AWS::EC2::EIP",
+   "arn": "arn:{partition}:ec2:{region}:{account}:elastic-ip/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ec2:AllocateAddress",
+    "delete": "ec2:ReleaseAddress",
+    "get": "ec2:DescribeAddresses",
+    "list": "ec2:DescribeAddresses",
+    "update": "ec2:AssociateAddress"
+   }
+  },
+  "EmailSender": {
+   "group": "openinfra.dev",
+   "resource": "emailsenders",
+   "service": "ses",
+   "resourceType": "identity",
+   "cfnType": "AWS::SES::EmailIdentity",
+   "arn": "arn:{partition}:ses:{region}:{account}:identity/{name}",
+   "nameField": "fromAddress",
+   "actions": {
+    "create": "ses:CreateEmailIdentity",
+    "delete": "ses:DeleteEmailIdentity",
+    "get": "ses:GetEmailIdentity",
+    "list": "ses:ListEmailIdentities",
+    "update": "ses:PutEmailIdentityMailFromAttributes"
+   }
+  },
+  "EncryptionKey": {
+   "group": "openinfra.dev",
+   "resource": "encryptionkeys",
+   "service": "kms",
+   "resourceType": "key",
+   "cfnType": "AWS::KMS::Key",
+   "arn": "arn:{partition}:kms:{region}:{account}:key/{name}",
+   "actions": {
+    "create": "kms:CreateKey",
+    "delete": "kms:ScheduleKeyDeletion",
+    "get": "kms:DescribeKey",
+    "list": "kms:ListKeys",
+    "update": "kms:UpdateKeyDescription"
+   },
+   "fieldActions": {
+    "rotationDays": {
+     "actions": [
+      "kms:EnableKeyRotation"
+     ]
+    }
+   }
+  },
+  "Execution": {
+   "group": "openinfra.dev",
+   "resource": "executions",
+   "service": "states",
+   "resourceType": "execution",
+   "arn": "arn:{partition}:states:{region}:{account}:execution:{spec.stateMachineRef}:{name}",
+   "actions": {
+    "create": "states:StartExecution",
+    "delete": "states:StopExecution",
+    "get": "states:DescribeExecution",
+    "list": "states:ListExecutions",
+    "update": "states:StartExecution"
+   },
+   "note": "an execution is immutable: changing one starts it again, deleting it stops it"
+  },
+  "FaultInjection": {
+   "group": "openinfra.dev",
+   "resource": "faultinjections",
+   "service": "fis",
+   "resourceType": "experiment",
+   "cfnType": "AWS::FIS::ExperimentTemplate",
+   "arn": "arn:{partition}:fis:{region}:{account}:experiment/{name}",
+   "actions": {
+    "create": "fis:StartExperiment",
+    "delete": "fis:StopExperiment",
+    "get": "fis:GetExperiment",
+    "list": "fis:ListExperiments",
+    "update": "fis:StartExperiment"
+   },
+   "note": "a FaultInjection is a running FIS experiment: changing one starts it again, deleting it stops it"
+  },
+  "FeatureGroup": {
+   "group": "openinfra.dev",
+   "resource": "featuregroups",
+   "service": "sagemaker",
+   "resourceType": "feature-group",
+   "cfnType": "AWS::SageMaker::FeatureGroup",
+   "arn": "arn:{partition}:sagemaker:{region}:{account}:feature-group/{name}",
+   "actions": {
+    "create": "sagemaker:CreateFeatureGroup",
+    "delete": "sagemaker:DeleteFeatureGroup",
+    "get": "sagemaker:DescribeFeatureGroup",
+    "list": "sagemaker:ListFeatureGroups",
+    "update": "sagemaker:UpdateFeatureGroup"
+   }
+  },
+  "FileShare": {
+   "group": "openinfra.dev",
+   "resource": "fileshares",
+   "service": "elasticfilesystem",
+   "resourceType": "file-system",
+   "cfnType": "AWS::EFS::FileSystem",
+   "arn": "arn:{partition}:elasticfilesystem:{region}:{account}:file-system/{name}",
+   "actions": {
+    "create": "elasticfilesystem:CreateFileSystem",
+    "delete": "elasticfilesystem:DeleteFileSystem",
+    "get": "elasticfilesystem:DescribeFileSystems",
+    "list": "elasticfilesystem:DescribeFileSystems",
+    "update": "elasticfilesystem:UpdateFileSystem"
+   }
+  },
+  "FlowLog": {
+   "group": "openinfra.dev",
+   "resource": "flowlogs",
+   "service": "ec2",
+   "resourceType": "vpc-flow-log",
+   "cfnType": "AWS::EC2::FlowLog",
+   "arn": "arn:{partition}:ec2:{region}:{account}:vpc-flow-log/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ec2:CreateFlowLogs",
+    "delete": "ec2:DeleteFlowLogs",
+    "get": "ec2:DescribeFlowLogs",
+    "list": "ec2:DescribeFlowLogs",
+    "update": "ec2:CreateFlowLogs"
+   },
+   "note": "a flow log can't be modified on AWS: a change replaces it (CreateFlowLogs)"
+  },
+  "Function": {
+   "group": "openinfra.dev",
+   "resource": "functions",
+   "service": "lambda",
+   "resourceType": "function",
+   "cfnType": "AWS::Lambda::Function",
+   "arn": "arn:{partition}:lambda:{region}:{account}:function:{name}",
+   "actions": {
+    "create": "lambda:CreateFunction",
+    "delete": "lambda:DeleteFunction",
+    "get": "lambda:GetFunction",
+    "list": "lambda:ListFunctions",
+    "update": "lambda:UpdateFunctionConfiguration"
+   },
+   "fieldActions": {
+    "aliases": {
+     "actions": [
+      "lambda:UpdateAlias"
+     ]
+    },
+    "code": {
+     "actions": [
+      "lambda:UpdateFunctionCode"
+     ]
+    },
+    "image": {
+     "actions": [
+      "lambda:UpdateFunctionCode"
+     ]
+    },
+    "reservedConcurrency": {
+     "actions": [
+      "lambda:PutFunctionConcurrency"
+     ]
+    }
+   }
+  },
+  "Grant": {
+   "group": "iam.openinfra.dev",
+   "resource": "grants",
+   "service": "iam",
+   "resourceType": "user",
+   "arn": "arn:{partition}:iam::{account}:user/{spec.subject}",
+   "actions": {
+    "create": "iam:AttachUserPolicy",
+    "delete": "iam:DetachUserPolicy",
+    "get": "iam:ListAttachedUserPolicies",
+    "list": "iam:ListAttachedUserPolicies",
+    "update": "iam:AttachUserPolicy"
+   },
+   "note": "a Grant raises its subject's permissions for a while: on AWS that is attaching a policy to the user, so it is the IAM write it amounts to (never openinfra:, which PowerUserAccess would cover)"
+  },
+  "GraphQLApi": {
+   "group": "openinfra.dev",
+   "resource": "graphqlapis",
+   "service": "appsync",
+   "resourceType": "apis",
+   "cfnType": "AWS::AppSync::GraphQLApi",
+   "arn": "arn:{partition}:appsync:{region}:{account}:apis/{name}",
+   "actions": {
+    "create": "appsync:CreateGraphqlApi",
+    "delete": "appsync:DeleteGraphqlApi",
+    "get": "appsync:GetGraphqlApi",
+    "list": "appsync:ListGraphqlApis",
+    "update": "appsync:UpdateGraphqlApi"
+   },
+   "fieldActions": {
+    "dataSources": {
+     "actions": [
+      "appsync:UpdateDataSource"
+     ]
+    },
+    "resolvers": {
+     "actions": [
+      "appsync:UpdateResolver"
+     ]
+    },
+    "schema": {
+     "actions": [
+      "appsync:StartSchemaCreation"
+     ]
+    }
+   }
+  },
+  "Group": {
+   "group": "iam.openinfra.dev",
+   "resource": "groups",
+   "service": "iam",
+   "resourceType": "group",
+   "cfnType": "AWS::IAM::Group",
+   "arn": "arn:{partition}:iam::{account}:group/{name}",
+   "actions": {
+    "create": "iam:CreateGroup",
+    "delete": "iam:DeleteGroup",
+    "get": "iam:GetGroup",
+    "list": "iam:ListGroups",
+    "update": "iam:UpdateGroup"
+   },
+   "fieldActions": {
+    "policies": {
+     "actions": [
+      "iam:AttachGroupPolicy",
+      "iam:DetachGroupPolicy"
+     ]
+    }
+   }
+  },
+  "HttpApi": {
+   "group": "openinfra.dev",
+   "resource": "httpapis",
+   "service": "apigateway",
+   "resourceType": "apis",
+   "cfnType": "AWS::ApiGatewayV2::Api",
+   "arn": "arn:{partition}:apigateway:{region}::/apis/{name}",
+   "actions": {
+    "create": "apigateway:POST",
+    "delete": "apigateway:DELETE",
+    "get": "apigateway:GET",
+    "list": "apigateway:GET",
+    "update": "apigateway:PATCH"
+   },
+   "note": "API Gateway's management actions are its HTTP verbs, and its ARNs carry no account, as on AWS"
+  },
+  "IdentityProvider": {
+   "group": "openinfra.dev",
+   "resource": "identityproviders",
+   "service": "iam",
+   "resourceType": "oidc-provider",
+   "cfnType": "AWS::IAM::OIDCProvider",
+   "arn": "arn:{partition}:iam::{account}:oidc-provider/{name}",
+   "actions": {
+    "create": "iam:CreateOpenIDConnectProvider",
+    "delete": "iam:DeleteOpenIDConnectProvider",
+    "get": "iam:GetOpenIDConnectProvider",
+    "list": "iam:ListOpenIDConnectProviders",
+    "update": "iam:UpdateOpenIDConnectProviderThumbprint"
+   },
+   "fieldActions": {
+    "audiences": {
+     "actions": [
+      "iam:AddClientIDToOpenIDConnectProvider",
+      "iam:RemoveClientIDFromOpenIDConnectProvider"
+     ]
+    }
+   }
+  },
+  "Migration": {
+   "group": "openinfra.dev",
+   "resource": "migrations",
+   "service": "dms",
+   "resourceType": "task",
+   "cfnType": "AWS::DMS::ReplicationTask",
+   "arn": "arn:{partition}:dms:{region}:{account}:task:{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "dms:CreateReplicationTask",
+    "delete": "dms:DeleteReplicationTask",
+    "get": "dms:DescribeReplicationTasks",
+    "list": "dms:DescribeReplicationTasks",
+    "update": "dms:ModifyReplicationTask"
+   }
+  },
+  "Model": {
+   "group": "openinfra.dev",
+   "resource": "models",
+   "service": "sagemaker",
+   "resourceType": "endpoint",
+   "cfnType": "AWS::SageMaker::Endpoint",
+   "arn": "arn:{partition}:sagemaker:{region}:{account}:endpoint/{name}",
+   "actions": {
+    "create": "sagemaker:CreateEndpoint",
+    "delete": "sagemaker:DeleteEndpoint",
+    "get": "sagemaker:DescribeEndpoint",
+    "list": "sagemaker:ListEndpoints",
+    "update": "sagemaker:UpdateEndpoint"
+   },
+   "note": "a served Model is a SageMaker endpoint"
+  },
+  "ModelMonitor": {
+   "group": "openinfra.dev",
+   "resource": "modelmonitors",
+   "service": "sagemaker",
+   "resourceType": "monitoring-schedule",
+   "cfnType": "AWS::SageMaker::MonitoringSchedule",
+   "arn": "arn:{partition}:sagemaker:{region}:{account}:monitoring-schedule/{name}",
+   "actions": {
+    "create": "sagemaker:CreateMonitoringSchedule",
+    "delete": "sagemaker:DeleteMonitoringSchedule",
+    "get": "sagemaker:DescribeMonitoringSchedule",
+    "list": "sagemaker:ListMonitoringSchedules",
+    "update": "sagemaker:UpdateMonitoringSchedule"
+   }
+  },
+  "ModelPackage": {
+   "group": "openinfra.dev",
+   "resource": "modelpackages",
+   "service": "sagemaker",
+   "resourceType": "model-package",
+   "cfnType": "AWS::SageMaker::ModelPackage",
+   "arn": "arn:{partition}:sagemaker:{region}:{account}:model-package/{name}",
+   "actions": {
+    "create": "sagemaker:CreateModelPackage",
+    "delete": "sagemaker:DeleteModelPackage",
+    "get": "sagemaker:DescribeModelPackage",
+    "list": "sagemaker:ListModelPackages",
+    "update": "sagemaker:UpdateModelPackage"
+   }
+  },
+  "NatGateway": {
+   "group": "openinfra.dev",
+   "resource": "natgateways",
+   "service": "ec2",
+   "resourceType": "natgateway",
+   "cfnType": "AWS::EC2::NatGateway",
+   "arn": "arn:{partition}:ec2:{region}:{account}:natgateway/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ec2:CreateNatGateway",
+    "delete": "ec2:DeleteNatGateway",
+    "get": "ec2:DescribeNatGateways",
+    "list": "ec2:DescribeNatGateways",
+    "update": "ec2:CreateNatGateway"
+   },
+   "note": "a NAT gateway can't be modified on AWS: a change replaces it (CreateNatGateway)"
+  },
+  "Parameter": {
+   "group": "openinfra.dev",
+   "resource": "parameters",
+   "service": "ssm",
+   "resourceType": "parameter",
+   "cfnType": "AWS::SSM::Parameter",
+   "arn": "arn:{partition}:ssm:{region}:{account}:parameter{name}",
+   "nameField": "path",
+   "actions": {
+    "create": "ssm:PutParameter",
+    "delete": "ssm:DeleteParameter",
+    "get": "ssm:GetParameter",
+    "list": "ssm:DescribeParameters",
+    "update": "ssm:PutParameter"
+   }
+  },
+  "Policy": {
+   "group": "iam.openinfra.dev",
+   "resource": "policies",
+   "service": "iam",
+   "resourceType": "policy",
+   "cfnType": "AWS::IAM::ManagedPolicy",
+   "arn": "arn:{partition}:iam::{account}:policy/{name}",
+   "actions": {
+    "create": "iam:CreatePolicy",
+    "delete": "iam:DeletePolicy",
+    "get": "iam:GetPolicy",
+    "list": "iam:ListPolicies",
+    "update": "iam:CreatePolicyVersion"
+   }
+  },
+  "ProcessingJob": {
+   "group": "openinfra.dev",
+   "resource": "processingjobs",
+   "service": "sagemaker",
+   "resourceType": "processing-job",
+   "arn": "arn:{partition}:sagemaker:{region}:{account}:processing-job/{name}",
+   "actions": {
+    "create": "sagemaker:CreateProcessingJob",
+    "delete": "sagemaker:StopProcessingJob",
+    "get": "sagemaker:DescribeProcessingJob",
+    "list": "sagemaker:ListProcessingJobs",
+    "update": "sagemaker:CreateProcessingJob"
+   },
+   "note": "a job is immutable on AWS: changing one re-runs it (CreateProcessingJob), and deleting one stops it"
+  },
+  "Query": {
+   "group": "openinfra.dev",
+   "resource": "queries",
+   "service": "athena",
+   "resourceType": "workgroup",
+   "arn": "arn:{partition}:athena:{region}:{account}:workgroup/primary",
+   "actions": {
+    "create": "athena:StartQueryExecution",
+    "delete": "athena:StopQueryExecution",
+    "get": "athena:GetQueryExecution",
+    "list": "athena:ListQueryExecutions",
+    "update": "athena:StartQueryExecution"
+   },
+   "note": "a Query is an Athena query execution; Athena authorizes query actions on their workgroup (primary)"
+  },
+  "Queue": {
+   "group": "openinfra.dev",
+   "resource": "queues",
+   "service": "sqs",
+   "resourceType": "queue",
+   "cfnType": "AWS::SQS::Queue",
+   "arn": "arn:{partition}:sqs:{region}:{account}:{name}",
+   "nameField": "queueName",
+   "actions": {
+    "create": "sqs:CreateQueue",
+    "delete": "sqs:DeleteQueue",
+    "get": "sqs:GetQueueAttributes",
+    "list": "sqs:ListQueues",
+    "update": "sqs:SetQueueAttributes"
+   },
+   "note": "a Queue is an SQS queue; with fanout it is an SNS topic",
+   "variants": [
+    {
+     "name": "fanout",
+     "replace": true,
+     "entry": {
+      "group": "openinfra.dev",
+      "resource": "queues",
+      "service": "sns",
+      "resourceType": "topic",
+      "cfnType": "AWS::SNS::Topic",
+      "arn": "arn:{partition}:sns:{region}:{account}:{name}",
+      "nameField": "queueName",
+      "actions": {
+       "create": "sns:CreateTopic",
+       "delete": "sns:DeleteTopic",
+       "get": "sns:GetTopicAttributes",
+       "list": "sns:ListTopics",
+       "update": "sns:SetTopicAttributes"
+      }
+     }
+    }
+   ]
+  },
+  "Replication": {
+   "group": "openinfra.dev",
+   "resource": "replications",
+   "service": "dms",
+   "resourceType": "task",
+   "cfnType": "AWS::DMS::ReplicationTask",
+   "arn": "arn:{partition}:dms:{region}:{account}:task:{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "dms:CreateReplicationTask",
+    "delete": "dms:DeleteReplicationTask",
+    "get": "dms:DescribeReplicationTasks",
+    "list": "dms:DescribeReplicationTasks",
+    "update": "dms:ModifyReplicationTask"
+   },
+   "note": "two-site replication is a continuous DMS replication task"
+  },
+  "Role": {
+   "group": "iam.openinfra.dev",
+   "resource": "roles",
+   "service": "iam",
+   "resourceType": "role",
+   "cfnType": "AWS::IAM::Role",
+   "arn": "arn:{partition}:iam::{account}:role/{name}",
+   "actions": {
+    "create": "iam:CreateRole",
+    "delete": "iam:DeleteRole",
+    "get": "iam:GetRole",
+    "list": "iam:ListRoles",
+    "update": "iam:UpdateRole"
+   },
+   "fieldActions": {
+    "permissionBoundary": {
+     "actions": [
+      "iam:PutRolePermissionsBoundary"
+     ]
+    },
+    "policies": {
+     "actions": [
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy"
+     ]
+    },
+    "trust": {
+     "actions": [
+      "iam:UpdateAssumeRolePolicy"
+     ]
+    }
+   }
+  },
+  "ScheduledJob": {
+   "group": "openinfra.dev",
+   "resource": "scheduledjobs",
+   "service": "scheduler",
+   "resourceType": "schedule",
+   "cfnType": "AWS::Scheduler::Schedule",
+   "arn": "arn:{partition}:scheduler:{region}:{account}:schedule/default/{name}",
+   "actions": {
+    "create": "scheduler:CreateSchedule",
+    "delete": "scheduler:DeleteSchedule",
+    "get": "scheduler:GetSchedule",
+    "list": "scheduler:ListSchedules",
+    "update": "scheduler:UpdateSchedule"
+   },
+   "note": "a ScheduledJob is an EventBridge Scheduler schedule (default group)"
+  },
+  "SecurityGroup": {
+   "group": "openinfra.dev",
+   "resource": "securitygroups",
+   "service": "ec2",
+   "resourceType": "security-group",
+   "cfnType": "AWS::EC2::SecurityGroup",
+   "arn": "arn:{partition}:ec2:{region}:{account}:security-group/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ec2:CreateSecurityGroup",
+    "delete": "ec2:DeleteSecurityGroup",
+    "get": "ec2:DescribeSecurityGroups",
+    "list": "ec2:DescribeSecurityGroups",
+    "update": "ec2:AuthorizeSecurityGroupIngress"
+   },
+   "fieldActions": {
+    "egress": {
+     "actions": [
+      "ec2:AuthorizeSecurityGroupEgress",
+      "ec2:RevokeSecurityGroupEgress"
+     ]
+    },
+    "ingress": {
+     "actions": [
+      "ec2:AuthorizeSecurityGroupIngress",
+      "ec2:RevokeSecurityGroupIngress"
+     ]
+    }
+   }
+  },
+  "StateMachine": {
+   "group": "openinfra.dev",
+   "resource": "statemachines",
+   "service": "states",
+   "resourceType": "stateMachine",
+   "cfnType": "AWS::StepFunctions::StateMachine",
+   "arn": "arn:{partition}:states:{region}:{account}:stateMachine:{name}",
+   "actions": {
+    "create": "states:CreateStateMachine",
+    "delete": "states:DeleteStateMachine",
+    "get": "states:DescribeStateMachine",
+    "list": "states:ListStateMachines",
+    "update": "states:UpdateStateMachine"
+   },
+   "passRoleFields": [
+    "roleArn"
+   ]
+  },
+  "StaticSite": {
+   "group": "openinfra.dev",
+   "resource": "staticsites",
+   "service": "cloudfront",
+   "resourceType": "distribution",
+   "cfnType": "AWS::CloudFront::Distribution",
+   "arn": "arn:{partition}:cloudfront::{account}:distribution/{name}",
+   "actions": {
+    "create": "cloudfront:CreateDistribution",
+    "delete": "cloudfront:DeleteDistribution",
+    "get": "cloudfront:GetDistribution",
+    "list": "cloudfront:ListDistributions",
+    "update": "cloudfront:UpdateDistribution"
+   }
+  },
+  "Stream": {
+   "group": "openinfra.dev",
+   "resource": "streams",
+   "service": "kinesis",
+   "resourceType": "stream",
+   "cfnType": "AWS::Kinesis::Stream",
+   "arn": "arn:{partition}:kinesis:{region}:{account}:stream/{name}",
+   "actions": {
+    "create": "kinesis:CreateStream",
+    "delete": "kinesis:DeleteStream",
+    "get": "kinesis:DescribeStream",
+    "list": "kinesis:ListStreams",
+    "update": "kinesis:CreateStream"
+   },
+   "note": "a Stream's source is fixed at creation: a change re-creates it (CreateStream)"
+  },
+  "Subnet": {
+   "group": "openinfra.dev",
+   "resource": "subnets",
+   "service": "ec2",
+   "resourceType": "subnet",
+   "cfnType": "AWS::EC2::Subnet",
+   "arn": "arn:{partition}:ec2:{region}:{account}:subnet/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ec2:CreateSubnet",
+    "delete": "ec2:DeleteSubnet",
+    "get": "ec2:DescribeSubnets",
+    "list": "ec2:DescribeSubnets",
+    "update": "ec2:ModifySubnetAttribute"
+   }
+  },
+  "Table": {
+   "group": "openinfra.dev",
+   "resource": "tables",
+   "service": "dynamodb",
+   "resourceType": "table",
+   "cfnType": "AWS::DynamoDB::Table",
+   "arn": "arn:{partition}:dynamodb:{region}:{account}:table/{name}",
+   "nameField": "tableName",
+   "actions": {
+    "create": "dynamodb:CreateTable",
+    "delete": "dynamodb:DeleteTable",
+    "get": "dynamodb:DescribeTable",
+    "list": "dynamodb:ListTables",
+    "update": "dynamodb:UpdateTable"
+   },
+   "fieldActions": {
+    "ttlAttribute": {
+     "actions": [
+      "dynamodb:UpdateTimeToLive"
+     ]
+    }
+   }
+  },
+  "TrainingJob": {
+   "group": "openinfra.dev",
+   "resource": "trainingjobs",
+   "service": "sagemaker",
+   "resourceType": "training-job",
+   "arn": "arn:{partition}:sagemaker:{region}:{account}:training-job/{name}",
+   "actions": {
+    "create": "sagemaker:CreateTrainingJob",
+    "delete": "sagemaker:StopTrainingJob",
+    "get": "sagemaker:DescribeTrainingJob",
+    "list": "sagemaker:ListTrainingJobs",
+    "update": "sagemaker:CreateTrainingJob"
+   },
+   "note": "a job is immutable on AWS: changing one re-runs it (CreateTrainingJob), and deleting one stops it"
+  },
+  "TransitGateway": {
+   "group": "openinfra.dev",
+   "resource": "transitgateways",
+   "service": "ec2",
+   "resourceType": "transit-gateway",
+   "cfnType": "AWS::EC2::TransitGateway",
+   "arn": "arn:{partition}:ec2:{region}:{account}:transit-gateway/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ec2:CreateTransitGateway",
+    "delete": "ec2:DeleteTransitGateway",
+    "get": "ec2:DescribeTransitGateways",
+    "list": "ec2:DescribeTransitGateways",
+    "update": "ec2:ModifyTransitGateway"
+   }
+  },
+  "TuningJob": {
+   "group": "openinfra.dev",
+   "resource": "tuningjobs",
+   "service": "sagemaker",
+   "resourceType": "hyper-parameter-tuning-job",
+   "arn": "arn:{partition}:sagemaker:{region}:{account}:hyper-parameter-tuning-job/{name}",
+   "actions": {
+    "create": "sagemaker:CreateHyperParameterTuningJob",
+    "delete": "sagemaker:StopHyperParameterTuningJob",
+    "get": "sagemaker:DescribeHyperParameterTuningJob",
+    "list": "sagemaker:ListHyperParameterTuningJobs",
+    "update": "sagemaker:CreateHyperParameterTuningJob"
+   },
+   "note": "a job is immutable on AWS: changing one re-runs it (CreateHyperParameterTuningJob), and deleting one stops it"
+  },
+  "User": {
+   "group": "iam.openinfra.dev",
+   "resource": "users",
+   "service": "iam",
+   "resourceType": "user",
+   "cfnType": "AWS::IAM::User",
+   "arn": "arn:{partition}:iam::{account}:user/{name}",
+   "actions": {
+    "create": "iam:CreateUser",
+    "delete": "iam:DeleteUser",
+    "get": "iam:GetUser",
+    "list": "iam:ListUsers",
+    "update": "iam:UpdateUser"
+   },
+   "fieldActions": {
+    "disabled": {
+     "actions": [
+      "iam:UpdateLoginProfile"
+     ]
+    },
+    "groups": {
+     "actions": [
+      "iam:AddUserToGroup",
+      "iam:RemoveUserFromGroup"
+     ]
+    },
+    "passwordSecretRef": {
+     "actions": [
+      "iam:UpdateLoginProfile"
+     ]
+    },
+    "permissionBoundary": {
+     "actions": [
+      "iam:PutUserPermissionsBoundary"
+     ]
+    },
+    "policies": {
+     "actions": [
+      "iam:AttachUserPolicy",
+      "iam:DetachUserPolicy"
+     ]
+    }
+   }
+  },
+  "UserPool": {
+   "group": "openinfra.dev",
+   "resource": "userpools",
+   "service": "cognito-idp",
+   "resourceType": "userpool",
+   "cfnType": "AWS::Cognito::UserPool",
+   "arn": "arn:{partition}:cognito-idp:{region}:{account}:userpool/{name}",
+   "actions": {
+    "create": "cognito-idp:CreateUserPool",
+    "delete": "cognito-idp:DeleteUserPool",
+    "get": "cognito-idp:DescribeUserPool",
+    "list": "cognito-idp:ListUserPools",
+    "update": "cognito-idp:UpdateUserPool"
+   }
+  },
+  "VirtualMachine": {
+   "group": "openinfra.dev",
+   "resource": "virtualmachines",
+   "service": "ec2",
+   "resourceType": "instance",
+   "cfnType": "AWS::EC2::Instance",
+   "arn": "arn:{partition}:ec2:{region}:{account}:instance/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ec2:RunInstances",
+    "delete": "ec2:TerminateInstances",
+    "get": "ec2:DescribeInstances",
+    "list": "ec2:DescribeInstances",
+    "update": "ec2:ModifyInstanceAttribute"
+   },
+   "fieldActions": {
+    "elasticIp": {
+     "actions": [
+      "ec2:AssociateAddress"
+     ]
+    },
+    "instanceRole": {
+     "actions": [
+      "ec2:AssociateIamInstanceProfile"
+     ]
+    },
+    "running": {
+     "actions": [
+      "ec2:StartInstances",
+      "ec2:StopInstances"
+     ],
+     "byValue": {
+      "false": [
+       "ec2:StopInstances"
+      ],
+      "true": [
+       "ec2:StartInstances"
+      ]
+     }
+    },
+    "volumes": {
+     "actions": [
+      "ec2:AttachVolume",
+      "ec2:DetachVolume"
+     ]
+    }
+   },
+   "passRoleFields": [
+    "instanceRole"
+   ]
+  },
+  "VmImage": {
+   "group": "openinfra.dev",
+   "resource": "vmimages",
+   "service": "ec2",
+   "resourceType": "image",
+   "arn": "arn:{partition}:ec2:{region}::image/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ec2:ImportImage",
+    "delete": "ec2:DeregisterImage",
+    "get": "ec2:DescribeImages",
+    "list": "ec2:DescribeImages",
+    "update": "ec2:ModifyImageAttribute"
+   },
+   "note": "an image (AMI) ARN carries no account, as AWS's"
+  },
+  "Volume": {
+   "group": "openinfra.dev",
+   "resource": "volumes",
+   "service": "ec2",
+   "resourceType": "volume",
+   "cfnType": "AWS::EC2::Volume",
+   "arn": "arn:{partition}:ec2:{region}:{account}:volume/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ec2:CreateVolume",
+    "delete": "ec2:DeleteVolume",
+    "get": "ec2:DescribeVolumes",
+    "list": "ec2:DescribeVolumes",
+    "update": "ec2:ModifyVolume"
+   }
+  },
+  "Vpc": {
+   "group": "openinfra.dev",
+   "resource": "vpcs",
+   "service": "ec2",
+   "resourceType": "vpc",
+   "cfnType": "AWS::EC2::VPC",
+   "arn": "arn:{partition}:ec2:{region}:{account}:vpc/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ec2:CreateVpc",
+    "delete": "ec2:DeleteVpc",
+    "get": "ec2:DescribeVpcs",
+    "list": "ec2:DescribeVpcs",
+    "update": "ec2:ModifyVpcAttribute"
+   }
+  },
+  "VpcEndpoint": {
+   "group": "openinfra.dev",
+   "resource": "vpcendpoints",
+   "service": "ec2",
+   "resourceType": "vpc-endpoint",
+   "cfnType": "AWS::EC2::VPCEndpoint",
+   "arn": "arn:{partition}:ec2:{region}:{account}:vpc-endpoint/{name}",
+   "globalDescribe": true,
+   "actions": {
+    "create": "ec2:CreateVpcEndpoint",
+    "delete": "ec2:DeleteVpcEndpoints",
+    "get": "ec2:DescribeVpcEndpoints",
+    "list": "ec2:DescribeVpcEndpoints",
+    "update": "ec2:ModifyVpcEndpoint"
+   }
+  }
+ },
+ "operator": {
+  "action": "openinfra-operator:<Verb><Kind>[<Subresource>]",
+  "arn": "arn:{partition}:openinfra-operator:{region}:{account}:<resource>/[<namespace>/]<name>",
+  "prefix": "openinfra-operator"
+ },
+ "shimActions": {
+  "acm": [
+   "acm:DescribeCertificate",
+   "acm:GetCertificate",
+   "acm:ListCertificates"
+  ],
+  "apigateway": [
+   "lambda:InvokeFunction"
+  ],
+  "appsync": [
+   "appsync:GraphQL",
+   "appsync:ListGraphqlApis"
+  ],
+  "cloudformation": [
+   "apigateway:CreateRestApi",
+   "apigateway:DeleteRestApi",
+   "cloudformation:DescribeStacks",
+   "cloudformation:SignalResource",
+   "lambda:InvokeFunction",
+   "s3:GetObject"
+  ],
+  "cloudfront": [
+   "cloudfront:ListDistributions"
+  ],
+  "ecr": [
+   "ecr:BatchCheckLayerAvailability",
+   "ecr:BatchDeleteImage",
+   "ecr:BatchGetImage",
+   "ecr:CompleteLayerUpload",
+   "ecr:GetDownloadUrlForLayer",
+   "ecr:InitiateLayerUpload",
+   "ecr:PutImage",
+   "ecr:UploadLayerPart"
+  ],
+  "email": [
+   "ses:GetAccount",
+   "ses:SendEmail"
+  ],
+  "events": [
+   "lambda:InvokeFunction",
+   "sqs:SendMessage"
+  ],
+  "iam": [
+   "sts:AssumeRole"
+  ],
+  "kms": [
+   "kms:Decrypt",
+   "kms:DeleteAlias",
+   "kms:ReEncryptFrom",
+   "kms:ReEncryptTo",
+   "kms:UpdateAlias"
+  ],
+  "lambda": [
+   "lambda:GetFunction",
+   "lambda:GetFunctionConfiguration",
+   "lambda:GetPolicy",
+   "lambda:InvokeFunction",
+   "lambda:ListFunctions"
+  ],
+  "monitoring": [
+   "cloudwatch:DeleteAlarms",
+   "cloudwatch:DescribeAlarms",
+   "cloudwatch:GetMetricData",
+   "cloudwatch:SetAlarmState",
+   "sns:Publish"
+  ],
+  "rds": [
+   "rds:CreateDBSnapshot"
+  ],
+  "ses": [
+   "ses:GetAccount",
+   "ses:SendEmail"
+  ],
+  "sns": [
+   "lambda:InvokeFunction",
+   "sqs:SendMessage"
+  ],
+  "sqs": [
+   "sqs:SendMessage"
+  ],
+  "ssm": [
+   "kms:Decrypt",
+   "ssm:DeleteParameters",
+   "ssm:DescribeInstanceInformation",
+   "ssm:GetCommandInvocation",
+   "ssm:GetParameters",
+   "ssm:ListCommandInvocations",
+   "ssm:ListCommands",
+   "ssm:SendCommand"
+  ],
+  "states": [
+   "iam:PassRole"
+  ]
+ },
+ "actions": [
+  "acm-pca:CreateCertificateAuthority",
+  "acm-pca:DeleteCertificateAuthority",
+  "acm-pca:DescribeCertificateAuthority",
+  "acm-pca:ListCertificateAuthorities",
+  "acm-pca:UpdateCertificateAuthority",
+  "acm:DescribeCertificate",
+  "acm:GetCertificate",
+  "acm:ListCertificates",
+  "apigateway:CreateRestApi",
+  "apigateway:DELETE",
+  "apigateway:DeleteRestApi",
+  "apigateway:GET",
+  "apigateway:PATCH",
+  "apigateway:POST",
+  "appsync:CreateGraphqlApi",
+  "appsync:DeleteGraphqlApi",
+  "appsync:GetGraphqlApi",
+  "appsync:GraphQL",
+  "appsync:ListGraphqlApis",
+  "appsync:StartSchemaCreation",
+  "appsync:UpdateDataSource",
+  "appsync:UpdateGraphqlApi",
+  "appsync:UpdateResolver",
+  "athena:GetQueryExecution",
+  "athena:ListQueryExecutions",
+  "athena:StartQueryExecution",
+  "athena:StopQueryExecution",
+  "autoscaling:CreateAutoScalingGroup",
+  "autoscaling:DeleteAutoScalingGroup",
+  "autoscaling:DescribeAutoScalingGroups",
+  "autoscaling:UpdateAutoScalingGroup",
+  "backup:CreateBackupPlan",
+  "backup:CreateBackupVault",
+  "backup:DeleteBackupPlan",
+  "backup:DeleteBackupVault",
+  "backup:DescribeBackupVault",
+  "backup:GetBackupPlan",
+  "backup:ListBackupPlans",
+  "backup:ListBackupVaults",
+  "backup:PutBackupVaultAccessPolicy",
+  "backup:UpdateBackupPlan",
+  "cloudformation:DescribeStacks",
+  "cloudformation:SignalResource",
+  "cloudfront:CreateDistribution",
+  "cloudfront:DeleteDistribution",
+  "cloudfront:GetDistribution",
+  "cloudfront:ListDistributions",
+  "cloudfront:UpdateDistribution",
+  "cloudwatch:DeleteAlarms",
+  "cloudwatch:DescribeAlarms",
+  "cloudwatch:GetMetricData",
+  "cloudwatch:SetAlarmState",
+  "cognito-idp:CreateUserPool",
+  "cognito-idp:DeleteUserPool",
+  "cognito-idp:DescribeUserPool",
+  "cognito-idp:ListUserPools",
+  "cognito-idp:UpdateUserPool",
+  "config:DeleteConfigRule",
+  "config:DescribeConfigRules",
+  "config:PutConfigRule",
+  "dms:CreateReplicationTask",
+  "dms:DeleteReplicationTask",
+  "dms:DescribeReplicationTasks",
+  "dms:ModifyReplicationTask",
+  "ds:CreateMicrosoftAD",
+  "ds:DeleteDirectory",
+  "ds:DescribeDirectories",
+  "ds:UpdateSettings",
+  "dynamodb:CreateTable",
+  "dynamodb:DeleteTable",
+  "dynamodb:DescribeTable",
+  "dynamodb:ListTables",
+  "dynamodb:UpdateTable",
+  "dynamodb:UpdateTimeToLive",
+  "ec2:AllocateAddress",
+  "ec2:AssociateAddress",
+  "ec2:AssociateIamInstanceProfile",
+  "ec2:AttachVolume",
+  "ec2:AuthorizeSecurityGroupEgress",
+  "ec2:AuthorizeSecurityGroupIngress",
+  "ec2:CreateFlowLogs",
+  "ec2:CreateNatGateway",
+  "ec2:CreateSecurityGroup",
+  "ec2:CreateSubnet",
+  "ec2:CreateTransitGateway",
+  "ec2:CreateVolume",
+  "ec2:CreateVpc",
+  "ec2:CreateVpcEndpoint",
+  "ec2:DeleteFlowLogs",
+  "ec2:DeleteNatGateway",
+  "ec2:DeleteSecurityGroup",
+  "ec2:DeleteSubnet",
+  "ec2:DeleteTransitGateway",
+  "ec2:DeleteVolume",
+  "ec2:DeleteVpc",
+  "ec2:DeleteVpcEndpoints",
+  "ec2:DeregisterImage",
+  "ec2:DescribeAddresses",
+  "ec2:DescribeFlowLogs",
+  "ec2:DescribeImages",
+  "ec2:DescribeInstances",
+  "ec2:DescribeNatGateways",
+  "ec2:DescribeSecurityGroups",
+  "ec2:DescribeSubnets",
+  "ec2:DescribeTransitGateways",
+  "ec2:DescribeVolumes",
+  "ec2:DescribeVpcEndpoints",
+  "ec2:DescribeVpcs",
+  "ec2:DetachVolume",
+  "ec2:ImportImage",
+  "ec2:ModifyImageAttribute",
+  "ec2:ModifyInstanceAttribute",
+  "ec2:ModifySubnetAttribute",
+  "ec2:ModifyTransitGateway",
+  "ec2:ModifyVolume",
+  "ec2:ModifyVpcAttribute",
+  "ec2:ModifyVpcEndpoint",
+  "ec2:ReleaseAddress",
+  "ec2:RevokeSecurityGroupEgress",
+  "ec2:RevokeSecurityGroupIngress",
+  "ec2:RunInstances",
+  "ec2:StartInstances",
+  "ec2:StopInstances",
+  "ec2:TerminateInstances",
+  "ecr:BatchCheckLayerAvailability",
+  "ecr:BatchDeleteImage",
+  "ecr:BatchGetImage",
+  "ecr:CompleteLayerUpload",
+  "ecr:GetDownloadUrlForLayer",
+  "ecr:InitiateLayerUpload",
+  "ecr:PutImage",
+  "ecr:UploadLayerPart",
+  "ecs:CreateService",
+  "ecs:DeleteService",
+  "ecs:DescribeServices",
+  "ecs:ListServices",
+  "ecs:UpdateService",
+  "elasticfilesystem:CreateFileSystem",
+  "elasticfilesystem:DeleteFileSystem",
+  "elasticfilesystem:DescribeFileSystems",
+  "elasticfilesystem:UpdateFileSystem",
+  "fis:GetExperiment",
+  "fis:ListExperiments",
+  "fis:StartExperiment",
+  "fis:StopExperiment",
+  "iam:AddClientIDToOpenIDConnectProvider",
+  "iam:AddUserToGroup",
+  "iam:AttachGroupPolicy",
+  "iam:AttachRolePolicy",
+  "iam:AttachUserPolicy",
+  "iam:CreateGroup",
+  "iam:CreateOpenIDConnectProvider",
+  "iam:CreatePolicy",
+  "iam:CreatePolicyVersion",
+  "iam:CreateRole",
+  "iam:CreateUser",
+  "iam:DeleteGroup",
+  "iam:DeleteOpenIDConnectProvider",
+  "iam:DeletePolicy",
+  "iam:DeleteRole",
+  "iam:DeleteUser",
+  "iam:DetachGroupPolicy",
+  "iam:DetachRolePolicy",
+  "iam:DetachUserPolicy",
+  "iam:GetGroup",
+  "iam:GetOpenIDConnectProvider",
+  "iam:GetPolicy",
+  "iam:GetRole",
+  "iam:GetUser",
+  "iam:ListAttachedUserPolicies",
+  "iam:ListGroups",
+  "iam:ListOpenIDConnectProviders",
+  "iam:ListPolicies",
+  "iam:ListRoles",
+  "iam:ListUsers",
+  "iam:PassRole",
+  "iam:PutRolePermissionsBoundary",
+  "iam:PutUserPermissionsBoundary",
+  "iam:RemoveClientIDFromOpenIDConnectProvider",
+  "iam:RemoveUserFromGroup",
+  "iam:UpdateAssumeRolePolicy",
+  "iam:UpdateGroup",
+  "iam:UpdateLoginProfile",
+  "iam:UpdateOpenIDConnectProviderThumbprint",
+  "iam:UpdateRole",
+  "iam:UpdateUser",
+  "kinesis:CreateStream",
+  "kinesis:DeleteStream",
+  "kinesis:DescribeStream",
+  "kinesis:ListStreams",
+  "kms:CancelKeyDeletion",
+  "kms:CreateKey",
+  "kms:Decrypt",
+  "kms:DeleteAlias",
+  "kms:DescribeKey",
+  "kms:EnableKeyRotation",
+  "kms:ListKeys",
+  "kms:ReEncryptFrom",
+  "kms:ReEncryptTo",
+  "kms:ScheduleKeyDeletion",
+  "kms:UpdateAlias",
+  "kms:UpdateKeyDescription",
+  "lambda:CreateFunction",
+  "lambda:DeleteFunction",
+  "lambda:GetFunction",
+  "lambda:GetFunctionConfiguration",
+  "lambda:GetPolicy",
+  "lambda:InvokeFunction",
+  "lambda:ListFunctions",
+  "lambda:PutFunctionConcurrency",
+  "lambda:UpdateAlias",
+  "lambda:UpdateFunctionCode",
+  "lambda:UpdateFunctionConfiguration",
+  "openinfra:CreateDataClassification",
+  "openinfra:CreateDataFlow",
+  "openinfra:DeleteDataClassification",
+  "openinfra:DeleteDataFlow",
+  "openinfra:GetDataClassification",
+  "openinfra:GetDataFlow",
+  "openinfra:ListDataClassifications",
+  "openinfra:ListDataFlows",
+  "openinfra:UpdateDataClassification",
+  "openinfra:UpdateDataFlow",
+  "rds:CreateDBInstance",
+  "rds:CreateDBProxy",
+  "rds:CreateDBSnapshot",
+  "rds:DeleteDBInstance",
+  "rds:DeleteDBProxy",
+  "rds:DescribeDBInstances",
+  "rds:DescribeDBProxies",
+  "rds:ModifyDBInstance",
+  "rds:ModifyDBProxy",
+  "s3:CreateBucket",
+  "s3:DeleteBucket",
+  "s3:GetBucketLocation",
+  "s3:GetObject",
+  "s3:ListAllMyBuckets",
+  "s3:PutBucketObjectLockConfiguration",
+  "s3:PutBucketPolicy",
+  "s3:PutBucketTagging",
+  "s3:PutBucketVersioning",
+  "s3:PutLifecycleConfiguration",
+  "sagemaker:CreateEndpoint",
+  "sagemaker:CreateFeatureGroup",
+  "sagemaker:CreateHyperParameterTuningJob",
+  "sagemaker:CreateModelPackage",
+  "sagemaker:CreateMonitoringSchedule",
+  "sagemaker:CreateProcessingJob",
+  "sagemaker:CreateTrainingJob",
+  "sagemaker:CreateTransformJob",
+  "sagemaker:DeleteEndpoint",
+  "sagemaker:DeleteFeatureGroup",
+  "sagemaker:DeleteModelPackage",
+  "sagemaker:DeleteMonitoringSchedule",
+  "sagemaker:DescribeEndpoint",
+  "sagemaker:DescribeFeatureGroup",
+  "sagemaker:DescribeHyperParameterTuningJob",
+  "sagemaker:DescribeModelPackage",
+  "sagemaker:DescribeMonitoringSchedule",
+  "sagemaker:DescribeProcessingJob",
+  "sagemaker:DescribeTrainingJob",
+  "sagemaker:DescribeTransformJob",
+  "sagemaker:ListEndpoints",
+  "sagemaker:ListFeatureGroups",
+  "sagemaker:ListHyperParameterTuningJobs",
+  "sagemaker:ListModelPackages",
+  "sagemaker:ListMonitoringSchedules",
+  "sagemaker:ListProcessingJobs",
+  "sagemaker:ListTrainingJobs",
+  "sagemaker:ListTransformJobs",
+  "sagemaker:StopHyperParameterTuningJob",
+  "sagemaker:StopProcessingJob",
+  "sagemaker:StopTrainingJob",
+  "sagemaker:StopTransformJob",
+  "sagemaker:UpdateEndpoint",
+  "sagemaker:UpdateFeatureGroup",
+  "sagemaker:UpdateModelPackage",
+  "sagemaker:UpdateMonitoringSchedule",
+  "scheduler:CreateSchedule",
+  "scheduler:DeleteSchedule",
+  "scheduler:GetSchedule",
+  "scheduler:ListSchedules",
+  "scheduler:UpdateSchedule",
+  "ses:CreateEmailIdentity",
+  "ses:DeleteEmailIdentity",
+  "ses:GetAccount",
+  "ses:GetEmailIdentity",
+  "ses:ListEmailIdentities",
+  "ses:PutEmailIdentityMailFromAttributes",
+  "ses:SendEmail",
+  "sns:CreateTopic",
+  "sns:DeleteTopic",
+  "sns:GetTopicAttributes",
+  "sns:ListTopics",
+  "sns:Publish",
+  "sns:SetTopicAttributes",
+  "sqs:CreateQueue",
+  "sqs:DeleteQueue",
+  "sqs:GetQueueAttributes",
+  "sqs:ListQueues",
+  "sqs:SendMessage",
+  "sqs:SetQueueAttributes",
+  "ssm:DeleteParameter",
+  "ssm:DeleteParameters",
+  "ssm:DescribeInstanceInformation",
+  "ssm:DescribeParameters",
+  "ssm:GetCommandInvocation",
+  "ssm:GetParameter",
+  "ssm:GetParameters",
+  "ssm:ListCommandInvocations",
+  "ssm:ListCommands",
+  "ssm:PutParameter",
+  "ssm:SendCommand",
+  "states:CreateStateMachine",
+  "states:DeleteStateMachine",
+  "states:DescribeExecution",
+  "states:DescribeStateMachine",
+  "states:ListExecutions",
+  "states:ListStateMachines",
+  "states:StartExecution",
+  "states:StopExecution",
+  "states:UpdateStateMachine",
+  "sts:AssumeRole"
+ ]
+}
