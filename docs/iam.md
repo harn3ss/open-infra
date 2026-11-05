@@ -261,10 +261,17 @@ verifies and prints its rollback. State is kept in `~/.local/state/openinfra-iam
 | 5 | the estate mirror's namespace becomes its own member account (`MIRROR_NAMESPACE`, `MIRROR_ACCOUNT_ID` to override the discovered namespace and derived id), with its claims checked as Ready as before | delete the account and unlabel the namespace |
 | 6 | after 24 h clean: `hack/iam-migrate --drop-legacy`, then the repo changes it prints (legacy bindings, the kebab-case alias policies) | none — roll back step 3 before this |
 
+A canary is decided by IAM policy alone, at every door, for every read. A write that the console or the
+AWS front door makes on the cluster as the principal (a stack, an instance's state, a volume, a bucket, an
+ECS service) also needs the RBAC the compiler generates, which step 3 applies: until then a canary user
+can be refused such a write that its policy allows. The probes' canaries write only resources that do not
+exist, so none of their writes reaches the cluster as them.
+
 The probes run on their own too (`SHIM_ENDPOINT` to reach the AWS front door; the console is reached
 through a port-forward unless `CONSOLE_ENDPOINT` is set); `probe/aws-shim-organizations.sh` proves the
-Organizations front door. Exit 0 is a pass, 1 a failure, 42 inconclusive (for instance IAM policy not yet
-deciding for the probe's principals).
+Organizations front door. A new principal reaches each door within 30 seconds (each caches its IAM policy
+for that long); the probes wait `IAM_SETTLE_SECONDS` (35) for it. Exit 0 is a pass, 1 a failure, 42
+inconclusive (for instance IAM policy not deciding for the probe's principals).
 
 ## Approving a quota increase (operators)
 
