@@ -113,7 +113,7 @@ export interface Service {
   flag?: "chaosUiEnabled";
 }
 
-/** AWS-style categories, in launcher display order. Last is the open-infra native. */
+/** AWS-style categories, in launcher display order. Last is open-infra's own: the cluster, for operators. */
 export const CATEGORIES: string[] = [
   "Compute",
   "Front-end Web & Mobile",
@@ -126,7 +126,7 @@ export const CATEGORIES: string[] = [
   "Networking & Content Delivery",
   "Security, Identity & Compliance",
   "Management & Governance",
-  "Cluster",
+  "Platform operations",
 ];
 
 /**
@@ -287,10 +287,10 @@ export const SERVICES: Service[] = [
   { label: "Audit", icon: ScrollText, category: "Management & Governance", to: "/audit" }, // CloudTrail
   { label: "Chaos", icon: Bomb, category: "Management & Governance", to: "/chaos", flag: "chaosUiEnabled" }, // FIS (flag-gated)
 
-  // ── Cluster (open-infra native — no AWS analog) ──────────────────────────────
-  { label: "Workloads", icon: Layers, category: "Cluster", to: "/workloads" },
-  { label: "Nodes", icon: Server, category: "Cluster", to: "/nodes" },
-  { label: "Network", icon: Globe, category: "Cluster", to: "/network" },
+  // ── Platform operations (open-infra native — the cluster under the platform, for its operators) ──
+  { label: "Workloads", icon: Layers, category: "Platform operations", to: "/workloads" },
+  { label: "Nodes", icon: Server, category: "Platform operations", to: "/nodes" },
+  { label: "Network", icon: Globe, category: "Platform operations", to: "/network" },
 ];
 
 // ── Route matching / resolution ──────────────────────────────────────────────
