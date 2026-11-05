@@ -287,8 +287,12 @@ describe() {
 # bindings (openinfra-group-*, openinfra-grant-*) until the IAM cutover deletes them, and an object
 # acknowledged with openinfra.dev/rbac-unmanaged-reason. The repo-side twin is
 # test/render/rbac_user_authority_test.go.
-kubectl get rolebindings -A -o json >"$WORK/rb-all.json" 2>"$WORK/err" \
-  || inconclusive "cannot list RoleBindings: $(head -c300 "$WORK/err")"
+if [ -f "$WORK/ns-all.json" ]; then
+  cp "$WORK/ns-all.json" "$WORK/rb-all.json"   # every namespace's Roles and RoleBindings, listed above
+else
+  kubectl get rolebindings -A -o json >"$WORK/rb-all.json" 2>"$WORK/err" \
+    || inconclusive "cannot list RoleBindings: $(head -c300 "$WORK/err")"
+fi
 jq -s '[ (.[0].items[] | select(.kind == "ClusterRoleBinding")), .[1].items[] ]
   | map(select(any(.subjects[]?; (.kind == "User" or .kind == "Group") and (.name | startswith("openinfra:")))))
   | map(select(
@@ -327,7 +331,8 @@ if [ "$nfind" -eq 0 ]; then
     exit 1
   fi
   ack_note=""; [ "$nack" -gt 0 ] && ack_note=" or acknowledged"
-  echo "✓ PASS — every audited ClusterRole/ClusterRoleBinding/Role/RoleBinding is managed${ack_note}, and no user authority is granted outside the generated set."
+  echo "✓ PASS — every audited ClusterRole/ClusterRoleBinding/Role/RoleBinding is managed${ack_note}."
+  echo "✓ no binding grants a console or shim principal authority outside the generated set."
   exit 0
 fi
 
