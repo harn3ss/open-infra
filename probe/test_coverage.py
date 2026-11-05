@@ -185,6 +185,51 @@ class CoverageGate(unittest.TestCase):
         self.assertEqual(coverage.read_calls("AWS::X::Thing", ops, {"AWS::X::Thing": ["ListQueues"]}), ["ListQueues"])
 
 
+class ProofRegistry(unittest.TestCase):
+    """shimgen.validate: the registry ⇄ probe/ contract. A pending probe (written, not yet run live) is
+    claimed like any other, so a new probe still needs its entry, but it is never proof."""
+
+    @classmethod
+    def setUpClass(cls):
+        import shimgen  # noqa: E402  (probe/shimgen.py)
+        cls.shimgen = shimgen
+
+    def validate(self, services, probes):
+        return self.shimgen.validate(services, set(probes))
+
+    def test_committed_registry_passes(self):
+        self.assertEqual(self.shimgen.validate(self.shimgen.load_registry(), self.shimgen.probe_basenames()), [])
+
+    def test_pending_probe_is_claimed(self):
+        svc = [{"name": "IAM", "tier": "proven", "probes": ["iam"], "pending": ["iam-new"]}]
+        self.assertEqual(self.validate(svc, ["iam", "iam-new"]), [])
+
+    def test_unclaimed_probe_fails(self):
+        svc = [{"name": "IAM", "tier": "proven", "probes": ["iam"]}]
+        errs = self.validate(svc, ["iam", "iam-new"])
+        self.assertTrue(any("aws-shim-iam-new.sh is not claimed" in e for e in errs), errs)
+
+    def test_pending_is_not_proof(self):
+        svc = [{"name": "Widgets", "tier": "proven", "pending": ["widgets"]}]
+        errs = self.validate(svc, ["widgets"])
+        self.assertTrue(any("Widgets: tier proven but no probe" in e for e in errs), errs)
+
+    def test_pending_probe_must_exist(self):
+        svc = [{"name": "IAM", "tier": "proven", "probes": ["iam"], "pending": ["iam-gone"]}]
+        errs = self.validate(svc, ["iam"])
+        self.assertTrue(any("pending names 'iam-gone'" in e for e in errs), errs)
+
+    def test_probe_both_proven_and_pending_fails(self):
+        svc = [{"name": "IAM", "tier": "proven", "probes": ["iam"], "pending": ["iam"]}]
+        errs = self.validate(svc, ["iam"])
+        self.assertTrue(any("claimed by both" in e for e in errs), errs)
+
+    def test_gated_may_hold_a_pending_probe_planned_may_not(self):
+        self.assertEqual(self.validate([{"name": "G", "tier": "gated", "pending": ["g"]}], ["g"]), [])
+        errs = self.validate([{"name": "P", "tier": "planned", "pending": ["p"]}], ["p"])
+        self.assertTrue(any("P: tier planned" in e for e in errs), errs)
+
+
 class EndToEndRed(unittest.TestCase):
     """The exact CI command, `probe/shimgen.py --check`, on a copy of the repository: green as committed,
     red once one CloudFormation type a stack can create — with no front door for its API — is added to

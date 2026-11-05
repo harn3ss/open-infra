@@ -76,18 +76,24 @@ def validate(services, probes):
         tier = s.get("tier")
         name = s.get("name", "<unnamed>")
         plist = s.get("probes") or []
+        # pending: probes written for the service but not yet run live (exit 0) — claimed, so a new probe
+        # still needs its registry entry, but never counted as proof: move one to probes once it passes.
+        pending = s.get("pending") or []
         if tier not in ("proven", "gated", "planned"):
             errs.append(f"{name}: tier must be proven|gated|planned (got {tier!r})")
-        for pr in plist:
-            if pr in claimed:
-                errs.append(f"probe {pr!r} claimed by both {claimed[pr]!r} and {name!r}")
-            claimed[pr] = name
-            if pr not in probes:
-                errs.append(f"{name}: probes names {pr!r} but probe/aws-shim-{pr}.sh does not exist")
+        for field, lst in (("probes", plist), ("pending", pending)):
+            for pr in lst:
+                if pr in claimed:
+                    errs.append(f"probe {pr!r} claimed by both {claimed[pr]!r} and {name!r}")
+                claimed[pr] = name
+                if pr not in probes:
+                    errs.append(f"{name}: {field} names {pr!r} but probe/aws-shim-{pr}.sh does not exist")
         if tier == "proven" and not plist:
             errs.append(f"{name}: tier proven but no probe (proven means observed — add a probe or change the tier)")
         if tier in ("gated", "planned") and plist:
             errs.append(f"{name}: tier {tier} must claim no probe (it has one — promote it to proven)")
+        if tier == "planned" and pending:
+            errs.append(f"{name}: tier planned has no handler for a pending probe to run against")
     # Every probe on disk must be claimed by exactly one service — a NEW probe forces a registry entry.
     for pr in sorted(probes):
         if pr not in claimed:

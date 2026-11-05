@@ -17,6 +17,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -146,10 +147,83 @@ class NoPolicyCallsEveryService(unittest.TestCase):
         self.assertEqual(missing, [], "probe/iam-no-policy.sh has no call for these fronted services")
 
 
+class LoginProfileProbe(unittest.TestCase):
+    """probe/aws-shim-iam-login-profile.sh run whole against a fake shim, console and cluster
+    (probe/fake_login_world.py): it passes against a faithful one, fails on each broken behaviour, ends
+    inconclusive when IAM policy does not decide, and cleans up what it made either way."""
+
+    def run_probe(self, mode):
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = os.path.join(tmp, "bin")
+            os.mkdir(bindir)
+            world = os.path.join(HERE, "fake_login_world.py")
+            for tool in ("aws", "kubectl", "curl"):
+                p = os.path.join(bindir, tool)
+                with open(p, "w") as f:
+                    f.write(f'#!/usr/bin/env bash\nexec "{sys.executable}" "{world}" {tool} "$@"\n')
+                os.chmod(p, 0o755)
+            p = os.path.join(bindir, "sleep")
+            with open(p, "w") as f:
+                f.write("#!/usr/bin/env bash\nexit 0\n")
+            os.chmod(p, 0o755)
+            state = os.path.join(tmp, "state.json")
+            env = dict(os.environ, PATH=bindir + os.pathsep + os.environ.get("PATH", ""),
+                       CONSOLE_ENDPOINT="http://console.test", SHIM_ENDPOINT="http://shim.test",
+                       FAKE_STATE=state, FAKE_MODE=mode)
+            env.pop("PRINCIPAL_MODE", None)
+            r = subprocess.run(["bash", os.path.join(HERE, "aws-shim-iam-login-profile.sh")], env=env,
+                               capture_output=True, text=True, timeout=120)
+            calls = []
+            if os.path.exists(state + ".log"):
+                calls = [json.loads(ln) for ln in read(state + ".log").splitlines()]
+            return r.returncode, r.stdout + r.stderr, calls
+
+    def assertCleanedUp(self, calls, out):
+        deletes = [c for c in calls if c[0] == "kubectl" and "delete" in c]
+        users = [c for c in deletes if "users.iam.openinfra.dev" in c]
+        keys = [c for c in deletes if "secret" in c and any(a.startswith("iam-ak-") for a in c)]
+        self.assertEqual(len(users), 2, out)  # the admin and the throwaway User
+        self.assertEqual(len(keys), 2, out)   # their access keys
+
+    def test_passes_against_a_faithful_shim_and_console(self):
+        rc, out, calls = self.run_probe("good")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("✓ PASS", out)
+        for step in ["→ EntityAlreadyExists", "create-login-profile for root → NoSuchEntity",
+                     "→ PasswordPolicyViolation", "refused with no grant (AccessDenied)",
+                     "a wrong old password is refused (InvalidUserType)", "refused by openinfra-login-profile-guard"]:
+            self.assertIn(step, out)
+        self.assertCleanedUp(calls, out)
+        self.assertFalse([c for c in calls if c[0] == "aws" and "update-account-password-policy" in c],
+                         "the probe must never set the account password policy (it governs every user)")
+
+    def test_a_wrong_old_password_accepted_fails(self):
+        rc, out, calls = self.run_probe("wrong-old-accepted")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("accepted a wrong old password", out)
+        self.assertCleanedUp(calls, out)
+
+    def test_a_hash_in_the_console_namespace_fails(self):
+        rc, out, _ = self.run_probe("console-ns")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("must be in the credential store", out)
+
+    def test_a_missing_admission_guard_fails(self):
+        rc, out, _ = self.run_probe("no-guard")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("unlabelled iam-login-* Secret was admitted", out)
+
+    def test_iam_policy_not_deciding_is_inconclusive(self):
+        rc, out, calls = self.run_probe("iam-not-deciding")
+        self.assertEqual(rc, 42, out)
+        self.assertIn("IAM policy does not decide", out)
+        self.assertCleanedUp(calls, out)
+
+
 class Parses(unittest.TestCase):
     def test_bash_n(self):
         for name in ["iam-lib.sh", "iam-parity.sh", "iam-no-policy.sh", "iam-managed-policies.sh",
-                     "aws-shim-organizations.sh"]:
+                     "aws-shim-organizations.sh", "aws-shim-iam-login-profile.sh"]:
             r = subprocess.run(["bash", "-n", os.path.join(HERE, name)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
         cut = os.path.join(REPO, "hack", "iam-cutover.sh")

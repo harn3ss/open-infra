@@ -18,6 +18,9 @@
 #             build one).
 #   planned — no handler yet: an honest 501, never a silent fake.
 #
+# `pending` lists a service's probes that are written but have not yet run live (exit 0): claimed, so
+# the filesystem check still holds, but never counted as proof. Move one to `probes` once it passes.
+#
 # `cell` is the short backend phrase shown next to the service name. `experimental: true` marks a
 # service whose engine is on the experimental tier (see README "Maturity & guarantees").
 #
@@ -44,6 +47,7 @@ services:
     tier: proven
     sigv4: [iam]
     probes: [iam, iam-timecond, iam-username-like]
+    pending: [iam-login-profile] # login profiles + ChangePassword + the console sign-in
   - name: KMS
     cell: "→ Vault Transit"
     tier: proven
