@@ -720,15 +720,10 @@ export interface QueryResult {
   truncated?: boolean;
 }
 
-/** Read a kind: Query's state + result rows (from MinIO, via the BFF). */
-export function queryResult(
-  namespace: string,
-  name: string,
-  bucket?: string,
-): Promise<QueryResult> {
-  const q = bucket ? `?bucket=${encodeURIComponent(bucket)}` : "";
+/** Read a kind: Query's state + result rows from the output location the Query declares (via the BFF). */
+export function queryResult(namespace: string, name: string): Promise<QueryResult> {
   return request<QueryResult>(
-    `/queries/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/result${q}`,
+    `/queries/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/result`,
   );
 }
 

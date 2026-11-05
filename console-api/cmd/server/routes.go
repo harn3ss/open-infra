@@ -96,7 +96,7 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	h(post, "/db-stats", s15, "pi:DescribeDimensionKeys", nil, handleDBStats(cs, client.Host, client.Transport, logger))
 	h(post, "/databases/{namespace}/{name}/stats", s15, "pi:GetResourceMetrics", nil, handleManagedDBStats(cs, logger))
 	h(post, "/directories/{namespace}/{name}/ldap", s15, "ds:DescribeDirectories", z.kindARN("Directory"), handleDirectoryLDAP(cs, logger))
-	h(get, "/queries/{namespace}/{name}/result", s15, "athena:GetQueryResults", z.kindARN("Query"), handleQueryResult(cs, logger))
+	h(get, "/queries/{namespace}/{name}/result", s15, "athena:GetQueryResults", z.kindARN("Query"), handleQueryResult(cs, buckets, logger))
 	h(get, "/catalog/tables", s15, "glue:GetTables", nil, handleCatalogTables(logger))
 
 	// Cost Explorer, and the operator's node view.

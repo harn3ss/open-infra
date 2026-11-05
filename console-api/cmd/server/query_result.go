@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	"github.com/minio/minio-go/v7"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -47,17 +51,86 @@ type queryResultResp struct {
 	Truncated       bool       `json:"truncated,omitempty"`
 }
 
-func handleQueryResult(cs kubernetes.Interface, logger *slog.Logger) http.HandlerFunc {
+// managedQueryResults is the platform's result bucket — Athena's managed query results: every Query
+// writes there under its own "<ns>/<name>" key unless it declares another output location, and the
+// caller needs only athena:GetQueryResults on the Query to read its results back.
+const managedQueryResults = "query-results"
+
+// objectOpener reads one object from object storage.
+type objectOpener func(ctx context.Context, bucket, key string) (io.ReadCloser, error)
+
+// minioOpener opens objects with the console's MinIO client.
+func minioOpener(cs kubernetes.Interface) (objectOpener, error) {
+	cl, err := minioClient(cs)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, bucket, key string) (io.ReadCloser, error) {
+		return cl.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+	}, nil
+}
+
+// queryOutputBucket reads the output location a kind: Query declares (spec.outputBucket, default
+// query-results). The results are read from there and nowhere else: a caller never names the bucket.
+func queryOutputBucket(ctx context.Context, cs kubernetes.Interface, ns, name string) (string, error) {
+	rc := cs.CoreV1().RESTClient()
+	if rc == nil {
+		return "", errors.New("no REST client")
+	}
+	if v := reflect.ValueOf(rc); v.Kind() == reflect.Ptr && v.IsNil() {
+		return "", errors.New("no REST client")
+	}
+	raw, err := rc.Get().AbsPath("/apis/openinfra.dev/v1/namespaces/" + ns + "/queries/" + name).DoRaw(ctx)
+	if err != nil {
+		return "", err
+	}
+	var q struct {
+		Spec struct {
+			OutputBucket string `json:"outputBucket"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &q); err != nil {
+		return "", err
+	}
+	if q.Spec.OutputBucket == "" {
+		return managedQueryResults, nil
+	}
+	return q.Spec.OutputBucket, nil
+}
+
+// handleQueryResult is Athena's GetQueryExecution + GetQueryResults for a kind: Query. The route's
+// gate has already decided athena:GetQueryResults on the Query. The results are read from the output
+// location the Query declares, never from a bucket the caller names (the console reads object storage
+// with its own credentials, which reach every bucket). As in AWS, results in a customer output location
+// also need s3:GetObject on that location, decided for the signed-in user; the managed location
+// (query-results, keyed by the Query's own namespace and name) needs nothing more. A Query never reads
+// its results from another platform bucket.
+func handleQueryResult(cs kubernetes.Interface, buckets *bucketAuthz, logger *slog.Logger) http.HandlerFunc {
+	return serveQueryResult(cs, buckets, func() (objectOpener, error) { return minioOpener(cs) })
+}
+
+func serveQueryResult(cs kubernetes.Interface, buckets *bucketAuthz, open func() (objectOpener, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ns := chi.URLParam(r, "namespace")
 		name := chi.URLParam(r, "name")
-		bucket := r.URL.Query().Get("bucket")
-		if bucket == "" {
-			bucket = "query-results"
-		}
 		key := resultKey(ns, name)
 
-		cl, err := minioClient(cs)
+		bucket, err := queryOutputBucket(r.Context(), cs, ns, name)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "query not found"})
+			return
+		}
+		if bucket != managedQueryResults {
+			if s3authz.IsPlatformBucket(bucket) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "access denied: a query's output location is never a platform bucket"})
+				return
+			}
+			if !buckets.allow(w, r, s3authz.Request{Action: "s3:GetObject", Verb: "get", Bucket: bucket, Key: key + ".csv", Object: true}) {
+				return
+			}
+		}
+
+		get, err := open()
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -65,7 +138,7 @@ func handleQueryResult(cs kubernetes.Interface, logger *slog.Logger) http.Handle
 
 		// Default to RUNNING until the metadata.json exists (query hasn't finished).
 		res := queryResultResp{State: "RUNNING"}
-		if obj, err := cl.GetObject(r.Context(), bucket, key+".metadata.json", minio.GetObjectOptions{}); err == nil {
+		if obj, err := get(r.Context(), bucket, key+".metadata.json"); err == nil {
 			if b, err := io.ReadAll(io.LimitReader(obj, 1<<20)); err == nil && len(b) > 0 {
 				var meta struct {
 					State           string `json:"state"`
@@ -99,7 +172,7 @@ func handleQueryResult(cs kubernetes.Interface, logger *slog.Logger) http.Handle
 		}
 
 		if res.State == "SUCCEEDED" {
-			if obj, err := cl.GetObject(r.Context(), bucket, key+".csv", minio.GetObjectOptions{}); err == nil {
+			if obj, err := get(r.Context(), bucket, key+".csv"); err == nil {
 				rd := csv.NewReader(obj)
 				rd.FieldsPerRecord = -1
 				for n := 0; ; n++ {
