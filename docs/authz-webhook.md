@@ -93,6 +93,34 @@ acyclic and keep a broken corpus from locking out the cluster:
    last-known-good snapshot (the same hardening the data-plane loader has), so a control-plane read
    stall degrades to stale policy, never to "deny everything."
 
+The console's **break-glass root** is in the floor too (`BREAK_GLASS_ROOT`, on unless `off`), so no
+corpus can lock it out — a corpus regenerated without the admins grant used to. Two identity forms
+count: the legacy `openinfra:root` only *with* the `openinfra:admins` group (the user name alone is not
+proof: a `kind: User` or directory user named `root` is impersonated with the same name, and gets
+nothing from the floor), and the management account's `openinfra:000000000000:root`. RBAC has the
+matching hand-written binding, `openinfra-root-break-glass`. The aws-shim's impersonation ceiling denies
+both root identities (`openinfra.dev/impersonate-users-deny`): root has no access keys, so the shim
+never acts as it.
+
+## Two corpora: platform identities and IAM principals
+
+IAM policy is where a console or shim principal's authority is written. The **iam-compiler**
+(`console-api/cmd/iam-compiler`, `platform/security/iam-compiler.yaml`) compiles it into the
+**iam-corpus** ConfigMap beside the control-plane corpus, and into generated RBAC (label
+`openinfra.dev/generated-by: iam-compiler`) for the paths where RBAC still decides. The webhook decides an
+**account-qualified** principal (`openinfra:<account>:<user>`, or `…:role/<role>` for an assumed role)
+from the iam-corpus alone — never from the RBAC-derived corpus — and with no iam-corpus loaded defers it
+to RBAC, where the generated bindings decide. Platform identities (ServiceAccounts) and the legacy
+console identities (`openinfra:<user>` with groups) stay on the RBAC-derived corpus.
+
+Compiling never widens: a Deny is exact in the corpus and keeps its verb out of RBAC; a condition the
+control plane cannot evaluate drops an Allow and makes a Deny unconditional; a name pattern is
+corpus-only; a NotAction never reaches the operator surface (raw Secrets, Pods, RBAC objects); a member
+account never reaches another account's namespaces. What it narrows is listed, per principal, in the
+`iam-compiler-report` ConfigMap. The compiler ships in **report** mode (it writes only that report);
+apply mode — writing the corpus and the RBAC — is part of the IAM cutover. `rbac-to-cedar
+-skip-iam-principals` then leaves the openinfra:* subjects out of the control-plane corpus.
+
 ## Failure and availability posture
 
 The authorizer sits in the **control-plane path**: its latency is the API server's latency and its
