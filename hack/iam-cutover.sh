@@ -93,7 +93,19 @@ console_up() {
 }
 
 # --- the break-glass root: checked before (and after) every step ----------------------------------------
-can() { kubectl auth can-i "$@" 2>/dev/null | head -1 | awk '{print $1}'; }   # "no - <reason>" → no
+# can <kubectl auth can-i args>: "yes" or "no" ("no - <reason>" → no). An answer other than yes is asked
+# twice more: a review the API server could not get from the authorization webhook in time falls through
+# to RBAC alone, which answers no for the webhook's root floor. A real no stays no; a check that wants no
+# gets more chances to show an unsafe yes.
+can() {
+  local a i
+  for i in 1 2 3; do
+    a="$(kubectl auth can-i "$@" 2>/dev/null | head -1 | awk '{print $1}')"
+    [ "$a" = yes ] && break
+    [ "$i" = 3 ] || sleep 3
+  done
+  echo "${a:-no}"
+}
 verify_root() {
   say "break-glass root"
   [ "$(can create clusterrolebindings --as=openinfra:"$MGMT":root)" = yes ] \
