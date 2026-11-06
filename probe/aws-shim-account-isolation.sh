@@ -257,7 +257,7 @@ check_ecs() {
   done
   [ "$(cat "$TMP/B.cl")" = "arn:aws:ecs:$REGION:$NEW_ACCOUNT:cluster/$NAME" ] || fail "ecs: the member's cluster ARN is $(cat "$TMP/B.cl")"
   has "$TMP/B.td" ":$NEW_ACCOUNT:task-definition/$NAME:1" || fail "ecs: the member's first revision is $(cat "$TMP/B.td") (a revision counts within its account)"
-  has "$TMP/M.td" ":$NAME:1" || fail "ecs: the management account's first revision is $(cat "$TMP/M.td")"
+  has "$TMP/M.td" "task-definition/$NAME:1" || fail "ecs: the management account's first revision is $(cat "$TMP/M.td")"
   B ecs list-clusters --query 'clusterArns' --output text > "$TMP/bl" 2>/dev/null
   has "$TMP/bl" "$(cat "$TMP/M.cl")" && fail "ecs: the member listed the management account's cluster"
   M ecs list-clusters --query 'clusterArns' --output text > "$TMP/ml" 2>/dev/null
@@ -278,7 +278,7 @@ check_ecr() {
 check_s3() {
   M s3api create-bucket --bucket "$NAME-mg" >/dev/null 2>"$TMP/err" || { fail "s3: management create-bucket: $(cat "$TMP/err")"; return; }
   CLEAN+=("M s3api delete-bucket --bucket $NAME-mg")
-  B s3api create-bucket --bucket "$NAME-mb" >/dev/null 2>"$TMP/err" || { fail "s3: member create-bucket: $(cat "$TMP/err")"; return; }
+  B s3api create-bucket --bucket "$NAME-mb" >"$TMP/out" 2>"$TMP/err" || { fail "s3: member create-bucket: $(cat "$TMP/err" "$TMP/out" | head -c 400)"; return; }
   CLEAN+=("B s3api delete-bucket --bucket $NAME-mb")
   for _ in $(seq 1 40); do M s3api head-bucket --bucket "$NAME-mg" >/dev/null 2>&1 && B s3api head-bucket --bucket "$NAME-mb" >/dev/null 2>&1 && break; sleep 3; done
   B s3api create-bucket --bucket "$NAME-mg" >/dev/null 2>"$TMP/err" && fail "s3: the member made a bucket of the management account's name"
@@ -297,7 +297,7 @@ check_states() {
   local trust='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"states.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
   local def='{"StartAt":"P","States":{"P":{"Type":"Pass","Result":"ok","End":true}}}'
   for who in M B; do
-    $who iam create-role --role-name "$NAME-sfn" --assume-role-policy-document "$trust" --query Role.Arn --output text > "$TMP/$who.role" 2>"$TMP/err" || { fail "states: $who create-role: $(cat "$TMP/err")"; return; }
+    $who iam create-role --role-name "$NAME-sfn" --assume-role-policy-document "$trust" --query Role.Arn --output text > "$TMP/$who.role" 2>"$TMP/err" || { fail "states: $who create-role: $(cat "$TMP/err" "$TMP/$who.role" | head -c 400)"; return; }
     CLEAN+=("$who iam delete-role --role-name $NAME-sfn")
   done
   sleep "$SETTLE"
