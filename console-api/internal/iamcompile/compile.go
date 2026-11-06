@@ -637,6 +637,43 @@ func compilePrincipal(in Input, accts map[string][]string, p Principal) principa
 			apply(t, v, decide(kc, action, modeFor(e, v), kind))
 		}
 	}
+	// iam:PassRole — handing a role to a resource that will act as it (a VirtualMachine's instanceRole, an
+	// Application's assumeRole). The pass-role admission policy (platform/security/pass-role.yaml) asks the
+	// API server for the custom verb passrole on the Role, so iam:PassRole compiles to that verb, on the
+	// roles the principal's policies allow it on, as AWS decides PassRole on the role's ARN. It is not an
+	// AWS verb of the table, so the wildcard never carries it: it is compiled here for every principal.
+	if e, ok := awsaction.Lookup("Role"); ok {
+		kc := newKindCtx(e, scope)
+		t := target{group: e.Group, resource: e.Resource, namespaced: true, label: "Role"}
+		d := decide(kc, "iam:PassRole", modeNamed, "Role")
+		pass := []string{"passrole"}
+		if d.allow.all {
+			rep.Allows++
+			addCedar(policyengine.Allow, pass, ids(t, "*")...)
+		} else if !d.allow.empty() {
+			rep.Allows++
+			for _, n := range append(sortedKeys(d.allow.names), sortedKeys(d.allow.globs)...) {
+				addCedar(policyengine.Allow, pass, ids(t, n)...)
+			}
+		}
+		if !d.deny.empty() {
+			rep.Denies++
+			if d.deny.all {
+				addCedar(policyengine.Deny, pass, ids(t, "*")...)
+			} else {
+				for _, n := range append(sortedKeys(d.deny.names), sortedKeys(d.deny.globs)...) {
+					addCedar(policyengine.Deny, pass, denyIDs(t, n)...)
+				}
+			}
+		}
+		if !d.allow.empty() && d.rbacOK && len(d.allow.globs) == 0 {
+			rule := rbacv1.PolicyRule{APIGroups: []string{t.group}, Resources: []string{t.resource}, Verbs: pass}
+			if !d.allow.all {
+				rule.ResourceNames = sortedKeys(d.allow.names)
+			}
+			nsRules = append(nsRules, rule)
+		}
+	}
 	for _, or := range operatorResources {
 		if !or.Namespaced && account != iamauthz.ManagementAccount {
 			continue // a member account never reaches cluster-scoped platform objects

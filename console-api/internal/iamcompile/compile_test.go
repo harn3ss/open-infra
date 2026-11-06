@@ -437,3 +437,32 @@ func TestCompile_ManagementLabelsAloneKeepAdministratorsClusterWide(t *testing.T
 		}
 	}
 }
+
+// iam:PassRole compiles to the custom verb the pass-role admission policy asks for (passrole on the Role):
+// AdministratorAccess passes any role, a policy that allows PassRole on one role passes that role alone,
+// and PowerUserAccess — which, as on AWS, has no iam:PassRole — passes none.
+func TestCompile_PassRoleIsThePassroleVerb(t *testing.T) {
+	one := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"iam:PassRole","Resource":"arn:aws:iam::000000000000:role/app-role"}]}`
+	out := Compile(Input{
+		World: world([]iamauthz.Policy{doc(t, "AdministratorAccess", adminDoc), doc(t, "PowerUserAccess", powerUserDoc), doc(t, "PassOne", one)},
+			map[string][]string{"User::admin": {"AdministratorAccess"}, "User::power": {"PowerUserAccess"}, "User::deployer": {"PassOne"}}),
+		Principals: []Principal{
+			{Kind: "User", Namespace: "open-infra-console", Name: "admin"},
+			{Kind: "User", Namespace: "open-infra-console", Name: "power"},
+			{Kind: "User", Namespace: "open-infra-console", Name: "deployer"},
+		},
+	})
+	chk := corpusChecker(t, out)
+	for _, c := range []struct {
+		user, role string
+		want       bool
+	}{
+		{"admin", "app-role", true}, {"admin", "other-role", true},
+		{"deployer", "app-role", true}, {"deployer", "other-role", false},
+		{"power", "app-role", false},
+	} {
+		if got := can(chk, "openinfra:000000000000:"+c.user, "passrole", "iam.openinfra.dev", "roles", "open-infra-cfn", c.role); got != c.want {
+			t.Errorf("%s passrole on %s: %v, want %v", c.user, c.role, got, c.want)
+		}
+	}
+}
