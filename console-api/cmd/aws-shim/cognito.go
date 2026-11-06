@@ -530,8 +530,15 @@ func (h *cognitoHandler) globalSignOut(ctx context.Context, w http.ResponseWrite
 
 // --- tokens ---
 
+// cognitoPoolIssuer is a user pool's OIDC issuer: <base>/cognito/<poolId>. The shim's Cognito mints its
+// tokens with it and serves its discovery and JWKS under it, and an API Gateway authorizer naming the
+// pool by ARN resolves to it.
+func cognitoPoolIssuer(base, poolID string) string {
+	return strings.TrimRight(base, "/") + "/cognito/" + poolID
+}
+
 func (h *cognitoHandler) tokensFor(pool, clientID string, u cognitoUser) map[string]any {
-	iss := h.issuerBase + "/cognito/" + pool
+	iss := cognitoPoolIssuer(h.issuerBase, pool)
 	now := time.Now().Unix()
 	base := func(tokenUse string, ttl int) map[string]any {
 		return map[string]any{
@@ -614,7 +621,7 @@ func (h *cognitoHandler) wellKnown(w http.ResponseWriter, r *http.Request) bool 
 			http.NotFound(w, r)
 			return true
 		}
-		writeCognitoWellKnown(w, discovery(h.issuerBase+"/cognito/"+poolID))
+		writeCognitoWellKnown(w, discovery(cognitoPoolIssuer(h.issuerBase, poolID)))
 		return true
 	case strings.HasSuffix(rest, "/.well-known/jwks.json"):
 		writeCognitoWellKnown(w, h.signer.jwks())

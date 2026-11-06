@@ -49,8 +49,9 @@ b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not reachable at ${ENDPOINT}"
 
 WORK="$(mktemp -d)"
-CREATED_KEYS=(); CREATED_USERS=(); CREATED_POLICIES=(); CREATED_APIS=(); MADE_FN=""; MADE_CM=""; MADE_OIDC=""
+CREATED_KEYS=(); CREATED_USERS=(); CREATED_POLICIES=(); CREATED_APIS=(); MADE_FN=""; MADE_CM=""; MADE_OIDC=""; MADE_POOL=""
 cleanup() {
+  [ -n "$MADE_POOL" ] && AWS_ACCESS_KEY_ID="${WAK:-}" AWS_SECRET_ACCESS_KEY="${WSK:-}" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager cognito-idp delete-user-pool --user-pool-id "$MADE_POOL" >/dev/null 2>&1 || true
   [ -n "$MADE_OIDC" ] && { kubectl -n "$SHIM_NS" delete pod "$MADE_OIDC" --ignore-not-found >/dev/null 2>&1; kubectl -n "$SHIM_NS" delete svc "$MADE_OIDC" --ignore-not-found >/dev/null 2>&1; } || true
   for a in "${CREATED_APIS[@]:-}"; do [ -n "$a" ] && AWS_ACCESS_KEY_ID="${WAK:-}" AWS_SECRET_ACCESS_KEY="${WSK:-}" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager apigateway delete-rest-api --rest-api-id "$a" >/dev/null 2>&1 || true; done
   [ -n "$MADE_FN" ] && kubectl -n "$FN_NS" delete function.openinfra.dev "$MADE_FN" --ignore-not-found >/dev/null 2>&1 || true
@@ -260,6 +261,41 @@ sec_code() { curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: a
 VCODE="$(sec_code -H "Authorization: Bearer $VALID_JWT")"
 [ "$VCODE" = "200" ] || fail "a VALID JWT was NOT admitted (got '$VCODE', want 200) — issuer discovery/verify failed"
 log "  ✓ COGNITO_USER_POOLS authorizer: rejects missing/garbage/expired, admits valid"
+
+# A COGNITO_USER_POOLS authorizer names its user pool by ARN, as a stack's ProviderARNs: [!GetAtt Pool.Arn]
+# does: it admits the ID token the pool's own InitiateAuth issued, and nothing else.
+log "COGNITO_USER_POOLS authorizer by user pool ARN admits the pool's own ID token"
+cog() { AWS_ACCESS_KEY_ID="$WAK" AWS_SECRET_ACCESS_KEY="$WSK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text cognito-idp "$@"; }
+read -r MADE_POOL POOL_ARN < <(cog create-user-pool --pool-name "agwv1-pool-$SFX" --query 'UserPool.[Id,Arn]' 2>/dev/null)
+if [ -z "$MADE_POOL" ] || [ "$MADE_POOL" = "None" ]; then
+  fail "create-user-pool failed"
+else
+  PCLIENT="$(cog create-user-pool-client --user-pool-id "$MADE_POOL" --client-name app --explicit-auth-flows USER_PASSWORD_AUTH --query 'UserPoolClient.ClientId' 2>/dev/null)"
+  PUSER="agwv1-user-$SFX"; PPASS="Sup3r!Secret9"
+  AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager --no-sign-request cognito-idp sign-up --client-id "$PCLIENT" \
+    --username "$PUSER" --password "$PPASS" --user-attributes Name=email,Value="$PUSER@example.com" >/dev/null 2>&1 || fail "sign-up failed"
+  cog admin-confirm-sign-up --user-pool-id "$MADE_POOL" --username "$PUSER" >/dev/null 2>&1 || fail "admin-confirm-sign-up failed"
+  IDTOK="$(AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager --no-sign-request --output text cognito-idp initiate-auth \
+    --client-id "$PCLIENT" --auth-flow USER_PASSWORD_AUTH --auth-parameters "USERNAME=$PUSER,PASSWORD=$PPASS" \
+    --query 'AuthenticationResult.IdToken' 2>/dev/null)"
+  [ -n "$IDTOK" ] && [ "$IDTOK" != "None" ] || fail "initiate-auth returned no IdToken"
+  PAUTH="$(agw "$WAK" "$WSK" create-authorizer --rest-api-id "$API" --name "agwv1-pool-$SFX" \
+    --type COGNITO_USER_POOLS --provider-arns "$POOL_ARN" --identity-source method.request.header.Authorization \
+    --query id 2>/dev/null)" || fail "create-authorizer by pool ARN failed"
+  POOLRES="$(agw "$WAK" "$WSK" create-resource --rest-api-id "$API" --parent-id "$ROOT" --path-part pooled --query id 2>/dev/null)" || fail "create-resource pooled failed"
+  agw "$WAK" "$WSK" put-method --rest-api-id "$API" --resource-id "$POOLRES" --http-method POST \
+    --authorization-type COGNITO_USER_POOLS --authorizer-id "$PAUTH" >/dev/null 2>&1 || fail "put-method (pooled) failed"
+  agw "$WAK" "$WSK" put-integration --rest-api-id "$API" --resource-id "$POOLRES" --http-method POST \
+    --type AWS_PROXY --integration-http-method POST \
+    --uri "arn:aws:lambda:${REGION}:open-infra:function:${FN}" >/dev/null 2>&1 || fail "put-integration (pooled) failed"
+  agw "$WAK" "$WSK" create-deployment --rest-api-id "$API" --stage-name prod >/dev/null 2>&1 || fail "redeploy (pooled) failed"
+  pool_code() { curl -sS -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' "$@" -d '{}' "${ENDPOINT}/_apigw/${API}/prod/pooled" 2>/dev/null || true; }
+  [ "$(pool_code)" = "401" ] || fail "the pool-ARN authorizer admitted a request with no token"
+  [ "$(pool_code -H "Authorization: Bearer $VALID_JWT")" = "401" ] || fail "the pool-ARN authorizer admitted another issuer's token"
+  PCODE="$(pool_code -H "Authorization: $IDTOK")"
+  [ "$PCODE" = "200" ] || fail "the pool-ARN authorizer did NOT admit the pool's own ID token (got '$PCODE', want 200)"
+  log "  ✓ by pool ARN: no token and another issuer's token 401, the pool's ID token 200"
+fi
 
 log "reads: get-method / get-authorizer(s) / get-deployment(s) answer what was written"
 [ "$(agw "$WAK" "$WSK" get-method --rest-api-id "$API" --resource-id "$SECRES" --http-method POST \

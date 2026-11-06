@@ -136,8 +136,10 @@ func TestApigwMux_Routing(t *testing.T) {
 
 func TestResolveCognitoIssuer(t *testing.T) {
 	h := &apigwV1Handler{cognitoIssuerBase: "https://cognito-idp.us-east-1.example/"}
-	// a Cognito user pool ARN resolves to <base>/<poolId>
-	if got := h.resolveCognitoIssuer("arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_abc123"); got != "https://cognito-idp.us-east-1.example/us-east-1_abc123" {
+	// a Cognito user pool ARN resolves to the pool's issuer, <base>/cognito/<poolId> — the iss the
+	// shim's Cognito mints the pool's tokens with, and where it serves the pool's discovery and JWKS
+	if got := h.resolveCognitoIssuer("arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_abc123"); got != "https://cognito-idp.us-east-1.example/cognito/us-east-1_abc123" ||
+		got != cognitoPoolIssuer(h.cognitoIssuerBase, "us-east-1_abc123") {
 		t.Errorf("pool ARN resolution got %q", got)
 	}
 	// a bare issuer URL is used as-is (trailing slash trimmed)
@@ -147,6 +149,15 @@ func TestResolveCognitoIssuer(t *testing.T) {
 	// unresolvable
 	if got := h.resolveCognitoIssuer("not-an-arn-or-url"); got != "" {
 		t.Errorf("unresolvable should be empty, got %q", got)
+	}
+	// an authorizer stored with the issuer a pool ARN once resolved to asks its pool's issuer on invoke
+	old := &restAuthorizer{Issuer: "https://cognito-idp.us-east-1.example/us-east-1_abc123",
+		ProviderARNs: []string{"arn:aws:cognito-idp:us-east-1:000000000000:userpool/us-east-1_abc123"}}
+	if got := h.authorizerIssuer(old); got != "https://cognito-idp.us-east-1.example/cognito/us-east-1_abc123" {
+		t.Errorf("authorizerIssuer of a stored pool-ARN authorizer = %q", got)
+	}
+	if got := h.authorizerIssuer(&restAuthorizer{Issuer: "https://issuer.example/realm"}); got != "https://issuer.example/realm" {
+		t.Errorf("authorizerIssuer without providers = %q", got)
 	}
 }
 

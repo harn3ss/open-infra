@@ -33,7 +33,7 @@ type apigwV1Handler struct {
 	authzNS           string
 	fnNS              string
 	svcSuffix         string
-	cognitoIssuerBase string // issuer prefix a Cognito pool ARN resolves to (<base>/<poolId>)
+	cognitoIssuerBase string // issuer base a Cognito pool ARN resolves under (<base>/cognito/<poolId>)
 	store             *apigwV1Store
 	authz             *dataplaneauthz.Checker
 	logger            *slog.Logger
@@ -906,8 +906,9 @@ func (h *apigwV1Handler) createAuthorizer(ctx context.Context, w http.ResponseWr
 }
 
 // resolveCognitoIssuer maps a providerARN to an OIDC issuer: a bare http(s) URL is the issuer as-is; a
-// Cognito user pool ARN (…:userpool/<poolId>) resolves to <COGNITO_ISSUER_BASE>/<poolId> (the shim's own
-// Cognito serves that issuer's discovery + JWKS). Anything else is unresolvable ("").
+// Cognito user pool ARN (…:userpool/<poolId>) resolves to the pool's issuer, <COGNITO_ISSUER_BASE>/cognito/<poolId>
+// (cognitoPoolIssuer: the shim's own Cognito mints the pool's tokens with it and serves its discovery +
+// JWKS). Anything else is unresolvable ("").
 func (h *apigwV1Handler) resolveCognitoIssuer(arn string) string {
 	if strings.HasPrefix(arn, "https://") || strings.HasPrefix(arn, "http://") {
 		return strings.TrimRight(arn, "/")
@@ -915,10 +916,23 @@ func (h *apigwV1Handler) resolveCognitoIssuer(arn string) string {
 	if i := strings.Index(arn, "userpool/"); i >= 0 {
 		poolID := arn[i+len("userpool/"):]
 		if poolID != "" {
-			return strings.TrimRight(h.cognitoIssuerBase, "/") + "/" + poolID
+			return cognitoPoolIssuer(h.cognitoIssuerBase, poolID)
 		}
 	}
 	return ""
+}
+
+// authorizerIssuer is the issuer an authorizer validates tokens against: resolved from its providerARNs
+// on every invoke, so an authorizer stored with an issuer resolved another way before (a pool ARN once
+// resolved to <base>/<poolId>, where no pool is served) asks its pool's issuer; the stored issuer is
+// for one with no resolvable provider.
+func (h *apigwV1Handler) authorizerIssuer(a *restAuthorizer) string {
+	for _, p := range a.ProviderARNs {
+		if iss := h.resolveCognitoIssuer(p); iss != "" {
+			return iss
+		}
+	}
+	return a.Issuer
 }
 
 // headerFromIdentitySource extracts the header name from a REST identity-source expression
@@ -1334,9 +1348,10 @@ func (h *apigwV1Handler) runCognitoAuthorizer(w http.ResponseWriter, r *http.Req
 		writeAGWError(w, http.StatusUnauthorized, "UnauthorizedException", requestID, "Unauthorized")
 		return false
 	}
-	provider, perr := h.oidcProvider(r.Context(), a.Issuer)
+	iss := h.authorizerIssuer(a)
+	provider, perr := h.oidcProvider(r.Context(), iss)
 	if perr != nil {
-		h.logger.Warn("apigw v1 cognito authorizer: issuer discovery failed", "issuer", a.Issuer, "error", perr.Error())
+		h.logger.Warn("apigw v1 cognito authorizer: issuer discovery failed", "issuer", iss, "error", perr.Error())
 		writeAGWError(w, http.StatusUnauthorized, "UnauthorizedException", requestID, "Unauthorized")
 		return false
 	}

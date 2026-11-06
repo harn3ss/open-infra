@@ -296,7 +296,7 @@ INSERT INTO rest_usage_plans (plan_id, name) VALUES ('oldplan', 'old');`); err !
 // Each account's REST APIs, API keys and usage plans are its own: the same name in both accounts, each
 // listing its own alone, and another account's id is NotFound for every operation that names it.
 func TestServicesPG_RestV1EachAccountKeepsItsOwnAPIs(t *testing.T) {
-	f := newAGWAccountsFixture(t, "http://shim/cognito")
+	f := newAGWAccountsFixture(t, "http://shim")
 	mgmt, member := mgmtDoorCaller(), memberDoorCaller()
 
 	_, mAPI, _ := f.call(t, mgmt, "POST", "/restapis", `{"name":"orders"}`)
@@ -595,7 +595,7 @@ func TestServicesPG_RestV1CognitoAuthorizersUseTheirOwnAccountsPools(t *testing.
 		http.NotFound(w, r)
 	}))
 	defer issuer.Close()
-	f := newAGWAccountsFixture(t, issuer.URL+"/cognito")
+	f := newAGWAccountsFixture(t, issuer.URL)
 	ctx := context.Background()
 	if err := f.pools.createPool(ctx, cognitoPool{ID: "us-east-1_mgmtpool", Name: "m"}); err != nil {
 		t.Fatal(err)
