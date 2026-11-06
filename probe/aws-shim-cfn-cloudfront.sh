@@ -430,8 +430,11 @@ assert ":certificate/" in c["ViewerCertificate"]["ACMCertificateArn"], c["Viewer
 assert c["Origins"]["Items"][0].get("OriginAccessControlId"), c["Origins"]
 PY
 HDR_ID="$(cf get-distribution-config --id "$DIST" --query 'DistributionConfig.DefaultCacheBehavior.ResponseHeadersPolicyId' --output text 2>/dev/null || true)"
-[ "$(cf get-response-headers-policy --id "$HDR_ID" --query 'ResponseHeadersPolicy.Id' --output text 2>/dev/null)" = "$HDR_ID" ] \
-  || fail "get-response-headers-policy did not answer the policy the distribution names ($HDR_ID)"
+got="$(cf get-response-headers-policy --id "$HDR_ID" --query 'ResponseHeadersPolicy.Id' --output text 2>&1 || true)"
+if [ "$got" != "$HDR_ID" ]; then
+  dbg="$(cf get-response-headers-policy --id "$HDR_ID" --debug 2>&1 | grep -E 'Response (headers|body)|HTTP/1.1|"GET ' | head -c 1500 || true)"
+  fail "get-response-headers-policy did not answer the policy the distribution names ($HDR_ID): $(printf '%s' "$got" | head -c 300) — ${dbg}"
+fi
 OAC_ID="$(cf get-distribution-config --id "$DIST" --query 'DistributionConfig.Origins.Items[0].OriginAccessControlId' --output text 2>/dev/null || true)"
 [ "$(cf get-origin-access-control --id "$OAC_ID" --query 'OriginAccessControl.Id' --output text 2>/dev/null)" = "$OAC_ID" ] \
   || fail "get-origin-access-control did not answer the OAC the distribution names ($OAC_ID)"
