@@ -89,3 +89,6 @@ console-api/cmd/ca-issuer/ca-issuer
 console-api/cmd/corpus-check/corpus-check
 console-api/cmd/rbac-to-cedar/rbac-to-cedar
 console-api/cmd/server/server
+
+# the open-infra.dev website build output (website/build.sh)
+website/dist/

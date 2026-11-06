@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>open-infra — AWS's APIs on infrastructure you own</title>
+<meta name="description" content="open-infra is a self-hosted cloud that speaks AWS: the AWS CLI, SDKs, Terraform and CloudFormation work against hardware you own.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: hsl(210 40% 98%); --fg: hsl(222 47% 11%); --card: hsl(0 0% 100%); --muted: hsl(215 28% 95%);
+    --muted-fg: hsl(215 16% 42%); --border: hsl(214 25% 88%); --primary: hsl(243 75% 59%);
+    --primary-soft: hsl(243 75% 59% / .1); --accent: hsl(173 80% 40%); --accent-soft: hsl(173 80% 40% / .12);
+    --success: hsl(152 60% 36%); --warning: hsl(38 92% 50%); --danger: hsl(0 72% 51%);
+    --shadow: 0 1px 2px hsl(222 47% 11% / .06), 0 8px 24px hsl(222 47% 11% / .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: hsl(222 47% 7%); --fg: hsl(213 31% 91%); --card: hsl(222 40% 10%); --muted: hsl(217 28% 15%);
+      --muted-fg: hsl(215 20% 65%); --border: hsl(217 25% 20%); --primary: hsl(243 75% 66%);
+      --primary-soft: hsl(243 75% 66% / .14); --accent: hsl(172 66% 50%); --accent-soft: hsl(172 66% 50% / .14);
+      --success: hsl(152 58% 45%); --warning: hsl(38 92% 55%); --danger: hsl(0 72% 60%);
+      --shadow: 0 1px 2px #0006, 0 8px 24px #0005;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif; }
+  a { color: var(--primary); text-decoration: none; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+  header.nav { position: sticky; top: 0; z-index: 5; backdrop-filter: blur(10px); background: color-mix(in srgb, var(--bg) 82%, transparent); border-bottom: 1px solid var(--border); }
+  header.nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--fg); letter-spacing: -.01em; }
+  .brand img { width: 26px; height: 26px; }
+  .navlinks { display: flex; gap: 22px; align-items: center; font-size: 14px; }
+  .navlinks a { color: var(--muted-fg); } .navlinks a:hover { color: var(--fg); }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 18px; border-radius: 10px; font-weight: 600; font-size: 15px; border: 1px solid transparent; transition: transform .15s, box-shadow .15s; }
+  .btn:hover { transform: translateY(-1px); }
+  .btn.primary { background: var(--primary); color: #fff; box-shadow: 0 6px 20px hsl(243 75% 59% / .35); }
+  .btn.ghost { border-color: var(--border); color: var(--fg); background: var(--card); }
+  .navlinks .btn { padding: 7px 14px; font-size: 14px; }
+  .hero { padding: 84px 0 56px; position: relative; overflow: hidden; }
+  .hero::before { content: ""; position: absolute; inset: -40% -10% auto; height: 520px; background: radial-gradient(closest-side, var(--primary-soft), transparent 70%), radial-gradient(closest-side at 70% 60%, var(--accent-soft), transparent 70%); pointer-events: none; }
+  .eyebrow { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; font-weight: 600; color: var(--accent); background: var(--accent-soft); padding: 5px 12px; border-radius: 999px; }
+  h1 { font-size: clamp(36px, 6vw, 62px); line-height: 1.05; letter-spacing: -.035em; margin: 18px 0 18px; max-width: 900px; position: relative; }
+  h1 .grad { background: linear-gradient(90deg, var(--primary), var(--accent)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted-fg); max-width: 720px; margin: 0 0 30px; position: relative; }
+  .ctas { display: flex; gap: 12px; flex-wrap: wrap; position: relative; }
+  .code { margin-top: 38px; position: relative; background: hsl(222 47% 9%); color: hsl(213 31% 91%); border-radius: 14px; padding: 18px 20px; font: 14px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; box-shadow: var(--shadow); border: 1px solid hsl(217 25% 20%); max-width: 760px; overflow-x: auto; }
+  .code .c { color: hsl(215 20% 55%); } .code .p { color: hsl(172 66% 55%); } .code .o { color: hsl(243 85% 78%); }
+  section { padding: 56px 0; }
+  h2 { font-size: clamp(26px, 3.4vw, 36px); letter-spacing: -.025em; margin: 0 0 10px; }
+  .sub { color: var(--muted-fg); margin: 0 0 30px; max-width: 720px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; box-shadow: var(--shadow); }
+  .stat .n { font-size: 36px; font-weight: 750; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+  .stat .l { color: var(--muted-fg); font-size: 14px; }
+  .grid2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 22px; box-shadow: var(--shadow); }
+  .panel h3 { margin: 0 0 4px; font-size: 17px; } .panel .hint { color: var(--muted-fg); font-size: 13px; margin: 0 0 16px; }
+  .bars { display: grid; gap: 7px; }
+  .bar { display: grid; grid-template-columns: 150px 1fr 40px; gap: 10px; align-items: center; font-size: 13px; }
+  .bar .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar .track { height: 12px; background: var(--muted); border-radius: 6px; overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--primary), var(--accent)); width: 0; transition: width .9s cubic-bezier(.2,.8,.2,1); }
+  .bar .fill.gated { background: var(--warning); }
+  .bar .v { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted-fg); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--muted-fg); margin-top: 14px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  .donut-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .flow { width: 100%; height: auto; }
+  .flow text { font: 600 13px ui-sans-serif, system-ui, sans-serif; fill: var(--fg); }
+  .flow .small { font-weight: 500; font-size: 11.5px; fill: var(--muted-fg); }
+  .flow .box { fill: var(--card); stroke: var(--border); }
+  .flow .core { fill: var(--primary-soft); stroke: var(--primary); }
+  .flow .edge { stroke: var(--accent); stroke-width: 2; fill: none; stroke-dasharray: 6 6; animation: dash 1.2s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -12; } }
+  .services { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+  .svc { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .svc .t { font-weight: 650; font-size: 14.5px; } .svc .m { font-size: 12.5px; color: var(--muted-fg); }
+  .badge { align-self: flex-start; font-size: 11px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; }
+  .badge.proven { color: var(--success); background: color-mix(in srgb, var(--success) 14%, transparent); }
+  .badge.gated { color: var(--warning); background: color-mix(in srgb, var(--warning) 16%, transparent); }
+  .badge.planned { color: var(--muted-fg); background: var(--muted); }
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .feat { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+  .feat .ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--primary-soft); color: var(--primary); font-weight: 800; margin-bottom: 10px; }
+  .feat h4 { margin: 0 0 6px; font-size: 16px; } .feat p { margin: 0; color: var(--muted-fg); font-size: 14.5px; }
+  .note { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 14px 16px; color: var(--fg); font-size: 14.5px; }
+  .cta-final { text-align: center; padding: 72px 0 84px; }
+  footer { border-top: 1px solid var(--border); color: var(--muted-fg); font-size: 13.5px; padding: 26px 0; }
+  footer .wrap { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .muted { color: var(--muted-fg); }
+  @media (max-width: 860px) {
+    .stats { grid-template-columns: repeat(2, 1fr); } .grid2, .features { grid-template-columns: 1fr; }
+    .navlinks a:not(.btn) { display: none; } .bar { grid-template-columns: 110px 1fr 34px; }
+  }
+</style>
+</head>
+<body>
+<header class="nav"><div class="wrap">
+  <a class="brand" href="#"><img src="favicon.svg" alt="">open-infra</a>
+  <nav class="navlinks">
+    <a href="#how">How it works</a><a href="#coverage">Coverage</a><a href="#services">Services</a>
+    <a class="btn ghost" href="https://github.com/harn3ss/open-infra">GitHub ↗</a>
+  </nav>
+</div></header>
+
+<main>
+<section class="hero"><div class="wrap">
+  <span class="eyebrow">● Self-hosted · Open source · AWS-shaped</span>
+  <h1>AWS's APIs, on <span class="grad">infrastructure you own.</span></h1>
+  <p class="lede">open-infra is a cloud you run yourself that speaks AWS. The AWS CLI, the SDKs, Terraform and
+    CloudFormation work against it unchanged — accounts, IAM policy, ARNs and errors included — on your own hardware.</p>
+  <div class="ctas">
+    <a class="btn primary" href="https://github.com/harn3ss/open-infra">Get started on GitHub →</a>
+    <a class="btn ghost" href="#coverage">See what it serves</a>
+  </div>
+  <div class="code" aria-label="Example AWS CLI session"><span class="c"># the same commands, pointed at your own cloud</span>
+<span class="p">$</span> export AWS_ENDPOINT_URL=https://aws.your-cloud.example
+<span class="p">$</span> aws sts get-caller-identity --query Account
+<span class="o">"000000000000"</span>
+<span class="p">$</span> aws cloudformation deploy --template-file app.yaml --stack-name shop
+<span class="o">Successfully created/updated stack - shop</span></div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="stats" id="stats" aria-live="polite">
+    <div class="stat"><div class="n" data-k="services">–</div><div class="l">AWS services proven by live probes</div></div>
+    <div class="stat"><div class="n" data-k="operations">–</div><div class="l">AWS API operations served</div></div>
+    <div class="stat"><div class="n" data-k="covered">–</div><div class="l">CloudFormation resource types a stack can create</div></div>
+    <div class="stat"><div class="n" data-k="probes">–</div><div class="l">live probes behind those claims</div></div>
+  </div>
+  <p class="muted" style="font-size:13px;margin-top:12px" id="src">Read from the platform's generated coverage registry.</p>
+</div></section>
+
+<section id="how"><div class="wrap">
+  <h2>How it works</h2>
+  <p class="sub">Your tools talk to one AWS-shaped front door. Every call is signed with SigV4 and decided by IAM policy —
+    the same evaluator for the console and the API — then served by the platform underneath.</p>
+  <div class="panel">
+    <svg class="flow" viewBox="0 0 980 300" role="img" aria-label="AWS tools call the open-infra front door, which authorizes with IAM and serves through platform services">
+      <g>
+        <rect class="box" x="10" y="20" width="210" height="52" rx="12"/><text x="30" y="51">AWS CLI · SDKs</text>
+        <rect class="box" x="10" y="90" width="210" height="52" rx="12"/><text x="30" y="121">Terraform</text>
+        <rect class="box" x="10" y="160" width="210" height="52" rx="12"/><text x="30" y="191">CloudFormation</text>
+        <rect class="box" x="10" y="230" width="210" height="52" rx="12"/><text x="30" y="261">Console</text>
+      </g>
+      <path class="edge" d="M220 46 C300 46 300 150 380 150"/><path class="edge" d="M220 116 C300 116 300 150 380 150"/>
+      <path class="edge" d="M220 186 C300 186 300 150 380 150"/><path class="edge" d="M220 256 C300 256 300 150 380 150"/>
+      <rect class="core" x="380" y="80" width="250" height="140" rx="16" stroke-width="1.5"/>
+      <text x="402" y="116">AWS front door</text>
+      <text class="small" x="402" y="142">SigV4 · accounts · ARNs</text>
+      <text class="small" x="402" y="164">IAM policy: identity, resource,</text>
+      <text class="small" x="402" y="182">boundaries, MFA conditions</text>
+      <text class="small" x="402" y="204">AWS error codes</text>
+      <path class="edge" d="M630 150 C700 150 700 60 760 60"/><path class="edge" d="M630 150 L760 150"/><path class="edge" d="M630 150 C700 150 700 240 760 240"/>
+      <rect class="box" x="760" y="30" width="210" height="60" rx="12"/><text x="780" y="56">Compute</text><text class="small" x="780" y="76">Lambda · EC2 · ECS</text>
+      <rect class="box" x="760" y="120" width="210" height="60" rx="12"/><text x="780" y="146">Data</text><text class="small" x="780" y="166">S3 · DynamoDB · RDS · SQS</text>
+      <rect class="box" x="760" y="210" width="210" height="60" rx="12"/><text x="780" y="236">Platform</text><text class="small" x="780" y="256">on your Kubernetes nodes</text>
+    </svg>
+  </div>
+</div></section>
+
+<section id="coverage"><div class="wrap">
+  <h2>What it serves today</h2>
+  <p class="sub">Generated from the same registry the project's CI checks against the code and its live probes — never
+    hand-written, so this page cannot claim more than the platform does.</p>
+  <div class="grid2">
+    <div class="panel"><h3>API operations per service</h3><p class="hint">The services with the most operations served.</p>
+      <div class="bars" id="bars"></div>
+      <div class="legend"><span><i style="background:linear-gradient(90deg,var(--primary),var(--accent))"></i>Proven live</span><span><i style="background:var(--warning)"></i>Built, off by default</span></div>
+    </div>
+    <div class="panel donut-wrap"><h3 style="align-self:flex-start">CloudFormation coverage</h3><p class="hint" style="align-self:flex-start">Resource types the CloudFormation front door knows.</p>
+      <svg id="donut" viewBox="0 0 220 220" width="220" height="220" role="img" aria-label="CloudFormation coverage"></svg>
+      <div class="legend" id="donut-legend"></div>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="features">
+    <div class="feat"><div class="ic">A</div><h4>Accounts, like AWS accounts</h4><p>Organizations, member accounts with their own 12-digit ids, and each account's resources kept apart — switch role, cross-account trust and resource policies as AWS does them.</p></div>
+    <div class="feat"><div class="ic">I</div><h4>IAM is the only authority</h4><p>AWS-shaped policies on users, groups and roles, AWS's managed policies by name, permission boundaries, MFA — one evaluator for every API and the console.</p></div>
+    <div class="feat"><div class="ic">C</div><h4>Your templates, unmodified</h4><p>Deploy CloudFormation stacks through the CloudFormation API, with change sets, drift, exports and the instance bootstrap tools, or use Terraform's AWS provider.</p></div>
+  </div>
+</div></section>
+
+<section id="services"><div class="wrap">
+  <h2>Services</h2>
+  <p class="sub">Every front door and its state. <span class="badge proven">proven</span> is served and checked by a live probe;
+    <span class="badge gated">gated</span> is built but ships off; <span class="badge planned">planned</span> answers honestly that it is not served.</p>
+  <div class="services" id="svc-grid"></div>
+  <p class="note" style="margin-top:22px">open-infra is honest about maturity: the stable platform services are distinguished from the
+    experimental ones in the project's documentation, and compatibility is described as AWS-shaped behaviour, never as AWS itself or any certification.</p>
+</div></section>
+
+<section class="cta-final"><div class="wrap">
+  <h2>Want more?</h2>
+  <p class="sub" style="margin:0 auto 26px">Install guide, architecture, the full coverage matrix and the source are on GitHub.</p>
+  <a class="btn primary" href="https://github.com/harn3ss/open-infra">github.com/harn3ss/open-infra →</a>
+</div></section>
+</main>
+
+<footer><div class="wrap"><span>open-infra · open source</span><span><a href="https://github.com/harn3ss/open-infra">GitHub</a></span></div></footer>
+
+<script>
+(async () => {
+  let r;
+  try { r = await (await fetch("registry.json", { cache: "no-cache" })).json(); }
+  catch (e) { document.getElementById("src").textContent = "The coverage registry could not be loaded."; return; }
+  const sum = r.summary || {}, svcs = Object.values(r.services || {});
+  const proven = svcs.filter(s => s.tier === "proven");
+  const probes = new Set(svcs.flatMap(s => s.probes || []));
+  const vals = { services: sum.services ?? proven.length, operations: sum.operations ?? 0, covered: sum.covered ?? 0, probes: probes.size };
+  document.querySelectorAll("#stats .n").forEach(el => {
+    const target = vals[el.dataset.k] || 0, t0 = performance.now();
+    const step = t => { const p = Math.min(1, (t - t0) / 900); el.textContent = Math.round(target * (1 - Math.pow(1 - p, 3))).toLocaleString(); if (p < 1) requestAnimationFrame(step); };
+    requestAnimationFrame(step);
+  });
+  const ops = s => (s.operations || []).length;
+  const top = [...svcs].filter(s => s.tier !== "planned").sort((a, b) => ops(b) - ops(a)).slice(0, 14);
+  const max = Math.max(1, ...top.map(ops)), bars = document.getElementById("bars");
+  for (const s of top) {
+    const row = document.createElement("div"); row.className = "bar";
+    row.innerHTML = `<span class="name"></span><span class="track"><span class="fill ${s.tier === "gated" ? "gated" : ""}"></span></span><span class="v">${ops(s)}</span>`;
+    row.querySelector(".name").textContent = s.service; bars.appendChild(row);
+    requestAnimationFrame(() => requestAnimationFrame(() => { row.querySelector(".fill").style.width = (ops(s) / max * 100) + "%"; }));
+  }
+  const total = sum.cfnTypes || 0, parts = [
+    { label: "Created by a stack", v: sum.covered || 0, c: "var(--primary)" },
+    { label: "Planned only", v: sum.planOnly || 0, c: "var(--accent)" },
+    { label: "Refused honestly", v: sum.refused || 0, c: "var(--muted-fg)" },
+  ];
+  const known = parts.reduce((a, p) => a + p.v, 0); if (total > known) parts.push({ label: "Other", v: total - known, c: "var(--border)" });
+  const d = document.getElementById("donut"), R = 80, C = 2 * Math.PI * R; let off = 0;
+  d.innerHTML = `<circle cx="110" cy="110" r="${R}" fill="none" stroke="var(--muted)" stroke-width="26"/>`;
+  for (const p of parts) {
+    const len = total ? p.v / total * C : 0;
+    d.insertAdjacentHTML("beforeend", `<circle cx="110" cy="110" r="${R}" fill="none" stroke="${p.c}" stroke-width="26" stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-off}" transform="rotate(-90 110 110)"/>`);
+    off += len;
+  }
+  d.insertAdjacentHTML("beforeend", `<text x="110" y="106" text-anchor="middle" style="font:800 34px system-ui;fill:var(--fg)">${sum.covered || 0}</text><text x="110" y="130" text-anchor="middle" style="font:500 12px system-ui;fill:var(--muted-fg)">of ${total} types</text>`);
+  document.getElementById("donut-legend").innerHTML = parts.map(p => `<span><i style="background:${p.c}"></i>${p.label} · ${p.v}</span>`).join("");
+  const grid = document.getElementById("svc-grid"), order = { proven: 0, gated: 1, planned: 2 };
+  for (const s of [...svcs].sort((a, b) => (order[a.tier] ?? 3) - (order[b.tier] ?? 3) || a.service.localeCompare(b.service))) {
+    const el = document.createElement("div"); el.className = "svc";
+    el.innerHTML = `<span class="t"></span><span class="m"></span><span class="badge ${s.tier}">${s.tier}</span>`;
+    el.querySelector(".t").textContent = s.service;
+    el.querySelector(".m").textContent = `${ops(s)} operations · ${(s.probes || []).length} live probe${(s.probes || []).length === 1 ? "" : "s"}`;
+    grid.appendChild(el);
+  }
+  document.getElementById("src").textContent = "Read from the platform's generated coverage registry" + (r.generatedBy ? ` (${r.generatedBy})` : "") + ".";
+})();
+</script>
+</body>
+</html>
