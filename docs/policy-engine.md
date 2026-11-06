@@ -97,11 +97,16 @@ these"), themselves fail-closed: a statement cannot set both a positive and its 
 Everything else it cannot honor is **reported, never silently granted or dropped**: an action for a service with no data plane,
 an unrecognizable ARN, a statement with no mappable `Resource`, and any `Condition` outside the narrow
 supported set — `aws:SourceIp` (IpAddress/NotIpAddress), `aws:username` (StringEquals, StringLike/NotLike
-`*`-wildcard), `aws:CurrentTime` (Date{Greater,Less}Than[Equals]), and the authenticated-principal flag.
-A supported condition is **populated on every request and sanitised** so a key that is absent or malformed
-makes a gated `Deny` fail *closed* (deny), never silently vanish; an unsupported key or operator, or a
-multi-valued condition, is refused wholesale rather than guessed (a silently-ineffective `Deny` condition
-is a security hole) — author those natively on `spec.dataPlane`, which the engine evaluates directly.
+`*`-wildcard), `aws:CurrentTime` (Date{Greater,Less}Than[Equals]), the authenticated-principal flag, and
+MFA: `aws:MultiFactorAuthPresent` (Bool, BoolIfExists, Null) and `aws:MultiFactorAuthAge` (Numeric* and
+their IfExists forms, integers). A supported condition is **populated on every request and sanitised** so a
+key that is absent or malformed makes a gated `Deny` fail *closed* (deny), never silently vanish. The MFA
+keys are the exception AWS makes: a long-term access key carries neither, on purpose, so their conditions
+(`keyConditions`) evaluate an absent key as AWS does — a plain operator does not match it, an `IfExists`
+or negated one does, `Null` tests it — and a present key of the wrong type denies the request outright.
+An unsupported key or operator, or a multi-valued condition, is refused wholesale rather than guessed (a
+silently-ineffective `Deny` condition is a security hole) — author those natively on `spec.dataPlane`,
+which the engine evaluates directly.
 
 The importer accepts exactly the services the shim checks for Users and assumed roles alike (a test reads
 the shim's checks and fails on drift), including IAM (`role/<name>`, `user/<name>`, `policy/<name>` →
