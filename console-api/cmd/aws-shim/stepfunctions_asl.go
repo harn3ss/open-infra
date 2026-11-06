@@ -9,12 +9,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 )
 
 // validateAndTranslateDefinition parses an ASL JSON document, rejects unsupported features, translates
 // AWS Lambda Task Resources to the engine's function:<name> form, and returns the (possibly rewritten)
 // definition as compact JSON.
 func validateAndTranslateDefinition(def string) (string, error) {
+	return validateAndTranslateDefinitionIn(def, "")
+}
+
+// validateAndTranslateDefinitionIn is validateAndTranslateDefinition for a state machine of member account
+// account ("" = the management account, whose definitions translate exactly as before). A member account's
+// Task runs its own account's functions (the engine invokes function:<name> in the account's home), so a
+// Lambda ARN naming another account's function is refused rather than run as the member's function of
+// the same name: on AWS that invocation reaches the other account's function only under its resource-based
+// policy, which a kind: Function does not have.
+func validateAndTranslateDefinitionIn(def, account string) (string, error) {
 	if strings.TrimSpace(def) == "" {
 		return "", fmt.Errorf("definition is required")
 	}
@@ -25,7 +37,7 @@ func validateAndTranslateDefinition(def string) (string, error) {
 	if _, ok := doc["StartAt"].(string); !ok {
 		return "", fmt.Errorf("definition must have a top-level string \"StartAt\"")
 	}
-	if err := validateAndTranslateStates(doc); err != nil {
+	if err := validateAndTranslateStates(doc, account); err != nil {
 		return "", err
 	}
 	out, err := json.Marshal(doc)
@@ -38,7 +50,7 @@ func validateAndTranslateDefinition(def string) (string, error) {
 // validateAndTranslateStates validates a {StartAt, States} object and translates each Task Resource in
 // place, recursing into Parallel Branches and Map Iterator/ItemProcessor sub-graphs so a Parallel/Map
 // with Lambda Tasks is accepted and its nested Resources rewritten to function:<name>.
-func validateAndTranslateStates(doc map[string]any) error {
+func validateAndTranslateStates(doc map[string]any, account string) error {
 	states, ok := doc["States"].(map[string]any)
 	if !ok || len(states) == 0 {
 		return fmt.Errorf("definition must have a non-empty \"States\" object")
@@ -53,7 +65,7 @@ func validateAndTranslateStates(doc map[string]any) error {
 		case "":
 			return fmt.Errorf("state %q has no Type", name)
 		case "Task":
-			if err := translateTaskResource(name, st); err != nil {
+			if err := translateTaskResource(name, st, account); err != nil {
 				return err
 			}
 		case "Choice", "Wait", "Pass", "Succeed", "Fail":
@@ -71,7 +83,7 @@ func validateAndTranslateStates(doc map[string]any) error {
 				if _, ok := bm["StartAt"].(string); !ok {
 					return fmt.Errorf("Parallel state %q branch %d must have a string \"StartAt\"", name, i)
 				}
-				if err := validateAndTranslateStates(bm); err != nil {
+				if err := validateAndTranslateStates(bm, account); err != nil {
 					return fmt.Errorf("Parallel state %q branch %d: %v", name, i, err)
 				}
 			}
@@ -86,7 +98,7 @@ func validateAndTranslateStates(doc map[string]any) error {
 			if _, ok := sub["StartAt"].(string); !ok {
 				return fmt.Errorf("Map state %q iterator must have a string \"StartAt\"", name)
 			}
-			if err := validateAndTranslateStates(sub); err != nil {
+			if err := validateAndTranslateStates(sub, account); err != nil {
 				return fmt.Errorf("Map state %q iterator: %v", name, err)
 			}
 		default:
@@ -96,8 +108,15 @@ func validateAndTranslateStates(doc map[string]any) error {
 	return nil
 }
 
-// translateTaskResource validates and, where needed, rewrites a Task state's Resource in place.
-func translateTaskResource(name string, st map[string]any) error {
+// translateTaskResource validates and, where needed, rewrites a Task state's Resource in place. account is a
+// member account's ("" for the management account): a Lambda ARN of another account is refused for it.
+func translateTaskResource(name string, st map[string]any, account string) error {
+	otherAccount := func(fnARN string) error {
+		if a := awsidentity.AccountOfARN(fnARN); account != "" && a != "" && a != account {
+			return fmt.Errorf("Task state %q invokes %q, a function of another account (%s): a state machine's Tasks invoke its own account's functions", name, fnARN, a)
+		}
+		return nil
+	}
 	res, ok := st["Resource"].(string)
 	if !ok || res == "" {
 		return fmt.Errorf("Task state %q has no string Resource", name)
@@ -116,6 +135,9 @@ func translateTaskResource(name string, st map[string]any) error {
 		if fn == "" {
 			return fmt.Errorf("Task state %q has a Lambda ARN with no function name: %q", name, res)
 		}
+		if err := otherAccount(res); err != nil {
+			return err
+		}
 		st["Resource"] = "function:" + fn
 		return nil
 
@@ -130,6 +152,9 @@ func translateTaskResource(name string, st map[string]any) error {
 		}
 		if fn == "" {
 			return fmt.Errorf("Task state %q uses states:::lambda:invoke but Parameters.FunctionName is missing", name)
+		}
+		if err := otherAccount(fnRef); err != nil {
+			return err
 		}
 		st["Resource"] = "function:" + fn
 		if payload, has := params["Payload"]; has {

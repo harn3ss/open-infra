@@ -21,12 +21,15 @@ import (
 // passRoleVerb is the RBAC verb the admission policy and this check ask for.
 const passRoleVerb = "passrole"
 
-// passRoleNamespace is the namespace a state machine's execution role is resolved in.
-func (h *sfnHandler) passRoleNamespace() string {
-	if h.rolesNS != "" {
-		return h.rolesNS
+// passRoleNamespace is the namespace a state machine's execution role is resolved in: the role
+// resolver's (the IAM home namespace) for the management account, as always, and a member account's home
+// — where its IAM roles live — for a member's. A role is passed only within its own account, as on AWS.
+func (h *sfnHandler) passRoleNamespace(ctx context.Context) string {
+	ns := h.rolesNS
+	if ns == "" {
+		ns = dataplaneauthz.DefaultHomeNamespace
 	}
-	return dataplaneauthz.DefaultHomeNamespace
+	return accountNamespace(ctx, ns)
 }
 
 // callerMayPassRole reports whether the caller may pass the Role roleNS/role. A User needs the RBAC verb

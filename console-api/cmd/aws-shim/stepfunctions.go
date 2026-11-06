@@ -17,6 +17,14 @@
 // exactly what the role's policies grant and no more — instead of the controller's ambient position.
 // Running a state machine under a role requires the caller to be trusted to assume it (the PassRole
 // analog): fail closed if the role is unknown or its trust does not name the caller.
+//
+// Accounts: each account's state machines and executions are its own. A member account's StateMachines,
+// Executions and execution credentials are kept in its home namespace (the management account's in the
+// Step Functions namespace, where they always were), so the same state-machine name lives in each account
+// independently and each account lists only its own; every ARN carries the caller's account, and a
+// member's reference by another account's ARN is not found. A member account's execution role is a Role
+// of its own account (in its home: iam:PassRole of another account's role is refused, as on AWS), and its
+// execution's session acts in the member account.
 package main
 
 import (
@@ -29,6 +37,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
@@ -67,6 +76,56 @@ func newSFNHandler(cs kubernetes.Interface, dyn dynamic.Interface, minter *awsst
 		region = "us-east-1"
 	}
 	return &sfnHandler{cs: cs, dyn: dyn, minter: minter, roles: roles, authz: authz, ns: ns, account: account, region: region, logger: logger}
+}
+
+// Step Functions keeps each account's state machines and executions apart (see the file header).
+func init() { accountScopedServices["states"] = true }
+
+// nsFor is the namespace the caller's account's state machines, executions and execution credentials are
+// kept in: the Step Functions namespace for the management account, a member account's home for a member's.
+func (h *sfnHandler) nsFor(ctx context.Context) string { return accountNamespace(ctx, h.ns) }
+
+// arnAccount is the account of the request's ARNs: the install's for the management account (exactly as
+// before), the member account's for a member's.
+func (h *sfnHandler) arnAccount(ctx context.Context) string {
+	if !isMemberRequest(ctx) {
+		return h.account
+	}
+	return callerAccount(ctx)
+}
+
+// memberAccount is the caller's account for a member account's request, "" for the management account's.
+func (h *sfnHandler) memberAccount(ctx context.Context) string {
+	if !isMemberRequest(ctx) {
+		return ""
+	}
+	return callerAccount(ctx)
+}
+
+// otherAccountsARN reports whether a member account's request names a state machine, an execution or a
+// role by an ARN of another account: none is ever one of the member's, so it is not found (never the
+// member's resource of the same name, nor the other account's). The management account's references
+// resolve by name, as they always did.
+func (h *sfnHandler) otherAccountsARN(ctx context.Context, arn string) bool {
+	arn = strings.TrimSpace(arn)
+	return isMemberRequest(ctx) && strings.HasPrefix(arn, "arn:") && awsidentity.AccountOfARN(arn) != callerAccount(ctx)
+}
+
+// resolveRole resolves an execution role of the caller's account: the management account's in the role
+// resolver's namespace (as always), a member account's in its home — where its IAM roles live. A resolver
+// that cannot resolve in another namespace resolves no member account's role.
+func (h *sfnHandler) resolveRole(ctx context.Context, roleName string) (resolvedRole, bool) {
+	if h.roles == nil {
+		return resolvedRole{}, false
+	}
+	if !isMemberRequest(ctx) {
+		return h.roles.Resolve(ctx, roleName)
+	}
+	in, ok := h.roles.(roleResolverIn)
+	if !ok {
+		return resolvedRole{}, false
+	}
+	return in.ResolveIn(ctx, h.passRoleNamespace(ctx), roleName)
 }
 
 func writeSFNError(w http.ResponseWriter, status int, code, requestID, message string) {
@@ -141,7 +200,7 @@ func (h *sfnHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	// In enforce IAM policy alone decides (decide); in legacy the coarse check above runs first.
 	sm := sfnStateMachine(op, body)
 	if ok, reason := decide(ctx, r, h.authz, claims, "states:"+op, "StateMachine", sm,
-		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", resource, h.ns, "",
+		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", resource, h.nsFor(ctx), "",
 			"states:"+op, "StateMachine", sm)); !ok {
 		writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
@@ -151,7 +210,13 @@ func (h *sfnHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	// as the caller. (StartExecution separately requires the role's trust policy to name the caller.)
 	if op == "CreateStateMachine" || op == "UpdateStateMachine" {
 		if role := roleNameFromArn(str(body["roleArn"])); role != "" {
-			if ok, reason := callerMayPassRole(ctx, h.cs, h.authz, claims, h.passRoleNamespace(), role, r); !ok {
+			// A role is passed only within its own account, as on AWS: a member account's state machine
+			// runs under a role of its own account.
+			if h.otherAccountsARN(ctx, str(body["roleArn"])) {
+				writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, "Cross-account pass role is not allowed.")
+				return
+			}
+			if ok, reason := callerMayPassRole(ctx, h.cs, h.authz, claims, h.passRoleNamespace(ctx), role, r); !ok {
 				writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 				return
 			}
@@ -188,11 +253,11 @@ func (h *sfnHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 
 // --- ARNs ---
 
-func (h *sfnHandler) smArn(name string) string {
-	return fmt.Sprintf("arn:aws:states:%s:%s:stateMachine:%s", h.region, h.account, name)
+func (h *sfnHandler) smArn(ctx context.Context, name string) string {
+	return fmt.Sprintf("arn:aws:states:%s:%s:stateMachine:%s", h.region, h.arnAccount(ctx), name)
 }
-func (h *sfnHandler) execArn(sm, name string) string {
-	return fmt.Sprintf("arn:aws:states:%s:%s:execution:%s:%s", h.region, h.account, sm, name)
+func (h *sfnHandler) execArn(ctx context.Context, sm, name string) string {
+	return fmt.Sprintf("arn:aws:states:%s:%s:execution:%s:%s", h.region, h.arnAccount(ctx), sm, name)
 }
 
 // sfnStateMachine is the state machine an op is authorized on: the name being created, the one a
@@ -266,7 +331,7 @@ func (h *sfnHandler) createStateMachine(ctx context.Context, w http.ResponseWrit
 			"type must be STANDARD or EXPRESS (got "+strings.ToUpper(str(body["type"]))+").")
 		return
 	}
-	translated, err := validateAndTranslateDefinition(str(body["definition"]))
+	translated, err := validateAndTranslateDefinitionIn(str(body["definition"]), h.memberAccount(ctx))
 	if err != nil {
 		writeSFNError(w, http.StatusBadRequest, "InvalidDefinition", requestID, err.Error())
 		return
@@ -278,19 +343,20 @@ func (h *sfnHandler) createStateMachine(ctx context.Context, w http.ResponseWrit
 				"a roleArn was given but execution-role authority is not enabled on this shim (STS disabled).")
 			return
 		}
-		if _, ok := h.roles.Resolve(ctx, roleName); !ok {
+		if _, ok := h.resolveRole(ctx, roleName); !ok {
 			writeSFNError(w, http.StatusBadRequest, "InvalidArn", requestID, "role "+roleName+" does not exist.")
 			return
 		}
 	}
 
+	ns := h.nsFor(ctx)
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "openinfra.dev/v1",
 		"kind":       "StateMachine",
-		"metadata":   map[string]any{"name": name, "namespace": h.ns},
+		"metadata":   map[string]any{"name": name, "namespace": ns},
 		"spec":       map[string]any{"definition": translated, "type": smType, "roleArn": roleName},
 	}}
-	if _, err := h.dyn.Resource(gvrStateMachines).Namespace(h.ns).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
+	if _, err := h.dyn.Resource(gvrStateMachines).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			writeSFNError(w, http.StatusBadRequest, "StateMachineAlreadyExists", requestID, "State Machine "+name+" already exists.")
 			return
@@ -299,15 +365,15 @@ func (h *sfnHandler) createStateMachine(ctx context.Context, w http.ResponseWrit
 		return
 	}
 	writeSFNJSON(w, requestID, map[string]any{
-		"stateMachineArn": h.smArn(name),
+		"stateMachineArn": h.smArn(ctx, name),
 		"creationDate":    epoch(time.Now()),
 	})
 }
 
 func (h *sfnHandler) updateStateMachine(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	name := smNameFromArn(str(body["stateMachineArn"]))
-	u, err := h.dyn.Resource(gvrStateMachines).Namespace(h.ns).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
+	u, err := h.dyn.Resource(gvrStateMachines).Namespace(h.nsFor(ctx)).Get(ctx, name, metav1.GetOptions{})
+	if err != nil || h.otherAccountsARN(ctx, str(body["stateMachineArn"])) {
 		writeSFNError(w, http.StatusBadRequest, "StateMachineDoesNotExist", requestID, "State Machine "+name+" does not exist.")
 		return
 	}
@@ -316,7 +382,7 @@ func (h *sfnHandler) updateStateMachine(ctx context.Context, w http.ResponseWrit
 		spec = map[string]any{}
 	}
 	if d := str(body["definition"]); d != "" {
-		translated, verr := validateAndTranslateDefinition(d)
+		translated, verr := validateAndTranslateDefinitionIn(d, h.memberAccount(ctx))
 		if verr != nil {
 			writeSFNError(w, http.StatusBadRequest, "InvalidDefinition", requestID, verr.Error())
 			return
@@ -326,7 +392,7 @@ func (h *sfnHandler) updateStateMachine(ctx context.Context, w http.ResponseWrit
 	if ra, ok := body["roleArn"]; ok {
 		roleName := roleNameFromArn(str(ra))
 		if roleName != "" && h.roles != nil {
-			if _, ok := h.roles.Resolve(ctx, roleName); !ok {
+			if _, ok := h.resolveRole(ctx, roleName); !ok {
 				writeSFNError(w, http.StatusBadRequest, "InvalidArn", requestID, "role "+roleName+" does not exist.")
 				return
 			}
@@ -334,7 +400,7 @@ func (h *sfnHandler) updateStateMachine(ctx context.Context, w http.ResponseWrit
 		spec["roleArn"] = roleName
 	}
 	_ = unstructured.SetNestedMap(u.Object, spec, "spec")
-	if _, err := h.dyn.Resource(gvrStateMachines).Namespace(h.ns).Update(ctx, u, metav1.UpdateOptions{}); err != nil {
+	if _, err := h.dyn.Resource(gvrStateMachines).Namespace(h.nsFor(ctx)).Update(ctx, u, metav1.UpdateOptions{}); err != nil {
 		writeSFNError(w, http.StatusInternalServerError, "InternalFailure", requestID, err.Error())
 		return
 	}
@@ -343,7 +409,11 @@ func (h *sfnHandler) updateStateMachine(ctx context.Context, w http.ResponseWrit
 
 func (h *sfnHandler) deleteStateMachine(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	name := smNameFromArn(str(body["stateMachineArn"]))
-	err := h.dyn.Resource(gvrStateMachines).Namespace(h.ns).Delete(ctx, name, metav1.DeleteOptions{})
+	if h.otherAccountsARN(ctx, str(body["stateMachineArn"])) {
+		writeSFNJSON(w, requestID, map[string]any{}) // no state machine of the member's: nothing to delete
+		return
+	}
+	err := h.dyn.Resource(gvrStateMachines).Namespace(h.nsFor(ctx)).Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) { // Delete is idempotent in SFN
 		writeSFNError(w, http.StatusInternalServerError, "InternalFailure", requestID, err.Error())
 		return
@@ -353,8 +423,8 @@ func (h *sfnHandler) deleteStateMachine(ctx context.Context, w http.ResponseWrit
 
 func (h *sfnHandler) describeStateMachine(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	name := smNameFromArn(str(body["stateMachineArn"]))
-	u, err := h.dyn.Resource(gvrStateMachines).Namespace(h.ns).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
+	u, err := h.dyn.Resource(gvrStateMachines).Namespace(h.nsFor(ctx)).Get(ctx, name, metav1.GetOptions{})
+	if err != nil || h.otherAccountsARN(ctx, str(body["stateMachineArn"])) {
 		writeSFNError(w, http.StatusBadRequest, "StateMachineDoesNotExist", requestID, "State Machine "+name+" does not exist.")
 		return
 	}
@@ -365,18 +435,18 @@ func (h *sfnHandler) describeStateMachine(ctx context.Context, w http.ResponseWr
 		smType = "Standard"
 	}
 	writeSFNJSON(w, requestID, map[string]any{
-		"stateMachineArn": h.smArn(name),
+		"stateMachineArn": h.smArn(ctx, name),
 		"name":            name,
 		"status":          "ACTIVE",
 		"definition":      def,
-		"roleArn":         h.iamRoleArn(roleName),
+		"roleArn":         h.iamRoleArn(ctx, roleName),
 		"type":            strings.ToUpper(smType),
 		"creationDate":    epoch(u.GetCreationTimestamp().Time),
 	})
 }
 
 func (h *sfnHandler) listStateMachines(ctx context.Context, w http.ResponseWriter, requestID string) {
-	list, err := h.dyn.Resource(gvrStateMachines).Namespace(h.ns).List(ctx, metav1.ListOptions{})
+	list, err := h.dyn.Resource(gvrStateMachines).Namespace(h.nsFor(ctx)).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		writeSFNError(w, http.StatusInternalServerError, "InternalFailure", requestID, err.Error())
 		return
@@ -389,7 +459,7 @@ func (h *sfnHandler) listStateMachines(ctx context.Context, w http.ResponseWrite
 			smType = "Standard"
 		}
 		items = append(items, map[string]any{
-			"stateMachineArn": h.smArn(n), "name": n, "type": strings.ToUpper(smType),
+			"stateMachineArn": h.smArn(ctx, n), "name": n, "type": strings.ToUpper(smType),
 			"creationDate": epoch(list.Items[i].GetCreationTimestamp().Time),
 		})
 	}
@@ -405,7 +475,7 @@ func (h *sfnHandler) startExecution(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 	writeSFNJSON(w, requestID, map[string]any{
-		"executionArn": h.execArn(smName, execName),
+		"executionArn": h.execArn(ctx, smName, execName),
 		"startDate":    epoch(time.Now()),
 	})
 }
@@ -420,8 +490,9 @@ func (h *sfnHandler) createExecution(ctx context.Context, body map[string]any, c
 	if smName == "" {
 		return "", "", "", &sfnErr{http.StatusBadRequest, "InvalidArn", "StartExecution requires stateMachineArn."}
 	}
-	sm, err := h.dyn.Resource(gvrStateMachines).Namespace(h.ns).Get(ctx, smName, metav1.GetOptions{})
-	if err != nil {
+	ns := h.nsFor(ctx)
+	sm, err := h.dyn.Resource(gvrStateMachines).Namespace(ns).Get(ctx, smName, metav1.GetOptions{})
+	if err != nil || h.otherAccountsARN(ctx, str(body["stateMachineArn"])) {
 		return "", "", "", &sfnErr{http.StatusBadRequest, "StateMachineDoesNotExist", "State Machine " + smName + " does not exist."}
 	}
 	smType, _, _ = unstructured.NestedString(sm.Object, "spec", "type")
@@ -458,16 +529,17 @@ func (h *sfnHandler) createExecution(ctx context.Context, body map[string]any, c
 		"input":           input,
 	}
 	if creds != nil {
+		// The Secret lives beside its Execution (it is owned by it), in the caller's account's namespace.
 		spec["credentialsSecret"] = executionCredsSecretName(execName)
-		spec["credentialsNamespace"] = h.ns
+		spec["credentialsNamespace"] = ns
 	}
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "openinfra.dev/v1",
 		"kind":       "Execution",
-		"metadata":   map[string]any{"name": execName, "namespace": h.ns},
+		"metadata":   map[string]any{"name": execName, "namespace": ns},
 		"spec":       spec,
 	}}
-	created, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).Create(ctx, obj, metav1.CreateOptions{})
+	created, err := h.dyn.Resource(gvrExecutions).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			return "", "", smType, &sfnErr{http.StatusBadRequest, "ExecutionAlreadyExists", "Execution " + execName + " already exists."}
@@ -479,7 +551,7 @@ func (h *sfnHandler) createExecution(ctx context.Context, body map[string]any, c
 	// Secret is garbage-collected with its Execution.
 	if creds != nil {
 		if aerr := h.storeExecutionCreds(ctx, created, creds); aerr != nil {
-			_ = h.dyn.Resource(gvrExecutions).Namespace(h.ns).Delete(ctx, execName, metav1.DeleteOptions{})
+			_ = h.dyn.Resource(gvrExecutions).Namespace(ns).Delete(ctx, execName, metav1.DeleteOptions{})
 			return "", "", smType, aerr
 		}
 	}
@@ -504,7 +576,7 @@ func (h *sfnHandler) startSyncExecution(ctx context.Context, w http.ResponseWrit
 	deadline := start.Add(syncWaitCap)
 	var phase, output, execErr, cause string
 	for {
-		u, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).Get(ctx, execName, metav1.GetOptions{})
+		u, err := h.dyn.Resource(gvrExecutions).Namespace(h.nsFor(ctx)).Get(ctx, execName, metav1.GetOptions{})
 		if err == nil {
 			phase, _, _ = unstructured.NestedString(u.Object, "status", "phase")
 			output, _, _ = unstructured.NestedString(u.Object, "status", "output")
@@ -514,8 +586,8 @@ func (h *sfnHandler) startSyncExecution(ctx context.Context, w http.ResponseWrit
 		switch phase {
 		case "Succeeded", "Failed", "TimedOut", "Aborted":
 			resp := map[string]any{
-				"executionArn":    h.execArn(smName, execName),
-				"stateMachineArn": h.smArn(smName),
+				"executionArn":    h.execArn(ctx, smName, execName),
+				"stateMachineArn": h.smArn(ctx, smName),
 				"name":            execName,
 				"status":          awsExecStatus(phase),
 				"startDate":       epoch(start),
@@ -542,8 +614,8 @@ func (h *sfnHandler) startSyncExecution(ctx context.Context, w http.ResponseWrit
 			// current status + arn so the caller can finish via DescribeExecution. A superset of AWS,
 			// where Express keeps no history; honest, never a false terminal result.
 			writeSFNJSON(w, requestID, map[string]any{
-				"executionArn":    h.execArn(smName, execName),
-				"stateMachineArn": h.smArn(smName),
+				"executionArn":    h.execArn(ctx, smName, execName),
+				"stateMachineArn": h.smArn(ctx, smName),
 				"name":            execName,
 				"status":          "RUNNING",
 				"startDate":       epoch(start),
@@ -568,17 +640,29 @@ func (h *sfnHandler) mintExecutionCreds(ctx context.Context, roleName, execName 
 		return nil, &sfnErr{http.StatusBadRequest, "InvalidArn",
 			"this state machine has a roleArn but execution-role authority is not enabled on this shim (STS disabled)."}
 	}
-	role, ok := h.roles.Resolve(ctx, roleName)
+	role, ok := h.resolveRole(ctx, roleName)
 	if !ok {
 		return nil, &sfnErr{http.StatusBadRequest, "InvalidArn", "role " + roleName + " does not exist."}
 	}
 	who := callerTrust(claims)
+	if isMemberRequest(ctx) {
+		who.account = callerAccount(ctx) // a member's role may name its own account's principals by ARN
+	}
 	if !trusted(who, role.trust) {
 		return nil, &sfnErr{http.StatusForbidden, "AccessDeniedException",
 			who.String() + " is not authorized to run executions under role " + roleName + " (not named by its trust policy)."}
 	}
 	caller := callerName(claims)
-	akid, sk, token, exp, err := h.minter.Mint(roleName, role.groups, execName, caller, executionSessionDuration(role))
+	var akid, sk, token string
+	var exp time.Time
+	var err error
+	if !isMemberRequest(ctx) {
+		akid, sk, token, exp, err = h.minter.Mint(roleName, role.groups, execName, caller, executionSessionDuration(role))
+	} else {
+		// A member account's execution acts in the member account, as its role (in its home).
+		akid, sk, token, exp, err = h.minter.MintInAccount(callerAccount(ctx), h.passRoleNamespace(ctx),
+			roleName, role.groups, execName, caller, executionSessionDuration(role))
+	}
 	if err != nil {
 		return nil, &sfnErr{http.StatusInternalServerError, "InternalFailure", "could not mint execution credentials."}
 	}
@@ -616,7 +700,7 @@ func (h *sfnHandler) storeExecutionCreds(ctx context.Context, exec *unstructured
 	isController := true
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: executionCredsSecretName(exec.GetName()), Namespace: h.ns,
+			Name: executionCredsSecretName(exec.GetName()), Namespace: exec.GetNamespace(),
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "open-infra-aws-shim",
 				execCredsLabel:                 "true",
@@ -634,9 +718,9 @@ func (h *sfnHandler) storeExecutionCreds(ctx context.Context, exec *unstructured
 			"role":            []byte(c.role),
 		},
 	}
-	_, err := h.cs.CoreV1().Secrets(h.ns).Create(ctx, sec, metav1.CreateOptions{})
+	_, err := h.cs.CoreV1().Secrets(sec.Namespace).Create(ctx, sec, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
-		_, err = h.cs.CoreV1().Secrets(h.ns).Update(ctx, sec, metav1.UpdateOptions{})
+		_, err = h.cs.CoreV1().Secrets(sec.Namespace).Update(ctx, sec, metav1.UpdateOptions{})
 	}
 	if err != nil {
 		return &sfnErr{http.StatusInternalServerError, "InternalFailure", "could not store execution credentials: " + err.Error()}
@@ -653,7 +737,11 @@ func (h *sfnHandler) boundExecution(ctx context.Context, w http.ResponseWriter, 
 		writeSFNError(w, http.StatusBadRequest, "InvalidArn", requestID, "Invalid executionArn: "+arn)
 		return nil, "", false
 	}
-	u, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).Get(ctx, execName, metav1.GetOptions{})
+	if h.otherAccountsARN(ctx, arn) {
+		writeSFNError(w, http.StatusBadRequest, "ExecutionDoesNotExist", requestID, "Execution "+arn+" does not exist.")
+		return nil, "", false
+	}
+	u, err := h.dyn.Resource(gvrExecutions).Namespace(h.nsFor(ctx)).Get(ctx, execName, metav1.GetOptions{})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			writeSFNError(w, http.StatusInternalServerError, "InternalFailure", requestID, err.Error())
@@ -682,7 +770,7 @@ func (h *sfnHandler) stopExecution(ctx context.Context, w http.ResponseWriter, r
 	// shim never races the running goroutine). Patch the status subresource.
 	patch := map[string]any{"status": map[string]any{"stopRequested": true, "stopCause": cause, "error": str(body["error"])}}
 	pb, _ := json.Marshal(patch)
-	if _, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).Patch(ctx, execName, types.MergePatchType, pb, metav1.PatchOptions{}, "status"); err != nil {
+	if _, err := h.dyn.Resource(gvrExecutions).Namespace(h.nsFor(ctx)).Patch(ctx, execName, types.MergePatchType, pb, metav1.PatchOptions{}, "status"); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeSFNError(w, http.StatusBadRequest, "ExecutionDoesNotExist", requestID, "Execution "+execName+" does not exist.")
 			return
@@ -702,8 +790,8 @@ func (h *sfnHandler) describeExecution(ctx context.Context, w http.ResponseWrite
 	input, _, _ := unstructured.NestedString(u.Object, "spec", "input")
 	phase, _, _ := unstructured.NestedString(u.Object, "status", "phase")
 	out := map[string]any{
-		"executionArn":    h.execArn(smName, execName),
-		"stateMachineArn": h.smArn(smName),
+		"executionArn":    h.execArn(ctx, smName, execName),
+		"stateMachineArn": h.smArn(ctx, smName),
 		"name":            execName,
 		"status":          awsExecStatus(phase),
 		"input":           input,
@@ -757,7 +845,11 @@ func (h *sfnHandler) getExecutionHistory(ctx context.Context, w http.ResponseWri
 }
 
 func (h *sfnHandler) listExecutions(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
-	list, err := h.dyn.Resource(gvrExecutions).Namespace(h.ns).List(ctx, metav1.ListOptions{})
+	if h.otherAccountsARN(ctx, str(body["stateMachineArn"])) {
+		writeSFNJSON(w, requestID, map[string]any{"executions": []map[string]any{}}) // no state machine of the member's
+		return
+	}
+	list, err := h.dyn.Resource(gvrExecutions).Namespace(h.nsFor(ctx)).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		writeSFNError(w, http.StatusInternalServerError, "InternalFailure", requestID, err.Error())
 		return
@@ -773,8 +865,8 @@ func (h *sfnHandler) listExecutions(ctx context.Context, w http.ResponseWriter, 
 		n := list.Items[i].GetName()
 		phase, _, _ := unstructured.NestedString(obj, "status", "phase")
 		items = append(items, map[string]any{
-			"executionArn":    h.execArn(smName, n),
-			"stateMachineArn": h.smArn(smName),
+			"executionArn":    h.execArn(ctx, smName, n),
+			"stateMachineArn": h.smArn(ctx, smName),
 			"name":            n,
 			"status":          awsExecStatus(phase),
 			"startDate":       epoch(list.Items[i].GetCreationTimestamp().Time),
@@ -785,11 +877,11 @@ func (h *sfnHandler) listExecutions(ctx context.Context, w http.ResponseWriter, 
 
 // --- helpers ---
 
-func (h *sfnHandler) iamRoleArn(name string) string {
+func (h *sfnHandler) iamRoleArn(ctx context.Context, name string) string {
 	if name == "" {
 		return ""
 	}
-	return fmt.Sprintf("arn:aws:iam::%s:role/%s", h.account, name)
+	return fmt.Sprintf("arn:aws:iam::%s:role/%s", h.arnAccount(ctx), name)
 }
 
 // awsExecStatus maps the engine's phase to the Step Functions ExecutionStatus enum.
