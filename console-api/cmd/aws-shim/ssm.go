@@ -37,11 +37,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
 )
+
+// Parameter Store keeps each account's parameters apart: a parameter's name is unique within its account,
+// its ARN names that account, and a member account's parameter is kept under its account's key
+// (accountKey, "<account>:<name>" — a parameter name never holds a ':'), its versions and labels with it,
+// and a SecureString's value bound to that key as associated data. A path query reads one account's
+// subtree. The management account's parameters are exactly where, and as, they always were.
+//
+// The "ssm" signing name also serves Run Command (ssm_runcommand.go), whose instances and commands are
+// decided by the same registration: the door is listed in accountScopedServices once Run Command keeps
+// each account's apart too.
 
 // ssmDefaultKeyID is the transit key id (→ Vault key kms-aws-ssm, matched by the aws-shim-kms policy's
 // kms-* prefix) that protects SecureString values — the analog of AWS's aws/ssm managed key.
@@ -163,6 +174,15 @@ func (h *ssmHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeSSMError(w, http.StatusNotImplemented, "InternalServerError", requestID,
 			"the SSM data layer is not configured on this shim (set SQS_PG_URI)")
 		return
+	}
+	// A member account's request naming a parameter by another account's ARN: no such parameter here
+	// (another account's parameter is reached only when it is shared, which this door does not serve).
+	switch op {
+	case "GetParameter", "DeleteParameter", "GetParameterHistory", "LabelParameterVersion":
+		if raw := strFromBody(body, "Name"); h.foreignRef(ctx, raw) {
+			writeSSMError(w, http.StatusBadRequest, "ParameterNotFound", requestID, "Parameter "+raw+" not found.")
+			return
+		}
 	}
 
 	switch op {
@@ -307,16 +327,17 @@ func (h *ssmHandler) putParameter(ctx context.Context, w http.ResponseWriter, r 
 	}
 	overwrite, _ := body["Overwrite"].(bool)
 
+	key := accountKey(ctx, name) // a name without ':' is always the caller's account's own
 	stored := value
 	if ptype == "SecureString" {
-		ct, err := h.encryptValue(ctx, name, value)
+		ct, err := h.encryptValue(ctx, key, value)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
 		stored = ct
 	}
-	ver, err := h.store.putParam(ctx, name, ptype, stored, overwrite, tagsFromBody(body["Tags"]))
+	ver, err := h.store.putParam(ctx, key, ptype, stored, overwrite, tagsFromBody(body["Tags"]))
 	if err == errParamExists {
 		writeSSMError(w, http.StatusBadRequest, "ParameterAlreadyExists", requestID,
 			"The parameter already exists. To overwrite this value, set the overwrite option in the request to true.")
@@ -346,7 +367,7 @@ func (h *ssmHandler) getParameter(ctx context.Context, w http.ResponseWriter, r 
 		return
 	}
 	h.audit(ctx, "GetParameter", p.base, "version", p.version, "withDecryption", withDec)
-	writeSSMJSON(w, requestID, map[string]any{"Parameter": h.paramJSON(p, val, raw)})
+	writeSSMJSON(w, requestID, map[string]any{"Parameter": h.paramJSON(ctx, p, val, raw)})
 }
 
 func (h *ssmHandler) getParameters(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, body map[string]any, claims iam.Claims) {
@@ -382,7 +403,7 @@ func (h *ssmHandler) getParameters(ctx context.Context, w http.ResponseWriter, r
 				"principal is not permitted kms:Decrypt on the SSM managed key (WithDecryption requires ssm:GetParameters + kms:Decrypt)")
 			return
 		}
-		out = append(out, h.paramJSON(p, val, raw))
+		out = append(out, h.paramJSON(ctx, p, val, raw))
 	}
 	h.audit(ctx, "GetParameters", "", "count", len(out))
 	writeSSMJSON(w, requestID, map[string]any{"Parameters": out, "InvalidParameters": invalid})
@@ -396,36 +417,44 @@ func (h *ssmHandler) getParametersByPath(ctx context.Context, w http.ResponseWri
 	}
 	recursive, _ := body["Recursive"].(bool)
 	withDec, _ := body["WithDecryption"].(bool)
-	rows, err := h.store.byPath(ctx, path, recursive)
+	// The caller's account's subtree: its path under its account's key.
+	rows, err := h.store.byPath(ctx, accountKey(ctx, path), recursive)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	out := make([]any, 0, len(rows))
 	for _, row := range rows {
+		name, own := nameOfAccountKey(ctx, row.Name)
+		if !own {
+			continue // another account's parameter (a management path spelled as a member account's key)
+		}
 		val, _, terr := h.store.getVersion(ctx, row.Name, row.CurrentVer)
 		if terr != nil {
 			h.internal(w, requestID, terr)
 			return
 		}
-		p := resolvedParam{base: row.Name, ptype: row.Type, version: row.CurrentVer, stored: val, lastModified: row.LastModified}
+		p := resolvedParam{base: name, key: row.Name, ptype: row.Type, version: row.CurrentVer, stored: val, lastModified: row.LastModified}
 		rval, aerr := h.renderParamValueBatch(ctx, r, p, withDec, claims)
 		if aerr {
 			writeSSMError(w, http.StatusForbidden, "AccessDeniedException", requestID,
 				"principal is not permitted kms:Decrypt on the SSM managed key (WithDecryption requires kms:Decrypt)")
 			return
 		}
-		out = append(out, h.paramJSON(p, rval, row.Name))
+		out = append(out, h.paramJSON(ctx, p, rval, name))
 	}
 	h.audit(ctx, "GetParametersByPath", path, "count", len(out), "recursive", recursive)
 	writeSSMJSON(w, requestID, map[string]any{"Parameters": out})
 }
 
 func (h *ssmHandler) deleteParameter(ctx context.Context, w http.ResponseWriter, requestID, name string) {
-	ok, err := h.store.deleteParam(ctx, name)
-	if err != nil {
-		h.internal(w, requestID, err)
-		return
+	ok := false
+	if key, own := h.paramKey(ctx, name); own {
+		var err error
+		if ok, err = h.store.deleteParam(ctx, key); err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
 	}
 	if !ok {
 		writeSSMError(w, http.StatusBadRequest, "ParameterNotFound", requestID, "Parameter "+name+" not found.")
@@ -446,7 +475,12 @@ func (h *ssmHandler) deleteParameters(ctx context.Context, w http.ResponseWriter
 			invalid = append(invalid, raw)
 			continue
 		}
-		ok, err := h.store.deleteParam(ctx, base)
+		key, own := h.paramKey(ctx, base)
+		if !own || h.foreignRef(ctx, raw) {
+			invalid = append(invalid, raw)
+			continue
+		}
+		ok, err := h.store.deleteParam(ctx, key)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
@@ -462,17 +496,25 @@ func (h *ssmHandler) deleteParameters(ctx context.Context, w http.ResponseWriter
 }
 
 func (h *ssmHandler) describeParameters(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
-	rows, err := h.store.list(ctx, toInt(body["MaxResults"]))
+	member := ""
+	if isMemberRequest(ctx) {
+		member = callerAccount(ctx)
+	}
+	rows, err := h.store.list(ctx, toInt(body["MaxResults"]), member)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	out := make([]any, 0, len(rows))
 	for _, row := range rows {
+		name, own := nameOfAccountKey(ctx, row.Name)
+		if !own {
+			continue // another account's parameter
+		}
 		out = append(out, map[string]any{
-			"Name": row.Name, "Type": row.Type, "Version": row.CurrentVer,
+			"Name": name, "Type": row.Type, "Version": row.CurrentVer,
 			"LastModifiedDate": epoch(row.LastModified), "Tier": "Standard",
-			"ARN": h.paramARN(row.Name),
+			"ARN": h.paramARN(ctx, name),
 		})
 	}
 	writeSSMJSON(w, requestID, map[string]any{"Parameters": out})
@@ -480,7 +522,11 @@ func (h *ssmHandler) describeParameters(ctx context.Context, w http.ResponseWrit
 
 func (h *ssmHandler) getParameterHistory(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, body map[string]any, name string, claims iam.Claims) {
 	withDec, _ := body["WithDecryption"].(bool)
-	meta, ok, err := h.store.getParam(ctx, name)
+	key, own := h.paramKey(ctx, name)
+	meta, ok, err := ssmParam{}, false, error(nil)
+	if own {
+		meta, ok, err = h.store.getParam(ctx, key)
+	}
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -489,7 +535,7 @@ func (h *ssmHandler) getParameterHistory(ctx context.Context, w http.ResponseWri
 		writeSSMError(w, http.StatusBadRequest, "ParameterNotFound", requestID, "Parameter "+name+" not found.")
 		return
 	}
-	hist, err := h.store.history(ctx, name)
+	hist, err := h.store.history(ctx, key)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -507,7 +553,7 @@ func (h *ssmHandler) getParameterHistory(ctx context.Context, w http.ResponseWri
 	for _, v := range hist {
 		value := v.Value
 		if meta.Type == "SecureString" && withDec {
-			pt, derr := h.decryptValue(ctx, name, v.Value)
+			pt, derr := h.decryptValue(ctx, key, v.Value)
 			if derr != nil {
 				h.internal(w, requestID, derr)
 				return
@@ -523,7 +569,11 @@ func (h *ssmHandler) getParameterHistory(ctx context.Context, w http.ResponseWri
 }
 
 func (h *ssmHandler) labelParameterVersion(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, name string) {
-	meta, ok, err := h.store.getParam(ctx, name)
+	key, own := h.paramKey(ctx, name)
+	meta, ok, err := ssmParam{}, false, error(nil)
+	if own {
+		meta, ok, err = h.store.getParam(ctx, key)
+	}
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -536,7 +586,7 @@ func (h *ssmHandler) labelParameterVersion(ctx context.Context, w http.ResponseW
 	if v, has := body["ParameterVersion"]; has {
 		ver = int64(toInt(v))
 	}
-	if _, vok, verr := h.store.getVersion(ctx, name, ver); verr != nil {
+	if _, vok, verr := h.store.getVersion(ctx, key, ver); verr != nil {
 		h.internal(w, requestID, verr)
 		return
 	} else if !vok {
@@ -550,7 +600,7 @@ func (h *ssmHandler) labelParameterVersion(ctx context.Context, w http.ResponseW
 			invalid = append(invalid, l) // AWS rejects labels starting with a digit or reserved prefixes
 			continue
 		}
-		if err := h.store.labelVersion(ctx, name, l, ver); err != nil {
+		if err := h.store.labelVersion(ctx, key, l, ver); err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
@@ -565,7 +615,11 @@ func (h *ssmHandler) changeTags(ctx context.Context, w http.ResponseWriter, requ
 		writeSSMError(w, http.StatusBadRequest, "ValidationException", requestID, "the open-infra shim tags only ResourceType=Parameter.")
 		return
 	}
-	meta, ok, err := h.store.getParam(ctx, name)
+	key, own := h.paramKey(ctx, name)
+	meta, ok, err := ssmParam{}, false, error(nil)
+	if own {
+		meta, ok, err = h.store.getParam(ctx, key)
+	}
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -587,7 +641,7 @@ func (h *ssmHandler) changeTags(ctx context.Context, w http.ResponseWriter, requ
 			delete(tags, k)
 		}
 	}
-	if _, err := h.store.setTags(ctx, name, tags); err != nil {
+	if _, err := h.store.setTags(ctx, key, tags); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -597,7 +651,11 @@ func (h *ssmHandler) changeTags(ctx context.Context, w http.ResponseWriter, requ
 
 func (h *ssmHandler) listTags(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	name := strFromBody(body, "ResourceId")
-	meta, ok, err := h.store.getParam(ctx, name)
+	key, own := h.paramKey(ctx, name)
+	meta, ok, err := ssmParam{}, false, error(nil)
+	if own {
+		meta, ok, err = h.store.getParam(ctx, key)
+	}
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -612,17 +670,23 @@ func (h *ssmHandler) listTags(ctx context.Context, w http.ResponseWriter, reques
 // --- resolution + rendering helpers ---
 
 type resolvedParam struct {
-	base         string
+	base         string // the parameter's name
+	key          string // its store key (accountKey of base), which a SecureString's value is bound to
 	ptype        string
 	version      int64
 	stored       string // plaintext for String/StringList; KMS ciphertext for SecureString
 	lastModified time.Time
 }
 
-// resolveParam parses a Name (possibly Name:version or Name:label, or an ARN) and loads that exact version.
+// resolveParam parses a Name (possibly Name:version or Name:label, or an ARN) and loads that exact version,
+// of the caller's account's parameter.
 func (h *ssmHandler) resolveParam(ctx context.Context, raw string) (resolvedParam, bool, error) {
 	base, version, label := parseParamRef(raw)
-	meta, ok, err := h.store.getParam(ctx, base)
+	key, own := h.paramKey(ctx, base)
+	if !own || h.foreignRef(ctx, raw) {
+		return resolvedParam{}, false, nil
+	}
+	meta, ok, err := h.store.getParam(ctx, key)
 	if err != nil || !ok {
 		return resolvedParam{}, ok, err
 	}
@@ -631,7 +695,7 @@ func (h *ssmHandler) resolveParam(ctx context.Context, raw string) (resolvedPara
 	case version > 0:
 		target = version
 	case label != "":
-		v, lok, lerr := h.store.versionForLabel(ctx, base, label)
+		v, lok, lerr := h.store.versionForLabel(ctx, key, label)
 		if lerr != nil {
 			return resolvedParam{}, false, lerr
 		}
@@ -640,11 +704,33 @@ func (h *ssmHandler) resolveParam(ctx context.Context, raw string) (resolvedPara
 		}
 		target = v
 	}
-	val, vok, verr := h.store.getVersion(ctx, base, target)
+	val, vok, verr := h.store.getVersion(ctx, key, target)
 	if verr != nil || !vok {
 		return resolvedParam{}, vok, verr
 	}
-	return resolvedParam{base: base, ptype: meta.Type, version: target, stored: val, lastModified: meta.LastModified}, true, nil
+	return resolvedParam{base: base, key: key, ptype: meta.Type, version: target, stored: val, lastModified: meta.LastModified}, true, nil
+}
+
+// acct is the account the request acts in, as its responses name it: the management account's own
+// (h.account, exactly as before) or the member account the request acts in.
+func (h *ssmHandler) acct(ctx context.Context) string {
+	if isMemberRequest(ctx) {
+		return callerAccount(ctx)
+	}
+	return h.account
+}
+
+// paramKey is the store key of a parameter name in the caller's account, and whether the name can be one
+// of its parameters at all (a name spelled as a member account's key is none of the management account's).
+func (h *ssmHandler) paramKey(ctx context.Context, name string) (string, bool) {
+	k := accountKey(ctx, name)
+	_, ok := nameOfAccountKey(ctx, k)
+	return k, ok
+}
+
+// foreignRef reports whether a member account's request names a parameter by the ARN of another account.
+func (h *ssmHandler) foreignRef(ctx context.Context, raw string) bool {
+	return isMemberRequest(ctx) && strings.HasPrefix(raw, "arn:") && awsidentity.AccountOfARN(raw) != callerAccount(ctx)
 }
 
 // renderParamValue decides the Value to return for a single-param op, applying the two-permission
@@ -661,7 +747,7 @@ func (h *ssmHandler) renderParamValue(ctx context.Context, w http.ResponseWriter
 			"principal is not permitted kms:Decrypt on the SSM managed key (WithDecryption requires ssm:GetParameter + kms:Decrypt)")
 		return "", true
 	}
-	pt, err := h.decryptValue(ctx, p.base, p.stored)
+	pt, err := h.decryptValue(ctx, p.key, p.stored)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return "", true
@@ -678,28 +764,28 @@ func (h *ssmHandler) renderParamValueBatch(ctx context.Context, r *http.Request,
 	if !h.canDecrypt(ctx, claims, r) {
 		return "", true
 	}
-	pt, err := h.decryptValue(ctx, p.base, p.stored)
+	pt, err := h.decryptValue(ctx, p.key, p.stored)
 	if err != nil {
 		return "", true
 	}
 	return pt, false
 }
 
-func (h *ssmHandler) paramJSON(p resolvedParam, value, selector string) map[string]any {
+func (h *ssmHandler) paramJSON(ctx context.Context, p resolvedParam, value, selector string) map[string]any {
 	return map[string]any{
 		"Name": p.base, "Type": p.ptype, "Value": value, "Version": p.version,
 		"LastModifiedDate": epoch(p.lastModified),
-		"ARN":              h.paramARN(p.base),
+		"ARN":              h.paramARN(ctx, p.base),
 		"Selector":         selectorSuffix(selector),
 		"DataType":         "text",
 	}
 }
 
-func (h *ssmHandler) paramARN(name string) string {
+func (h *ssmHandler) paramARN(ctx context.Context, name string) string {
 	if strings.HasPrefix(name, "/") {
-		return "arn:aws:ssm:" + h.region + ":" + h.account + ":parameter" + name
+		return "arn:aws:ssm:" + h.region + ":" + h.acct(ctx) + ":parameter" + name
 	}
-	return "arn:aws:ssm:" + h.region + ":" + h.account + ":parameter/" + name
+	return "arn:aws:ssm:" + h.region + ":" + h.acct(ctx) + ":parameter/" + name
 }
 
 func (h *ssmHandler) internal(w http.ResponseWriter, requestID string, err error) {

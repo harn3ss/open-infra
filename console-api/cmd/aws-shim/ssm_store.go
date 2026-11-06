@@ -196,11 +196,17 @@ func (s *ssmStore) byPath(ctx context.Context, pathPrefix string, recursive bool
 	return out, rows.Err()
 }
 
-func (s *ssmStore) list(ctx context.Context, limit int) ([]ssmParam, error) {
+// list lists one account's parameters, by store key: a member account's (member, its account id) are the
+// keys it prefixes, the management account's (member "") every key that is not a member account's.
+func (s *ssmStore) list(ctx context.Context, limit int, member string) ([]ssmParam, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT name, type, tags, current_version, created, last_modified FROM ssm_params ORDER BY name LIMIT $1`, limit)
+	where, args := `name !~ '^[0-9]{12}:.'`, []any{limit} // memberKeyRe
+	if member != "" {
+		where, args = `left(name, length($2)) = $2`, append(args, member+":")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT name, type, tags, current_version, created, last_modified FROM ssm_params WHERE `+where+` ORDER BY name LIMIT $1`, args...)
 	if err != nil {
 		return nil, err
 	}
