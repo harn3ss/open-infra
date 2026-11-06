@@ -29,6 +29,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// Kinesis keeps each account's streams apart: a stream's name is unique within its account, its ARN names
+// that account, and a member account's stream is kept under its account's key (accountKey) — its shards
+// and records with it. A shard iterator carries the stream's key, so it reads only the account's stream it
+// was issued for. The retention reaper trims every account's records by each stream's own retention.
+func init() { accountScopedServices["kinesis"] = true }
+
 const defaultShardCount = 4
 
 // maxRecordBytes is the AWS per-record data limit (1 MiB, on the decoded blob).
@@ -106,14 +112,17 @@ func (h *kinesisHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	if op == "ListStreams" {
 		stream = "" // it lists every stream: a StreamName sent with it must not scope the check to one
 	}
+	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 	if op == "GetRecords" {
 		if it, _ := body["ShardIterator"].(string); it != "" {
 			if dec, err := decodeIterator(it); err == nil {
-				stream = dec.Stream
+				stream = dec.Stream // the stream's key: the caller's account's stream is checked by its name
+				if name, own := nameOfAccountKey(ctx, dec.Stream); own {
+					stream = name
+				}
 			}
 		}
 	}
-	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 
 	// kinesis:<Op> on the stream (decide): in legacy the coarse SubjectAccessReview, then the data-plane
 	// refinement per stream (an assumed role is checked on every op, ListStreams on Stream::*).
@@ -173,7 +182,13 @@ func (h *kinesisHandler) createStream(ctx context.Context, w http.ResponseWriter
 	if shardCount < 1 {
 		shardCount = 1
 	}
-	created, err := h.store.createStream(ctx, name, shardCount, 24)
+	key, own := h.streamKey(ctx, name)
+	if !own {
+		writeKinesisError(w, http.StatusBadRequest, "ValidationException", requestID,
+			"1 validation error detected: Value at 'streamName' failed to satisfy constraint: Member must satisfy regular expression pattern: [a-zA-Z0-9_.-]+")
+		return
+	}
+	created, err := h.store.createStream(ctx, key, shardCount, 24)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -194,8 +209,8 @@ func (h *kinesisHandler) describeStream(ctx context.Context, w http.ResponseWrit
 	}
 	writeKinesisJSON(w, requestID, map[string]any{
 		"StreamDescription": map[string]any{
-			"StreamName":              st.Name,
-			"StreamARN":               h.streamARN(st.Name),
+			"StreamName":              name,
+			"StreamARN":               h.streamARN(ctx, name),
 			"StreamStatus":            "ACTIVE",
 			"RetentionPeriodHours":    st.Retention,
 			"StreamCreationTimestamp": epochSeconds(st.Created.UnixMilli()),
@@ -213,8 +228,8 @@ func (h *kinesisHandler) describeStreamSummary(ctx context.Context, w http.Respo
 	}
 	writeKinesisJSON(w, requestID, map[string]any{
 		"StreamDescriptionSummary": map[string]any{
-			"StreamName":              st.Name,
-			"StreamARN":               h.streamARN(st.Name),
+			"StreamName":              name,
+			"StreamARN":               h.streamARN(ctx, name),
 			"StreamStatus":            "ACTIVE",
 			"RetentionPeriodHours":    st.Retention,
 			"OpenShardCount":          st.ShardCount,
@@ -225,22 +240,28 @@ func (h *kinesisHandler) describeStreamSummary(ctx context.Context, w http.Respo
 }
 
 func (h *kinesisHandler) listStreams(ctx context.Context, w http.ResponseWriter, requestID string) {
-	names, err := h.store.listStreams(ctx)
+	keys, err := h.store.listStreams(ctx)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
-	if names == nil {
-		names = []string{}
+	names := []string{}
+	for _, k := range keys {
+		if name, own := nameOfAccountKey(ctx, k); own {
+			names = append(names, name) // the caller's account's streams alone
+		}
 	}
 	writeKinesisJSON(w, requestID, map[string]any{"StreamNames": names, "HasMoreStreams": false})
 }
 
 func (h *kinesisHandler) deleteStream(ctx context.Context, w http.ResponseWriter, requestID, name string) {
-	ok, err := h.store.deleteStream(ctx, name)
-	if err != nil {
-		h.internal(w, requestID, err)
-		return
+	ok := false
+	if key, own := h.streamKey(ctx, name); own {
+		var err error
+		if ok, err = h.store.deleteStream(ctx, key); err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
 	}
 	if !ok {
 		writeKinesisError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Stream "+name+" not found.")
@@ -274,7 +295,7 @@ func (h *kinesisHandler) putRecord(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 	shard := shardID(shardForKey(pk, st.ShardCount))
-	seq, err := h.store.appendRecord(ctx, name, shard, pk, data, time.Now().UnixMilli())
+	seq, err := h.store.appendRecord(ctx, st.Name, shard, pk, data, time.Now().UnixMilli())
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -311,7 +332,7 @@ func (h *kinesisHandler) putRecords(ctx context.Context, w http.ResponseWriter, 
 			continue
 		}
 		shard := shardID(shardForKey(pk, st.ShardCount))
-		seq, err := h.store.appendRecord(ctx, name, shard, pk, data, now)
+		seq, err := h.store.appendRecord(ctx, st.Name, shard, pk, data, now)
 		if err != nil {
 			failed++
 			out = append(out, map[string]any{"ErrorCode": "InternalFailure", "ErrorMessage": "could not persist record"})
@@ -324,7 +345,8 @@ func (h *kinesisHandler) putRecords(ctx context.Context, w http.ResponseWriter, 
 }
 
 func (h *kinesisHandler) getShardIterator(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, name string) {
-	if _, ok, _ := h.mustStream(ctx, w, requestID, name); !ok {
+	st, ok, _ := h.mustStream(ctx, w, requestID, name)
+	if !ok {
 		return
 	}
 	shard, _ := body["ShardId"].(string)
@@ -333,7 +355,7 @@ func (h *kinesisHandler) getShardIterator(ctx context.Context, w http.ResponseWr
 		writeKinesisError(w, http.StatusBadRequest, "InvalidArgumentException", requestID, "GetShardIterator requires ShardId and ShardIteratorType.")
 		return
 	}
-	minSeq, latestSeq, _, hasRecords, err := h.store.shardBounds(ctx, name, shard)
+	minSeq, latestSeq, _, hasRecords, err := h.store.shardBounds(ctx, st.Name, shard)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -372,7 +394,7 @@ func (h *kinesisHandler) getShardIterator(ctx context.Context, w http.ResponseWr
 			writeKinesisError(w, http.StatusBadRequest, "InvalidArgumentException", requestID, "AT_TIMESTAMP requires a Timestamp.")
 			return
 		}
-		s, terr := h.store.seqAtOrAfterTimestamp(ctx, name, shard, int64(tsSec*1000))
+		s, terr := h.store.seqAtOrAfterTimestamp(ctx, st.Name, shard, int64(tsSec*1000))
 		if terr != nil {
 			h.internal(w, requestID, terr)
 			return
@@ -386,12 +408,17 @@ func (h *kinesisHandler) getShardIterator(ctx context.Context, w http.ResponseWr
 		writeKinesisError(w, http.StatusBadRequest, "InvalidArgumentException", requestID, "unsupported ShardIteratorType "+itype)
 		return
 	}
-	writeKinesisJSON(w, requestID, map[string]any{"ShardIterator": encodeIterator(shardIterator{Stream: name, Shard: shard, NextSeq: next})})
+	writeKinesisJSON(w, requestID, map[string]any{"ShardIterator": encodeIterator(shardIterator{Stream: st.Name, Shard: shard, NextSeq: next})})
 }
 
 func (h *kinesisHandler) getRecords(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	itStr, _ := body["ShardIterator"].(string)
 	it, err := decodeIterator(itStr)
+	if err == nil {
+		if _, own := nameOfAccountKey(ctx, it.Stream); !own {
+			err = errForeignIterator // issued for another account's stream: it reads nothing here
+		}
+	}
 	if err != nil {
 		writeKinesisError(w, http.StatusBadRequest, "InvalidArgumentException", requestID, "invalid ShardIterator.")
 		return
@@ -432,7 +459,8 @@ func (h *kinesisHandler) getRecords(ctx context.Context, w http.ResponseWriter, 
 }
 
 func (h *kinesisHandler) changeRetention(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, name string) {
-	if _, ok, _ := h.mustStream(ctx, w, requestID, name); !ok {
+	st, ok, _ := h.mustStream(ctx, w, requestID, name)
+	if !ok {
 		return
 	}
 	hours := toInt(body["RetentionPeriodHours"])
@@ -440,7 +468,7 @@ func (h *kinesisHandler) changeRetention(ctx context.Context, w http.ResponseWri
 		writeKinesisError(w, http.StatusBadRequest, "InvalidArgumentException", requestID, "RetentionPeriodHours must be between 24 and 8760.")
 		return
 	}
-	if err := h.store.setRetention(ctx, name, hours); err != nil {
+	if err := h.store.setRetention(ctx, st.Name, hours); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -450,12 +478,18 @@ func (h *kinesisHandler) changeRetention(ctx context.Context, w http.ResponseWri
 
 // --- helpers ---
 
+// mustStream loads the caller's account's stream of this name; its Name is the stream's store key, which
+// its shards and records are kept under.
 func (h *kinesisHandler) mustStream(ctx context.Context, w http.ResponseWriter, requestID, name string) (kinesisStream, bool, error) {
 	if name == "" {
 		writeKinesisError(w, http.StatusBadRequest, "InvalidArgumentException", requestID, "a StreamName is required.")
 		return kinesisStream{}, false, nil
 	}
-	st, ok, err := h.store.getStream(ctx, name)
+	key, own := h.streamKey(ctx, name)
+	st, ok, err := kinesisStream{}, false, error(nil)
+	if own {
+		st, ok, err = h.store.getStream(ctx, key)
+	}
 	if err != nil {
 		h.internal(w, requestID, err)
 		return kinesisStream{}, false, err
@@ -485,9 +519,26 @@ func (h *kinesisHandler) shardsJSON(shardCount int) []any {
 	return out
 }
 
-func (h *kinesisHandler) streamARN(name string) string {
-	return "arn:aws:kinesis:" + h.region + ":" + h.account + ":stream/" + name
+// streamARN is the ARN of a stream of the account the request acts in: the management account's own
+// (h.account, exactly as before) or the member account's.
+func (h *kinesisHandler) streamARN(ctx context.Context, name string) string {
+	acct := h.account
+	if isMemberRequest(ctx) {
+		acct = callerAccount(ctx)
+	}
+	return "arn:aws:kinesis:" + h.region + ":" + acct + ":stream/" + name
 }
+
+// streamKey is the store key of a stream name in the caller's account, and whether the name can be one of
+// its streams at all (a name spelled as a member account's key is none of the management account's).
+func (h *kinesisHandler) streamKey(ctx context.Context, name string) (string, bool) {
+	k := accountKey(ctx, name)
+	_, ok := nameOfAccountKey(ctx, k)
+	return k, ok
+}
+
+// errForeignIterator is a shard iterator issued for another account's stream.
+var errForeignIterator = fmt.Errorf("shard iterator of another account's stream")
 
 func (h *kinesisHandler) internal(w http.ResponseWriter, requestID string, err error) {
 	h.logger.Error("kinesis backend error", "error", err.Error())
