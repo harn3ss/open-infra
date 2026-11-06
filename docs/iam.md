@@ -270,8 +270,13 @@ exist, so none of their writes reaches the cluster as them.
 The probes run on their own too (`SHIM_ENDPOINT` to reach the AWS front door; the console is reached
 through a port-forward unless `CONSOLE_ENDPOINT` is set); `probe/aws-shim-organizations.sh` proves the
 Organizations front door. A new principal reaches each door within 30 seconds (each caches its IAM policy
-for that long); the probes wait `IAM_SETTLE_SECONDS` (35) for it. Exit 0 is a pass, 1 a failure, 42
-inconclusive (for instance IAM policy not deciding for the probe's principals).
+for that long); the probes wait `IAM_SETTLE_SECONDS` (35) for it. Once IAM policy decides, a front door
+that writes to the cluster as the caller (S3 CreateBucket, CloudFormation, Organizations CreateAccount)
+also needs the caller's compiled rights: the IAM compiler compiles a new principal within one pass (every
+15 seconds) and the authorization webhook reloads them within 30 seconds, so a principal made a moment
+ago can see AccessDenied for up to about 45 seconds, as AWS IAM changes take a moment to propagate; the
+probes that write as a new caller wait for it with a SubjectAccessReview. Exit 0 is a pass, 1 a failure,
+42 inconclusive (for instance IAM policy not deciding for the probe's principals).
 
 ## Approving a quota increase (operators)
 
