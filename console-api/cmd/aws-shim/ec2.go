@@ -27,6 +27,12 @@
 // assumed role. The kinds are read and deleted with the CALLER's own Kubernetes authority (impersonation,
 // as the CloudFormation front door applies them), so RBAC decides what a caller sees; key pairs, kept in
 // the shim's store, take the coarse RBAC check every store-backed front door makes.
+//
+// Accounts, as on AWS: each account's resources are its own. The management account's are in the stack
+// namespace, as they always were; a member account's are in its home namespace, its key pairs are its own
+// (the same name may be a key pair in both), and the OwnerId and ARNs of what it is answered name it. A
+// member account never sees, changes or deletes another account's. The catalog's images are the
+// platform's in every account (their owner is the install's account, as a public AMI's is its publisher's).
 package main
 
 import (
@@ -451,15 +457,22 @@ func ec2Time(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.00
 
 // --- reading the kinds, for the caller ---
 
-// listForCaller lists a kind in the account namespace for a caller the front door has authorized. In
-// legacy the read is made with the caller's Kubernetes authority, its RBAC being its read permission
-// (denied reports that RBAC refused it). In enforce IAM policy has already decided the call, and the read
-// is what it allowed: it is made with the shim's own client, in the account namespace alone — the caller's
-// RBAC (generated from the same policy by the IAM compiler, and not there before it runs) is never a second
-// decision on a read IAM policy allowed. A write still acts as the caller (applierFor).
+// listForCaller lists a kind in the caller's account's namespace (accountNS) for a caller the front door
+// has authorized. In legacy the read is made with the caller's Kubernetes authority, its RBAC being its
+// read permission (denied reports that RBAC refused it). In enforce IAM policy has already decided the
+// call, and the read is what it allowed: it is made with the shim's own client, in the account namespace
+// alone — the caller's RBAC (generated from the same policy by the IAM compiler, and not there before it
+// runs) is never a second decision on a read IAM policy allowed. A write still acts as the caller
+// (applierFor).
 func (h *ec2Handler) listForCaller(ctx context.Context, claims iam.Claims, gvr schema.GroupVersionResource) (items []unstructured.Unstructured, denied bool, err error) {
-	return h.listForCallerIn(ctx, claims, gvr, h.door.ns)
+	return h.listForCallerIn(ctx, claims, gvr, h.accountNS(ctx))
 }
+
+// accountNS is the namespace the caller's account's instances, volumes, security groups, VPCs, subnets and
+// addresses are in (accountNamespace): the stack namespace for the management account, where they always
+// were, and a member account's home for a member's — so a member account reads, changes and deletes its
+// own alone, never the management account's or another member's.
+func (h *ec2Handler) accountNS(ctx context.Context) string { return accountNamespace(ctx, h.door.ns) }
 
 // listForCallerIn is listForCaller in namespace ns (the caller's account's: accountNamespace).
 func (h *ec2Handler) listForCallerIn(ctx context.Context, claims iam.Claims, gvr schema.GroupVersionResource, ns string) (items []unstructured.Unstructured, denied bool, err error) {
@@ -516,6 +529,21 @@ func (h *ec2Handler) account() string {
 	}
 	return "000000000000"
 }
+
+// ownerAccount is the account the caller's resources belong to — their OwnerId, and the account their
+// ARNs name: a member account's own id, the install's for the management account (whose answers do not
+// change).
+func (h *ec2Handler) ownerAccount(ctx context.Context) string {
+	if isMemberRequest(ctx) {
+		return callerAccount(ctx)
+	}
+	return h.account()
+}
+
+// EC2 keeps each account's resources apart: a member account's instances, volumes, groups, VPCs, subnets
+// and addresses are in its home namespace, its key pairs are its own (ec2_keypairs.go), and their OwnerId
+// and ARNs name it.
+func init() { accountScopedServices["ec2"] = true }
 
 // --- key pairs ---
 

@@ -42,6 +42,11 @@ type ec2KeyPair struct {
 
 var errKeyPairExists = errors.New("key pair exists")
 
+// Accounts: a key pair is its account's, and its name is unique within that account (the same name may be
+// a key pair in two accounts, each its own). Each row records its account in the account column: empty for
+// the management account (every key pair made before accounts, and every one it makes), the member
+// account's id for a member's. A key pair's name may hold any printable ASCII, ":" included, so the account
+// is a column of its own, never a prefix of the name. Its id (key-…) is unique across accounts.
 func (s *ec2KeyStore) ensureSchema(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS ec2_key_pairs (
@@ -52,23 +57,48 @@ CREATE TABLE IF NOT EXISTS ec2_key_pairs (
     public_key  text NOT NULL,
     tags        jsonb NOT NULL DEFAULT '{}',
     created     timestamptz NOT NULL DEFAULT now()
-);`)
+);
+-- The account a key pair belongs to ('' = the management account, which every earlier row is): the primary
+-- key on name alone becomes (account, name), once.
+ALTER TABLE ec2_key_pairs ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT '';
+DO $$
+DECLARE pk text;
+BEGIN
+  SELECT conname INTO pk FROM pg_constraint
+   WHERE conrelid = 'ec2_key_pairs'::regclass AND contype = 'p' AND array_length(conkey, 1) = 1;
+  IF pk IS NOT NULL THEN
+    EXECUTE format('ALTER TABLE ec2_key_pairs DROP CONSTRAINT %I', pk);
+    ALTER TABLE ec2_key_pairs ADD PRIMARY KEY (account, name);
+  END IF;
+END $$;`)
 	return err
 }
 
+// ec2KeyAccount is the account column of the caller's account's key pairs: "" for the management account
+// (where every key pair always was), the member account's id for a member's.
+func ec2KeyAccount(ctx context.Context) string {
+	if !isMemberRequest(ctx) {
+		return ""
+	}
+	return callerAccount(ctx)
+}
+
+// put records a key pair of the caller's account; errKeyPairExists when the account has one of that name.
 func (s *ec2KeyStore) put(ctx context.Context, k ec2KeyPair) (ec2KeyPair, error) {
 	tags, _ := json.Marshal(k.Tags)
-	err := s.db.QueryRowContext(ctx, `INSERT INTO ec2_key_pairs (name, key_pair_id, key_type, fingerprint, public_key, tags)
-VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (name) DO NOTHING RETURNING created`,
-		k.Name, k.ID, k.Type, k.Fingerprint, k.PublicKey, string(tags)).Scan(&k.Created)
+	err := s.db.QueryRowContext(ctx, `INSERT INTO ec2_key_pairs (account, name, key_pair_id, key_type, fingerprint, public_key, tags)
+VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (account, name) DO NOTHING RETURNING created`,
+		ec2KeyAccount(ctx), k.Name, k.ID, k.Type, k.Fingerprint, k.PublicKey, string(tags)).Scan(&k.Created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ec2KeyPair{}, errKeyPairExists
 	}
 	return k, err
 }
 
+// list is the caller's account's key pairs, by name.
 func (s *ec2KeyStore) list(ctx context.Context) ([]ec2KeyPair, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name, key_pair_id, key_type, fingerprint, public_key, tags, created FROM ec2_key_pairs ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT name, key_pair_id, key_type, fingerprint, public_key, tags, created FROM ec2_key_pairs
+WHERE account=$1 ORDER BY name`, ec2KeyAccount(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -86,18 +116,21 @@ func (s *ec2KeyStore) list(ctx context.Context) ([]ec2KeyPair, error) {
 	return out, rows.Err()
 }
 
-// delete removes the key pair named name or with id keyID; deleting one that does not exist succeeds, as
-// on AWS. It returns the id of the pair removed ("" for none).
+// delete removes the caller's account's key pair named name or with id keyID; deleting one that does not
+// exist succeeds, as on AWS (another account's key pair of that name or id is not the caller's, and is
+// left as it is). It returns the id of the pair removed ("" for none).
 func (s *ec2KeyStore) delete(ctx context.Context, name, keyID string) (string, error) {
 	var id string
-	err := s.db.QueryRowContext(ctx, `DELETE FROM ec2_key_pairs WHERE ($1 <> '' AND name=$1) OR ($2 <> '' AND key_pair_id=$2) RETURNING key_pair_id`, name, keyID).Scan(&id)
+	err := s.db.QueryRowContext(ctx, `DELETE FROM ec2_key_pairs WHERE account=$3 AND (($1 <> '' AND name=$1) OR ($2 <> '' AND key_pair_id=$2))
+RETURNING key_pair_id`, name, keyID, ec2KeyAccount(ctx)).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return id, err
 }
 
-// publicKeys is every key pair's public key by name: the CloudFormation front door's Capabilities.KeyPairs.
+// publicKeys is every key pair of the account ctx acts in, its public key by name: the CloudFormation front
+// door's Capabilities.KeyPairs (a stack's instance names a key pair of the stack's own account).
 func (s *ec2KeyStore) publicKeys(ctx context.Context) (map[string]string, error) {
 	all, err := s.list(ctx)
 	if err != nil {

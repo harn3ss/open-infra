@@ -132,6 +132,9 @@ func (h *ec2Handler) instanceStateOp(ctx context.Context, w http.ResponseWriter,
 		h.readFailed(w, requestID, "instance", true, err)
 		return
 	}
+	// The instances are the caller's account's (instancesForCaller read them in its namespace), and each is
+	// changed there.
+	ns := h.accountNS(ctx)
 	var changes []string
 	for _, id := range ids {
 		in := byID[id]
@@ -141,22 +144,22 @@ func (h *ec2Handler) instanceStateOp(ctx context.Context, w http.ResponseWriter,
 		switch op {
 		case "StopInstances":
 			if in.state != "stopped" && in.state != "stopping" {
-				aerr = h.setRunning(ctx, ap, name, false)
+				aerr = h.setRunning(ctx, ap, ns, name, false)
 				change.curCode, change.curState = 64, "stopping"
 			}
 		case "StartInstances":
 			if in.state == "stopped" {
-				aerr = h.setRunning(ctx, ap, name, true)
+				aerr = h.setRunning(ctx, ap, ns, name, true)
 				change.curCode, change.curState = 0, "pending"
 			}
 		case "TerminateInstances":
 			if in.state != "shutting-down" {
 				policy := metav1.DeletePropagationBackground
-				aerr = ap.caller.Resource(vmClaimGVR).Namespace(h.door.ns).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &policy})
+				aerr = ap.caller.Resource(vmClaimGVR).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &policy})
 				change.curCode, change.curState = 32, "shutting-down"
 			}
 		case "RebootInstances":
-			aerr = h.reboot(ctx, ap, name)
+			aerr = h.reboot(ctx, ap, ns, name)
 		}
 		switch {
 		case aerr == nil:
@@ -203,29 +206,29 @@ func incorrectState(op string, in ec2Instance) string {
 	return ""
 }
 
-// setRunning sets the claim's spec.running, as the caller.
-func (h *ec2Handler) setRunning(ctx context.Context, ap *impersonatingApplier, name string, running bool) error {
+// setRunning sets claim ns/name's spec.running, as the caller.
+func (h *ec2Handler) setRunning(ctx context.Context, ap *impersonatingApplier, ns, name string, running bool) error {
 	patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"running": running}})
-	_, err := ap.caller.Resource(vmClaimGVR).Namespace(h.door.ns).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
+	_, err := ap.caller.Resource(vmClaimGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{})
 	return err
 }
 
-// reboot restarts a running VM: the request is recorded on the claim as the caller (which proves the
+// reboot restarts running VM ns/name: the request is recorded on the claim as the caller (which proves the
 // caller may change the instance), then the shim asks KubeVirt to restart the VM in place.
-func (h *ec2Handler) reboot(ctx context.Context, ap *impersonatingApplier, name string) error {
+func (h *ec2Handler) reboot(ctx context.Context, ap *impersonatingApplier, ns, name string) error {
 	patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]any{
 		rebootAnnotation: time.Now().UTC().Format(time.RFC3339)}}})
-	if _, err := ap.caller.Resource(vmClaimGVR).Namespace(h.door.ns).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+	if _, err := ap.caller.Resource(vmClaimGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
 		return err
 	}
 	if h.restartVM != nil {
-		return h.restartVM(ctx, h.door.ns, name)
+		return h.restartVM(ctx, ns, name)
 	}
 	if h.door.cs == nil {
 		return errNoRestart
 	}
 	return h.door.cs.CoreV1().RESTClient().Put().
-		AbsPath("/apis/subresources.kubevirt.io/v1/namespaces/" + h.door.ns + "/virtualmachines/" + name + "/restart").
+		AbsPath("/apis/subresources.kubevirt.io/v1/namespaces/" + ns + "/virtualmachines/" + name + "/restart").
 		Body([]byte("{}")).Do(ctx).Error()
 }
 

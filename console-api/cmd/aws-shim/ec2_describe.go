@@ -253,13 +253,14 @@ func (h *ec2Handler) describeInstances(ctx context.Context, w http.ResponseWrite
 	}
 	want := setOf(ids)
 	found := map[string]bool{}
+	acct := h.ownerAccount(ctx)
 	var sel []ec2Instance
 	for _, in := range all {
 		if in.id == "" || (len(ids) > 0 && !want[in.id]) {
 			continue
 		}
 		found[in.id] = true
-		if in.record(h.region(), h.account()).matches(fs) {
+		if in.record(h.region(), acct).matches(fs) {
 			sel = append(sel, in)
 		}
 	}
@@ -283,13 +284,14 @@ func (h *ec2Handler) describeInstances(ctx context.Context, w http.ResponseWrite
 	}
 	items := make([]string, 0, end-start)
 	for _, in := range sel[start:end] {
-		items = append(items, xtag("reservationId", in.reservationID())+xtag("ownerId", h.account())+"<groupSet/>"+
-			xset("instancesSet", []string{h.instanceXML(in)}))
+		items = append(items, xtag("reservationId", in.reservationID())+xtag("ownerId", acct)+"<groupSet/>"+
+			xset("instancesSet", []string{h.instanceXML(in, acct)}))
 	}
 	writeEC2(w, requestID, "DescribeInstances", xset("reservationSet", items)+xtag("nextToken", next))
 }
 
-func (h *ec2Handler) instanceXML(in ec2Instance) string {
+// instanceXML is an instance as DescribeInstances answers it, in account (its instance profile's).
+func (h *ec2Handler) instanceXML(in ec2Instance, account string) string {
 	region := h.region()
 	var b strings.Builder
 	b.WriteString(xtag("instanceId", in.id) + xtag("imageId", in.imageID))
@@ -324,7 +326,7 @@ func (h *ec2Handler) instanceXML(in ec2Instance) string {
 	b.WriteString(xset("blockDeviceMapping", bdm))
 	b.WriteString("<virtualizationType>hvm</virtualizationType><clientToken/>" + xtags(in.tags) + "<hypervisor>xen</hypervisor>")
 	if in.role != "" {
-		b.WriteString("<iamInstanceProfile><arn>" + xesc("arn:aws:iam::"+h.account()+":instance-profile/"+in.role) + "</arn><id>" +
+		b.WriteString("<iamInstanceProfile><arn>" + xesc("arn:aws:iam::"+account+":instance-profile/"+in.role) + "</arn><id>" +
 			xesc(strings.ToUpper(shortHashID("AIPA", in.role, 17))) + "</id></iamInstanceProfile>")
 	}
 	b.WriteString("<ebsOptimized>false</ebsOptimized><enaSupport>true</enaSupport><sourceDestCheck>true</sourceDestCheck>")
@@ -411,7 +413,7 @@ func (h *ec2Handler) volumesForCaller(ctx context.Context, claims iam.Claims) ([
 			v.snapshot = snap
 		}
 		if enc && key != "" {
-			v.kmsKey = "arn:aws:kms:" + h.region() + ":" + h.account() + ":key/" + key
+			v.kmsKey = "arn:aws:kms:" + h.region() + ":" + h.ownerAccount(ctx) + ":key/" + key
 		}
 		switch {
 		case u.GetDeletionTimestamp() != nil:
@@ -541,7 +543,7 @@ func (h *ec2Handler) deleteVolume(ctx context.Context, w http.ResponseWriter, r 
 		h.readFailed(w, requestID, "volume", true, err)
 		return
 	}
-	err = ap.caller.Resource(volumeGVR).Namespace(h.door.ns).Delete(ctx, id, metav1.DeleteOptions{})
+	err = ap.caller.Resource(volumeGVR).Namespace(h.accountNS(ctx)).Delete(ctx, id, metav1.DeleteOptions{})
 	switch {
 	case err == nil:
 	case apierrors.IsForbidden(err):
@@ -630,6 +632,7 @@ func (h *ec2Handler) describeSecurityGroups(ctx context.Context, w http.Response
 	}
 	ids, names := ec2List(r.Form, "GroupId"), ec2List(r.Form, "GroupName")
 	wantID, wantName, found := setOf(ids), setOf(names), map[string]bool{}
+	acct := h.ownerAccount(ctx)
 	var items []string
 	for i := range sgs {
 		u := &sgs[i]
@@ -642,7 +645,7 @@ func (h *ec2Handler) describeSecurityGroups(ctx context.Context, w http.Response
 			continue
 		}
 		found[u.GetName()], found[name] = true, true
-		f := map[string][]string{"group-id": {u.GetName()}, "group-name": {name}, "description": {view.GroupDescription}, "owner-id": {h.account()}}
+		f := map[string][]string{"group-id": {u.GetName()}, "group-name": {name}, "description": {view.GroupDescription}, "owner-id": {acct}}
 		ingress, _, _ := unstructured.NestedSlice(u.Object, "spec", "ingress")
 		egress, _, _ := unstructured.NestedSlice(u.Object, "spec", "egress")
 		in := sgPermissions(ingress, "from", f, "")
@@ -656,9 +659,9 @@ func (h *ec2Handler) describeSecurityGroups(ctx context.Context, w http.Response
 		if !rec.matches(fs) {
 			continue
 		}
-		items = append(items, xtag("ownerId", h.account())+xtag("groupId", u.GetName())+xtag("groupName", name)+
+		items = append(items, xtag("ownerId", acct)+xtag("groupId", u.GetName())+xtag("groupName", name)+
 			"<groupDescription>"+xesc(view.GroupDescription)+"</groupDescription>"+xset("ipPermissions", in)+
-			xset("ipPermissionsEgress", out)+xtags(view.Tags)+xtag("securityGroupArn", "arn:aws:ec2:"+h.region()+":"+h.account()+":security-group/"+u.GetName()))
+			xset("ipPermissionsEgress", out)+xtags(view.Tags)+xtag("securityGroupArn", "arn:aws:ec2:"+h.region()+":"+acct+":security-group/"+u.GetName()))
 	}
 	for _, id := range ids {
 		if !found[id] {
@@ -697,6 +700,7 @@ func (h *ec2Handler) describeVpcs(ctx context.Context, w http.ResponseWriter, r 
 	}
 	ids := ec2List(r.Form, "VpcId")
 	want, found := setOf(ids), map[string]bool{}
+	acct := h.ownerAccount(ctx)
 	var items []string
 	for i := range vpcs {
 		u := &vpcs[i]
@@ -707,7 +711,7 @@ func (h *ec2Handler) describeVpcs(ctx context.Context, w http.ResponseWriter, r 
 		view := cfn.ParseAWSView(u.GetAnnotations())
 		state := readyState(u)
 		rec := ec2Record{fields: map[string][]string{"vpc-id": {u.GetName()}, "cidr": {view.CidrBlock}, "cidr-block-association.cidr-block": {view.CidrBlock},
-			"state": {state}, "is-default": {"false"}, "owner-id": {h.account()}, "dhcp-options-id": {"default"}}, tags: view.Tags}
+			"state": {state}, "is-default": {"false"}, "owner-id": {acct}, "dhcp-options-id": {"default"}}, tags: view.Tags}
 		if !rec.matches(fs) {
 			continue
 		}
@@ -716,7 +720,7 @@ func (h *ec2Handler) describeVpcs(ctx context.Context, w http.ResponseWriter, r 
 			assoc = xset("cidrBlockAssociationSet", []string{xtag("associationId", shortHashID("vpc-cidr-assoc-", u.GetName(), 17)) +
 				xtag("cidrBlock", view.CidrBlock) + "<cidrBlockState><state>associated</state></cidrBlockState>"})
 		}
-		items = append(items, xtag("vpcId", u.GetName())+xtag("ownerId", h.account())+xtag("state", state)+xtag("cidrBlock", view.CidrBlock)+
+		items = append(items, xtag("vpcId", u.GetName())+xtag("ownerId", acct)+xtag("state", state)+xtag("cidrBlock", view.CidrBlock)+
 			assoc+"<dhcpOptionsId>default</dhcpOptionsId>"+xtags(view.Tags)+"<instanceTenancy>default</instanceTenancy><isDefault>false</isDefault>")
 	}
 	for _, id := range ids {
@@ -758,6 +762,7 @@ func (h *ec2Handler) describeSubnets(ctx context.Context, w http.ResponseWriter,
 	}
 	ids := ec2List(r.Form, "SubnetId")
 	want, found := setOf(ids), map[string]bool{}
+	acct := h.ownerAccount(ctx)
 	var items []string
 	for i := range subs {
 		u := &subs[i]
@@ -773,14 +778,14 @@ func (h *ec2Handler) describeSubnets(ctx context.Context, w http.ResponseWriter,
 			private = v
 		}
 		state := readyState(u)
-		arn := "arn:aws:ec2:" + h.region() + ":" + h.account() + ":subnet/" + u.GetName()
+		arn := "arn:aws:ec2:" + h.region() + ":" + acct + ":subnet/" + u.GetName()
 		rec := ec2Record{fields: map[string][]string{"subnet-id": {u.GetName()}, "vpc-id": {vpc}, "cidr-block": {cidr}, "cidr": {cidr}, "cidrBlock": {cidr},
 			"availability-zone": {h.zone()}, "availabilityZone": {h.zone()}, "state": {state}, "default-for-az": {"false"}, "defaultForAz": {"false"},
-			"map-public-ip-on-launch": {strconv.FormatBool(!private)}, "owner-id": {h.account()}, "subnet-arn": {arn}}, tags: view.Tags}
+			"map-public-ip-on-launch": {strconv.FormatBool(!private)}, "owner-id": {acct}, "subnet-arn": {arn}}, tags: view.Tags}
 		if !rec.matches(fs) {
 			continue
 		}
-		items = append(items, xtag("subnetId", u.GetName())+xtag("subnetArn", arn)+xtag("state", state)+xtag("ownerId", h.account())+
+		items = append(items, xtag("subnetId", u.GetName())+xtag("subnetArn", arn)+xtag("state", state)+xtag("ownerId", acct)+
 			xtag("vpcId", vpc)+xtag("cidrBlock", cidr)+"<availableIpAddressCount>"+strconv.FormatInt(usableAddresses(cidr), 10)+"</availableIpAddressCount>"+
 			xtag("availabilityZone", h.zone())+xtag("availabilityZoneId", h.zoneID())+"<defaultForAz>false</defaultForAz>"+
 			xbool("mapPublicIpOnLaunch", !private)+"<assignIpv6AddressOnCreation>false</assignIpv6AddressOnCreation>"+xtags(view.Tags))
@@ -796,6 +801,8 @@ func (h *ec2Handler) describeSubnets(ctx context.Context, w http.ResponseWriter,
 
 // --- images, regions, zones ---
 
+// describeImages lists the OS catalog: public images the platform publishes, the same in every account, so
+// their owner is the install's own account whoever asks (as a public AMI's owner is its publisher's).
 func (h *ec2Handler) describeImages(w http.ResponseWriter, r *http.Request, requestID string) {
 	fs := ec2Filters(r.Form)
 	if msg, ok := checkFilters(fs, []string{"image-id", "name", "state", "architecture", "platform", "platform-details", "owner-alias",
@@ -936,7 +943,7 @@ func (h *ec2Handler) describeAddresses(ctx context.Context, w http.ResponseWrite
 		writeEC2(w, requestID, "DescribeAddresses", "<addressesSet/>")
 		return
 	}
-	svcs, err := h.door.shimDyn.Resource(serviceGVR).Namespace(h.door.ns).List(ctx, metav1.ListOptions{})
+	svcs, err := h.door.shimDyn.Resource(serviceGVR).Namespace(h.accountNS(ctx)).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		h.readFailed(w, requestID, "addresses", false, err)
 		return
