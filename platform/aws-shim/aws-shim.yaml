@@ -349,7 +349,9 @@ rules:
   - apiGroups: [""]
     resources: [groups]
     verbs: [impersonate]
-    resourceNames: [openinfra:admins, openinfra:powerusers, openinfra:readers, openinfra:users]
+    # Not openinfra:users: once IAM policy decides (#360), the shim acts as each caller's account
+    # identity, with no groups; rolling the IAM cutover back past step 3 needs it here again.
+    resourceNames: [openinfra:admins, openinfra:powerusers, openinfra:readers]
   - apiGroups: [""]
     resources: [users]
     verbs: [impersonate]

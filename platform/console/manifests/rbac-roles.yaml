@@ -10,7 +10,8 @@
 #   poweruser    -> openinfra:powerusers  manage resources, but not secrets or RBAC
 #   readonly     -> openinfra:readers     get/list/watch only
 #
-# Everyone also lands in openinfra:users.
+# Before IAM policy was the authority (#360) everyone also landed in openinfra:users; nothing grants or
+# impersonates it any more.
 ---
 # 1. Let the console's ServiceAccount impersonate console users/groups. Without
 #    this the API server rejects the Impersonate-* headers outright.
@@ -44,7 +45,9 @@ rules:
       - openinfra:admins
       - openinfra:powerusers
       - openinfra:readers
-      - openinfra:users
+      # Not openinfra:users: the implicit group every principal carried before IAM policy became the
+      # authority (#360) is impersonated by nothing once it decides (the IAM cutover's step 4). Rolling
+      # the cutover back past step 3 needs it here again.
   - apiGroups: [""]
     resources: [users]
     verbs: [impersonate]
