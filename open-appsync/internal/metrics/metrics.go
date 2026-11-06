@@ -115,7 +115,27 @@ func (m *Metrics) DecSubscriptions() { m.subConnections.Dec() }
 // MeteredStore wraps a data source so every Execute is counted and timed under a bounded `type`
 // label, without the source or the engine knowing anything about metrics.
 func (m *Metrics) MeteredStore(dsType string, s datasource.Store) datasource.Store {
-	return &meteredStore{typ: dsType, inner: s, m: m}
+	ms := &meteredStore{typ: dsType, inner: s, m: m}
+	// A source that can batch (BatchInvoke) stays one that can: the wrapper keeps the capability, so
+	// metering never turns a batched resolver into a failing one. Each batch is one metered call.
+	if bs, ok := s.(datasource.BatchStore); ok {
+		return &meteredBatchStore{meteredStore: ms, batch: bs}
+	}
+	return ms
+}
+
+// meteredBatchStore is the metered wrapper of a source that can batch.
+type meteredBatchStore struct {
+	*meteredStore
+	batch datasource.BatchStore
+}
+
+func (ms *meteredBatchStore) ExecuteBatch(ctx context.Context, ops []runtime.Operation) ([]any, error) {
+	start := time.Now()
+	res, err := ms.batch.ExecuteBatch(ctx, ops)
+	ms.m.dsDuration.WithLabelValues(ms.typ).Observe(time.Since(start).Seconds())
+	ms.m.dsRequests.WithLabelValues(ms.typ, boolOutcome(err != nil)).Inc()
+	return res, err
 }
 
 type meteredStore struct {

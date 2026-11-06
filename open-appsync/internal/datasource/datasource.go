@@ -22,3 +22,17 @@ import (
 type Store interface {
 	Execute(ctx context.Context, op runtime.Operation) (any, error)
 }
+
+// BatchStore is an OPTIONAL capability of a Store: execute several operations as ONE call and return
+// one result per operation, in order. It is AppSync's BatchInvoke — the Lambda source implements it
+// (the payloads of N sibling resolutions go to the function as one list, and the function answers one
+// list). It is separate from Store on purpose, like runtime.Validator: a source that cannot batch
+// simply does not implement it, and a resolver that asks it to batch fails closed rather than being
+// silently resolved one call at a time.
+type BatchStore interface {
+	Store
+	// ExecuteBatch runs ops as one call. On success it returns exactly len(ops) results, in order; a
+	// failure of the whole call (or a response that cannot be matched back to the ops) is an error that
+	// every op in the batch shares.
+	ExecuteBatch(ctx context.Context, ops []runtime.Operation) ([]any, error)
+}

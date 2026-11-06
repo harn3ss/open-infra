@@ -93,6 +93,63 @@ type** — only a `Store` implementation knows its own operation shape. Declared
 via `dataSources[].type: http` + `endpoint`. (A push source — a subscription's event stream — is a
 different kind of thing, not a `Store`; see below.)
 
+### Lambda resolvers: direct and batched
+
+A `lambda` data source invokes a `kind: Function` the way AppSync invokes Lambda: AWS-Invoke style,
+so the handler's **raw return value** is the result and only a **thrown** error is a failure. Name the
+function with `dataSources[].function` (a `kind: Function` in the API's namespace — as AppSync's
+`LambdaConfig` names its function), or give its URL as `endpoint`.
+
+**Mapping-template resolvers.** A request template emits AppSync's Lambda document:
+`{"version":"2018-05-29","operation":"Invoke"|"BatchInvoke","payload":…}`. `Invoke` sends `payload` and
+`$ctx.result` is what the function returns. `invocationType: Event` (an asynchronous invoke) is not
+served and fails the field with an error that says so.
+
+**Direct Lambda resolvers.** Leave out the request and response templates on a resolver (or pipeline
+function) over a `lambda` data source and it is a direct Lambda resolver:
+
+- The function's event is AppSync's Context — `arguments`, `identity` (null for an anonymous caller),
+  `source` (the parent object; null at the root), `request.headers` (lower-cased; the cookie header and
+  the platform's own `X-OpenInfra-*` headers are left out), `info` (`fieldName`, `parentTypeName`,
+  `variables`, `selectionSetList`, `selectionSetGraphQL`), `prev` and `stash`.
+- What the function returns is the field's value.
+- A thrown error is the field's GraphQL error, with the thrown error's `errorType` and `errorMessage`
+  (an error with no type is `Lambda:Unhandled`). An `UnauthorizedException` gets AppSync's message,
+  "You are not authorized to make this call."
+- You may give one of the two templates and leave the other out; the template you give runs as
+  written.
+
+The same `$ctx.arguments`, `$ctx.info` and `$ctx.request.headers` are available to every resolver's
+templates.
+
+**Batching (BatchInvoke).** The same field resolved across a list of parent objects (`posts { author }`)
+can go to the function as **one** invocation:
+
+- A direct Lambda resolver batches when it sets `maxBatchSize` > 0 (up to 2000). The function receives
+  a **list** of Contexts, at most `maxBatchSize` per invocation, and returns a list of results in the
+  same order. Each result is `{"data": …, "errorMessage": …, "errorType": …}`: an item with an
+  `errorMessage` is the error of exactly that item's field (with its `errorType`, and its `data` in the
+  error entry) and the field is null; otherwise the field is the item's `data`. A `null` item is a null
+  field.
+- A request template batches by emitting `"operation": "BatchInvoke"`. The template runs for each
+  item, the items' `payload`s go to the function as one list, and each item's response template runs
+  with its own element as `$ctx.result` — per-item errors are the response template's to raise
+  (`$util.error($ctx.result.errorMessage, $ctx.result.errorType, $ctx.result.data)`). `maxBatchSize`
+  caps the batch; unset, a batch carries AppSync's default of 5.
+- A pipeline function batches the same way, with its own `maxBatchSize`; `maxBatchSize` on the pipeline
+  resolver itself is refused.
+- A response that is not a list of the batch's size fails **every** item of the batch
+  (`errorType: BatchInvokeResponseMismatch`); a thrown error fails every item with that error. A
+  cached item is served from the cache and stays out of the batch, and a field the caller may not read
+  is never sent.
+- Root fields are a batch of one (mutations run one at a time, as AppSync runs them). Siblings are
+  batched within one list; the same field under different lists is batched per list.
+
+**Fails closed at load:** `maxBatchSize` on a non-Lambda source or outside 0–2000, a resolver with no
+response template on a non-Lambda source, and an `appsync-js` resolver with no code each keep the API
+from loading, with an error naming the resolver and the feature. `BatchInvoke` on a non-Lambda source
+fails the field.
+
 ### Field-level authorization (one policy world)
 
 A resolver may declare an `auth` requirement (a k8s RBAC verb on a resource). The **executor** consults
@@ -248,7 +305,8 @@ Everything below is implemented and covered by `go test -race ./...`; all of it 
   (`internal/dynamodb`), a **NONE** source (`internal/nonesource` — no backend; the resolver's mapping
   templates do the work, for pub/sub-only fields and local computation), an **HTTP** source
   (`internal/httpsource`), a **Lambda** source (`internal/lambdasource` — invokes a `kind: Function` over
-  HTTP with AppSync's Invoke payload shape), an **RDS** source (`internal/rdssource` — SQL over
+  HTTP with AppSync's Invoke and BatchInvoke shapes; direct Lambda resolvers in `internal/directlambda`),
+  an **RDS** source (`internal/rdssource` — SQL over
   PostgreSQL/Aurora-PostgreSQL in AppSync's `{statements, variableMap}` shape, named params bound safely,
   rows returned as JSON), an **OpenSearch** source (`internal/opensearchsource` — search/index
   requests to an OpenSearch domain in AppSync's `{operation, path, params}` shape, returning the response
@@ -416,8 +474,11 @@ This is **not a full AppSync** — each widening graduates behind its own probe.
 - `internal/vtl/` — the VTL interpreter + the AppSync `$util` helper library (the heart of fidelity).
 - `internal/vtlruntime/` — the VTL tenant of the runtime interface.
 - `internal/jsruntime/` — the JavaScript tenant (goja-sandboxed) of the runtime interface.
-- `internal/resolver/` — the request→execute→response lifecycle (drives any runtime).
-- `internal/datasource/` — the neutral call-source contract (`Store`).
+- `internal/directlambda/` — AppSync's direct Lambda resolver (no mapping templates) as a runtime tenant.
+- `internal/resolver/` — the request→execute→response lifecycle (drives any runtime), including
+  BatchInvoke across sibling resolutions.
+- `internal/datasource/` — the neutral call-source contract (`Store`, and the optional `BatchStore`).
+- `internal/lambdasource/` — the Lambda data source (Invoke + BatchInvoke).
 - `internal/dynamodb/` — the DynamoDB-style data source (in-memory + FerretDB-backed).
 - `internal/httpsource/` — an HTTP data source (the second, differently-shaped call-source).
 - `internal/authz/` — the field-auth port (Requirement/Identity/Authorizer); `internal/k8sauth/` — the

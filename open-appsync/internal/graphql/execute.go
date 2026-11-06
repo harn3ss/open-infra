@@ -13,7 +13,6 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/authz"
 	"github.com/harn3ss/open-infra/open-appsync/internal/cache"
 	"github.com/harn3ss/open-infra/open-appsync/internal/resolver"
-	"github.com/harn3ss/open-infra/open-appsync/internal/vtl"
 )
 
 // Limits are the hostile-load guards. GraphQL's cost asymmetry — the client composes
@@ -132,11 +131,30 @@ func NewWithLimits(resolvers map[string]resolver.Resolver, limits Limits) *Engin
 	return New(resolvers, WithLimits(limits))
 }
 
-// GqlError is a GraphQL error entry, carrying AppSync's errorType where the resolver threw one.
+// GqlError is a GraphQL error entry, carrying AppSync's errorType where the resolver threw one, and the
+// data a resolver attached to its error ($util.error's third argument; a batched Lambda item's data).
 type GqlError struct {
 	Message   string `json:"message"`
 	Path      []any  `json:"path,omitempty"`
 	ErrorType string `json:"errorType,omitempty"`
+	Data      any    `json:"data,omitempty"`
+}
+
+// appsyncError is an error that surfaces on a field the way AppSync shows it: a message, an errorType and
+// optional data. A template's $util.error (vtl.ThrowError) and a Lambda function's thrown error carry one.
+type appsyncError interface {
+	AppSyncError() (message, errorType string, data any)
+}
+
+// fieldError is the GraphQL error a resolver error becomes at path: AppSync's message/errorType/data
+// when the error carries them, else its text.
+func fieldError(err error, path []any) GqlError {
+	ge := GqlError{Message: err.Error(), Path: path}
+	var ae appsyncError
+	if errors.As(err, &ae) {
+		ge.Message, ge.ErrorType, ge.Data = ae.AppSyncError()
+	}
+	return ge
 }
 
 // Result is a GraphQL response: {data, errors}.
@@ -247,16 +265,10 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 				continue
 			}
 		}
-		gctx := map[string]any{"args": evalArgs(sel.args, variables), "identity": identityMap(id)}
+		gctx := e.fieldContext(ec, sel, rootType, nil, id)
 		res, rerr := e.resolveWithCache(ctx, rootType, sel.name, r, id, gctx)
 		if rerr != nil {
-			ge := GqlError{Message: rerr.Error(), Path: []any{respKey}}
-			var te *vtl.ThrowError
-			if errors.As(rerr, &te) {
-				ge.Message = te.Message
-				ge.ErrorType = te.ErrorType
-			}
-			errs = append(errs, ge)
+			errs = append(errs, fieldError(rerr, []any{respKey}))
 			data[respKey] = nil
 			continue
 		}
@@ -279,8 +291,26 @@ func (e *Engine) ExecuteOp(ctx context.Context, query, operationName string, var
 // just runs the resolver; errors are never cached. The cache key ALWAYS folds in the caller identity
 // (via cache.Key), so a cached response can never be served across identities.
 func (e *Engine) resolveWithCache(ctx context.Context, parentType, field string, r resolver.Resolver, id authz.Identity, gctx map[string]any) (any, error) {
-	if r.Caching == nil || parentType == "Mutation" {
+	key, cacheable := e.cacheKey(parentType, field, r, id, gctx)
+	if !cacheable {
 		return r.Resolve(ctx, gctx)
+	}
+	if v, hit := e.cacheGet(ctx, key); hit {
+		return v, nil
+	}
+	res, err := r.Resolve(ctx, gctx)
+	if err != nil {
+		return nil, err
+	}
+	e.cacheSet(ctx, key, r, res)
+	return res, nil
+}
+
+// cacheKey is the response-cache key of one resolution, or cacheable=false when the resolution is not
+// cached: the resolver has no CachingConfig, it is a Mutation, or the key is not canonically derivable.
+func (e *Engine) cacheKey(parentType, field string, r resolver.Resolver, id authz.Identity, gctx map[string]any) (key string, cacheable bool) {
+	if r.Caching == nil || parentType == "Mutation" {
+		return "", false
 	}
 	var keyValues []any
 	if len(r.Caching.Keys) == 0 {
@@ -294,32 +324,34 @@ func (e *Engine) resolveWithCache(ctx context.Context, parentType, field string,
 			keyValues = append(keyValues, cache.ResolveKeyPath(gctx, k))
 		}
 	}
-	key, ok := cache.Key(parentType+"."+field, id.Username, id.Groups, keyValues)
-	if !ok {
-		// Key not canonically derivable (e.g. a non-finite argument) — best-effort: run the resolver,
-		// never fall back to a degenerate shared key that would cross identities/resolvers.
-		return r.Resolve(ctx, gctx)
+	// A key that is not canonically derivable (e.g. a non-finite argument) is not cached — best-effort:
+	// run the resolver, never fall back to a degenerate shared key that would cross identities/resolvers.
+	return cache.Key(parentType+"."+field, id.Username, id.Groups, keyValues)
+}
+
+// cacheGet reads a cached response. A corrupt entry is a miss.
+func (e *Engine) cacheGet(ctx context.Context, key string) (any, bool) {
+	cached, hit := e.cache.Get(ctx, key)
+	if !hit {
+		return nil, false
 	}
-	if cached, hit := e.cache.Get(ctx, key); hit {
-		// Decode with UseNumber so a cached integer re-serializes to its EXACT original text: a HIT must
-		// be byte-identical to a MISS, and json's default float64 would truncate integers > 2^53
-		// (BIGINT ids, snowflake ids, nanosecond timestamps).
-		dec := json.NewDecoder(bytes.NewReader(cached))
-		dec.UseNumber()
-		var v any
-		if err := dec.Decode(&v); err == nil {
-			return v, nil
-		}
-		// A corrupt entry is a miss: fall through and run the resolver.
+	// Decode with UseNumber so a cached integer re-serializes to its EXACT original text: a HIT must
+	// be byte-identical to a MISS, and json's default float64 would truncate integers > 2^53
+	// (BIGINT ids, snowflake ids, nanosecond timestamps).
+	dec := json.NewDecoder(bytes.NewReader(cached))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, false
 	}
-	res, err := r.Resolve(ctx, gctx)
-	if err != nil {
-		return nil, err
-	}
+	return v, true
+}
+
+// cacheSet stores a successful response (errors are never cached).
+func (e *Engine) cacheSet(ctx context.Context, key string, r resolver.Resolver, res any) {
 	if b, mErr := json.Marshal(res); mErr == nil {
 		e.cache.Set(ctx, key, b, r.Caching.TTL)
 	}
-	return res, nil
 }
 
 // enforcedAuthModes are the AppSync auth modes open-appsync actually enforces. Modes graduated into this
@@ -644,12 +676,22 @@ func (e *Engine) projectValue(ec *execCtx, val any, sels []selection, declaredTy
 	}
 	switch v := val.(type) {
 	case map[string]any:
-		return e.resolveObject(ec, e.concreteTypeOf(v, declaredType), v, sels, path)
+		return e.resolveObject(ec, e.concreteTypeOf(v, declaredType), v, sels, path, nil)
 	case []any:
+		// The list's objects are siblings: a field whose resolver can batch is resolved for all of them
+		// at once (AppSync's BatchInvoke) before each object is projected with its own result.
+		plans := e.planSiblings(ec, v, sels, declaredType, path)
 		out := make([]any, len(v))
 		var errs []GqlError
 		for i, elem := range v {
-			ev, eerrs := e.projectValue(ec, elem, sels, declaredType, append(append([]any{}, path...), i))
+			elemPath := append(append([]any{}, path...), i)
+			var ev any
+			var eerrs []GqlError
+			if plans[i] != nil {
+				ev, eerrs = e.resolveObject(ec, plans[i].concreteType, elem.(map[string]any), sels, elemPath, plans[i])
+			} else {
+				ev, eerrs = e.projectValue(ec, elem, sels, declaredType, elemPath)
+			}
 			out[i] = ev
 			errs = append(errs, eerrs...)
 		}
@@ -659,13 +701,131 @@ func (e *Engine) projectValue(ec *execCtx, val any, sels []selection, declaredTy
 	}
 }
 
+// siblingPlan is one object of a list, prepared for batched resolution: its concrete type, its
+// collected fields, and the outcome of each of its fields that was resolved together with the same field
+// of its siblings (keyed by response key).
+type siblingPlan struct {
+	concreteType string
+	fields       []selection
+	collectErr   error
+	batched      map[string]resolver.Outcome
+}
+
+// planSiblings resolves, for the objects of one list, each selected field whose resolver can batch
+// (resolver.CanBatch: a Lambda data source) once across all of them — ResolveAll, so the requests that
+// are BatchInvokes reach the function together, maxBatchSize per call — and returns a plan per object
+// (nil for an element that is not an object). Only fields the caller may read are resolved here (the
+// auth gates run first, as resolveObject runs them again per object); a cached item is served from the
+// cache and stays out of the batch. With no batching resolver selected this is just field collection.
+func (e *Engine) planSiblings(ec *execCtx, list []any, sels []selection, declaredType string, path []any) []*siblingPlan {
+	plans := make([]*siblingPlan, len(list))
+	type group struct {
+		concreteType string
+		sel          selection
+		r            resolver.Resolver
+		members      []int
+	}
+	var groups []*group
+	byKey := map[string]*group{}
+	for i, elem := range list {
+		obj, ok := elem.(map[string]any)
+		if !ok {
+			continue
+		}
+		ct := e.concreteTypeOf(obj, declaredType)
+		fields, err := e.collectFields(sels, ct, ec, map[string]bool{})
+		plans[i] = &siblingPlan{concreteType: ct, fields: fields, collectErr: err}
+		if err != nil || ct == "" {
+			continue
+		}
+		for _, sel := range fields {
+			if sel.name == "__typename" {
+				continue
+			}
+			r, ok := e.resolvers[ct+"."+sel.name]
+			if !ok || !r.CanBatch() {
+				continue
+			}
+			key := ct + "." + sel.name + "\x00" + responseKey(sel)
+			g := byKey[key]
+			if g == nil {
+				g = &group{concreteType: ct, sel: sel, r: r}
+				byKey[key] = g
+				groups = append(groups, g)
+			}
+			g.members = append(g.members, i)
+		}
+	}
+
+	id := authz.FromContext(ec.ctx)
+	for _, g := range groups {
+		// The same gates resolveObject applies: a denied field is not resolved (resolveObject reports
+		// the denial on each object), so the function never sees a request the caller may not make.
+		if e.checkFieldAuth(ec.ctx, g.concreteType, g.sel.name) != nil {
+			continue
+		}
+		if !g.r.Auth.IsZero() && e.authorizer.Authorize(ec.ctx, id, g.r.Auth) != nil {
+			continue
+		}
+		info := e.fieldInfo(ec, g.sel, g.concreteType)
+		var ctxs []map[string]any
+		var idx []int
+		var keys []string
+		for _, i := range g.members {
+			rctx := e.fieldContextWithInfo(ec, g.sel, list[i].(map[string]any), id, info)
+			if plans[i].batched == nil {
+				plans[i].batched = map[string]resolver.Outcome{}
+			}
+			key, cacheable := e.cacheKey(g.concreteType, g.sel.name, g.r, id, rctx)
+			if cacheable {
+				if v, hit := e.cacheGet(ec.ctx, key); hit {
+					plans[i].batched[responseKey(g.sel)] = resolver.Outcome{Value: v}
+					continue
+				}
+			} else {
+				key = ""
+			}
+			ctxs = append(ctxs, rctx)
+			idx = append(idx, i)
+			keys = append(keys, key)
+		}
+		if len(ctxs) == 0 {
+			continue
+		}
+		outcomes := g.r.ResolveAll(ec.ctx, ctxs)
+		for j, i := range idx {
+			if outcomes[j].Err == nil && keys[j] != "" {
+				e.cacheSet(ec.ctx, keys[j], g.r, outcomes[j].Value)
+			}
+			plans[i].batched[responseKey(g.sel)] = outcomes[j]
+		}
+	}
+	return plans
+}
+
+// responseKey is a selected field's key in the response: its alias, else its name.
+func responseKey(sel selection) string {
+	if sel.alias != "" {
+		return sel.alias
+	}
+	return sel.name
+}
+
 // resolveObject resolves each selected field on an object of concreteType. It first collects the fields
 // that apply to this object (fragment type conditions + directives). A field with a registered resolver
 // "<concreteType>.<field>" runs it (with $ctx.source = this object) — the per-nested-field resolver —
 // then projects the result against the field's sub-selections. A field without a resolver is read
 // structurally from the object. __typename resolves to concreteType; field auth is enforced as at root.
-func (e *Engine) resolveObject(ec *execCtx, concreteType string, source map[string]any, sels []selection, path []any) (map[string]any, []GqlError) {
-	fields, err := e.collectFields(sels, concreteType, ec, map[string]bool{})
+// plan, when the object is one of a list's (planSiblings), carries its collected fields and the outcomes
+// of the fields resolved together with its siblings.
+func (e *Engine) resolveObject(ec *execCtx, concreteType string, source map[string]any, sels []selection, path []any, plan *siblingPlan) (map[string]any, []GqlError) {
+	var fields []selection
+	var err error
+	if plan != nil {
+		fields, err = plan.fields, plan.collectErr
+	} else {
+		fields, err = e.collectFields(sels, concreteType, ec, map[string]bool{})
+	}
 	if err != nil {
 		return nil, []GqlError{{Message: err.Error(), Path: path, ErrorType: "ValidationError"}}
 	}
@@ -715,19 +875,20 @@ func (e *Engine) resolveObject(ec *execCtx, concreteType string, source map[stri
 				continue
 			}
 		}
-		rctx := map[string]any{"args": evalArgs(sel.args, ec.vars), "identity": identityMap(id), "source": source}
-		// Per-nested-field resolvers honor caching too (config on any object-type resolver, not just root).
-		// concreteType is never "Mutation" here, so the Mutation-skip is a no-op; rctx carries source, so
-		// source.* caching keys resolve. Without a CachingConfig this is exactly r.Resolve.
-		res, rerr := e.resolveWithCache(ec.ctx, concreteType, sel.name, r, id, rctx)
+		var res any
+		var rerr error
+		if o, done := plan.outcome(respKey); done {
+			// Resolved together with the same field of this object's siblings (planSiblings).
+			res, rerr = o.Value, o.Err
+		} else {
+			rctx := e.fieldContext(ec, sel, concreteType, source, id)
+			// Per-nested-field resolvers honor caching too (config on any object-type resolver, not just
+			// root). concreteType is never "Mutation" here, so the Mutation-skip is a no-op; rctx carries
+			// source, so source.* caching keys resolve. Without a CachingConfig this is exactly r.Resolve.
+			res, rerr = e.resolveWithCache(ec.ctx, concreteType, sel.name, r, id, rctx)
+		}
 		if rerr != nil {
-			ge := GqlError{Message: rerr.Error(), Path: childPath}
-			var te *vtl.ThrowError
-			if errors.As(rerr, &te) {
-				ge.Message = te.Message
-				ge.ErrorType = te.ErrorType
-			}
-			errs = append(errs, ge)
+			errs = append(errs, fieldError(rerr, childPath))
 			out[respKey] = nil
 			continue
 		}

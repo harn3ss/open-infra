@@ -29,6 +29,12 @@ type ThrowError struct {
 
 func (e *ThrowError) Error() string { return e.Message }
 
+// AppSyncError is the GraphQL error the throw surfaces as: its message, errorType and data (the third
+// argument of $util.error, which AppSync returns in the error entry).
+func (e *ThrowError) AppSyncError() (message, errorType string, data any) {
+	return e.Message, e.ErrorType, e.Data
+}
+
 // Util is the $util namespace. Providers default to real implementations; tests override them.
 type Util struct {
 	AutoID func() string    // $util.autoId()

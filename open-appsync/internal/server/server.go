@@ -24,6 +24,7 @@ import (
 	"github.com/harn3ss/open-infra/open-appsync/internal/awsscalars"
 	"github.com/harn3ss/open-infra/open-appsync/internal/cache"
 	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
+	"github.com/harn3ss/open-infra/open-appsync/internal/directlambda"
 	"github.com/harn3ss/open-infra/open-appsync/internal/eventbridgesource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/graphql"
 	"github.com/harn3ss/open-infra/open-appsync/internal/httpsource"
@@ -93,11 +94,19 @@ type ResolverConfig struct {
 	Type  string `json:"type"` // "Query" | "Mutation" (root), or any object type (e.g. "Post") for a per-field resolver
 	Field string `json:"field"`
 
-	// Unit resolver (the default): one runtime step over one data source.
+	// Unit resolver (the default): one runtime step over one data source. On a lambda data source either
+	// template may be left out ("" or a blank file): that phase is then AppSync's direct Lambda behavior
+	// (the Context is the event; the function's return is the value) — with neither, a direct Lambda
+	// resolver.
 	DataSource string `json:"dataSource"`
 	Runtime    string `json:"runtime"`  // "appsync-vtl" (default). The runtime extension point's field.
 	Request    string `json:"request"`  // filename of the request mapping template (relative to the config dir)
 	Response   string `json:"response"` // filename of the response mapping template
+	// MaxBatchSize is AppSync's maxBatchSize (0–2000; lambda data sources only): on a direct Lambda
+	// resolver > 0 turns batching on — sibling resolutions go to the function as one BatchInvoke of at
+	// most this many Contexts; on a resolver whose request template emits BatchInvoke it caps each batch
+	// (0 = AppSync's default of 5).
+	MaxBatchSize int `json:"maxBatchSize"`
 
 	// Pipeline resolver: if Functions is non-empty this is a pipeline lifecycle and the unit fields
 	// above are ignored. Before/After are optional single-template steps (files) that touch no data
@@ -123,12 +132,18 @@ type CachingConfig struct {
 	Keys       []string `json:"keys"`
 }
 
+// FunctionConfig is one pipeline function. As on a unit resolver, a function on a lambda data source may
+// leave out its templates (a direct Lambda function), and MaxBatchSize is its maxBatchSize.
 type FunctionConfig struct {
-	DataSource string `json:"dataSource"`
-	Runtime    string `json:"runtime"` // "appsync-vtl" (default)
-	Request    string `json:"request"`
-	Response   string `json:"response"`
+	DataSource   string `json:"dataSource"`
+	Runtime      string `json:"runtime"` // "appsync-vtl" (default)
+	Request      string `json:"request"`
+	Response     string `json:"response"`
+	MaxBatchSize int    `json:"maxBatchSize"`
 }
+
+// maxBatchSizeLimit is the largest maxBatchSize AppSync takes.
+const maxBatchSizeLimit = 2000
 
 // Load reads config.json + its template files from dir and builds a ready GraphQL engine. mongoDB is
 // the FerretDB database backing "dynamodb" data sources; pass nil when only "memory" sources are used
@@ -144,7 +159,9 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 	}
 
 	stores := map[string]datasource.Store{}
+	dsTypes := map[string]string{} // data source name → type (a direct Lambda resolver needs a lambda source)
 	for _, ds := range cfg.DataSources {
+		dsTypes[ds.Name] = ds.Type
 		switch ds.Type {
 		case "memory":
 			stores[ds.Name] = dynamodb.NewMemStore()
@@ -220,7 +237,7 @@ func Load(dir string, mongoDB *mongo.Database, opts ...graphql.Option) (*graphql
 
 	registry := map[string]resolver.Resolver{}
 	for _, rc := range cfg.Resolvers {
-		res, err := buildResolver(dir, engine, stores, rc)
+		res, err := buildResolver(dir, engine, stores, dsTypes, rc)
 		if err != nil {
 			return nil, fmt.Errorf("open-appsync: resolver %s.%s: %w", rc.Type, rc.Field, err)
 		}
@@ -471,20 +488,24 @@ func safeLimit(v, def int) int {
 // buildResolver assembles one field's lifecycle from its config: a pipeline when Functions is set,
 // otherwise a unit resolver. Every template is validated (fail closed): one malformed template makes
 // the whole Load fail, so the engine never serves a half-broken API.
-func buildResolver(dir string, engine *vtl.Engine, stores map[string]datasource.Store, rc ResolverConfig) (resolver.Resolver, error) {
+func buildResolver(dir string, engine *vtl.Engine, stores map[string]datasource.Store, dsTypes map[string]string, rc ResolverConfig) (resolver.Resolver, error) {
 	if len(rc.Functions) == 0 {
 		src, ok := stores[rc.DataSource]
 		if !ok {
 			return resolver.Resolver{}, fmt.Errorf("references unknown data source %q", rc.DataSource)
 		}
-		rt, err := loadStep(dir, engine, rc.Runtime, rc.Request, rc.Response)
+		rt, err := loadSourceStep(dir, engine, dsTypes[rc.DataSource], rc.Runtime, rc.Request, rc.Response, rc.MaxBatchSize)
 		if err != nil {
 			return resolver.Resolver{}, err
 		}
-		return resolver.Resolver{Runtime: rt, Source: src, Auth: rc.Auth, Caching: buildCaching(rc.Caching)}, nil
+		return resolver.Resolver{Runtime: rt, Source: src, MaxBatchSize: rc.MaxBatchSize, Auth: rc.Auth, Caching: buildCaching(rc.Caching)}, nil
 	}
 
-	// Pipeline lifecycle.
+	// Pipeline lifecycle. Batching is a property of each function (its own maxBatchSize), not of the
+	// pipeline resolver around them.
+	if rc.MaxBatchSize != 0 {
+		return resolver.Resolver{}, fmt.Errorf("maxBatchSize is set on a pipeline resolver — batching is configured on its Lambda functions (each function's maxBatchSize)")
+	}
 	p := &resolver.Pipeline{}
 	if rc.Before != "" {
 		// before is a single-template step: its request phase runs (stash/abort), no response phase.
@@ -499,11 +520,11 @@ func buildResolver(dir string, engine *vtl.Engine, stores map[string]datasource.
 		if !ok {
 			return resolver.Resolver{}, fmt.Errorf("function %d references unknown data source %q", i, fc.DataSource)
 		}
-		rt, err := loadStep(dir, engine, fc.Runtime, fc.Request, fc.Response)
+		rt, err := loadSourceStep(dir, engine, dsTypes[fc.DataSource], fc.Runtime, fc.Request, fc.Response, fc.MaxBatchSize)
 		if err != nil {
 			return resolver.Resolver{}, fmt.Errorf("function %d: %w", i, err)
 		}
-		p.Functions = append(p.Functions, resolver.Function{Runtime: rt, Source: src})
+		p.Functions = append(p.Functions, resolver.Function{Runtime: rt, Source: src, MaxBatchSize: fc.MaxBatchSize})
 	}
 	if rc.After != "" {
 		// after is a single-template step: its response phase shapes the final value, no request phase.
@@ -552,6 +573,64 @@ func buildCache() cache.Cache {
 	}
 	log.Printf("open-appsync: response caching enabled (shared NATS JetStream KV bucket %q)", bucket)
 	return jc
+}
+
+// loadSourceStep builds a step that reaches a data source (a unit resolver or a pipeline function) of
+// type dsType. On a lambda source a missing template phase — no filename, or a blank file — is AppSync's
+// direct Lambda behavior for that phase (internal/directlambda): no request template sends the Context
+// (an Invoke, or a BatchInvoke when maxBatchSize > 0), no response template returns the function's
+// result (or, batched, each item's data or error). Fail closed: maxBatchSize outside 0–2000, or set on a
+// non-Lambda source, and an APPSYNC_JS step with no code, refuse to load.
+func loadSourceStep(dir string, engine *vtl.Engine, dsType, runtimeName, reqFile, respFile string, maxBatchSize int) (runtime.Runtime, error) {
+	if maxBatchSize < 0 || maxBatchSize > maxBatchSizeLimit {
+		return nil, fmt.Errorf("maxBatchSize must be from 0 to %d (got %d)", maxBatchSizeLimit, maxBatchSize)
+	}
+	if maxBatchSize > 0 && dsType != "lambda" {
+		return nil, fmt.Errorf("maxBatchSize %d turns on Lambda batching (BatchInvoke), which needs a lambda data source — this one is %q", maxBatchSize, dsType)
+	}
+	req, err := readTemplate(dir, reqFile)
+	if err != nil {
+		return nil, fmt.Errorf("read request template: %w", err)
+	}
+	resp, err := readTemplate(dir, respFile)
+	if err != nil {
+		return nil, fmt.Errorf("read response template: %w", err)
+	}
+	switch runtimeName {
+	case "", runtimeAppsyncVTL:
+	case runtimeAppsyncJS:
+		if strings.TrimSpace(req) == "" {
+			return nil, fmt.Errorf("an %s resolver needs its code (a module exporting request and response) — only a resolver with no runtime on a lambda data source runs without one (a direct Lambda resolver)", runtimeAppsyncJS)
+		}
+		return loadStep(dir, engine, runtimeName, reqFile, respFile)
+	default:
+		return nil, fmt.Errorf("unknown runtime %q (available: %q, %q)", runtimeName, runtimeAppsyncVTL, runtimeAppsyncJS)
+	}
+	if dsType != "lambda" {
+		// Without a response template a VTL step has nothing to answer with: only a Lambda data source
+		// has a direct behavior that stands in for it. (A missing request template stays what it always
+		// was — a step that calls no source.)
+		if strings.TrimSpace(resp) == "" {
+			return nil, fmt.Errorf("has no response mapping template — only a resolver on a lambda data source may leave its mapping templates out (a direct Lambda resolver); this data source is %q", dsType)
+		}
+		return loadStep(dir, engine, runtimeName, reqFile, respFile)
+	}
+	hasReq, hasResp := strings.TrimSpace(req) != "", strings.TrimSpace(resp) != ""
+	if hasReq && hasResp {
+		return loadStep(dir, engine, runtimeName, reqFile, respFile)
+	}
+	var reqRT, respRT runtime.Runtime
+	if hasReq {
+		reqRT = vtlruntime.New(engine, req, "")
+	}
+	if hasResp {
+		respRT = vtlruntime.New(engine, "", resp)
+	}
+	rt := directlambda.New(reqRT, respRT, maxBatchSize > 0)
+	if err := rt.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid, refusing to serve: %w", err)
+	}
+	return rt, nil
 }
 
 // loadStep reads a step's request/response template files (an empty filename means an empty, unused
@@ -653,6 +732,8 @@ func Handler(e *graphql.Engine, opts ...HandlerOption) http.HandlerFunc {
 		if mode != "" {
 			ctx = authz.WithMode(ctx, mode)
 		}
+		ctx = graphql.WithRequestHeaders(ctx, r.Header) // $ctx.request.headers
+
 		// Deferred so the in-flight gauge is released and the request counted even if execution panics
 		// (net/http recovers per-request); a panic counts as an error. isErr is set once the result is known.
 		isErr := true

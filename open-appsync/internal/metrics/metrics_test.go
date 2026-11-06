@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/harn3ss/open-infra/open-appsync/internal/datasource"
 	"github.com/harn3ss/open-infra/open-appsync/internal/runtime"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -126,5 +127,31 @@ func TestHandler_ExposesFamilies(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("/metrics output missing %q", want)
 		}
+	}
+}
+
+// fakeBatch can batch (AppSync's BatchInvoke).
+type fakeBatch struct{ fakeStore }
+
+func (fakeBatch) ExecuteBatch(_ context.Context, ops []runtime.Operation) ([]any, error) {
+	return make([]any, len(ops)), nil
+}
+
+// Metering keeps a source's batching capability (a batched resolver over a metered Lambda source must not
+// fail as unbatchable), counts one request per batch, and adds none to a source that cannot batch.
+func TestMeteredStore_KeepsBatching(t *testing.T) {
+	m := New()
+	bs, ok := m.MeteredStore("lambda", fakeBatch{}).(datasource.BatchStore)
+	if !ok {
+		t.Fatal("a metered batch source must still be a datasource.BatchStore")
+	}
+	if res, err := bs.ExecuteBatch(context.Background(), make([]runtime.Operation, 3)); err != nil || len(res) != 3 {
+		t.Fatalf("ExecuteBatch = %v, %v", res, err)
+	}
+	if got := testutil.ToFloat64(m.dsRequests.WithLabelValues("lambda", "ok")); got != 1 {
+		t.Errorf("a batch is one data-source request, got %v", got)
+	}
+	if _, ok := m.MeteredStore("http", fakeStore{}).(datasource.BatchStore); ok {
+		t.Error("a source that cannot batch must not gain the capability")
 	}
 }
