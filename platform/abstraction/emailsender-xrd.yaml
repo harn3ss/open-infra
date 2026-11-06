@@ -1,14 +1,16 @@
-# kind: EmailSender — transactional email sending (AWS SES-shaped). One claim -> a
-# sending identity (a From address) and a <name>-smtp connection secret
-# (SMTP_HOST/PORT/FROM/FROM_NAME) injected into apps via the existing spec.secrets
-# -> envFrom, exactly like the <name>-minio bucket credential convention.
+# kind: EmailSender — transactional email sending (AWS SES-shaped). One claim -> a sending identity (a From
+# address) and its Amazon SES SMTP credentials: an IAM user allowed ses:SendRawEmail as that address only, an
+# access key, and the SMTP password derived from it, delivered as a <name>-smtp connection secret
+# (SMTP_HOST/PORT/USERNAME/PASSWORD/FROM/FROM_NAME) injected into apps via the existing spec.secrets ->
+# envFrom, exactly like the <name>-minio bucket credential convention.
 #
-# The secret points at the in-cluster SMTP relay (platform/mail/), a shared
-# singleton. Apps send with any SMTP client; the relay forwards outbound.
+# The secret points at the aws-shim's SES SMTP interface (STARTTLS), which authenticates the credentials,
+# authorizes each message as SendRawEmail and hands it to the platform relay (platform/mail/), which takes
+# mail from the aws-shim alone.
 #
-# OPT-IN: this kind and the relay ride the `mail` component (off by default). Real
-# internet deliverability depends on the relay's upstream (a smarthost, or direct
-# MX) plus SPF/DKIM/DMARC on the sending domain — an operator concern, see
+# OPT-IN: this kind and the relay ride the `mail` component (off by default); sending goes through the
+# aws-shim, so the awsShim component must be on too. Real internet deliverability depends on the relay's
+# upstream (a smarthost, or direct MX) plus SPF/DKIM/DMARC on the sending domain — an operator concern, see
 # docs/email.md. EXPERIMENTAL.
 #
 # Synced after Crossplane's CRDs exist (sync-wave 2).
@@ -31,6 +33,10 @@ spec:
     - name: v1
       served: true
       referenceable: true
+      additionalPrinterColumns:
+        - { name: FROM, type: string, jsonPath: .status.fromAddress }
+        - { name: VERIFICATION, type: string, jsonPath: .status.verificationStatus }
+        - { name: SECRET, type: string, jsonPath: .status.connectionSecret }
       schema:
         openAPIV3Schema:
           type: object
@@ -41,8 +47,13 @@ spec:
               properties:
                 fromAddress:
                   type: string
-                  description: "The sending identity — the From address, e.g. noreply@example.com. Delivered as SMTP_FROM in the connection secret."
-                  pattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+                  description: >-
+                    The sending identity — the From address, e.g. noreply@example.com. The credentials send as
+                    this address only (MAIL FROM and the message's From header), and it must be a verified
+                    identity of the claim's account. Delivered as SMTP_FROM in the connection secret. Letters,
+                    digits and . _ % + - before the @ (no wildcard: the address is the policy's resource).
+                  maxLength: 254
+                  pattern: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$'
                 fromName:
                   type: string
                   description: "Optional display name for the From header, e.g. \"Acme Notifications\"."
@@ -50,5 +61,17 @@ spec:
               type: object
               properties:
                 fromAddress: { type: string }
+                verificationStatus:
+                  type: string
+                  description: >-
+                    SUCCESS when the From address is a verified identity of the claim's account (the address,
+                    or its domain), PENDING until the operator verifies it; sends are refused while PENDING.
+                iamUser:
+                  type: string
+                  description: The IAM user the SMTP credentials belong to (in the account's IAM home).
+                iamUserArn: { type: string }
+                smtpUsername:
+                  type: string
+                  description: The SMTP user name, the IAM user's access key id (also SMTP_USERNAME in the secret).
                 connectionSecret: { type: string }
                 ready: { type: boolean }

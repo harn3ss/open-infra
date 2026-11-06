@@ -5629,9 +5629,12 @@ components:
           properties:
             fromAddress:
               type: string
-              description: "The sending identity \u2014 the From address, e.g. noreply@example.com. Delivered as SMTP_FROM\
-                \ in the connection secret."
-              pattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
+              description: "The sending identity \u2014 the From address, e.g. noreply@example.com. The credentials send as\
+                \ this address only (MAIL FROM and the message's From header), and it must be a verified identity of the claim's\
+                \ account. Delivered as SMTP_FROM in the connection secret. Letters, digits and . _ % + - before the @ (no\
+                \ wildcard: the address is the policy's resource)."
+              maxLength: 254
+              pattern: ^[A-Za-z0-9._%+-]+@[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$
             fromName:
               type: string
               description: Optional display name for the From header, e.g. "Acme Notifications".
@@ -5640,6 +5643,18 @@ components:
           properties:
             fromAddress:
               type: string
+            verificationStatus:
+              type: string
+              description: SUCCESS when the From address is a verified identity of the claim's account (the address, or its
+                domain), PENDING until the operator verifies it; sends are refused while PENDING.
+            iamUser:
+              type: string
+              description: The IAM user the SMTP credentials belong to (in the account's IAM home).
+            iamUserArn:
+              type: string
+            smtpUsername:
+              type: string
+              description: The SMTP user name, the IAM user's access key id (also SMTP_USERNAME in the secret).
             connectionSecret:
               type: string
             ready:

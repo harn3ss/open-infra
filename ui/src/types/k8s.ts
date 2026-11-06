@@ -1335,14 +1335,19 @@ export const PARAMETERS_PLURAL = "parameters";
 export const PARAMETERS_CRD_NAME = "parameters.openinfra.dev";
 
 /* ---------------- open-infra EmailSender CRD (SES) ------------------------ */
-// A transactional sending identity (a From address) + a <name>-smtp connection
-// secret injected into apps via spec.secrets -> envFrom.
+// A transactional sending identity (a From address) + its Amazon SES SMTP credentials (an IAM user
+// allowed ses:SendRawEmail as that address, its access key and the derived SMTP password), in a
+// <name>-smtp connection secret injected into apps via spec.secrets -> envFrom.
 export interface EmailSenderSpec {
   fromAddress: string; // the sending identity / From address (required)
   fromName?: string; // optional display name for the From header
 }
 export interface EmailSenderStatus {
   fromAddress?: string;
+  verificationStatus?: "SUCCESS" | "PENDING"; // is the From address a verified identity of the account?
+  iamUser?: string; // the SMTP credentials' IAM user
+  iamUserArn?: string;
+  smtpUsername?: string; // the SMTP user name (the IAM user's access key id)
   connectionSecret?: string; // the <name>-smtp secret name
   ready?: boolean;
   conditions?: Condition[];

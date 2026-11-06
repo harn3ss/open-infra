@@ -15,6 +15,8 @@ import { awsState } from "@/lib/aws-states";
 
 /** The sender identity's verification state, as SES shows it (Verified / Pending / Failed). */
 function senderStatus(s: EmailSender): { label: string; tone: StatusTone } {
+  // An identity the account has not verified is Pending, however far its credentials are along.
+  if (s.status?.verificationStatus === "PENDING") return { label: "Pending", tone: "warning" };
   // The resource's state in AWS's words (lib/aws-states).
   return awsState(s, "emailsender");
 }
@@ -97,7 +99,7 @@ export function EmailSendersPage() {
     <ResourceTablePage<EmailSender>
       icon={<Mail />}
       title="Email Senders"
-      description="A transactional sending identity (AWS SES). Each sender is a From address plus an SMTP connection secret that apps use to send mail through an in-cluster relay."
+      description="A transactional sending identity (AWS SES). Each sender is a From address plus SES SMTP credentials, in a connection secret apps use to send as that address through the SES SMTP interface."
       listPath={openinfraPaths.emailsenders}
       columns={columns}
       onRowClick={(s) =>

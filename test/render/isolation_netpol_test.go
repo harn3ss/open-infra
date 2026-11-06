@@ -155,7 +155,9 @@ func isoDBNode(name string) map[string]any {
 
 // isoExempt lists compositions that render pods but need no tenant isolation of their own, and why.
 var isoExempt = map[string]string{
-	"bucket-composition.yaml":  "its only pod is the setup Job in the minio namespace",
+	"bucket-composition.yaml": "its only pod is the setup Job in the minio namespace",
+	"emailsender-composition.yaml": "its only pod is the credential Job in the open-infra-aws-shim platform namespace, " +
+		"which opens no port",
 	"query-composition.yaml":   "its Job runs in the minio namespace; queries run in query-runtime, which has its own policy",
 	"queue-composition.yaml":   "its only pod is the setup Job in the nats namespace",
 	"vmimage-composition.yaml": "image builds run in the openinfra-images platform namespace",

@@ -1,14 +1,29 @@
-# The compiler for kind: EmailSender. It emits a <name>-smtp connection secret
-# (SMTP_HOST/PORT/FROM/FROM_NAME) into the app namespace, pointing at the shared
-# in-cluster SMTP relay (platform/mail/), and echoes status. Apps consume it via
-# the existing spec.secrets -> envFrom, exactly like the <name>-minio convention —
-# no app-composition change.
+# The compiler for kind: EmailSender — a sending identity and its Amazon SES SMTP credentials, the way the
+# SES console's "Create SMTP credentials" makes them. One claim gets, in the AWS account its namespace
+# belongs to:
+#   - an IAM user (ses-smtp-user-<id>, in the account's IAM home) whose one permission is ses:SendRawEmail
+#     as the claim's From address: an inline policy (AmazonSesSendingAccess) on that address's SES identity.
+#     The SES SMTP interface sends every message as SendRawEmail, authorized on every address it is sent as
+#     (MAIL FROM and the From header), so these credentials send as exactly that address;
+#   - an access key for the user, minted once by a setup Job in the aws-shim's namespace, stored with the SES
+#     SMTP password derived from its secret (AWS's algorithm, in the install's region). The key's Secret is
+#     owned by this composite, so it is deleted with the claim;
+#   - <name>-smtp in the claim's namespace, injected into apps via spec.secrets -> envFrom like <name>-minio:
+#     SMTP_HOST / SMTP_PORT (the aws-shim's SES SMTP interface, STARTTLS on 587), SMTP_USERNAME (the access
+#     key id), SMTP_PASSWORD (the SMTP password), SMTP_FROM, SMTP_FROM_NAME.
+# The From address must be a verified identity of the account: the management account's are every identity
+# the platform relay is configured for; a member account's are its kind: Account's spec.ses
+# .verifiedIdentities (an operator verifies them). status.verificationStatus is SUCCESS or PENDING; while it
+# is PENDING the credentials work but every send is refused (554 Message rejected: Email address is not
+# verified), as on SES.
 #
-# The relay accepts submission from in-cluster senders; no per-sender credential is
-# minted in this slice (the relay is network-guarded, not internet-exposed). A
-# per-identity SMTP AUTH credential is a follow-on.
+# The claim's account is its namespace's (the openinfra.dev/account-id label; none = the management
+# account), read with the namespace and, for a member account, its Account, as extra resources. Nothing is
+# rendered until they are known, so a user is never made in the wrong account.
 #
-# Synced after the XRD (sync-wave 3).
+# Synced after the XRD (sync-wave 3). Also here: the read and write grants the composition's Crossplane and
+# provider-kubernetes need. After they are in RBAC, regenerate the Cedar control-plane corpus
+# (console-api/cmd/rbac-to-cedar --configmap) so the enforced corpus includes them.
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
@@ -22,6 +37,21 @@ spec:
     kind: XEmailSender
   mode: Pipeline
   pipeline:
+    # The install's AWS identity (platform/aws-shim/aws-identity.yaml): the management account's id, and
+    # the region SMTP passwords are derived for. Optional: without it, 000000000000 in us-east-1.
+    - step: environment
+      functionRef:
+        name: crossplane-contrib-function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          policy:
+            resolution: Optional
+          environmentConfigs:
+            - type: Reference
+              ref:
+                name: openinfra-aws-identity
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -31,41 +61,311 @@ spec:
         source: Inline
         inline:
           template: |
-            {{- $spec := .observed.composite.resource.spec }}
-            {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
-            {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
+            {{- $xr := .observed.composite.resource }}
+            {{- $spec := $xr.spec }}
+            {{- $labels := $xr.metadata.labels | default dict }}
+            {{- $name := (index $labels "crossplane.io/claim-name") | default $xr.metadata.name }}
             {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "default" }}
-            {{- $from := $spec.fromAddress }}
+            {{- $uid := $xr.metadata.uid | default "" }}
+            {{- $from := $spec.fromAddress | default "" }}
+            {{- /* The address is the SMTP user's policy resource: never a wildcard, never anything the XRD's
+                   pattern refuses (a claim that slipped past admission stops here). */}}
+            {{- if not (regexMatch "^[A-Za-z0-9._%+-]+@[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$" $from) }}
+            {{-   fail (printf "kind: EmailSender %s: fromAddress %q is not an email address (letters, digits and . _ %% + - before the @)" .observed.composite.resource.metadata.name $from) }}
+            {{- end }}
             {{- $fromName := $spec.fromName | default "" }}
+            {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
+            {{- $mgmt := index $envCfg "awsAccountId" | default "000000000000" }}
+            {{- $region := index $envCfg "awsRegion" | default "us-east-1" }}
+            {{- $keysNS := "open-infra-aws-shim" }}
+            {{- /* The claim's account: its namespace's account label (none = the management account). A member
+                   account's IAM home is the first namespace its Account lists; the management account's is the
+                   console's namespace. */}}
+            {{- $extra := .extraResources | default dict }}
+            {{- $nsObj := dict }}
+            {{- with index $extra "claim-namespace" }}{{- with .items }}{{- $nsObj = (index . 0).resource }}{{- end }}{{- end }}
+            {{- $nsKnown := gt (len $nsObj) 0 }}
+            {{- $acct := $mgmt }}
+            {{- if $nsKnown }}{{- with $nsObj.metadata }}{{- with .labels }}{{- with (index . "openinfra.dev/account-id") }}{{- $acct = . }}{{- end }}{{- end }}{{- end }}{{- end }}
+            {{- $member := ne $acct $mgmt }}
+            {{- $acctObj := dict }}
+            {{- with index $extra "account" }}{{- with .items }}{{- $acctObj = (index . 0).resource }}{{- end }}{{- end }}
+            {{- $home := "open-infra-console" }}
+            {{- $verified := list }}
+            {{- if $member }}
+            {{-   $home = "" }}
+            {{-   with $acctObj.spec }}
+            {{-     with .namespaces }}{{- $home = index . 0 }}{{- end }}
+            {{-     with .ses }}{{- with .verifiedIdentities }}{{- $verified = . }}{{- end }}{{- end }}
+            {{-   end }}
+            {{- end }}
+            {{- /* Verified: the management account's identities are the relay's (every one); a member account's
+                   are its Account's — the address itself, or its domain. */}}
+            {{- $fromDomain := regexReplaceAll "^[^@]*@" ($from | lower) "" }}
+            {{- $status := "SUCCESS" }}
+            {{- if $member }}
+            {{-   $status = "PENDING" }}
+            {{-   range $v := $verified }}{{- if or (eq ($v | lower) ($from | lower)) (eq ($v | lower) $fromDomain) }}{{- $status = "SUCCESS" }}{{- end }}{{- end }}
+            {{- end }}
+            {{- /* Names, from the composite's uid: a re-created claim (same name) gets a new user and key, so an
+                   old key can never act as a new user. The access key id is AWS-shaped (20 characters, upper-case
+                   letters and digits); its Secret is named as the key store names it (awskeys.SecretName). */}}
+            {{- $id := printf "emailsender|%s" $uid | sha256sum }}
+            {{- $user := printf "ses-smtp-user-%s" (trunc 12 $id) }}
+            {{- $ak := printf "OIAK%s" (trunc 16 (printf "emailsender-key|%s" $uid | sha256sum) | upper) }}
+            {{- $keySecret := printf "iam-ak-%s" (trunc 40 ($ak | sha256sum)) }}
+            {{- $jobRes := printf "smtp-credentials-%s" (trunc 10 $id) }}
+            {{- $userArn := printf "arn:aws:iam::%s:user/%s" $acct $user }}
             ---
-            # Connection secret: how an app talks to the relay. Injected via spec.secrets -> envFrom.
+            # The claim's namespace (its account label) and, for a member account, its Account (its IAM home
+            # and verified identities).
+            apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+            kind: ExtraResources
+            requirements:
+              claim-namespace:
+                apiVersion: v1
+                kind: Namespace
+                matchName: {{ $ns | quote }}
+              {{- if and $nsKnown $member }}
+              account:
+                apiVersion: organizations.openinfra.dev/v1
+                kind: Account
+                matchName: {{ $acct | quote }}
+              {{- end }}
+            {{- $ready := false }}
+            {{- if and $nsKnown $home $uid }}
+            ---
+            # The SMTP user: an IAM user in the account's IAM home, allowed ses:SendRawEmail as the From address
+            # and nothing else (no groups, one inline policy), decided by IAM policy alone (the canary label).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: smtp-user
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: iam.openinfra.dev/v1
+                  kind: User
+                  metadata:
+                    name: {{ $user }}
+                    namespace: {{ $home | quote }}
+                    labels:
+                      openinfra.dev/iam-authz: enforce
+                      openinfra.dev/emailsender: {{ $name | quote }}
+                      openinfra.dev/emailsender-namespace: {{ $ns | quote }}
+                  spec:
+                    displayName: {{ printf "SES SMTP user of EmailSender %s/%s" $ns $name | quote }}
+                    source: local
+                    groups: []
+                    inlinePolicies:
+                      - name: AmazonSesSendingAccess
+                        document:
+                          Version: "2012-10-17"
+                          Statement:
+                            - Effect: Allow
+                              Action: ses:SendRawEmail
+                              Resource: {{ printf "arn:aws:ses:*:*:identity/%s" $from | quote }}
+            ---
+            # Mint the user's access key once: a random secret, the SES SMTP password derived from it for the
+            # install's region (AWS's algorithm), in one key-store Secret owned by this composite. A rerun finds
+            # the Secret (AlreadyExists) and changes nothing. Its tenant-derived values travel as env values.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: {{ $jobRes }}
+            spec:
+              readiness:
+                policy: DeriveFromCelQuery
+                celQuery: "has(object.status.succeeded) && object.status.succeeded >= 1"
+              forProvider:
+                manifest:
+                  apiVersion: batch/v1
+                  kind: Job
+                  metadata:
+                    name: {{ printf "emailsender-%s" (trunc 12 $id) }}
+                    namespace: {{ $keysNS }}
+                    labels: { openinfra.dev/emailsender: {{ $name | quote }}, openinfra.dev/emailsender-namespace: {{ $ns | quote }} }
+                  spec:
+                    backoffLimit: 20
+                    # No ttlSecondsAfterFinished: provider-kubernetes manages this Job, and would re-create a
+                    # TTL-collected one every poll. The finished Job is its own done-marker.
+                    template:
+                      spec:
+                        serviceAccountName: openinfra-emailsender-setup
+                        restartPolicy: OnFailure
+                        enableServiceLinks: false
+                        securityContext:
+                          runAsNonRoot: true
+                          runAsUser: 65534
+                          runAsGroup: 65534
+                          seccompProfile: { type: RuntimeDefault }
+                        volumes:
+                          - { name: tmp, emptyDir: { sizeLimit: 1Mi } }
+                        containers:
+                          - name: mint
+                            image: alpine/k8s:1.30.0@sha256:bd01dae02676ce4cab62fc744e43443eee5bf660054e94d3496d23bfc35d384e
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              readOnlyRootFilesystem: true
+                              capabilities: { drop: [ALL] }
+                            resources:
+                              requests: { cpu: 50m, memory: 64Mi }
+                              limits: { cpu: 50m, memory: 64Mi }
+                            volumeMounts: [{ name: tmp, mountPath: /tmp }]
+                            env:
+                              - { name: HOME, value: /tmp }
+                              - { name: ACCESS_KEY_ID, value: {{ $ak | quote }} }
+                              - { name: KEY_SECRET, value: {{ $keySecret | quote }} }
+                              - { name: KEYS_NS, value: {{ $keysNS | quote }} }
+                              - { name: OWNER, value: {{ $user | quote }} }
+                              - { name: ACCOUNT, value: {{ ternary $acct "" $member | quote }} }
+                              - { name: REGION, value: {{ $region | quote }} }
+                              - { name: XR_API, value: {{ $xr.apiVersion | default "openinfra.dev/v1" | quote }} }
+                              - { name: XR_KIND, value: {{ $xr.kind | default "XEmailSender" | quote }} }
+                              - { name: XR_NAME, value: {{ $xr.metadata.name | quote }} }
+                              - { name: XR_UID, value: {{ $uid | quote }} }
+                            command: ["/bin/sh", "-c"]
+                            args:
+                              - |
+                                set -eu
+                                python3 - > /tmp/key.json <<'PY'
+                                import base64, hashlib, hmac, json, os, secrets
+                                e = os.environ
+                                secret = base64.b64encode(secrets.token_bytes(30)).decode()
+                                def sign(key, msg):
+                                    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+                                # SES SMTP password, version 4 (AWS, "Obtaining Amazon SES SMTP credentials").
+                                sig = sign(("AWS4" + secret).encode("utf-8"), "11111111")
+                                for part in (e["REGION"], "ses", "aws4_request", "SendRawEmail"):
+                                    sig = sign(sig, part)
+                                password = base64.b64encode(bytes([0x04]) + sig).decode()
+                                data = {"accessKeyId": e["ACCESS_KEY_ID"], "secretKey": secret, "owner": e["OWNER"],
+                                        "smtpPassword": password}
+                                if e.get("ACCOUNT"):
+                                    data["account"] = e["ACCOUNT"]
+                                print(json.dumps({"apiVersion": "v1", "kind": "Secret", "type": "Opaque",
+                                    "metadata": {"name": e["KEY_SECRET"], "namespace": e["KEYS_NS"],
+                                        "labels": {"app.kubernetes.io/managed-by": "open-infra-console",
+                                                   "openinfra.dev/iam-user": e["OWNER"],
+                                                   "openinfra.dev/ses-smtp-credentials": "true"},
+                                        "ownerReferences": [{"apiVersion": e["XR_API"], "kind": e["XR_KIND"],
+                                                             "name": e["XR_NAME"], "uid": e["XR_UID"]}]},
+                                    "stringData": data}))
+                                PY
+                                if out=$(kubectl create -f /tmp/key.json 2>&1); then
+                                  echo "SES SMTP credentials minted for $OWNER ($ACCESS_KEY_ID)"
+                                else
+                                  case "$out" in
+                                    *AlreadyExists*|*"already exists"*) echo "SES SMTP credentials for $OWNER already exist ($ACCESS_KEY_ID)" ;;
+                                    *) echo "could not store the access key: $out" >&2; exit 1 ;;
+                                  esac
+                                fi
+                                rm -f /tmp/key.json
+            {{- $job := index (.observed.resources | default dict) $jobRes }}
+            {{- $minted := false }}
+            {{- if $job }}{{- with $job.resource.status }}{{- with .atProvider }}{{- with .manifest }}{{- with .status }}{{- with .succeeded }}{{- if ge (int .) 1 }}{{- $minted = true }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
+            {{- if $minted }}
+            {{- $ready = true }}
+            ---
+            # The connection secret: the SES SMTP interface and these credentials. The password is copied from
+            # the key-store Secret (patchesFrom), never written in this composition.
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
               annotations:
                 gotemplating.fn.crossplane.io/composition-resource-name: smtp-secret
             spec:
+              references:
+                - patchesFrom:
+                    apiVersion: v1
+                    kind: Secret
+                    namespace: {{ $keysNS }}
+                    name: {{ $keySecret }}
+                    fieldPath: data.smtpPassword
+                  toFieldPath: data.SMTP_PASSWORD
               forProvider:
                 manifest:
                   apiVersion: v1
                   kind: Secret
+                  type: Opaque
                   metadata:
                     name: {{ $name }}-smtp
                     namespace: {{ $ns }}
                     labels:
                       openinfra.dev/emailsender: {{ $name }}
                   stringData:
-                    SMTP_HOST: smtp-relay.mail.svc.cluster.local
+                    SMTP_HOST: aws-shim.open-infra-aws-shim.svc.cluster.local
                     SMTP_PORT: "587"
+                    SMTP_USERNAME: {{ $ak | quote }}
                     SMTP_FROM: {{ $from | quote }}
                     SMTP_FROM_NAME: {{ $fromName | quote }}
+            {{- end }}
+            {{- end }}
             ---
             apiVersion: openinfra.dev/v1
             kind: XEmailSender
             status:
-              ready: true
+              ready: {{ $ready }}
               fromAddress: {{ $from | quote }}
+              verificationStatus: {{ $status | quote }}
+              {{- if and $nsKnown $home $uid }}
+              iamUser: {{ $user | quote }}
+              iamUserArn: {{ $userArn | quote }}
+              smtpUsername: {{ $ak | quote }}
+              {{- end }}
+              {{- if $ready }}
               connectionSecret: {{ $name }}-smtp
+              {{- end }}
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready
+---
+# Crossplane reads the claim's namespace (its account label) as an extra resource. Read-only: a Namespace
+# carries its name and labels. (The account's kind: Account it reads through the organizations grant in
+# account-composition.yaml.)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crossplane:openinfra-emailsender-reads
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crossplane:openinfra-emailsender-reads
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: crossplane:openinfra-emailsender-reads
+subjects:
+  - kind: ServiceAccount
+    name: crossplane
+    namespace: crossplane-system
+---
+# provider-kubernetes writes each claim's SMTP user (a kind: User in its account's IAM home).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: provider-kubernetes:openinfra-emailsender
+rules:
+  - apiGroups: ["iam.openinfra.dev"]
+    resources: ["users"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: provider-kubernetes:openinfra-emailsender
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: provider-kubernetes:openinfra-emailsender
+subjects:
+  - kind: ServiceAccount
+    name: provider-kubernetes
+    namespace: crossplane-system

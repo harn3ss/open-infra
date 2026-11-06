@@ -239,6 +239,37 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# kind: EmailSender's credential setup (abstraction/emailsender-composition.yaml): one Job per claim, in
+# this namespace, mints the claim's IAM user's access key — an iam-ak-<id> Secret holding the key and the
+# SES SMTP password derived from it, owned by the claim's composite so it goes with the claim. Create only:
+# it never reads, lists or changes a key (a second run finds its Secret already there and stops).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openinfra-emailsender-setup
+  namespace: open-infra-aws-shim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openinfra-emailsender-setup
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openinfra-emailsender-setup
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: openinfra-emailsender-setup }
+subjects:
+  - kind: ServiceAccount
+    name: openinfra-emailsender-setup
+    namespace: open-infra-aws-shim
+---
 # IdentityProvider registry (#136 §2): read the spec-mirror ConfigMaps
 # (openinfra.dev/identity-provider) the IdentityProvider composition renders into this namespace, to
 # build the external-OIDC web-identity verifier registry. ConfigMaps only, this namespace only,

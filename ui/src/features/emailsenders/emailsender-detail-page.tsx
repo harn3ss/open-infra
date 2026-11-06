@@ -17,6 +17,9 @@ import type { EmailSender } from "@/types/k8s";
 import { awsState } from "@/lib/aws-states";
 
 function senderStatus(s: EmailSender): { label: string; tone: StatusTone } {
+  // An identity the account has not verified yet is SES's "Pending", whatever else is ready: its
+  // credentials sign in, but every send is refused until the operator verifies it.
+  if (s.status?.verificationStatus === "PENDING") return { label: "Pending verification", tone: "warning" };
   // The resource's state in AWS's words (lib/aws-states).
   return awsState(s, "emailsender");
 }
@@ -47,6 +50,9 @@ export function EmailSenderDetailPage() {
   const spec = sender.spec;
   const fromAddress = spec?.fromAddress ?? sender.status?.fromAddress;
   const connectionSecret = sender.status?.connectionSecret;
+  const smtpUsername = sender.status?.smtpUsername;
+  const iamUser = sender.status?.iamUser;
+  const verification = sender.status?.verificationStatus;
 
   return (
     <DetailShell
@@ -100,6 +106,28 @@ export function EmailSenderDetailPage() {
                     ),
                   },
                   {
+                    label: "Identity status",
+                    value: verification ? (
+                      <StatusBadge
+                        status={verification === "SUCCESS" ? "Verified" : "Pending"}
+                        tone={verification === "SUCCESS" ? "success" : "warning"}
+                      />
+                    ) : null,
+                  },
+                  {
+                    label: "SMTP user name",
+                    value: smtpUsername ? (
+                      <span className="inline-flex items-center gap-1">
+                        <code className="text-xs">{smtpUsername}</code>
+                        <CopyButton value={smtpUsername} />
+                      </span>
+                    ) : null,
+                  },
+                  {
+                    label: "IAM user",
+                    value: iamUser ? <code className="text-xs">{iamUser}</code> : null,
+                  },
+                  {
                     label: "Ready",
                     value: <StatusBadge status={status.label} tone={status.tone} />,
                   },
@@ -113,7 +141,8 @@ export function EmailSenderDetailPage() {
               Reference the SMTP credentials in an Application or Function via{" "}
               <code className="text-xs">spec.secrets</code> — open-infra injects the{" "}
               <span className="font-medium text-foreground">{connectionSecret}</span> secret (host, port, username,
-              password) into the workload's environment.
+              password) into the workload's environment. Send through the SES SMTP interface with STARTTLS, as this
+              From address only.
             </div>
           ) : null}
 
@@ -121,8 +150,8 @@ export function EmailSenderDetailPage() {
           <div className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
             <TriangleAlert className="mt-0.5 size-4 shrink-0" />
             <span>
-              <span className="font-medium">Experimental.</span> This sender relays mail from an in-cluster relay.
-              Internet deliverability is <span className="font-medium">not guaranteed out of the box</span> — reaching
+              <span className="font-medium">Experimental.</span> Mail is sent through the SES SMTP interface to the
+              platform relay. Internet deliverability is <span className="font-medium">not guaranteed out of the box</span> — reaching
               real inboxes needs a smarthost (an authenticated upstream relay) plus SPF, DKIM, and DMARC DNS records for
               your domain. Those are operator-configured; the console does not verify them.
             </span>
