@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -18,6 +19,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+// maxSyncInvokePayload is AWS Lambda's synchronous invocation payload limit (6 MB).
+const maxSyncInvokePayload = 6 * 1024 * 1024
 
 // fnNameRE is exactly the RFC-1123 label a kind: Function / Knative Service name can be. Validating the
 // function name at the parse choke point (which feeds BOTH the sync target URL and the async subject +
@@ -197,7 +201,16 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		host = qualifier + "-" + name
 	}
 	target := "http://" + host + "." + ns + "." + h.svcSuffix + "/"
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, r.Body)
+	// The payload goes to the function whole, with its length: a streamed (chunked) body reaches a runtime
+	// that reads Content-Length as an empty event. A synchronous invocation's payload is at most 6 MB, as on
+	// AWS, which refuses a larger one with RequestEntityTooLargeException.
+	payload, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxSyncInvokePayload))
+	if err != nil {
+		writeLambdaError(w, http.StatusRequestEntityTooLarge, "RequestEntityTooLargeException", requestID,
+			"Request must be smaller than 6291456 bytes for the InvokeFunction operation")
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(payload))
 	if err != nil {
 		writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID, "could not build upstream request")
 		return

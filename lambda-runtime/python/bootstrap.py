@@ -163,13 +163,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body_bytes)
 
+    def _read_body(self):
+        """The request body, sent with a Content-Length or chunked (HTTP/1.1 Transfer-Encoding), which
+        BaseHTTPRequestHandler does not decode: an invocation's payload is the event either way."""
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            out = bytearray()
+            while True:
+                size = int(self.rfile.readline().split(b";", 1)[0].strip() or b"0", 16)
+                if size == 0:
+                    while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                        pass  # trailers
+                    return bytes(out)
+                out += self.rfile.read(size)
+                self.rfile.readline()  # the CRLF after each chunk
+        length = int(self.headers.get("Content-Length") or 0)
+        return self.rfile.read(length) if length else b""
+
     def _handle(self):
         # Health probe (never collides with a real invoke).
         if self.command == "GET" and self.path == "/_openinfra_health":
             self._send(200, b'{"ok":true}')
             return
-        length = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(length) if length else b""
+        raw = self._read_body()
         # Direct-invoke mode (AWS `Invoke` semantics) when the caller sets X-Openinfra-Invoke: direct —
         # the shim's Invoke, open-appsync, and Step Functions all do. The handler's RAW return value is
         # the payload (a {statusCode,...} dict is DATA, never an HTTP mapping), a thrown error is
