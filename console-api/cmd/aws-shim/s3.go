@@ -110,6 +110,10 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
 		return
 	}
+	if !h.expectedOwner(r, "x-amz-expected-bucket-owner", op) {
+		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
+		return
+	}
 	// A copy reads its source as well: the source object is authorized as a read of it (s3:GetObject, or
 	// s3:GetObjectVersion for a version), exactly as AWS evaluates CopyObject and UploadPartCopy.
 	var src copySource
@@ -120,7 +124,8 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 				"Copy Source must mention the source bucket and key: sourcebucket/sourcekey", r.URL.Path)
 			return
 		}
-		if !h.allowed(r, claims, s3op{kind: "get", bucket: src.bucket, key: src.key, versionID: src.versionID}) {
+		srcOp := s3op{kind: "get", bucket: src.bucket, key: src.key, versionID: src.versionID}
+		if !h.allowed(r, claims, srcOp) || !h.expectedOwner(r, "x-amz-source-expected-bucket-owner", srcOp) {
 			writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
 			return
 		}
@@ -230,6 +235,22 @@ func (h *s3Handler) allowedIn(b *s3authz.Batch, r *http.Request, claims iam.Clai
 			"bucket", op.bucket, "key", op.key, "reason", reason)
 	}
 	return ok
+}
+
+// expectedOwner applies an expected-bucket-owner header (x-amz-expected-bucket-owner for the request's
+// bucket, x-amz-source-expected-bucket-owner for a copy's source): a request that names the account it
+// expects to own the bucket is refused, 403 AccessDenied, when another account owns it, as S3 refuses it.
+// CreateBucket takes no such header (its bucket has no owner yet), and a request without one is unchanged.
+func (h *s3Handler) expectedOwner(r *http.Request, header string, op s3op) bool {
+	want := strings.TrimSpace(r.Header.Get(header))
+	if want == "" || op.bucket == "" || op.kind == "create-bucket" {
+		return true
+	}
+	if owner := h.bucketOwner(r.Context(), op.bucket); owner != want {
+		h.logger.Warn("s3 refused: the bucket's owner is not the expected owner", "op", op.kind, "bucket", op.bucket, "header", header)
+		return false
+	}
+	return true
 }
 
 // gate is the shared object-storage authorization (internal/s3authz) over this handler's clients.

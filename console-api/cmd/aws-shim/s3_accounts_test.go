@@ -342,3 +342,40 @@ func TestS3Accounts_NoMemberAccountsNothingChanges(t *testing.T) {
 		}
 	}
 }
+
+// x-amz-expected-bucket-owner (and x-amz-source-expected-bucket-owner for a copy's source): the request is
+// refused when the bucket's owner is not the account it names, and is unchanged without the header.
+func TestS3Accounts_ExpectedBucketOwner(t *testing.T) {
+	h, _, _ := s3AccountsFixture(t)
+	mgmt := awsidentity.Current().AccountID
+	get := func(b string) s3op { return s3op{kind: "get", bucket: b, key: "k"} }
+	req := func(header, value string) *http.Request {
+		r := s3Req(context.Background(), "GET", "/x/k")
+		if header != "" {
+			r.Header.Set(header, value)
+		}
+		return r
+	}
+	for _, c := range []struct {
+		name, header, value, bucket string
+		op                          s3op
+		want                        bool
+	}{
+		{"no header", "", "", "team-data", get("team-data"), true},
+		{"the owner", "x-amz-expected-bucket-owner", testMember, "team-data", get("team-data"), true},
+		{"the management account's own", "x-amz-expected-bucket-owner", mgmt, "mgmt-data", get("mgmt-data"), true},
+		{"another account", "x-amz-expected-bucket-owner", mgmt, "team-data", get("team-data"), false},
+		{"another account (member expected)", "x-amz-expected-bucket-owner", testMember, "mgmt-data", get("mgmt-data"), false},
+		{"copy source owner", "x-amz-source-expected-bucket-owner", testMember, "team-data", get("team-data"), true},
+		{"copy source another account", "x-amz-source-expected-bucket-owner", testMember, "assets", get("assets"), false},
+		{"create-bucket takes none", "x-amz-expected-bucket-owner", testMember, "new-one", s3op{kind: "create-bucket", bucket: "new-one", write: true}, true},
+	} {
+		header := c.header
+		if header == "" {
+			header = "x-amz-expected-bucket-owner"
+		}
+		if got := h.expectedOwner(req(c.header, c.value), header, c.op); got != c.want {
+			t.Errorf("%s: expectedOwner = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
