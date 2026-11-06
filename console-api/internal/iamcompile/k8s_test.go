@@ -100,7 +100,11 @@ func TestWriter_ReportThenApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	docs, err := ParseCorpus([]byte(corpus.Data[CorpusKey]))
+	raw, err := ReadCorpus(corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs, err := ParseCorpus(raw)
 	if err != nil || len(docs) != 1 || docs[0].AppliesTo[0] != "User::"+alice {
 		t.Fatalf("corpus: %v %+v", err, docs)
 	}
@@ -129,7 +133,8 @@ func TestWriter_ReportThenApply(t *testing.T) {
 		t.Error("a principal whose policy is detached loses its generated role")
 	}
 	corpus, _ = cs.CoreV1().ConfigMaps(CorpusNamespace).Get(ctx, CorpusName, metav1.GetOptions{})
-	if docs, _ := ParseCorpus([]byte(corpus.Data[CorpusKey])); len(docs) != 0 {
+	raw, _ = ReadCorpus(corpus)
+	if docs, _ := ParseCorpus(raw); len(docs) != 0 {
 		t.Errorf("and its corpus grant: %+v", docs)
 	}
 }

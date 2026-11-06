@@ -1,6 +1,7 @@
 package iamcompile
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -161,14 +162,55 @@ func (wr Writer) Write(ctx context.Context, mode Mode, in Input, out Output) err
 	if mode != ModeApply {
 		return nil
 	}
-	corpus, err := MarshalCorpus(out.Corpus)
+	corpus, err := MarshalCorpus(MergeGrants(out.Corpus))
 	if err != nil {
 		return err
 	}
-	if err := wr.putConfigMap(ctx, ns, CorpusName, CorpusKey, string(corpus)); err != nil {
+	gz, err := GzipCorpus(corpus)
+	if err != nil {
+		return err
+	}
+	if len(gz) > MaxCorpusBytes {
+		return fmt.Errorf("corpus: %d bytes compressed is more than a ConfigMap holds (%d); nothing written", len(gz), MaxCorpusBytes)
+	}
+	if err := wr.putCorpus(ctx, ns, gz); err != nil {
 		return fmt.Errorf("corpus: %w", err)
 	}
 	return wr.reconcileRBAC(ctx, out)
+}
+
+// putCorpus writes the compressed corpus to binaryData and drops a plain one from data.
+func (wr Writer) putCorpus(ctx context.Context, ns string, gz []byte) error {
+	cms := wr.CS.CoreV1().ConfigMaps(ns)
+	cur, err := cms.Get(ctx, CorpusName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = cms.Create(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: CorpusName, Namespace: ns,
+			Labels: map[string]string{GeneratedByLabel: GeneratedBy}}, BinaryData: map[string][]byte{CorpusGzipKey: gz}},
+			metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(cur.BinaryData[CorpusGzipKey], gz) && cur.Data[CorpusKey] == "" {
+		return nil
+	}
+	cur = cur.DeepCopy()
+	if cur.BinaryData == nil {
+		cur.BinaryData = map[string][]byte{}
+	}
+	cur.BinaryData[CorpusGzipKey] = gz
+	delete(cur.Data, CorpusKey)
+	_, err = cms.Update(ctx, cur, metav1.UpdateOptions{})
+	return err
+}
+
+// ReadCorpus reads the compiled corpus from its ConfigMap (compressed, or plain from before).
+func ReadCorpus(cm *corev1.ConfigMap) ([]byte, error) {
+	if gz := cm.BinaryData[CorpusGzipKey]; len(gz) > 0 {
+		return gunzipCorpus(gz)
+	}
+	return []byte(cm.Data[CorpusKey]), nil
 }
 
 func (wr Writer) putConfigMap(ctx context.Context, ns, name, key, value string) error {
