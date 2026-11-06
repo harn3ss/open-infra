@@ -1,0 +1,84 @@
+# The guard on IAM virtual MFA devices (console-api/internal/mfa).
+#
+# A virtual MFA device is a Secret in the credential store namespace (open-infra-aws-shim, the aws-shim's
+# KEYS_NAMESPACE, beside the access keys and login profiles) holding its TOTP seed. The aws-shim's IAM
+# front door and the console write them; sign-in, GetSessionToken and AssumeRole read them. RBAC cannot
+# hold writes to a name prefix, so admission does:
+#
+#   1. A device is exactly a Secret named iam-mfa-* labelled openinfra.dev/mfa-device: "true": the prefix
+#      and the label come together or not at all, so nothing else passes for a device and no device hides
+#      under another name.
+#   2. A device names its account (openinfra.dev/account-id), and keeps it: an update never moves a
+#      device to another account.
+#   3. An assigned device names its user (openinfra.dev/iam-user and openinfra.dev/iam-user-namespace),
+#      both or neither; an update never moves an assigned device to another user — it is deactivated
+#      (the user labels removed) first, as DeactivateMFADevice does.
+#
+# A cluster administrator (system:masters) is not held, so a broken device can always be repaired — and a
+# user locked out by a lost device recovered (docs/iam.md, "Recovering a lost MFA device").
+# Pinned by test/admission (each rule evaluated against its cases) and test/render (the objects, scope).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-mfa-device-guard
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["secrets"]
+  matchConditions:
+    - name: credential-store
+      expression: "request.namespace == 'open-infra-aws-shim'"
+    - name: not-cluster-admin
+      expression: "!('system:masters' in request.userInfo.groups)"
+  variables:
+    # The Secret as it is (create, update) or was (delete).
+    - name: s
+      expression: "request.operation == 'DELETE' ? oldObject : object"
+    - name: isDevice
+      expression: "variables.s.metadata.name.startsWith('iam-mfa-')"
+    - name: deviceLabel
+      expression: "has(variables.s.metadata.labels) && 'openinfra.dev/mfa-device' in variables.s.metadata.labels ? variables.s.metadata.labels['openinfra.dev/mfa-device'] : ''"
+    - name: account
+      expression: "has(variables.s.metadata.labels) && 'openinfra.dev/account-id' in variables.s.metadata.labels ? variables.s.metadata.labels['openinfra.dev/account-id'] : ''"
+    - name: user
+      expression: "has(variables.s.metadata.labels) && 'openinfra.dev/iam-user' in variables.s.metadata.labels ? variables.s.metadata.labels['openinfra.dev/iam-user'] : ''"
+    - name: userNS
+      expression: "has(variables.s.metadata.labels) && 'openinfra.dev/iam-user-namespace' in variables.s.metadata.labels ? variables.s.metadata.labels['openinfra.dev/iam-user-namespace'] : ''"
+    - name: oldAccount
+      expression: "request.operation == 'UPDATE' && has(oldObject.metadata.labels) && 'openinfra.dev/account-id' in oldObject.metadata.labels ? oldObject.metadata.labels['openinfra.dev/account-id'] : ''"
+    - name: oldUser
+      expression: "request.operation == 'UPDATE' && has(oldObject.metadata.labels) && 'openinfra.dev/iam-user' in oldObject.metadata.labels ? oldObject.metadata.labels['openinfra.dev/iam-user'] : ''"
+    - name: oldUserNS
+      expression: "request.operation == 'UPDATE' && has(oldObject.metadata.labels) && 'openinfra.dev/iam-user-namespace' in oldObject.metadata.labels ? oldObject.metadata.labels['openinfra.dev/iam-user-namespace'] : ''"
+  validations:
+    - expression: "variables.isDevice == (variables.deviceLabel == 'true')"
+      message: "a virtual MFA device is a Secret named iam-mfa-* labelled openinfra.dev/mfa-device: \"true\", both or neither"
+      reason: Forbidden
+    - expression: "!variables.isDevice || variables.account != ''"
+      message: "a virtual MFA device names its account (openinfra.dev/account-id)"
+      reason: Forbidden
+    - expression: "!variables.isDevice || ((variables.user == '') == (variables.userNS == ''))"
+      message: "an assigned MFA device names its user (openinfra.dev/iam-user and openinfra.dev/iam-user-namespace), both or neither"
+      reason: Forbidden
+    - expression: "request.operation != 'UPDATE' || !variables.isDevice || variables.oldAccount == variables.account"
+      message: "an MFA device cannot be moved to another account"
+      reason: Forbidden
+    - expression: "request.operation != 'UPDATE' || !variables.isDevice || variables.oldUser == '' || variables.user == '' || (variables.oldUser == variables.user && variables.oldUserNS == variables.userNS)"
+      message: "an assigned MFA device cannot be moved to another user: deactivate it first"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-mfa-device-guard
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  policyName: openinfra-mfa-device-guard
+  validationActions: [Deny]

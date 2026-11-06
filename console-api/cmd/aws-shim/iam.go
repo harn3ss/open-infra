@@ -115,6 +115,13 @@ func verbForIAMOp(op string) (verb, resource string, ok bool) {
 		return "delete", "users", true
 	case "ChangePassword":
 		return "update", "users", true
+	// Virtual MFA devices (iam_mfa.go): a user's credentials, as its access keys are.
+	case "CreateVirtualMFADevice", "EnableMFADevice", "ResyncMFADevice", "TagMFADevice", "UntagMFADevice":
+		return "create", "users", true
+	case "ListMFADevices", "ListVirtualMFADevices", "ListMFADeviceTags":
+		return "get", "users", true
+	case "DeactivateMFADevice", "DeleteVirtualMFADevice":
+		return "delete", "users", true
 	}
 	return "", "", false
 }
@@ -135,8 +142,11 @@ func iamResource(op string, r *http.Request) (string, string) {
 		return "Policy", r.PostFormValue("PolicyName")
 	case "ListGroupsForUser":
 		return "User", r.PostFormValue("UserName")
-	case "GetAccountAuthorizationDetails":
+	case "GetAccountAuthorizationDetails", "ListVirtualMFADevices":
 		return "", ""
+	}
+	if mfaResourceOp(op) {
+		return mfaResourceType, "" // the device's ARN, built in serve (it needs the caller's account)
 	}
 	switch resource {
 	case "roles":
@@ -157,11 +167,15 @@ func iamResource(op string, r *http.Request) (string, string) {
 func iamActsOnCaller(op string) bool {
 	switch op {
 	case "CreateAccessKey", "UpdateAccessKey", "DeleteAccessKey", "ListAccessKeys", "GetUser",
-		"CreateLoginProfile", "GetLoginProfile", "UpdateLoginProfile", "DeleteLoginProfile":
+		"CreateLoginProfile", "GetLoginProfile", "UpdateLoginProfile", "DeleteLoginProfile",
+		"DeactivateMFADevice", "ListMFADevices":
 		return true
 	}
 	return false
 }
+
+// mfaResourceType marks an operation authorized on a virtual MFA device's ARN (iamResource → serve).
+const mfaResourceType = "MFADevice"
 
 func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	op := r.PostFormValue("Action")
@@ -179,6 +193,14 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
+	// An IAM user's own session (sts:GetSessionToken) calls no IAM operation unless it was authenticated
+	// with MFA, as on AWS: the session token is refused as IAM refuses it.
+	if claims.UserSession && !claims.MFAPresent() {
+		h.audit(ctx, op, "", "deny", "GetSessionToken credentials without MFA")
+		writeQueryError(w, http.StatusForbidden, "InvalidClientTokenId", requestID,
+			"The security token included in the request is invalid: credentials from GetSessionToken can call IAM only when they were obtained with MFA.", iamXMLNamespace)
+		return
+	}
 	if op == "ChangePassword" {
 		h.changePassword(ctx, w, r, claims, requestID) // a user's own password: authorized there
 		return
@@ -197,6 +219,9 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	}
 	if resType == "Group" {
 		resType, resID = arnType, h.scope(ctx).arn("group/"+orStar(resID))
+	}
+	if resType == mfaResourceType {
+		resType, resID = arnType, h.mfaARN(ctx, op, r)
 	}
 	// In legacy the coarse check first — the caller must hold k8s RBAC on the iam.openinfra.dev CRD
 	// (impersonated SAR; IAM management is admin-level, the RBAC the console's IAM pages use) — then the
@@ -297,6 +322,10 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "CreateLoginProfile", "GetLoginProfile", "UpdateLoginProfile", "DeleteLoginProfile",
 		"GetAccountPasswordPolicy", "UpdateAccountPasswordPolicy", "DeleteAccountPasswordPolicy":
 		h.serveLoginProfile(ctx, w, r, op, requestID, claims)
+	case "CreateVirtualMFADevice", "DeleteVirtualMFADevice", "EnableMFADevice", "DeactivateMFADevice",
+		"ResyncMFADevice", "ListMFADevices", "ListVirtualMFADevices",
+		"TagMFADevice", "UntagMFADevice", "ListMFADeviceTags":
+		h.serveMFA(ctx, w, r, op, requestID, claims)
 	default:
 		writeQueryError(w, http.StatusBadRequest, "InvalidAction", requestID, "IAM "+op+" is recognized but not implemented.", iamXMLNamespace)
 	}
@@ -469,6 +498,18 @@ func (h *iamHandler) getUser(ctx context.Context, w http.ResponseWriter, r *http
 func (h *iamHandler) deleteUser(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
 	sc := h.scope(ctx)
 	name := r.PostFormValue("UserName")
+	// A user with an MFA device is not deleted until the device is deactivated, as on AWS.
+	if u, err := h.dyn.Resource(gvrUsers).Namespace(sc.ns).Get(ctx, name, metav1.GetOptions{}); err == nil {
+		devices, derr := h.mfaDevicesOf(ctx, sc, u)
+		if derr != nil {
+			h.internal(w, requestID, derr)
+			return
+		}
+		if len(devices) > 0 {
+			h.conflict(w, requestID, "DeleteConflict", "Cannot delete entity, must remove MFA device first.")
+			return
+		}
+	}
 	if err := h.dyn.Resource(gvrUsers).Namespace(sc.ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 		h.noSuchEntity(w, requestID, "User "+name+" not found.")
 		return

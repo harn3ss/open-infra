@@ -53,6 +53,18 @@ type Session struct {
 	SecretKey   string    `json:"sk"`     // temp secret the shim uses to verify SigV4
 	IssuedAt    time.Time `json:"iat"`    // when the session was minted; the per-role revoke cutoff compares against it
 	Expiry      time.Time `json:"exp"`    // hard expiry; a stale token falls closed
+	// User is set for an IAM user's own session (sts:GetSessionToken): the kind: User it acts as, in
+	// Account. RoleName is then empty.
+	User string `json:"user,omitempty"`
+	// MFA reports that the session was authenticated with an MFA code (GetSessionToken's or AssumeRole's
+	// SerialNumber and TokenCode, or a calling session that was), at MFAAuthTime (Unix seconds). A session
+	// minted without — or before sessions carried it — is a temporary credential authenticated without
+	// MFA: aws:MultiFactorAuthPresent false.
+	MFA         bool  `json:"mfa,omitempty"`
+	MFAAuthTime int64 `json:"mfaAt,omitempty"`
+	// Federated marks a web-identity session (AssumeRoleWithWebIdentity), which AWS carries no MFA
+	// context for at all: aws:MultiFactorAuthPresent is absent.
+	Federated bool `json:"fed,omitempty"`
 }
 
 // Minter seals and opens session tokens. It holds one PRIMARY AES-256 key, used to seal (Mint) and to
@@ -97,6 +109,13 @@ const (
 	MinDuration     = 15 * time.Minute
 	MaxDuration     = 12 * time.Hour
 	DefaultDuration = 1 * time.Hour
+)
+
+// MaxUserSessionDuration / DefaultUserSessionDuration bound an IAM user's own session
+// (sts:GetSessionToken): 15 minutes to 36 hours, 12 hours by default, as on AWS.
+const (
+	MaxUserSessionDuration     = 36 * time.Hour
+	DefaultUserSessionDuration = 12 * time.Hour
 )
 
 // NewMinter builds a Minter from a 32-byte AES-256 key. A key of the wrong length is rejected so a
@@ -152,14 +171,25 @@ func (m *Minter) MintIn(ns, role string, groups []string, sessionName, caller st
 // MintInAccount is MintIn for a Role of account acct ("" = the management account): the session acts in
 // that account, as an AssumeRole into another account's role does on AWS.
 func (m *Minter) MintInAccount(acct, ns, role string, groups []string, sessionName, caller string, ttl time.Duration) (accessKeyID, secretKey, sessionToken string, expiry time.Time, err error) {
+	return m.MintSession(Session{RoleName: role, Namespace: ns, Account: acct, Groups: groups, SessionName: sessionName, Caller: caller}, ttl, MaxDuration)
+}
+
+// MintSession issues a temporary credential acting as s's identity — an assumed role, or an IAM user's
+// own session (s.User) — with s's MFA context, valid for ttl (DefaultDuration when 0) within
+// [MinDuration, max]. The access key id, secret and timestamps are the minter's: whatever s carries in
+// them is replaced.
+func (m *Minter) MintSession(s Session, ttl, max time.Duration) (accessKeyID, secretKey, sessionToken string, expiry time.Time, err error) {
 	if ttl <= 0 {
 		ttl = DefaultDuration
 	}
 	if ttl < MinDuration {
 		ttl = MinDuration
 	}
-	if ttl > MaxDuration {
-		ttl = MaxDuration
+	if max <= 0 {
+		max = MaxDuration
+	}
+	if ttl > max {
+		ttl = max
 	}
 	akid, err := randToken(15)
 	if err != nil {
@@ -174,10 +204,8 @@ func (m *Minter) MintInAccount(acct, ns, role string, groups []string, sessionNa
 	secretKey = base64.RawStdEncoding.EncodeToString(sk)
 	issuedAt := time.Now().UTC()
 	expiry = issuedAt.Add(ttl)
-	sess := Session{
-		RoleName: role, Namespace: ns, Account: acct, Groups: groups, SessionName: sessionName, Caller: caller,
-		AccessKeyID: accessKeyID, SecretKey: secretKey, IssuedAt: issuedAt, Expiry: expiry,
-	}
+	sess := s
+	sess.AccessKeyID, sess.SecretKey, sess.IssuedAt, sess.Expiry = accessKeyID, secretKey, issuedAt, expiry
 	sessionToken, err = m.seal(sess)
 	if err != nil {
 		return "", "", "", time.Time{}, err

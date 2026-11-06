@@ -38,6 +38,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
+	"github.com/harn3ss/open-infra/console-api/internal/mfa"
 	"github.com/harn3ss/open-infra/console-api/internal/tracing"
 	_ "github.com/lib/pq" // database/sql driver for the documentdb Postgres (DynamoDB transactions)
 	"github.com/minio/minio-go/v7"
@@ -579,7 +580,8 @@ func run(logger *slog.Logger) error {
 	services := map[string]awsService{
 		"s3": newS3Handler(cs, mc, dyn, kc.Config, authzNS, authzChecker, logger,
 			splitSuffixes(getenv("S3_INTERNAL_VHOST_SUFFIXES", ""), getenv("S3_VHOST_SUFFIXES", ""))),
-		"sts":             &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, accounts: acctDir, logger: logger},
+		"sts": &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, accounts: acctDir, logger: logger,
+			mfa: &shimMFA{store: mfa.Store{CS: cs, NS: keysNS}, dyn: dyn, usersNS: usersNS, account: account, homes: acctDir, logger: logger}},
 		"lambda":          lambdaH,
 		"appsync":         appsyncH,
 		"dynamodb":        dynamoH,

@@ -13,6 +13,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 )
 
 // stsHandler fronts a minimal, faithful slice of AWS STS. STS is the identity service SDKs and
@@ -50,6 +51,10 @@ type resolvedRole struct {
 	// maxSession is the role's spec.maxSessionDuration (AWS's MaxSessionDuration: 1h by default, at most
 	// 12h); zero means the default.
 	maxSession time.Duration
+	// trustDoc is the trust policy the role was created with, as written (CreateRole's
+	// AssumeRolePolicyDocument); "" when it has none. Its conditions — aws:MultiFactorAuthPresent above
+	// all — gate AssumeRole on top of spec.trust's principals.
+	trustDoc string
 }
 
 // defaultMaxSession is AWS's MaxSessionDuration default; chainedMaxSession caps a session assumed by
@@ -106,7 +111,10 @@ type stsHandler struct {
 	// accounts maps member accounts to their home namespaces; nil means every role is the management
 	// account's (a RoleArn naming another account is AccessDenied).
 	accounts accountHomes
-	logger   *slog.Logger
+	// mfa verifies an IAM user's MFA code (GetSessionToken's and AssumeRole's SerialNumber + TokenCode);
+	// nil refuses every code.
+	mfa    mfaChecker
+	logger *slog.Logger
 }
 
 // callerAccount is the 12-digit account a caller acts in.
@@ -135,7 +143,19 @@ func (h *stsHandler) ident() awsidentity.Identity {
 
 func (h *stsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	action := stsAction(r)
+	// An IAM user's own session (GetSessionToken) calls no STS operation but AssumeRole and
+	// GetCallerIdentity, as on AWS.
+	if claims.UserSession && action != "AssumeRole" && action != "GetCallerIdentity" {
+		msg := "Credentials from GetSessionToken can call only AssumeRole and GetCallerIdentity in STS"
+		if action == "GetSessionToken" {
+			msg = "Cannot call GetSessionToken with session credentials"
+		}
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, msg, stsXMLNamespace)
+		return
+	}
 	switch action {
+	case "GetSessionToken":
+		h.getSessionToken(w, r, claims, requestID)
 	case "GetCallerIdentity":
 		// AWS allows GetCallerIdentity for ANY authenticated principal (no extra authorization) —
 		// it only reports who you are. We mirror that: the request is already authenticated.
@@ -194,6 +214,27 @@ func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims i
 			"not authorized to perform sts:AssumeRole on role "+roleName, stsXMLNamespace)
 		return
 	}
+	// MFA: the caller's SerialNumber + TokenCode, verified against its own device, authenticate this
+	// session with MFA; without them it carries the calling session's MFA context (a GetSessionToken
+	// session obtained with MFA, or a role session that was), as AWS does.
+	serial, code, ok := mfaParams(w, r, requestID)
+	if !ok {
+		return
+	}
+	mfaCtx := claims.MFA
+	if serial != "" {
+		if claims.AssumedRole != "" || h.mfa == nil {
+			// A role session has no MFA device of its own.
+			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, mfaUnknownDevice, stsXMLNamespace)
+			return
+		}
+		at, why := h.mfa.verify(r.Context(), h.memberAcct(claims), claims.Sub, serial, code)
+		if why != "" {
+			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, why, stsXMLNamespace)
+			return
+		}
+		mfaCtx = iam.WithMFA(at)
+	}
 	who := callerTrust(claims)
 	who.account = h.callerAccount(claims)
 	if !trustedFrom(who, role.trust, roleAcct) {
@@ -201,21 +242,33 @@ func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims i
 			who.String()+" is not authorized to assume role "+roleName+" (not named by its trust policy)", stsXMLNamespace)
 		return
 	}
+	// The trust policy as written: its conditions (aws:MultiFactorAuthPresent, aws:MultiFactorAuthAge)
+	// must hold for this caller too. An unparseable or unevaluable condition never widens the trust.
+	if role.trustDoc != "" {
+		c := claims
+		c.MFA = mfaCtx
+		p := iamauthz.PrincipalFromClaims(c, h.callerAccount(claims))
+		if ok, why := iamauthz.AuthorizeTrust(role.trustDoc, p, "sts:AssumeRole",
+			h.identIn(roleAcct).IAMARN("role/"+roleName), requestContext(c, r)); !ok {
+			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
+				who.String()+" is not authorized to perform: sts:AssumeRole on resource: "+h.identIn(roleAcct).IAMARN("role/"+roleName)+" ("+why+")", stsXMLNamespace)
+			return
+		}
+	}
 	ttl, bad := sessionDuration(r, role, claims.AssumedRole != "")
 	if bad != "" {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, bad, stsXMLNamespace)
 		return
 	}
-	caller := callerName(claims)
-	var akid, sk, token string
-	var exp time.Time
-	var err error
-	if roleAcct == h.account {
-		akid, sk, token, exp, err = h.minter.Mint(roleName, role.groups, sessionName, caller, ttl)
-	} else {
+	sess := awssts.Session{RoleName: roleName, Groups: role.groups, SessionName: sessionName, Caller: callerName(claims)}
+	if roleAcct != h.account {
 		// A session of another account's role acts in that account (its token records it).
-		akid, sk, token, exp, err = h.minter.MintInAccount(roleAcct, roleNS, roleName, role.groups, sessionName, caller, ttl)
+		sess.Account, sess.Namespace = roleAcct, roleNS
 	}
+	if mfaCtx != nil && mfaCtx.Present {
+		sess.MFA, sess.MFAAuthTime = true, mfaCtx.AuthTime
+	}
+	akid, sk, token, exp, err := h.minter.MintSession(sess, ttl, awssts.MaxDuration)
 	if err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not mint credentials", stsXMLNamespace)
 		return
@@ -279,7 +332,9 @@ func (h *stsHandler) assumeRoleWithWebIdentity(w http.ResponseWriter, r *http.Re
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, bad, stsXMLNamespace)
 		return
 	}
-	akid, sk, tok, exp, err := h.minter.Mint(roleName, role.groups, sessionName, username, ttl)
+	// A web-identity session carries no MFA context: AWS cannot know whether the provider used MFA.
+	akid, sk, tok, exp, err := h.minter.MintSession(awssts.Session{RoleName: roleName, Groups: role.groups,
+		SessionName: sessionName, Caller: username, Federated: true}, ttl, awssts.MaxDuration)
 	if err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not mint credentials", stsXMLNamespace)
 		return

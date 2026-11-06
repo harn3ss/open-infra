@@ -1241,6 +1241,9 @@
   ],
   "states": [
    "iam:PassRole"
+  ],
+  "sts": [
+   "sts:AssumeRole"
   ]
  },
  "actions": [

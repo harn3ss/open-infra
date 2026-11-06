@@ -52,7 +52,8 @@ func (r *dynRoleResolver) ResolveIn(ctx context.Context, ns, roleName string) (r
 	// authority is its attached data-plane policies, evaluated with principal type "Role" (the
 	// assumed-role principal). Broader control-plane authority for assumed roles lands with the
 	// control-plane authorization work (#109 Phase 2).
-	return resolvedRole{trust: trust, groups: []string{"openinfra:users"}, maxSession: roleMaxSession(u.Object)}, true
+	return resolvedRole{trust: trust, groups: []string{"openinfra:users"}, maxSession: roleMaxSession(u.Object),
+		trustDoc: u.GetAnnotations()[assumeRolePolicyAnnotation]}, true
 }
 
 // roleMaxSession is a role's spec.maxSessionDuration (seconds), within AWS's 1h..12h; the default, 1h,

@@ -104,6 +104,9 @@ func (a *authenticator) ownerNamespace() string {
 // even though its token is valid and unexpired. A nil revoker skips that check (crypto + expiry still
 // gate the request; see roleCutoffCache's failure posture).
 func (a *authenticator) sessionClaims(ctx context.Context, sess awssts.Session) (iam.Claims, bool) {
+	if sess.User != "" {
+		return a.userSessionClaims(ctx, sess)
+	}
 	home := a.home
 	if home == "" {
 		home = dataplaneauthz.DefaultHomeNamespace
@@ -136,7 +139,34 @@ func (a *authenticator) sessionClaims(ctx context.Context, sess awssts.Session) 
 		AssumedRole:   principal,
 		SessionExpiry: sess.Expiry,
 		Account:       acct,
+		MFA:           sessionMFA(sess),
 	}, true
+}
+
+// userSessionClaims is the identity an IAM user's own session (sts:GetSessionToken) acts as: the user, as
+// its access key would (its groups resolved fresh, so a user deleted or disabled since is no one), with
+// the session's MFA context. AWS restricts what such a session may call (Claims.UserSession).
+func (a *authenticator) userSessionClaims(ctx context.Context, sess awssts.Session) (iam.Claims, bool) {
+	c, ok := a.keyClaims(ctx, awskeys.Key{Owner: sess.User, Account: sess.Account})
+	if !ok {
+		return iam.Claims{}, false
+	}
+	c.SessionExpiry = sess.Expiry
+	c.MFA = sessionMFA(sess)
+	c.UserSession = true
+	return c, true
+}
+
+// sessionMFA is a session's MFA context, as AWS carries it on a temporary credential: authenticated with
+// MFA (and when), or not; none at all for a web-identity session, for which AWS cannot know.
+func sessionMFA(sess awssts.Session) *iam.MFAContext {
+	switch {
+	case sess.Federated:
+		return nil
+	case sess.MFA:
+		return &iam.MFAContext{Present: true, AuthTime: sess.MFAAuthTime}
+	}
+	return iam.NoMFA()
 }
 
 // authenticate proves the caller holds a valid open-infra access key and returns the iam.Claims

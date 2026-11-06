@@ -809,6 +809,8 @@
         "CreatePolicyVersion",
         "CreateRole",
         "CreateUser",
+        "CreateVirtualMFADevice",
+        "DeactivateMFADevice",
         "DeleteAccessKey",
         "DeleteAccountPasswordPolicy",
         "DeleteGroup",
@@ -822,9 +824,11 @@
         "DeleteUser",
         "DeleteUserPermissionsBoundary",
         "DeleteUserPolicy",
+        "DeleteVirtualMFADevice",
         "DetachGroupPolicy",
         "DetachRolePolicy",
         "DetachUserPolicy",
+        "EnableMFADevice",
         "GetAccountAuthorizationDetails",
         "GetAccountPasswordPolicy",
         "GetGroup",
@@ -846,21 +850,27 @@
         "ListGroupsForUser",
         "ListInstanceProfiles",
         "ListInstanceProfilesForRole",
+        "ListMFADeviceTags",
+        "ListMFADevices",
         "ListPolicies",
         "ListPolicyVersions",
         "ListRolePolicies",
         "ListRoles",
         "ListUserPolicies",
         "ListUsers",
+        "ListVirtualMFADevices",
         "PutGroupPolicy",
         "PutRolePermissionsBoundary",
         "PutRolePolicy",
         "PutUserPermissionsBoundary",
         "PutUserPolicy",
         "RemoveUserFromGroup",
+        "ResyncMFADevice",
         "SetDefaultPolicyVersion",
         "SimulatePrincipalPolicy",
+        "TagMFADevice",
         "TagUser",
+        "UntagMFADevice",
         "UpdateAccessKey",
         "UpdateAccountPasswordPolicy",
         "UpdateLoginProfile"
@@ -1416,7 +1426,9 @@
       "tier": "proven"
     },
     "sts": {
-      "actions": [],
+      "actions": [
+        "sts:AssumeRole"
+      ],
       "conditional": false,
       "deployableTypes": [],
       "handler": "stsHandler",
@@ -1424,7 +1436,8 @@
       "operations": [
         "AssumeRole",
         "AssumeRoleWithWebIdentity",
-        "GetCallerIdentity"
+        "GetCallerIdentity",
+        "GetSessionToken"
       ],
       "probes": [
         "sts",
@@ -1443,7 +1456,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 575,
+    "operations": 586,
     "planOnly": 11,
     "refused": 11,
     "services": 31,

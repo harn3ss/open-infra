@@ -458,6 +458,8 @@
         "CreatePolicyVersion",
         "CreateRole",
         "CreateUser",
+        "CreateVirtualMFADevice",
+        "DeactivateMFADevice",
         "DeleteAccessKey",
         "DeleteAccountPasswordPolicy",
         "DeleteGroup",
@@ -471,9 +473,11 @@
         "DeleteUser",
         "DeleteUserPermissionsBoundary",
         "DeleteUserPolicy",
+        "DeleteVirtualMFADevice",
         "DetachGroupPolicy",
         "DetachRolePolicy",
         "DetachUserPolicy",
+        "EnableMFADevice",
         "GetAccountAuthorizationDetails",
         "GetAccountPasswordPolicy",
         "GetGroup",
@@ -495,21 +499,27 @@
         "ListGroupsForUser",
         "ListInstanceProfiles",
         "ListInstanceProfilesForRole",
+        "ListMFADeviceTags",
+        "ListMFADevices",
         "ListPolicies",
         "ListPolicyVersions",
         "ListRolePolicies",
         "ListRoles",
         "ListUserPolicies",
         "ListUsers",
+        "ListVirtualMFADevices",
         "PutGroupPolicy",
         "PutRolePermissionsBoundary",
         "PutRolePolicy",
         "PutUserPermissionsBoundary",
         "PutUserPolicy",
         "RemoveUserFromGroup",
+        "ResyncMFADevice",
         "SetDefaultPolicyVersion",
         "SimulatePrincipalPolicy",
+        "TagMFADevice",
         "TagUser",
+        "UntagMFADevice",
         "UpdateAccessKey",
         "UpdateAccountPasswordPolicy",
         "UpdateLoginProfile"
@@ -877,7 +887,11 @@
       "operations": [
         "AssumeRole",
         "AssumeRoleWithWebIdentity",
-        "GetCallerIdentity"
+        "GetCallerIdentity",
+        "GetSessionToken"
+      ],
+      "actions": [
+        "sts:AssumeRole"
       ]
     }
   }
