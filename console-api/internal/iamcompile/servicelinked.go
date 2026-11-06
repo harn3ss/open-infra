@@ -131,8 +131,15 @@ func serviceLinked(in Input) ([]rbacv1.RoleBinding, []Grant) {
 	if len(rbs) == 0 {
 		return nil, nil
 	}
+	// The translation reads the bindings as RBAC (without the compiler's own label, which marks the RBAC
+	// the platform's hand-run corpus leaves to this one).
+	plain := make([]rbacv1.RoleBinding, len(rbs))
+	for i, rb := range rbs {
+		plain[i] = rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: rb.Name, Namespace: rb.Namespace},
+			RoleRef: rb.RoleRef, Subjects: rb.Subjects}
+	}
 	var grants []Grant
-	for _, g := range rbactocedar.Generate(rbactocedar.Inputs{ClusterRoles: roles, RoleBindings: rbs}) {
+	for _, g := range rbactocedar.Generate(rbactocedar.Inputs{ClusterRoles: roles, RoleBindings: plain}) {
 		out := Grant{AppliesTo: []string{g.Principal}, Caveats: g.Caveats}
 		for _, st := range g.Statements {
 			out.Statements = append(out.Statements, Statement{

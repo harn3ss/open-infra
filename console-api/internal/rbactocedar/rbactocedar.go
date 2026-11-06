@@ -41,6 +41,14 @@ type Inputs struct {
 // IAMPrincipalPrefix is the prefix of every console and shim identity (users and groups).
 const IAMPrincipalPrefix = "openinfra:"
 
+// compiledLabel marks the RBAC the IAM compiler generates (iamcompile.GeneratedByLabel=GeneratedBy): its
+// principals' bindings, and the service-linked roles' bindings in member accounts' homes. Their grants are
+// in the iam-corpus the compiler writes on every pass, so the corpus generated here never carries them: a
+// snapshot of them would outlive the next pass's change (a narrowed service-linked role, a closed account).
+const compiledLabel, compiledBy = "openinfra.dev/generated-by", "iam-compiler"
+
+func compiled(labels map[string]string) bool { return labels[compiledLabel] == compiledBy }
+
 // Generate aggregates RBAC into per-principal control-plane grants mirroring what RBAC allows.
 func Generate(in Inputs) []Grant {
 	byPrincipal := map[string]*Grant{}
@@ -65,6 +73,9 @@ func Generate(in Inputs) []Grant {
 	}
 
 	for _, crb := range in.ClusterRoleBindings {
+		if compiled(crb.Labels) {
+			continue
+		}
 		if cr, ok := in.ClusterRoles[crb.RoleRef.Name]; ok {
 			rules, narrowed, cav := narrowImpersonation(cr)
 			denied, dcav := impersonationDenies(cr)
@@ -80,6 +91,9 @@ func Generate(in Inputs) []Grant {
 		}
 	}
 	for _, rb := range in.RoleBindings {
+		if compiled(rb.Labels) {
+			continue
+		}
 		var rules []rbacv1.PolicyRule
 		switch rb.RoleRef.Kind {
 		case "ClusterRole":

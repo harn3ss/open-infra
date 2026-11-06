@@ -401,3 +401,35 @@ func TestGenerate_CertManagerSignerWildcard(t *testing.T) {
 		}
 	}
 }
+
+// The RBAC the IAM compiler generates (its principals' bindings, the service-linked roles' bindings) is
+// carried by the iam-corpus it writes each pass, never by this snapshot.
+func TestGenerate_SkipsTheIAMCompilersBindings(t *testing.T) {
+	cr := rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "openinfra:service-linked:aws-shim"},
+		Rules: []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"get"}}}}
+	sa := rbacv1.Subject{Kind: "ServiceAccount", Namespace: "open-infra-aws-shim", Name: "aws-shim"}
+	ref := rbacv1.RoleRef{Kind: "ClusterRole", Name: cr.Name}
+	in := Inputs{
+		ClusterRoles: map[string]rbacv1.ClusterRole{cr.Name: cr},
+		RoleBindings: []rbacv1.RoleBinding{
+			{ObjectMeta: metav1.ObjectMeta{Name: cr.Name, Namespace: "shop", Labels: map[string]string{"openinfra.dev/generated-by": "iam-compiler"}},
+				RoleRef: ref, Subjects: []rbacv1.Subject{sa}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "hand-written", Namespace: "ops"}, RoleRef: ref, Subjects: []rbacv1.Subject{sa}},
+		},
+		ClusterRoleBindings: []rbacv1.ClusterRoleBinding{
+			{ObjectMeta: metav1.ObjectMeta{Name: "gen", Labels: map[string]string{"openinfra.dev/generated-by": "iam-compiler"}},
+				RoleRef: ref, Subjects: []rbacv1.Subject{{Kind: "User", Name: "someone"}}},
+		},
+	}
+	grants := Generate(in)
+	if len(grants) != 1 || grants[0].Principal != "ServiceAccount::open-infra-aws-shim/aws-shim" {
+		t.Fatalf("grants = %+v, want the hand-written binding's alone", grants)
+	}
+	for _, st := range grants[0].Statements {
+		for _, r := range st.Resources {
+			if r != "configmaps::ops/*" {
+				t.Fatalf("a compiled binding reached the corpus: %v", r)
+			}
+		}
+	}
+}
