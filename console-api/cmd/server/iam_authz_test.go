@@ -264,8 +264,8 @@ func TestConsoleGate_RootIsNeverLockedOut(t *testing.T) {
 			}
 		}
 		id, ok := z.proxyIdentity(as(httptest.NewRequest(http.MethodGet, "/", nil), rootClaims()))
-		if !ok || id.User != "openinfra:root" || len(id.Groups) == 0 {
-			t.Errorf("%s: root must act as its break-glass identity, got %+v", mode, id)
+		if !ok || id.User != "openinfra:root" || len(id.Groups) != 1 || id.Groups[0] != "openinfra:admins" {
+			t.Errorf("%s: root must act as its break-glass identity (openinfra:root in openinfra:admins, and no other group), got %+v", mode, id)
 		}
 		// The handlers' own check (authz.go) for root.
 		r := as(httptest.NewRequest(http.MethodGet, "/", nil), rootClaims())
