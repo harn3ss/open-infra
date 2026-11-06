@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 )
 
 func init() {
@@ -138,6 +140,11 @@ func serviceStatic(id, attr string, ctx *stackCtx) (string, bool) {
 			return arn("ecr", "repository/"+name), true
 		case "RepositoryUri":
 			if h := capsOf(ctx).ECRRepositoryHost; h != "" {
+				// A member account's registry is the "<account>/" path of the one registry (the
+				// aws-shim's ECR door, ecr_accounts.go); the management account's is its root.
+				if a := ctx.account(); !awsidentity.Current().IsManagement(a) {
+					return h + "/" + a + "/" + name, true
+				}
 				return h + "/" + name, true
 			}
 		}

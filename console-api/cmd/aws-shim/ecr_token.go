@@ -418,8 +418,9 @@ func (h *ecrHandler) issueRegistryToken(w http.ResponseWriter, r *http.Request, 
 	claims := iam.Claims{Sub: caller.Sub, Groups: caller.Groups, Role: caller.Role, AssumedRole: caller.AssumedRole,
 		Account: caller.Account}
 	// The account the credential was issued in, as the router puts it on a signed request: a member
-	// account's principal is decided as that account's, in its home.
-	ctx := withPrincipal(withAccount(r.Context(), caller.Account, caller.Home), claims.PrincipalType()+"::"+claims.PrincipalID())
+	// account's principal is decided as that account's, in its home — on its own account's repositories,
+	// as ECR keeps each account's registry apart (inAccountScope).
+	ctx := withPrincipal(inAccountScope(withAccount(r.Context(), caller.Account, caller.Home)), claims.PrincipalType()+"::"+claims.PrincipalID())
 
 	// "Revoke sessions" on the role bites its ECR credentials too: one minted before the cutoff came from a
 	// session issued before it (the SigV4 path refuses such a session), so it is refused here as well.
@@ -439,9 +440,16 @@ func (h *ecrHandler) issueRegistryToken(w http.ResponseWriter, r *http.Request, 
 			if !ok {
 				continue
 			}
+			// The scope names a registry path; the caller's account's repository is the one its own
+			// registry holds there. A path in another account's registry is granted nothing.
+			repo, own := repoOfRegistryPath(ctx, acc.Name)
+			if !own {
+				h.audit(ctx, "TokenGrant", acc.Name, "deny", "the path is in another account's registry")
+				continue
+			}
 			var allowed []string
 			for _, action := range acc.Actions {
-				if h.authorizeScope(ctx, r, claims, acc.Name, action) {
+				if h.authorizeScope(ctx, r, claims, repo, action) {
 					allowed = append(allowed, action)
 				}
 			}

@@ -12,6 +12,11 @@
 // would let the second create silently OVERWRITE the first. So the object name is sanitized-prefix PLUS a
 // hash of the EXACT name: distinct names always get distinct objects, and the exact repositoryName is both
 // stored in the data and re-verified on read, so a record can never be served under the wrong name.
+//
+// Each account's repositories are its own (ecr_accounts.go): the management account's records are named by
+// the repository name exactly as always; a member account's by its account key ("<account>:<name>", a
+// name ECR's pattern never produces) and carry the account, re-verified on read and filtered on list, so
+// neither account's record is ever served, listed or overwritten as the other's.
 package main
 
 import (
@@ -32,6 +37,8 @@ const (
 	ecrManagedBy    = "ecr" // app.kubernetes.io/managed-by value on every ECR doorway record
 	ecrNamePrefix   = "ecr-repo-"
 	ecrRepoLabel    = "ecr.openinfra.dev/repo" // listing label (the sanitized name; exact name lives in data)
+	// ecrAccountLabel is a member account's record's account (absent on the management account's).
+	ecrAccountLabel = "ecr.openinfra.dev/account"
 )
 
 // ecrInvalidName matches everything a k8s object-name segment may NOT contain.
@@ -64,20 +71,29 @@ type ecrRepoRecord struct {
 	RepositoryName     string `json:"repositoryName"`
 	ImageTagMutability string `json:"imageTagMutability"`
 	CreatedAt          int64  `json:"createdAt"` // unix seconds
+	// Account is the member account the repository belongs to; empty (absent) for the management
+	// account's, as every record was before accounts.
+	Account string `json:"account,omitempty"`
 }
 
-// putRepo creates or replaces a repository record. The typed clientset is used (the doorway's own SA);
-// a create that races an existing object is folded into an update so the call is idempotent.
+// putRepo creates or replaces a repository record of the caller's account. The typed clientset is used
+// (the doorway's own SA); a create that races an existing object is folded into an update so the call is
+// idempotent.
 func (h *ecrHandler) putRepo(ctx context.Context, rec ecrRepoRecord) error {
+	rec.Account = ecrRecordAccount(ctx)
 	blob, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
-	name := h.repoCMName(rec.RepositoryName)
+	name := h.repoCMName(accountKey(ctx, rec.RepositoryName))
 	data := map[string]string{"repo.json": string(blob), "repositoryName": rec.RepositoryName}
 	labels := map[string]string{
 		"app.kubernetes.io/managed-by": ecrManagedBy,
 		ecrRepoLabel:                   ecrSanitize(rec.RepositoryName),
+	}
+	if rec.Account != "" {
+		data["account"] = rec.Account
+		labels[ecrAccountLabel] = rec.Account
 	}
 	cms := h.cs.CoreV1().ConfigMaps(h.ns)
 	existing, err := cms.Get(ctx, name, metav1.GetOptions{})
@@ -122,10 +138,15 @@ func (h *ecrHandler) updateRepoCM(ctx context.Context, name string, data, labels
 	return err
 }
 
-// getRepo fetches a repository record by its EXACT name. The stored repositoryName is re-checked against
-// the requested one (collision guard) so a hash/name coincidence can never serve the wrong record.
+// getRepo fetches a repository record of the caller's account by its EXACT name. The stored
+// repositoryName and account are re-checked against the requested ones (collision guard) so a hash/name
+// coincidence can never serve the wrong record, nor another account's. A name the management account's
+// registry leaves to a member account's registry (ecrMemberRegistryName) is no repository of its.
 func (h *ecrHandler) getRepo(ctx context.Context, exactName string) (ecrRepoRecord, bool, error) {
-	cm, err := h.cs.CoreV1().ConfigMaps(h.ns).Get(ctx, h.repoCMName(exactName), metav1.GetOptions{})
+	if !isMemberRequest(ctx) && ecrMemberRegistryName(exactName) {
+		return ecrRepoRecord{}, false, nil
+	}
+	cm, err := h.cs.CoreV1().ConfigMaps(h.ns).Get(ctx, h.repoCMName(accountKey(ctx, exactName)), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return ecrRepoRecord{}, false, nil
 	}
@@ -136,13 +157,13 @@ func (h *ecrHandler) getRepo(ctx context.Context, exactName string) (ecrRepoReco
 	if err := json.Unmarshal([]byte(cm.Data["repo.json"]), &rec); err != nil {
 		return ecrRepoRecord{}, false, err
 	}
-	if rec.RepositoryName != exactName {
+	if rec.RepositoryName != exactName || rec.Account != ecrRecordAccount(ctx) {
 		return ecrRepoRecord{}, false, nil
 	}
 	return rec, true, nil
 }
 
-// listRepos returns every repository record in the doorway namespace.
+// listRepos returns every repository record of the caller's account in the doorway namespace.
 func (h *ecrHandler) listRepos(ctx context.Context) ([]ecrRepoRecord, error) {
 	list, err := h.cs.CoreV1().ConfigMaps(h.ns).List(ctx, metav1.ListOptions{
 		LabelSelector: "app.kubernetes.io/managed-by=" + ecrManagedBy,
@@ -157,16 +178,21 @@ func (h *ecrHandler) listRepos(ctx context.Context) ([]ecrRepoRecord, error) {
 			continue
 		}
 		var rec ecrRepoRecord
-		if json.Unmarshal([]byte(cm.Data["repo.json"]), &rec) == nil && rec.RepositoryName != "" {
-			out = append(out, rec)
+		if json.Unmarshal([]byte(cm.Data["repo.json"]), &rec) != nil || rec.RepositoryName == "" {
+			continue
 		}
+		if rec.Account != ecrRecordAccount(ctx) || (rec.Account == "" && ecrMemberRegistryName(rec.RepositoryName)) {
+			continue // another account's repository, or a name the management account's registry leaves to a member's
+		}
+		out = append(out, rec)
 	}
 	return out, nil
 }
 
-// deleteRepo removes a repository record (idempotent: an already-absent record is success).
+// deleteRepo removes a repository record of the caller's account (idempotent: an already-absent record is
+// success).
 func (h *ecrHandler) deleteRepo(ctx context.Context, exactName string) error {
-	err := h.cs.CoreV1().ConfigMaps(h.ns).Delete(ctx, h.repoCMName(exactName), metav1.DeleteOptions{})
+	err := h.cs.CoreV1().ConfigMaps(h.ns).Delete(ctx, h.repoCMName(accountKey(ctx, exactName)), metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}

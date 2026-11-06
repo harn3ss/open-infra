@@ -307,6 +307,14 @@ func (h *ecrHandler) getAuthorizationToken(ctx context.Context, w http.ResponseW
 		writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
 		return
 	}
+	if isMemberRequest(ctx) && !perRepo {
+		// Likewise a member account: its registry is a path in the shared registry, and the shared
+		// credential reaches every account's. Without per-repository token auth a member account gets none.
+		reason := "a member account's registry is held apart per repository, which needs per-repository token auth; it is not enabled on this shim"
+		h.audit(ctx, "GetAuthorizationToken", "", "deny", reason)
+		writeECRError(w, http.StatusBadRequest, "AccessDeniedException", requestID, reason)
+		return
+	}
 	if perRepo {
 		// Per-repo mode: the credential is a shim-signed caller token carrying the caller's identity — for an
 		// assumed-role session, the role too, so /ecr/token authorizes it under the role's data-plane policy.
@@ -363,6 +371,11 @@ func (h *ecrHandler) createRepository(ctx context.Context, w http.ResponseWriter
 			"Invalid repository name '"+name+"': it must match "+ecrNamePattern+" and be at most 256 characters.")
 		return
 	}
+	if !isMemberRequest(ctx) && ecrMemberRegistryName(name) {
+		writeECRError(w, http.StatusBadRequest, "InvalidParameterException", requestID,
+			"Invalid repository name '"+name+"': a first segment that is another account's 12-digit id names that account's registry, not this one.")
+		return
+	}
 	mut := firstString(body, "imageTagMutability")
 	if mut == "" {
 		mut = "MUTABLE"
@@ -377,7 +390,7 @@ func (h *ecrHandler) createRepository(ctx context.Context, w http.ResponseWriter
 		return
 	} else if found {
 		writeECRError(w, http.StatusBadRequest, "RepositoryAlreadyExistsException", requestID,
-			"The repository with name '"+name+"' already exists in the registry with id '"+h.account+"'.")
+			"The repository with name '"+name+"' already exists in the registry with id '"+h.registryID(ctx)+"'.")
 		return
 	}
 	rec := ecrRepoRecord{RepositoryName: name, ImageTagMutability: mut, CreatedAt: time.Now().Unix()}
@@ -386,7 +399,7 @@ func (h *ecrHandler) createRepository(ctx context.Context, w http.ResponseWriter
 		return
 	}
 	h.audit(ctx, "CreateRepository", name, "allow", "")
-	writeECRJSON(w, requestID, map[string]any{"repository": h.repoObject(rec)})
+	writeECRJSON(w, requestID, map[string]any{"repository": h.repoObject(ctx, rec)})
 }
 
 func (h *ecrHandler) putImageTagMutability(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -402,7 +415,7 @@ func (h *ecrHandler) putImageTagMutability(ctx context.Context, w http.ResponseW
 		return
 	}
 	if !found {
-		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.account))
+		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.registryID(ctx)))
 		return
 	}
 	rec.ImageTagMutability = mut
@@ -411,7 +424,7 @@ func (h *ecrHandler) putImageTagMutability(ctx context.Context, w http.ResponseW
 		return
 	}
 	h.audit(ctx, "PutImageTagMutability", name, "allow", mut)
-	writeECRJSON(w, requestID, map[string]any{"registryId": h.account, "repositoryName": name, "imageTagMutability": mut})
+	writeECRJSON(w, requestID, map[string]any{"registryId": h.registryID(ctx), "repositoryName": name, "imageTagMutability": mut})
 }
 
 func (h *ecrHandler) describeRepositories(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -424,7 +437,7 @@ func (h *ecrHandler) describeRepositories(ctx context.Context, w http.ResponseWr
 			return
 		}
 		for _, rec := range recs {
-			repos = append(repos, h.repoObject(rec))
+			repos = append(repos, h.repoObject(ctx, rec))
 		}
 	} else {
 		for _, name := range names {
@@ -434,10 +447,10 @@ func (h *ecrHandler) describeRepositories(ctx context.Context, w http.ResponseWr
 				return
 			}
 			if !found {
-				writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.account))
+				writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.registryID(ctx)))
 				return
 			}
-			repos = append(repos, h.repoObject(rec))
+			repos = append(repos, h.repoObject(ctx, rec))
 		}
 	}
 	h.audit(ctx, "DescribeRepositories", strings.Join(names, ","), "allow", "")
@@ -452,29 +465,30 @@ func (h *ecrHandler) deleteRepository(ctx context.Context, w http.ResponseWriter
 		return
 	}
 	if !found {
-		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.account))
+		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.registryID(ctx)))
 		return
 	}
 	force, _ := body["force"].(bool)
+	path := registryPath(ctx, name) // where the repository lives in the backing registry
 	rc, err := h.registry(ctx)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
-	tags, err := rc.listTags(ctx, name)
+	tags, err := rc.listTags(ctx, path)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	if len(tags) > 0 && !force {
 		writeECRError(w, http.StatusBadRequest, "RepositoryNotEmptyException", requestID,
-			"The repository with name '"+name+"' in registry with id '"+h.account+"' cannot be deleted because it still contains images (use force to delete them).")
+			"The repository with name '"+name+"' in registry with id '"+h.registryID(ctx)+"' cannot be deleted because it still contains images (use force to delete them).")
 		return
 	}
 	// force (or empty): resolve every tag to a digest and delete each DISTINCT manifest.
 	seen := map[string]bool{}
 	for _, tag := range tags {
-		digest, _, derr := rc.resolveDigest(ctx, name, tag)
+		digest, _, derr := rc.resolveDigest(ctx, path, tag)
 		if derr != nil {
 			h.internal(w, requestID, derr)
 			return
@@ -483,7 +497,7 @@ func (h *ecrHandler) deleteRepository(ctx context.Context, w http.ResponseWriter
 			continue
 		}
 		seen[digest] = true
-		if derr := rc.deleteManifest(ctx, name, digest); derr != nil {
+		if derr := rc.deleteManifest(ctx, path, digest); derr != nil {
 			h.internal(w, requestID, derr)
 			return
 		}
@@ -493,7 +507,7 @@ func (h *ecrHandler) deleteRepository(ctx context.Context, w http.ResponseWriter
 		return
 	}
 	h.audit(ctx, "DeleteRepository", name, "allow", "")
-	writeECRJSON(w, requestID, map[string]any{"repository": h.repoObject(rec)})
+	writeECRJSON(w, requestID, map[string]any{"repository": h.repoObject(ctx, rec)})
 }
 
 // --- images (answered from the backing registry's /v2 API) ---
@@ -504,22 +518,23 @@ func (h *ecrHandler) listImages(ctx context.Context, w http.ResponseWriter, requ
 		h.internal(w, requestID, err)
 		return
 	} else if !found {
-		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.account))
+		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.registryID(ctx)))
 		return
 	}
+	path := registryPath(ctx, name)
 	rc, err := h.registry(ctx)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
-	tags, err := rc.listTags(ctx, name)
+	tags, err := rc.listTags(ctx, path)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	imageIds := []any{}
 	for _, tag := range tags {
-		digest, _, derr := rc.resolveDigest(ctx, name, tag)
+		digest, _, derr := rc.resolveDigest(ctx, path, tag)
 		if derr != nil {
 			h.internal(w, requestID, derr)
 			return
@@ -539,16 +554,17 @@ func (h *ecrHandler) describeImages(ctx context.Context, w http.ResponseWriter, 
 		h.internal(w, requestID, err)
 		return
 	} else if !found {
-		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.account))
+		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.registryID(ctx)))
 		return
 	}
 	filterTags, filterDigests := ecrImageIDFilter(body["imageIds"])
+	path := registryPath(ctx, name)
 	rc, err := h.registry(ctx)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
-	tags, err := rc.listTags(ctx, name)
+	tags, err := rc.listTags(ctx, path)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -564,7 +580,7 @@ func (h *ecrHandler) describeImages(ctx context.Context, w http.ResponseWriter, 
 		if len(filterTags) > 0 && !filterTags[tag] {
 			continue
 		}
-		digest, size, derr := rc.resolveDigest(ctx, name, tag)
+		digest, size, derr := rc.resolveDigest(ctx, path, tag)
 		if derr != nil {
 			h.internal(w, requestID, derr)
 			return
@@ -587,7 +603,7 @@ func (h *ecrHandler) describeImages(ctx context.Context, w http.ResponseWriter, 
 	for _, digest := range order {
 		a := byDigest[digest]
 		d := map[string]any{
-			"registryId":     h.account,
+			"registryId":     h.registryID(ctx),
 			"repositoryName": name,
 			"imageDigest":    digest,
 			"imageTags":      a.tags,
@@ -608,9 +624,10 @@ func (h *ecrHandler) batchDeleteImage(ctx context.Context, w http.ResponseWriter
 		h.internal(w, requestID, err)
 		return
 	} else if !found {
-		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.account))
+		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.registryID(ctx)))
 		return
 	}
+	path := registryPath(ctx, name)
 	rc, err := h.registry(ctx)
 	if err != nil {
 		h.internal(w, requestID, err)
@@ -634,7 +651,7 @@ func (h *ecrHandler) batchDeleteImage(ctx context.Context, w http.ResponseWriter
 			failures = append(failures, ecrFailure(tag, digest, "InvalidImageTag", "imageId must carry an imageTag or imageDigest"))
 			continue
 		}
-		resolved, _, derr := rc.resolveDigest(ctx, name, ref)
+		resolved, _, derr := rc.resolveDigest(ctx, path, ref)
 		if derr != nil {
 			failures = append(failures, ecrFailure(tag, digest, "ImageNotFound", derr.Error()))
 			continue
@@ -643,7 +660,7 @@ func (h *ecrHandler) batchDeleteImage(ctx context.Context, w http.ResponseWriter
 			failures = append(failures, ecrFailure(tag, digest, "ImageNotFound", "the image with the specified id does not exist"))
 			continue
 		}
-		if derr := rc.deleteManifest(ctx, name, resolved); derr != nil {
+		if derr := rc.deleteManifest(ctx, path, resolved); derr != nil {
 			failures = append(failures, ecrFailure(tag, digest, "ImageNotFound", derr.Error()))
 			continue
 		}
@@ -696,25 +713,31 @@ func (h *ecrHandler) registry(ctx context.Context) (*registryClient, error) {
 
 // --- object shaping + helpers ---
 
-func (h *ecrHandler) repoObject(rec ecrRepoRecord) map[string]any {
+func (h *ecrHandler) repoObject(ctx context.Context, rec ecrRepoRecord) map[string]any {
 	return map[string]any{
-		"repositoryArn":      h.repoArn(rec.RepositoryName),
-		"registryId":         h.account,
+		"repositoryArn":      h.accountRepoArn(ctx, rec.RepositoryName),
+		"registryId":         h.registryID(ctx),
 		"repositoryName":     rec.RepositoryName,
-		"repositoryUri":      h.repoURI(rec.RepositoryName),
+		"repositoryUri":      h.accountRepoURI(ctx, rec.RepositoryName),
 		"createdAt":          float64(rec.CreatedAt),
 		"imageTagMutability": rec.ImageTagMutability,
 	}
 }
 
-func (h *ecrHandler) repoArn(name string) string {
-	return "arn:aws:ecr:" + h.region + ":" + h.account + ":repository/" + name
+// accountRepoArn is the ARN of the caller's account's repository name: it names the account.
+func (h *ecrHandler) accountRepoArn(ctx context.Context, name string) string {
+	return "arn:aws:ecr:" + h.region + ":" + h.registryID(ctx) + ":repository/" + name
 }
 
-// repoURI is the pull/push base for a repository: the proxyEndpoint host (scheme stripped) + "/" + name.
-func (h *ecrHandler) repoURI(name string) string {
-	return stripScheme(h.proxyEndpoint) + "/" + name
+// accountRepoURI is the pull/push base for the caller's account's repository: the proxyEndpoint host
+// (scheme stripped) + "/" + its registry path (the name; "<account>/<name>" in a member account's registry).
+func (h *ecrHandler) accountRepoURI(ctx context.Context, name string) string {
+	return stripScheme(h.proxyEndpoint) + "/" + registryPath(ctx, name)
 }
+
+// repoArn and repoURI are the management account's (accountRepoArn, accountRepoURI for the caller's).
+func (h *ecrHandler) repoArn(name string) string { return h.accountRepoArn(context.Background(), name) }
+func (h *ecrHandler) repoURI(name string) string { return h.accountRepoURI(context.Background(), name) }
 
 func (h *ecrHandler) internal(w http.ResponseWriter, requestID string, err error) {
 	h.logger.Error("ecr backend error", "error", err.Error())
