@@ -1242,10 +1242,11 @@ rules:
   - apiGroups: [postgresql.cnpg.io]
     resources: [backups]
     verbs: [get, list, create, delete]
-  # KMS key policies (kind: Policy in the account's IAM home).
+  # The account's IAM (the IAM front door's users, groups, roles and policies, and KMS key policies), kept
+  # in its home as the management account's are in the IAM home namespace.
   - apiGroups: [iam.openinfra.dev]
-    resources: [policies]
-    verbs: [list, create, delete]
+    resources: [users, groups, roles, policies]
+    verbs: [get, list, create, update, patch, delete]
   # EC2's describes, read as IAM policy allowed.
   - apiGroups: [openinfra.dev]
     resources: [virtualmachines, volumes, securitygroups, vpcs, subnets, vpcendpoints, natgateways]
