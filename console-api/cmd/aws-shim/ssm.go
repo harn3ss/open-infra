@@ -134,10 +134,9 @@ func (h *ssmHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.serveRunCommand(withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID()), w, r, op, readJSONBody(r), claims, requestID)
 		return
 	}
-	// Parameter Store keeps each account's parameters apart (accountKey), so its requests are
-	// account-scoped; Run Command, which shares the "ssm" signing name, keeps the management account's
-	// instances and commands alone (a member account reaches them cross-account), so the router does not
-	// mark the whole service and Parameter Store marks its own requests here.
+	// Parameter Store keeps each account's parameters apart (accountKey) and Run Command each account's
+	// instances and commands (ssm_runcommand.go), so every "ssm" request is account-scoped; Parameter
+	// Store marks its own requests here as well.
 	r = r.WithContext(inAccountScope(r.Context()))
 	verb, known := verbForSSMOp(op)
 	if !known {
