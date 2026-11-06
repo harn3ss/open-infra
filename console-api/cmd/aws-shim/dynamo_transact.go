@@ -103,7 +103,7 @@ func (h *dynamoHandler) transactWriteItems(ctx context.Context, w http.ResponseW
 			}
 			keyAttrs, ok := h.tableKeyAttrs(ctx, table)
 			if !ok {
-				writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+table)
+				writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+tableName(ctx, table))
 				return
 			}
 			key, missing := keyFromItem(item, keyAttrs)
@@ -130,7 +130,7 @@ func (h *dynamoHandler) transactWriteItems(ctx context.Context, w http.ResponseW
 				return
 			}
 			if _, ok := h.tableKeyAttrs(ctx, table); !ok {
-				writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+table)
+				writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+tableName(ctx, table))
 				return
 			}
 			id := dynamodb.KeyID(keyAV)
@@ -157,7 +157,7 @@ func (h *dynamoHandler) transactWriteItems(ctx context.Context, w http.ResponseW
 				return
 			}
 			if _, ok := h.tableKeyAttrs(ctx, table); !ok {
-				writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+table)
+				writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+tableName(ctx, table))
 				return
 			}
 			id := dynamodb.KeyID(keyAV)
@@ -185,7 +185,7 @@ func (h *dynamoHandler) transactWriteItems(ctx context.Context, w http.ResponseW
 				return
 			}
 			if _, ok := h.tableKeyAttrs(ctx, table); !ok {
-				writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+table)
+				writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+tableName(ctx, table))
 				return
 			}
 			id := dynamodb.KeyID(keyAV)
@@ -337,7 +337,7 @@ func (h *dynamoHandler) transactGetItems(ctx context.Context, w http.ResponseWri
 			return
 		}
 		if _, ok := h.tableKeyAttrs(ctx, table); !ok {
-			writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+table)
+			writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+tableName(ctx, table))
 			return
 		}
 		plan = append(plan, getReq{table: table, id: dynamodb.KeyID(keyAV)})

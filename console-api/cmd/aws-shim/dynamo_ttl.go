@@ -27,7 +27,7 @@ func (h *dynamoHandler) updateTimeToLive(ctx context.Context, w http.ResponseWri
 		return
 	}
 	if _, ok := h.tableKeyAttrs(ctx, table); !ok {
-		writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+table)
+		writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Cannot do operations on a non-existent table: "+tableName(ctx, table))
 		return
 	}
 	if _, err := h.registry().UpdateOne(ctx, bson.M{"_id": table},

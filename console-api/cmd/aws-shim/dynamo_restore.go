@@ -255,16 +255,24 @@ func readDynamoClusterSpec(ctx context.Context, cs kubernetes.Interface, ns, nam
 // image / uid / gid / postgresql so FerretDB can connect to it identically. Mirrors
 // cmd/server/backtrack.go's buildRecoveryCluster. Pure, so it is unit-testable.
 func buildDynamoRecoveryCluster(ns, src, store, newName, targetTime, srcTable string, s dynamoClusterSpec) map[string]any {
+	labels := map[string]string{
+		"openinfra.dev/dynamo-restore-of": srcTable,
+		"app.kubernetes.io/managed-by":    "aws-shim-dynamo-restore",
+	}
+	// A member account's table is keyed "<account>:<name>", and ":" is no label value's: the label names the
+	// table, and another names its account.
+	if memberKeyRe.MatchString(srcTable) {
+		account, name := splitAccountKey(srcTable)
+		labels["openinfra.dev/dynamo-restore-of"] = name
+		labels["openinfra.dev/dynamo-restore-account"] = account
+	}
 	cluster := map[string]any{
 		"apiVersion": "postgresql.cnpg.io/v1",
 		"kind":       "Cluster",
 		"metadata": map[string]any{
 			"name":      newName,
 			"namespace": ns,
-			"labels": map[string]string{
-				"openinfra.dev/dynamo-restore-of": srcTable,
-				"app.kubernetes.io/managed-by":    "aws-shim-dynamo-restore",
-			},
+			"labels":    labels,
 			// Created imperatively (not GitOps); keep the dry-run hint harmless.
 			"annotations": map[string]string{"argocd.argoproj.io/sync-options": "SkipDryRunOnMissingResource=true"},
 		},

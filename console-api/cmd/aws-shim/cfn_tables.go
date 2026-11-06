@@ -25,16 +25,20 @@ var tableDeclarationGoneWait = 2 * time.Minute
 // tableDeclarationPoll is how often that wait looks again.
 var tableDeclarationPoll = 2 * time.Second
 
-// stackTableExists reports whether a DynamoDB table of that name exists (its registry entry).
+// The hooks act in the account ctx acts in (callerAccount): a stack of a member account has that
+// account's tables, keyed as the DynamoDB front door keys them (dynamo_accounts.go), and its declarations
+// are those made in that account's namespaces.
+
+// stackTableExists reports whether a DynamoDB table of that name exists in the account (its registry entry).
 func (h *dynamoHandler) stackTableExists(ctx context.Context, table string) (bool, error) {
-	err := h.registry().FindOne(ctx, bson.M{"_id": table}).Err()
+	err := h.registry().FindOne(ctx, bson.M{"_id": accountKey(ctx, table)}).Err()
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-// tableDeclared reports whether a kind: Table declaration for the table is still present.
+// tableDeclared reports whether a kind: Table declaration for the account's table is still present.
 func (h *dynamoHandler) tableDeclared(ctx context.Context, table string) (bool, error) {
 	if h.cs == nil || h.tableNS == "" {
 		return false, nil
@@ -43,8 +47,15 @@ func (h *dynamoHandler) tableDeclared(ctx context.Context, table string) (bool, 
 	if err != nil {
 		return false, err
 	}
+	accts, err := h.declaredTableAccounts(ctx)
+	if err != nil {
+		return false, err
+	}
 	for _, cm := range cms.Items {
-		if cm.Data["tableName"] == table {
+		if cm.Data["tableName"] != table {
+			continue
+		}
+		if account, ok := accts.of(cm.Labels[tableNamespaceLabel]); ok && account == callerAccount(ctx) {
 			return true, nil
 		}
 	}
@@ -74,5 +85,5 @@ func (h *dynamoHandler) removeStackTable(ctx context.Context, table string) erro
 		case <-time.After(tableDeclarationPoll):
 		}
 	}
-	return h.dropTable(ctx, table)
+	return h.dropTable(ctx, accountKey(ctx, table))
 }

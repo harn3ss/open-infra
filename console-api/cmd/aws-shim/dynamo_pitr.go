@@ -128,7 +128,7 @@ func (h *dynamoHandler) describeContinuousBackups(ctx context.Context, w http.Re
 	}
 	if err := h.registry().FindOne(ctx, bson.M{"_id": table}).Err(); err != nil {
 		writeDynamoError(w, http.StatusBadRequest, "TableNotFoundException", requestID,
-			"Requested resource not found: Table: "+table+" not found")
+			"Requested resource not found: Table: "+tableName(ctx, table)+" not found")
 		return
 	}
 	writeDynamoJSON(w, requestID, map[string]any{"ContinuousBackupsDescription": h.continuousBackupsDesc(ctx, table)})
@@ -156,7 +156,7 @@ func (h *dynamoHandler) updateContinuousBackups(ctx context.Context, w http.Resp
 	}
 	if res.MatchedCount == 0 {
 		writeDynamoError(w, http.StatusBadRequest, "TableNotFoundException", requestID,
-			"Requested resource not found: Table: "+table+" not found")
+			"Requested resource not found: Table: "+tableName(ctx, table)+" not found")
 		return
 	}
 	writeDynamoJSON(w, requestID, map[string]any{"ContinuousBackupsDescription": h.continuousBackupsDesc(ctx, table)})
@@ -204,23 +204,26 @@ func (h *dynamoHandler) restoreTableToPointInTime(ctx context.Context, w http.Re
 		return
 	}
 
+	// src and tgt are the caller's account's keys (a restore stays within the account, as on AWS); the
+	// caller knows them by their names.
+	srcName, tgtName := tableName(ctx, src), tableName(ctx, tgt)
 	// The source table must exist...
 	var srcDoc dynamoRegistryDoc
 	if err := h.registry().FindOne(ctx, bson.M{"_id": src}).Decode(&srcDoc); err != nil {
 		writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID,
-			"Requested resource not found: Table: "+src+" not found")
+			"Requested resource not found: Table: "+srcName+" not found")
 		return
 	}
 	// ...and have point-in-time recovery enabled (else there is no window to restore to).
 	if !srcDoc.PITR.Enabled {
 		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID,
-			"point-in-time recovery is not enabled for table "+src)
+			"point-in-time recovery is not enabled for table "+srcName)
 		return
 	}
 	// The target table must NOT already exist (AWS: ResourceInUseException).
 	if err := h.registry().FindOne(ctx, bson.M{"_id": tgt}).Err(); err == nil {
 		writeDynamoError(w, http.StatusBadRequest, "ResourceInUseException", requestID,
-			"Table already exists: "+tgt)
+			"Table already exists: "+tgtName)
 		return
 	}
 
@@ -286,7 +289,8 @@ func (h *dynamoHandler) restoreTableToPointInTime(ctx context.Context, w http.Re
 	h.logger.Info("dynamodb restore started", "source", src, "target", tgt, "targetTime", targetTime, "job", jobName)
 
 	writeDynamoJSON(w, requestID, map[string]any{"TableDescription": map[string]any{
-		"TableName":   tgt,
+		"TableName":   tgtName,
+		"TableArn":    dynamoTableARN(h.region, h.arnAccount(ctx), tgtName),
 		"TableStatus": "CREATING",
 		"KeySchema":   keySchemaFromAttrs(srcDoc.KeyAttrs),
 		"ItemCount":   float64(0),

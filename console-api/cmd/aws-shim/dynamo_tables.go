@@ -57,14 +57,28 @@ func (h *dynamoHandler) syncDeclaredTables(ctx context.Context, namespace string
 		h.logger.Warn("table sync: cannot list declared tables", "namespace", namespace, "err", err)
 		return
 	}
+	// A declared table is the table of the account its claim's namespace is in (openinfra.dev/table-namespace):
+	// the management account's under its name, a member account's under its key. Without the namespaces'
+	// accounts no declaration can be placed, so none is registered this round (the next one retries).
+	accts, err := h.declaredTableAccounts(ctx)
+	if err != nil {
+		h.logger.Warn("table sync: cannot read the accounts of the declaring namespaces", "err", err)
+		return
+	}
 	for i := range cms.Items {
 		cm := &cms.Items[i]
 		table := cm.Data["tableName"]
 		var keyAttrs []string
-		if err := json.Unmarshal([]byte(cm.Data["keyAttrs"]), &keyAttrs); err != nil || table == "" || len(keyAttrs) == 0 {
+		if err := json.Unmarshal([]byte(cm.Data["keyAttrs"]), &keyAttrs); err != nil || table == "" || len(keyAttrs) == 0 || tableNameRefusal(table) != "" {
 			h.logger.Warn("table sync: skipping malformed table declaration", "configMap", cm.Name)
 			continue
 		}
+		account, ok := accts.of(cm.Labels[tableNamespaceLabel])
+		if !ok {
+			h.logger.Warn("table sync: skipping a declaration in a namespace whose account label is no account id", "configMap", cm.Name)
+			continue
+		}
+		table = accountKeyFor(account, table)
 		var gsis []gsiDef
 		if raw := cm.Data["gsi"]; raw != "" {
 			if err := json.Unmarshal([]byte(raw), &gsis); err != nil {

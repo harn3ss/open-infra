@@ -272,6 +272,14 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	for _, c := range dynamoRoleChecks(op, table, body) {
 		checks = append(checks, authzCheck{c.action, "Table", c.table})
 	}
+	// The checks are on the names the caller gave, in its own account (dynamo_accounts.go); what the
+	// operation reads and writes is the caller's account's tables, by their keys. A name no table can have
+	// (":") is refused before anything is decided, as AWS validates a request before it authorizes it.
+	key, refusal := scopeDynamoRequest(r.Context(), op, table, body)
+	if refusal != "" {
+		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, refusal)
+		return
+	}
 	if ok, reason, c := decideEach(r.Context(), r, h.authz, claims,
 		coarseOnly(r.Context(), h.cs, claims, verb, "openinfra.dev", "applications", h.authzNS, table), checks); !ok {
 		// Log the denial with its reason: a client-only 403 with nothing recorded server-side is
@@ -289,6 +297,7 @@ func (h *dynamoHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	}
 
 	ctx := r.Context()
+	table = key // from here on, the caller's account's table
 	switch op {
 	case "ListTables":
 		h.listTables(ctx, w, requestID, body)
@@ -370,8 +379,10 @@ func (h *dynamoHandler) createTable(ctx context.Context, w http.ResponseWriter, 
 	h.ensureGSIIndexes(ctx, table, gsis)
 	h.ensureLSIIndexes(ctx, table, lsis)
 	h.openTableStream(ctx, table, streamView)
+	name := tableName(ctx, table)
 	desc := map[string]any{
-		"TableName": table, "TableStatus": "ACTIVE", "KeySchema": body["KeySchema"], "ItemCount": float64(0),
+		"TableName": name, "TableArn": dynamoTableARN(h.region, h.arnAccount(ctx), name), "TableStatus": "ACTIVE",
+		"KeySchema": body["KeySchema"], "ItemCount": float64(0),
 		"BillingModeSummary": billingModeSummary(bill), "ProvisionedThroughput": provisionedThroughputDesc(bill),
 	}
 	if len(gsis) > 0 {
@@ -382,21 +393,23 @@ func (h *dynamoHandler) createTable(ctx context.Context, w http.ResponseWriter, 
 	}
 	if streamView != "" {
 		desc["StreamSpecification"] = map[string]any{"StreamEnabled": true, "StreamViewType": streamView}
-		desc["LatestStreamArn"] = dynamoStreamARN(h.region, h.account, table)
-		desc["LatestStreamLabel"] = table
+		desc["LatestStreamArn"] = dynamoStreamARN(h.region, h.arnAccount(ctx), name)
+		desc["LatestStreamLabel"] = name
 	}
 	writeDynamoJSON(w, requestID, map[string]any{"TableDescription": desc})
 }
 
 func (h *dynamoHandler) describeTable(ctx context.Context, w http.ResponseWriter, requestID, table string) {
+	name := tableName(ctx, table)
 	keyAttrs, ok := h.tableKeyAttrs(ctx, table)
 	if !ok {
 		writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID,
-			"Requested resource not found: Table: "+table+" not found")
+			"Requested resource not found: Table: "+name+" not found")
 		return
 	}
 	bill := h.tableBilling(ctx, table)
-	tbl := map[string]any{"TableName": table, "TableStatus": h.tableStatus(ctx, table), "KeySchema": keySchemaFromAttrs(keyAttrs),
+	tbl := map[string]any{"TableName": name, "TableArn": dynamoTableARN(h.region, h.arnAccount(ctx), name),
+		"TableStatus": h.tableStatus(ctx, table), "KeySchema": keySchemaFromAttrs(keyAttrs),
 		"BillingModeSummary": billingModeSummary(bill), "ProvisionedThroughput": provisionedThroughputDesc(bill)}
 	if gsis := h.tableGSIs(ctx, table); len(gsis) > 0 {
 		tbl["GlobalSecondaryIndexes"] = gsiDescriptions(gsis)
@@ -406,8 +419,8 @@ func (h *dynamoHandler) describeTable(ctx context.Context, w http.ResponseWriter
 	}
 	if sv := h.tableStream(ctx, table); sv != "" {
 		tbl["StreamSpecification"] = map[string]any{"StreamEnabled": true, "StreamViewType": sv}
-		tbl["LatestStreamArn"] = dynamoStreamARN(h.region, h.account, table)
-		tbl["LatestStreamLabel"] = table
+		tbl["LatestStreamArn"] = dynamoStreamARN(h.region, h.arnAccount(ctx), name)
+		tbl["LatestStreamLabel"] = name
 	}
 	writeDynamoJSON(w, requestID, map[string]any{"Table": tbl})
 }
@@ -427,15 +440,16 @@ func (h *dynamoHandler) deleteTable(ctx context.Context, w http.ResponseWriter, 
 		writeDynamoError(w, http.StatusBadRequest, "ValidationException", requestID, "DeleteTable requires a TableName.")
 		return
 	}
+	name := tableName(ctx, table)
 	var doc dynamoRegistryDoc
 	if err := h.registry().FindOne(ctx, bson.M{"_id": table}).Decode(&doc); err != nil {
 		writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID,
-			"Requested resource not found: Table: "+table+" not found")
+			"Requested resource not found: Table: "+name+" not found")
 		return
 	}
 	if doc.Status == "CREATING" {
 		writeDynamoError(w, http.StatusBadRequest, "ResourceInUseException", requestID,
-			"Table "+table+" is CREATING and cannot be deleted")
+			"Table "+name+" is CREATING and cannot be deleted")
 		return
 	}
 	if err := h.dropTable(ctx, table); err != nil {
@@ -443,8 +457,8 @@ func (h *dynamoHandler) deleteTable(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 	writeDynamoJSON(w, requestID, map[string]any{"TableDescription": map[string]any{
-		"TableName": table, "TableStatus": "DELETING", "KeySchema": keySchemaFromAttrs(doc.KeyAttrs),
-		"ItemCount": float64(0),
+		"TableName": name, "TableArn": dynamoTableARN(h.region, h.arnAccount(ctx), name), "TableStatus": "DELETING",
+		"KeySchema": keySchemaFromAttrs(doc.KeyAttrs), "ItemCount": float64(0),
 	}})
 }
 
@@ -461,24 +475,33 @@ func (h *dynamoHandler) listTables(ctx context.Context, w http.ResponseWriter, r
 		}
 		limit = int(v)
 	}
+	// The caller's account's tables alone: a member account's are its keys' range, the management
+	// account's every key that is not a member account's (dynamo_accounts.go).
+	start, _ := body["ExclusiveStartTableName"].(string)
 	filter := bson.M{}
-	if start, _ := body["ExclusiveStartTableName"].(string); start != "" {
-		filter["_id"] = bson.M{"$gt": start}
+	if f := tableKeyIDFilter(ctx, start); len(f) > 0 {
+		filter["_id"] = bson.M(f)
 	}
-	cur, err := h.registry().Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}).
-		SetLimit(int64(limit+1)).SetProjection(bson.M{"_id": 1}))
+	opts := options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}).SetProjection(bson.M{"_id": 1})
+	if isMemberRequest(ctx) {
+		opts.SetLimit(int64(limit + 1)) // the range holds the member account's keys alone
+	}
+	cur, err := h.registry().Find(ctx, filter, opts)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	defer cur.Close(ctx)
 	names := []string{}
-	for cur.Next(ctx) {
+	for len(names) <= limit && cur.Next(ctx) {
 		var doc struct {
 			ID string `bson:"_id"`
 		}
-		if cur.Decode(&doc) == nil && doc.ID != "" {
-			names = append(names, doc.ID)
+		if cur.Decode(&doc) != nil || doc.ID == "" {
+			continue
+		}
+		if name, ok := nameOfAccountKey(ctx, doc.ID); ok {
+			names = append(names, name)
 		}
 	}
 	if err := cur.Err(); err != nil {
@@ -770,7 +793,7 @@ func (h *dynamoHandler) batchGetItem(ctx context.Context, w http.ResponseWriter,
 				out = append(out, dynamodb.ToItem(item))
 			}
 		}
-		responses[table] = out
+		responses[tableName(ctx, table)] = out
 	}
 	// The store applies every read synchronously, so nothing is ever left unprocessed.
 	writeDynamoJSON(w, requestID, map[string]any{"Responses": responses, "UnprocessedKeys": map[string]any{}})
@@ -799,7 +822,7 @@ func (h *dynamoHandler) batchWriteItem(ctx context.Context, w http.ResponseWrite
 		keyAttrs, ok := h.tableKeyAttrs(ctx, table)
 		if !ok {
 			writeDynamoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID,
-				"Cannot do operations on a non-existent table: "+table)
+				"Cannot do operations on a non-existent table: "+tableName(ctx, table))
 			return
 		}
 		rl, _ := reqs.([]any)

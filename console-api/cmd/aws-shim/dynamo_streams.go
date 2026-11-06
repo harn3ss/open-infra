@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -57,8 +58,9 @@ func dynamoStreamARN(region, account, table string) string {
 	return fmt.Sprintf("arn:aws:dynamodb:%s:%s:table/%s/stream/%s", region, account, table, table)
 }
 
-func (h *ddbStreamsHandler) streamARN(table string) string {
-	return dynamoStreamARN(h.region, h.account, table)
+// streamARN is the ARN of the stream of the caller's account's table name.
+func (h *ddbStreamsHandler) streamARN(ctx context.Context, name string) string {
+	return dynamoStreamARN(h.region, h.arnAccount(ctx), name)
 }
 
 // streamViewFromSpec parses a DynamoDB StreamSpecification ({StreamEnabled, StreamViewType}) into a
@@ -106,16 +108,32 @@ func (h *ddbStreamsHandler) serve(w http.ResponseWriter, r *http.Request, claims
 	// acts on the table inside its ShardIterator (which a caller can write by hand), so it is checked
 	// on that table, whatever else the request names.
 	table, _ := body["TableName"].(string)
+	arn := ""
 	if table == "" {
-		if arn, _ := body["StreamArn"].(string); arn != "" {
+		if arn, _ = body["StreamArn"].(string); arn != "" {
 			table = tableFromStreamARN(arn)
 		}
 	}
 	if op == "GetRecords" {
-		table = ""
+		table, arn = "", ""
 		if it, err := decodeIterator(strFromBody(body, "ShardIterator")); err == nil {
 			table = it.Stream
 		}
+	}
+	// Every name here is a table's name in the caller's own account (an iterator carries the name it was
+	// issued for), keyed below as the DynamoDB front door keys it; a name no table can have (":") could be
+	// another account's key, and is refused.
+	if refusal := tableNameRefusal(table); refusal != "" {
+		writeStreamsError(w, http.StatusBadRequest, "ValidationException", requestID, refusal)
+		return
+	}
+	// A member account's stream ARN names its own account: another account's stream (whose table might share
+	// the name) is cross-account, and DynamoDB Streams here has no resource policy to allow it.
+	if arn != "" && isMemberRequest(r.Context()) && awsidentity.AccountOfARN(arn) != callerAccount(r.Context()) {
+		writeStreamsError(w, http.StatusForbidden, "AccessDeniedException", requestID,
+			notAuthorized(principalOf(r.Context(), claims), "dynamodb:"+op, arn,
+				"no resource-based policy allows the dynamodb:"+op+" action"))
+		return
 	}
 
 	// Authorize with the same impersonated SubjectAccessReview + data-plane policy the dynamodb
@@ -157,23 +175,25 @@ func (h *ddbStreamsHandler) listStreams(ctx context.Context, w http.ResponseWrit
 		return
 	}
 	out := make([]any, 0, len(tables))
-	for _, t := range tables {
-		if tableFilter != "" && t != tableFilter {
+	for _, key := range tables {
+		t, ok := nameOfAccountKey(ctx, key) // the caller's account's streams alone
+		if !ok || (tableFilter != "" && t != tableFilter) {
 			continue
 		}
-		out = append(out, map[string]any{"StreamArn": h.streamARN(t), "TableName": t, "StreamLabel": t})
+		out = append(out, map[string]any{"StreamArn": h.streamARN(ctx, t), "TableName": t, "StreamLabel": t})
 	}
 	writeStreamsJSON(w, requestID, map[string]any{"Streams": out})
 }
 
-func (h *ddbStreamsHandler) describeStream(ctx context.Context, w http.ResponseWriter, requestID, table string) {
+func (h *ddbStreamsHandler) describeStream(ctx context.Context, w http.ResponseWriter, requestID, name string) {
+	table := accountKey(ctx, name)
 	viewType, ok, err := h.store.getStream(ctx, table)
 	if err != nil {
 		writeStreamsError(w, http.StatusInternalServerError, "InternalServerError", requestID, "could not read stream")
 		return
 	}
 	if !ok {
-		writeStreamsError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Requested resource not found: Stream for table "+table+" not found")
+		writeStreamsError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Requested resource not found: Stream for table "+name+" not found")
 		return
 	}
 	// KeySchema from the table registry (HASH first, optional RANGE).
@@ -199,11 +219,11 @@ func (h *ddbStreamsHandler) describeStream(ctx context.Context, w http.ResponseW
 	}
 	writeStreamsJSON(w, requestID, map[string]any{
 		"StreamDescription": map[string]any{
-			"StreamArn":               h.streamARN(table),
-			"StreamLabel":             table,
+			"StreamArn":               h.streamARN(ctx, name),
+			"StreamLabel":             name,
 			"StreamStatus":            "ENABLED",
 			"StreamViewType":          viewType,
-			"TableName":               table,
+			"TableName":               name,
 			"CreationRequestDateTime": epochSeconds(time.Now().UnixMilli()),
 			"KeySchema":               keySchema,
 			"Shards":                  []any{shard},
@@ -211,9 +231,10 @@ func (h *ddbStreamsHandler) describeStream(ctx context.Context, w http.ResponseW
 	})
 }
 
-func (h *ddbStreamsHandler) getShardIterator(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, table string) {
+func (h *ddbStreamsHandler) getShardIterator(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, name string) {
+	table := accountKey(ctx, name)
 	if _, ok, _ := h.store.getStream(ctx, table); !ok {
-		writeStreamsError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Requested resource not found: Stream for table "+table+" not found")
+		writeStreamsError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Requested resource not found: Stream for table "+name+" not found")
 		return
 	}
 	shard, _ := body["ShardId"].(string)
@@ -259,7 +280,8 @@ func (h *ddbStreamsHandler) getShardIterator(ctx context.Context, w http.Respons
 		writeStreamsError(w, http.StatusBadRequest, "ValidationException", requestID, "unsupported ShardIteratorType "+itype)
 		return
 	}
-	writeStreamsJSON(w, requestID, map[string]any{"ShardIterator": encodeIterator(shardIterator{Stream: table, Shard: shard, NextSeq: next})})
+	// The iterator carries the table's name, read in the account of whoever presents it.
+	writeStreamsJSON(w, requestID, map[string]any{"ShardIterator": encodeIterator(shardIterator{Stream: name, Shard: shard, NextSeq: next})})
 }
 
 func (h *ddbStreamsHandler) getRecords(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -272,7 +294,7 @@ func (h *ddbStreamsHandler) getRecords(ctx context.Context, w http.ResponseWrite
 	if v, ok := body["Limit"]; ok {
 		limit = toInt(v)
 	}
-	recs, err := h.store.getRecords(ctx, it.Stream, it.NextSeq, limit)
+	recs, err := h.store.getRecords(ctx, accountKey(ctx, it.Stream), it.NextSeq, limit)
 	if err != nil {
 		writeStreamsError(w, http.StatusInternalServerError, "InternalServerError", requestID, "could not read records")
 		return
