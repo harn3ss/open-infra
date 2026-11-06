@@ -82,7 +82,8 @@ func statementsToSpecAny(stmts []policyengine.Statement) []any {
 // statements count. As AWS reads a trust policy:
 //   - Principal "*" (or {"AWS":"*"}) is "*": any principal, of any account;
 //   - a user or role of the role's own account is that User ("<name>") or that role's sessions
-//     ("Role::<name>");
+//     ("Role::<name>"); an ARN whose account is not a 12-digit id (the platform's placeholder from before
+//     accounts, "open-infra") names the role's own account;
 //   - an account's root, and any user or role of another account, stay the ARN they are: the account's
 //     principals, or that one principal, matched by the caller's account (sts.go trustedARN) — never "*";
 //   - a service principal is recorded as "Service::<service>" (EC2's as "vm", the instance principal the
@@ -134,7 +135,11 @@ func parseTrustPolicy(doc, account string) ([]string, error) {
 				if accountIDRe.MatchString(p) {
 					add("arn:aws:iam::" + p + ":root")
 				}
-			case arnAccountField(p) != account || isRootOrAccountArn(p):
+			case !accountIDRe.MatchString(arnAccountField(p)) && isRootOrAccountArn(p):
+				// The platform's own placeholder account ("open-infra", from before accounts) is the
+				// role's own account, never another: its root is this account's.
+				add("arn:aws:iam::" + account + ":root")
+			case accountIDRe.MatchString(arnAccountField(p)) && (arnAccountField(p) != account || isRootOrAccountArn(p)):
 				add(p) // another account's principal, or an account's root: matched by account
 			case userFromArn(p) != "":
 				add(lastSegment(userFromArn(p)))

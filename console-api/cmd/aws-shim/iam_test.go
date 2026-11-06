@@ -36,6 +36,12 @@ func TestParseTrustPolicy(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, []string{"arn:aws:iam::111111111111:root"}) {
 		t.Fatalf("root principal: got %v err %v", got, err)
 	}
+	// the platform's placeholder account (from before accounts) is the role's own account: its user is
+	// that User, and its root is this account's root
+	got, err = parseTrustPolicy(`{"Statement":[{"Effect":"Allow","Principal":{"AWS":["arn:aws:iam::open-infra:user/dana","arn:aws:iam::open-infra:root"]},"Action":"sts:AssumeRole"}]}`, "000000000000")
+	if err != nil || !reflect.DeepEqual(got, []string{"dana", "arn:aws:iam::000000000000:root"}) {
+		t.Fatalf("placeholder account: got %v err %v", got, err)
+	}
 	// a bare account id is that account's root
 	got, err = parseTrustPolicy(`{"Statement":[{"Effect":"Allow","Principal":{"AWS":"222222222222"},"Action":"sts:AssumeRole"}]}`, "111111111111")
 	if err != nil || !reflect.DeepEqual(got, []string{"arn:aws:iam::222222222222:root"}) {
