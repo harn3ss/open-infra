@@ -277,10 +277,20 @@ class LoginProfileProbe(unittest.TestCase):
         self.assertCleanedUp(calls, out)
 
 
+class MFAProbeTOTP(unittest.TestCase):
+    """probe/aws-shim-iam-mfa.sh computes its own TOTP codes from the device's seed: its code generator
+    against RFC 6238's SHA-1 vectors (the shim's, console-api/internal/mfa, is pinned to the same ones)."""
+
+    def test_rfc6238_vectors(self):
+        r = subprocess.run(["bash", os.path.join(HERE, "aws-shim-iam-mfa.sh"), "--totp-selftest"],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
 class Parses(unittest.TestCase):
     def test_bash_n(self):
         for name in ["iam-lib.sh", "iam-parity.sh", "iam-no-policy.sh", "iam-managed-policies.sh",
-                     "aws-shim-organizations.sh", "aws-shim-iam-login-profile.sh"]:
+                     "aws-shim-organizations.sh", "aws-shim-iam-login-profile.sh", "aws-shim-iam-mfa.sh"]:
             r = subprocess.run(["bash", "-n", os.path.join(HERE, name)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
         cut = os.path.join(REPO, "hack", "iam-cutover.sh")

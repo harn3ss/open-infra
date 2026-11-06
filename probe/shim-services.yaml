@@ -47,6 +47,7 @@ services:
     tier: proven
     sigv4: [iam]
     probes: [iam, iam-timecond, iam-username-like, iam-login-profile]
+    pending: [iam-mfa] # virtual MFA devices, GetSessionToken with MFA, "deny unless MFA" (not yet run live)
   - name: KMS
     cell: "→ Vault Transit"
     tier: proven
