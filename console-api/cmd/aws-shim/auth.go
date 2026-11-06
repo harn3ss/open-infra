@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/accounts"
@@ -107,7 +108,10 @@ func (a *authenticator) sessionClaims(ctx context.Context, sess awssts.Session) 
 	if home == "" {
 		home = dataplaneauthz.DefaultHomeNamespace
 	}
-	principal := dataplaneauthz.QualifiedName(home, sess.Namespace, sess.RoleName)
+	// The role's principal is its object (the IAM policy world keys a role by its object name), which is
+	// its AWS name lower-cased — OrganizationAccountAccessRole is the object organizationaccountaccessrole
+	// (dynRoleResolver.ResolveIn) — while the session's ARN keeps the AWS name, as AWS shows it.
+	principal := dataplaneauthz.QualifiedName(home, sess.Namespace, strings.ToLower(sess.RoleName))
 	if a.revoke != nil {
 		if cutoff, on := a.revoke.RevokedBefore(ctx, principal); on && sess.IssuedAt.Before(cutoff) {
 			return iam.Claims{}, false

@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
@@ -151,6 +152,38 @@ func TestAssumeRole_CrossAccountIntoAMemberRole(t *testing.T) {
 	}
 	if claims.Account != testMember || claims.AssumedRole != memberHome+"/admin" {
 		t.Fatalf("session claims %+v, want account %s, role %s/admin", claims, testMember, memberHome)
+	}
+}
+
+// A role named in AWS's mixed case — OrganizationAccountAccessRole, the object
+// organizationaccountaccessrole — acts as its object, which the IAM policy world keys its policies by,
+// while its session ARN keeps the AWS name.
+func TestAssumeRole_MixedCaseRoleActsAsItsObject(t *testing.T) {
+	h := crossAccountSTS(t, fakeRoles{memberHome + "/OrganizationAccountAccessRole": {trust: []string{"arn:aws:iam::" + testMgmt + ":root"}}})
+	w := httptest.NewRecorder()
+	h.serve(w, assumeRequest("arn:aws:iam::"+testMember+":role/OrganizationAccountAccessRole", "ops"), iam.Claims{Sub: "alice"}, "rid")
+	if w.Code != http.StatusOK {
+		t.Fatalf("assume: %d %s", w.Code, w.Body)
+	}
+	var resp assumeRoleResponse
+	if err := xml.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resp.Result.AssumedRoleUser.Arn, "arn:aws:sts::"+testMember+":assumed-role/OrganizationAccountAccessRole/ops"; got != want {
+		t.Fatalf("session ARN %q, want %q", got, want)
+	}
+	c := resp.Result.Credentials
+	auth := &authenticator{keys: fakeKeys{}, resolve: func(context.Context, string) ([]string, bool) { return nil, false },
+		sts: h.minter, dir: testDirectory()}
+	claims, err := auth.authenticate(context.Background(), signedSessionRequest(t, c.AccessKeyId, c.SecretAccessKey, c.SessionToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.AssumedRole != memberHome+"/organizationaccountaccessrole" {
+		t.Fatalf("the session acts as %q, want the role's object %s/organizationaccountaccessrole", claims.AssumedRole, memberHome)
+	}
+	if !strings.Contains(claims.Sub, "OrganizationAccountAccessRole") {
+		t.Errorf("the session's name keeps the AWS role name: %q", claims.Sub)
 	}
 }
 
