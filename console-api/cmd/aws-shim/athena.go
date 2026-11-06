@@ -44,6 +44,10 @@ import (
 // the AWS JSON 1.1 X-Amz-Target prefix the Athena SDKs and aws CLI sign for.
 const athenaTargetPrefix = "AmazonAthena"
 
+// athenaMemberRefusal is the answer to a member account's every Athena call: the query engine and its
+// catalog are not kept per account on this installation.
+const athenaMemberRefusal = "Amazon Athena is not available to member accounts on this installation: it queries the installation's one shared query engine and Data Catalog, which keep no account's data, workgroups or query history apart from another's, so they belong to the management account alone. Use Amazon Athena from the management account."
+
 type athenaHandler struct {
 	cs            kubernetes.Interface
 	authzNS       string
@@ -182,6 +186,16 @@ func (h *athenaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 
 	// Carry the resolved principal on the context so every audit record names *who* (AU-2/AU-9).
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
+
+	// Athena queries the platform's one Trino engine over the one shared Data Catalog, neither of which
+	// keeps an account's data, workgroups or query history apart from another's: they are the management
+	// account's. A member account is refused outright — never shown the management account's data or
+	// queries as though they were its own.
+	if isMemberRequest(r.Context()) || memberAccount(claims) {
+		h.audit(ctx, op, "", "refuse", athenaMemberRefusal)
+		writeAthenaError(w, http.StatusBadRequest, "AccessDeniedException", requestID, athenaMemberRefusal)
+		return
+	}
 
 	// Deliberately-refused ops are a flat capability statement (not an access decision), so they are refused
 	// up front with an honest "why" — before the verb table, which does not list them.

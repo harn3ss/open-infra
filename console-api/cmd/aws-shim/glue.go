@@ -43,6 +43,10 @@ import (
 // the AWS JSON 1.1 X-Amz-Target prefix the Glue SDKs and aws CLI sign for.
 const glueTargetPrefix = "AWSGlue"
 
+// glueMemberRefusal is the answer to a member account's every Glue call: the catalog is not kept per
+// account on this installation.
+const glueMemberRefusal = "AWS Glue is not available to member accounts on this installation: its Data Catalog is the installation's one shared catalog, which keeps no account's databases and tables apart from another's, so it belongs to the management account alone. Use AWS Glue from the management account."
+
 type glueHandler struct {
 	cs         kubernetes.Interface
 	authzNS    string
@@ -157,6 +161,16 @@ func (h *glueHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.C
 
 	// Carry the resolved principal on the context so every audit record names *who* (AU-2/AU-9).
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
+
+	// The Data Catalog is the platform's one Iceberg catalog, which keeps no account's databases apart
+	// from another's: it is the management account's. A member account has no Data Catalog of its own
+	// here, so it is refused outright — never shown the management account's catalog as though it were
+	// its own.
+	if isMemberRequest(r.Context()) || memberAccount(claims) {
+		h.audit(ctx, op, "", "refuse", glueMemberRefusal)
+		writeGlueError(w, http.StatusBadRequest, "AccessDeniedException", requestID, glueMemberRefusal)
+		return
+	}
 
 	// Deliberately-refused ops are a flat capability statement (not an access decision), so they are
 	// refused up front with an honest "why" — before the verb table, which does not list them.
