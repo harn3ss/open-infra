@@ -32,18 +32,27 @@ func (ap *impersonatingApplier) callerClaims() iam.Claims {
 	if ap.claims != nil {
 		return *ap.claims
 	}
+	if ap.account != "" {
+		// A member account's caller (openinfra:<account>:<user>, the identity it acts as there).
+		return iam.Claims{Sub: strings.TrimPrefix(ap.user, "openinfra:"+ap.account+":"), Account: ap.account, AssumedRole: ap.assumedRole}
+	}
 	return iam.Claims{Sub: strings.TrimPrefix(ap.user, "openinfra:"), Groups: ap.groups, AssumedRole: ap.assumedRole}
 }
 
 // callerCan asks whether the applier's identity — the one the stack's own Kubernetes operations
 // impersonate — may do verb on group/resource in namespace (fail closed). It is asked for an assumed role
-// too: such a step needs both this and the role's data-plane grant.
+// too: such a step needs both this and the role's data-plane grant. A member account's identity has its
+// RBAC (the IAM compiler's) in its own account's namespaces alone, so a check every front door makes in the
+// authorization namespace is made, for a member account's caller, in its home.
 func (h *cfnDoorway) callerCan(ctx context.Context, ap *impersonatingApplier, verb, group, resource, ns, name string) (bool, string) {
 	if h.cs == nil {
 		return false, "CloudFormation authorization is not configured on this shim"
 	}
 	if ap.user == "" {
 		return false, "no caller identity"
+	}
+	if ns == h.authzNS {
+		ns = accountNamespace(ctx, ns)
 	}
 	out, err := h.cs.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authzv1.SubjectAccessReview{
 		Spec: authzv1.SubjectAccessReviewSpec{User: ap.user, Groups: ap.groups,
@@ -112,7 +121,7 @@ func (h *cfnDoorway) canProvisionRestAPI(ctx context.Context, ap *impersonatingA
 			continue
 		}
 		fn := functionFromURI(ig.URI)
-		fnNS := h.ns // where the REST v1 invoke path will run the integration's Function
+		fnNS := ap.ns // where the REST v1 invoke path will run the integration's Function
 		if h.restV1 != nil && h.restV1.fnNS != "" {
 			fnNS = h.restV1.fnNamespace(ctx, fn)
 		}
@@ -238,7 +247,7 @@ func (h *cfnDoorway) authorizeTeardownDepth(ctx context.Context, ap *impersonati
 			}
 		case cfn.IsCustomResource(r):
 			fn, _ := r.Spec["function"].(string)
-			ok, reason = h.canInvokeFunction(ctx, ap, h.ns, fn)
+			ok, reason = h.canInvokeFunction(ctx, ap, ap.ns, fn)
 		case cfn.IsRestV1API(r):
 			ok, reason = h.canDeleteRestAPI(ctx, ap, r.ProvisionedID)
 		case cfn.IsServiceResource(r): // a stack's service resource: its front door's delete checks
@@ -253,7 +262,7 @@ func (h *cfnDoorway) authorizeTeardownDepth(ctx context.Context, ap *impersonati
 			if err != nil {
 				return false, fmt.Sprintf("cannot check %s/%s: %v", r.Kind, r.Name, err)
 			}
-			ok, reason = h.callerCan(ctx, ap, "delete", gvr.Group, gvr.Resource, h.ns, r.Name)
+			ok, reason = h.callerCan(ctx, ap, "delete", gvr.Group, gvr.Resource, ap.ns, r.Name)
 		}
 		if !ok {
 			return false, "not authorized to delete stack resource " + r.LogicalID + ": " + reason

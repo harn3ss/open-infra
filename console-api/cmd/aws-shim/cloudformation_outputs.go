@@ -45,7 +45,8 @@ func exportsFrom(recs []*cfn.StackRecord, exclude string) stackExports {
 	return ex
 }
 
-// exportsFor returns the namespace's export registry, excluding stack `exclude`.
+// exportsFor returns the export registry of the request's account, excluding stack `exclude`: as on AWS,
+// a stack imports only its own account's exports.
 func (h *cfnDoorway) exportsFor(ctx context.Context, exclude string) stackExports {
 	return exportsFrom(h.allRecords(ctx), exclude)
 }
@@ -53,7 +54,12 @@ func (h *cfnDoorway) exportsFor(ctx context.Context, exclude string) stackExport
 // optsFor is opts with the namespace's exports supplied for Fn::ImportValue — for every operation that
 // evaluates a template.
 func (h *cfnDoorway) optsFor(name string, params map[string]string, ex stackExports) cfn.DeployOptions {
-	o := h.opts(name, params)
+	return h.optsForIn(context.Background(), name, params, ex)
+}
+
+// optsForIn is optsFor for a stack of the account the request acts in (opts).
+func (h *cfnDoorway) optsForIn(ctx context.Context, name string, params map[string]string, ex stackExports) cfn.DeployOptions {
+	o := h.opts(ctx, name, params)
 	o.Exports = ex.values
 	return o
 }

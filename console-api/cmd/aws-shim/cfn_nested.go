@@ -74,7 +74,7 @@ func (d *nestedDriver) CreateNested(ctx context.Context, req cfn.NestedStackRequ
 		return cfn.NestedStackResult{}, fmt.Errorf("Stack [%s] already exists", req.Name)
 	}
 	ex := h.exportsFor(ctx, req.Name)
-	stackID := h.newStackID(req.Name)
+	stackID := h.newStackIDIn(ctx, req.Name) // in the parent stack's account
 	plan, perr := cfn.BuildPlanForStack([]byte(body), req.Parameters, ex.values, req.Name, stackID, h.caps())
 	if perr != nil {
 		return cfn.NestedStackResult{StackID: stackID}, perr
@@ -82,7 +82,7 @@ func (d *nestedDriver) CreateNested(ctx context.Context, req cfn.NestedStackRequ
 	if plan.Verdict == cfn.Rejected {
 		return cfn.NestedStackResult{StackID: stackID}, fmt.Errorf("template refused (nothing created):\n  - %s", strings.Join(plan.Blockers, "\n  - "))
 	}
-	opts := h.withRequest(h.asCaller(h.stackOpts(req.Name, req.Parameters, ex, body), d.ap), d.ap, d.req)
+	opts := h.withRequest(h.asCaller(h.stackOpts(ctx, req.Name, req.Parameters, ex, body), d.ap), d.ap, d.req)
 	opts.StackID, opts.ParentID, opts.RootID = stackID, req.ParentID, req.RootID
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -110,7 +110,7 @@ func (d *nestedDriver) DeleteNested(ctx context.Context, name string) error {
 	if before.ParentID == "" {
 		return fmt.Errorf("stack %s is not a nested stack; it is not deleted with another stack", name)
 	}
-	out, err := cfn.Destroy(ctx, d.h.asCaller(d.h.opts(name, nil), d.ap), d.ap)
+	out, err := cfn.Destroy(ctx, d.h.asCaller(d.h.opts(ctx, name, nil), d.ap), d.ap)
 	if err != nil {
 		return err
 	}

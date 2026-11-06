@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	"github.com/minio/minio-go/v7"
@@ -121,10 +122,22 @@ func (h *cfnDoorway) readTemplateURL(r *http.Request, raw string) (string, error
 // s3ReadDenied is the S3 front door's authorization of a GetObject on the template's object, for a
 // template read on the caller's behalf (s3authz.Gate, exactly as the S3 API authorizes the same read): the
 // platform-bucket fence, then an assumed role default-deny under its data-plane policy, a User the coarse
-// read right and no data-plane deny.
+// read right and no data-plane deny. Where accounts meet — a member account's caller, or a member
+// account's bucket — it is decided as the S3 front door decides one (s3_accounts.go): in the bucket's
+// account with the bucket's own policy, so a stack reads a template from its own account's bucket, or from
+// another account's that its bucket policy opens to it, as on AWS.
 func (h *cfnDoorway) s3ReadDenied(r *http.Request, claims iam.Claims, bucket, key string) (bool, string) {
+	ctx := r.Context()
 	g := s3authz.Gate{CS: h.s3.cs, Authz: h.authz, NS: h.s3.authzNS}
-	ok, reason := g.Allow(r.Context(), claims,
-		s3authz.Request{Action: "s3:GetObject", Verb: "get", Bucket: bucket, Key: key, Object: true}, requestContext(claims, r))
+	q := s3authz.Request{Action: "s3:GetObject", Verb: "get", Bucket: bucket, Key: key, Object: true}
+	if owner := h.s3.bucketOwner(ctx, bucket); memberAccount(claims) || !awsidentity.Current().IsManagement(owner) {
+		ok, reason := g.AllowAccount(ctx, q, s3authz.Account{
+			Principal: principalOf(ctx, claims),
+			Owner:     owner,
+			Policy:    func() string { return h.s3.bucketPolicyDoc(ctx, bucket) },
+		}, requestContext(claims, r))
+		return !ok, reason
+	}
+	ok, reason := g.Allow(ctx, claims, q, requestContext(claims, r))
 	return !ok, reason
 }

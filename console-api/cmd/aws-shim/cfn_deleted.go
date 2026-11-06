@@ -61,17 +61,24 @@ func (h *cfnDoorway) changeSetStackID(cs *changeSet) string {
 	return h.stackID(cs.StackName)
 }
 
-// liveStackID is the StackId of the stack of that name now in use (the derived one when there is none).
+// liveStackID is the StackId of the stack of that name now in use in the request's account (the derived one
+// when there is none).
 func (h *cfnDoorway) liveStackID(ctx context.Context, name string) string {
 	if rec, found, err := h.getRecord(ctx, name); err == nil && found {
 		return h.idOf(rec)
 	}
-	return h.stackID(name)
+	return h.stackIDIn(ctx, name)
 }
 
 // newStackID is a new stack instance's StackId.
 func (h *cfnDoorway) newStackID(name string) string {
 	return awsidentity.Identity{AccountID: h.account, Region: h.region, StackNamespace: h.ns}.NewStackID(name)
+}
+
+// newStackIDIn is newStackID for a stack of the account the request acts in: its StackId names that
+// account, as on AWS.
+func (h *cfnDoorway) newStackIDIn(ctx context.Context, name string) string {
+	return h.identityFor(ctx).NewStackID(name)
 }
 
 type cfnStackARNKey struct{}
@@ -222,7 +229,7 @@ func (h *cfnDoorway) keepDeleted(ctx context.Context, before, after *cfn.StackRe
 	if err != nil {
 		return
 	}
-	if err := h.recs().apply(ctx, deletedRecordName(kept.Name, kept.StackID),
+	if err := h.recsFor(ctx).apply(ctx, deletedRecordName(kept.Name, kept.StackID),
 		map[string]any{"app.kubernetes.io/managed-by": cfnDeletedManagedBy, "cfn.openinfra.dev/stack": kept.Name},
 		map[string]string{"stack.json": string(data)}); err != nil {
 		h.logger.Warn("cfn: could not keep the deleted stack's record (ListStacks will not list it)", "stack", kept.Name, "error", err.Error())
@@ -231,7 +238,7 @@ func (h *cfnDoorway) keepDeleted(ctx context.Context, before, after *cfn.StackRe
 
 // sideEvents is the events record a stack's operations keep apart from its record (nil when none).
 func (h *cfnDoorway) sideEvents(ctx context.Context, stack string) []cfn.StackEvent {
-	st := h.recs()
+	st := h.recsFor(ctx)
 	u, err := st.client().Get(ctx, eventsRecordName(stack), metav1.GetOptions{})
 	if err != nil {
 		return nil
@@ -243,14 +250,14 @@ func (h *cfnDoorway) sideEvents(ctx context.Context, stack string) []cfn.StackEv
 	return side
 }
 
-// deletedStacks lists the kept deleted stacks (of one name, or every name when name is ""), newest delete
-// first.
+// deletedStacks lists the request's account's kept deleted stacks (of one name, or every name when name is
+// ""), newest delete first.
 func (h *cfnDoorway) deletedStacks(ctx context.Context, name string) []*cfn.StackRecord {
 	sel := "app.kubernetes.io/managed-by=" + cfnDeletedManagedBy
 	if name != "" {
 		sel += ",cfn.openinfra.dev/stack=" + name
 	}
-	st := h.recs()
+	st := h.recsFor(ctx)
 	list, err := st.client().List(ctx, metav1.ListOptions{LabelSelector: sel})
 	if err != nil {
 		return nil
@@ -279,16 +286,18 @@ func (h *cfnDoorway) deletedStack(ctx context.Context, name, arn string) (*cfn.S
 }
 
 // pruneDeleted removes the deleted stacks kept longer than cfnDeletedRetention, and the oldest past
-// cfnDeletedLimit. Run with every recovery pass.
+// cfnDeletedLimit — each account's, within its own records (recordAccounts). Run with every recovery pass.
 func (h *cfnDoorway) pruneDeleted(ctx context.Context, now time.Time) {
-	all := h.deletedStacks(ctx, "")
-	for i, rec := range all {
-		t, err := time.Parse(time.RFC3339, rec.DeletedAt)
-		if err == nil && now.Sub(t) <= cfnDeletedRetention && i < cfnDeletedLimit {
-			continue
-		}
-		if err := h.recs().client().Delete(ctx, deletedRecordName(rec.Name, rec.StackID), metav1.DeleteOptions{}); err != nil {
-			h.logger.Warn("cfn: could not remove a deleted stack past its retention (retried next pass)", "stack", rec.Name, "error", err.Error())
+	for _, actx := range h.recordAccounts(ctx) {
+		all := h.deletedStacks(actx, "")
+		for i, rec := range all {
+			t, err := time.Parse(time.RFC3339, rec.DeletedAt)
+			if err == nil && now.Sub(t) <= cfnDeletedRetention && i < cfnDeletedLimit {
+				continue
+			}
+			if err := h.recsFor(actx).client().Delete(actx, deletedRecordName(rec.Name, rec.StackID), metav1.DeleteOptions{}); err != nil {
+				h.logger.Warn("cfn: could not remove a deleted stack past its retention (retried next pass)", "stack", rec.Name, "error", err.Error())
+			}
 		}
 	}
 }

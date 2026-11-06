@@ -14,6 +14,10 @@
 // The distribution id is the stack's Ref of the distribution (cfn/resource_attrs.go), found in the stack
 // records. Invalidations are kept in the CloudFormation front door's record store (cfn-invalidations-<stack>,
 // one data key per distribution) and removed with the stack.
+//
+// Accounts: a distribution is its stack's, and a stack is its account's (cfn_accounts.go). A request finds
+// distributions among its own account's stack records alone, its invalidations are kept with that
+// account's records, and a distribution's ARN names its account.
 package main
 
 import (
@@ -78,6 +82,14 @@ type cloudFrontHandler struct {
 	newID     func() string
 	logger    *slog.Logger
 	mu        sync.Mutex // serializes this replica's writes to a record (the record's resourceVersion guards replicas)
+}
+
+func init() { accountScopedServices["cloudfront"] = true }
+
+// distributionARN is the ARN of a distribution of the account the request acts in (CloudFront is global:
+// no region).
+func (h *cloudFrontHandler) distributionARN(ctx context.Context, id string) string {
+	return "arn:aws:cloudfront::" + h.cfn.accountFor(ctx) + ":distribution/" + id
 }
 
 func newCloudFrontHandler(c *cfnDoorway, logger *slog.Logger) *cloudFrontHandler {
@@ -226,9 +238,10 @@ type cfDistribution struct {
 	id, stack, ns, site string
 }
 
-// findDistribution finds the distribution a stack reports as id (its Ref) among the stack records.
+// findDistribution finds the distribution a stack reports as id (its Ref) among the stack records of the
+// request's account.
 func (h *cloudFrontHandler) findDistribution(ctx context.Context, id string) (*cfDistribution, bool, error) {
-	st := h.cfn.recs()
+	st := h.cfn.recsFor(ctx)
 	list, err := st.client().List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
 	if err != nil {
 		return nil, false, err
@@ -241,7 +254,7 @@ func (h *cloudFrontHandler) findDistribution(ctx context.Context, id string) (*c
 		if !ok {
 			continue
 		}
-		if d := distributionIn(rec, id, h.cfn.ns); d != nil {
+		if d := distributionIn(rec, id, h.cfn.nsFor(ctx)); d != nil {
 			return d, true, nil
 		}
 	}
@@ -280,7 +293,7 @@ func invalidationsRecordName(stack string) string { return "cfn-invalidations-" 
 
 // load reads a distribution's invalidations, oldest first.
 func (h *cloudFrontHandler) load(ctx context.Context, d *cfDistribution) ([]cfInvalidation, error) {
-	st := h.cfn.recs()
+	st := h.cfn.recsFor(ctx)
 	u, err := st.client().Get(ctx, invalidationsRecordName(d.stack), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil, nil
@@ -305,7 +318,7 @@ var errCFNoWrite = errors.New("no write")
 func (h *cloudFrontHandler) mutate(ctx context.Context, d *cfDistribution, fn func([]cfInvalidation) ([]cfInvalidation, error)) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	st := h.cfn.recs()
+	st := h.cfn.recsFor(ctx)
 	name := invalidationsRecordName(d.stack)
 	labels := map[string]any{"app.kubernetes.io/managed-by": "cfn-invalidations", "cfn.openinfra.dev/stack": d.stack}
 	for attempt := 0; attempt < 5; attempt++ {

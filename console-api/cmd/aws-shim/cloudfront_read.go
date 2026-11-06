@@ -97,9 +97,9 @@ type cfStackResource struct {
 	res cfn.TemplateResource
 }
 
-// stackRecords is every stack record.
+// stackRecords is every stack record of the request's account (a member account's are its own alone).
 func (h *cloudFrontHandler) stackRecords(ctx context.Context) ([]*cfn.StackRecord, error) {
-	st := h.cfn.recs()
+	st := h.cfn.recsFor(ctx)
 	list, err := st.client().List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
 	if err != nil {
 		return nil, err
@@ -158,7 +158,7 @@ func (h *cloudFrontHandler) serveRead(w http.ResponseWriter, r *http.Request, cl
 			return
 		}
 		for _, rec := range recs {
-			d := distributionIn(rec, rt.distID, h.cfn.ns)
+			d := distributionIn(rec, rt.distID, h.cfn.nsFor(ctx))
 			if d == nil {
 				continue
 			}
@@ -201,9 +201,13 @@ func (h *cloudFrontHandler) serveRead(w http.ResponseWriter, r *http.Request, cl
 			if tr.Ref != rt.resID {
 				continue
 			}
-			if allowed, reason := h.cfn.canDo(ctx, claims, "get", rec.Name); !allowed {
-				writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
-				return
+			// A member account's principal is decided by IAM policy alone (above): the coarse RBAC check
+			// knows no accounts.
+			if !memberAccount(claims) {
+				if allowed, reason := h.cfn.canDo(ctx, claims, "get", rec.Name); !allowed {
+					writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
+					return
+				}
 			}
 			body := cfConfigXML(rt.op, rec, tr)
 			w.Header().Set("ETag", cfETag(body))
@@ -254,7 +258,7 @@ func (h *cloudFrontHandler) listDistributions(w http.ResponseWriter, r *http.Req
 	for _, rec := range recs {
 		for _, res := range rec.Resources {
 			if res.Type == cloudFrontDistributionType && res.Kind == "StaticSite" && res.PhysicalID != "" && res.PhysicalID > marker {
-				if d := distributionIn(rec, res.PhysicalID, h.cfn.ns); d != nil {
+				if d := distributionIn(rec, res.PhysicalID, h.cfn.nsFor(ctx)); d != nil {
 					all = append(all, entry{rec, d})
 				}
 			}
@@ -315,7 +319,7 @@ func (h *cloudFrontHandler) distributionHead(ctx context.Context, rec *cfn.Stack
 	if domain == "" {
 		domain = h.siteDomain(rec, d)
 	}
-	return "<Id>" + xesc(d.id) + "</Id><ARN>" + xesc("arn:aws:cloudfront::"+h.cfn.account+":distribution/"+d.id) + "</ARN>" +
+	return "<Id>" + xesc(d.id) + "</Id><ARN>" + xesc(h.distributionARN(ctx, d.id)) + "</ARN>" +
 		"<Status>" + status + "</Status><LastModifiedTime>" + xesc(cfRecordTime(rec.UpdatedAt, rec.CreatedAt)) + "</LastModifiedTime>" +
 		fmt.Sprintf("<InProgressInvalidationBatches>%d</InProgressInvalidationBatches>", inProgress) +
 		"<DomainName>" + xesc(domain) + "</DomainName>" +

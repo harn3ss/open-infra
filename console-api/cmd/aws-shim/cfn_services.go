@@ -12,6 +12,12 @@
 // object's stack label, which a store row does not have), so the engine's ownership rules — refuse to
 // take over a resource another stack (or no stack) created, never re-adopt a retained one — hold here
 // too. It also keeps each resource's applied spec, for drift and for fields a store does not hold.
+//
+// Accounts: a member account's stack provisions into its own account's space — each resource stored under
+// the account's key (accountKey), as its front door stores one made through the API, with the ARN or URL the
+// engine gave it naming the account — and its ownership rows carry its account (the account column: empty for
+// the management account, whose rows are exactly what they always were). No step looks up another
+// account's resource by a bare name.
 package main
 
 import (
@@ -83,13 +89,35 @@ CREATE TABLE IF NOT EXISTS cfn_service_resources (
   spec      jsonb NOT NULL DEFAULT '{}',
   updated   timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (kind, name)
-);`)
+);
+-- Accounts: each row's account ('' = the management account, which every earlier row is). A resource is
+-- unique within its account: the primary key on (kind, name) becomes (account, kind, name), once.
+ALTER TABLE cfn_service_resources ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT '';
+DO $$
+DECLARE pk text;
+BEGIN
+  SELECT conname INTO pk FROM pg_constraint
+   WHERE conrelid = 'cfn_service_resources'::regclass AND contype = 'p' AND array_length(conkey, 1) = 2;
+  IF pk IS NOT NULL THEN
+    EXECUTE format('ALTER TABLE cfn_service_resources DROP CONSTRAINT %I', pk);
+    ALTER TABLE cfn_service_resources ADD PRIMARY KEY (account, kind, name);
+  END IF;
+END $$;`)
 	return err
+}
+
+// ownerAccount is the account column of the request's account's rows: empty for the management account's.
+func ownerAccount(ctx context.Context) string {
+	if isMemberRequest(ctx) {
+		return callerAccount(ctx)
+	}
+	return ""
 }
 
 func (o *cfnServiceOwners) get(ctx context.Context, kind, name string) (stack string, spec map[string]any, found bool, err error) {
 	var sj []byte
-	err = o.db.QueryRowContext(ctx, `SELECT stack, spec::text FROM cfn_service_resources WHERE kind=$1 AND name=$2`, kind, name).Scan(&stack, &sj)
+	err = o.db.QueryRowContext(ctx, `SELECT stack, spec::text FROM cfn_service_resources WHERE account=$3 AND kind=$1 AND name=$2`,
+		kind, name, ownerAccount(ctx)).Scan(&stack, &sj)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil, false, nil
 	}
@@ -104,14 +132,14 @@ func (o *cfnServiceOwners) get(ctx context.Context, kind, name string) (stack st
 func (o *cfnServiceOwners) put(ctx context.Context, kind, name, stack, ns string, spec map[string]any) error {
 	sj, _ := json.Marshal(spec)
 	_, err := o.db.ExecContext(ctx, `
-		INSERT INTO cfn_service_resources (kind, name, stack, namespace, spec, updated) VALUES ($1,$2,$3,$4,$5::jsonb,now())
-		ON CONFLICT (kind, name) DO UPDATE SET stack=EXCLUDED.stack, namespace=EXCLUDED.namespace, spec=EXCLUDED.spec, updated=now()`,
-		kind, name, stack, ns, string(sj))
+		INSERT INTO cfn_service_resources (kind, name, stack, namespace, spec, updated, account) VALUES ($1,$2,$3,$4,$5::jsonb,now(),$6)
+		ON CONFLICT (account, kind, name) DO UPDATE SET stack=EXCLUDED.stack, namespace=EXCLUDED.namespace, spec=EXCLUDED.spec, updated=now()`,
+		kind, name, stack, ns, string(sj), ownerAccount(ctx))
 	return err
 }
 
 func (o *cfnServiceOwners) del(ctx context.Context, kind, name string) error {
-	_, err := o.db.ExecContext(ctx, `DELETE FROM cfn_service_resources WHERE kind=$1 AND name=$2`, kind, name)
+	_, err := o.db.ExecContext(ctx, `DELETE FROM cfn_service_resources WHERE account=$3 AND kind=$1 AND name=$2`, kind, name, ownerAccount(ctx))
 	return err
 }
 
@@ -264,11 +292,27 @@ func (a *impersonatingApplier) svcAuthorize(ctx context.Context, kind, op, name 
 		if p, _ := spec["protocol"].(string); p == "sqs" && a.svc.snsOK() && a.svc.sqsOK() {
 			endpoint, _ := spec["endpoint"].(string)
 			topicArn, _ := spec["topicArn"].(string)
-			url, found, err := a.svc.sqs.store.queueURLByName(ctx, nameFromArn(endpoint))
+			// The queue the endpoint names, in the account its ARN names (as the SNS front door finds it).
+			topicOwner, err := a.svc.sns.topicOwner(ctx, topicArn)
 			if err != nil {
 				return err
 			}
-			if found {
+			url, queueOwner, found, err := a.svc.sns.endpointQueue(ctx, topicOwner, endpoint)
+			if err != nil {
+				return err
+			}
+			if found && (isMemberRequest(ctx) || a.svc.sns.normAccount(queueOwner) != a.svc.sns.account) {
+				// A member account's stack, or a queue of another account: decided exactly as the SNS front
+				// door decides a Subscribe — the caller may send to the queue (across accounts, with the
+				// queue's own policy), or the queue's policy lets the topic send to it.
+				reason, ok, err := a.svc.sns.mayDeliverToQueue(ctx, nil, a.callerClaims(), topicArn, topicOwner, url, queueOwner)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return cfn.Unauthorized(fmt.Sprintf("subscription %s not created: not authorized to deliver to queue %s: %s", name, endpoint, reason))
+				}
+			} else if found {
 				queue := queueNameFromURL(url)
 				verb, _ := verbForSQSOp("SendMessage")
 				ok, reason := a.door.callerCan(ctx, a, verb, "openinfra.dev", "applications", a.door.authzNS, queue)
@@ -290,7 +334,7 @@ func (a *impersonatingApplier) svcAuthorize(ctx context.Context, kind, op, name 
 	// An alias is moved or deleted only with the action on the key it names now, as the KMS front door
 	// checks: the spec names the key it is moved to (above), the store the key it names today.
 	if kind == cfn.KindKMSAlias && (op == "update" || op == "delete") && a.svc.kmsOK() {
-		cur, found, err := a.svc.kms.store.aliasTarget(ctx, name)
+		cur, found, err := a.svc.kms.store.aliasTarget(ctx, accountKey(ctx, name))
 		if err != nil {
 			return err
 		}
@@ -316,7 +360,7 @@ func (s *cfnServices) lambdaNamespace(ctx context.Context, spec map[string]any, 
 		return stackNS
 	}
 	fn, _ := spec["function"].(string)
-	return s.sns.fns.namespaceOf(ctx, fn, s.sns.lambdaNS)
+	return s.sns.fns.namespaceFor(ctx, fn, s.sns.lambdaNS) // among the stack's account's namespaces
 }
 
 // svcExists reports whether the service resource exists in its store (under any owner).
@@ -331,10 +375,10 @@ func (a *impersonatingApplier) svcExistsAt(ctx context.Context, kind, name strin
 	}
 	switch kind {
 	case cfn.KindSQSQueue:
-		_, ok, err := a.svc.sqs.store.queueURLByName(ctx, name)
+		_, ok, err := a.svc.sqs.store.queueURLByName(ctx, accountKey(ctx, name))
 		return ok, err
 	case cfn.KindSNSTopic:
-		_, ok, err := a.svc.sns.store.topicARNByName(ctx, name)
+		_, ok, err := a.svc.sns.store.topicARNByName(ctx, accountKey(ctx, name))
 		return ok, err
 	case cfn.KindSNSSubscription:
 		_, spec, found, err := a.svc.owners.get(ctx, kind, name)
@@ -345,14 +389,15 @@ func (a *impersonatingApplier) svcExistsAt(ctx context.Context, kind, name strin
 		_, ok, err := a.svc.sns.store.subByArn(ctx, arn)
 		return ok, err
 	case cfn.KindSSMParameter:
-		_, ok, err := a.svc.ssm.store.getParam(ctx, name)
+		_, ok, err := a.svc.ssm.store.getParam(ctx, accountKey(ctx, name))
 		return ok, err
 	case cfn.KindKMSKey:
 		m, ok, err := a.svc.kms.store.getKey(ctx, name)
 		// A key pending deletion is gone as far as its stack is concerned: the stack's delete scheduled it.
-		return ok && m.State != "PendingDeletion", err
+		// Another account's key (its ARN names that account) is none of this stack's account's.
+		return ok && m.State != "PendingDeletion" && a.svc.kms.ownsKey(ctx, m), err
 	case cfn.KindKMSAlias:
-		_, ok, err := a.svc.kms.store.aliasTarget(ctx, name)
+		_, ok, err := a.svc.kms.store.aliasTarget(ctx, accountKey(ctx, name))
 		return ok, err
 	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
 		// A policy is the Policy attribute of the queues or topics it names; it exists while it is recorded.
@@ -428,11 +473,11 @@ func (a *impersonatingApplier) svcCreate(ctx context.Context, kind, name string,
 		if url == "" {
 			return fmt.Errorf("no queue url")
 		}
-		_, err := a.svc.sqs.store.createQueue(ctx, name, url, specStrings(spec["attributes"]))
+		_, err := a.svc.sqs.store.createQueue(ctx, accountKey(ctx, name), url, specStrings(spec["attributes"]))
 		return err
 	case cfn.KindSNSTopic:
 		arn := str("topicArn")
-		if _, err := a.svc.sns.store.createTopic(ctx, arn, name); err != nil {
+		if _, err := a.svc.sns.store.createTopic(ctx, arn, accountKey(ctx, name)); err != nil {
 			return err
 		}
 		if attrs := specStrings(spec["attributes"]); len(attrs) > 0 {
@@ -447,12 +492,13 @@ func (a *impersonatingApplier) svcCreate(ctx context.Context, kind, name string,
 	case cfn.KindKMSKey:
 		return a.svcCreateKey(ctx, name, spec)
 	case cfn.KindKMSAlias:
-		if _, ok, err := a.svc.kms.store.getKey(ctx, str("targetKeyId")); err != nil {
+		// An alias names a key of its own account (as the KMS front door's CreateAlias finds it).
+		if m, ok, err := a.svc.kms.store.getKey(ctx, str("targetKeyId")); err != nil {
 			return err
-		} else if !ok {
+		} else if !ok || !a.svc.kms.ownsKey(ctx, m) {
 			return fmt.Errorf("the alias's target key %s does not exist", str("targetKeyId"))
 		}
-		return a.svc.kms.store.createAlias(ctx, name, str("targetKeyId"))
+		return a.svc.kms.store.createAlias(ctx, accountKey(ctx, name), str("targetKeyId"))
 	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
 		return a.svcApplyPolicy(ctx, kind, name, spec)
 	case cfn.KindEC2Address:
@@ -472,7 +518,7 @@ func (a *impersonatingApplier) svcUpdate(ctx context.Context, kind, name string,
 	str := func(k string) string { s, _ := spec[k].(string); return s }
 	switch kind {
 	case cfn.KindSQSQueue:
-		url, _, err := a.svc.sqs.store.queueURLByName(ctx, name)
+		url, _, err := a.svc.sqs.store.queueURLByName(ctx, accountKey(ctx, name))
 		if err != nil {
 			return err
 		}
@@ -487,7 +533,7 @@ func (a *impersonatingApplier) svcUpdate(ctx context.Context, kind, name string,
 		_, err = a.svc.sqs.store.replaceQueueAttrs(ctx, url, attrs)
 		return err
 	case cfn.KindSNSTopic:
-		arn, _, err := a.svc.sns.store.topicARNByName(ctx, name)
+		arn, _, err := a.svc.sns.store.topicARNByName(ctx, accountKey(ctx, name))
 		if err != nil {
 			return err
 		}
@@ -509,7 +555,13 @@ func (a *impersonatingApplier) svcUpdate(ctx context.Context, kind, name string,
 	case cfn.KindKMSKey:
 		return a.svcUpdateKey(ctx, name, spec)
 	case cfn.KindKMSAlias:
-		_, err := a.svc.kms.store.updateAlias(ctx, name, str("targetKeyId"))
+		// Never to another account's key; a member account's alias only to a key it has.
+		if m, ok, err := a.svc.kms.store.getKey(ctx, str("targetKeyId")); err != nil {
+			return err
+		} else if (ok && !a.svc.kms.ownsKey(ctx, m)) || (!ok && isMemberRequest(ctx)) {
+			return fmt.Errorf("the alias's target key %s does not exist", str("targetKeyId"))
+		}
+		_, err := a.svc.kms.store.updateAlias(ctx, accountKey(ctx, name), str("targetKeyId"))
 		return err
 	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
 		return a.svcApplyPolicy(ctx, kind, name, spec)
@@ -571,14 +623,14 @@ func (a *impersonatingApplier) svcApplyPolicy(ctx context.Context, kind, name st
 func (a *impersonatingApplier) setResourcePolicy(ctx context.Context, kind, target, doc string) error {
 	if kind == cfn.KindSQSQueuePolicy {
 		q := a.svc.sqs
-		url, ok, err := q.store.queueURLByName(ctx, target)
+		url, ok, err := q.store.queueURLByName(ctx, accountKey(ctx, target))
 		if err != nil {
 			return err
 		}
 		if !ok {
 			return fmt.Errorf("the policy's queue %s does not exist", target)
 		}
-		if err := checkResourcePolicy(doc, sqsResourceARN(q.region, q.account, target)); err != nil {
+		if err := checkResourcePolicy(doc, sqsResourceARN(q.region, q.acct(ctx), target)); err != nil {
 			return fmt.Errorf("the policy for queue %s: %w", target, err)
 		}
 		_, err = q.store.setQueueAttrs(ctx, url, map[string]string{policyAttr: doc})
@@ -602,7 +654,7 @@ func (a *impersonatingApplier) setResourcePolicy(ctx context.Context, kind, targ
 // policy has since set is left alone). A queue or topic already gone needs nothing.
 func (a *impersonatingApplier) clearResourcePolicy(ctx context.Context, kind, target, doc string) error {
 	if kind == cfn.KindSQSQueuePolicy {
-		url, ok, err := a.svc.sqs.store.queueURLByName(ctx, target)
+		url, ok, err := a.svc.sqs.store.queueURLByName(ctx, accountKey(ctx, target))
 		if err != nil || !ok {
 			return err
 		}
@@ -628,7 +680,7 @@ func (a *impersonatingApplier) clearResourcePolicy(ctx context.Context, kind, ta
 // resourcePolicyOf is the Policy the queue or topic target holds ("" none, or it is gone).
 func (a *impersonatingApplier) resourcePolicyOf(ctx context.Context, kind, target string) string {
 	if kind == cfn.KindSQSQueuePolicy {
-		if url, ok, err := a.svc.sqs.store.queueURLByName(ctx, target); err == nil && ok {
+		if url, ok, err := a.svc.sqs.store.queueURLByName(ctx, accountKey(ctx, target)); err == nil && ok {
 			if attrs, _, ok, err := a.svc.sqs.store.queueAttrs(ctx, url); err == nil && ok {
 				return attrs[policyAttr]
 			}
@@ -659,7 +711,12 @@ func (a *impersonatingApplier) svcSubscribe(ctx context.Context, spec map[string
 		if a.svc.sns.sqs == nil {
 			return fmt.Errorf("sqs delivery is not configured on this shim")
 		}
-		if _, ok, err := a.svc.sns.sqs.queueURLByName(ctx, nameFromArn(endpoint)); err != nil {
+		// The queue the endpoint names, in the account its ARN names (as the SNS front door finds it).
+		topicOwner, err := a.svc.sns.topicOwner(ctx, topicArn)
+		if err != nil {
+			return err
+		}
+		if _, _, ok, err := a.svc.sns.endpointQueue(ctx, topicOwner, endpoint); err != nil {
 			return err
 		} else if !ok {
 			return fmt.Errorf("the sqs endpoint queue does not exist: %s", endpoint)
@@ -695,18 +752,19 @@ func (a *impersonatingApplier) svcPutParam(ctx context.Context, name string, spe
 	if len(value) > ssmMaxValueStandard {
 		return fmt.Errorf("value length exceeds the Standard-tier 4 KB limit")
 	}
+	key := accountKey(ctx, name) // the parameter of the stack's account, as PutParameter keys it
 	stored := value
 	if ptype == "SecureString" {
 		if a.svc.ssm.transit == nil {
 			return fmt.Errorf("the SecureString crypto backend (Vault Transit) is not configured on this shim")
 		}
-		ct, err := a.svc.ssm.encryptValue(ctx, name, value)
+		ct, err := a.svc.ssm.encryptValue(ctx, key, value)
 		if err != nil {
 			return err
 		}
 		stored = ct
 	}
-	_, err := a.svc.ssm.store.putParam(ctx, name, ptype, stored, overwrite, specStrings(spec["tags"]))
+	_, err := a.svc.ssm.store.putParam(ctx, key, ptype, stored, overwrite, specStrings(spec["tags"]))
 	return err
 }
 
@@ -719,7 +777,7 @@ func (a *impersonatingApplier) svcCreateKey(ctx context.Context, keyID string, s
 		if k.dyn == nil {
 			return fmt.Errorf("key-policy import is not configured on this shim (no cluster client)")
 		}
-		tp, err := translateKeyPolicy(doc, keyID)
+		tp, err := k.translateKeyPolicyIn(ctx, doc, keyID) // its principals of the stack's own account
 		if err != nil {
 			return fmt.Errorf("the key policy is malformed: %w", err)
 		}
@@ -731,7 +789,7 @@ func (a *impersonatingApplier) svcCreateKey(ctx context.Context, keyID string, s
 	rot, _ := spec["rotation"].(bool)
 	arn := str("arn")
 	if arn == "" {
-		arn = k.keyARN(keyID)
+		arn = k.keyARNIn(ctx, keyID)
 	}
 	m := keyMeta{KeyID: keyID, Arn: arn, Description: str("description"), KeyUsage: "ENCRYPT_DECRYPT",
 		KeySpec: "SYMMETRIC_DEFAULT", State: "Enabled", Rotation: rot, Created: time.Now()}
@@ -815,7 +873,7 @@ func (a *impersonatingApplier) svcUpdateKey(ctx context.Context, keyID string, s
 	if k.dyn == nil {
 		return fmt.Errorf("key-policy import is not configured on this shim (no cluster client)")
 	}
-	translated, err := translateKeyPolicy(doc, keyID)
+	translated, err := k.translateKeyPolicyIn(ctx, doc, keyID)
 	if err != nil {
 		return fmt.Errorf("the key policy is malformed: %w", err)
 	}
@@ -857,7 +915,7 @@ func (a *impersonatingApplier) svcDelete(ctx context.Context, kind, name string)
 	}
 	switch kind {
 	case cfn.KindSQSQueue:
-		url, _, err := a.svc.sqs.store.queueURLByName(ctx, name)
+		url, _, err := a.svc.sqs.store.queueURLByName(ctx, accountKey(ctx, name))
 		if err == nil {
 			_, err = a.svc.sqs.store.deleteQueue(ctx, url)
 		}
@@ -865,7 +923,7 @@ func (a *impersonatingApplier) svcDelete(ctx context.Context, kind, name string)
 			return err
 		}
 	case cfn.KindSNSTopic:
-		arn, _, err := a.svc.sns.store.topicARNByName(ctx, name)
+		arn, _, err := a.svc.sns.store.topicARNByName(ctx, accountKey(ctx, name))
 		if err == nil {
 			_, err = a.svc.sns.store.deleteTopic(ctx, arn)
 		}
@@ -878,7 +936,7 @@ func (a *impersonatingApplier) svcDelete(ctx context.Context, kind, name string)
 			return err
 		}
 	case cfn.KindSSMParameter:
-		if _, err := a.svc.ssm.store.deleteParam(ctx, name); err != nil {
+		if _, err := a.svc.ssm.store.deleteParam(ctx, accountKey(ctx, name)); err != nil {
 			return err
 		}
 	case cfn.KindKMSKey:
@@ -892,7 +950,7 @@ func (a *impersonatingApplier) svcDelete(ctx context.Context, kind, name string)
 		}
 		a.svc.kms.audit(ctx, "ScheduleKeyDeletion", name, "via", "cloudformation")
 	case cfn.KindKMSAlias:
-		if _, err := a.svc.kms.store.deleteAlias(ctx, name); err != nil {
+		if _, err := a.svc.kms.store.deleteAlias(ctx, accountKey(ctx, name)); err != nil {
 			return err
 		}
 	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:
@@ -953,24 +1011,24 @@ func (a *impersonatingApplier) svcSpec(ctx context.Context, kind, name string) (
 	}
 	switch kind {
 	case cfn.KindSQSQueue:
-		if url, ok, err := a.svc.sqs.store.queueURLByName(ctx, name); err == nil && ok {
+		if url, ok, err := a.svc.sqs.store.queueURLByName(ctx, accountKey(ctx, name)); err == nil && ok {
 			if attrs, _, ok, err := a.svc.sqs.store.queueAttrs(ctx, url); err == nil && ok {
 				delete(attrs, policyAttr) // its queue policy's, compared there
 				spec["attributes"] = stringsToAny(attrs)
 			}
 		}
 	case cfn.KindSNSTopic:
-		if arn, ok, err := a.svc.sns.store.topicARNByName(ctx, name); err == nil && ok {
+		if arn, ok, err := a.svc.sns.store.topicARNByName(ctx, accountKey(ctx, name)); err == nil && ok {
 			if attrs, ok, err := a.svc.sns.store.topicAttrs(ctx, arn); err == nil && ok {
 				delete(attrs, policyAttr)
 				spec["attributes"] = stringsToAny(attrs)
 			}
 		}
 	case cfn.KindSSMParameter:
-		if p, ok, err := a.svc.ssm.store.getParam(ctx, name); err == nil && ok {
+		if p, ok, err := a.svc.ssm.store.getParam(ctx, accountKey(ctx, name)); err == nil && ok {
 			spec["type"] = p.Type
 			if p.Type != "SecureString" {
-				if v, ok, err := a.svc.ssm.store.getVersion(ctx, name, p.CurrentVer); err == nil && ok {
+				if v, ok, err := a.svc.ssm.store.getVersion(ctx, accountKey(ctx, name), p.CurrentVer); err == nil && ok {
 					spec["value"] = v
 				}
 			}
@@ -985,7 +1043,7 @@ func (a *impersonatingApplier) svcSpec(ctx context.Context, kind, name string) (
 			}
 		}
 	case cfn.KindKMSAlias:
-		if t, ok, err := a.svc.kms.store.aliasTarget(ctx, name); err == nil && ok {
+		if t, ok, err := a.svc.kms.store.aliasTarget(ctx, accountKey(ctx, name)); err == nil && ok {
 			spec["targetKeyId"] = t
 		}
 	case cfn.KindSQSQueuePolicy, cfn.KindSNSTopicPolicy:

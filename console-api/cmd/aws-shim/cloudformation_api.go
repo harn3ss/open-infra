@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,8 +36,8 @@ import (
 // stackOpts are the engine options for a create or update a request starts: the front door's own, the
 // exports, and the operation's fidelity line (shown by DescribeStacks and the stack's first event). A
 // stack's queue URLs are built on SQS_QUEUE_URL_BASE (the caps), never on the host this request came in on.
-func (h *cfnDoorway) stackOpts(name string, params map[string]string, ex stackExports, body string) cfn.DeployOptions {
-	o := h.optsFor(name, params, ex)
+func (h *cfnDoorway) stackOpts(ctx context.Context, name string, params map[string]string, ex stackExports, body string) cfn.DeployOptions {
+	o := h.optsForIn(ctx, name, params, ex)
 	if p, err := cfn.BuildPlanWithCaps([]byte(body), params, ex.values, name, h.caps()); err == nil {
 		o.Fidelity = fidelityLine(p)
 	}
@@ -125,7 +126,7 @@ func (h *cfnDoorway) foldedResources(ctx context.Context, rec *cfn.StackRecord, 
 	if strings.Contains(rec.Template, "ImportValue") {
 		ex = h.exportsFor(ctx, rec.Name)
 	}
-	return cfn.FoldedResources(ctx, rec, h.optsFor(rec.Name, rec.Parameters, ex), sr)
+	return cfn.FoldedResources(ctx, rec, h.optsForIn(ctx, rec.Name, rec.Parameters, ex), sr)
 }
 
 // stackResourceRows lists a stack's resources (companion objects folded into their parent), each with its
@@ -439,7 +440,7 @@ func (h *cfnDoorway) describeStackResourceOf(w http.ResponseWriter, r *http.Requ
 
 func (h *cfnDoorway) listChangeSets(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
 	stack := r.PostFormValue("StackName")
-	st := h.recs()
+	st := h.recsFor(r.Context())
 	list, err := st.client().List(r.Context(), metav1.ListOptions{LabelSelector: "cfn.openinfra.dev/changeset=" + stack})
 	if err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, err.Error(), cfnXMLNamespace)
@@ -460,7 +461,7 @@ func (h *cfnDoorway) listChangeSets(w http.ResponseWriter, r *http.Request, ap *
 		b.WriteString("<member>")
 		b.WriteString("<StackId>" + xesc(h.changeSetStackID(cs)) + "</StackId>")
 		b.WriteString("<StackName>" + xesc(stack) + "</StackName>")
-		b.WriteString("<ChangeSetId>" + xesc(h.changeSetID(stack, csName)) + "</ChangeSetId>")
+		b.WriteString("<ChangeSetId>" + xesc(h.changeSetIDIn(r.Context(), stack, csName)) + "</ChangeSetId>")
 		b.WriteString("<ChangeSetName>" + xesc(csName) + "</ChangeSetName>")
 		b.WriteString("<ExecutionStatus>" + xesc(changeSetExecutionStatus(cs)) + "</ExecutionStatus>")
 		b.WriteString("<Status>" + xesc(changeSetStatus(cs)) + "</Status>")
@@ -507,7 +508,7 @@ type signalStore struct {
 }
 
 func (s *signalStore) Signals(ctx context.Context, stack, id string) ([]cfn.Signal, error) {
-	st := s.h.recs()
+	st := s.h.recsFor(ctx)
 	u, err := st.client().Get(ctx, signalsRecordName(stack), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil, nil
@@ -528,7 +529,7 @@ func (s *signalStore) Signals(ctx context.Context, stack, id string) ([]cfn.Sign
 func (s *signalStore) add(ctx context.Context, stack, id string, sig cfn.Signal) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st := s.h.recs()
+	st := s.h.recsFor(ctx)
 	for attempt := 0; attempt < 5; attempt++ {
 		u, err := st.client().Get(ctx, signalsRecordName(stack), metav1.GetOptions{})
 		var list []cfn.Signal
@@ -570,7 +571,7 @@ func (s *signalStore) add(ctx context.Context, stack, id string, sig cfn.Signal)
 
 // deleteStackSide removes a deleted stack's events, signals and its distributions' invalidations.
 func (h *cfnDoorway) deleteStackSide(ctx context.Context, stack string) {
-	st := h.recs()
+	st := h.recsFor(ctx)
 	for _, n := range []string{eventsRecordName(stack), signalsRecordName(stack), invalidationsRecordName(stack)} {
 		_ = st.client().Delete(ctx, n, metav1.DeleteOptions{})
 	}
@@ -651,9 +652,9 @@ func roleNameOf(role string) string {
 	return role
 }
 
-// getRecord reads a stack record with the shim's own client.
+// getRecord reads a stack record of the request's account with the shim's own client.
 func (h *cfnDoorway) getRecord(ctx context.Context, stack string) (*cfn.StackRecord, bool, error) {
-	st := h.recs()
+	st := h.recsFor(ctx)
 	u, err := st.client().Get(ctx, "cfn-stack-"+stack, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil, false, nil
@@ -712,12 +713,20 @@ func signHandle(key []byte, stack, handle string) string {
 // signalURL is a WaitConditionHandle's Ref: a URL on this shim, signed for that stack and handle, that a
 // guest PUTs its signal to (CFN_SIGNAL_BASE_URL, default the in-cluster TLS address guests already trust).
 func (h *cfnDoorway) signalURL(stack, handle string) string {
+	return h.signalURLIn("", stack, handle)
+}
+
+// signalURLIn is signalURL for a stack of account ("" the management account's): a member account's stack
+// is named in the URL by its account key ("<account>:<stack>"), and the signature covers it, so a handle URL
+// names its stack in its own account and no other.
+func (h *cfnDoorway) signalURLIn(account, stack, handle string) string {
 	key, err := h.signalKey(context.Background())
 	if err != nil {
 		return ""
 	}
+	ref := accountKeyFor(account, stack)
 	base := strings.TrimSuffix(h.signalBase, "/")
-	return base + waitConditionPath + url.PathEscape(stack) + "/" + url.PathEscape(handle) + "?sig=" + signHandle(key, stack, handle)
+	return base + waitConditionPath + url.PathEscape(ref) + "/" + url.PathEscape(handle) + "?sig=" + signHandle(key, ref, handle)
 }
 
 // waitConditionHandler serves PUTs to WaitConditionHandle URLs, ahead of SigV4: the signed URL is the
@@ -737,13 +746,25 @@ func (h *cfnDoorway) waitConditionHandler(next http.Handler) http.Handler {
 			http.Error(w, "not a wait-condition handle URL", http.StatusNotFound)
 			return
 		}
-		stack, err1 := url.PathUnescape(parts[0])
+		ref, err1 := url.PathUnescape(parts[0])
 		handle, err2 := url.PathUnescape(parts[1])
 		key, kerr := h.signalKey(r.Context())
 		if err1 != nil || err2 != nil || kerr != nil ||
-			!hmac.Equal([]byte(r.URL.Query().Get("sig")), []byte(signHandle(key, stack, handle))) {
+			!hmac.Equal([]byte(r.URL.Query().Get("sig")), []byte(signHandle(key, ref, handle))) {
 			http.Error(w, "the signature does not match", http.StatusForbidden)
 			return
+		}
+		// The stack the signed URL names, in the account it names (signalURLIn): a member account's stack is
+		// read and signalled in that account alone.
+		ctx := r.Context()
+		account, stack := splitAccountKey(ref)
+		if !awsidentity.Current().IsManagement(account) {
+			home, ok := h.homeOf(account, "")
+			if !ok {
+				http.Error(w, "the stack is not waiting for signals", http.StatusConflict)
+				return
+			}
+			ctx = inAccount(ctx, account, home)
 		}
 		var body struct {
 			Status, UniqueId, Data, Reason string
@@ -754,12 +775,12 @@ func (h *cfnDoorway) waitConditionHandler(next http.Handler) http.Handler {
 			http.Error(w, `the body must be {"Status":"SUCCESS"|"FAILURE","UniqueId":…,"Data":…,"Reason":…}`, http.StatusBadRequest)
 			return
 		}
-		rec, found, err := h.getRecord(r.Context(), stack)
+		rec, found, err := h.getRecord(ctx, stack)
 		if err != nil || !found || !strings.HasSuffix(rec.Status, "_IN_PROGRESS") {
 			http.Error(w, "the stack is not waiting for signals", http.StatusConflict)
 			return
 		}
-		if err := h.signals.add(r.Context(), stack, handle, cfn.Signal{UniqueID: body.UniqueId, Status: strings.ToUpper(body.Status),
+		if err := h.signals.add(ctx, stack, handle, cfn.Signal{UniqueID: body.UniqueId, Status: strings.ToUpper(body.Status),
 			Data: body.Data, Reason: body.Reason, Time: time.Now().UTC().Format(time.RFC3339)}); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

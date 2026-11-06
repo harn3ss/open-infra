@@ -1250,8 +1250,18 @@ rules:
   - apiGroups: [openinfra.dev]
     resources: [virtualmachines, volumes, securitygroups, vpcs, subnets, vpcendpoints, natgateways]
     verbs: [get, list]
-  # EC2's DescribeAddresses: the account's Elastic IP allocations are holder Services in its home, listed
-  # with the shim's client (ec2_describe.go). List only; nothing is read by name or changed.
+  # The account's Elastic IP allocations are holder Services in its home: EC2's DescribeAddresses lists
+  # them (ec2_describe.go); CloudFormation holds a member account's stack's AWS::EC2::EIP allocation as one
+  # (cfn_addresses.go) — reads it by name, creates it after checking the caller may allocate it, and on
+  # release lists the Services sharing its address and deletes it.
   - apiGroups: [""]
     resources: [services]
+    verbs: [get, list, create, delete]
+  # ACM's reads of a member account's stack certificate: its site's cert-manager Certificate, and the
+  # CertificateRequest that issued it (acm.go).
+  - apiGroups: [cert-manager.io]
+    resources: [certificates]
+    verbs: [get]
+  - apiGroups: [cert-manager.io]
+    resources: [certificaterequests]
     verbs: [list]

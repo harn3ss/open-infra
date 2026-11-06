@@ -56,6 +56,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -225,6 +226,15 @@ type recordedCaller struct {
 	Groups []string `json:"groups,omitempty"`
 	// AssumedRole is the kind: Role an assumed-role caller acted as (its data-plane principal).
 	AssumedRole string `json:"assumedRole,omitempty"`
+	// Account is the member account the caller acted in ("" = the management account): a recovery runs it
+	// only for a record of that account (usableIn).
+	Account string `json:"account,omitempty"`
+}
+
+// usableIn is usable for a record of account ("" the management account's): the caller must have acted in
+// the account whose record it is, so no record can carry a caller of another account into it.
+func (c *recordedCaller) usableIn(account string) bool {
+	return c.usable() && c.Account == account
 }
 
 // usable reports whether a recorded caller is one this front door could itself have impersonated — the
@@ -312,13 +322,13 @@ func (h *cfnDoorway) patchLease(ctx context.Context, stack, rv string, ann map[s
 	if err != nil {
 		return err
 	}
-	_, err = h.recs().client().Patch(ctx, stackRecordName(stack), types.MergePatchType, body,
+	_, err = h.recsFor(ctx).client().Patch(ctx, stackRecordName(stack), types.MergePatchType, body,
 		metav1.PatchOptions{FieldManager: cfnLeaseManager})
 	return err
 }
 
 func (h *cfnDoorway) getRecordObject(ctx context.Context, stack string) (*unstructured.Unstructured, error) {
-	return h.recs().client().Get(ctx, stackRecordName(stack), metav1.GetOptions{})
+	return h.recsFor(ctx).client().Get(ctx, stackRecordName(stack), metav1.GetOptions{})
 }
 
 // seedRecord creates a new stack's CREATE_IN_PROGRESS record already carrying this process's lease and
@@ -329,7 +339,7 @@ func (h *cfnDoorway) seedRecord(ctx context.Context, rec *cfn.StackRecord, actio
 	if err != nil {
 		return err
 	}
-	st := h.recs()
+	st := h.recsFor(ctx)
 	obj := st.object(stackRecordName(rec.Name),
 		map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/stack": rec.Name},
 		h.leaseAnnotations(action, caller), map[string]string{"stack.json": string(data)})
@@ -435,7 +445,13 @@ func (h *cfnDoorway) renewLease(ctx context.Context, stack string) renewResult {
 // could not be renewed for renewDeadline — so a fenced operation stops before another front door may
 // take the stack over.
 func (h *cfnDoorway) holdLease(stack string) (context.Context, func() bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), cfnAsyncTimeout)
+	return h.holdLeaseIn(context.Background(), stack)
+}
+
+// holdLeaseIn is holdLease for a stack of the account parent acts in (inAccount; context.Background for the
+// management account's): the operation's context acts in that account, and so does every renewal.
+func (h *cfnDoorway) holdLeaseIn(parent context.Context, stack string) (context.Context, func() bool) {
+	ctx, cancel := context.WithTimeout(parent, cfnAsyncTimeout)
 	var lost atomic.Bool
 	stopc, done := make(chan struct{}), make(chan struct{})
 	refresh := h.ops.refreshEvery()
@@ -486,11 +502,12 @@ func (h *cfnDoorway) holdLease(stack string) (context.Context, func() bool) {
 // runStackOp runs a long stack operation in the background as this process's leased operation. The
 // handler has already begun it (h.ops.begin) and stamped the record (seedRecord / claimRecord). run returns
 // the engine's error; failStatus is backstopped onto a record the engine left *_IN_PROGRESS after failing
-// on its own (e.g. refusing before it wrote anything).
+// on its own (e.g. refusing before it wrote anything). The operation runs in the account of the stack ap
+// acts for (accountCtx): its records, its resources' namespace, its service resources' keys.
 func (h *cfnDoorway) runStackOp(stack, action, failStatus string, ap *impersonatingApplier, run func(ctx context.Context) error) {
 	go func() {
-		defer h.ops.end(stack)
-		ctx, stop := h.holdLease(stack)
+		defer h.ops.end(ap.opKey(stack))
+		ctx, stop := h.holdLeaseIn(ap.accountCtx(context.Background()), stack)
 		err := run(ctx)
 		interrupted := ctx.Err() != nil // out of time, or fenced: the engine could not finish (or roll back)
 		lost := stop()
@@ -500,7 +517,7 @@ func (h *cfnDoorway) runStackOp(stack, action, failStatus string, ap *impersonat
 		if lost {
 			return // another front door holds the stack now and resolves it
 		}
-		bctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		bctx, cancel := context.WithTimeout(ap.accountCtx(context.Background()), 30*time.Second)
 		defer cancel()
 		if err != nil && !interrupted {
 			ap.backstopTerminal(bctx, stack, failStatus, err.Error())
@@ -530,7 +547,7 @@ func (h *cfnDoorway) refuseOp(w http.ResponseWriter, requestID string, err error
 func (h *cfnDoorway) beginCreate(ctx context.Context, ap *impersonatingApplier, stack string) error {
 	deadline := time.Now().Add(createAfterDeleteWait)
 	for {
-		err := h.ops.begin(stack)
+		err := h.ops.begin(h.opKey(ctx, stack))
 		if err == nil || !errors.Is(err, errCFNStackBusy) || time.Now().After(deadline) {
 			return err
 		}
@@ -550,23 +567,23 @@ var createAfterDeleteWait = 30 * time.Second
 
 // notUpdatable is AWS's refusal for UpdateStack / an UPDATE change set on a stack that cannot be updated
 // now: one with an operation in progress, or one an interrupted create/update left rolled back or failed.
-func (h *cfnDoorway) notUpdatable(stack, status string) string {
+func (h *cfnDoorway) notUpdatable(ctx context.Context, stack, status string) string {
 	switch {
 	case inProgress(status), status == "ROLLBACK_COMPLETE", status == "ROLLBACK_FAILED", status == "UPDATE_ROLLBACK_FAILED":
-		return "Stack:" + h.liveStackID(context.Background(), stack) + " is in " + status + " state and can not be updated."
+		return "Stack:" + h.liveStackID(ctx, stack) + " is in " + status + " state and can not be updated."
 	}
 	return ""
 }
 
 // claimRefusal maps a claimRecord failure to the AWS answer.
-func (h *cfnDoorway) claimRefusal(w http.ResponseWriter, requestID, stack, verb string, err error) {
+func (h *cfnDoorway) claimRefusal(ctx context.Context, w http.ResponseWriter, requestID, stack, verb string, err error) {
 	var ip *stackInProgressError
 	switch {
 	case errors.As(err, &ip) && verb == "delete":
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
 			"Stack ["+stack+"] cannot be deleted while in status "+ip.status+".", cfnXMLNamespace)
 	case errors.As(err, &ip):
-		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, h.notUpdatable(stack, ip.status), cfnXMLNamespace)
+		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, h.notUpdatable(ctx, stack, ip.status), cfnXMLNamespace)
 	case errors.Is(err, errCFNStackBusy):
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
 			"Stack ["+stack+"] is being changed by another operation; retry once it settles.", cfnXMLNamespace)
@@ -600,11 +617,13 @@ func (h *cfnDoorway) runRecovery(ctx context.Context) {
 
 // recoverOrphans is one recovery pass: one List of the stack records; every *_IN_PROGRESS record no live
 // operation owns is claimed (conditionally — at most one front door wins) and resolved in the background.
+// The pass covers every account's records, and resolves each in the account it is stored under
+// (recoveryAccount).
 func (h *cfnDoorway) recoverOrphans(ctx context.Context) {
 	if h.ops.isTerminating() {
 		return
 	}
-	list, err := h.recs().client().List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
+	list, err := h.recs().rawClient().List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
 	if err != nil {
 		h.logger.Warn("cfn recovery: could not list stack records", "error", err.Error())
 		return
@@ -612,12 +631,17 @@ func (h *cfnDoorway) recoverOrphans(ctx context.Context) {
 	now := time.Now()
 	for i := range list.Items {
 		u := &list.Items[i]
-		if !strings.HasPrefix(u.GetName(), "cfn-stack-") {
+		account, name, ok := recordAccountOf(u)
+		if !ok || !strings.HasPrefix(name, "cfn-stack-") {
 			continue
 		}
-		stack := strings.TrimPrefix(u.GetName(), "cfn-stack-")
+		stack := strings.TrimPrefix(name, "cfn-stack-")
 		rec, ok := h.recordOf(u)
-		if !ok || !inProgress(rec.Status) || h.ops.isLive(stack) {
+		if !ok || !inProgress(rec.Status) {
+			continue
+		}
+		actx, opParent, ok := h.recoveryAccount(ctx, account, rec)
+		if !ok || h.ops.isLive(h.opKey(actx, stack)) {
 			continue
 		}
 		if rec.ParentID != "" {
@@ -627,7 +651,8 @@ func (h *cfnDoorway) recoverOrphans(ctx context.Context) {
 		if !orphaned {
 			continue
 		}
-		if h.ops.begin(stack) != nil {
+		key := h.opKey(actx, stack)
+		if h.ops.begin(key) != nil {
 			continue
 		}
 		l, _ := leaseOf(u)
@@ -636,8 +661,8 @@ func (h *cfnDoorway) recoverOrphans(ctx context.Context) {
 			action = "The stack operation"
 		}
 		// Claim: our owner + a fresh lease, the recorded caller kept as is; conditional on what we read.
-		if err := h.patchLease(ctx, stack, u.GetResourceVersion(), h.leaseAnnotations(l.action, nil)); err != nil {
-			h.ops.end(stack)
+		if err := h.patchLease(actx, stack, u.GetResourceVersion(), h.leaseAnnotations(l.action, nil)); err != nil {
+			h.ops.end(key)
 			if !apierrors.IsConflict(err) && !apierrors.IsNotFound(err) {
 				h.logger.Warn("cfn recovery: could not claim an orphaned stack", "stack", stack, "error", err.Error())
 			}
@@ -645,8 +670,32 @@ func (h *cfnDoorway) recoverOrphans(ctx context.Context) {
 		}
 		h.logger.Warn("cfn recovery: resolving an interrupted stack operation", "stack", stack, "status", rec.Status, "why", why)
 		reason := fmt.Sprintf("%s was interrupted before it finished: %s.", action, why)
-		go h.recoverStack(stack, l.caller, reason)
+		go h.recoverStack(opParent, stack, l.caller, reason)
 	}
+}
+
+// recoveryAccount is the account an interrupted stack is recovered in — the account its record is stored
+// under (account, "" for the management account's), which its StackId names too: actx is the pass's ctx
+// acting in it, opParent the context its recovery runs from (context.Background for the management
+// account's, exactly as before). A member account's stack is recovered in its home, where its resources
+// are; one whose StackId names another account, or whose account has no home (or another home than the
+// one the stack was made in), is left alone (logged): it is never resolved in any other account.
+func (h *cfnDoorway) recoveryAccount(ctx context.Context, account string, rec *cfn.StackRecord) (actx, opParent context.Context, ok bool) {
+	if account == "" {
+		return ctx, context.Background(), true
+	}
+	if a := awsidentity.AccountOfARN(rec.StackID); a != account {
+		h.logger.Warn("cfn recovery: a stack record's StackId does not name the account it is kept for; left alone",
+			"stack", rec.Name, "account", account, "stackId", rec.StackID)
+		return nil, nil, false
+	}
+	home, found := h.homeOf(account, rec.Namespace)
+	if !found || (rec.Namespace != "" && rec.Namespace != home) {
+		h.logger.Warn("cfn recovery: the account's home is not the namespace its stack was made in; left alone",
+			"stack", rec.Name, "account", account, "home", home, "namespace", rec.Namespace)
+		return nil, nil, false
+	}
+	return inAccount(ctx, account, home), inAccount(context.Background(), account, home), true
 }
 
 // orphaned decides whether an *_IN_PROGRESS record (not live in this process) has no live owner.
@@ -676,17 +725,18 @@ func (h *cfnDoorway) orphaned(rec *cfn.StackRecord, u *unstructured.Unstructured
 // recoverStack resolves one claimed orphan: cfn.RecoverInterrupted under the operation's recorded caller,
 // or — with no usable recorded caller — settleWithoutAuthority. The record stays claimed by this process
 // until it is settled; a recovery that cannot finish (cluster unreachable) is retried by the next pass.
-func (h *cfnDoorway) recoverStack(stack string, caller *recordedCaller, reason string) {
-	defer h.ops.end(stack)
-	ctx, stop := h.holdLease(stack)
+// parent acts in the stack's account (recoveryAccount): the recorded caller must have acted in it.
+func (h *cfnDoorway) recoverStack(parent context.Context, stack string, caller *recordedCaller, reason string) {
+	defer h.ops.end(h.opKey(parent, stack))
+	ctx, stop := h.holdLeaseIn(parent, stack)
 	var err error
 	var out *cfn.StackRecord
-	if caller.usable() {
+	if caller.usableIn(noEchoAccount(parent)) {
 		var ap *impersonatingApplier
-		if ap, err = h.applierForIdentity(caller.User, caller.Groups); err == nil {
+		if ap, err = h.applierForIdentityIn(ctx, caller.User, caller.Groups); err == nil {
 			ap.assumedRole = caller.AssumedRole
 			before, found, _ := h.getRecord(ctx, stack)
-			out, err = cfn.RecoverInterrupted(ctx, h.asCaller(h.opts(stack, nil), ap), ap, reason)
+			out, err = cfn.RecoverInterrupted(ctx, h.asCaller(h.opts(ctx, stack, nil), ap), ap, reason)
 			if err == nil && out == nil && found && before.Status == "DELETE_IN_PROGRESS" {
 				h.keepDeleted(ctx, before, nil) // the resumed delete completed: kept as any deleted stack is
 			}
@@ -706,7 +756,7 @@ func (h *cfnDoorway) recoverStack(stack string, caller *recordedCaller, reason s
 	if lost {
 		return
 	}
-	bctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	bctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	h.releaseLease(bctx, stack)
 }
@@ -718,8 +768,8 @@ func (h *cfnDoorway) recoverStack(stack string, caller *recordedCaller, reason s
 // settled ROLLBACK_FAILED / UPDATE_ROLLBACK_FAILED / DELETE_FAILED, keeping what it recorded, so DeleteStack
 // — run under the deleting caller's own authority — removes it.
 func (h *cfnDoorway) settleWithoutAuthority(ctx context.Context, stack, reason string) (*cfn.StackRecord, error) {
-	rs := h.recs()
-	sa := &impersonatingApplier{shim: h.shimDyn, mapper: h.mapper, ns: h.ns, records: &rs}
+	rs := h.recsFor(ctx)
+	sa := &impersonatingApplier{shim: h.shimDyn, mapper: h.mapper, ns: h.nsFor(ctx), records: &rs}
 	rec, found, err := sa.GetStack(ctx, stack)
 	if err != nil || !found || !inProgress(rec.Status) {
 		return rec, err

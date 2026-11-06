@@ -34,9 +34,19 @@ type recordStore struct {
 	dyn    dynamic.Interface
 	ns     string
 	secret bool
+	// account is the member account whose records this store holds, kept beside the management account's
+	// under names of their own (cfn_accounts.go); "" holds the management account's, as they always were.
+	account string
 }
 
+// client reads and writes the store's account's records, by their names within the account
+// (accountRecords): a listing never returns another account's.
 func (s recordStore) client() dynamic.ResourceInterface {
+	return accountRecords{ResourceInterface: s.rawClient(), account: s.account}
+}
+
+// rawClient is every account's records as stored (work that runs for every account: the recovery pass).
+func (s recordStore) rawClient() dynamic.ResourceInterface {
 	if s.secret {
 		return s.dyn.Resource(secretGVR).Namespace(s.ns)
 	}

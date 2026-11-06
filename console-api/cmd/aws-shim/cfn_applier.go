@@ -67,6 +67,10 @@ type impersonatingApplier struct {
 	// svc = this applier cannot provision them (it refuses).
 	svc  *cfnServices
 	door *cfnDoorway
+	// account and home are the member account this applier's stack belongs to and its home namespace ("" =
+	// the management account's): the account the stack's background work acts in (accountCtx), recorded
+	// with the caller (cfn_accounts.go).
+	account, home string
 }
 
 // recordStore is where this applier keeps stack records.
@@ -84,7 +88,8 @@ func (a *impersonatingApplier) PutNoEcho(ctx context.Context, stackName string, 
 
 // identity is the caller this applier acts as, in the form recorded on a stack record.
 func (a *impersonatingApplier) identity() *recordedCaller {
-	return &recordedCaller{User: a.user, Groups: append([]string(nil), a.groups...), AssumedRole: a.callerClaims().AssumedRole}
+	return &recordedCaller{User: a.user, Groups: append([]string(nil), a.groups...), AssumedRole: a.callerClaims().AssumedRole,
+		Account: a.account}
 }
 
 // isStackRecord reports whether a (kind,name) the engine writes is the doorway's own bookkeeping — the
@@ -203,7 +208,7 @@ func (a *impersonatingApplier) Create(ctx context.Context, manifestYAML []byte) 
 		}
 	}
 	if gvr == functionClaimGVR && a.door != nil {
-		a.door.fns.forget(name) // the next invoke by name finds it here
+		a.door.fns.forgetFor(ctx, name) // the next invoke by name finds it here (in the stack's account)
 	}
 	return true, nil
 }
@@ -216,7 +221,7 @@ func (a *impersonatingApplier) functionNameFree(ctx context.Context, gvr schema.
 	if gvr != functionClaimGVR || a.door == nil || a.door.fns == nil {
 		return nil
 	}
-	other, err := a.door.fns.elsewhere(ctx, name, ns)
+	other, err := a.door.fns.elsewhereFor(ctx, name, ns) // among the stack's account's namespaces
 	if err != nil || other == "" {
 		return nil
 	}
@@ -264,7 +269,7 @@ func (a *impersonatingApplier) Delete(ctx context.Context, apiVersion, kind, nam
 		return fmt.Errorf("delete %s/%s %q: %w", apiVersion, kind, name, err)
 	}
 	if gvr == functionClaimGVR && a.door != nil {
-		a.door.fns.forget(name)
+		a.door.fns.forgetFor(ctx, name)
 	}
 	return nil
 }

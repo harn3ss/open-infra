@@ -145,6 +145,10 @@ type cfnDoorway struct {
 	// keyPairs reads the EC2 key pairs (name -> public key) an instance's KeyName may name (ec2_keypairs.go);
 	// nil = this shim keeps none.
 	keyPairs func(context.Context) (map[string]string, error)
+	// accounts is the organization's accounts directory: the home of a member account whose stack is worked
+	// on without a request (recovery, a WaitConditionHandle signal —
+	// cfn_accounts.go). nil = a member account's stack is worked on only by its own requests.
+	accounts accountHomes
 }
 
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
@@ -271,11 +275,17 @@ func (h *cfnDoorway) authFailure(w http.ResponseWriter, _ *http.Request, request
 // identity (openinfra:<account>:<user>, no groups), whose RBAC the IAM compiler generates from its IAM
 // policy; in legacy the identity they always did.
 func (h *cfnDoorway) applierFor(claims iam.Claims) (*impersonatingApplier, error) {
+	return h.applierForIn(context.Background(), claims)
+}
+
+// applierForIn is applierFor in the account the request acts in (ctx): a member account's stack keeps its
+// resources in its home and its records with its own (cfn_accounts.go).
+func (h *cfnDoorway) applierForIn(ctx context.Context, claims iam.Claims) (*impersonatingApplier, error) {
 	user, groups, ok := callerIdentity(context.Background(), h.authz, claims)
 	if !ok {
 		return nil, noCallerIdentity(claims)
 	}
-	ap, err := h.applierForIdentity(user, groups)
+	ap, err := h.applierForIdentityIn(ctx, user, groups)
 	if err != nil {
 		return nil, err
 	}
@@ -287,6 +297,13 @@ func (h *cfnDoorway) applierFor(claims iam.Claims) (*impersonatingApplier, error
 // applierForIdentity builds the Applier impersonating an already-resolved identity — a request's caller,
 // or (recovery) the caller recorded on an interrupted operation's stack record.
 func (h *cfnDoorway) applierForIdentity(user string, groups []string) (*impersonatingApplier, error) {
+	return h.applierForIdentityIn(context.Background(), user, groups)
+}
+
+// applierForIdentityIn is applierForIdentity in the account ctx acts in: the management account's stack
+// namespace and records, or a member account's home and records — the account the applier's background
+// work then acts in too (accountCtx).
+func (h *cfnDoorway) applierForIdentityIn(ctx context.Context, user string, groups []string) (*impersonatingApplier, error) {
 	var cdyn dynamic.Interface
 	var err error
 	if h.callerDyn != nil {
@@ -299,9 +316,13 @@ func (h *cfnDoorway) applierForIdentity(user string, groups []string) (*imperson
 	if err != nil {
 		return nil, err
 	}
-	rs := h.recs()
-	return &impersonatingApplier{caller: cdyn, shim: h.shimDyn, mapper: h.mapper, ns: h.ns, user: user, groups: groups,
-		noecho: h.noecho, records: &rs, svc: h.services, door: h}, nil
+	rs := h.recsFor(ctx)
+	ap := &impersonatingApplier{caller: cdyn, shim: h.shimDyn, mapper: h.mapper, ns: h.nsFor(ctx), user: user, groups: groups,
+		noecho: h.noecho, records: &rs, svc: h.services, door: h}
+	if isMemberRequest(ctx) {
+		ap.account, ap.home = callerAccount(ctx), accountHomeOf(ctx)
+	}
+	return ap, nil
 }
 
 // cfnVerb is the coarse RBAC verb a User needs for a CloudFormation action: get for the reads (as AWS's
@@ -409,12 +430,19 @@ func (h *cfnDoorway) serveQuery(w http.ResponseWriter, r *http.Request, claims i
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
 		return
 	}
-	ap, err := h.applierFor(claims)
+	// A member account's stacks are kept in its home: an account the router found none for has nowhere to
+	// keep them.
+	if isMemberRequest(r.Context()) && accountHomeOf(r.Context()) == "" {
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
+			"account "+callerAccount(r.Context())+" has no home namespace to keep its stacks in", cfnXMLNamespace)
+		return
+	}
+	ap, err := h.applierForIn(r.Context(), claims)
 	if err != nil {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, err.Error(), cfnXMLNamespace)
 		return
 	}
-	if action != "ValidateTemplate" {
+	if action != "ValidateTemplate" && !isMemberRequest(r.Context()) {
 		h.migrateLegacyRecords(r.Context()) // records an earlier front door kept as ConfigMaps (cfn_records.go)
 	}
 	// A StackId that is not the live stack's names a deleted stack: only the reads AWS serves for one find
@@ -651,9 +679,16 @@ func (h *cfnDoorway) stackID(name string) string {
 	return awsidentity.Identity{AccountID: h.account, Region: h.region, StackNamespace: h.ns}.StackID(name)
 }
 
-func (h *cfnDoorway) opts(name string, params map[string]string) cfn.DeployOptions {
+// stackIDIn is stackID for a stack of the account the request acts in (identityFor).
+func (h *cfnDoorway) stackIDIn(ctx context.Context, name string) string {
+	return h.identityFor(ctx).StackID(name)
+}
+
+// opts are the engine options for stack name in the account the request acts in: its namespace, and the
+// signal URLs of its wait-condition handles naming its account.
+func (h *cfnDoorway) opts(ctx context.Context, name string, params map[string]string) cfn.DeployOptions {
 	o := cfn.DeployOptions{
-		StackName: name, Namespace: h.ns, Params: params, Wait: true, Timeout: cfnWaitTimeout,
+		StackName: name, Namespace: h.nsFor(ctx), Params: params, Wait: true, Timeout: cfnWaitTimeout,
 		// In-cluster: a custom resource's backing Function is invokable (#269). The CLI deploy path leaves
 		// this nil, so a custom-resource stack there refuses rather than guessing.
 		Invoke: h.invokeCustomResourceFn,
@@ -664,10 +699,16 @@ func (h *cfnDoorway) opts(name string, params map[string]string) cfn.DeployOptio
 	if h.signals != nil {
 		o.Signals = h.signals
 		o.SignalURL = h.signalURL
+		if isMemberRequest(ctx) {
+			account := callerAccount(ctx)
+			o.SignalURL = func(stack, handle string) string { return h.signalURLIn(account, stack, handle) }
+		}
 	}
 	// In-cluster: an AWS::ApiGateway::RestApi stack is provisioned via the apigateway REST v1 store (#295).
-	// Nil when the apigateway data layer is unconfigured (or on the CLI), so such a stack refuses.
-	if h.restV1 != nil && h.restV1.store != nil {
+	// Nil when the apigateway data layer is unconfigured (or on the CLI), so such a stack refuses — as it
+	// does in a member account while that store keeps the management account's APIs alone (it is not an
+	// account-scoped front door): a member account's stack never writes into another account's APIs.
+	if h.restV1 != nil && h.restV1.store != nil && (!isMemberRequest(ctx) || accountScopedServices["apigateway"]) {
 		o.ProvisionRestAPI = func(ctx context.Context, planSpec map[string]any) (string, error) {
 			plan, perr := cfn.ParseRestAPIPlan(planSpec)
 			if perr != nil {
@@ -725,8 +766,8 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
-	ex := h.exportsFor(ctx, name) // other stacks' exports, for Fn::ImportValue
-	stackID := h.newStackID(name) // this stack instance's own StackId (cfn_deleted.go)
+	ex := h.exportsFor(ctx, name)        // other stacks' exports, for Fn::ImportValue
+	stackID := h.newStackIDIn(ctx, name) // this stack instance's own StackId, in the caller's account (cfn_deleted.go)
 
 	// Synchronous validation gate — an unsupported type / bad template is refused WHOLE here, before
 	// anything is created (the DoD's "refused at validation, nothing created"). This mirrors the engine's
@@ -760,9 +801,9 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 	}
 	// The record is created already owned by this operation (lease + caller), in one atomic Create.
 	now := time.Now().UTC().Format(time.RFC3339)
-	seed := &cfn.StackRecord{Name: name, Namespace: h.ns, StackID: stackID, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now, Owner: ap.user}
+	seed := &cfn.StackRecord{Name: name, Namespace: h.nsFor(ctx), StackID: stackID, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now, Owner: ap.user}
 	if err := h.seedRecord(ctx, seed, "CreateStack", ap.identity()); err != nil {
-		h.ops.end(name)
+		h.ops.end(h.opKey(ctx, name))
 		if apierrors.IsAlreadyExists(err) {
 			alreadyExists()
 			return
@@ -770,7 +811,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not seed stack record: "+err.Error(), cfnXMLNamespace)
 		return
 	}
-	createOpts := h.withRequest(h.asCaller(h.stackOpts(name, params, ex, body), ap), ap, r)
+	createOpts := h.withRequest(h.asCaller(h.stackOpts(ctx, name, params, ex, body), ap), ap, r)
 	createOpts.StackID = stackID
 	createOpts.TerminationProtection = strings.EqualFold(r.PostFormValue("EnableTerminationProtection"), "true")
 	h.runStackOp(name, "CreateStack", "ROLLBACK_COMPLETE", ap, func(bctx context.Context) error {
@@ -798,7 +839,7 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist.", cfnXMLNamespace)
 		return
 	}
-	if msg := h.notUpdatable(name, current.Status); msg != "" {
+	if msg := h.notUpdatable(ctx, name, current.Status); msg != "" {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
@@ -822,20 +863,20 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
-	if err := h.ops.begin(name); err != nil {
+	if err := h.ops.begin(h.opKey(ctx, name)); err != nil {
 		h.refuseOp(w, requestID, err, "ValidationError", "Stack ["+name+"] is being changed by another operation; retry once it settles.")
 		return
 	}
 	if cur, err := h.claimRecord(ctx, name, "UpdateStack", ap.identity()); err != nil || cur == nil {
-		h.ops.end(name)
+		h.ops.end(h.opKey(ctx, name))
 		if err == nil {
 			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist.", cfnXMLNamespace)
 			return
 		}
-		h.claimRefusal(w, requestID, name, "update", err)
+		h.claimRefusal(ctx, w, requestID, name, "update", err)
 		return
 	}
-	updateOpts := h.withRequest(h.asCaller(h.stackOpts(name, params, ex, body), ap), ap, r)
+	updateOpts := h.withRequest(h.asCaller(h.stackOpts(ctx, name, params, ex, body), ap), ap, r)
 	updateOpts.StackID = current.StackID
 	h.runStackOp(name, "UpdateStack", "UPDATE_FAILED", ap, func(bctx context.Context) error {
 		rec, derr := cfn.Update(bctx, []byte(body), updateOpts, ap)
@@ -858,19 +899,19 @@ func (h *cfnDoorway) updateTerminationProtection(w http.ResponseWriter, r *http.
 			"StackName and EnableTerminationProtection (true or false) are required.", cfnXMLNamespace)
 		return
 	}
-	if err := h.ops.begin(name); err != nil {
+	ctx := r.Context()
+	if err := h.ops.begin(h.opKey(ctx, name)); err != nil {
 		h.refuseOp(w, requestID, err, "ValidationError", "Stack ["+name+"] is being changed by another operation; retry once it settles.")
 		return
 	}
-	defer h.ops.end(name)
-	ctx := r.Context()
+	defer h.ops.end(h.opKey(ctx, name))
 	rec, err := h.claimRecord(ctx, name, "UpdateTerminationProtection", ap.identity())
 	if err == nil && rec == nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+name+"] does not exist", cfnXMLNamespace)
 		return
 	}
 	if err != nil {
-		h.claimRefusal(w, requestID, name, "update", err)
+		h.claimRefusal(ctx, w, requestID, name, "update", err)
 		return
 	}
 	defer h.releaseLease(context.WithoutCancel(ctx), name)
@@ -928,17 +969,17 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
-	if err := h.ops.begin(name); err != nil {
+	if err := h.ops.begin(h.opKey(ctx, name)); err != nil {
 		h.refuseOp(w, requestID, err, "ValidationError", "Stack ["+name+"] cannot be deleted while another operation on it is in progress.")
 		return
 	}
 	if cur, err := h.claimRecord(ctx, name, "DeleteStack", ap.identity()); err != nil || cur == nil {
-		h.ops.end(name)
+		h.ops.end(h.opKey(ctx, name))
 		if err == nil { // gone since it was read: already deleted
 			h.writeResult(w, requestID, "DeleteStack", "")
 			return
 		}
-		h.claimRefusal(w, requestID, name, "delete", err)
+		h.claimRefusal(ctx, w, requestID, name, "delete", err)
 		return
 	}
 	before := rec
@@ -946,7 +987,7 @@ func (h *cfnDoorway) deleteStack(w http.ResponseWriter, r *http.Request, ap *imp
 		if cur, found, err := ap.GetStack(bctx, name); err == nil && found {
 			before = cur // the record as the delete begins (claimed by this operation)
 		}
-		out, derr := cfn.Destroy(bctx, h.asCaller(h.opts(name, nil), ap), ap)
+		out, derr := cfn.Destroy(bctx, h.asCaller(h.opts(bctx, name, nil), ap), ap)
 		if derr == nil {
 			// As on AWS, the deleted stack is kept for 90 days, and its change sets, stored NoEcho values,
 			// events and signals are deleted (cfn_nested.go).
@@ -1024,7 +1065,8 @@ func (h *cfnDoorway) queueURLsFor(r *http.Request, v string) string {
 	if base == "" {
 		base = defaultQueueURLBase
 	}
-	return strings.ReplaceAll(v, base+"/"+h.account+"/", "https://sqs."+h.region+".amazonaws.com/"+h.account+"/")
+	account := h.accountFor(r.Context()) // a stack's queue URLs name its account
+	return strings.ReplaceAll(v, base+"/"+account+"/", "https://sqs."+h.region+".amazonaws.com/"+account+"/")
 }
 
 func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {
@@ -1161,9 +1203,9 @@ func stackRef(r *http.Request) string {
 	return r.PostFormValue("StackName")
 }
 
-// allRecords lists every stack record in the record store (shim client).
+// allRecords lists every stack record of the request's account in the record store (shim client).
 func (h *cfnDoorway) allRecords(ctx context.Context) []*cfn.StackRecord {
-	st := h.recs()
+	st := h.recsFor(ctx)
 	list, err := st.client().List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
 	if err != nil {
 		return nil
@@ -1289,8 +1331,17 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 		return
 	}
 
-	// BuildChangeSet computes the diff against the current stack record and APPLIES NOTHING.
-	cs, _, current, cerr := cfn.BuildChangeSet(ctx, []byte(body), h.withRequest(h.optsFor(stack, params, ex), ap, r), ap)
+	// BuildChangeSet computes the diff against the current stack record and APPLIES NOTHING. A member
+	// account's new stack is diffed as the stack it creates will be: with its StackId (its account).
+	csOpts := h.optsForIn(ctx, stack, params, ex)
+	newID := ""
+	if !priorFound {
+		newID = h.newStackIDIn(ctx, stack)
+		if isMemberRequest(ctx) {
+			csOpts.StackID = newID
+		}
+	}
+	cs, _, current, cerr := cfn.BuildChangeSet(ctx, []byte(body), h.withRequest(csOpts, ap, r), ap)
 	if cerr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, cerr.Error(), cfnXMLNamespace)
 		return
@@ -1308,7 +1359,10 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 		stackID = h.idOf(current)
 	} else {
 		csType = "CREATE"
-		stackID = h.newStackID(stack) // the StackId the stack it creates will have, as AWS returns it here
+		stackID = newID // the StackId the stack it creates will have, as AWS returns it here
+		if stackID == "" {
+			stackID = h.newStackIDIn(ctx, stack)
+		}
 	}
 	// NoEcho values stay out of the change-set record (a ConfigMap): they go to its NoEcho Secret.
 	plain, noEchoNames, noEchoValues := cfn.SplitNoEcho([]byte(body), params)
@@ -1322,7 +1376,7 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, err.Error(), cfnXMLNamespace)
 		return
 	}
-	csID := fmt.Sprintf("arn:aws:cloudformation:%s:%s:changeSet/%s/%s", h.region, h.account, csName, shortHash(stack+"/"+csName))
+	csID := h.changeSetIDIn(ctx, stack, csName)
 	h.writeResult(w, requestID, "CreateChangeSet",
 		"<Id>"+xesc(csID)+"</Id><StackId>"+xesc(stackID)+"</StackId>")
 }
@@ -1394,7 +1448,7 @@ func (h *cfnDoorway) describeChangeSet(w http.ResponseWriter, r *http.Request, a
 		// what this change accepts that open-infra does not emulate as AWS does.
 		reason = fid
 	}
-	csID := h.changeSetID(cs.StackName, cs.Name)
+	csID := h.changeSetIDIn(r.Context(), cs.StackName, cs.Name)
 	inner := "<ChangeSetName>" + xesc(cs.Name) + "</ChangeSetName>" +
 		"<ChangeSetId>" + xesc(csID) + "</ChangeSetId>" +
 		"<StackName>" + xesc(cs.StackName) + "</StackName>" +
@@ -1439,6 +1493,11 @@ func changeSetResourceChanges(changes []cfn.Change) []cfn.Change {
 // changeSetID is a change set's ARN.
 func (h *cfnDoorway) changeSetID(stack, name string) string {
 	return fmt.Sprintf("arn:aws:cloudformation:%s:%s:changeSet/%s/%s", h.region, h.account, name, shortHash(stack+"/"+name))
+}
+
+// changeSetIDIn is changeSetID for a change set of the account the request acts in (its ARN names it).
+func (h *cfnDoorway) changeSetIDIn(ctx context.Context, stack, name string) string {
+	return fmt.Sprintf("arn:aws:cloudformation:%s:%s:changeSet/%s/%s", h.region, h.accountFor(ctx), name, shortHash(stack+"/"+name))
 }
 
 // changeSetStatus is a change set's Status: an update with nothing to change is FAILED, as on AWS.
@@ -1493,7 +1552,7 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 	// As on AWS, only an AVAILABLE change set runs: not one with nothing to change, nor one already run.
 	if exec := changeSetExecutionStatus(cs); exec != "AVAILABLE" {
 		writeQueryError(w, http.StatusBadRequest, "InvalidChangeSetStatus", requestID,
-			"ChangeSet ["+h.changeSetID(cs.StackName, cs.Name)+"] cannot be executed in its current execution status of ["+exec+"]", cfnXMLNamespace)
+			"ChangeSet ["+h.changeSetIDIn(r.Context(), cs.StackName, cs.Name)+"] cannot be executed in its current execution status of ["+exec+"]", cfnXMLNamespace)
 		return
 	}
 	// Re-check the export rules at execute time: another stack may have taken an export name, or started
@@ -1508,7 +1567,7 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+stack+"] does not exist.", cfnXMLNamespace)
 			return
 		}
-		if msg := h.notUpdatable(stack, current.Status); msg != "" {
+		if msg := h.notUpdatable(ctx, stack, current.Status); msg != "" {
 			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 			return
 		}
@@ -1518,7 +1577,7 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, msg, cfnXMLNamespace)
 		return
 	}
-	begin := h.ops.begin
+	begin := func(stack string) error { return h.ops.begin(h.opKey(ctx, stack)) }
 	if create {
 		begin = func(stack string) error { return h.beginCreate(ctx, ap, stack) }
 	}
@@ -1533,11 +1592,11 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		// was created since the change set was is refused, never overwritten).
 		now := time.Now().UTC().Format(time.RFC3339)
 		if cs.StackID == "" { // a change set from before StackIds were per instance
-			cs.StackID = h.newStackID(stack)
+			cs.StackID = h.newStackIDIn(ctx, stack)
 		}
-		seed := &cfn.StackRecord{Name: stack, Namespace: h.ns, StackID: cs.StackID, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now, Owner: ap.user}
+		seed := &cfn.StackRecord{Name: stack, Namespace: h.nsFor(ctx), StackID: cs.StackID, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now, Owner: ap.user}
 		if err := h.seedRecord(ctx, seed, "ExecuteChangeSet", ap.identity()); err != nil {
-			h.ops.end(stack)
+			h.ops.end(h.opKey(ctx, stack))
 			if apierrors.IsAlreadyExists(err) {
 				writeQueryError(w, http.StatusBadRequest, "AlreadyExistsException", requestID, "Stack ["+stack+"] already exists.", cfnXMLNamespace)
 				return
@@ -1546,15 +1605,15 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 			return
 		}
 	} else if cur, err := h.claimRecord(ctx, stack, "ExecuteChangeSet", ap.identity()); err != nil || cur == nil {
-		h.ops.end(stack)
+		h.ops.end(h.opKey(ctx, stack))
 		if err == nil {
 			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "Stack ["+stack+"] does not exist.", cfnXMLNamespace)
 			return
 		}
-		h.claimRefusal(w, requestID, stack, "update", err)
+		h.claimRefusal(ctx, w, requestID, stack, "update", err)
 		return
 	}
-	execOpts := h.withRequest(h.asCaller(h.stackOpts(stack, params, ex, body), ap), ap, r)
+	execOpts := h.withRequest(h.asCaller(h.stackOpts(ctx, stack, params, ex, body), ap), ap, r)
 	if create {
 		execOpts.StackID = cs.StackID
 	} else {
@@ -1594,7 +1653,7 @@ func (h *cfnDoorway) deleteChangeSet(w http.ResponseWriter, r *http.Request, ap 
 	// Only the record that is this stack's change set (findChangeSet) — never one that merely shares a
 	// legacy record name.
 	if _, cmName, err := h.findChangeSet(r.Context(), stack, csName); err == nil {
-		_ = h.recs().client().Delete(r.Context(), cmName, metav1.DeleteOptions{})
+		_ = h.recsFor(r.Context()).client().Delete(r.Context(), cmName, metav1.DeleteOptions{})
 	}
 	if err := h.noecho.put(r.Context(), changeSetCMName(stack, csName), stack, nil); err != nil {
 		h.logger.Warn("cfn: could not delete a change set's NoEcho parameters", "stack", stack, "changeSet", csName, "error", err.Error())
@@ -1627,7 +1686,7 @@ func (h *cfnDoorway) putChangeSet(ctx context.Context, cs *changeSet) error {
 	if err != nil {
 		return err
 	}
-	return h.recs().apply(ctx, changeSetCMName(cs.StackName, cs.Name),
+	return h.recsFor(ctx).apply(ctx, changeSetCMName(cs.StackName, cs.Name),
 		map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/changeset": cs.StackName},
 		map[string]string{"changeset.json": string(data)})
 }
@@ -1641,7 +1700,7 @@ func (h *cfnDoorway) changeSetRef(ctx context.Context, stack, csName string) (st
 		return stack, csName
 	}
 	name := strings.SplitN(csName[i+len(":changeSet/"):], "/", 2)[0]
-	st := h.recs()
+	st := h.recsFor(ctx)
 	list, err := st.client().List(ctx, metav1.ListOptions{LabelSelector: "cfn.openinfra.dev/changeset"})
 	if err != nil {
 		return stack, csName
@@ -1649,7 +1708,7 @@ func (h *cfnDoorway) changeSetRef(ctx context.Context, stack, csName string) (st
 	for i := range list.Items {
 		var cs changeSet
 		if json.Unmarshal([]byte(st.value(&list.Items[i], "changeset.json")), &cs) == nil && cs.Name == name &&
-			h.changeSetID(cs.StackName, cs.Name) == csName {
+			h.changeSetIDIn(ctx, cs.StackName, cs.Name) == csName {
 			return cs.StackName, cs.Name
 		}
 	}
@@ -1666,7 +1725,7 @@ func (h *cfnDoorway) getChangeSet(ctx context.Context, stack, csName string) (*c
 // a (legacy) record name.
 func (h *cfnDoorway) findChangeSet(ctx context.Context, stack, csName string) (*changeSet, string, error) {
 	var lastErr error
-	st := h.recs()
+	st := h.recsFor(ctx)
 	for _, cmName := range []string{changeSetCMName(stack, csName), legacyChangeSetCMName(stack, csName)} {
 		u, err := st.client().Get(ctx, cmName, metav1.GetOptions{})
 		if err != nil {
@@ -1693,7 +1752,7 @@ func (h *cfnDoorway) findChangeSet(ctx context.Context, stack, csName string) (*
 func (h *cfnDoorway) detectStackDrift(w http.ResponseWriter, r *http.Request, ap *impersonatingApplier, requestID string) {
 	stack := r.PostFormValue("StackName")
 	// DetectDrift is read-only and fast, so run it synchronously and store the result under a detection id.
-	report, err := cfn.DetectDrift(r.Context(), h.opts(stack, nil), ap)
+	report, err := cfn.DetectDrift(r.Context(), h.opts(r.Context(), stack, nil), ap)
 	if err != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, err.Error(), cfnXMLNamespace)
 		return
@@ -1761,7 +1820,7 @@ func (h *cfnDoorway) describeResourceDrifts(w http.ResponseWriter, r *http.Reque
 
 func (h *cfnDoorway) putDrift(ctx context.Context, stack, detID string, report *cfn.DriftReport) error {
 	data, _ := json.Marshal(report)
-	st := h.recs()
+	st := h.recsFor(ctx)
 	obj := st.object("cfn-drift-"+stack,
 		map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/drift": stack},
 		map[string]any{"cfn.openinfra.dev/detection-id": detID},
@@ -1771,7 +1830,7 @@ func (h *cfnDoorway) putDrift(ctx context.Context, stack, detID string, report *
 }
 
 func (h *cfnDoorway) getDrift(ctx context.Context, detID string) (*cfn.DriftReport, string, error) {
-	st := h.recs()
+	st := h.recsFor(ctx)
 	list, err := st.client().List(ctx, metav1.ListOptions{LabelSelector: "app.kubernetes.io/managed-by=cfn"})
 	if err != nil {
 		return nil, "", err
@@ -1793,7 +1852,7 @@ func (h *cfnDoorway) getDrift(ctx context.Context, detID string) (*cfn.DriftRepo
 }
 
 func (h *cfnDoorway) latestDrift(ctx context.Context, stack string) (*cfn.DriftReport, bool) {
-	st := h.recs()
+	st := h.recsFor(ctx)
 	u, err := st.client().Get(ctx, "cfn-drift-"+stack, metav1.GetOptions{})
 	if err != nil {
 		return nil, false
@@ -1884,7 +1943,7 @@ func nameFromCFNArn(v, marker string) (string, bool) {
 // deleteChangeSetsOf removes every change-set record of a stack (best effort; a leftover record
 // provisions nothing, it would only be listed).
 func (h *cfnDoorway) deleteChangeSetsOf(ctx context.Context, stack string) {
-	cms := h.recs().client()
+	cms := h.recsFor(ctx).client()
 	list, err := cms.List(ctx, metav1.ListOptions{LabelSelector: "cfn.openinfra.dev/changeset=" + stack})
 	if err != nil {
 		h.logger.Warn("cfn: could not list the stack's change sets", "stack", stack, "error", err.Error())

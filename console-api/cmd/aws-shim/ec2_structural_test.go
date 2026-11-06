@@ -69,17 +69,21 @@ func netStackRecord(name, ns string) cfn.StackRecord {
 }
 
 // stackRecordConfigMap is a stack record as a front door with no record namespace keeps one (in its own
-// namespace, ec2TestNS).
+// namespace, ec2TestNS). A stack in the member account's home is the member account's, kept under its own
+// record name and account label (cfn_accounts.go).
 func stackRecordConfigMap(t *testing.T, rec cfn.StackRecord) *unstructured.Unstructured {
 	t.Helper()
 	data, err := json.Marshal(rec)
 	if err != nil {
 		t.Fatal(err)
 	}
+	name, labels := "cfn-stack-"+rec.Name, map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/stack": rec.Name}
+	if rec.Namespace == memberHome {
+		name, labels[labelRecordAccount] = physicalRecordName(testMember, name), testMember
+	}
 	return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]any{"name": "cfn-stack-" + rec.Name, "namespace": ec2TestNS,
-			"labels": map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/stack": rec.Name}},
-		"data": map[string]any{"stack.json": string(data)}}}
+		"metadata": map[string]any{"name": name, "namespace": ec2TestNS, "labels": labels},
+		"data":     map[string]any{"stack.json": string(data)}}}
 }
 
 var structuralLists = map[schema.GroupVersionResource]string{

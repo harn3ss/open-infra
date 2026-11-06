@@ -662,7 +662,8 @@ func run(logger *slog.Logger) error {
 			if s3H, ok := services["s3"].(*s3Handler); ok {
 				cfnH.s3 = s3H // TemplateURL objects are read from this shim's S3, as the caller (cloudformation_templateurl.go)
 			}
-			cfnH.fns = fns // a stack's function may not take a name a Lambda-API function has
+			cfnH.fns = fns          // a stack's function may not take a name a Lambda-API function has
+			cfnH.accounts = acctDir // a member account's stack is recovered and signalled in its own home
 			services["cloudformation"] = cfnH
 			// CloudFront (cloudfront.*): the invalidations of a stack's distributions (cloudfront.go).
 			services["cloudfront"] = newCloudFrontHandler(cfnH, logger)

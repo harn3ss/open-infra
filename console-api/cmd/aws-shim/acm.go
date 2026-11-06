@@ -16,6 +16,10 @@
 // Authorization: acm:<Action> on Certificate::<certificate id> (ListCertificates on Certificate::*), and for
 // a User the read on the certificate's stack that DescribeStackResources needs (a certificate belongs to its
 // stack and to nothing else). ListCertificates lists only the certificates of stacks the caller may read.
+//
+// Accounts: a certificate is its stack's, and a stack its account's (cfn_accounts.go): a request finds
+// certificates among its own account's stacks alone (their ARNs, the Refs the stacks gave them, name that
+// account), and the distributions a certificate is in use by are named in that account.
 package main
 
 import (
@@ -50,6 +54,8 @@ type acmHandler struct {
 	cfn    *cfnDoorway // the stack records the certificates are found in, and the authorization clients
 	logger *slog.Logger
 }
+
+func init() { accountScopedServices["acm"] = true }
 
 func newACMHandler(c *cfnDoorway, logger *slog.Logger) *acmHandler {
 	return &acmHandler{cfn: c, logger: logger}
@@ -133,9 +139,13 @@ func (h *acmHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		if c.arn != arn {
 			continue
 		}
-		if allowed, reason := h.cfn.canDo(ctx, claims, "get", c.rec.Name); !allowed {
-			writeACMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
-			return
+		// A member account's principal is decided by IAM policy alone (above): the coarse RBAC check knows
+		// no accounts.
+		if !memberAccount(claims) {
+			if allowed, reason := h.cfn.canDo(ctx, claims, "get", c.rec.Name); !allowed {
+				writeACMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+				return
+			}
 		}
 		if op == "DescribeCertificate" {
 			writeACMJSON(w, requestID, map[string]any{"Certificate": h.describe(ctx, c)})
@@ -176,7 +186,7 @@ type acmCertificate struct {
 
 type acmSite struct{ ns, name, distID string }
 
-// certificates is every stack's certificates, in ARN order.
+// certificates is the certificates of every stack of the request's account, in ARN order.
 func (h *acmHandler) certificates(ctx context.Context) ([]acmCertificate, error) {
 	cf := &cloudFrontHandler{cfn: h.cfn}
 	recs, err := cf.stackRecords(ctx)
@@ -200,7 +210,7 @@ func (h *acmHandler) certificates(ctx context.Context) ([]acmCertificate, error)
 				if fnStr(vc["AcmCertificateArn"]) != c.arn {
 					continue
 				}
-				if site := distributionIn(rec, d.Ref, h.cfn.ns); site != nil {
+				if site := distributionIn(rec, d.Ref, h.cfn.nsFor(ctx)); site != nil {
 					c.sites = append(c.sites, acmSite{ns: site.ns, name: site.site, distID: d.Ref})
 				}
 			}
@@ -306,7 +316,7 @@ func (h *acmHandler) describe(ctx context.Context, c acmCertificate) map[string]
 	}
 	inUse := make([]string, 0, len(c.sites))
 	for _, s := range c.sites {
-		inUse = append(inUse, "arn:aws:cloudfront::"+h.cfn.account+":distribution/"+s.distID)
+		inUse = append(inUse, (&cloudFrontHandler{cfn: h.cfn}).distributionARN(ctx, s.distID))
 	}
 	out := map[string]any{
 		"CertificateArn": c.arn, "DomainName": domain, "SubjectAlternativeNames": names, "Status": status,
@@ -434,7 +444,10 @@ func (h *acmHandler) listCertificates(w http.ResponseWriter, r *http.Request, cl
 		}
 		ok, seen := readable[c.rec.Name]
 		if !seen {
-			ok, _ = h.cfn.canDo(ctx, claims, "get", c.rec.Name)
+			ok = true
+			if !memberAccount(claims) { // a member account's principal: IAM policy decided ListCertificates
+				ok, _ = h.cfn.canDo(ctx, claims, "get", c.rec.Name)
+			}
 			readable[c.rec.Name] = ok
 		}
 		if !ok {
