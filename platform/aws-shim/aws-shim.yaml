@@ -512,7 +512,7 @@ metadata:
   namespace: open-infra-cfn
 rules:
   - apiGroups: [openinfra.dev]
-    resources: [virtualmachines, volumes, securitygroups, vpcs, subnets]
+    resources: [virtualmachines, volumes, securitygroups, vpcs, subnets, vpcendpoints, natgateways]
     verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -1202,3 +1202,51 @@ spec:
   egress:
     # In-cluster services (MinIO / Knative / open-appsync) + the kube-apiserver. NOT the outside world.
     - toEntities: [cluster, kube-apiserver]
+---
+# The aws-shim's service-linked role: what its front doors do with the shim's own identity in a member
+# account, as AWS's service-linked roles (AWSServiceRoleForECS, AWSServiceRoleForRDS) are what a
+# service may do in an account. The management account's doors keep the namespaced grants above. The
+# IAM compiler binds this role in every member account's home namespace (where the doors keep a member's
+# resources) and puts the same grant in the iam-corpus, so a new account works within one pass. Nothing
+# else binds it. Writes a door makes as the caller (impersonated) are the caller's own policy, not this.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: "openinfra:service-linked:aws-shim"
+  labels: { openinfra.dev/service-linked-role: "true" }
+  annotations: { openinfra.dev/service-principals: open-infra-aws-shim/aws-shim }
+rules:
+  # ECS's task-definition, cluster and service records (server-side apply).
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, create, patch, delete]
+  # Step Functions' execution credentials (create, or replace) and RDS's master credentials (create,
+  # read back by name on a restore, delete). No list: the shim never enumerates a member's Secrets.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, delete]
+  # Step Functions' state machines and executions (a stop patches an execution's status).
+  - apiGroups: [openinfra.dev]
+    resources: [statemachines]
+    verbs: [get, list, create, update, delete]
+  - apiGroups: [openinfra.dev]
+    resources: [executions]
+    verbs: [get, list, create, delete]
+  - apiGroups: [openinfra.dev]
+    resources: [executions/status]
+    verbs: [patch]
+  # RDS's DB instances and snapshots.
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters]
+    verbs: [get, list, create, update, patch, delete]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [backups]
+    verbs: [get, list, create, delete]
+  # KMS key policies (kind: Policy in the account's IAM home).
+  - apiGroups: [iam.openinfra.dev]
+    resources: [policies]
+    verbs: [list, create, delete]
+  # EC2's describes, read as IAM policy allowed.
+  - apiGroups: [openinfra.dev]
+    resources: [virtualmachines, volumes, securitygroups, vpcs, subnets, vpcendpoints, natgateways]
+    verbs: [get, list]

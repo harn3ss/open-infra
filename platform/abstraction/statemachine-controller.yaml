@@ -55,6 +55,23 @@ subjects:
     name: openinfra-statemachine
     namespace: crossplane-system
 ---
+# The state-machine controller's service-linked role: in a member account it reads an execution's
+# credentials Secret from the account's home namespace, where the Step Functions front door keeps a member's
+# executions. The IAM compiler binds it in every member account's home (iamcompile/servicelinked.go). The
+# management account's executions keep the openinfra-statemachine-creds Role in the aws-shim namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: "openinfra:service-linked:statemachine"
+  labels: { openinfra.dev/service-linked-role: "true" }
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    openinfra.dev/service-principals: crossplane-system/openinfra-statemachine
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:

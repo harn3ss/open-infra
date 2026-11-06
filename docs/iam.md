@@ -177,6 +177,11 @@ aws organizations describe-create-account-status --create-account-request-id car
   principal in it), or a resource policy grants it, and the other side's identity policy must allow it
   too.
 - Organizations is served to the management account only; a member account's caller is denied.
+- **Service-linked roles:** the platform's services act in a member account through service-linked
+  roles, as AWS services do (`AWSServiceRoleForECS`, `AWSServiceRoleForRDS`). The service defines each
+  role, every member account has it from creation, and the account's own principals cannot change it. An
+  operator finds them as the ClusterRoles named `openinfra:service-linked:<service>`. The IAM compiler
+  binds them in each member account's home namespace.
 
 ### Service Quotas
 

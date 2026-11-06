@@ -85,7 +85,26 @@ func LoadInput(ctx context.Context, dc dynamic.Interface, cs kubernetes.Interfac
 		if id := ns.Labels[AccountIDLabel]; validAccountID(id) {
 			in.NamespaceAccounts[ns.Name] = id
 		}
+		if ns.Labels[AccountHomeLabel] == "true" {
+			if in.Homes == nil {
+				in.Homes = map[string]bool{}
+			}
+			in.Homes[ns.Name] = true
+		}
 	}
+	crs, err := cs.RbacV1().ClusterRoles().List(ctx, metav1.ListOptions{LabelSelector: ServiceLinkedRoleLabel + "=true"})
+	if err != nil {
+		return Input{}, fmt.Errorf("list service-linked roles: %w", err)
+	}
+	for _, cr := range crs.Items {
+		if !IsServiceLinkedRoleName(cr.Name) {
+			continue
+		}
+		in.ServiceLinkedRoles = append(in.ServiceLinkedRoles, ServiceLinkedRole{
+			Name: cr.Name, Principals: ParseServicePrincipals(cr.Annotations[ServicePrincipalsAnno]), Rules: cr.Rules,
+		})
+	}
+	sort.Slice(in.ServiceLinkedRoles, func(i, j int) bool { return in.ServiceLinkedRoles[i].Name < in.ServiceLinkedRoles[j].Name })
 	if len(in.NamespaceAccounts) == 0 {
 		in.NamespaceAccounts = nil
 	}
@@ -119,7 +138,8 @@ type Report struct {
 func BuildReport(mode Mode, in Input, out Output) Report {
 	r := Report{Mode: mode, Principals: out.Principals, Policies: map[string][]string{}, Counts: map[string]int{
 		"principals": len(out.Principals), "grants": len(out.Corpus), "clusterRoles": len(out.ClusterRoles),
-		"clusterRoleBindings": len(out.ClusterRoleBindings), "roleBindings": len(out.RoleBindings)}}
+		"clusterRoleBindings": len(out.ClusterRoleBindings), "roleBindings": len(out.RoleBindings),
+		"serviceLinkedRoleBindings": out.ServiceLinked}}
 	for _, p := range in.World.Docs {
 		if len(p.Report) > 0 {
 			r.Policies[p.Name] = p.Report

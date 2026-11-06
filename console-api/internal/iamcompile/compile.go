@@ -48,6 +48,10 @@ type Input struct {
 	// Namespaces is every namespace in the cluster (labelled or not). With a member account present, the
 	// management account's generated RBAC is bound in each namespace that is not a member's.
 	Namespaces []string
+	// Homes is every namespace labelled an account's home (AccountHomeLabel).
+	Homes map[string]bool
+	// ServiceLinkedRoles are the platform services' roles in member accounts (servicelinked.go).
+	ServiceLinkedRoles []ServiceLinkedRole
 }
 
 // managementNamespaces is every namespace that is not a member account's: the management account's own,
@@ -87,6 +91,8 @@ type Output struct {
 	ClusterRoleBindings []rbacv1.ClusterRoleBinding
 	RoleBindings        []rbacv1.RoleBinding
 	Principals          []PrincipalReport
+	// ServiceLinked counts the service-linked role bindings among RoleBindings.
+	ServiceLinked int
 }
 
 // PrincipalReport is what compiling one principal produced and what it could not express.
@@ -129,6 +135,10 @@ func Compile(in Input) Output {
 		out.ClusterRoleBindings = append(out.ClusterRoleBindings, pc.clusterRoleBindings...)
 		out.RoleBindings = append(out.RoleBindings, pc.roleBindings...)
 	}
+	rbs, grants := serviceLinked(in)
+	out.RoleBindings = append(out.RoleBindings, rbs...)
+	out.Corpus = append(out.Corpus, grants...)
+	out.ServiceLinked = len(rbs)
 	return out
 }
 

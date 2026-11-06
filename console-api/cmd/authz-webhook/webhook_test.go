@@ -297,3 +297,55 @@ func TestWebhook_AccountPrincipalsUseTheIAMCorpus(t *testing.T) {
 		t.Fatalf("with no iam-corpus an account principal defers to RBAC, got %+v", st)
 	}
 }
+
+// A service-linked role: a platform ServiceAccount the RBAC corpus names (and so fully enforces) may
+// act in a member account's home as the iam-corpus's service-linked grant allows, and nowhere else. An
+// explicit forbid in the RBAC corpus stands, and the lift is for ServiceAccounts only.
+func TestWebhook_ServiceLinkedRoleInMemberHome(t *testing.T) {
+	const shim = "system:serviceaccount:open-infra-aws-shim:aws-shim"
+	sa := []string{"system:serviceaccounts", "system:serviceaccounts:open-infra-aws-shim"}
+	rbacCorpus := controlplaneauthz.New(func(context.Context) ([]controlplaneauthz.PolicyDoc, error) {
+		return []controlplaneauthz.PolicyDoc{
+			{AppliesTo: []string{"ServiceAccount::open-infra-aws-shim/aws-shim"}, Statements: []policyengine.Statement{
+				{Effect: policyengine.Allow, Actions: []string{"get", "create"}, Resources: []string{"configmaps::open-infra-ecs/*"}},
+				{Effect: policyengine.Deny, Actions: []string{"*"}, Resources: []string{"secrets::shop/locked"}},
+			}},
+			{AppliesTo: []string{"ServiceAccount::kube-system/other"}, Statements: []policyengine.Statement{
+				{Effect: policyengine.Allow, Actions: []string{"get"}, Resources: []string{"pods::kube-system/*"}},
+			}},
+			{AppliesTo: []string{"User::bob"}, Statements: []policyengine.Statement{
+				{Effect: policyengine.Allow, Actions: []string{"get"}, Resources: []string{"pods::default/*"}},
+			}},
+		}, nil
+	}, time.Minute)
+	iamCorpus := controlplaneauthz.New(func(context.Context) ([]controlplaneauthz.PolicyDoc, error) {
+		return []controlplaneauthz.PolicyDoc{
+			{AppliesTo: []string{"ServiceAccount::open-infra-aws-shim/aws-shim"}, Statements: []policyengine.Statement{
+				{Effect: policyengine.Allow, Actions: []string{"get", "create"}, Resources: []string{"configmaps::shop/*", "secrets::shop/*"}},
+			}},
+		}, nil
+	}, time.Minute)
+	h := &webhookHandler{checker: rbacCorpus, iamChecker: iamCorpus, mode: Enforce, logger: discard()}
+
+	if st := post(t, h, sar(shim, sa, "create", "", "configmaps", "open-infra-ecs", "")); !st.Allowed {
+		t.Fatalf("the platform's own grant must still allow, got %+v", st)
+	}
+	if st := post(t, h, sar(shim, sa, "create", "", "configmaps", "shop", "")); !st.Allowed {
+		t.Fatalf("the service-linked role must allow in the member home, got %+v", st)
+	}
+	if st := post(t, h, sar(shim, sa, "create", "", "configmaps", "elsewhere", "")); st.Allowed || !st.Denied {
+		t.Fatalf("outside a member home the shim stays denied, got %+v", st)
+	}
+	if st := post(t, h, sar(shim, sa, "delete", "", "configmaps", "shop", "x")); st.Allowed || !st.Denied {
+		t.Fatalf("a verb the service-linked role does not grant stays denied, got %+v", st)
+	}
+	if st := post(t, h, sar(shim, sa, "get", "", "secrets", "shop", "locked")); st.Allowed || !st.Denied {
+		t.Fatalf("an explicit forbid must stand over a service-linked allow, got %+v", st)
+	}
+	if st := post(t, h, sar("system:serviceaccount:kube-system:other", []string{"system:serviceaccounts"}, "get", "", "configmaps", "shop", "x")); st.Allowed || !st.Denied {
+		t.Fatalf("another ServiceAccount gets nothing from the shim's service-linked role, got %+v", st)
+	}
+	if st := post(t, h, sar("bob", nil, "get", "", "configmaps", "shop", "x")); st.Allowed || !st.Denied {
+		t.Fatalf("a user is never lifted by a service-linked role, got %+v", st)
+	}
+}

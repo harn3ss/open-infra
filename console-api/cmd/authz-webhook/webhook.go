@@ -234,6 +234,15 @@ func (h *webhookHandler) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d := h.checker.Evaluate(r.Context(), sar.Spec)
+	// A service-linked role (iamcompile/servicelinked.go): a platform ServiceAccount may act in a member
+	// account's home as that account's service-linked role allows, even where the RBAC corpus does not
+	// grant it. The compiler puts the role's grant in the iam-corpus each pass, so a new account needs no
+	// corpus regeneration. This lifts only a default deny; an explicit forbid stands.
+	if !d.Allowed && !d.ExplicitDeny && isServiceAccountUser(sar.Spec.User) && h.iamChecker != nil {
+		if sl := h.iamChecker.Evaluate(r.Context(), sar.Spec); sl.Allowed {
+			d = policyengine.Decision{Allowed: true, Reason: "service-linked role in a member account: " + sl.Reason}
+		}
+	}
 	// Log every decision — the whole point of shadow mode is the divergence record.
 	h.logger.Info("control-plane authz decision",
 		"mode", h.mode, "user", sar.Spec.User, "verb", verbOf(sar.Spec),
