@@ -91,13 +91,42 @@ func TestTranslate_IAMPolicy_ConditionBlocks(t *testing.T) {
 		"PolicyDocument": map[string]any{
 			"Statement": []any{
 				map[string]any{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/*",
-					"Condition": map[string]any{"Bool": map[string]any{"aws:MultiFactorAuthPresent": "true"}}},
+					"Condition": map[string]any{"Bool": map[string]any{"aws:SecureTransport": "true"}}},
 			},
 		},
 	}, nil)
 	txt := findingsText(fs)
 	if !strings.Contains(txt, "Condition") {
 		t.Fatalf("a Condition must block, got: %s", txt)
+	}
+}
+
+// An MFA condition translates, with its absent-key semantics: the key condition is written to the
+// statement (spec.dataPlane keyConditions, which the Policy schema keeps), never dropped.
+func TestTranslate_IAMPolicy_MFAConditionTranslates(t *testing.T) {
+	m, fs := translateIAMPolicy("NeedsMFA", map[string]any{
+		"Roles": []any{"app-role"},
+		"PolicyDocument": map[string]any{
+			"Statement": []any{
+				map[string]any{"Effect": "Deny", "Action": "s3:DeleteObject", "Resource": "arn:aws:s3:::b/*",
+					"Condition": map[string]any{"BoolIfExists": map[string]any{"aws:MultiFactorAuthPresent": "false"}}},
+			},
+		},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("an MFA condition must translate: %s", findingsText(fs))
+	}
+	st, _ := m.Spec["dataPlane"].(map[string]any)["statements"].([]any)
+	if len(st) != 1 {
+		t.Fatalf("statements: %#v", st)
+	}
+	kc, _ := st[0].(map[string]any)["keyConditions"].([]any)
+	if len(kc) != 1 {
+		t.Fatalf("the key condition is missing: %#v", st[0])
+	}
+	got := kc[0].(map[string]any)
+	if got["key"] != "multiFactorAuthPresent" || got["op"] != "==" || got["value"] != "false" || got["ifExists"] != true {
+		t.Fatalf("key condition %#v", got)
 	}
 }
 

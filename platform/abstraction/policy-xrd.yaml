@@ -288,6 +288,39 @@ spec:
                                   description: >-
                                     A Cedar-parseable datetime the attribute is compared against, e.g.
                                     "2025-01-01T00:00:00Z".
+                          keyConditions:
+                            type: array
+                            description: >-
+                              Conditions on request attributes AWS leaves out of some requests on purpose —
+                              the multi-factor keys the AWS importer emits from aws:MultiFactorAuthPresent
+                              (Bool / BoolIfExists) and aws:MultiFactorAuthAge (Numeric* and their IfExists
+                              forms), and Null on either. An absent attribute is evaluated as AWS does: it
+                              does not match a plain operator, matches an IfExists or negated one, and Null
+                              true tests for it. key is "multiFactorAuthPresent" (present on every temporary
+                              credential, absent for long-term access keys) or "multiFactorAuthAge" (the
+                              seconds since MFA, present only with MFA). A malformed entry makes the policy
+                              fail to compile (it then grants nothing). Optional.
+                            items:
+                              type: object
+                              required: [key, op, value]
+                              properties:
+                                key:
+                                  type: string
+                                  description: The request-context attribute, e.g. "multiFactorAuthPresent".
+                                op:
+                                  type: string
+                                  enum: ["==", "!=", "<", "<=", ">", ">=", "null"]
+                                  description: >-
+                                    The comparison: "==" (Bool, NumericEquals), "!=" (NumericNotEquals),
+                                    "<" "<=" ">" ">=" (NumericLessThan[Equals], NumericGreaterThan[Equals]),
+                                    or "null" (Null).
+                                value:
+                                  type: string
+                                  description: '"true" or "false" for a boolean (and for null), an integer for a number.'
+                                ifExists:
+                                  type: boolean
+                                  default: false
+                                  description: true = the operator's IfExists form (an absent attribute matches).
                 controlPlane:
                   type: object
                   description: >-

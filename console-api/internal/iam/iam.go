@@ -44,6 +44,42 @@ type Claims struct {
 	// Account is the 12-digit account the principal belongs to; empty is the install's management
 	// account. It qualifies the principal's identity (AccountIdentity) and its ARNs.
 	Account string `json:"account,omitempty"`
+	// MFA is how the credential was authenticated, for a TEMPORARY credential (a console session, an STS
+	// session): whether with a multi-factor code, and when. nil for long-term access keys, which AWS never
+	// marks either way — aws:MultiFactorAuthPresent and aws:MultiFactorAuthAge are then absent from the
+	// request, as on AWS.
+	MFA *MFAContext `json:"mfa,omitempty"`
+	// UserSession marks an IAM user's own temporary credentials (sts:GetSessionToken), which AWS restricts:
+	// no IAM call without MFA, and no STS call but AssumeRole and GetCallerIdentity.
+	UserSession bool `json:"-"`
+}
+
+// MFAContext is a temporary credential's multi-factor authentication: Present when it was authenticated
+// with an MFA code, and AuthTime (Unix seconds) when that was.
+type MFAContext struct {
+	Present  bool  `json:"present"`
+	AuthTime int64 `json:"at,omitempty"`
+}
+
+// NoMFA is the context of a temporary credential authenticated without MFA.
+func NoMFA() *MFAContext { return &MFAContext{} }
+
+// WithMFA is the context of a temporary credential authenticated with MFA at t.
+func WithMFA(t time.Time) *MFAContext { return &MFAContext{Present: true, AuthTime: t.Unix()} }
+
+// MFAPresent reports whether the credential was authenticated with MFA.
+func (c Claims) MFAPresent() bool { return c.MFA != nil && c.MFA.Present }
+
+// MFAAge is the seconds since the credential's MFA authentication (never negative); ok=false without one.
+func (c Claims) MFAAge(now time.Time) (int64, bool) {
+	if !c.MFAPresent() {
+		return 0, false
+	}
+	age := now.Unix() - c.MFA.AuthTime
+	if age < 0 {
+		age = 0
+	}
+	return age, true
 }
 
 // UsersGroup is the implicit group every principal carried before IAM policy became the one

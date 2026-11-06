@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/cedar-policy/cedar-go/types"
@@ -51,6 +52,7 @@ const (
 	condIP                     // a string attr holding an IP — IpAddress / NotIpAddress (or an exact StringEquals)
 	condString                 // a plain string attr — StringEquals (exact) / StringLike / StringNotLike (wildcard)
 	condTime                   // a datetime attr (RFC3339 string) — DateLessThan / DateGreaterThan [Equals]
+	condNumber                 // an integer attr — the Numeric* operators
 )
 
 // ConditionKey is one request-context attribute the aws-shim's requestContext() populates and that the
@@ -65,10 +67,18 @@ const (
 // the shim reopens that hole — the drift test in the aws-shim package
 // (TestSupportedConditionKeysMatchRequestContext) fails if the two ever diverge. (Belt-and-braces, the
 // engine additionally DENIES a forbid whose read attribute is absent or malformed — see engine.go.)
+//
+// An Optional key is one AWS leaves out of some requests on purpose, so its absence means something:
+// aws:MultiFactorAuthPresent is absent for a request signed with long-term access keys, and
+// aws:MultiFactorAuthAge for any request not authenticated with MFA. Its conditions are KeyConditions, which
+// say what an absent key does exactly as AWS's operators do (see KeyCondition), instead of the absent-key
+// guard the other conditions carry. The shim still populates it wherever the credential carries it: the
+// drift test exercises requestContext() with an MFA-authenticated session to see it set.
 type ConditionKey struct {
-	Attr    string
-	Type    condType
-	Aliases []string
+	Attr     string
+	Type     condType
+	Aliases  []string
+	Optional bool
 }
 
 // SupportedConditionKeys is the condition-import whitelist. Everything not expressible through it stays
@@ -83,6 +93,13 @@ var SupportedConditionKeys = []ConditionKey{
 	// The request time — the shim populates it from the clock. Honors time-window conditions
 	// (DateGreaterThan/DateLessThan[Equals]), e.g. temporary access that expires.
 	{Attr: "currentTime", Type: condTime, Aliases: []string{"aws:CurrentTime", "currentTime"}},
+	// Multi-factor authentication. The shim populates both from the credential (s3authz.RequestContext):
+	// multiFactorAuthPresent on every temporary credential (a console session, an STS session) — true when it
+	// was authenticated with an MFA code — and absent for long-term access keys; multiFactorAuthAge, the
+	// seconds since that MFA authentication, only when there was one. Honors Bool / BoolIfExists, the
+	// Numeric* operators and their IfExists forms, and Null, with AWS's absent-key semantics.
+	{Attr: "multiFactorAuthPresent", Type: condBool, Optional: true, Aliases: []string{"aws:MultiFactorAuthPresent", "multiFactorAuthPresent"}},
+	{Attr: "multiFactorAuthAge", Type: condNumber, Optional: true, Aliases: []string{"aws:MultiFactorAuthAge", "multiFactorAuthAge"}},
 }
 
 // SupportedConditionAttrs is the set of request-context attributes the importer may reference — the
@@ -95,10 +112,12 @@ func SupportedConditionAttrs() map[string]bool {
 	return m
 }
 
+// resolveConditionKey finds a condition key by any of its spellings. AWS condition key names are not
+// case-sensitive (aws:SourceIp is aws:sourceip), so neither is the lookup.
 func resolveConditionKey(key string) (ConditionKey, bool) {
 	for _, k := range SupportedConditionKeys {
 		for _, a := range k.Aliases {
-			if a == key {
+			if strings.EqualFold(a, key) {
 				return k, true
 			}
 		}
@@ -146,6 +165,7 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 		var ips []IPCondition
 		var likes []LikeCondition
 		var times []TimeCondition
+		var keyConds []KeyCondition
 		if rawCond, ok := st["Condition"]; ok {
 			cm, isMap := rawCond.(map[string]any)
 			if !isMap {
@@ -154,7 +174,7 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 			}
 			var reason string
 			var mapped bool
-			eq, ips, likes, times, reason, mapped = importCondition(cm)
+			eq, ips, likes, times, keyConds, reason, mapped = importCondition(cm)
 			if !mapped {
 				// Refuse the WHOLE statement — never emit it with the condition dropped. Dropping an
 				// Allow's condition would WIDEN the grant; dropping a Deny's condition would widen the
@@ -221,7 +241,7 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 			}
 		}
 
-		s := Statement{Effect: effect, Actions: actions, NotActions: notActions, Resources: resources, NotResources: notResources, IPConditions: ips, LikeConditions: likes, TimeConditions: times}
+		s := Statement{Effect: effect, Actions: actions, NotActions: notActions, Resources: resources, NotResources: notResources, IPConditions: ips, LikeConditions: likes, TimeConditions: times, KeyConditions: keyConds}
 		if len(eq) > 0 {
 			s.Condition = eq
 		}
@@ -232,16 +252,17 @@ func ImportAWS(policyDocument string) ([]Statement, []string, error) {
 
 // importCondition maps a statement's AWS Condition block onto the whitelist. It returns the equality
 // conditions (attr -> value; "true"/"false" for a Bool), the IP CIDR conditions, the StringLike pattern
-// conditions, and the Date* datetime conditions, plus ok=false with a reason if ANY operator / key /
-// shape is not faithfully mappable — in which case the caller refuses the whole statement. Only Bool (on
-// a boolean attr), single-valued StringEquals (on a non-boolean populated attr), StringLike/StringNotLike
-// (on a string attr), Date{Greater,Less}Than[Equals] (on a datetime attr), and IpAddress / NotIpAddress
-// (CIDR, on an IP attr) are honored; every other operator, an unpopulated key, and any multi-valued list
+// conditions, the Date* datetime conditions and the conditions on Optional keys, plus ok=false with a
+// reason if ANY operator / key / shape is not faithfully mappable — in which case the caller refuses the
+// whole statement. Only Bool (on a boolean attr), single-valued StringEquals (on a non-boolean populated
+// attr), StringLike/StringNotLike (on a string attr), Date{Greater,Less}Than[Equals] (on a datetime attr),
+// IpAddress / NotIpAddress (CIDR, on an IP attr), and on an Optional key Bool / Numeric* (and their
+// IfExists forms) and Null are honored; every other operator, an unpopulated key, and any multi-valued list
 // stay refused (fail closed).
-func importCondition(cond map[string]any) (eq map[string]string, ips []IPCondition, likes []LikeCondition, times []TimeCondition, reason string, ok bool) {
+func importCondition(cond map[string]any) (eq map[string]string, ips []IPCondition, likes []LikeCondition, times []TimeCondition, keys []KeyCondition, reason string, ok bool) {
 	eq = map[string]string{}
-	fail := func(format string, a ...any) (map[string]string, []IPCondition, []LikeCondition, []TimeCondition, string, bool) {
-		return nil, nil, nil, nil, fmt.Sprintf(format, a...), false
+	fail := func(format string, a ...any) (map[string]string, []IPCondition, []LikeCondition, []TimeCondition, []KeyCondition, string, bool) {
+		return nil, nil, nil, nil, nil, fmt.Sprintf(format, a...), false
 	}
 	for op, kv := range cond {
 		m, isMap := kv.(map[string]any)
@@ -256,6 +277,14 @@ func importCondition(cond map[string]any) (eq map[string]string, ips []IPConditi
 			val, single := singleValue(rawVal)
 			if !single {
 				return fail("%q on %q is multi-valued (only single-valued is importable)", op, key)
+			}
+			if ck.Optional {
+				kc, why := optionalKeyCondition(op, key, ck, val)
+				if why != "" {
+					return fail("%s", why)
+				}
+				keys = append(keys, kc)
+				continue
 			}
 			switch op {
 			case "Bool":
@@ -305,7 +334,51 @@ func importCondition(cond map[string]any) (eq map[string]string, ips []IPConditi
 			}
 		}
 	}
-	return eq, ips, likes, times, "", true
+	return eq, ips, likes, times, keys, "", true
+}
+
+// numericOps maps an AWS Numeric* operator to its comparison.
+var numericOps = map[string]string{
+	"NumericEquals": "==", "NumericNotEquals": "!=",
+	"NumericLessThan": "<", "NumericLessThanEquals": "<=",
+	"NumericGreaterThan": ">", "NumericGreaterThanEquals": ">=",
+}
+
+// optionalKeyCondition maps one AWS operator on an Optional key (aws:MultiFactorAuthPresent,
+// aws:MultiFactorAuthAge) to its KeyCondition, or says why it cannot: Bool / BoolIfExists on a boolean key,
+// Numeric* / Numeric*IfExists with an integer on a number key, and Null on either. Anything else — a string
+// operator, a decimal, a value that is not a boolean — is refused, never approximated.
+func optionalKeyCondition(op, key string, ck ConditionKey, val string) (KeyCondition, string) {
+	if op == "Null" {
+		v := strings.ToLower(strings.TrimSpace(val))
+		if v != "true" && v != "false" {
+			return KeyCondition{}, fmt.Sprintf("Null on %q needs true or false, not %q", key, val)
+		}
+		return KeyCondition{Key: ck.Attr, Op: KeyNull, Value: v}, ""
+	}
+	base, ifExists := strings.CutSuffix(op, "IfExists")
+	switch ck.Type {
+	case condBool:
+		if base != "Bool" {
+			return KeyCondition{}, fmt.Sprintf("%q on the boolean key %q is not importable (use Bool or BoolIfExists)", op, key)
+		}
+		v := strings.ToLower(strings.TrimSpace(val))
+		if v != "true" && v != "false" {
+			return KeyCondition{}, fmt.Sprintf("%q on %q needs true or false, not %q", op, key, val)
+		}
+		return KeyCondition{Key: ck.Attr, Op: "==", Value: v, IfExists: ifExists}, ""
+	case condNumber:
+		cmp, isNumeric := numericOps[base]
+		if !isNumeric {
+			return KeyCondition{}, fmt.Sprintf("%q on the numeric key %q is not importable (use a Numeric operator)", op, key)
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
+		if err != nil {
+			return KeyCondition{}, fmt.Sprintf("%q value %q on %q is not an integer", op, val, key)
+		}
+		return KeyCondition{Key: ck.Attr, Op: cmp, Value: strconv.FormatInt(n, 10), IfExists: ifExists}, ""
+	}
+	return KeyCondition{}, fmt.Sprintf("%q on %q is not importable", op, key)
 }
 
 // dateOp maps an AWS Date* condition operator to the Cedar datetime comparison operator.

@@ -228,27 +228,39 @@ func (g Gate) legacy(ctx context.Context, c iam.Claims, q Request, reqCtx map[st
 	return true, ""
 }
 
-// RequestContext is the Cedar condition context for a request: past authentication, the source IP, the
-// calling principal's name (username) and the time it is evaluated (currentTime, for aws:CurrentTime
-// conditions). The aws-shim's requestContext is this, so every front door feeds the engine the same
-// attributes; each MUST stay in lockstep with policyengine's SupportedConditionKeys (the aws-shim's
+// RequestContext is the Cedar condition context for a request by claims: past authentication, the source
+// IP, the calling principal's name (username), the time it is evaluated (currentTime, for aws:CurrentTime
+// conditions) and how its credential was authenticated (multiFactorAuthPresent, multiFactorAuthAge). The
+// aws-shim's requestContext is this, so every front door feeds the engine the same attributes; each MUST
+// stay in lockstep with policyengine's SupportedConditionKeys (the aws-shim's
 // TestSupportedConditionKeysMatchRequestContext drift guard). currentTime is always set: an absent
 // datetime would make a time-window Deny fail open.
-func RequestContext(principalID string, r *http.Request) map[string]any {
-	c := map[string]any{
+//
+// The MFA keys follow AWS: a temporary credential (a console session, an STS session) carries
+// multiFactorAuthPresent — true when it was authenticated with an MFA code, false when not — and, with
+// MFA, multiFactorAuthAge, the seconds since. A long-term access key carries neither.
+func RequestContext(c iam.Claims, r *http.Request) map[string]any {
+	now := time.Now()
+	out := map[string]any{
 		"authenticated": true,
 		// RFC3339 UTC with a trailing Z, the form cedar-go's datetime() parses.
-		"currentTime": time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+		"currentTime": now.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 	if r != nil {
 		if ip := ClientIP(r); ip != "" {
-			c["sourceIp"] = ip
+			out["sourceIp"] = ip
 		}
 	}
-	if principalID != "" {
-		c["username"] = principalID
+	if id := c.PrincipalID(); id != "" {
+		out["username"] = id
 	}
-	return c
+	if c.MFA != nil {
+		out["multiFactorAuthPresent"] = c.MFA.Present
+		if age, ok := c.MFAAge(now); ok {
+			out["multiFactorAuthAge"] = age
+		}
+	}
+	return out
 }
 
 // ClientIP is the request's source address: the first X-Forwarded-For hop, else the peer address.

@@ -3,6 +3,7 @@ package iamauthz
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 
 	"github.com/harn3ss/open-infra/policyengine"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -174,6 +175,7 @@ func StatementsFromSpec(v any) []policyengine.Statement {
 			IPConditions:   ToIPConditions(sm["ipConditions"]),
 			LikeConditions: ToLikeConditions(sm["likeConditions"]),
 			TimeConditions: ToTimeConditions(sm["timeConditions"]),
+			KeyConditions:  ToKeyConditions(sm["keyConditions"]),
 		})
 	}
 	return out
@@ -230,6 +232,36 @@ func ToTimeConditions(v any) []policyengine.TimeCondition {
 			continue
 		}
 		out = append(out, policyengine.TimeCondition{Key: key, Op: op, Target: target})
+	}
+	return out
+}
+
+// ToKeyConditions parses a statement's keyConditions array (conditions on keys AWS leaves out of some
+// requests: aws:MultiFactorAuthPresent, aws:MultiFactorAuthAge). An entry missing a key or op is kept with
+// what it has, so the engine refuses to compile it rather than the condition being dropped: a dropped
+// condition would widen an Allow.
+func ToKeyConditions(v any) []policyengine.KeyCondition {
+	var out []policyengine.KeyCondition
+	for _, it := range toSlice(v) {
+		m, ok := it.(map[string]any)
+		if !ok {
+			out = append(out, policyengine.KeyCondition{})
+			continue
+		}
+		val := str(m["value"])
+		switch x := m["value"].(type) {
+		case bool:
+			val = "false"
+			if x {
+				val = "true"
+			}
+		case int64:
+			val = strconv.FormatInt(x, 10)
+		case float64:
+			val = strconv.FormatFloat(x, 'f', -1, 64)
+		}
+		ifExists, _ := m["ifExists"].(bool)
+		out = append(out, policyengine.KeyCondition{Key: str(m["key"]), Op: str(m["op"]), Value: val, IfExists: ifExists})
 	}
 	return out
 }

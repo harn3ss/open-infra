@@ -72,6 +72,13 @@ func statementsToSpecAny(stmts []policyengine.Statement) []any {
 			}
 			m["timeConditions"] = times
 		}
+		if len(s.KeyConditions) > 0 {
+			keys := make([]any, 0, len(s.KeyConditions))
+			for _, kc := range s.KeyConditions {
+				keys = append(keys, map[string]any{"key": kc.Key, "op": kc.Op, "value": kc.Value, "ifExists": kc.IfExists})
+			}
+			m["keyConditions"] = keys
+		}
 		out = append(out, m)
 	}
 	return out

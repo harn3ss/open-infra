@@ -100,8 +100,8 @@ func compileStatement(st map[string]any) ([]policyengine.Statement, []string, er
 		c, why := importCondition(effect, cond)
 		switch {
 		case why == "":
-			base.Condition, base.IPConditions, base.LikeConditions, base.TimeConditions =
-				c.Condition, c.IPConditions, c.LikeConditions, c.TimeConditions
+			base.Condition, base.IPConditions, base.LikeConditions, base.TimeConditions, base.KeyConditions =
+				c.Condition, c.IPConditions, c.LikeConditions, c.TimeConditions, c.KeyConditions
 		case effect == policyengine.Allow:
 			return nil, []string{"Allow dropped: its condition is not supported (" + why + ")"}, nil
 		default:
@@ -241,6 +241,7 @@ type conditions struct {
 	IPConditions   []policyengine.IPCondition
 	LikeConditions []policyengine.LikeCondition
 	TimeConditions []policyengine.TimeCondition
+	KeyConditions  []policyengine.KeyCondition
 }
 
 // importCondition maps an AWS Condition block with the AWS importer (by importing a one-statement
@@ -263,7 +264,7 @@ func importCondition(effect policyengine.Effect, cond any) (conditions, string) 
 		return conditions{}, why
 	}
 	s := stmts[0]
-	return conditions{s.Condition, s.IPConditions, s.LikeConditions, s.TimeConditions}, ""
+	return conditions{s.Condition, s.IPConditions, s.LikeConditions, s.TimeConditions, s.KeyConditions}, ""
 }
 
 // ResourceStatement is one statement of a resource-based policy (a bucket, queue, topic, key, function

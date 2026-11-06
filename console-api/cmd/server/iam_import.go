@@ -65,7 +65,16 @@ type importedStatement struct {
 	IPConditions   []importedIPCondition   `json:"ipConditions,omitempty"`
 	LikeConditions []importedLikeCondition `json:"likeConditions,omitempty"`
 	TimeConditions []importedTimeCondition `json:"timeConditions,omitempty"`
+	KeyConditions  []importedKeyCondition  `json:"keyConditions,omitempty"`
 	Broad          bool                    `json:"broad"`
+}
+
+// importedKeyCondition is a condition on a key AWS leaves out of some requests (aws:MultiFactorAuth*).
+type importedKeyCondition struct {
+	Key      string `json:"key"`
+	Op       string `json:"op"`
+	Value    string `json:"value"`
+	IfExists bool   `json:"ifExists,omitempty"`
 }
 
 type importSummary struct {
@@ -136,6 +145,10 @@ func buildImportResp(stmts []policyengine.Statement, refused []string) importRes
 		for _, c := range s.TimeConditions {
 			timec = append(timec, importedTimeCondition{Key: c.Key, Op: c.Op, Target: c.Target})
 		}
+		var keyc []importedKeyCondition
+		for _, c := range s.KeyConditions {
+			keyc = append(keyc, importedKeyCondition{Key: c.Key, Op: c.Op, Value: c.Value, IfExists: c.IfExists})
+		}
 		translated = append(translated, importedStatement{
 			Effect:         string(s.Effect),
 			Actions:        s.Actions,
@@ -146,6 +159,7 @@ func buildImportResp(stmts []policyengine.Statement, refused []string) importRes
 			IPConditions:   ipc,
 			LikeConditions: likec,
 			TimeConditions: timec,
+			KeyConditions:  keyc,
 			Broad:          broad,
 		})
 		if broad {

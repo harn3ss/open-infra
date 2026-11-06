@@ -221,6 +221,30 @@ func awsDateOp(op string) string {
 	return ""
 }
 
+// awsKeyOp is the AWS operator of a KeyCondition (the reverse of optionalKeyCondition), "" when AWS has
+// none (a boolean compared with !=).
+func awsKeyOp(c KeyCondition) string {
+	if c.Op == KeyNull {
+		return "Null"
+	}
+	suffix := ""
+	if c.IfExists {
+		suffix = "IfExists"
+	}
+	if c.kind() == "bool" {
+		if c.Op != "==" {
+			return ""
+		}
+		return "Bool" + suffix
+	}
+	for op, cmp := range numericOps {
+		if cmp == c.Op {
+			return op + suffix
+		}
+	}
+	return ""
+}
+
 // ExportAWS writes data-plane statements as an AWS IAM policy document — the reverse of ImportAWS, so a
 // policy authored in the earlier native form (kind: Policy spec.dataPlane) becomes a spec.document that
 // imports back to the same statements. A statement it cannot write faithfully (a resource type with no
@@ -316,6 +340,14 @@ func ExportAWS(stmts []Statement) (document string, skipped []string, err error)
 				break
 			}
 			put(op, awsConditionKey(c.Key), c.Target)
+		}
+		for _, c := range s.KeyConditions {
+			op := awsKeyOp(c)
+			if op == "" {
+				bad = "condition " + c.Op + " on " + c.Key + " has no AWS operator"
+				break
+			}
+			put(op, awsConditionKey(c.Key), c.Value)
 		}
 		if bad != "" {
 			skipped = append(skipped, fmt.Sprintf("statement %d: %s", i, bad))

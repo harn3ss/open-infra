@@ -140,6 +140,9 @@ func statementsFromSpec(v any) []policyengine.Statement {
 		for _, x := range toSliceMaps(m["timeConditions"]) {
 			st.TimeConditions = append(st.TimeConditions, policyengine.TimeCondition{Key: fmt.Sprint(x["key"]), Op: fmt.Sprint(x["op"]), Target: fmt.Sprint(x["target"])})
 		}
+		for _, x := range toSliceMaps(m["keyConditions"]) {
+			st.KeyConditions = append(st.KeyConditions, policyengine.KeyCondition{Key: fmt.Sprint(x["key"]), Op: fmt.Sprint(x["op"]), Value: fmt.Sprint(x["value"]), IfExists: x["ifExists"] == true})
+		}
 		out = append(out, st)
 	}
 	return out

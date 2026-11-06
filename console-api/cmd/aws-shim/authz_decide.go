@@ -41,12 +41,9 @@ func decision(ctx context.Context, r *http.Request, authz *dataplaneauthz.Checke
 	action, resType, resID string, legacy func() (bool, string), opts ...iamauthz.RequestOption) iamauthz.Decision {
 	p := principalOf(ctx, claims)
 	res := typedResource(resType, resID)
-	var reqCtx map[string]any
-	if r != nil {
-		reqCtx = requestContext(claims, r)
-	} else {
-		reqCtx = map[string]any{"authenticated": "true", "username": claims.PrincipalID()}
-	}
+	// One request context for every decision, a request or not (an in-process call has no source IP): the
+	// MFA keys above all must reach every evaluation, or a Deny gated on them would not.
+	reqCtx := requestContext(claims, r)
 	var d iamauthz.Decision
 	if memberAccount(claims) {
 		// A door that keeps one account's resources keeps the management account's: a member account's

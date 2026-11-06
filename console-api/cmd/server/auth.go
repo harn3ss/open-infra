@@ -594,6 +594,6 @@ func (z *consoleAuthz) isOperator(r *http.Request, c sessionClaims, p iamauthz.P
 	if z == nil || z.eval == nil || mode != iamauthz.ModeEnforce {
 		return c.Role == "admin" || c.Role == "root"
 	}
-	reqCtx := s3authz.RequestContext(c.Claims.PrincipalID(), r)
+	reqCtx := s3authz.RequestContext(c.Claims, r)
 	return z.eval.Authorize(r.Context(), p, operatorSurface, "*", reqCtx).Allowed
 }

@@ -130,13 +130,15 @@ func s3Action(kind string) string {
 
 // requestContext is the Cedar condition context: the request is past SigV4 auth (authenticated), the
 // source IP, the calling principal's name (username — the data-plane principal id: a User's name or an
-// assumed Role's name), and the wall-clock time the request is evaluated (currentTime, for aws:CurrentTime
-// Date* conditions). It is s3authz.RequestContext, which the console's bucket browser uses too, so both
+// assumed Role's name), the wall-clock time the request is evaluated (currentTime, for aws:CurrentTime
+// Date* conditions), and — for a temporary credential — whether it was authenticated with MFA and how long
+// ago (multiFactorAuthPresent, multiFactorAuthAge; absent for a long-term access key, as on AWS). r may be
+// nil (an in-process decision: no source IP). It is s3authz.RequestContext, which the console's bucket browser uses too, so both
 // feed the engine the same attributes. Each attribute MUST stay in lockstep with policyengine's
 // SupportedConditionKeys (the TestSupportedConditionKeysMatchRequestContext drift guard): supporting a
 // condition key the shim never populates would make a Deny gated on it silently never fire.
 func requestContext(claims iam.Claims, r *http.Request) map[string]any {
-	return s3authz.RequestContext(claims.PrincipalID(), r)
+	return s3authz.RequestContext(claims, r)
 }
 
 func clientIP(r *http.Request) string { return s3authz.ClientIP(r) }

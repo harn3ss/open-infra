@@ -124,7 +124,7 @@ func (z *consoleAuthz) decide(r *http.Request, action, arn string, legacy func()
 		return legacy()
 	}
 	p := z.principal(c)
-	reqCtx := s3authz.RequestContext(c.Claims.PrincipalID(), r)
+	reqCtx := s3authz.RequestContext(c.Claims, r)
 	d := z.eval.Decide(r.Context(), p, action, arn, reqCtx, legacy)
 	if !d.Allowed && d.Mode == iamauthz.ModeEnforce {
 		z.logger.Warn("iam denied", "principal", p.ARN(), "action", action, "resource", arn, "reason", d.Reason)

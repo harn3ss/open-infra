@@ -84,13 +84,31 @@ func TestS3_DataPlaneDeny(t *testing.T) {
 // removes a populated key that is still importable. Keep them one shared list.
 func TestSupportedConditionKeysMatchRequestContext(t *testing.T) {
 	// Exercise requestContext with a request + claims that populate every attribute it can set: a
-	// RemoteAddr yields the source IP, a principal id yields username, and authenticated is always set.
+	// RemoteAddr yields the source IP, a principal id yields username, authenticated is always set, and a
+	// session authenticated with MFA a minute ago yields the MFA keys.
 	req := httptest.NewRequest("GET", "http://shim/", nil)
 	req.RemoteAddr = "203.0.113.7:5555"
-	claims := iam.Claims{Sub: "alice"}
+	claims := iam.Claims{Sub: "alice", MFA: iam.WithMFA(time.Now().Add(-time.Minute))}
 	populated := map[string]bool{}
 	for k := range requestContext(claims, req) {
 		populated[k] = true
+	}
+	// A long-term access key (no MFA context) carries every key but the Optional ones — those AWS leaves out
+	// of such a request on purpose (aws:MultiFactorAuth*): a Deny gated on any other key must always see it.
+	longTerm := requestContext(iam.Claims{Sub: "alice"}, req)
+	for _, k := range policyengine.SupportedConditionKeys {
+		if _, set := longTerm[k.Attr]; set == k.Optional {
+			t.Errorf("a long-term key's request context: %q set=%v, but Optional=%v", k.Attr, set, k.Optional)
+		}
+	}
+	// In-process decisions (no request) carry the same keys, the source IP aside.
+	for k := range requestContext(claims, nil) {
+		if !populated[k] {
+			t.Errorf("requestContext(nil request) sets %q, which a request does not", k)
+		}
+	}
+	if _, ok := requestContext(claims, nil)["multiFactorAuthPresent"]; !ok {
+		t.Error("an in-process decision drops the MFA keys")
 	}
 
 	importable := policyengine.SupportedConditionAttrs()

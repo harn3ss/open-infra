@@ -14,7 +14,9 @@ package policyengine
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/cedar-policy/cedar-go"
@@ -54,6 +56,87 @@ type Statement struct {
 	IPConditions   []IPCondition     // aws:SourceIp-style CIDR conditions, evaluated via Cedar's ipaddr extension
 	LikeConditions []LikeCondition   // StringLike/StringNotLike wildcard conditions, evaluated via Cedar's `like`
 	TimeConditions []TimeCondition   // aws:CurrentTime Date* conditions, evaluated via Cedar's datetime extension
+	KeyConditions  []KeyCondition    // conditions on keys AWS leaves out of some requests (aws:MultiFactorAuth*)
+}
+
+// KeyNull is a KeyCondition's Op for AWS's Null operator: Value "true" matches when the key is absent,
+// "false" when it is present.
+const KeyNull = "null"
+
+// KeyCondition is a condition on a request-context attribute that AWS leaves out of some requests on
+// purpose — aws:MultiFactorAuthPresent (absent for long-term access keys) and aws:MultiFactorAuthAge (absent
+// unless the credential was authenticated with MFA) — so what an absent key does is part of the condition,
+// exactly as AWS evaluates it:
+//
+//   - Bool / Numeric* (IfExists false): an absent key does not match, so an Allow gated on it grants nothing
+//     and a Deny gated on it does not apply — AWS's documented behaviour for "Deny, Bool
+//     aws:MultiFactorAuthPresent false", which does not deny long-term access keys;
+//   - their IfExists forms (IfExists true): an absent key matches — "Deny, BoolIfExists
+//     aws:MultiFactorAuthPresent false" denies every request not authenticated with MFA, long-term keys
+//     included, the policy AWS recommends;
+//   - a negated operator (NumericNotEquals, Op "!=") matches an absent key, as AWS's negated operators do;
+//   - Null (Op KeyNull): Value "true" matches an absent key, "false" a present one.
+//
+// Op is "==" or "!=" with a boolean Value ("true"/"false"), one of == != < <= > >= with an integer Value,
+// or KeyNull. The request attribute must be a Cedar boolean or long of the matching kind: a request that
+// carries one of another kind is denied outright (Authorize), so a malformed value can never make a Deny
+// evaporate.
+type KeyCondition struct {
+	Key      string // request-context attribute, e.g. "multiFactorAuthPresent"
+	Op       string // "==", "!=", "<", "<=", ">", ">=", or KeyNull
+	Value    string // "true"/"false", or an integer
+	IfExists bool   // AWS's ...IfExists: an absent key matches
+}
+
+var cedarIdent = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// kind is the Cedar type the condition compares the attribute as ("bool" or "long"), "" for Null.
+func (k KeyCondition) kind() string {
+	switch {
+	case k.Op == KeyNull:
+		return ""
+	case k.Value == "true" || k.Value == "false":
+		return "bool"
+	}
+	return "long"
+}
+
+// cedarTerm renders the condition as one Cedar term, absent-key semantics included.
+func (k KeyCondition) cedarTerm(idx int) (string, error) {
+	if !cedarIdent.MatchString(k.Key) {
+		return "", fmt.Errorf("statement %d: key condition needs an attribute name, got %q", idx, k.Key)
+	}
+	has := "context has " + k.Key
+	if k.Op == KeyNull {
+		switch k.Value {
+		case "true":
+			return "!(" + has + ")", nil
+		case "false":
+			return "(" + has + ")", nil
+		}
+		return "", fmt.Errorf("statement %d: a Null condition on %s needs true or false, got %q", idx, k.Key, k.Value)
+	}
+	lit := k.Value
+	switch k.kind() {
+	case "bool":
+		if k.Op != "==" && k.Op != "!=" {
+			return "", fmt.Errorf("statement %d: a boolean condition on %s compares with == or !=, not %q", idx, k.Key, k.Op)
+		}
+	default:
+		if _, err := strconv.ParseInt(k.Value, 10, 64); err != nil {
+			return "", fmt.Errorf("statement %d: condition on %s needs true, false or an integer, got %q", idx, k.Key, k.Value)
+		}
+		switch k.Op {
+		case "==", "!=", "<", "<=", ">", ">=":
+		default:
+			return "", fmt.Errorf("statement %d: numeric condition operator %q must be one of == != < <= > >=", idx, k.Op)
+		}
+	}
+	test := "context." + k.Key + " " + k.Op + " " + lit
+	if k.IfExists || k.Op == "!=" {
+		return "(!(" + has + ") || " + test + ")", nil
+	}
+	return "(" + has + " && " + test + ")", nil
 }
 
 // IPCondition is a CIDR test on a request-context attribute that holds an IP (today only "sourceIp",
@@ -128,6 +211,9 @@ type Engine struct {
 	ps       *cedar.PolicySet
 	ipKeys   map[string]bool
 	timeKeys map[string]bool
+	// keyKinds is the Cedar type ("bool", "long") each KeyCondition attribute is compared as; a request
+	// carrying one of another type is denied outright.
+	keyKinds map[string]string
 }
 
 // NewEngine compiles open-infra statements into a Cedar policy set.
@@ -153,6 +239,7 @@ func newEngine(statements []Statement, extra string) (*Engine, error) {
 	var b strings.Builder
 	ipKeys := map[string]bool{}
 	timeKeys := map[string]bool{}
+	keyKinds := map[string]string{}
 	for i, s := range statements {
 		clause, err := s.toCedar(i)
 		if err != nil {
@@ -166,6 +253,16 @@ func newEngine(statements []Statement, extra string) (*Engine, error) {
 		for _, tc := range s.TimeConditions {
 			timeKeys[tc.Key] = true
 		}
+		for _, kc := range s.KeyConditions {
+			k := kc.kind()
+			if k == "" {
+				continue
+			}
+			if prev, seen := keyKinds[kc.Key]; seen && prev != k {
+				return nil, fmt.Errorf("statement %d: %s is compared as both a %s and a %s", i, kc.Key, prev, k)
+			}
+			keyKinds[kc.Key] = k
+		}
 	}
 	if extra != "" {
 		b.WriteString(extra)
@@ -175,7 +272,7 @@ func newEngine(statements []Statement, extra string) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile policy: %w", err)
 	}
-	return &Engine{ps: ps, ipKeys: ipKeys, timeKeys: timeKeys}, nil
+	return &Engine{ps: ps, ipKeys: ipKeys, timeKeys: timeKeys, keyKinds: keyKinds}, nil
 }
 
 // Authorize evaluates a request: an explicit Deny wins, else an Allow permits, else default-deny.
@@ -187,6 +284,24 @@ func (e *Engine) Authorize(r Request) Decision {
 			ctx[types.String(k)] = types.String(x)
 		case bool:
 			ctx[types.String(k)] = types.Boolean(x)
+		case int:
+			ctx[types.String(k)] = types.Long(x)
+		case int64:
+			ctx[types.String(k)] = types.Long(x)
+		}
+	}
+	// A KeyCondition attribute must be the type its conditions compare it as. Present as anything else
+	// (a string "true", a number where a boolean belongs), a comparison on it would error at eval and SKIP a
+	// forbid — so such a request is denied outright, never evaluated.
+	for k, kind := range e.keyKinds {
+		v, ok := ctx[types.String(k)]
+		if !ok {
+			continue
+		}
+		_, isBool := v.(types.Boolean)
+		_, isLong := v.(types.Long)
+		if (kind == "bool" && !isBool) || (kind == "long" && !isLong) {
+			return Decision{Allowed: false, Reason: "the request attribute " + k + " is malformed (denied)"}
 		}
 	}
 	// Sanitise IP-typed attributes so a malformed value cannot make a Deny fail OPEN. An IP condition
@@ -370,6 +485,15 @@ func (s Statement) toCedar(idx int) (string, error) {
 		} else {
 			terms = append(terms, joined)
 		}
+	}
+	// Key conditions carry their own absent-key semantics (AWS's), the same for a permit and a forbid: an
+	// absent key is part of what they test, never an error that would skip the clause.
+	for _, kc := range s.KeyConditions {
+		term, err := kc.cedarTerm(idx)
+		if err != nil {
+			return "", err
+		}
+		terms = append(terms, term)
 	}
 
 	clause := head + " (\n  principal,\n  action,\n  resource\n)"

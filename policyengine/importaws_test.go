@@ -135,7 +135,7 @@ func TestImportAWS_EC2AddressActionsOnly(t *testing.T) {
 func TestImportAWS_ReportsUnsupported(t *testing.T) {
 	doc := `{"Statement":[
 	  {"Effect":"Allow","Action":["ec2:RunInstances","s3:GetObject"],"Resource":"*"},
-	  {"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"Bool":{"aws:MultiFactorAuthPresent":"true"}}}
+	  {"Effect":"Allow","Action":"s3:GetObject","Resource":"arn:aws:s3:::b/*","Condition":{"Bool":{"aws:SecureTransport":"true"}}}
 	]}`
 	stmts, unsupported, err := ImportAWS(doc)
 	if err != nil {

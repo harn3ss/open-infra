@@ -68,7 +68,7 @@ func (b *bucketAuthz) allow(w http.ResponseWriter, r *http.Request, q s3authz.Re
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not signed in"})
 		return false
 	}
-	allowed, reason := b.gate.Allow(r.Context(), c.Claims, q, s3authz.RequestContext(c.Claims.PrincipalID(), r))
+	allowed, reason := b.gate.Allow(r.Context(), c.Claims, q, s3authz.RequestContext(c.Claims, r))
 	if !allowed {
 		b.logger.Warn("bucket browser denied", "user", c.Sub, "role", c.Role, "action", q.Action,
 			"bucket", q.Bucket, "key", q.Key, "reason", reason)
