@@ -142,6 +142,11 @@ type ecrCaller struct {
 	// AssumedRole is the kind: Role an sts:AssumeRole session (e.g. a VM instance role) acts as; empty for a
 	// User. A credential minted before this claim existed has none and is authorized as a User, as before.
 	AssumedRole string `json:"assumedRole,omitempty"`
+	// Account and Home are the account the caller acts in and, for a member account, its home namespace:
+	// the token endpoint decides as that account's principal (a member account's bob is never the
+	// management account's bob). Empty — a credential minted before accounts — is the management account.
+	Account string `json:"account,omitempty"`
+	Home    string `json:"home,omitempty"`
 	// IssuedAt is when the credential was minted (the JWT iat) — compared against the role's session-revoke
 	// cutoff. Set by verifyCaller; ignored by mintCaller.
 	IssuedAt time.Time `json:"-"`
@@ -156,6 +161,12 @@ func (s *ecrTokenSigner) mintCaller(c ecrCaller, ttl time.Duration) (string, err
 		"purpose": "ecr-authz", "iat": now.Unix(), "exp": now.Add(ttl).Unix()}
 	if c.AssumedRole != "" {
 		claims["assumedRole"] = c.AssumedRole
+	}
+	if c.Account != "" {
+		claims["account"] = c.Account
+		if c.Home != "" {
+			claims["home"] = c.Home
+		}
 	}
 	return s.signJWT(map[string]any{"alg": "RS256", "typ": "JWT", "kid": "ecr-cred-1"}, claims)
 }
@@ -404,8 +415,11 @@ func (h *ecrHandler) issueRegistryToken(w http.ResponseWriter, r *http.Request, 
 		writeDockerTokenError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid ECR credential: "+err.Error())
 		return
 	}
-	claims := iam.Claims{Sub: caller.Sub, Groups: caller.Groups, Role: caller.Role, AssumedRole: caller.AssumedRole}
-	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
+	claims := iam.Claims{Sub: caller.Sub, Groups: caller.Groups, Role: caller.Role, AssumedRole: caller.AssumedRole,
+		Account: caller.Account}
+	// The account the credential was issued in, as the router puts it on a signed request: a member
+	// account's principal is decided as that account's, in its home.
+	ctx := withPrincipal(withAccount(r.Context(), caller.Account, caller.Home), claims.PrincipalType()+"::"+claims.PrincipalID())
 
 	// "Revoke sessions" on the role bites its ECR credentials too: one minted before the cutoff came from a
 	// session issued before it (the SigV4 path refuses such a session), so it is refused here as well.

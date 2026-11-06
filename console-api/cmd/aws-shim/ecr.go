@@ -312,8 +312,9 @@ func (h *ecrHandler) getAuthorizationToken(ctx context.Context, w http.ResponseW
 		// assumed-role session, the role too, so /ecr/token authorizes it under the role's data-plane policy.
 		// docker login -u AWS -p <token>; docker then presents it to /ecr/token, which authorizes the
 		// requested repos against THIS caller and mints a registry token scoped to only what's granted.
+		home, _ := ctx.Value(accountHomeKey{}).(string)
 		caller, err := h.signer.mintCaller(ecrCaller{Sub: claims.Sub, Groups: claims.Groups, Role: claims.Role,
-			AssumedRole: claims.AssumedRole}, ttl)
+			AssumedRole: claims.AssumedRole, Account: claims.Account, Home: home}, ttl)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return

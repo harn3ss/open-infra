@@ -14,6 +14,7 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"github.com/harn3ss/open-infra/policyengine"
 )
 
@@ -476,4 +477,33 @@ func equalGrants(got, want map[string][]string) bool {
 		}
 	}
 	return true
+}
+
+// A credential carries the account it was issued in: a member account's bob is decided as that account's
+// bob — never as the management account's bob, whose grant does not reach it — and the management
+// account's bob keeps his.
+func TestECRToken_MemberAccountCallerIsItsAccountsPrincipal(t *testing.T) {
+	t.Setenv(iamauthz.EnvMode, "enforce")
+	mgmtBob := dataplaneauthz.New(func(context.Context) (dataplaneauthz.Snapshot, error) {
+		return dataplaneauthz.Snapshot{Docs: []dataplaneauthz.PolicyDoc{{AppliesTo: []string{"User::bob"},
+			Statements: []policyengine.Statement{dpAllow([]string{"ecr:*"}, "*")}}}}, nil
+	}, time.Minute)
+	h := tokenModeECR(t, true, mgmtBob)
+	member, err := h.signer.mintCaller(ecrCaller{Sub: "bob", Account: testMember, Home: memberHome}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, err := h.signer.verifyCaller(member); err != nil || c.Account != testMember || c.Home != memberHome {
+		t.Fatalf("the credential must carry its account: %+v %v", c, err)
+	}
+	if got, _ := realmGrant(t, h, member, "repository:app:pull"); len(got) != 0 {
+		t.Fatalf("a member account's bob was granted %v on the management account's bob's policy", got)
+	}
+	mgmt, err := h.signer.mintCaller(ecrCaller{Sub: "bob"}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := realmGrant(t, h, mgmt, "repository:app:pull"); !equalGrants(got, map[string][]string{"app": {"pull"}}) {
+		t.Fatalf("the management account's bob keeps his grant, got %v", got)
+	}
 }
