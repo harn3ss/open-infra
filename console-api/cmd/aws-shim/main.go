@@ -475,6 +475,7 @@ func run(logger *slog.Logger) error {
 	var fns *fnLocator
 	if dyn != nil {
 		fns = newFnLocator(dyn, logger, fnNS, ident.StackNamespace)
+		fns.accounts = acctDir // a member account's functions are in its own namespaces
 	}
 	lambdaH := newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger)
 	lambdaH.authz = authzChecker

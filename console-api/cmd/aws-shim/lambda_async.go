@@ -7,8 +7,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/nats-io/nats.go"
 )
 
@@ -32,14 +34,14 @@ type asyncInvoker struct {
 const (
 	asyncStream     = "LAMBDA_ASYNC"
 	asyncSubjectAll = "lambda.async.>"
-	asyncSubjectPre = "lambda.async." // per-function work subject: lambda.async.<name>
+	asyncSubjectPre = "lambda.async." // per-function work subject: lambda.async.<name> (a member account's: lambda.async.<account>.<name>)
 	asyncDLQStream  = "LAMBDA_ASYNC_DLQ"
 	asyncDLQAll     = "lambda.dlq.>"
 	// Dead-letter subject. Deliberately NOT under "dlq.*" (that overlaps the platform-wide "dlq.>"
 	// stream apply-sink owns — JetStream forbids overlapping stream subjects, so our DLQ stream would
 	// silently fail to create and our dead-letters would pollute a shared stream) and NOT under
 	// "lambda.async.*" (that would be re-consumed by the work stream — an infinite dead-letter loop).
-	asyncDLQPre  = "lambda.dlq." // per-function dead-letter subject: lambda.dlq.<name>
+	asyncDLQPre  = "lambda.dlq." // per-function dead-letter subject: lambda.dlq.<name> (a member account's: lambda.dlq.<account>.<name>)
 	asyncDurable = "lambda-async-worker"
 	asyncAckWait = 2 * time.Minute // > the delivery client timeout, so no redelivery mid-POST
 )
@@ -95,11 +97,29 @@ func newAsyncInvoker(url, fnNS, svcSuffix string, maxDeliver int, logger *slog.L
 // publish enqueues an async invocation. The function name, its namespace (where the caller's right to
 // invoke it was checked; "" = the Lambda API's) and content-type ride as message headers; the payload is
 // the message body. Returns an error only if the durable enqueue itself fails (the caller then reports a
-// 500 rather than a false 202).
+// 500 rather than a false 202). It is the management account's function's (publishFor names the account).
 func (a *asyncInvoker) publish(name, ns, contentType string, payload []byte, requestID string) error {
-	msg := nats.NewMsg(asyncSubjectPre + name)
+	return a.publishFor("", name, ns, contentType, payload, requestID)
+}
+
+// publishFor is publish for the function of account ("" or the management account's: exactly publish).
+// A member account's invocation rides its own subject (lambda.async.<account>.<name>) and names its
+// account (X-Fn-Account), so its dead-letter is the account's too, never the management account's
+// function's of the same name.
+func (a *asyncInvoker) publishFor(account, name, ns, contentType string, payload []byte, requestID string) error {
+	_, err := a.js.PublishMsg(asyncMsg(account, name, ns, contentType, payload, requestID))
+	return err
+}
+
+// asyncMsg is the queued invocation of account's function name in ns.
+func asyncMsg(account, name, ns, contentType string, payload []byte, requestID string) *nats.Msg {
+	member := !awsidentity.Current().IsManagement(account)
+	msg := nats.NewMsg(asyncSubject(account, name))
 	msg.Data = payload
 	msg.Header.Set("X-Fn-Name", name)
+	if member {
+		msg.Header.Set("X-Fn-Account", account)
+	}
 	if ns != "" {
 		msg.Header.Set("X-Fn-Namespace", ns)
 	}
@@ -109,8 +129,38 @@ func (a *asyncInvoker) publish(name, ns, contentType string, payload []byte, req
 	if requestID != "" {
 		msg.Header.Set("X-Amzn-Request-Id", requestID)
 	}
-	_, err := a.js.PublishMsg(msg)
-	return err
+	return msg
+}
+
+// asyncSubject is the work subject of account's function name: lambda.async.<name> for the management
+// account (as always), lambda.async.<account>.<name> for a member account's.
+func asyncSubject(account, name string) string {
+	if awsidentity.Current().IsManagement(account) {
+		return asyncSubjectPre + name
+	}
+	return asyncSubjectPre + account + "." + name
+}
+
+// asyncDLQSubject is the dead-letter subject of account's function name: lambda.dlq.<name> for the
+// management account (as always), lambda.dlq.<account>.<name> for a member account's.
+func asyncDLQSubject(account, name string) string {
+	if awsidentity.Current().IsManagement(account) {
+		return asyncDLQPre + name
+	}
+	return asyncDLQPre + account + "." + name
+}
+
+// dlqAccount is the account a queued invocation's X-Fn-Account header names: "" (the management account)
+// when it has none, as every invocation queued before accounts; "unknown" for one that is no account id,
+// so a malformed header never lands on the management account's subject nor builds an invalid one.
+func dlqAccount(h string) string {
+	switch {
+	case h == "":
+		return ""
+	case len(h) == 12 && strings.Trim(h, "0123456789") == "":
+		return h
+	}
+	return "unknown"
 }
 
 // run is the delivery loop: pull batches, POST each to its function, ack on success, nak to retry, and
@@ -200,7 +250,8 @@ func (a *asyncInvoker) deadLetter(m *nats.Msg, name, reason string) {
 	if name == "" {
 		name = "unknown" // never build a trailing-dot (invalid) subject
 	}
-	dlq := nats.NewMsg(asyncDLQPre + name)
+	// The function's account's dead-letter subject: the account the invocation was queued in.
+	dlq := nats.NewMsg(asyncDLQSubject(dlqAccount(m.Header.Get("X-Fn-Account")), name))
 	dlq.Data = m.Data
 	dlq.Header = m.Header
 	if _, err := a.js.PublishMsg(dlq); err != nil {

@@ -12,6 +12,9 @@
 // namespace it stopped in and that namespace's continue token; a namespace the caller may not list is
 // skipped, so the listing holds only functions the caller may read.
 //
+// A function belongs to an account: a member account's are found and listed in its own namespaces alone,
+// and named by ARNs carrying its account; the management account's are where they always were.
+//
 // What a Function does not have, the answer leaves out rather than invents: there is no execution role
 // (a stack's Role is dropped: functions get their access through injected secrets), no code size or hash,
 // and no download location for a zip's code. A function has no resource policy (a stack's
@@ -21,6 +24,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -28,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -134,14 +139,14 @@ func (h *lambdaHandler) serveRead(w http.ResponseWriter, r *http.Request, claims
 	}
 	ctx := r.Context()
 	action := lambdaReadAction(op)
-	ns := h.fns.namespaceOf(ctx, name, h.fnNS)
+	ns := h.fns.namespaceFor(ctx, name, h.fnNS) // the caller's account's function (fn_locate.go)
 	if ok, reason := decide(ctx, r, h.authz, claims, action, "Function", name, func() (bool, string) {
 		if denied, reason := deniedByDataPlane(ctx, h.authz, claims, action, "Function", name, r); denied {
 			return false, reason
 		}
 		if allowed, reason := iam.CanDo(ctx, h.cs, claims, "get", "openinfra.dev", "functions", ns, name); !allowed {
 			h.logger.Warn("lambda read denied", "user", claims.Sub, "function", name, "op", op, "reason", reason)
-			return false, "User: " + claims.Sub + " is not authorized to perform: " + action + " on resource: " + h.functionARN(name)
+			return false, "User: " + claims.Sub + " is not authorized to perform: " + action + " on resource: " + h.functionARNIn(ctx, name)
 		}
 		return true, ""
 	}); !ok {
@@ -149,10 +154,14 @@ func (h *lambdaHandler) serveRead(w http.ResponseWriter, r *http.Request, claims
 		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
-	obj, err := h.fns.dyn.Resource(functionClaimGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	var obj *unstructured.Unstructured
+	var err error = apierrors.NewNotFound(functionClaimGVR.GroupResource(), name) // a member account with no namespace has none
+	if ns != noFnNamespace {
+		obj, err = h.fns.dyn.Resource(functionClaimGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	}
 	if apierrors.IsNotFound(err) {
 		writeLambdaError(w, http.StatusNotFound, "ResourceNotFoundException", requestID,
-			"Function not found: "+h.functionARN(name))
+			"Function not found: "+h.functionARNIn(ctx, name))
 		return
 	} else if err != nil {
 		h.logger.Warn("lambda read failed", "function", name, "namespace", ns, "error", err.Error())
@@ -161,14 +170,14 @@ func (h *lambdaHandler) serveRead(w http.ResponseWriter, r *http.Request, claims
 	}
 	if qualifier != "" && qualifier != "$LATEST" && !hasAlias(obj, qualifier) {
 		writeLambdaError(w, http.StatusNotFound, "ResourceNotFoundException", requestID,
-			"Function not found: "+h.functionARN(name)+":"+qualifier)
+			"Function not found: "+h.functionARNIn(ctx, name)+":"+qualifier)
 		return
 	}
 	switch op {
 	case "GetFunctionConfiguration":
-		writeLambdaJSON(w, requestID, h.functionConfiguration(obj, qualifier))
+		writeLambdaJSON(w, requestID, h.functionConfiguration(ctx, obj, qualifier))
 	case "GetFunction":
-		out := map[string]any{"Configuration": h.functionConfiguration(obj, qualifier)}
+		out := map[string]any{"Configuration": h.functionConfiguration(ctx, obj, qualifier)}
 		if code := functionCode(obj); code != nil {
 			out["Code"] = code
 		}
@@ -226,10 +235,13 @@ func (h *lambdaHandler) listFunctions(w http.ResponseWriter, r *http.Request, cl
 			limit = n
 		}
 	}
+	// The caller's account's namespaces: the management account's are the locator's own; a member
+	// account's are its own, never the management account's (fn_locate.go).
+	namespaces := h.fns.namespacesFor(ctx)
 	start := lambdaMarker{}
 	if s := q.Get("Marker"); s != "" {
 		m, ok := decodeLambdaMarker(s)
-		if !ok || m.NS >= len(h.fns.namespaces) {
+		if !ok || m.NS >= len(namespaces) {
 			writeLambdaError(w, http.StatusBadRequest, "InvalidParameterValueException", requestID, "Invalid Marker")
 			return
 		}
@@ -239,10 +251,10 @@ func (h *lambdaHandler) listFunctions(w http.ResponseWriter, r *http.Request, cl
 	// the caller's to see). A caller who may list none is refused, as AWS refuses ListFunctions.
 	// In enforce, IAM policy allowed lambda:ListFunctions above: the account's functions are listed, as on
 	// AWS. In legacy each namespace is listed only where the caller may list functions.
-	readable := make([]bool, len(h.fns.namespaces))
+	readable := make([]bool, len(namespaces))
 	anyReadable := false
 	enforce := enforcing(ctx, h.authz, claims)
-	for i, ns := range h.fns.namespaces {
+	for i, ns := range namespaces {
 		if enforce {
 			readable[i], anyReadable = true, true
 			continue
@@ -251,14 +263,14 @@ func (h *lambdaHandler) listFunctions(w http.ResponseWriter, r *http.Request, cl
 			readable[i], anyReadable = true, true
 		}
 	}
-	if !anyReadable {
+	if !anyReadable && !(enforce && len(namespaces) == 0) { // an account with no namespace has no functions
 		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID,
 			"User: "+claims.Sub+" is not authorized to perform: lambda:ListFunctions on resource: *")
 		return
 	}
 	fns := []any{}
 	next := ""
-	for i := start.NS; i < len(h.fns.namespaces); i++ {
+	for i := start.NS; i < len(namespaces); i++ {
 		if !readable[i] {
 			continue
 		}
@@ -267,14 +279,14 @@ func (h *lambdaHandler) listFunctions(w http.ResponseWriter, r *http.Request, cl
 			cont = start.Continue
 		}
 		for len(fns) < limit {
-			list, err := h.fns.dyn.Resource(functionClaimGVR).Namespace(h.fns.namespaces[i]).List(ctx,
+			list, err := h.fns.dyn.Resource(functionClaimGVR).Namespace(namespaces[i]).List(ctx,
 				metav1.ListOptions{Limit: int64(limit - len(fns)), Continue: cont})
 			if apierrors.IsResourceExpired(err) {
 				writeLambdaError(w, http.StatusBadRequest, "InvalidParameterValueException", requestID,
 					"The Marker has expired: list the functions again from the start")
 				return
 			} else if err != nil {
-				h.logger.Warn("lambda ListFunctions failed", "namespace", h.fns.namespaces[i], "error", err.Error())
+				h.logger.Warn("lambda ListFunctions failed", "namespace", namespaces[i], "error", err.Error())
 				writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID, "could not list the functions")
 				return
 			}
@@ -282,7 +294,7 @@ func (h *lambdaHandler) listFunctions(w http.ResponseWriter, r *http.Request, cl
 				if len(fns) == limit {
 					break // a server that ignores Limit still yields a page of at most limit
 				}
-				fns = append(fns, h.functionConfiguration(&list.Items[j], ""))
+				fns = append(fns, h.functionConfiguration(ctx, &list.Items[j], ""))
 			}
 			cont = list.GetContinue()
 			if cont == "" {
@@ -320,12 +332,29 @@ func (h *lambdaHandler) functionARN(name string) string {
 	return "arn:aws:lambda:" + h.region + ":" + h.account + ":function:" + name
 }
 
+// functionARNIn is the ARN of the request's account's function named name: functionARN for the
+// management account, the member account's own for a member's.
+func (h *lambdaHandler) functionARNIn(ctx context.Context, name string) string {
+	if !isMemberRequest(ctx) {
+		return h.functionARN(name)
+	}
+	return "arn:aws:lambda:" + h.regionIn(ctx) + ":" + callerAccount(ctx) + ":function:" + name
+}
+
+// regionIn is the region of the handler's ARNs (the request's identity's when the handler has none).
+func (h *lambdaHandler) regionIn(ctx context.Context) string {
+	if h.region != "" {
+		return h.region
+	}
+	return awsidentity.FromContext(ctx).Region
+}
+
 // functionConfiguration is a kind: Function in Lambda's FunctionConfiguration shape. qualifier is ""
-// (the unqualified function) or an alias it has.
-func (h *lambdaHandler) functionConfiguration(obj *unstructured.Unstructured, qualifier string) map[string]any {
+// (the unqualified function) or an alias it has. Its ARN is the request's account's.
+func (h *lambdaHandler) functionConfiguration(ctx context.Context, obj *unstructured.Unstructured, qualifier string) map[string]any {
 	name := obj.GetName()
 	spec, _ := obj.Object["spec"].(map[string]any)
-	arn := h.functionARN(name)
+	arn := h.functionARNIn(ctx, name)
 	if qualifier != "" {
 		arn += ":" + qualifier
 	}

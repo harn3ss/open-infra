@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -39,7 +40,9 @@ var fnNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 //
 // Invocation types: RequestResponse (synchronous), Event (asynchronous — durably queued via
 // asyncInvoker), and DryRun (authorize-only) are all supported. A function is found by name in the
-// Lambda API's namespace or a CloudFormation stack's (fn_locate.go); a downstream HTTP error is surfaced
+// Lambda API's namespace or a CloudFormation stack's (fn_locate.go) — the caller's account's: a member
+// account's functions are in its own namespaces, and another account's ARN is refused as AWS refuses a
+// cross-account call no resource-based policy allows; a downstream HTTP error is surfaced
 // as Lambda's X-Amz-Function-Error. Qualifiers are supported for the synchronous path: an alias (or
 // $LATEST) routes to the Knative traffic tag the Function composition publishes at <alias>-<name>.
 // Qualified async delivery is the flagged next step.
@@ -82,6 +85,9 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 				"FunctionName is not a valid function name or ARN")
 			return
 		}
+		if h.refusedCrossAccount(w, r, claims, requestID, lambdaReadAction(op), fn) {
+			return
+		}
 		h.serveRead(w, r, claims, requestID, op, fn, q)
 		return
 	}
@@ -89,6 +95,9 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	if !ok {
 		writeLambdaError(w, http.StatusNotImplemented, "InvalidAction", requestID,
 			"only Invoke (POST /2015-03-31/functions/{name}[:{qualifier}]/invocations), GetFunction, GetFunctionConfiguration, ListFunctions and GetPolicy are implemented")
+		return
+	}
+	if h.refusedCrossAccount(w, r, claims, requestID, "lambda:InvokeFunction", name) {
 		return
 	}
 	// A non-default qualifier (a Lambda alias) routes to the Knative traffic tag the Function
@@ -102,7 +111,7 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	// lambda:InvokeFunction on the function (decide). In legacy the data-plane refinement, then the
 	// coarse check where the function lives (the Lambda API's namespace or a stack's); in enforce IAM
 	// policy alone.
-	ns := h.fns.namespaceOf(r.Context(), name, h.fnNS)
+	ns := h.fns.namespaceFor(r.Context(), name, h.fnNS) // the caller's account's function (fn_locate.go)
 	if ok, reason := decide(r.Context(), r, h.authz, claims, "lambda:InvokeFunction", "Function", name, func() (bool, string) {
 		if denied, reason := deniedByDataPlane(r.Context(), h.authz, claims, "lambda:InvokeFunction", "Function", name, r); denied {
 			return false, reason
@@ -115,6 +124,12 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	}); !ok {
 		h.logger.Warn("lambda invoke denied", "user", claims.Sub, "function", name, "reason", reason)
 		writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
+	}
+	if ns == noFnNamespace {
+		// A member account with no namespace has no functions.
+		writeLambdaError(w, http.StatusNotFound, "ResourceNotFoundException", requestID,
+			"Function not found: "+h.functionARNIn(r.Context(), name))
 		return
 	}
 
@@ -146,7 +161,7 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 				"async invocation payload exceeds the 256 KB limit")
 			return
 		}
-		if err := h.async.publish(name, ns, r.Header.Get("Content-Type"), body, requestID); err != nil {
+		if err := h.async.publishFor(callerAccount(r.Context()), name, ns, r.Header.Get("Content-Type"), body, requestID); err != nil {
 			h.logger.Warn("lambda async enqueue failed", "function", name, "error", err.Error())
 			writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID,
 				"could not enqueue the asynchronous invocation")
@@ -264,6 +279,57 @@ func parseInvokePath(r *http.Request) (name, qualifier string, ok bool) {
 	// A function ARN or partial ARN (arn:aws:lambda:<region>:<acct>:function:<name>[:<qualifier>],
 	// <acct>:function:<name>) names the function as its name does — the form a stack's Arn output gives.
 	return parseFunctionRef(fn, r.URL.Query().Get("Qualifier"))
+}
+
+// Lambda keeps each account's functions apart (fn_locate.go: a member account's are in its own
+// namespaces), so it is an account-scoped front door.
+func init() { accountScopedServices["lambda"] = true }
+
+// refusedCrossAccount refuses, as AWS does, a request whose FunctionName is an ARN (or partial ARN) of a
+// function in another account: reaching another account's function needs that function's resource-based
+// policy to allow it (AddPermission), and a Function here has none (GetPolicy). The function of the same
+// name in the caller's own account is never taken for it. A bare name is the caller's account's. The
+// management account's requests are refused only for an ARN naming a member account the directory knows:
+// an ARN carrying any other account (one kept from before accounts, or from the estate a stack came from)
+// names the management account's function, as it always has.
+func (h *lambdaHandler) refusedCrossAccount(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID, action, name string) bool {
+	ctx := r.Context()
+	acct := functionRefAccount(lambdaPathRef(r))
+	if acct == "" || acct == callerAccount(ctx) {
+		return false
+	}
+	if !isMemberRequest(ctx) && !h.fns.memberAccount(acct) {
+		return false
+	}
+	arn := "arn:aws:lambda:" + h.regionIn(ctx) + ":" + acct + ":function:" + name
+	h.logger.Warn("lambda cross-account request refused", "user", claims.Sub, "account", callerAccount(ctx), "function", arn)
+	writeLambdaError(w, http.StatusForbidden, "AccessDeniedException", requestID,
+		notAuthorized(principalOf(ctx, claims), action, arn, "")+" because no resource-based policy allows the "+action+" action")
+	return true
+}
+
+// lambdaPathRef is the FunctionName segment of a /2015-03-31/functions/{FunctionName}[/…] path, as sent
+// ("" for none).
+func lambdaPathRef(r *http.Request) string {
+	p := strings.TrimPrefix(r.URL.Path, "/2015-03-31/functions/")
+	if p == r.URL.Path {
+		return ""
+	}
+	ref, _, _ := strings.Cut(p, "/")
+	return ref
+}
+
+// functionRefAccount is the account a FunctionName names: an ARN's (arn:aws:lambda:<region>:<account>:
+// function:<name>) or a partial ARN's (<account>:function:<name>); "" for a bare name or an ARN carrying no
+// 12-digit account.
+func functionRefAccount(ref string) string {
+	if strings.HasPrefix(ref, "arn:") {
+		return awsidentity.AccountOfARN(ref)
+	}
+	if acct, _, ok := strings.Cut(ref, ":function:"); ok && len(acct) == 12 && strings.Trim(acct, "0123456789") == "" {
+		return acct
+	}
+	return ""
 }
 
 // writeLambdaError writes Lambda's JSON error dialect: the error class in the x-amzn-errortype
