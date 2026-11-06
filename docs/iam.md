@@ -177,6 +177,13 @@ aws organizations describe-create-account-status --create-account-request-id car
   principal in it), or a resource policy grants it, and the other side's identity policy must allow it
   too.
 - Organizations is served to the management account only; a member account's caller is denied.
+- **Each account's resources are its own** at every front door that keeps resources: queues, topics,
+  tables, streams, secrets, parameters, keys, rules, alarms, log groups, functions, state machines, ECS
+  clusters and task definitions, EC2 instances and key pairs, Run Command, APIs, user pools,
+  repositories, buckets (bucket names stay global, as on AWS), DB instances and snapshots, and stacks.
+  The same name lives in each account independently, ARNs carry the account's id, and an account lists
+  only its own. Glue and Athena serve the management account only: a member account's call is
+  AccessDenied.
 - **Service-linked roles:** the platform's services act in a member account through service-linked
   roles, as AWS services do (`AWSServiceRoleForECS`, `AWSServiceRoleForRDS`). The service defines each
   role, every member account has it from creation, and the account's own principals cannot change it. An
