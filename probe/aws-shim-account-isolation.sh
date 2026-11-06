@@ -229,8 +229,8 @@ check_athena() {
   log "    athena refuses the member account: $(head -c 160 "$TMP/err" | tr '\n' ' ')"
 }
 check_ses() {
-  B ses send-email --source "probe@example.com" --destination ToAddresses=probe@example.com \
-    --message 'Subject={Data=x},Body={Text={Data=x}}' >/dev/null 2>"$TMP/err" && { fail "ses: a member account sent as an identity it has not verified"; return; }
+  B ses send-email --from "probe@example.com" --to probe@example.com --subject x --text x \
+    >/dev/null 2>"$TMP/err" && { fail "ses: a member account sent as an identity it has not verified"; return; }
   has "$TMP/err" "not verified" || has "$TMP/err" "MessageRejected" || has "$TMP/err" "AccessDenied" || fail "ses: the member's refusal is not AWS's: $(head -c 200 "$TMP/err")"
 }
 
