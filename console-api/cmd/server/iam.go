@@ -555,6 +555,13 @@ func handleIAMUserDelete(cs kubernetes.Interface, auth *authStore, logger *slog.
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such user"})
 			return
 		}
+		// The user's MFA devices go with it, as the AWS console removes them: none is left assigned to a
+		// user that no longer exists.
+		if err := auth.removeUserMFADevices(r.Context(), u); err != nil {
+			logger.Error("iam: delete user — its MFA devices could not be removed", "user", name, "error", err.Error())
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the user's MFA devices could not be removed; the user was not deleted"})
+			return
+		}
 		if err := auth.deleteCR(r.Context(), usersAbsPath(auth.ns)+"/"+name); err != nil {
 			logger.Error("iam: delete user", "user", name, "error", err.Error())
 			writeIAMErr(w, err)

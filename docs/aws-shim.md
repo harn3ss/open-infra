@@ -486,6 +486,18 @@ server-side session store** to replicate across replicas or lose on restart — 
 scales. This is opt-in and OFF until a sealing key is available (below); with no key, `AssumeRole`
 answers `InvalidAction` and no session tokens are accepted, so the identity surface is unchanged.
 
+#### GetSessionToken and MFA
+
+`aws sts get-session-token` gives an IAM user its own temporary credentials (15 minutes to 36 hours, 12 by
+default), sealed the same way, with the user's permissions. `GetSessionToken` and `AssumeRole` take the
+user's MFA device (`SerialNumber`, its ARN) and a current `TokenCode`; a session minted with a valid code
+carries `aws:MultiFactorAuthPresent` true and `aws:MultiFactorAuthAge` to every request it signs, one
+minted without carries `aws:MultiFactorAuthPresent` false, and a long-term access key carries neither, as
+on AWS. A wrong, replayed or unknown code is `AccessDenied`. `GetSessionToken` credentials call no IAM
+operation unless they were obtained with MFA (`InvalidClientTokenId`), and no STS operation but
+`AssumeRole` and `GetCallerIdentity`; a session that has MFA keeps it when it assumes a role. A role's
+trust-policy conditions (MFA among them) gate `AssumeRole`. See [iam.md](iam.md#multi-factor-authentication-mfa).
+
 #### Sealing-key custody (Vault) and rotation
 
 The one piece of long-lived key material — the 32-byte AES sealing key — is **custodied in Vault**,
@@ -1463,7 +1475,10 @@ policies and their versions (`CreatePolicy`/`GetPolicy`/`DeletePolicy`/`ListPoli
 attachments (`Attach`/`Detach`/`ListAttached` `User`/`Group`/`Role` `Policies`), inline policies (`Put`/`Get`/
 `Delete`/`List` `User`/`Group`/`Role` `Policy`), permissions boundaries (`Put`/`Delete` `User`/`Role`
 `PermissionsBoundary`, or `PermissionsBoundary` on create), `GetAccountAuthorizationDetails`, the access-key
-verbs, and `SimulatePrincipalPolicy`.
+verbs, login profiles and the account password policy, virtual MFA devices (`CreateVirtualMFADevice`,
+`EnableMFADevice`, `DeactivateMFADevice`, `DeleteVirtualMFADevice`, `ResyncMFADevice`, `ListMFADevices`,
+`ListVirtualMFADevices`, `Tag`/`Untag`/`ListMFADeviceTags`; [iam.md](iam.md#multi-factor-authentication-mfa)),
+and `SimulatePrincipalPolicy`.
 
 Instance profiles: `GetInstanceProfile`, `ListInstanceProfiles` and `ListInstanceProfilesForRole` read a
 stack's `AWS::IAM::InstanceProfile` from its recorded template (a profile provisions nothing: the instance's

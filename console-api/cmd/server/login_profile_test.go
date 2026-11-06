@@ -49,6 +49,12 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
+		if strings.HasSuffix(path, "/secrets") {
+			// A list, by label selector (k=v,k=v), as the MFA store reads a user's devices.
+			_ = json.NewEncoder(w).Encode(map[string]any{"kind": "SecretList", "apiVersion": "v1",
+				"items": f.listLabelled(path+"/", r.URL.Query().Get("labelSelector"))})
+			return
+		}
 		obj, ok := f.objects[path]
 		if !ok {
 			w.Header().Set("Content-Type", "application/json")
@@ -92,6 +98,27 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		delete(f.objects, path)
 		_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Success"}`))
 	}
+}
+
+// listLabelled is the objects under prefix whose labels match an equality selector.
+func (f *fakeAPI) listLabelled(prefix, selector string) []any {
+	items := []any{}
+	for p, obj := range f.objects {
+		if !strings.HasPrefix(p, prefix) || strings.Contains(p[len(prefix):], "/") {
+			continue
+		}
+		labels, _ := obj["metadata"].(map[string]any)["labels"].(map[string]any)
+		match := true
+		for _, term := range strings.Split(selector, ",") {
+			if k, v, ok := strings.Cut(term, "="); ok && labels[k] != v {
+				match = false
+			}
+		}
+		if match {
+			items = append(items, obj)
+		}
+	}
+	return items
 }
 
 func mergePatch(dst, patch map[string]any) {

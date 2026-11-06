@@ -326,6 +326,11 @@ func (a *authStore) parse(tok string) (sessionClaims, bool) {
 	if !rootSessionValid(out.Claims) {
 		return out, false // a session named root that is not the Secret's root (issued before the name was reserved)
 	}
+	if out.MFA == nil {
+		// Every console session is a temporary credential: one issued before sessions carried their MFA
+		// context was not authenticated with MFA.
+		out.MFA = iam.NoMFA()
+	}
 	return out, true
 }
 
@@ -493,9 +498,30 @@ func handleLogin(a *authStore) http.HandlerFunc {
 					writeJSON(w, http.StatusForbidden, map[string]string{"code": "PasswordExpired", "error": refuse})
 					return
 				}
+				// A user with an MFA device signs in with its code too, as on AWS: the password step only
+				// earns the MFA step (mfa.go). Its devices unreadable, it does not sign in at all.
+				devices, err := a.mfaDevices(r.Context(), u)
+				if err != nil {
+					a.logger.Error("console login: the user's MFA devices cannot be read", "user", in.Username, "error", err.Error())
+					writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "sign-in is unavailable: the MFA devices cannot be read"})
+					return
+				}
+				if len(devices) > 0 {
+					ch, err := a.signChallenge(mfaChallenge{Sub: in.Username, Role: role, Groups: groups, PwReset: mustChange,
+						Exp: time.Now().Add(mfaChallengeTTL).Unix()})
+					if err != nil {
+						writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not start sign-in"})
+						return
+					}
+					a.setChallengeCookie(w, r, ch, mfaChallengeTTL)
+					a.logger.Info("console login: password verified, MFA code required", "user", in.Username)
+					writeJSON(w, http.StatusOK, map[string]any{"user": in.Username, "mfaRequired": true})
+					return
+				}
 			}
 		}
-		tok, err := a.issueSession(iam.Claims{Sub: in.Username, Role: role, Groups: groups}, mustChange)
+		// A console session is a temporary credential; without the MFA step, one not authenticated with MFA.
+		tok, err := a.issueSession(iam.Claims{Sub: in.Username, Role: role, Groups: groups, MFA: iam.NoMFA()}, mustChange)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not start session"})
 			return
@@ -550,7 +576,9 @@ func handleMe(a *authStore) http.HandlerFunc {
 			"account": acct, "accountAlias": getenv("ACCOUNT_ALIAS", ""),
 			"arn": p.ARN(), "principalType": string(p.Type), "iamAuthz": string(mode),
 			"passwordResetRequired": claims.PwReset,
-			"capabilities":          map[string]bool{"operator": consoleIAM.isOperator(r, claims, p, mode)},
+			// Whether this session was signed in with MFA (aws:MultiFactorAuthPresent for its requests).
+			"mfaAuthenticated": claims.MFAPresent(),
+			"capabilities":     map[string]bool{"operator": consoleIAM.isOperator(r, claims, p, mode)},
 		}
 		consoleIAM.addAccountContext(r.Context(), body, acct)
 		writeJSON(w, http.StatusOK, body)

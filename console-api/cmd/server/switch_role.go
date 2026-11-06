@@ -11,6 +11,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/accounts"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
+	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -25,6 +26,9 @@ import (
 // checks treat an assumed-role session as the role's own policies' business (iam.CanDo), so a role
 // session outside enforce would pass them. For the same reason the gate refuses any request from a role
 // session that is no longer in enforce (a rollback to legacy ends role sessions; the user switches back).
+
+// assumeRolePolicyAnnotation is the trust policy a role was created with through the IAM API, as written.
+const assumeRolePolicyAnnotation = "openinfra.dev/assume-role-policy"
 
 type switchRoleReq struct {
 	Account string `json:"account"`
@@ -128,6 +132,14 @@ func handleSwitchRole(cs kubernetes.Interface, auth *authStore, logger *slog.Log
 		if !ok || !trusts(role.Spec.Trust, caller, base.Sub) {
 			denied()
 			return
+		}
+		// The trust policy as written (CreateRole's document): its conditions — aws:MultiFactorAuthPresent
+		// above all — hold for this console session too. The role session keeps the session's MFA.
+		if doc := role.Metadata.Annotations[assumeRolePolicyAnnotation]; doc != "" {
+			if ok, why := iamauthz.AuthorizeTrust(doc, caller, "sts:AssumeRole", roleARN, s3authz.RequestContext(base.Claims, r)); !ok {
+				writeAccessDenied(w, "sts:AssumeRole", roleARN, why)
+				return
+			}
 		}
 		next := base
 		next.Account = in.Account

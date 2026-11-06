@@ -47,6 +47,10 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	// own password at that prompt). It checks its own session and CSRF header.
 	api.Post("/auth/change-password", handleChangeOwnPassword(auth))
 	z.public(post, "/api/auth/change-password", "a signed-in user changes its own password, proving the old one (the forced change at sign-in)")
+	// The second step of a sign-in whose user has an MFA device: its code, against the challenge the
+	// password step set. There is no session yet.
+	api.Post("/auth/login/mfa", handleLoginMFA(auth))
+	z.public(post, "/api/auth/login/mfa", "sign-in: the MFA code of a user whose password step passed")
 	// Runtime config: read from env on every request so a redeploy or ConfigMap change is picked up
 	// without rebuilding the SPA.
 	api.Get("/config", handleConfig)
@@ -150,6 +154,14 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	h(post, "/iam/users/{name}/access-keys", s15, "iam:CreateAccessKey", iamARN("user"), handleIAMAccessKeyCreate(cs, auth, keysNS, logger))
 	h(patch, "/iam/users/{name}/access-keys/{id}", s15, "iam:UpdateAccessKey", iamARN("user"), handleIAMAccessKeyUpdate(cs, auth, keysNS, logger))
 	h(del, "/iam/users/{name}/access-keys/{id}", s15, "iam:DeleteAccessKey", iamARN("user"), handleIAMAccessKeyDelete(cs, auth, keysNS, logger))
+	// MFA devices ("Assign MFA device"): the device's own actions on its ARN, the user's on the user, as AWS
+	// authorizes them. The devices live in the same credential store.
+	h(get, "/iam/users/{name}/mfa-devices", s15, "iam:ListMFADevices", iamARN("user"), handleIAMMFADevicesList(cs, auth, logger))
+	h(post, "/iam/users/{name}/mfa-devices", s15, "iam:CreateVirtualMFADevice",
+		bodyARN("deviceName", func(r *http.Request, v string) string { return mfaARN(r, v) }), handleIAMMFADeviceCreate(cs, auth, logger))
+	h(post, "/iam/users/{name}/mfa-devices/enable", s15, "iam:EnableMFADevice", iamARN("user"), handleIAMMFADeviceEnable(cs, auth, logger))
+	h(del, "/iam/users/{name}/mfa-devices", s15, "iam:DeactivateMFADevice", iamARN("user"), handleIAMMFADeviceRemove(cs, auth, logger))
+	h(del, "/iam/users/{name}/mfa-devices/pending", s15, "iam:DeleteVirtualMFADevice", queryMFAARN, handleIAMMFADeviceCancel(cs, auth, logger))
 
 	// IAM: groups (policy containers).
 	h(get, "/iam/groups", s15, "iam:ListGroups", nil, handleIAMGroupsList(cs, auth, logger))

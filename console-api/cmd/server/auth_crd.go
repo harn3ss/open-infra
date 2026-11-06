@@ -51,6 +51,9 @@ type crdUserSpec struct {
 type crdUser struct {
 	Metadata struct {
 		Name string `json:"name"`
+		// UID tells this User from an earlier one of the same name: an MFA device assigned to the earlier
+		// one is not this one's.
+		UID string `json:"uid,omitempty"`
 		// Annotations carry free-form tags (openinfra.dev/tag-*); see iam_tags.go.
 		Annotations map[string]string `json:"annotations,omitempty"`
 	} `json:"metadata"`

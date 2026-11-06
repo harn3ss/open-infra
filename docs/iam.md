@@ -57,6 +57,112 @@ aws iam change-password --old-password '…' --new-password '…'    # the user,
   in the console's namespace, where the root user's credentials live; an admission policy holds the AWS
   front door to that.
 
+### Multi-factor authentication (MFA)
+
+A user can have up to eight **virtual MFA devices**: an authenticator app (any RFC 6238 TOTP app) that
+shows a six-digit code every 30 seconds. With a device assigned, the user signs in to the console with
+its password and then the code, and its programmatic sessions can prove MFA too. Policies decide what
+needs it.
+
+**Assign a device from the console:** the user's page → **Security credentials** → **Multi-factor
+authentication (MFA)** → **Assign MFA device**. Name the device, scan the QR code with the app (or type
+the secret key it offers), then enter two consecutive codes and choose **Add MFA**. **Remove** deactivates
+and deletes a device. Users can assign and remove their own devices; an administrator can remove
+another user's (for a user who lost a device).
+
+**Or with the IAM API**, as on AWS:
+
+```sh
+aws iam create-virtual-mfa-device --virtual-mfa-device-name alice-phone \
+    --outfile alice-phone.png --bootstrap-method QRCodePNG             # or Base32StringSeed
+aws iam enable-mfa-device --user-name alice \
+    --serial-number arn:aws:iam::<account>:mfa/alice-phone \
+    --authentication-code1 123456 --authentication-code2 654321        # two consecutive codes
+aws iam list-mfa-devices --user-name alice
+aws iam list-virtual-mfa-devices --assignment-status Unassigned
+aws iam resync-mfa-device --user-name alice --serial-number … --authentication-code1 … --authentication-code2 …
+aws iam deactivate-mfa-device --user-name alice --serial-number arn:aws:iam::<account>:mfa/alice-phone
+aws iam delete-virtual-mfa-device --serial-number arn:aws:iam::<account>:mfa/alice-phone
+```
+
+- A device's serial number is its ARN, `arn:aws:iam::<account>:mfa/<path><name>`; its name is unique in
+  the account. `TagMFADevice`, `UntagMFADevice` and `ListMFADeviceTags` manage its tags.
+- **The seed is shown once**: in `CreateVirtualMFADevice`'s answer (and the console's QR code). Nothing
+  returns it again. Treat the QR image and secret key as you would a password.
+- A code is accepted for 30 seconds either side of the platform's clock, and **only once**: a code that
+  has signed in, or obtained a session, cannot be used again. A device whose clock has drifted is fixed
+  with `resync-mfa-device`.
+- **Five wrong codes in a row lock the device for 15 minutes.** The lock ends by itself; a right code
+  during it is refused too.
+- A user with an MFA device cannot be deleted through the IAM API until the device is deactivated
+  (`DeleteConflict`), as on AWS; deleting the user in the console removes its devices.
+- IAM authorizes these calls as AWS does: `iam:CreateVirtualMFADevice`, `iam:DeleteVirtualMFADevice` and
+  the tag calls on the device's ARN; `iam:EnableMFADevice`, `iam:DeactivateMFADevice`,
+  `iam:ResyncMFADevice` and `iam:ListMFADevices` on the user; `iam:ListVirtualMFADevices` on `*`. So
+  AWS's "manage your own MFA device" policy works as written (with the user's name in place of
+  `${aws:username}`, which the platform does not substitute).
+- Hardware TOTP tokens, passkeys and FIDO security keys are not supported. `GetMFADevice` (which AWS
+  answers for FIDO keys only) is not served.
+
+**Programmatic access with MFA.** Long-term access keys never carry MFA, exactly as on AWS. To act with
+MFA from the CLI or an SDK, get temporary credentials with the device's code:
+
+```sh
+aws sts get-session-token --serial-number arn:aws:iam::<account>:mfa/alice-phone --token-code 123456
+aws sts assume-role --role-arn arn:aws:iam::<account>:role/admin --role-session-name ops \
+    --serial-number arn:aws:iam::<account>:mfa/alice-phone --token-code 123456
+```
+
+- `GetSessionToken` returns the user's own temporary credentials (15 minutes to 36 hours, 12 by default)
+  with the user's permissions. Without MFA they cannot call IAM at all (`InvalidClientTokenId`), and in
+  STS they can call only `AssumeRole` and `GetCallerIdentity`, as on AWS. Session credentials cannot
+  call `GetSessionToken` again.
+- A wrong, replayed or unknown code is `AccessDenied`
+  (`MultiFactorAuthentication failed with invalid MFA one time pass code.`).
+- A session obtained with MFA keeps it when it calls `AssumeRole` (no new code needed), with the time of
+  the original MFA.
+
+**Requiring MFA in a policy.** Every temporary credential — a console session, a `GetSessionToken` or
+`AssumeRole` session — carries `aws:MultiFactorAuthPresent` (`true` or `false`) and, with MFA,
+`aws:MultiFactorAuthAge` (seconds since). A long-term access key carries neither, so the operators behave
+as AWS documents:
+
+| Condition | Long-term access key | Session without MFA | Session with MFA |
+|---|---|---|---|
+| `Deny` + `BoolIfExists` `aws:MultiFactorAuthPresent` `false` (**AWS's recommended "deny unless MFA"**) | denied | denied | not denied |
+| `Deny` + `Bool` `aws:MultiFactorAuthPresent` `false` | **not** denied | denied | not denied |
+| `Allow` + `Bool` `aws:MultiFactorAuthPresent` `true` | not allowed | not allowed | allowed |
+| `Allow` + `BoolIfExists` `aws:MultiFactorAuthPresent` `true` | allowed | not allowed | allowed |
+| `NumericLessThan` `aws:MultiFactorAuthAge` `3600` | no match | no match | match within an hour |
+
+AWS's policy that lets a user manage its own MFA device and do nothing else until it has signed in with
+one (attach it beside the user's other policies):
+
+```json
+{"Version": "2012-10-17", "Statement": [
+  {"Sid": "AllowViewAccountInfo", "Effect": "Allow", "Action": "iam:ListVirtualMFADevices", "Resource": "*"},
+  {"Sid": "AllowManageOwnVirtualMFADevice", "Effect": "Allow",
+   "Action": ["iam:CreateVirtualMFADevice", "iam:DeleteVirtualMFADevice"],
+   "Resource": "arn:aws:iam::<account>:mfa/*"},
+  {"Sid": "AllowManageOwnUserMFA", "Effect": "Allow",
+   "Action": ["iam:DeactivateMFADevice", "iam:EnableMFADevice", "iam:GetUser",
+              "iam:ListMFADevices", "iam:ResyncMFADevice"],
+   "Resource": "arn:aws:iam::<account>:user/alice"},
+  {"Sid": "DenyAllExceptListedIfNoMFA", "Effect": "Deny",
+   "NotAction": ["iam:CreateVirtualMFADevice", "iam:EnableMFADevice", "iam:GetUser",
+                 "iam:ListMFADevices", "iam:ListVirtualMFADevices", "iam:ResyncMFADevice",
+                 "sts:GetSessionToken"],
+   "Resource": "*",
+   "Condition": {"BoolIfExists": {"aws:MultiFactorAuthPresent": "false"}}}]}
+```
+
+A role's **trust policy** can require MFA the same way (`"Condition": {"Bool":
+{"aws:MultiFactorAuthPresent": "true"}}`): `AssumeRole` and the console's **Switch role** then need a
+session signed in with MFA, or `AssumeRole`'s `SerialNumber` and `TokenCode`.
+
+The root user has no MFA device here: it is the break-glass sign-in, and stays usable when IAM or the
+credential store is not (see [The root user](#the-root-user)).
+
 ## Groups
 
 A group is a **container for policies**, as on AWS: its members get the policies attached to it. It is not
@@ -113,10 +219,13 @@ AWS's evaluation logic:
 4. Anything not allowed is denied.
 
 **Conditions** supported: `aws:SourceIp` (`IpAddress` / `NotIpAddress`), string conditions such as
-`aws:username` (`StringEquals`, `StringLike` and their negations), and `aws:CurrentTime` windows
-(`DateGreaterThan` / `DateLessThan`). A statement whose condition the platform cannot evaluate is never
-read more broadly than written: an `Allow` with it grants nothing, and a `Deny` with it applies
-unconditionally. The policy's page reports which statements that affected.
+`aws:username` (`StringEquals`, `StringLike` and their negations), `aws:CurrentTime` windows
+(`DateGreaterThan` / `DateLessThan`), and MFA: `aws:MultiFactorAuthPresent` (`Bool`, `BoolIfExists`,
+`Null`) and `aws:MultiFactorAuthAge` (the `Numeric` operators and their `IfExists` forms), with AWS's
+rules for a key a request does not carry (see [Multi-factor authentication](#multi-factor-authentication-mfa)).
+Condition key names are not case-sensitive, as on AWS. A statement whose condition the platform cannot
+evaluate is never read more broadly than written: an `Allow` with it grants nothing, and a `Deny` with
+it applies unconditionally. The policy's page reports which statements that affected.
 
 **One difference from AWS:** the platform has an operator surface (its Kubernetes objects: workloads,
 nodes, Secrets) that AWS has no service for. Its actions are `openinfra-operator:*`. A policy grants them
@@ -139,6 +248,9 @@ aws sts assume-role --role-arn arn:aws:iam::<account>:role/deployer --role-sessi
 
 - **Trust** entries name principals by ARN (`arn:aws:iam::<account>:user/alice`, `…:role/…`,
   `…:root` for a whole account) or a federated provider for `AssumeRoleWithWebIdentity`.
+- A trust policy's **conditions** gate `AssumeRole` and the console's Switch role too: MFA
+  (`aws:MultiFactorAuthPresent`, `aws:MultiFactorAuthAge`) and the other supported keys. A trust statement
+  whose condition the platform cannot evaluate (such as `sts:ExternalId`) allows no one.
 - Sessions last up to the role's `MaxSessionDuration` (1 hour by default, at most 12).
 - **Instance roles:** a virtual machine's role (`IamInstanceProfile` in a stack, the VM's role in the
   console) gives the guest credentials through the instance metadata service, as on EC2.
@@ -229,6 +341,11 @@ The account's root user is the console's break-glass sign-in, created with the i
 user and has every permission in its account; no policy can lock it out. Keep its password offline, use
 IAM users and roles for daily work, and use root only when IAM itself needs repair.
 
+Root has no MFA device. On AWS the root user can have one; here root is the credential that must work when
+IAM, the AWS front door or the credential store does not, so it depends on nothing but the console's own
+Secret. Protect it as that: an offline password, and access to the console namespace's Secrets held to
+cluster administrators. Every IAM user can — and for administrators should — have MFA.
+
 ## Temporary access: grants
 
 A **grant** gives a user another set of permissions for a bounded time (at most 24 hours) and then
@@ -289,6 +406,35 @@ also needs the caller's compiled rights: the IAM compiler compiles a new princip
 ago can see AccessDenied for up to about 45 seconds, as AWS IAM changes take a moment to propagate; the
 probes that write as a new caller wait for it with a SubjectAccessReview. Exit 0 is a pass, 1 a failure,
 42 inconclusive (for instance IAM policy not deciding for the probe's principals).
+
+## Recovering a lost MFA device (operators)
+
+*Operator-facing: this section is Kubernetes-shaped by design.*
+
+An administrator removes a user's lost device from the console (the user's **Security credentials** →
+**Remove**) or with `aws iam deactivate-mfa-device` and `delete-virtual-mfa-device`. When no IAM
+administrator can sign in — every one of them has lost its device — sign in as root (which has no MFA
+device), or a cluster administrator removes the device directly.
+
+Each virtual MFA device is a Secret in the credential store namespace (`open-infra-aws-shim`, the aws-shim's
+`KEYS_NAMESPACE`), named `iam-mfa-<name>-<hash>` and labelled `openinfra.dev/mfa-device: "true"` and
+`openinfra.dev/account-id: <account>` (the management account's are labelled `000000000000`). An assigned
+device also carries `openinfra.dev/iam-user` and `openinfra.dev/iam-user-namespace`. To find and remove a
+user's devices:
+
+```sh
+kubectl -n open-infra-aws-shim get secrets \
+  -l openinfra.dev/mfa-device=true,openinfra.dev/iam-user=alice,openinfra.dev/iam-user-namespace=open-infra-console
+kubectl -n open-infra-aws-shim delete secret iam-mfa-alice-phone-<hash>
+```
+
+The user's next sign-in asks for its password only, and it can assign a new device. Deleting the Secret
+destroys the seed: the old app's codes never work again. Only a cluster administrator (`system:masters`) can
+write a device Secret other than as the platform writes it: the admission policy
+`openinfra-mfa-device-guard` holds the device name prefix and label together, keeps a device in its
+account, and refuses handing an assigned device to another user without deactivating it first. The seeds
+are readable by the aws-shim's and the console's ServiceAccounts (which hold Secret rights in that
+namespace for the access keys) and cluster administrators, and by no IAM principal.
 
 ## Approving a quota increase (operators)
 

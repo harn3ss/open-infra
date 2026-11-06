@@ -129,6 +129,12 @@ Changes take effect immediately — the Secret is re-read on every sign-in.
 - **CSRF**: state-changing requests (`POST`/`PUT`/`PATCH`/`DELETE`) must carry
   `X-Openinfra-Console`. `SameSite=Lax` already blocks cross-site form posts; this closes the
   simple-request gap. The console's API client sends it automatically.
+- **MFA**: a user with an MFA device assigned signs in in two steps, as on the AWS console: the password
+  step answers `{"mfaRequired": true}` and sets a five-minute `HttpOnly` challenge cookie (signed with the
+  session key for that purpose only), and `POST /api/auth/login/mfa` with the device's code starts the
+  session. Each session records whether it was signed in with MFA, for IAM policy's
+  `aws:MultiFactorAuthPresent`. Five wrong codes lock the device for 15 minutes. The Secret-backed root
+  has no MFA device. See [Multi-factor authentication](iam.md#multi-factor-authentication-mfa).
 - **Failed sign-ins are logged** with the username and remote address.
 - Unknown usernames still run a bcrypt comparison, so timing doesn't reveal which users exist.
 
@@ -173,7 +179,7 @@ Two things make this real rather than cosmetic:
   new BFF endpoint is only covered once it is wired up.
 - Sessions are stateless: signing out clears the cookie, but a stolen token stays valid until it
   expires (12h). Rotating the Secret's `sessionKey` invalidates all sessions.
-- `local` mode has no lockout or MFA. Passwords follow the account password policy (AWS's default until
+- `local` mode has no password lockout. Passwords follow the account password policy (AWS's default until
   one is set with `aws iam update-account-password-policy`).
 - The console **Users** and **Groups** pages (Security & Identity) manage `kind: User` /
   `kind: Group` and passwords, gated so only admins can (a `SubjectAccessReview` per action).

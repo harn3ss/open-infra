@@ -30,6 +30,7 @@ import { GroupPicker } from "./group-picker";
 import { UserPermissionsTab } from "./user-permissions-tab";
 import { AccessAdvisorTab } from "./access-advisor-tab";
 import { AccessKeysPanel } from "./access-keys-panel";
+import { MfaDevicesPanel } from "./mfa-devices-panel";
 import { TagsTab } from "./tags-tab";
 import { AttachPolicyPicker, ManagedBadge } from "./attach-policy-picker";
 import { policyType } from "./policy-type";
@@ -479,19 +480,8 @@ export function UserDetailPage() {
           {/* Access keys — the aws-shim SigV4 sub-resource. The secret is shown exactly once. */}
           <AccessKeysPanel user={user.name} />
 
-          {/* MFA — deferred (Part A). Kept as an honest note, not a fake widget. */}
-          <Card>
-            <CardContent className="space-y-1 p-5 text-sm text-muted-foreground">
-              <h3 className="text-sm font-semibold text-foreground">Multi-factor authentication (MFA)</h3>
-              <p>
-                MFA device registration is not yet supported.{" "}
-                {isLocal
-                  ? "It is on the roadmap for local users."
-                  : `For this user, sign-in (and any MFA) is handled by the ${user.source} directory.`}{" "}
-                No MFA widget is shown until it lands.
-              </p>
-            </CardContent>
-          </Card>
+          {/* MFA devices: AWS's "Assign MFA device" (virtual devices — authenticator apps). */}
+          <MfaDevicesPanel user={user.name} />
         </TabsContent>
 
         {/* Access Advisor — services this user has written to (audit-derived, honest write-only coverage). */}

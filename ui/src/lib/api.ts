@@ -152,6 +152,10 @@ export interface CurrentUser {
   iamAuthz?: "legacy" | "shadow" | "enforce";
   /** The sign-in must set a new password before anything else (PasswordResetRequired, or expired). */
   passwordResetRequired?: boolean;
+  /** The session was signed in with an MFA code (aws:MultiFactorAuthPresent for its requests). */
+  mfaAuthenticated?: boolean;
+  /** Sign-in only: the password was right, and the user's MFA code is needed next (loginMfa). */
+  mfaRequired?: boolean;
   /**
    * What the console shows this principal. `operator`: the platform's operator (IAM policy allows it
    * openinfra-operator:*), for whom the cluster views under Platform operations appear.
@@ -191,6 +195,14 @@ export function login(username: string, password: string): Promise<CurrentUser> 
   return request<CurrentUser>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ username, password }),
+  });
+}
+
+/** The second step of a sign-in whose user has an MFA device: the code it shows. */
+export function loginMfa(code: string): Promise<CurrentUser> {
+  return request<CurrentUser>("/auth/login/mfa", {
+    method: "POST",
+    body: JSON.stringify({ code }),
   });
 }
 
@@ -1053,6 +1065,68 @@ export function deleteAccessKey(
 ): Promise<{ accessKeyId: string }> {
   return request(
     `/iam/users/${encodeURIComponent(user)}/access-keys/${encodeURIComponent(accessKeyId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/* ---------------------- MFA devices (AWS's "Assign MFA device") ---------------------- */
+
+/** An MFA device assigned to a user (never its seed). */
+export interface MfaDevice {
+  /** The device's ARN, arn:aws:iam::<account>:mfa/<name> (AWS's SerialNumber). */
+  serialNumber: string;
+  name: string;
+  /** "Virtual": an authenticator app. */
+  type: string;
+  enableDate?: string;
+  created?: string;
+}
+
+/** A just-created virtual MFA device: its QR code and secret key, shown this once. */
+export interface VirtualMfaDeviceCreated {
+  serialNumber: string;
+  name: string;
+  base32StringSeed: string;
+  /** Base64 PNG of the QR code. */
+  qrCodePng: string;
+}
+
+export function listMfaDevices(user: string): Promise<MfaDevice[]> {
+  return request<MfaDevice[]>(`/iam/users/${encodeURIComponent(user)}/mfa-devices`);
+}
+
+export function createVirtualMfaDevice(user: string, deviceName: string): Promise<VirtualMfaDeviceCreated> {
+  return request<VirtualMfaDeviceCreated>(`/iam/users/${encodeURIComponent(user)}/mfa-devices`, {
+    method: "POST",
+    body: JSON.stringify({ deviceName }),
+  });
+}
+
+/** EnableMFADevice: two consecutive codes from the device assign it to the user. */
+export function enableMfaDevice(
+  user: string,
+  serialNumber: string,
+  authenticationCode1: string,
+  authenticationCode2: string,
+): Promise<{ serialNumber: string }> {
+  return request(`/iam/users/${encodeURIComponent(user)}/mfa-devices/enable`, {
+    method: "POST",
+    body: JSON.stringify({ serialNumber, authenticationCode1, authenticationCode2 }),
+  });
+}
+
+/** Remove: DeactivateMFADevice, then DeleteVirtualMFADevice. */
+export function removeMfaDevice(user: string, serialNumber: string): Promise<{ serialNumber: string }> {
+  return request(
+    `/iam/users/${encodeURIComponent(user)}/mfa-devices?serialNumber=${encodeURIComponent(serialNumber)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** Cancel an "Assign MFA device" before its codes were entered (DeleteVirtualMFADevice). */
+export function cancelMfaDevice(user: string, serialNumber: string): Promise<{ name: string }> {
+  return request(
+    `/iam/users/${encodeURIComponent(user)}/mfa-devices/pending?serialNumber=${encodeURIComponent(serialNumber)}`,
     { method: "DELETE" },
   );
 }
