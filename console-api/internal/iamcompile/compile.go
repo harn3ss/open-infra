@@ -115,6 +115,16 @@ func sortedPrincipals(ps []Principal) []Principal {
 }
 
 // accountNamespaces inverts NamespaceAccounts: account id -> its namespaces, sorted.
+// hasMemberAccounts reports whether any namespace belongs to an account other than the management account.
+func hasMemberAccounts(m map[string]string) bool {
+	for _, acct := range m {
+		if acct != iamauthz.ManagementAccount {
+			return true
+		}
+	}
+	return false
+}
+
 func accountNamespaces(m map[string]string) map[string][]string {
 	out := map[string][]string{}
 	for ns, acct := range m {
@@ -394,7 +404,10 @@ func compilePrincipal(in Input, accts map[string][]string, p Principal) principa
 	// Where this principal's grants land: its account's namespaces, or — for the management account in
 	// a cluster where no namespace is labelled yet — everywhere (today's one-account world).
 	nsList := accts[account]
-	clusterWide := account == iamauthz.ManagementAccount && len(in.NamespaceAccounts) == 0
+	// The management account's grants are cluster-wide while no namespace belongs to a member account: a
+	// namespace labelled into the management account itself (the platform's own) changes nothing, and an
+	// unlabelled one is the management account's too (as the console and the aws-shim resolve it).
+	clusterWide := account == iamauthz.ManagementAccount && !hasMemberAccounts(in.NamespaceAccounts)
 	if !clusterWide && len(nsList) == 0 {
 		rep.Dropped = append(rep.Dropped, "account "+account+" has no namespaces: nothing to grant on")
 		return principalCompile{report: rep}

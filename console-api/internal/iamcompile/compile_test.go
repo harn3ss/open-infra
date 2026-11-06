@@ -400,3 +400,40 @@ func TestCorpusRoundTrip(t *testing.T) {
 		t.Error("IsAccountIdentity")
 	}
 }
+
+// The platform's own namespaces carry the management account's label: that is still a one-account world,
+// so an administrator's grant is the cluster-wide wildcard — every API group and resource, the operator
+// surface included — not one enumerated over the labelled namespaces alone (which left the API server
+// refusing an administrator kube-system's Secrets and the cluster-scoped kind: Account).
+func TestCompile_ManagementLabelsAloneKeepAdministratorsClusterWide(t *testing.T) {
+	out := Compile(Input{
+		World:             world([]iamauthz.Policy{doc(t, "AdministratorAccess", adminDoc)}, map[string][]string{"User::admin": {"AdministratorAccess"}}),
+		Principals:        []Principal{{Kind: "User", Namespace: "open-infra-console", Name: "admin"}},
+		NamespaceAccounts: map[string]string{"open-infra-console": "000000000000", "open-infra-s3": "000000000000"},
+	})
+	wild := false
+	for _, cr := range out.ClusterRoles {
+		for _, r := range cr.Rules {
+			if len(r.APIGroups) == 1 && r.APIGroups[0] == "*" && len(r.Resources) == 1 && r.Resources[0] == "*" {
+				wild = true
+			}
+		}
+	}
+	if !wild {
+		t.Fatal("an administrator in a world of management-account namespaces did not get the cluster-wide wildcard")
+	}
+	// With a member account present, the management account's grants are enumerated (a wildcard would
+	// reach the member account's namespaces).
+	out = Compile(Input{
+		World:             world([]iamauthz.Policy{doc(t, "AdministratorAccess", adminDoc)}, map[string][]string{"User::admin": {"AdministratorAccess"}}),
+		Principals:        []Principal{{Kind: "User", Namespace: "open-infra-console", Name: "admin"}},
+		NamespaceAccounts: map[string]string{"open-infra-console": "000000000000", "team-a": "912345678901"},
+	})
+	for _, cr := range out.ClusterRoles {
+		for _, r := range cr.Rules {
+			if len(r.APIGroups) == 1 && r.APIGroups[0] == "*" && len(r.Resources) == 1 && r.Resources[0] == "*" {
+				t.Fatal("with a member account present, the management account's administrator got a cluster-wide wildcard")
+			}
+		}
+	}
+}

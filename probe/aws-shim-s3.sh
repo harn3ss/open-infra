@@ -116,25 +116,35 @@ awss3() { # AK SK -- <aws s3 args...> (the high-level `aws s3` commands)
 
 # --- 1. Seed a WRITER principal + its key -----------------------------------------------------
 log "seeding a writer principal (openinfra:powerusers) + access key"
-# await_control_plane <user> <kubectl auth can-i args…>: once IAM policy decides (enforce), a caller acts on
-# the cluster as its account identity, whose control-plane rights the IAM compiler compiles a pass after the
-# principal is made (and the authorization webhook reloads within 30 s): wait until they have arrived, as an
-# AWS client retries while a new principal propagates. In legacy and shadow there is nothing to wait for.
+# await_control_plane <user> <verb> <group> <resource> [namespace]: once IAM policy decides (enforce), a
+# caller acts on the cluster as its account identity, whose control-plane rights the IAM compiler compiles a
+# pass after the principal is made (and the authorization webhook reloads within 30 s): wait until they have
+# arrived, as an AWS client retries while a new principal propagates. Asked as a SubjectAccessReview about
+# that identity (the identity itself may not ask the API server about itself). Nothing to wait for in legacy
+# and shadow.
 await_control_plane() {
-  local user="$1"; shift
+  local user="$1" verb="$2" group="$3" resource="$4" ns="${5:-}"
   [ "$(kubectl -n "$SHIM_NS" get configmap openinfra-iam -o jsonpath='{.data.IAM_AUTHZ}' 2>/dev/null)" = enforce ] || return 0
   local acct; acct="$(kubectl -n "$SHIM_NS" get configmap openinfra-aws-identity -o jsonpath='{.data.ACCOUNT_ID}' 2>/dev/null)"
   acct="${acct:-000000000000}"
-  local _
+  local _ ok
   for _ in $(seq 1 60); do
-    [ "$(kubectl auth can-i "$@" --as="openinfra:$acct:$user" 2>/dev/null | head -1 | awk '{print $1}')" = yes ] && return 0
+    ok="$(kubectl create -o jsonpath='{.status.allowed}' -f - 2>/dev/null <<SAR
+apiVersion: authorization.k8s.io/v1
+kind: SubjectAccessReview
+spec:
+  user: "openinfra:$acct:$user"
+  resourceAttributes: { verb: "$verb", group: "$group", resource: "$resource", namespace: "$ns" }
+SAR
+)"
+    [ "$ok" = true ] && return 0
     sleep 3
   done
   inconclusive "the IAM compiler had not compiled $user's control-plane rights after 180 s"
 }
 
 mint_key "probe-writer" "powerusers"; WAK="$MK_AK"; WSK="$MK_SK"
-await_control_plane probe-writer create buckets.openinfra.dev -n "${S3_BUCKET_NAMESPACE:-open-infra-s3}"
+await_control_plane probe-writer create openinfra.dev buckets "${S3_BUCKET_NAMESPACE:-open-infra-s3}"
 [ -n "$WAK" ] && [ -n "$WSK" ] || inconclusive "failed to mint a writer key"
 sleep 2 # let the key Secret + User settle
 
