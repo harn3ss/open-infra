@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -210,6 +211,48 @@ func dedupeSortedStrings(ss []string) []string {
 	return out
 }
 
+// translateKeyPolicyIn is translateKeyPolicy for a key of the account the request acts in. A member
+// account's key policy grants its own account's principals only: a statement naming another account's
+// principal is a cross-account grant the data plane cannot honour (its user or role would be read as the
+// member account's own of that name), so the whole policy is refused, fail-closed. The management
+// account's translation is exactly translateKeyPolicy's.
+func (h *kmsHandler) translateKeyPolicyIn(ctx context.Context, doc, keyID string) ([]kmsTranslatedPolicy, error) {
+	tp, err := translateKeyPolicy(doc, keyID)
+	if err != nil || !isMemberRequest(ctx) {
+		return tp, err
+	}
+	if p := foreignKeyPolicyPrincipal(doc, callerAccount(ctx)); p != "" {
+		return nil, fmt.Errorf("principal %q is in another account; a key policy here grants its own account's principals only", p)
+	}
+	return tp, nil
+}
+
+// foreignKeyPolicyPrincipal is the first principal of a key policy that names an account other than
+// account ("" when every principal is of account, or "*").
+func foreignKeyPolicyPrincipal(doc, account string) string {
+	var d struct {
+		Statement json.RawMessage `json:"Statement"`
+	}
+	if json.Unmarshal([]byte(doc), &d) != nil {
+		return ""
+	}
+	stmts, err := rawStatements(d.Statement)
+	if err != nil {
+		return ""
+	}
+	for _, st := range stmts {
+		for _, p := range principalARNs(st["Principal"]) {
+			if a := awsidentity.AccountOfARN(p); a != "" && a != account {
+				return p
+			}
+			if len(p) == 12 && strings.Trim(p, "0123456789") == "" && p != account {
+				return p // a bare account id
+			}
+		}
+	}
+	return ""
+}
+
 // defaultKeyPolicyJSON synthesizes the AWS default key policy (root full access) returned by GetKeyPolicy
 // when no policy was ever set — exactly what AWS returns for a key created without an explicit Policy.
 func defaultKeyPolicyJSON(account string) string {
@@ -239,7 +282,7 @@ func (h *kmsHandler) putKeyPolicy(ctx context.Context, w http.ResponseWriter, re
 		writeKMSError(w, http.StatusBadRequest, "MalformedPolicyDocumentException", requestID, "Policy is required.")
 		return
 	}
-	translated, err := translateKeyPolicy(doc, m.KeyID)
+	translated, err := h.translateKeyPolicyIn(ctx, doc, m.KeyID)
 	if err != nil {
 		writeKMSError(w, http.StatusBadRequest, "MalformedPolicyDocumentException", requestID, err.Error())
 		return
@@ -272,8 +315,9 @@ func (h *kmsHandler) getKeyPolicy(ctx context.Context, w http.ResponseWriter, re
 		writeKMSJSON(w, requestID, map[string]any{"Policy": doc})
 		return
 	}
-	// No explicit policy was ever set — return the AWS default (root full access), as KMS does.
-	writeKMSJSON(w, requestID, map[string]any{"Policy": defaultKeyPolicyJSON(h.account)})
+	// No explicit policy was ever set — return the AWS default (root full access), as KMS does: the root
+	// of the key's own account, the caller's (mustKey resolves the caller's account's keys alone).
+	writeKMSJSON(w, requestID, map[string]any{"Policy": defaultKeyPolicyJSON(h.acct(ctx))})
 }
 
 func (h *kmsHandler) listKeyPolicies(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -288,9 +332,12 @@ func (h *kmsHandler) listKeyPolicies(ctx context.Context, w http.ResponseWriter,
 
 // materializeKeyPolicy replaces the whole kind: Policy CR set for a key with the translated grants (one CR
 // per statement, labeled by key id). Replace = delete the existing labeled set, then create the new one —
-// so PutKeyPolicy is a full replace, like AWS (a key has exactly one policy document).
+// so PutKeyPolicy is a full replace, like AWS (a key has exactly one policy document). The CRs live in the
+// key's account's namespace (the management account's policiesNS, a member account's home), where they
+// govern that account's principals alone.
 func (h *kmsHandler) materializeKeyPolicy(ctx context.Context, keyID string, policies []kmsTranslatedPolicy) error {
-	if err := h.deleteKeyPolicyCRs(ctx, keyID); err != nil {
+	ns := accountNamespace(ctx, h.policiesNS)
+	if err := h.deleteKeyPolicyCRsIn(ctx, ns, keyID); err != nil {
 		return err
 	}
 	for i, p := range policies {
@@ -300,7 +347,7 @@ func (h *kmsHandler) materializeKeyPolicy(ctx context.Context, keyID string, pol
 			"kind":       "Policy",
 			"metadata": map[string]any{
 				"name":      name,
-				"namespace": h.policiesNS,
+				"namespace": ns,
 				"labels":    map[string]any{kmsKeyPolicyLabel: keyID},
 			},
 			"spec": map[string]any{
@@ -309,23 +356,30 @@ func (h *kmsHandler) materializeKeyPolicy(ctx context.Context, keyID string, pol
 				"dataPlane":   map[string]any{"appliesTo": toAny(p.appliesTo), "statements": p.statements},
 			},
 		}}
-		if _, err := h.dyn.Resource(gvrPolicies).Namespace(h.policiesNS).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
+		if _, err := h.dyn.Resource(gvrPolicies).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// deleteKeyPolicyCRs removes every kind: Policy CR materialized for a key (by its label). Idempotent.
+// deleteKeyPolicyCRs removes every kind: Policy CR materialized for a key of the account the request acts
+// in (by its label, in that account's namespace). Idempotent.
 func (h *kmsHandler) deleteKeyPolicyCRs(ctx context.Context, keyID string) error {
-	list, err := h.dyn.Resource(gvrPolicies).Namespace(h.policiesNS).List(ctx, metav1.ListOptions{
+	return h.deleteKeyPolicyCRsIn(ctx, accountNamespace(ctx, h.policiesNS), keyID)
+}
+
+// deleteKeyPolicyCRsIn removes a key's kind: Policy CRs from namespace ns (metav1.NamespaceAll: wherever
+// they are). Idempotent.
+func (h *kmsHandler) deleteKeyPolicyCRsIn(ctx context.Context, ns, keyID string) error {
+	list, err := h.dyn.Resource(gvrPolicies).Namespace(ns).List(ctx, metav1.ListOptions{
 		LabelSelector: kmsKeyPolicyLabel + "=" + keyID,
 	})
 	if err != nil {
 		return err
 	}
 	for _, it := range list.Items {
-		if err := h.dyn.Resource(gvrPolicies).Namespace(h.policiesNS).Delete(ctx, it.GetName(), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		if err := h.dyn.Resource(gvrPolicies).Namespace(it.GetNamespace()).Delete(ctx, it.GetName(), metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}

@@ -44,12 +44,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
+
+// KMS keeps each account's keys apart: a key belongs to the account that made it, and its ARN names that
+// account. Key ids are UUIDs, unique across accounts, so a key keeps its id, its Transit key (kms-<keyId>)
+// and its row whatever its account, and the account it belongs to is the one its ARN names (keyAccount).
+// An alias name is unique within an account: a member account's is kept under its account's key
+// (accountKey). An imported key policy's kind: Policy objects live in the key's account's namespace
+// (accountNamespace), where they govern that account's principals alone.
+func init() { accountScopedServices["kms"] = true }
 
 type kmsHandler struct {
 	cs         kubernetes.Interface
@@ -261,6 +271,52 @@ func (h *kmsHandler) kmsKeyChecks(ctx context.Context, op, verb string, body map
 	return []kmsKeyCheck{{"kms:" + op, verb, resolve(firstString(body, "KeyId", "TargetKeyId"))}}
 }
 
+// --- accounts ---
+
+// acct is the account the request acts in, as its responses name it: the management account's own
+// (h.account, exactly as before) or the member account the request acts in.
+func (h *kmsHandler) acct(ctx context.Context) string {
+	if isMemberRequest(ctx) {
+		return callerAccount(ctx)
+	}
+	return h.account
+}
+
+// keyAccount is the account a key belongs to: the member account its ARN names, or "" for the management
+// account's (its ARN names the management account, or no account at all).
+func (h *kmsHandler) keyAccount(m keyMeta) string {
+	a := awsidentity.AccountOfARN(m.Arn)
+	if a == "" || a == h.account || awsidentity.Current().IsManagement(a) {
+		return ""
+	}
+	return a
+}
+
+// ownsKey reports whether a key is the caller's account's. A member account never reaches the management
+// account's key, nor another member's, and the management account never a member's: AWS reaches another
+// account's key only by its full ARN under that key's key policy, which this door does not serve, so
+// another account's key is not found.
+func (h *kmsHandler) ownsKey(ctx context.Context, m keyMeta) bool {
+	if !isMemberRequest(ctx) {
+		return h.keyAccount(m) == ""
+	}
+	return h.keyAccount(m) == callerAccount(ctx)
+}
+
+// aliasKey is the store key of an alias name in the caller's account, and whether the name can be one of
+// its aliases at all (a name spelled as a member account's key is none of the management account's).
+func (h *kmsHandler) aliasKey(ctx context.Context, name string) (string, bool) {
+	k := accountKey(ctx, name)
+	_, ok := nameOfAccountKey(ctx, k)
+	return k, ok
+}
+
+// foreignRef reports whether a member account's request names a key or an alias by the ARN of another
+// account (which it does not reach: see ownsKey).
+func (h *kmsHandler) foreignRef(ctx context.Context, ref string) bool {
+	return isMemberRequest(ctx) && strings.HasPrefix(ref, "arn:") && awsidentity.AccountOfARN(ref) != callerAccount(ctx)
+}
+
 // --- key lifecycle ---
 
 func (h *kmsHandler) createKey(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -294,7 +350,7 @@ func (h *kmsHandler) createKey(ctx context.Context, w http.ResponseWriter, reque
 				"key-policy import is not configured on this shim (no cluster client)")
 			return
 		}
-		tp, err := translateKeyPolicy(policyDoc, keyID)
+		tp, err := h.translateKeyPolicyIn(ctx, policyDoc, keyID)
 		if err != nil {
 			writeKMSError(w, http.StatusBadRequest, "MalformedPolicyDocumentException", requestID, err.Error())
 			return
@@ -308,7 +364,7 @@ func (h *kmsHandler) createKey(ctx context.Context, w http.ResponseWriter, reque
 	}
 	m := keyMeta{
 		KeyID:       keyID,
-		Arn:         h.keyARN(keyID),
+		Arn:         h.keyARNIn(ctx, keyID),
 		Description: desc,
 		KeyUsage:    "ENCRYPT_DECRYPT",
 		KeySpec:     "SYMMETRIC_DEFAULT",
@@ -340,7 +396,7 @@ func (h *kmsHandler) createKey(ctx context.Context, w http.ResponseWriter, reque
 		}
 	}
 	h.audit(ctx, "CreateKey", keyID)
-	writeKMSJSON(w, requestID, map[string]any{"KeyMetadata": h.keyMetadataJSON(m)})
+	writeKMSJSON(w, requestID, map[string]any{"KeyMetadata": h.keyMetadataJSON(ctx, m)})
 }
 
 func (h *kmsHandler) describeKey(ctx context.Context, w http.ResponseWriter, requestID, keyRef string) {
@@ -348,12 +404,12 @@ func (h *kmsHandler) describeKey(ctx context.Context, w http.ResponseWriter, req
 	if !ok {
 		return
 	}
-	writeKMSJSON(w, requestID, map[string]any{"KeyMetadata": h.keyMetadataJSON(m)})
+	writeKMSJSON(w, requestID, map[string]any{"KeyMetadata": h.keyMetadataJSON(ctx, m)})
 }
 
 func (h *kmsHandler) listKeys(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	limit := toInt(body["Limit"])
-	keys, err := h.store.listKeys(ctx, limit)
+	keys, err := h.store.listKeys(ctx, limit, func(m keyMeta) bool { return h.ownsKey(ctx, m) })
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -371,7 +427,7 @@ func (h *kmsHandler) setKeyEnabled(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 	if m.State == "PendingDeletion" {
-		h.invalidState(w, requestID, m.KeyID, "is pending deletion")
+		h.invalidState(ctx, w, requestID, m.KeyID, "is pending deletion")
 		return
 	}
 	state := "Disabled"
@@ -392,7 +448,7 @@ func (h *kmsHandler) setRotation(ctx context.Context, w http.ResponseWriter, req
 		return
 	}
 	if m.State != "Enabled" {
-		h.invalidState(w, requestID, m.KeyID, "is not enabled")
+		h.invalidState(ctx, w, requestID, m.KeyID, "is not enabled")
 		return
 	}
 	// Enabling rotation rotates once immediately (Vault has no scheduled rotation); the flag records that
@@ -425,7 +481,7 @@ func (h *kmsHandler) scheduleKeyDeletion(ctx context.Context, w http.ResponseWri
 		return
 	}
 	if m.State == "PendingDeletion" {
-		h.invalidState(w, requestID, m.KeyID, "is already pending deletion")
+		h.invalidState(ctx, w, requestID, m.KeyID, "is already pending deletion")
 		return
 	}
 	window := 30
@@ -457,7 +513,7 @@ func (h *kmsHandler) cancelKeyDeletion(ctx context.Context, w http.ResponseWrite
 		return
 	}
 	if m.State != "PendingDeletion" {
-		h.invalidState(w, requestID, m.KeyID, "is not pending deletion")
+		h.invalidState(ctx, w, requestID, m.KeyID, "is not pending deletion")
 		return
 	}
 	// Cancelling deletion restores the key Disabled (AWS's post-cancel state).
@@ -482,7 +538,8 @@ func (h *kmsHandler) createAlias(ctx context.Context, w http.ResponseWriter, req
 	if !ok {
 		return
 	}
-	if err := h.store.createAlias(ctx, name, m.KeyID); err == errAliasExists {
+	key, _ := h.aliasKey(ctx, name) // a name beginning "alias/" is always the caller's account's own
+	if err := h.store.createAlias(ctx, key, m.KeyID); err == errAliasExists {
 		writeKMSError(w, http.StatusBadRequest, "AlreadyExistsException", requestID, "An alias with this name already exists.")
 		return
 	} else if err != nil {
@@ -500,10 +557,13 @@ func (h *kmsHandler) updateAlias(ctx context.Context, w http.ResponseWriter, req
 	if !ok {
 		return
 	}
-	updated, err := h.store.updateAlias(ctx, name, m.KeyID)
-	if err != nil {
-		h.internal(w, requestID, err)
-		return
+	updated := false
+	if key, own := h.aliasKey(ctx, name); own {
+		var err error
+		if updated, err = h.store.updateAlias(ctx, key, m.KeyID); err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
 	}
 	if !updated {
 		writeKMSError(w, http.StatusBadRequest, "NotFoundException", requestID, "The specified alias does not exist.")
@@ -515,10 +575,13 @@ func (h *kmsHandler) updateAlias(ctx context.Context, w http.ResponseWriter, req
 
 func (h *kmsHandler) deleteAlias(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	name, _ := body["AliasName"].(string)
-	ok, err := h.store.deleteAlias(ctx, name)
-	if err != nil {
-		h.internal(w, requestID, err)
-		return
+	ok := false
+	if key, own := h.aliasKey(ctx, name); own {
+		var err error
+		if ok, err = h.store.deleteAlias(ctx, key); err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
 	}
 	if !ok {
 		writeKMSError(w, http.StatusBadRequest, "NotFoundException", requestID, "The specified alias does not exist.")
@@ -542,9 +605,17 @@ func (h *kmsHandler) listAliases(ctx context.Context, w http.ResponseWriter, req
 	}
 	out := make([]any, 0, len(aliases))
 	for _, a := range aliases {
+		name, own := nameOfAccountKey(ctx, a.Name)
+		if !own {
+			continue // another account's alias
+		}
+		// An alias naming another account's key is none of this account's to show (it resolves to nothing).
+		if m, found, err := h.store.getKey(ctx, a.KeyID); err == nil && found && !h.ownsKey(ctx, m) {
+			continue
+		}
 		out = append(out, map[string]any{
-			"AliasName":       a.Name,
-			"AliasArn":        h.aliasARN(a.Name),
+			"AliasName":       name,
+			"AliasArn":        h.aliasARNIn(ctx, name),
 			"TargetKeyId":     a.KeyID,
 			"CreationDate":    epoch(a.Created),
 			"LastUpdatedDate": epoch(a.Updated),
@@ -770,7 +841,7 @@ func (h *kmsHandler) mustKey(ctx context.Context, w http.ResponseWriter, request
 		h.internal(w, requestID, err)
 		return keyMeta{}, false
 	}
-	if !found {
+	if !found || !h.ownsKey(ctx, m) {
 		writeKMSError(w, http.StatusBadRequest, "NotFoundException", requestID, "Key '"+keyRef+"' does not exist.")
 		return keyMeta{}, false
 	}
@@ -791,18 +862,19 @@ func (h *kmsHandler) mustUsableKey(ctx context.Context, w http.ResponseWriter, r
 			m.Arn+" is disabled.")
 		return keyMeta{}, false
 	case "PendingDeletion":
-		h.invalidState(w, requestID, m.KeyID, "is pending deletion and cannot be used for cryptographic operations")
+		h.invalidState(ctx, w, requestID, m.KeyID, "is pending deletion and cannot be used for cryptographic operations")
 		return keyMeta{}, false
 	}
-	h.invalidState(w, requestID, m.KeyID, "is not in a usable state")
+	h.invalidState(ctx, w, requestID, m.KeyID, "is not in a usable state")
 	return keyMeta{}, false
 }
 
 // resolveKeyID accepts a raw key id, a key ARN, an alias name ("alias/x"), or an alias ARN, and returns
 // the canonical key id. A bare id is only accepted if a metadata row exists for it (so a made-up id is a miss).
+// Only the caller's account's keys and aliases resolve (ownsKey): another account's is a miss.
 func (h *kmsHandler) resolveKeyID(ctx context.Context, ref string) (string, bool, error) {
 	ref = strings.TrimSpace(ref)
-	if ref == "" {
+	if ref == "" || h.foreignRef(ctx, ref) {
 		return "", false, nil
 	}
 	// key ARN: arn:aws:kms:region:account:key/<id>
@@ -814,20 +886,31 @@ func (h *kmsHandler) resolveKeyID(ctx context.Context, ref string) (string, bool
 		ref = "alias/" + ref[i+len(":alias/"):]
 	}
 	if strings.HasPrefix(ref, "alias/") {
-		return h.store.aliasTarget(ctx, ref)
+		key, _ := h.aliasKey(ctx, ref)
+		id, ok, err := h.store.aliasTarget(ctx, key)
+		if err != nil || !ok {
+			return "", false, err
+		}
+		// An alias names a key of its own account: one naming another account's key resolves to nothing.
+		if m, found, err := h.store.getKey(ctx, id); err != nil {
+			return "", false, err
+		} else if found && !h.ownsKey(ctx, m) {
+			return "", false, nil
+		}
+		return id, true, nil
 	}
-	// bare id — accept only if a key row exists
-	if _, found, err := h.store.getKey(ctx, ref); err != nil {
+	// bare id — accept only if a key row exists, and it is the caller's account's
+	if m, found, err := h.store.getKey(ctx, ref); err != nil {
 		return "", false, err
-	} else if found {
+	} else if found && h.ownsKey(ctx, m) {
 		return ref, true, nil
 	}
 	return "", false, nil
 }
 
-func (h *kmsHandler) keyMetadataJSON(m keyMeta) map[string]any {
+func (h *kmsHandler) keyMetadataJSON(ctx context.Context, m keyMeta) map[string]any {
 	md := map[string]any{
-		"AWSAccountId":          h.account,
+		"AWSAccountId":          h.acct(ctx), // the key is the caller's account's (ownsKey)
 		"KeyId":                 m.KeyID,
 		"Arn":                   m.Arn,
 		"CreationDate":          epoch(m.Created),
@@ -848,12 +931,19 @@ func (h *kmsHandler) keyMetadataJSON(m keyMeta) map[string]any {
 	return md
 }
 
+// keyARN is the ARN of a management-account key (a stack's key whose spec names no ARN of its own).
 func (h *kmsHandler) keyARN(keyID string) string {
 	return "arn:aws:kms:" + h.region + ":" + h.account + ":key/" + keyID
 }
 
-func (h *kmsHandler) aliasARN(name string) string {
-	return "arn:aws:kms:" + h.region + ":" + h.account + ":" + name
+// keyARNIn is the ARN of a key of the account the request acts in.
+func (h *kmsHandler) keyARNIn(ctx context.Context, keyID string) string {
+	return "arn:aws:kms:" + h.region + ":" + h.acct(ctx) + ":key/" + keyID
+}
+
+// aliasARNIn is the ARN of an alias of the account the request acts in.
+func (h *kmsHandler) aliasARNIn(ctx context.Context, name string) string {
+	return "arn:aws:kms:" + h.region + ":" + h.acct(ctx) + ":" + name
 }
 
 func (h *kmsHandler) internal(w http.ResponseWriter, requestID string, err error) {
@@ -873,9 +963,9 @@ func (h *kmsHandler) cryptoErr(w http.ResponseWriter, requestID string, err erro
 	h.internal(w, requestID, err)
 }
 
-func (h *kmsHandler) invalidState(w http.ResponseWriter, requestID, keyID, why string) {
+func (h *kmsHandler) invalidState(ctx context.Context, w http.ResponseWriter, requestID, keyID, why string) {
 	writeKMSError(w, http.StatusBadRequest, "KMSInvalidStateException", requestID,
-		h.keyARN(keyID)+" "+why+".")
+		h.keyARNIn(ctx, keyID)+" "+why+".")
 }
 
 // audit emits a structured audit record for a KMS operation (AC-2/AU-2/AU-9): who (the resolved
@@ -901,7 +991,8 @@ func (h *kmsHandler) auditDeny(ctx context.Context, op, keyID, reason string) {
 }
 
 // reapDeleted crypto-erases keys whose deletion window has elapsed: destroy the Vault Transit key (after
-// which no ciphertext can ever be decrypted again), then drop the metadata row. Idempotent.
+// which no ciphertext can ever be decrypted again), then drop the metadata row. Idempotent. It reaps every
+// account's keys, each key's imported policy torn down in its own account's namespace.
 func (h *kmsHandler) reapDeleted(ctx context.Context) error {
 	if h.store == nil || h.transit == nil {
 		return nil
@@ -911,6 +1002,13 @@ func (h *kmsHandler) reapDeleted(ctx context.Context) error {
 		return err
 	}
 	for _, id := range due {
+		// Where the key's policy objects live: the management account's namespace for its keys; for a
+		// member account's key (whose home this pass, run without a request, does not know), wherever
+		// the label naming this one key puts them — its id is unique across accounts.
+		policyNS := h.policiesNS
+		if m, found, err := h.store.getKey(ctx, id); err == nil && found && h.keyAccount(m) != "" {
+			policyNS = metav1.NamespaceAll
+		}
 		if err := h.transit.destroy(ctx, id); err != nil {
 			h.logger.Warn("kms crypto-erase failed", "keyId", id, "error", err.Error())
 			continue
@@ -923,7 +1021,7 @@ func (h *kmsHandler) reapDeleted(ctx context.Context) error {
 		// gone). Best-effort: a stale grant on a destroyed Key::<id> can authorize nothing. Cleanup runs at
 		// crypto-erase (true deletion), not ScheduleKeyDeletion, so the policy survives a CancelKeyDeletion.
 		if h.dyn != nil {
-			if err := h.deleteKeyPolicyCRs(ctx, id); err != nil {
+			if err := h.deleteKeyPolicyCRsIn(ctx, policyNS, id); err != nil {
 				h.logger.Warn("kms key-policy CR cleanup failed after crypto-erase", "keyId", id, "error", err.Error())
 			}
 		}

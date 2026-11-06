@@ -112,24 +112,28 @@ func (s *kmsStore) getKey(ctx context.Context, keyID string) (keyMeta, bool, err
 	return m, true, nil
 }
 
-func (s *kmsStore) listKeys(ctx context.Context, limit int) ([]keyMeta, error) {
+// listKeys returns the first limit keys (by creation) that keep accepts: the caller's account's (a key's
+// account is the one its ARN names, kmsHandler.ownsKey).
+func (s *kmsStore) listKeys(ctx context.Context, limit int, keep func(keyMeta) bool) ([]keyMeta, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
 	}
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT key_id, arn, description, key_usage, key_spec, state, rotation, created, deletion_date
-		   FROM kms_keys ORDER BY created LIMIT $1`, limit)
+		   FROM kms_keys ORDER BY created`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []keyMeta
-	for rows.Next() {
+	for len(out) < limit && rows.Next() {
 		var m keyMeta
 		if err := rows.Scan(&m.KeyID, &m.Arn, &m.Description, &m.KeyUsage, &m.KeySpec, &m.State, &m.Rotation, &m.Created, &m.DeletionDate); err != nil {
 			return nil, err
 		}
-		out = append(out, m)
+		if keep(m) {
+			out = append(out, m)
+		}
 	}
 	return out, rows.Err()
 }
