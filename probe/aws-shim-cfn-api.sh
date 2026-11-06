@@ -116,7 +116,25 @@ outputs() { cfn describe-stacks --stack-name "$1" --query 'Stacks[0].Outputs' --
 output() { outputs "$1" | python3 -c "import json,sys; print(next((o['OutputValue'] for o in json.load(sys.stdin) or [] if o['OutputKey']=='$2'), ''))"; }
 
 log "minting an openinfra:admins deployer"
+# await_control_plane <user> <kubectl auth can-i args…>: once IAM policy decides (enforce), a caller acts on
+# the cluster as its account identity, whose control-plane rights the IAM compiler compiles a pass after the
+# principal is made (and the authorization webhook reloads within 30 s): wait until they have arrived, as an
+# AWS client retries while a new principal propagates. In legacy and shadow there is nothing to wait for.
+await_control_plane() {
+  local user="$1"; shift
+  [ "$(kubectl -n "$SHIM_NS" get configmap openinfra-iam -o jsonpath='{.data.IAM_AUTHZ}' 2>/dev/null)" = enforce ] || return 0
+  local acct; acct="$(kubectl -n "$SHIM_NS" get configmap openinfra-aws-identity -o jsonpath='{.data.ACCOUNT_ID}' 2>/dev/null)"
+  acct="${acct:-000000000000}"
+  local _
+  for _ in $(seq 1 60); do
+    [ "$(kubectl auth can-i "$@" --as="openinfra:$acct:$user" 2>/dev/null | head -1 | awk '{print $1}')" = yes ] && return 0
+    sleep 3
+  done
+  inconclusive "the IAM compiler had not compiled $user's control-plane rights after 180 s"
+}
+
 mint_key "cfnapi-admin-$SFX" "admins"
+await_control_plane "cfnapi-admin-$SFX" create applications.openinfra.dev -n "${CFN_NAMESPACE:-open-infra-cfn}"
 sleep 20 # the key reaches the shim's key cache
 
 # --- 1. a network stack exports its VPC and both subnets ---------------------------------------------
