@@ -201,9 +201,9 @@ func (h *cloudFrontHandler) serveRead(w http.ResponseWriter, r *http.Request, cl
 			if tr.Ref != rt.resID {
 				continue
 			}
-			// A member account's principal is decided by IAM policy alone (above): the coarse RBAC check
-			// knows no accounts.
-			if !memberAccount(claims) {
+			// In enforce, and for a member account's principal, IAM policy alone decided (above); the coarse
+			// RBAC check is legacy's (it knows no accounts, and under enforce no user has RBAC of its own).
+			if !memberAccount(claims) && !enforcing(ctx, h.cfn.authz, claims) {
 				if allowed, reason := h.cfn.canDo(ctx, claims, "get", rec.Name); !allowed {
 					writeCFError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
 					return

@@ -139,9 +139,9 @@ func (h *acmHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		if c.arn != arn {
 			continue
 		}
-		// A member account's principal is decided by IAM policy alone (above): the coarse RBAC check knows
-		// no accounts.
-		if !memberAccount(claims) {
+		// In enforce, and for a member account's principal, IAM policy alone decided (above); the coarse RBAC
+		// check is legacy's (it knows no accounts, and under enforce no user has RBAC of its own).
+		if !memberAccount(claims) && !enforcing(ctx, h.cfn.authz, claims) {
 			if allowed, reason := h.cfn.canDo(ctx, claims, "get", c.rec.Name); !allowed {
 				writeACMError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 				return
@@ -445,7 +445,9 @@ func (h *acmHandler) listCertificates(w http.ResponseWriter, r *http.Request, cl
 		ok, seen := readable[c.rec.Name]
 		if !seen {
 			ok = true
-			if !memberAccount(claims) { // a member account's principal: IAM policy decided ListCertificates
+			// IAM policy decided ListCertificates (enforce, or a member account's principal); legacy also
+			// keeps a certificate to the stacks the caller may get.
+			if !memberAccount(claims) && !enforcing(ctx, h.cfn.authz, claims) {
 				ok, _ = h.cfn.canDo(ctx, claims, "get", c.rec.Name)
 			}
 			readable[c.rec.Name] = ok
