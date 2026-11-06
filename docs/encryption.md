@@ -98,28 +98,15 @@ kubectl -n vault exec -it vault-0 -- vault operator unseal    # x3 with differen
 kubectl -n vault create secret generic vault-bootstrap --from-literal=token=<root-or-admin-token>
 ```
 
-The `vault-transit-setup` Job then enables the Transit engine and Kubernetes auth, creates each
-component's role (bound to its ServiceAccount), turns on Vault's audit device (every request, with
-sensitive fields HMAC'd, to the Vault pod's log), and writes `vault-config`: Vault's configuration
-administrator, a Kubernetes-auth role bound to the setup Job's own ServiceAccount with short-lived tokens.
-Every later run of the Job (each sync) logs in as `vault-config`, so the root token is needed exactly once.
-No standing Vault secret is written anywhere.
+The `vault-transit-setup` Job then enables the Transit engine and Kubernetes auth, and creates the
+reconciler's role (bound to its ServiceAccount). No standing Vault secret is written anywhere.
 
 ```sh
-# 4. The bootstrap token is a root token and was ONLY needed for the first run — REVOKE and DELETE it
-#    once the setup Job has completed (as AWS has an account's root credentials put away and its
-#    automation use a role), so it can't be stolen later. Revoke it with itself, without printing it:
-kubectl -n vault run vault-root-revoke --rm -i --restart=Never --image=hashicorp/vault:1.17.2 \
-  --env VAULT_ADDR=http://vault.vault.svc.cluster.local:8200 \
-  --overrides='{"spec":{"containers":[{"name":"vault-root-revoke","image":"hashicorp/vault:1.17.2",
-    "command":["sh","-c","vault token revoke -self && ! vault token lookup >/dev/null 2>&1 && echo revoked"],
-    "env":[{"name":"VAULT_ADDR","value":"http://vault.vault.svc.cluster.local:8200"},
-           {"name":"VAULT_TOKEN","valueFrom":{"secretKeyRef":{"name":"vault-bootstrap","key":"token"}}}]}]}}'
+# 4. The bootstrap token is a root/admin token and was ONLY needed for setup — REVOKE and DELETE it
+#    once the setup Job has completed, so it can't be stolen later.
+kubectl -n vault exec -it vault-0 -- vault token revoke <the-bootstrap-token>
 kubectl -n vault delete secret vault-bootstrap
 ```
-
-A root token can be generated again from the unseal keys (`vault operator generate-root`) should one be
-needed for recovery.
 
 After that, create `EncryptionKey`s. Because the reconciler uses Kubernetes auth, there is no
 `encryptionkey-reconciler-vault` Secret to guard — a console compromise cannot reach Vault through it.
