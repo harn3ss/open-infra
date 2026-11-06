@@ -217,8 +217,10 @@ func (h *s3Handler) allowed(r *http.Request, claims iam.Claims, op s3op) bool {
 func (h *s3Handler) allowedIn(b *s3authz.Batch, r *http.Request, claims iam.Claims, op s3op) bool {
 	var ok bool
 	var reason string
-	owner := claimsAccount(claims) // an operation on no bucket (ListBuckets) is in the caller's account
-	if op.bucket != "" {
+	// An operation on no bucket (ListBuckets) is in the caller's account, and so is CreateBucket: the bucket
+	// it makes is the caller's (a name any account holds is BucketAlreadyExists, from the handler).
+	owner := claimsAccount(claims)
+	if op.bucket != "" && op.kind != "create-bucket" {
 		owner = h.bucketOwner(r.Context(), op.bucket)
 	}
 	if memberAccount(claims) || !awsidentity.Current().IsManagement(owner) {

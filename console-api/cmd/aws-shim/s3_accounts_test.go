@@ -379,3 +379,17 @@ func TestS3Accounts_ExpectedBucketOwner(t *testing.T) {
 		}
 	}
 }
+
+// CreateBucket is decided in the caller's own account: the bucket it makes is the caller's. Before it
+// exists no claim names it, so deciding it by the name's owner would decide a member's create across
+// accounts and deny it.
+func TestS3Accounts_CreateBucketIsDecidedInTheCallersAccount(t *testing.T) {
+	h, _, _ := s3AccountsFixture(t)
+	create := s3op{kind: "create-bucket", bucket: "brand-new", write: true}
+	if !h.allowed(s3Req(memberCtx(), "PUT", "/brand-new"), s3Bob, create) {
+		t.Fatal("a member account's principal must be allowed to create a bucket in its own account")
+	}
+	if !h.allowed(s3Req(context.Background(), "PUT", "/brand-new"), s3Alice, create) {
+		t.Fatal("the management account's principal must be allowed to create a bucket")
+	}
+}
