@@ -30,8 +30,14 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 )
+
+// RDS keeps each account's DB instances and snapshots apart: a member account's are kept in its home
+// namespace (rds_cnpg.go), the management account's in the RDS namespace as always, and their ARNs carry
+// the caller's account.
+func init() { accountScopedServices["rds"] = true }
 
 const rdsXMLNamespace = "http://rds.amazonaws.com/doc/2014-10-31/"
 const xmlHeader = `<?xml version="1.0" encoding="UTF-8"?>` + "\n"
@@ -48,6 +54,24 @@ type rdsHandler struct {
 	region  string
 	authz   *dataplaneauthz.Checker
 	logger  *slog.Logger
+}
+
+// arnAccount is the account of the request's ARNs: the install's for the management account, the member
+// account's for a member's.
+func (h *rdsHandler) arnAccount(ctx context.Context) string {
+	if !isMemberRequest(ctx) {
+		return h.account
+	}
+	return callerAccount(ctx)
+}
+
+// instanceArn is a DB instance's ARN (DBInstanceArn), arn:aws:rds:<region>:<account>:db:<id>, in the
+// caller's account; snapshotArn a DB snapshot's (DBSnapshotArn), arn:aws:rds:<region>:<account>:snapshot:<id>.
+func (h *rdsHandler) instanceArn(ctx context.Context, id string) string {
+	return "arn:aws:rds:" + h.region + ":" + h.arnAccount(ctx) + ":db:" + id
+}
+func (h *rdsHandler) snapshotArn(ctx context.Context, id string) string {
+	return "arn:aws:rds:" + h.region + ":" + h.arnAccount(ctx) + ":snapshot:" + id
 }
 
 func newRDSHandler(cs kubernetes.Interface, cnpg *rdsCNPG, authzNS, account, region string, logger *slog.Logger) *rdsHandler {
@@ -230,13 +254,18 @@ func (h *rdsHandler) createDBInstance(ctx context.Context, w http.ResponseWriter
 		tags:              tagsFromForm(r),
 	}
 	if err := h.cnpg.createInstance(ctx, p); err != nil {
+		if isMemberRequest(ctx) && apierrors.IsAlreadyExists(err) {
+			// The name is held in the account's home by another of its database clusters (a kind: Database).
+			writeQueryError(w, http.StatusBadRequest, "DBInstanceAlreadyExists", requestID, "DB instance "+id+" already exists.", rdsXMLNamespace)
+			return
+		}
 		h.internal(w, requestID, err)
 		return
 	}
 	h.audit(ctx, "CreateDBInstance", id, "allow", "")
 	// Return the freshly-created instance in `creating` state (no Endpoint yet — AWS behavior).
 	v, _ := h.cnpg.getInstance(ctx, id)
-	h.writeInstanceResponse(w, requestID, "CreateDBInstance", v)
+	h.writeInstanceResponse(ctx, w, requestID, "CreateDBInstance", v)
 }
 
 func (h *rdsHandler) describeDBInstances(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
@@ -263,7 +292,7 @@ func (h *rdsHandler) describeDBInstances(ctx context.Context, w http.ResponseWri
 	var sb strings.Builder
 	sb.WriteString("<DescribeDBInstancesResult><DBInstances>")
 	for _, v := range views {
-		sb.WriteString(dbInstanceXML(v))
+		sb.WriteString(dbInstanceXML(v, h.instanceArn(ctx, v.id)))
 	}
 	sb.WriteString("</DBInstances></DescribeDBInstancesResult>")
 	h.writeXML(w, requestID, "DescribeDBInstances", sb.String())
@@ -289,7 +318,7 @@ func (h *rdsHandler) modifyDBInstance(ctx context.Context, w http.ResponseWriter
 		v.deletionProtected = on
 	}
 	h.audit(ctx, "ModifyDBInstance", id, "allow", "")
-	h.writeInstanceResponse(w, requestID, "ModifyDBInstance", v)
+	h.writeInstanceResponse(ctx, w, requestID, "ModifyDBInstance", v)
 }
 
 func (h *rdsHandler) deleteDBInstance(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
@@ -330,7 +359,7 @@ func (h *rdsHandler) deleteDBInstance(ctx context.Context, w http.ResponseWriter
 	}
 	v.status = "deleting"
 	h.audit(ctx, "DeleteDBInstance", id, "allow", "")
-	h.writeInstanceResponse(w, requestID, "DeleteDBInstance", v)
+	h.writeInstanceResponse(ctx, w, requestID, "DeleteDBInstance", v)
 }
 
 func (h *rdsHandler) restoreFromSnapshot(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
@@ -373,7 +402,7 @@ func (h *rdsHandler) restoreFromSnapshot(ctx context.Context, w http.ResponseWri
 	}
 	h.audit(ctx, "RestoreDBInstanceFromDBSnapshot", newID, "allow", "from "+snapID)
 	v, _ := h.cnpg.getInstance(ctx, newID)
-	h.writeInstanceResponse(w, requestID, "RestoreDBInstanceFromDBSnapshot", v)
+	h.writeInstanceResponse(ctx, w, requestID, "RestoreDBInstanceFromDBSnapshot", v)
 }
 
 // --- snapshots ---
@@ -403,7 +432,7 @@ func (h *rdsHandler) createDBSnapshot(ctx context.Context, w http.ResponseWriter
 		return
 	}
 	h.audit(ctx, "CreateDBSnapshot", snapID, "allow", "of "+instID)
-	h.writeXML(w, requestID, "CreateDBSnapshot", "<CreateDBSnapshotResult>"+dbSnapshotXML(snapshotView{id: snapID, instance: instID, status: "creating", found: true})+"</CreateDBSnapshotResult>")
+	h.writeXML(w, requestID, "CreateDBSnapshot", "<CreateDBSnapshotResult>"+dbSnapshotXML(snapshotView{id: snapID, instance: instID, status: "creating", found: true}, h.snapshotArn(ctx, snapID))+"</CreateDBSnapshotResult>")
 }
 
 func (h *rdsHandler) describeDBSnapshots(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
@@ -430,7 +459,7 @@ func (h *rdsHandler) describeDBSnapshots(ctx context.Context, w http.ResponseWri
 	var sb strings.Builder
 	sb.WriteString("<DescribeDBSnapshotsResult><DBSnapshots>")
 	for _, s := range snaps {
-		sb.WriteString(dbSnapshotXML(s))
+		sb.WriteString(dbSnapshotXML(s, h.snapshotArn(ctx, s.id)))
 	}
 	sb.WriteString("</DBSnapshots></DescribeDBSnapshotsResult>")
 	h.writeXML(w, requestID, "DescribeDBSnapshots", sb.String())
@@ -453,13 +482,13 @@ func (h *rdsHandler) deleteDBSnapshot(ctx context.Context, w http.ResponseWriter
 	}
 	s.status = "deleted"
 	h.audit(ctx, "DeleteDBSnapshot", id, "allow", "")
-	h.writeXML(w, requestID, "DeleteDBSnapshot", "<DeleteDBSnapshotResult>"+dbSnapshotXML(s)+"</DeleteDBSnapshotResult>")
+	h.writeXML(w, requestID, "DeleteDBSnapshot", "<DeleteDBSnapshotResult>"+dbSnapshotXML(s, h.snapshotArn(ctx, id))+"</DeleteDBSnapshotResult>")
 }
 
 // --- XML rendering ---
 
-func (h *rdsHandler) writeInstanceResponse(w http.ResponseWriter, requestID, action string, v instanceView) {
-	h.writeXML(w, requestID, action, "<"+action+"Result>"+dbInstanceXML(v)+"</"+action+"Result>")
+func (h *rdsHandler) writeInstanceResponse(ctx context.Context, w http.ResponseWriter, requestID, action string, v instanceView) {
+	h.writeXML(w, requestID, action, "<"+action+"Result>"+dbInstanceXML(v, h.instanceArn(ctx, v.id))+"</"+action+"Result>")
 }
 
 func (h *rdsHandler) writeXML(w http.ResponseWriter, requestID, action, inner string) {
@@ -473,10 +502,11 @@ func (h *rdsHandler) writeXML(w http.ResponseWriter, requestID, action, inner st
 	_, _ = w.Write([]byte("</" + action + "Response>"))
 }
 
-func dbInstanceXML(v instanceView) string {
+func dbInstanceXML(v instanceView, arn string) string {
 	var sb strings.Builder
 	sb.WriteString("<DBInstance>")
 	el(&sb, "DBInstanceIdentifier", v.id)
+	el(&sb, "DBInstanceArn", arn)
 	el(&sb, "DBInstanceStatus", v.status)
 	el(&sb, "Engine", v.engine)
 	el(&sb, "EngineVersion", "16")
@@ -498,10 +528,11 @@ func dbInstanceXML(v instanceView) string {
 	return sb.String()
 }
 
-func dbSnapshotXML(s snapshotView) string {
+func dbSnapshotXML(s snapshotView, arn string) string {
 	var sb strings.Builder
 	sb.WriteString("<DBSnapshot>")
 	el(&sb, "DBSnapshotIdentifier", s.id)
+	el(&sb, "DBSnapshotArn", arn)
 	el(&sb, "DBInstanceIdentifier", s.instance)
 	el(&sb, "Status", s.status)
 	el(&sb, "Engine", "postgres")
