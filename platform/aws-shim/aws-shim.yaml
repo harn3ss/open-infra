@@ -446,10 +446,9 @@ subjects:
 # Finding a function by name: a Lambda Invoke, an SNS/EventBridge/API Gateway delivery or a stack's
 # function name check looks for the kind: Function in the Lambda API's namespace (FUNCTIONS_NAMESPACE)
 # and the stack namespace (CFN_NAMESPACE), so a function a stack creates is invoked by the name its stack
-# reports. Read one claim by name — get only, bound in just those two namespaces; the caller's right to
-# invoke is still checked where the function is found. Without it every invoke looks in
-# FUNCTIONS_NAMESPACE only. list serves Lambda ListFunctions, a page at a time, over the same two
-# namespaces (the caller's own list right is checked in each).
+# reports; a member account's functions are in its own namespaces (its home). get and list only; the
+# caller's right to invoke or list is still checked, in its own account, where the function is found. list
+# serves Lambda ListFunctions, a page at a time, over the caller's account's namespaces.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -459,22 +458,14 @@ rules:
     resources: [functions]
     verbs: [get, list]
 ---
+# Bound in every namespace: each account's functions (and the resources whose logs AWS keeps) are in that
+# account's own namespaces — the management account's Lambda and stack namespaces, a member account's home —
+# which are made as accounts are, so a binding per namespace could never keep up. Read only; what a caller
+# may see is decided per request, in its own account (fn_locate.go, cloudwatchlogs_loki.go).
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: aws-shim-functions
-  namespace: default
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-functions }
-subjects:
-  - kind: ServiceAccount
-    name: aws-shim
-    namespace: open-infra-aws-shim
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: aws-shim-functions
-  namespace: open-infra-cfn
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-functions }
 subjects:
   - kind: ServiceAccount
@@ -484,8 +475,8 @@ subjects:
 # CloudWatch Logs (cloudwatchlogs_loki.go): the log groups AWS keeps a service's own logs in —
 # /aws/sagemaker/TrainingJobs and ProcessingJobs, /ecs/<application> (and /aws/lambda/<function>, through
 # the functions grant above) — exist while their resource does. Reading which ones exist: get and list
-# only, in the same two namespaces; the events are read from the log store, and the caller's logs:* right
-# is checked on each group.
+# only; the events are read from the log store, and the caller's logs:* right
+# is checked on each group. Bound in every namespace, as the functions grant is.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -495,22 +486,14 @@ rules:
     resources: [applications, trainingjobs, processingjobs]
     verbs: [get, list]
 ---
+# Bound in every namespace: each account's functions (and the resources whose logs AWS keeps) are in that
+# account's own namespaces — the management account's Lambda and stack namespaces, a member account's home —
+# which are made as accounts are, so a binding per namespace could never keep up. Read only; what a caller
+# may see is decided per request, in its own account (fn_locate.go, cloudwatchlogs_loki.go).
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: aws-shim-log-sources
-  namespace: default
-roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-log-sources }
-subjects:
-  - kind: ServiceAccount
-    name: aws-shim
-    namespace: open-infra-aws-shim
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: aws-shim-log-sources
-  namespace: open-infra-cfn
 roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-log-sources }
 subjects:
   - kind: ServiceAccount
