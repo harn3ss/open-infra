@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 )
 
 // sqsStore is the Postgres persistence for queues and messages. A nil store means the data layer is
@@ -116,6 +118,9 @@ func (s *sqsStore) createQueue(ctx context.Context, name, url string, attrs map[
 	return true, nil
 }
 
+// queueURLByName is the URL of the queue stored under name: its store key (accountKey), which is the
+// queue's name for the management account's queues — where every queue always was — and
+// "<account>:<name>" for a member account's (queueURLInAccount).
 func (s *sqsStore) queueURLByName(ctx context.Context, name string) (string, bool, error) {
 	var url string
 	err := s.db.QueryRowContext(ctx, `SELECT url FROM sqs_queues WHERE name = $1`, name).Scan(&url)
@@ -123,6 +128,30 @@ func (s *sqsStore) queueURLByName(ctx context.Context, name string) (string, boo
 		return "", false, nil
 	}
 	return url, err == nil, err
+}
+
+// queueURLInAccount is the URL of account's queue named name: a delivery to a queue (an EventBridge rule's
+// target, an SNS subscription's endpoint) looks its queue up in the account the queue's ARN names, never by
+// the bare name in the management account. An empty account is the management account.
+func (s *sqsStore) queueURLInAccount(ctx context.Context, account, name string) (string, bool, error) {
+	return s.queueURLByName(ctx, accountKeyFor(account, name))
+}
+
+// queueURLForARN is queueURLInAccount for the queue an SQS ARN names (an ARN naming no account, or the
+// legacy one, names the management account's).
+func (s *sqsStore) queueURLForARN(ctx context.Context, arn string) (string, bool, error) {
+	return s.queueURLInAccount(ctx, awsidentity.AccountOfARN(arn), nameFromArn(arn))
+}
+
+// queueKeyByURL is the store key of the queue stored under url — which account's queue it is
+// (splitAccountKey).
+func (s *sqsStore) queueKeyByURL(ctx context.Context, url string) (string, bool, error) {
+	var key string
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM sqs_queues WHERE url = $1`, url).Scan(&key)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	return key, err == nil, err
 }
 
 func (s *sqsStore) queueAttrs(ctx context.Context, url string) (map[string]string, time.Time, bool, error) {
@@ -185,8 +214,23 @@ func (s *sqsStore) deleteQueue(ctx context.Context, url string) (bool, error) {
 	return n > 0, nil
 }
 
+// listQueues lists the URLs of the management account's queues whose name begins with prefix: every
+// queue but a member account's (memberKeyRe).
 func (s *sqsStore) listQueues(ctx context.Context, prefix string, limit int) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT url FROM sqs_queues WHERE name LIKE $1 ORDER BY name LIMIT $2`, prefix+"%", limit)
+	return s.queryURLs(ctx, `SELECT url FROM sqs_queues WHERE name LIKE $1 AND name !~ '^[0-9]{12}:' ORDER BY name LIMIT $2`, prefix+"%", limit)
+}
+
+// listQueuesIn lists the URLs of account's queues whose name begins with prefix (listQueues for the
+// management account).
+func (s *sqsStore) listQueuesIn(ctx context.Context, account, prefix string, limit int) ([]string, error) {
+	if awsidentity.Current().IsManagement(account) {
+		return s.listQueues(ctx, prefix, limit)
+	}
+	return s.queryURLs(ctx, `SELECT url FROM sqs_queues WHERE name LIKE $1 ORDER BY name LIMIT $2`, accountKeyFor(account, prefix)+"%", limit)
+}
+
+func (s *sqsStore) queryURLs(ctx context.Context, q string, args ...any) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

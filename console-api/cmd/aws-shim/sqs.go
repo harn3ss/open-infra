@@ -38,6 +38,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -56,6 +57,9 @@ type sqsHandler struct {
 	// urlBase is the shim's own queue URL base (SQS_QUEUE_URL_BASE): the URL a queue is recorded under
 	// when its creator called by an AWS name (queueURLs).
 	urlBase string
+	// accounts tells a member account from any other account id a URL may carry (queueIn); nil knows
+	// none.
+	accounts accountHomes
 }
 
 // defaultQueueURLBase is the shim's in-cluster queue URL base, unless SQS_QUEUE_URL_BASE names another.
@@ -127,28 +131,56 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 	body := readJSONBody(r)
+	ctx := r.Context()
 
 	queueName := sqsAuthzQueue(op, body)
+
+	// The queue the request addresses, in the account it belongs to (queueTarget): the caller's own, or —
+	// named by a QueueUrl (or GetQueueUrl's QueueOwnerAWSAccountId) — another account's, which is then
+	// reached across accounts.
+	q := queueRef{account: h.acct(ctx), name: queueName}
+	if h.store != nil {
+		var err error
+		if q, err = h.queueTarget(ctx, op, body); err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+	}
 
 	// sqs:<Op> on the queue (decide): in legacy the coarse impersonated SubjectAccessReview, then the
 	// data-plane refinement scoped to the queue (where sqs:ReceiveMessage is separable from
 	// sqs:DeleteMessage; an assumed role is checked on every op, ListQueues on Queue::*); in enforce IAM
-	// policy alone, with the queue's own policy.
-	if ok, reason := decide(r.Context(), r, h.authz, claims, "sqs:"+op, "Queue", queueName,
-		coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, queueName,
-			"sqs:"+op, "Queue", queueName), h.queuePolicyOpt(r.Context(), queueName)...); !ok {
+	// policy alone, with the queue's own policy. A queue of another account is decided across accounts.
+	opts, legacy := h.accountAuthz(ctx, q.account, coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, queueName,
+		"sqs:"+op, "Queue", queueName))
+	if ok, reason := decide(ctx, r, h.authz, claims, "sqs:"+op, "Queue", queueName, legacy,
+		append(h.queuePolicyOpt(ctx, q), opts...)...); !ok {
 		writeSQSError(w, http.StatusForbidden, "AccessDenied", requestID, reason)
 		return
 	}
 	// A RedrivePolicy moves this queue's failed messages into its dead-letter queue, so the caller must be
 	// able to send to that queue itself: without this a queue it owns could deliver into one it may not
-	// write to.
+	// write to. The dead-letter queue is the queue's own account's (SQS's rule: the source queue's account
+	// and region).
 	if op == "CreateQueue" || op == "SetQueueAttributes" {
 		if dlq := redriveTarget(stringMap(body["Attributes"])); dlq != "" {
+			if e := h.checkRedriveAccount(q.account, stringMap(body["Attributes"])); e != nil {
+				writeSQSError(w, http.StatusBadRequest, e.code, requestID, e.msg)
+				return
+			}
+			d := queueRef{account: q.account, name: dlq, key: h.keyFor(q.account, dlq)}
+			if h.store != nil {
+				var err error
+				if d.url, _, err = h.store.queueURLByName(ctx, d.key); err != nil {
+					h.internal(w, requestID, err)
+					return
+				}
+			}
 			sendVerb, _ := verbForSQSOp("SendMessage")
-			if ok, reason := decide(r.Context(), r, h.authz, claims, "sqs:SendMessage", "Queue", dlq,
-				coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, sendVerb, "openinfra.dev", "applications", h.authzNS, dlq,
-					"sqs:SendMessage", "Queue", dlq), h.queuePolicyOpt(r.Context(), dlq)...); !ok {
+			opts, legacy := h.accountAuthz(ctx, d.account, coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, sendVerb, "openinfra.dev", "applications", h.authzNS, dlq,
+				"sqs:SendMessage", "Queue", dlq))
+			if ok, reason := decide(ctx, r, h.authz, claims, "sqs:SendMessage", "Queue", dlq, legacy,
+				append(h.queuePolicyOpt(ctx, d), opts...)...); !ok {
 				writeSQSError(w, http.StatusForbidden, "AccessDenied", requestID, "RedrivePolicy dead-letter queue "+dlq+": "+reason)
 				return
 			}
@@ -160,24 +192,23 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 
-	ctx := r.Context()
-	h.resolveLegacyQueueURL(ctx, body) // a queue made before the account changed answers to either URL (identity_compat.go)
-	// A queue is its name: a QueueUrl naming another host or account (the URL a stack reported, one
-	// minted for another endpoint of this shim) means the queue of that name.
-	if u, _ := body["QueueUrl"].(string); u != "" {
-		if stored, found, err := h.canonicalURL(ctx, u); err == nil && found {
-			body["QueueUrl"] = stored
+	// A queue is its name: a QueueUrl naming another host (the URL a stack reported, one minted for
+	// another endpoint of this shim) means the queue of that name in the account the URL names
+	// (queueTarget); the op acts on the URL that queue is stored under.
+	if q.url != "" {
+		if _, given := body["QueueUrl"].(string); given {
+			body["QueueUrl"] = q.url
 		}
 	}
 	switch op {
 	case "CreateQueue":
 		h.createQueue(ctx, w, r, requestID, body)
 	case "GetQueueUrl":
-		h.getQueueURL(ctx, w, r, requestID, body)
+		h.getQueueURL(w, r, requestID, q)
 	case "GetQueueAttributes":
-		h.getQueueAttributes(ctx, w, requestID, body)
+		h.getQueueAttributes(ctx, w, requestID, body, q)
 	case "SetQueueAttributes":
-		h.setQueueAttributes(ctx, w, requestID, body)
+		h.setQueueAttributes(ctx, w, requestID, body, q)
 	case "DeleteQueue":
 		h.deleteQueue(ctx, w, requestID, body)
 	case "ListQueues":
@@ -187,7 +218,7 @@ func (h *sqsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "SendMessageBatch":
 		h.sendMessageBatch(ctx, w, requestID, body)
 	case "ReceiveMessage":
-		h.receiveMessage(ctx, w, requestID, body)
+		h.receiveMessage(ctx, w, requestID, body, q)
 	case "DeleteMessage":
 		h.deleteMessage(ctx, w, requestID, body)
 	case "DeleteMessageBatch":
@@ -215,15 +246,16 @@ func (h *sqsHandler) createQueue(ctx context.Context, w http.ResponseWriter, r *
 		writeSQSError(w, http.StatusBadRequest, e.code, requestID, e.msg)
 		return
 	}
-	if err := checkResourcePolicy(attrs[policyAttr], h.queueARN(name)); err != nil {
+	account := h.acct(ctx) // a queue is made in the caller's account
+	if err := checkResourcePolicy(attrs[policyAttr], h.queueARNIn(account, name)); err != nil {
 		writeSQSError(w, http.StatusBadRequest, "InvalidAttributeValue", requestID, "Invalid value for the parameter Policy: "+err.Error())
 		return
 	}
 	if v, ok := attrs[policyAttr]; ok && strings.TrimSpace(v) == "" {
 		delete(attrs, policyAttr)
 	}
-	url, answer := h.queueURLs(r, name)
-	existed, err := h.store.createQueue(ctx, name, url, attrs)
+	url, answer := h.queueURLsIn(r, account, name)
+	existed, err := h.store.createQueue(ctx, accountKey(ctx, name), url, attrs)
 	if err == errQueueExistsDiff {
 		writeSQSError(w, http.StatusBadRequest, "QueueNameExists", requestID,
 			"A queue already exists with the same name and a different configuration.")
@@ -237,21 +269,17 @@ func (h *sqsHandler) createQueue(ctx context.Context, w http.ResponseWriter, r *
 	writeSQSJSON(w, requestID, map[string]any{"QueueUrl": answer})
 }
 
-func (h *sqsHandler) getQueueURL(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, body map[string]any) {
-	name, _ := body["QueueName"].(string)
-	url, ok, err := h.store.queueURLByName(ctx, name)
-	if err != nil {
-		h.internal(w, requestID, err)
-		return
-	}
-	if !ok {
+// getQueueURL answers the URL of the queue GetQueueUrl names: by QueueName in the caller's account, or in
+// QueueOwnerAWSAccountId's (queueTarget).
+func (h *sqsHandler) getQueueURL(w http.ResponseWriter, r *http.Request, requestID string, q queueRef) {
+	if q.url == "" {
 		writeSQSError(w, http.StatusBadRequest, "QueueDoesNotExist", requestID, "The specified queue does not exist.")
 		return
 	}
-	writeSQSJSON(w, requestID, map[string]any{"QueueUrl": h.answerURL(r, url)})
+	writeSQSJSON(w, requestID, map[string]any{"QueueUrl": h.answerURLIn(r, q.account, q.url)})
 }
 
-func (h *sqsHandler) getQueueAttributes(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+func (h *sqsHandler) getQueueAttributes(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, q queueRef) {
 	url, _ := body["QueueUrl"].(string)
 	attrs, created, ok, err := h.store.queueAttrs(ctx, url)
 	if err != nil {
@@ -285,7 +313,7 @@ func (h *sqsHandler) getQueueAttributes(ctx context.Context, w http.ResponseWrit
 	}
 	out["ApproximateNumberOfMessages"] = strconv.Itoa(avail)
 	out["ApproximateNumberOfMessagesNotVisible"] = strconv.Itoa(inflight)
-	out["QueueArn"] = h.queueARN(queueNameFromURL(url))
+	out["QueueArn"] = h.queueARNIn(q.account, queueNameFromURL(url))
 	out["CreatedTimestamp"] = strconv.FormatInt(created.Unix(), 10)
 
 	// Honor a requested AttributeNames filter (All / specific names); default is All.
@@ -302,7 +330,7 @@ func (h *sqsHandler) getQueueAttributes(ctx context.Context, w http.ResponseWrit
 	writeSQSJSON(w, requestID, map[string]any{"Attributes": out})
 }
 
-func (h *sqsHandler) setQueueAttributes(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+func (h *sqsHandler) setQueueAttributes(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, q queueRef) {
 	url, _ := body["QueueUrl"].(string)
 	attrs := stringMap(body["Attributes"])
 	have, _, found, err := h.store.queueAttrs(ctx, url)
@@ -321,7 +349,7 @@ func (h *sqsHandler) setQueueAttributes(ctx context.Context, w http.ResponseWrit
 	if doc, set := attrs[policyAttr]; set {
 		// A queue policy decides the deliveries the shim makes to the queue (resource_policy.go); one it
 		// cannot honor is refused rather than kept and ignored. An empty Policy removes it, as on AWS.
-		if err := checkResourcePolicy(doc, h.queueARN(queueNameFromURL(url))); err != nil {
+		if err := checkResourcePolicy(doc, h.queueARNIn(q.account, queueNameFromURL(url))); err != nil {
 			writeSQSError(w, http.StatusBadRequest, "InvalidAttributeValue", requestID, "Invalid value for the parameter Policy: "+err.Error())
 			return
 		}
@@ -352,15 +380,17 @@ func (h *sqsHandler) deleteQueue(ctx context.Context, w http.ResponseWriter, req
 	writeSQSJSON(w, requestID, map[string]any{})
 }
 
+// listQueues lists the caller's account's queues — never another account's.
 func (h *sqsHandler) listQueues(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, body map[string]any) {
 	prefix, _ := body["QueueNamePrefix"].(string)
-	urls, err := h.store.listQueues(ctx, prefix, 1000)
+	urls, err := h.store.listQueuesIn(ctx, callerAccount(ctx), prefix, 1000)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
+	account := h.acct(ctx)
 	for i, u := range urls {
-		urls[i] = h.answerURL(r, u)
+		urls[i] = h.answerURLIn(r, account, u)
 	}
 	writeSQSJSON(w, requestID, map[string]any{"QueueUrls": urls})
 }
@@ -501,7 +531,7 @@ func (h *sqsHandler) sendMessageBatch(ctx context.Context, w http.ResponseWriter
 	writeSQSJSON(w, requestID, map[string]any{"Successful": successful, "Failed": failed})
 }
 
-func (h *sqsHandler) receiveMessage(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+func (h *sqsHandler) receiveMessage(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, q queueRef) {
 	url, _ := body["QueueUrl"].(string)
 	qattrs, _, ok, err := h.store.queueAttrs(ctx, url)
 	if err != nil {
@@ -532,7 +562,7 @@ func (h *sqsHandler) receiveMessage(ctx context.Context, w http.ResponseWriter, 
 	if wait > 20*time.Second {
 		wait = 20 * time.Second
 	}
-	maxReceive, dlqURL := h.redrive(ctx, qattrs)
+	maxReceive, dlqURL := h.redrive(ctx, q.account, qattrs)
 	fifo := isFIFO(qattrs)
 	if v, _ := body["ReceiveRequestAttemptId"].(string); v != "" && fifo {
 		writeSQSError(w, http.StatusBadRequest, "InvalidParameterValue", requestID,
@@ -682,22 +712,30 @@ func (h *sqsHandler) internal(w http.ResponseWriter, requestID string, err error
 	writeSQSError(w, http.StatusInternalServerError, "InternalFailure", requestID, "The server encountered an internal error.")
 }
 
-func (h *sqsHandler) queueURL(r *http.Request, name string) string {
+// queueURLIn is the URL of account's queue name at the caller's own endpoint.
+func (h *sqsHandler) queueURLIn(r *http.Request, account, name string) string {
 	scheme := "http"
 	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 		scheme = "https"
 	}
-	return scheme + "://" + r.Host + "/" + h.account + "/" + name
+	return scheme + "://" + r.Host + "/" + account + "/" + name
 }
 
-// queueURLs is the URL a new queue is recorded under, and the one its creator is answered with. Both are
-// the caller's own endpoint, except when the caller came in by an AWS name (a VM guest whose resolver
-// sends sqs.<region>.amazonaws.com here): that caller is answered in AWS's shape, but the queue is
-// recorded under the shim's own URL. A recorded amazonaws.com URL would be handed to every later caller
-// (GetQueueUrl, ListQueues, a stack's outputs), and an SDK that sends to the QueueUrl's host — the
-// JavaScript SDK v3 does — would send that caller's credentials and messages to AWS.
+// queueURLs is the URL a new queue of the management account is recorded under, and the one its creator
+// is answered with (queueURLsIn).
 func (h *sqsHandler) queueURLs(r *http.Request, name string) (stored, answer string) {
-	answer = h.queueURL(r, name)
+	return h.queueURLsIn(r, h.account, name)
+}
+
+// queueURLsIn is the URL a new queue of account is recorded under, and the one its creator is answered
+// with. Both are the caller's own endpoint, except when the caller came in by an AWS name (a VM guest
+// whose resolver sends sqs.<region>.amazonaws.com here): that caller is answered in AWS's shape, but the
+// queue is recorded under the shim's own URL. A recorded amazonaws.com URL would be handed to every later
+// caller (GetQueueUrl, ListQueues, a stack's outputs), and an SDK that sends to the QueueUrl's host — the
+// JavaScript SDK v3 does — would send that caller's credentials and messages to AWS. Both carry the
+// queue's account, as an SQS queue URL does.
+func (h *sqsHandler) queueURLsIn(r *http.Request, account, name string) (stored, answer string) {
+	answer = h.queueURLIn(r, account, name)
 	if !awsSQSHost(r) {
 		return answer, answer
 	}
@@ -705,29 +743,26 @@ func (h *sqsHandler) queueURLs(r *http.Request, name string) (stored, answer str
 	if base == "" {
 		base = defaultQueueURLBase
 	}
-	return strings.TrimRight(base, "/") + "/" + h.account + "/" + name, answer
+	return strings.TrimRight(base, "/") + "/" + account + "/" + name, answer
 }
 
-// answerURL is the URL a queue recorded under stored is reported to this caller with: the recorded URL,
-// or, for a caller that came in by an AWS name, the queue's URL at that name (queueURLs).
+// answerURL is answerURLIn for a queue of the management account.
 func (h *sqsHandler) answerURL(r *http.Request, stored string) string {
+	return h.answerURLIn(r, h.account, stored)
+}
+
+// answerURLIn is the URL account's queue recorded under stored is reported to this caller with: the
+// recorded URL, or, for a caller that came in by an AWS name, the queue's URL at that name (queueURLsIn).
+func (h *sqsHandler) answerURLIn(r *http.Request, account, stored string) string {
 	if !awsSQSHost(r) {
 		return stored
 	}
-	return h.queueURL(r, queueNameFromURL(stored))
+	return h.queueURLIn(r, account, queueNameFromURL(stored))
 }
 
-// canonicalURL is the stored URL of the queue a QueueUrl addresses: the URL itself when a queue has it,
-// else the queue named by its last path segment (queue names are unique in this store).
-func (h *sqsHandler) canonicalURL(ctx context.Context, u string) (string, bool, error) {
-	if _, _, ok, err := h.store.queueAttrs(ctx, u); err != nil || ok {
-		return u, ok, err
-	}
-	return h.store.queueURLByName(ctx, queueNameFromURL(u))
-}
-
-func (h *sqsHandler) queueARN(name string) string {
-	return "arn:aws:sqs:" + h.region + ":" + h.account + ":" + name
+// queueARNIn is the ARN of account's queue name.
+func (h *sqsHandler) queueARNIn(account, name string) string {
+	return "arn:aws:sqs:" + h.region + ":" + account + ":" + name
 }
 
 // delayFor resolves the effective DelaySeconds for a send: the per-message value if present, else the
@@ -757,9 +792,10 @@ func redriveTarget(attrs map[string]string) string {
 	return rp.DeadLetterTargetArn[strings.LastIndex(rp.DeadLetterTargetArn, ":")+1:]
 }
 
-// redrive parses a queue's RedrivePolicy attribute into (maxReceiveCount, dlqURL). Returns (0,"") when
-// there is no redrive or the DLQ cannot be resolved (in which case messages are not dead-lettered).
-func (h *sqsHandler) redrive(ctx context.Context, qattrs map[string]string) (int, string) {
+// redrive parses the RedrivePolicy attribute of a queue of account into (maxReceiveCount, dlqURL): the
+// dead-letter queue is the queue's own account's, as SQS keeps it. Returns (0,"") when there is no
+// redrive or the DLQ cannot be resolved (in which case messages are not dead-lettered).
+func (h *sqsHandler) redrive(ctx context.Context, account string, qattrs map[string]string) (int, string) {
 	raw := qattrs["RedrivePolicy"]
 	if raw == "" {
 		return 0, ""
@@ -775,8 +811,8 @@ func (h *sqsHandler) redrive(ctx context.Context, qattrs map[string]string) (int
 	if maxRecv <= 0 || rp.DeadLetterTargetArn == "" {
 		return 0, ""
 	}
-	// arn:aws:sqs:region:account:name -> name -> url
-	url, ok, err := h.store.queueURLByName(ctx, redriveTarget(qattrs))
+	// arn:aws:sqs:region:account:name -> name -> the url of the queue's own account's queue of that name
+	url, ok, err := h.store.queueURLByName(ctx, h.keyFor(account, redriveTarget(qattrs)))
 	if err != nil || !ok {
 		return 0, ""
 	}
@@ -993,21 +1029,194 @@ func filterMessageAttributes(attrs map[string]any, want []string) map[string]any
 	return out
 }
 
-// queuePolicyOpt carries queue name's Policy attribute (its resource policy) to the evaluator, read only
+// queuePolicyOpt carries queue q's Policy attribute (its resource policy) to the evaluator, read only
 // when IAM policy decides (resourcePolicyOpt).
-func (h *sqsHandler) queuePolicyOpt(ctx context.Context, name string) []iamauthz.RequestOption {
-	if h.store == nil || name == "" {
+func (h *sqsHandler) queuePolicyOpt(ctx context.Context, q queueRef) []iamauthz.RequestOption {
+	if h.store == nil || q.url == "" {
 		return nil
 	}
 	return resourcePolicyOpt(h.authz, func() string {
-		url, found, err := h.store.queueURLByName(ctx, name)
-		if err != nil || !found {
-			return ""
-		}
-		attrs, _, found, err := h.store.queueAttrs(ctx, url)
+		attrs, _, found, err := h.store.queueAttrs(ctx, q.url)
 		if err != nil || !found {
 			return ""
 		}
 		return attrs["Policy"]
 	})
+}
+
+// --- accounts ---
+
+func init() { accountScopedServices["sqs"] = true }
+
+// queueRef is the queue a request addresses: the account it belongs to (h.account for the management
+// account's), its name, its store key, and the URL it is stored under ("" when that account has no such
+// queue).
+type queueRef struct {
+	account, name, key, url string
+}
+
+// acct is the account the caller acts in, as the queues it makes and lists name it: a member account's
+// id, or the handler's own for the management account (every URL and ARN exactly as before accounts).
+func (h *sqsHandler) acct(ctx context.Context) string {
+	if isMemberRequest(ctx) {
+		return callerAccount(ctx)
+	}
+	return h.account
+}
+
+// normAccount normalizes an account id: the management account's — however it is written (the
+// handler's, the install identity's, none) — is h.account.
+func (h *sqsHandler) normAccount(account string) string {
+	return normAccount(h.account, account)
+}
+
+// keyFor is the store key of account's queue name (accountKeyFor, with the handler's account taken for
+// the management account's).
+func (h *sqsHandler) keyFor(account, name string) string {
+	if a := h.normAccount(account); a != h.account {
+		return a + ":" + name
+	}
+	return name
+}
+
+// queueTarget is the queue op addresses, in the account it belongs to: CreateQueue's in the caller's
+// account; GetQueueUrl's by QueueName in the caller's account, or in QueueOwnerAWSAccountId's; every other
+// op's by its QueueUrl (queueByURL). ListQueues names none (the caller's account).
+func (h *sqsHandler) queueTarget(ctx context.Context, op string, body map[string]any) (queueRef, error) {
+	switch op {
+	case "ListQueues":
+		return queueRef{account: h.acct(ctx)}, nil
+	case "CreateQueue":
+		name, _ := body["QueueName"].(string)
+		return h.queueIn(ctx, "", name)
+	case "GetQueueUrl":
+		name, _ := body["QueueName"].(string)
+		owner, _ := body["QueueOwnerAWSAccountId"].(string)
+		return h.queueIn(ctx, owner, name)
+	}
+	u, _ := body["QueueUrl"].(string)
+	if u == "" {
+		return queueRef{account: h.acct(ctx)}, nil
+	}
+	if !isMemberRequest(ctx) {
+		// A management-account queue made before the account changed answers to either URL
+		// (identity_compat.go). Only the management account ever had the legacy id.
+		h.resolveLegacyQueueURL(ctx, body)
+		u, _ = body["QueueUrl"].(string)
+	}
+	return h.queueByURL(ctx, u)
+}
+
+// queueByURL is the queue a QueueUrl addresses: the queue stored under that URL, whichever account's it
+// is; else the queue its last path segment names in the account its path names (a queue is its name: the
+// URL a stack reported, one minted for another endpoint of this shim) — never another account's for a URL
+// naming the caller's (queueIn).
+func (h *sqsHandler) queueByURL(ctx context.Context, u string) (queueRef, error) {
+	key, ok, err := h.store.queueKeyByURL(ctx, u)
+	if err != nil {
+		return queueRef{}, err
+	}
+	if ok {
+		account, name := splitAccountKey(key)
+		return queueRef{account: h.normAccount(account), name: name, key: key, url: u}, nil
+	}
+	return h.queueIn(ctx, queueURLAccount(u), queueNameFromURL(u))
+}
+
+// queueIn is queue name of account named ("" = the caller's own). A queue of another account than the
+// caller's is that account's, reached across accounts. The management account keeps what it always had: a
+// queue it names in an account id that is no member account's (a URL minted with another account id) is
+// its own queue of that name. A member account's name never falls back to another account's queue, nor
+// another account's name to a member's own.
+func (h *sqsHandler) queueIn(ctx context.Context, named, name string) (queueRef, error) {
+	caller := h.acct(ctx)
+	if named != "" {
+		if named = h.normAccount(named); named != caller {
+			key := h.keyFor(named, name)
+			url, ok, err := h.store.queueURLByName(ctx, key)
+			if err != nil || ok || isMemberRequest(ctx) || knownMember(h.accounts, named) {
+				return queueRef{account: named, name: name, key: key, url: url}, err
+			}
+		}
+	}
+	key := accountKey(ctx, name)
+	url, _, err := h.store.queueURLByName(ctx, key)
+	return queueRef{account: caller, name: name, key: key, url: url}, err
+}
+
+// queueURLAccount is the account a queue URL's path names (<base>/<account>/<name>), "" when it names
+// none (the legacy id, a malformed URL).
+func queueURLAccount(u string) string {
+	if _, rest, ok := strings.Cut(u, "://"); ok {
+		u = rest
+	}
+	segs := strings.Split(strings.Trim(u, "/"), "/")
+	if len(segs) < 3 || !accountIDRe.MatchString(segs[len(segs)-2]) {
+		return ""
+	}
+	return segs[len(segs)-2]
+}
+
+// accountAuthz is how a request on a resource of account owner is decided. The caller's own account's: a
+// management-account request exactly as before, a member account's principal as AWS decides a request
+// within one account (the router's account scope, named here outright). Another account's: across
+// accounts, as AWS decides it — the caller's identity policy and the resource's own policy must both
+// allow — which only IAM policy can decide: the legacy check knows no accounts, so it refuses.
+func (h *sqsHandler) accountAuthz(ctx context.Context, owner string, legacy func() (bool, string)) ([]iamauthz.RequestOption, func() (bool, string)) {
+	return accountAuthzFor(ctx, h.acct(ctx), h.normAccount(owner), h.account, legacy)
+}
+
+// accountAuthzFor is accountAuthz for a door whose management account id is mgmt.
+func accountAuthzFor(ctx context.Context, caller, owner, mgmt string, legacy func() (bool, string)) ([]iamauthz.RequestOption, func() (bool, string)) {
+	iamAccount := owner
+	if owner == mgmt {
+		iamAccount = awsidentity.Current().AccountID // the management account, as the IAM policy world names it
+	}
+	if owner == caller {
+		if isMemberRequest(ctx) {
+			return []iamauthz.RequestOption{iamauthz.WithResourceAccount(iamAccount)}, legacy
+		}
+		return nil, legacy
+	}
+	return []iamauthz.RequestOption{iamauthz.WithResourceAccount(iamAccount)}, func() (bool, string) {
+		return false, "the resource is in another account (" + owner + "): reached only under IAM policy, with the resource's own policy allowing it"
+	}
+}
+
+// knownMember reports whether account is a member account of the organization (dir; nil knows none) —
+// not the management account, nor an account id that names no account here.
+func knownMember(dir accountHomes, account string) bool {
+	if dir == nil || awsidentity.Current().IsManagement(account) || dir.IsManagement(account) {
+		return false
+	}
+	_, ok := dir.HomeOf(account)
+	return ok
+}
+
+// normAccount is account with the management account's id — however it is written (mgmt, the install
+// identity's, none) — as mgmt.
+func normAccount(mgmt, account string) string {
+	if account == "" || account == mgmt || awsidentity.Current().IsManagement(account) {
+		return mgmt
+	}
+	return account
+}
+
+// checkRedriveAccount refuses a member account's RedrivePolicy naming a dead-letter queue of another
+// account: SQS keeps a queue's dead-letter queue in its own account. (The management account's names the
+// queue of that name in its own account, as it always did.)
+func (h *sqsHandler) checkRedriveAccount(owner string, attrs map[string]string) *sqsAttrError {
+	if h.normAccount(owner) == h.account {
+		return nil
+	}
+	var rp struct {
+		DeadLetterTargetArn string `json:"deadLetterTargetArn"`
+	}
+	if json.Unmarshal([]byte(attrs["RedrivePolicy"]), &rp) != nil {
+		return nil
+	}
+	if a := awsidentity.AccountOfARN(rp.DeadLetterTargetArn); a != "" && h.normAccount(a) != h.normAccount(owner) {
+		return &sqsAttrError{"InvalidParameterValue", "Value " + attrs["RedrivePolicy"] + " for parameter RedrivePolicy is invalid. Reason: Dead-letter target owner should be same as the source."}
+	}
+	return nil
 }
