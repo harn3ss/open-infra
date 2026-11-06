@@ -3,8 +3,8 @@ package main
 // Each account's parameters are its own (real Postgres store, OPENINFRA_TEST_PG_URI; see
 // cfn_services_pg_test.go): the same name in both accounts, each with its own versions, ARN and — for a
 // SecureString — value bound to its account's key; a path query reads one account's subtree, and neither
-// account reads, lists, tags or deletes the other's. The calls are made as the router makes them once the
-// "ssm" door is listed as account-scoped (see ssm.go).
+// account reads, lists, tags or deletes the other's. Parameter Store marks its own requests account-scoped
+// (ssm.go serve), since Run Command shares the "ssm" signing name and keeps the management account's alone.
 
 import (
 	"context"
