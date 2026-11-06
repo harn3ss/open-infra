@@ -507,6 +507,7 @@ func run(logger *slog.Logger) error {
 	ebH := newEBHandler(cs, authzNS, fnNS, account, region, ebSt, asyncInv, sqsSt, logger)
 	ebH.authz = authzChecker
 	ebH.fns = fns
+	ebH.homeOf = acctDir.HomeOf // the scheduler fires a member account's rule in its account
 	// RDS provisions real PostgreSQL via CloudNativePG (the data path is Postgres by construction). The
 	// shim's SA holds the CNPG-management RBAC in RDS_NAMESPACE; requires the dynamic client.
 	var rdsCnpg *rdsCNPG

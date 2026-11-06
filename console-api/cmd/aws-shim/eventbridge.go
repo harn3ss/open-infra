@@ -17,6 +17,14 @@
 // authority. RoleArn on a target is refused in v1. Every fire is audited to the creating principal.
 // (Divergence from AWS: authority is verified at PutTargets, not re-checked per-fire; documented.)
 //
+// Accounts: the door keeps each account's buses, rules and targets apart, as on AWS. The management
+// account's are where they always were; a member account's bus is stored under its account key
+// ("<account>:<bus>", accountKey), its implicit "default" bus included, and its rules and targets follow
+// their bus. A member account's bus, rule and events carry its account (ARNs, an event's "account"). The
+// scheduler fires each rule in the rule's own account. A target is looked up in the account its ARN names:
+// a Lambda target is a function of the rule's own account (in its home namespace for a member account),
+// and a queue of another account takes the rule's events only when its own policy says so.
+//
 // See docs/aws-shim.md for supported targets, the pattern operators, the cron translation, and divergences.
 package main
 
@@ -30,6 +38,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/cfn/resourcepolicy"
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
@@ -49,9 +58,16 @@ type ebHandler struct {
 	authz   *dataplaneauthz.Checker
 	logger  *slog.Logger
 	fns     *fnLocator // where a lambda target's Function lives (fn_locate.go); nil = fnNS
+	// homeOf is a member account's home namespace (the accounts directory's HomeOf): the scheduler acts in
+	// a rule's account with it, and an account it knows is one of the organization's. nil knows none.
+	homeOf func(account string) (string, bool)
 
-	schedMu sync.Mutex
+	schedMu  sync.Mutex
+	defaults sync.Map // the member accounts whose implicit default bus is stored
 }
+
+// EventBridge keeps each account's buses, rules and targets apart.
+func init() { accountScopedServices["events"] = true }
 
 func newEBHandler(cs kubernetes.Interface, authzNS, fnNS, account, region string, store *ebStore, async *asyncInvoker, sqs *sqsStore, logger *slog.Logger) *ebHandler {
 	if region == "" {
@@ -125,6 +141,10 @@ func (h *ebHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 	if h.store == nil {
 		writeEBError(w, http.StatusNotImplemented, "InternalException", requestID,
 			"the EventBridge data layer is not configured on this shim (set SQS_PG_URI)")
+		return
+	}
+	if err := h.ensureDefaultBus(ctx); err != nil {
+		h.internal(w, requestID, err)
 		return
 	}
 
@@ -226,6 +246,109 @@ func busOf(body map[string]any) string {
 	return "default"
 }
 
+// --- accounts ---
+
+// normAccount is an account id as the account directory names it: the management account's whether an ARN
+// names it as this door writes it (h.account) or as the install's identity does.
+func (h *ebHandler) normAccount(acct string) string {
+	if acct == "" || acct == h.account || awsidentity.Current().IsManagement(acct) {
+		return awsidentity.Current().AccountID
+	}
+	return acct
+}
+
+// arnAccount is the account id the ARNs and events of account acct carry: the door's own for the
+// management account (as it always wrote them), the member account's id for a member's.
+func (h *ebHandler) arnAccount(acct string) string {
+	if awsidentity.Current().IsManagement(h.normAccount(acct)) {
+		return h.account
+	}
+	return acct
+}
+
+// ownerOfARN is the account whose resource an ARN names, for a request or rule of account acct: acct when
+// the ARN names no account or acct itself, otherwise the account it names. For the management account an
+// ARN naming an account that is none of the organization's still names its own resource, as the door always
+// read one (by name).
+func (h *ebHandler) ownerOfARN(acct, arn string) string {
+	acct = h.normAccount(acct)
+	named := awsidentity.AccountOfARN(arn)
+	if named == "" {
+		return acct
+	}
+	named = h.normAccount(named)
+	if named == acct {
+		return acct
+	}
+	if awsidentity.Current().IsManagement(acct) && !h.knownAccount(named) {
+		return acct
+	}
+	return named
+}
+
+// knownAccount reports whether acct is one of the organization's accounts.
+func (h *ebHandler) knownAccount(acct string) bool {
+	if awsidentity.Current().IsManagement(acct) {
+		return true
+	}
+	if h.homeOf == nil {
+		return false
+	}
+	_, ok := h.homeOf(acct)
+	return ok
+}
+
+// inAccount is a background context acting in account acct (the scheduler's, for a rule of acct).
+func (h *ebHandler) inAccount(ctx context.Context, acct string) context.Context {
+	home := ""
+	if h.homeOf != nil && !awsidentity.Current().IsManagement(acct) {
+		home, _ = h.homeOf(acct)
+	}
+	return withAccount(ctx, acct, home)
+}
+
+// busKey is the store key of the bus ref names (a name, or an ARN) in the caller's account. ok=false when
+// ref is an ARN of another account's bus — which a bus of the caller's own must never stand in for — or a
+// name no bus can have (an account key's form: AWS's bus names have no ":").
+func (h *ebHandler) busKey(ctx context.Context, ref string) (key, name string, ok bool) {
+	name = eventBusName(ref)
+	if name == "" || memberKeyRe.MatchString(name) {
+		return "", name, false
+	}
+	acct := callerAccount(ctx)
+	if strings.HasPrefix(ref, "arn:") && h.ownerOfARN(acct, ref) != h.normAccount(acct) {
+		return "", name, false
+	}
+	return accountKey(ctx, name), name, true
+}
+
+// busARN is the ARN of account acct's bus name.
+func (h *ebHandler) busARN(acct, name string) string {
+	return "arn:aws:events:" + h.region + ":" + h.arnAccount(acct) + ":event-bus/" + name
+}
+
+// ensureDefaultBus stores a member account's default bus, which every account has, on its first request.
+// (The management account's is stored with the schema.)
+func (h *ebHandler) ensureDefaultBus(ctx context.Context) error {
+	if !isMemberRequest(ctx) {
+		return nil
+	}
+	acct := callerAccount(ctx)
+	if _, done := h.defaults.Load(acct); done {
+		return nil
+	}
+	if _, err := h.store.createBus(ctx, accountKey(ctx, "default"), h.busARN(acct, "default")); err != nil {
+		return err
+	}
+	h.defaults.Store(acct, true)
+	return nil
+}
+
+// busNotFound answers a bus the caller's account does not have.
+func busNotFound(w http.ResponseWriter, requestID, name string) {
+	writeEBError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Event bus "+name+" does not exist.")
+}
+
 // --- buses ---
 
 func (h *ebHandler) createEventBus(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -234,8 +357,13 @@ func (h *ebHandler) createEventBus(ctx context.Context, w http.ResponseWriter, r
 		writeEBError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "CreateEventBus requires a Name.")
 		return
 	}
-	arn := "arn:aws:events:" + h.region + ":" + h.account + ":event-bus/" + name
-	created, err := h.store.createBus(ctx, name, arn)
+	if memberKeyRe.MatchString(name) {
+		writeEBError(w, http.StatusBadRequest, "ValidationException", requestID,
+			"1 validation error detected: Value '"+name+"' at 'name' failed to satisfy constraint: Member must satisfy regular expression pattern: [/\\.\\-_A-Za-z0-9]+")
+		return
+	}
+	arn := h.busARN(callerAccount(ctx), name)
+	created, err := h.store.createBus(ctx, accountKey(ctx, name), arn)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -254,7 +382,11 @@ func (h *ebHandler) deleteEventBus(ctx context.Context, w http.ResponseWriter, r
 		writeEBError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "The default event bus cannot be deleted.")
 		return
 	}
-	ok, err := h.store.deleteBus(ctx, name)
+	if memberKeyRe.MatchString(name) {
+		busNotFound(w, requestID, name)
+		return
+	}
+	ok, err := h.store.deleteBus(ctx, accountKey(ctx, name))
 	if err == errBusNotEmpty {
 		writeEBError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "The event bus still has rules; delete them first.")
 		return
@@ -279,7 +411,11 @@ func (h *ebHandler) listEventBuses(ctx context.Context, w http.ResponseWriter, r
 	}
 	out := make([]any, 0, len(buses))
 	for _, b := range buses {
-		out = append(out, map[string]any{"Name": b.Name, "Arn": b.Arn})
+		name, mine := nameOfAccountKey(ctx, b.Name)
+		if !mine {
+			continue // another account's bus
+		}
+		out = append(out, map[string]any{"Name": name, "Arn": b.Arn})
 	}
 	writeEBJSON(w, requestID, map[string]any{"EventBuses": out})
 }
@@ -292,12 +428,16 @@ func (h *ebHandler) putRule(ctx context.Context, w http.ResponseWriter, requestI
 		writeEBError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "PutRule requires a Name.")
 		return
 	}
-	bus := busOf(body)
-	if ok, err := h.store.busExists(ctx, bus); err != nil {
+	busK, bus, mine := h.busKey(ctx, busOf(body))
+	if !mine {
+		busNotFound(w, requestID, bus)
+		return
+	}
+	if ok, err := h.store.busExists(ctx, busK); err != nil {
 		h.internal(w, requestID, err)
 		return
 	} else if !ok {
-		writeEBError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "Event bus "+bus+" does not exist.")
+		busNotFound(w, requestID, bus)
 		return
 	}
 	schedExpr := strFromBody(body, "ScheduleExpression")
@@ -321,7 +461,7 @@ func (h *ebHandler) putRule(ctx context.Context, w http.ResponseWriter, requestI
 		return
 	}
 	r := ebRule{
-		Bus: bus, Name: name, Arn: h.ruleARN(bus, name),
+		Bus: busK, Name: name, Arn: h.ruleARN(callerAccount(ctx), bus, name),
 		ScheduleExpr: schedExpr, EventPattern: pattern, State: state,
 		Description: strFromBody(body, "Description"), Creator: principalFromCtx(ctx),
 	}
@@ -360,8 +500,13 @@ func (h *ebHandler) putRule(ctx context.Context, w http.ResponseWriter, requestI
 }
 
 func (h *ebHandler) deleteRule(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
-	name, bus := strFromBody(body, "Name"), busOf(body)
-	ok, err := h.store.deleteRule(ctx, bus, name)
+	name := strFromBody(body, "Name")
+	busK, bus, mine := h.busKey(ctx, busOf(body))
+	if !mine {
+		busNotFound(w, requestID, bus)
+		return
+	}
+	ok, err := h.store.deleteRule(ctx, busK, name)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -375,8 +520,13 @@ func (h *ebHandler) deleteRule(ctx context.Context, w http.ResponseWriter, reque
 }
 
 func (h *ebHandler) describeRule(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
-	name, bus := strFromBody(body, "Name"), busOf(body)
-	r, ok, err := h.store.getRule(ctx, bus, name)
+	name := strFromBody(body, "Name")
+	busK, bus, mine := h.busKey(ctx, busOf(body))
+	if !mine {
+		busNotFound(w, requestID, bus)
+		return
+	}
+	r, ok, err := h.store.getRule(ctx, busK, name)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -389,8 +539,12 @@ func (h *ebHandler) describeRule(ctx context.Context, w http.ResponseWriter, req
 }
 
 func (h *ebHandler) listRules(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
-	bus := busOf(body)
-	rules, err := h.store.listRules(ctx, bus, strFromBody(body, "NamePrefix"))
+	busK, bus, mine := h.busKey(ctx, busOf(body))
+	if !mine {
+		busNotFound(w, requestID, bus)
+		return
+	}
+	rules, err := h.store.listRules(ctx, busK, strFromBody(body, "NamePrefix"))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -403,8 +557,13 @@ func (h *ebHandler) listRules(ctx context.Context, w http.ResponseWriter, reques
 }
 
 func (h *ebHandler) setRuleState(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, state string) {
-	name, bus := strFromBody(body, "Name"), busOf(body)
-	r, ok, err := h.store.getRule(ctx, bus, name)
+	name := strFromBody(body, "Name")
+	busK, bus, mine := h.busKey(ctx, busOf(body))
+	if !mine {
+		busNotFound(w, requestID, bus)
+		return
+	}
+	r, ok, err := h.store.getRule(ctx, busK, name)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -422,7 +581,7 @@ func (h *ebHandler) setRuleState(ctx context.Context, w http.ResponseWriter, req
 			}
 		}
 	}
-	if _, err := h.store.setState(ctx, bus, name, state, next); err != nil {
+	if _, err := h.store.setState(ctx, busK, name, state, next); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -433,8 +592,13 @@ func (h *ebHandler) setRuleState(ctx context.Context, w http.ResponseWriter, req
 // --- targets ---
 
 func (h *ebHandler) putTargets(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, body map[string]any, claims iam.Claims) {
-	name, bus := strFromBody(body, "Rule"), busOf(body)
-	rule, ok, err := h.store.getRule(ctx, bus, name)
+	name := strFromBody(body, "Rule")
+	busK, bus, mine := h.busKey(ctx, busOf(body))
+	if !mine {
+		busNotFound(w, requestID, bus)
+		return
+	}
+	rule, ok, err := h.store.getRule(ctx, busK, name)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -448,7 +612,7 @@ func (h *ebHandler) putTargets(ctx context.Context, w http.ResponseWriter, r *ht
 		writeEBError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "PutTargets requires at least one target.")
 		return
 	}
-	existing, _ := h.store.countTargets(ctx, bus, name)
+	existing, _ := h.store.countTargets(ctx, busK, name)
 	if existing+len(targets) > 5 {
 		writeEBError(w, http.StatusBadRequest, "LimitExceededException", requestID, "A rule can have at most 5 targets.")
 		return
@@ -485,16 +649,29 @@ func (h *ebHandler) putTargets(ctx context.Context, w http.ResponseWriter, r *ht
 				"a FIFO queue target ("+arn+") needs SqsParameters.MessageGroupId, which this shim does not support; target a standard queue.")
 			return
 		}
+		// A Lambda target is a function of the rule's own account: delivering to another account's needs
+		// the execution role (RoleArn) this shim does not support, and a function of the caller's own
+		// account must never stand in for it.
+		if ttype == "lambda" && h.ownerOfARN(callerAccount(ctx), arn) != h.normAccount(callerAccount(ctx)) {
+			writeEBError(w, http.StatusBadRequest, "InvalidParameterException", requestID,
+				"the target "+arn+" is a function of another account; the open-infra shim delivers a rule's events to its own account's functions (and to another account's queue whose policy allows the rule).")
+			return
+		}
 		// A stack's own Function runs in the stack's namespace: the CloudFormation front door names it for
 		// an in-stack target (never a client — the value rides only an in-process request's context).
-		// Any other Function is found by name where it is (fn_locate.go). The target records the namespace,
-		// so it is delivered where the caller's right to invoke it is checked here.
+		// Any other Function is found by name where it is (fn_locate.go) — a member account's in its home,
+		// where its functions are. The target records the namespace, so it is delivered where the caller's
+		// right to invoke it is checked here.
 		fnNS := ""
 		if m, ok := ctx.Value(cfnTargetNamespaceKey{}).(map[string]string); ok && ttype == "lambda" {
 			fnNS = m[id]
 		}
 		if ttype == "lambda" && fnNS == "" {
-			fnNS = h.fns.namespaceOf(ctx, lambdaNameFromArn(arn), h.fnNS)
+			if isMemberRequest(ctx) {
+				fnNS = accountNamespace(ctx, h.fnNS)
+			} else {
+				fnNS = h.fns.namespaceOf(ctx, lambdaNameFromArn(arn), h.fnNS)
+			}
 		}
 		// Escalation fence: the caller must be able to invoke/send to this target themselves. A rule is
 		// then not a way to reach something you could not reach directly.
@@ -507,7 +684,7 @@ func (h *ebHandler) putTargets(ctx context.Context, w http.ResponseWriter, r *ht
 		if iv, ok := tm["Input"].(string); ok {
 			input = iv
 		}
-		if err := h.store.putTarget(ctx, bus, name, ebTarget{ID: id, Arn: arn, Type: ttype, Input: input, NS: fnNS}); err != nil {
+		if err := h.store.putTarget(ctx, busK, name, ebTarget{ID: id, Arn: arn, Type: ttype, Input: input, NS: fnNS}); err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
@@ -518,10 +695,15 @@ func (h *ebHandler) putTargets(ctx context.Context, w http.ResponseWriter, r *ht
 }
 
 func (h *ebHandler) removeTargets(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
-	name, bus := strFromBody(body, "Rule"), busOf(body)
+	name := strFromBody(body, "Rule")
+	busK, bus, mine := h.busKey(ctx, busOf(body))
+	if !mine {
+		busNotFound(w, requestID, bus)
+		return
+	}
 	ids := stringSlice(body["Ids"])
 	for _, id := range ids {
-		if _, err := h.store.removeTarget(ctx, bus, name, id); err != nil {
+		if _, err := h.store.removeTarget(ctx, busK, name, id); err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
@@ -531,8 +713,13 @@ func (h *ebHandler) removeTargets(ctx context.Context, w http.ResponseWriter, re
 }
 
 func (h *ebHandler) listTargetsByRule(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
-	name, bus := strFromBody(body, "Rule"), busOf(body)
-	targets, err := h.store.listTargets(ctx, bus, name)
+	name := strFromBody(body, "Rule")
+	busK, bus, mine := h.busKey(ctx, busOf(body))
+	if !mine {
+		busNotFound(w, requestID, bus)
+		return
+	}
+	targets, err := h.store.listTargets(ctx, busK, name)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -560,9 +747,19 @@ func (h *ebHandler) putEvents(ctx context.Context, w http.ResponseWriter, reques
 	failed := 0
 	for _, ev := range entries {
 		em, _ := ev.(map[string]any)
-		bus := "default"
+		ref := "default"
 		if b, _ := em["EventBusName"].(string); b != "" {
-			bus = eventBusName(b) // the bus serve authorized this entry on
+			ref = b // the bus serve authorized this entry on (by name)
+		}
+		// The bus is the caller's account's: an entry naming another account's bus is not delivered there
+		// (that needs the bus's resource policy, which this shim does not keep), nor to a bus of the
+		// caller's own of that name.
+		busK, bus, mine := h.busKey(ctx, ref)
+		if !mine {
+			failed++
+			resultEntries = append(resultEntries, map[string]any{"ErrorCode": "AccessDeniedException",
+				"ErrorMessage": "Event bus " + bus + " is not one of this account's; events are not delivered to another account's bus."})
+			continue
 		}
 		detail, _ := em["Detail"].(string)
 		if len(detail) > 256*1024 {
@@ -570,8 +767,8 @@ func (h *ebHandler) putEvents(ctx context.Context, w http.ResponseWriter, reques
 			resultEntries = append(resultEntries, map[string]any{"ErrorCode": "InternalFailure", "ErrorMessage": "Detail exceeds 256 KB."})
 			continue
 		}
-		envelope, id := h.buildEnvelope(em, bus)
-		if err := h.routeEvent(ctx, bus, envelope); err != nil {
+		envelope, id := h.buildEnvelope(ctx, em)
+		if err := h.routeEvent(ctx, busK, envelope); err != nil {
 			failed++
 			resultEntries = append(resultEntries, map[string]any{"ErrorCode": "InternalFailure", "ErrorMessage": "routing failed"})
 			continue
@@ -602,7 +799,8 @@ func (h *ebHandler) testEventPattern(ctx context.Context, w http.ResponseWriter,
 
 // --- routing + delivery ---
 
-// routeEvent matches an event against enabled pattern rules on the bus and delivers to their targets.
+// routeEvent matches an event against enabled pattern rules on the bus (its store key) and delivers to
+// their targets.
 func (h *ebHandler) routeEvent(ctx context.Context, bus string, envelope map[string]any) error {
 	rules, err := h.store.enabledPatternRules(ctx, bus)
 	if err != nil {
@@ -643,7 +841,10 @@ func (h *ebHandler) fireRuleTargets(ctx context.Context, r ebRule, envelope map[
 	}
 }
 
+// deliver delivers one event to one of the rule's targets, in the account the target's ARN names (the
+// rule's own account is the one its bus key names).
 func (h *ebHandler) deliver(ctx context.Context, r ebRule, t ebTarget, payload []byte) error {
+	ruleAcct, busName := splitAccountKey(r.Bus)
 	switch t.Type {
 	case "lambda":
 		if h.async == nil {
@@ -652,7 +853,12 @@ func (h *ebHandler) deliver(ctx context.Context, r ebRule, t ebTarget, payload [
 		fn := lambdaNameFromArn(t.Arn)
 		ns := t.NS // where PutTargets checked the creator's right to invoke it
 		if ns == "" {
-			ns = h.fns.namespaceOf(ctx, fn, h.fnNS) // a target recorded before targets kept a namespace
+			// A target recorded before targets kept a namespace (the management account's: a member
+			// account's always records its home).
+			if !awsidentity.Current().IsManagement(ruleAcct) {
+				return errNoFunction
+			}
+			ns = h.fns.namespaceOf(ctx, fn, h.fnNS)
 		}
 		return h.async.publish(fn, ns, "application/json", payload, "")
 	case "sqs":
@@ -660,7 +866,9 @@ func (h *ebHandler) deliver(ctx context.Context, r ebRule, t ebTarget, payload [
 			return errNoSQS
 		}
 		qname := arnLast(t.Arn)
-		url, ok, err := h.sqs.queueURLByName(ctx, qname)
+		// The queue of the account the target's ARN names — never a queue of that name in another account.
+		owner := h.ownerOfARN(ruleAcct, t.Arn)
+		url, ok, err := h.sqs.queueURLByName(ctx, accountKeyFor(owner, qname))
 		if err != nil {
 			return err
 		}
@@ -673,10 +881,16 @@ func (h *ebHandler) deliver(ctx context.Context, r ebRule, t ebTarget, payload [
 		// The queue's policy decides whether this rule may send to it (resource_policy.go).
 		ruleArn := r.Arn
 		if ruleArn == "" {
-			ruleArn = h.ruleARN(r.Bus, r.Name)
+			ruleArn = h.ruleARN(ruleAcct, busName, r.Name)
 		}
-		accepts, err := queueAccepts(ctx, h.sqs, h.region, h.account, url, resourcepolicy.Request{
-			Service: "events.amazonaws.com", Action: "sqs:SendMessage", SourceArn: ruleArn, SourceAccount: h.account}, h.logger)
+		req := resourcepolicy.Request{Service: "events.amazonaws.com", Action: "sqs:SendMessage",
+			SourceArn: ruleArn, SourceAccount: h.arnAccount(ruleAcct)}
+		var accepts bool
+		if owner == h.normAccount(ruleAcct) {
+			accepts, err = queueAccepts(ctx, h.sqs, h.region, h.arnAccount(owner), url, req, h.logger)
+		} else {
+			accepts, err = h.crossAccountQueueAccepts(ctx, url, owner, qname, req)
+		}
 		if err != nil {
 			return err
 		}
@@ -688,6 +902,25 @@ func (h *ebHandler) deliver(ctx context.Context, r ebRule, t ebTarget, payload [
 		return err
 	}
 	return errUnsupportedTarget
+}
+
+// crossAccountQueueAccepts reports whether another account's queue (owner's, at url) takes the rule's
+// delivery: only when its own policy allows it, as AWS decides a cross-account request — a queue with no
+// policy, or one this shim cannot read, takes nothing from another account.
+func (h *ebHandler) crossAccountQueueAccepts(ctx context.Context, url, owner, qname string, req resourcepolicy.Request) (bool, error) {
+	attrs, _, ok, err := h.sqs.queueAttrs(ctx, url)
+	if err != nil || !ok {
+		return false, err
+	}
+	doc := attrs[policyAttr]
+	if strings.TrimSpace(doc) == "" {
+		return false, nil
+	}
+	p, err := resourcepolicy.Parse(doc, sqsResourceARN(h.region, h.arnAccount(owner), qname))
+	if err != nil {
+		return false, nil
+	}
+	return p.Allows(req), nil
 }
 
 // --- scheduler ---
@@ -733,13 +966,16 @@ func (h *ebHandler) tickSchedule(ctx context.Context) {
 			h.logger.Warn("eventbridge scheduler: could not advance next fire", "rule", r.Name, "error", err.Error())
 			continue
 		}
-		h.fireRuleTargets(ctx, r, h.scheduledEnvelope(r), "schedule")
+		// The rule fires in its own account: the one its bus key names.
+		acct, _ := splitAccountKey(r.Bus)
+		h.fireRuleTargets(h.inAccount(ctx, acct), r, h.scheduledEnvelope(r), "schedule")
 	}
 }
 
 // --- helpers ---
 
-func (h *ebHandler) buildEnvelope(entry map[string]any, bus string) (map[string]any, string) {
+// buildEnvelope is the event an entry puts on a bus of the caller's account, which the event names.
+func (h *ebHandler) buildEnvelope(ctx context.Context, entry map[string]any) (map[string]any, string) {
 	id := uuidLike()
 	var detail any = map[string]any{}
 	if d, _ := entry["Detail"].(string); d != "" {
@@ -753,7 +989,7 @@ func (h *ebHandler) buildEnvelope(entry map[string]any, bus string) (map[string]
 		"id":          id,
 		"detail-type": strFromBody(entry, "DetailType"),
 		"source":      strFromBody(entry, "Source"),
-		"account":     h.account,
+		"account":     h.arnAccount(callerAccount(ctx)),
 		"time":        time.Now().UTC().Format(time.RFC3339),
 		"region":      h.region,
 		"resources":   entry["Resources"],
@@ -761,13 +997,15 @@ func (h *ebHandler) buildEnvelope(entry map[string]any, bus string) (map[string]
 	}, id
 }
 
+// scheduledEnvelope is a schedule rule's event, in the rule's account (its bus key's).
 func (h *ebHandler) scheduledEnvelope(r ebRule) map[string]any {
+	acct, _ := splitAccountKey(r.Bus)
 	return map[string]any{
 		"version":     "0",
 		"id":          uuidLike(),
 		"detail-type": "Scheduled Event",
 		"source":      "aws.events",
-		"account":     h.account,
+		"account":     h.arnAccount(acct),
 		"time":        time.Now().UTC().Format(time.RFC3339),
 		"region":      h.region,
 		"resources":   []any{r.Arn},
@@ -802,7 +1040,8 @@ func (h *ebHandler) authorizeTarget(ctx context.Context, r *http.Request, claims
 }
 
 func (h *ebHandler) ruleJSON(r ebRule) map[string]any {
-	out := map[string]any{"Name": r.Name, "Arn": r.Arn, "State": r.State, "EventBusName": r.Bus, "Description": r.Description}
+	_, bus := splitAccountKey(r.Bus)
+	out := map[string]any{"Name": r.Name, "Arn": r.Arn, "State": r.State, "EventBusName": bus, "Description": r.Description}
 	if r.ScheduleExpr != "" {
 		out["ScheduleExpression"] = r.ScheduleExpr
 	}
@@ -812,11 +1051,12 @@ func (h *ebHandler) ruleJSON(r ebRule) map[string]any {
 	return out
 }
 
-func (h *ebHandler) ruleARN(bus, name string) string {
+// ruleARN is the ARN of account acct's rule name on its bus (by name).
+func (h *ebHandler) ruleARN(acct, bus, name string) string {
 	if bus == "default" {
-		return "arn:aws:events:" + h.region + ":" + h.account + ":rule/" + name
+		return "arn:aws:events:" + h.region + ":" + h.arnAccount(acct) + ":rule/" + name
 	}
-	return "arn:aws:events:" + h.region + ":" + h.account + ":rule/" + bus + "/" + name
+	return "arn:aws:events:" + h.region + ":" + h.arnAccount(acct) + ":rule/" + bus + "/" + name
 }
 
 func (h *ebHandler) internal(w http.ResponseWriter, requestID string, err error) {
@@ -882,6 +1122,7 @@ const (
 	errNoAsync           = ebErr("Lambda target delivery requires the async event bus (NATS_URL) on the shim")
 	errNoSQS             = ebErr("SQS target delivery requires the SQS data layer on the shim")
 	errNoQueue           = ebErr("the target SQS queue does not exist")
+	errNoFunction        = ebErr("the target function's namespace is not recorded")
 	errQueuePolicy       = ebErr("the target SQS queue's policy does not let this rule send to it")
 	errFIFOTarget        = ebErr("a FIFO queue target needs SqsParameters.MessageGroupId, which this shim does not support")
 	errUnsupportedTarget = ebErr("unsupported target type")
