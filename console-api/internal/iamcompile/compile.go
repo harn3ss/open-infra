@@ -45,6 +45,39 @@ type Input struct {
 	// to its account id. Empty — no namespace labelled yet — is today's one-account world: the
 	// management account's grants are cluster-wide.
 	NamespaceAccounts map[string]string
+	// Namespaces is every namespace in the cluster (labelled or not). With a member account present, the
+	// management account's generated RBAC is bound in each namespace that is not a member's.
+	Namespaces []string
+}
+
+// managementNamespaces is every namespace that is not a member account's: the management account's own,
+// labelled or not (an unlabelled namespace is the management account's, as the console and the aws-shim
+// resolve it). Without the full list, the namespaces labelled into the management account.
+func (in Input) managementNamespaces(accts map[string][]string) []string {
+	if len(in.Namespaces) == 0 {
+		return accts[iamauthz.ManagementAccount]
+	}
+	var out []string
+	for _, ns := range in.Namespaces {
+		if a, ok := in.NamespaceAccounts[ns]; ok && a != "" && a != iamauthz.ManagementAccount {
+			continue
+		}
+		out = append(out, ns)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// memberNamespaces is every namespace that belongs to a member account.
+func memberNamespaces(m map[string]string) []string {
+	var out []string
+	for ns, a := range m {
+		if a != "" && a != iamauthz.ManagementAccount {
+			out = append(out, ns)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Output is one compile's result.
@@ -404,10 +437,20 @@ func compilePrincipal(in Input, accts map[string][]string, p Principal) principa
 	// Where this principal's grants land: its account's namespaces, or — for the management account in
 	// a cluster where no namespace is labelled yet — everywhere (today's one-account world).
 	nsList := accts[account]
-	// The management account's grants are cluster-wide while no namespace belongs to a member account: a
-	// namespace labelled into the management account itself (the platform's own) changes nothing, and an
-	// unlabelled one is the management account's too (as the console and the aws-shim resolve it).
-	clusterWide := account == iamauthz.ManagementAccount && !hasMemberAccounts(in.NamespaceAccounts)
+	// The management account's grants are written cluster-wide: every namespace that is not a member
+	// account's is the management account's, labelled (the platform's own) or not (as the console and the
+	// aws-shim resolve it). With member accounts present, the corpus also denies the management account's
+	// identities every member namespace (the webhook decides account identities, and a Deny wins), and
+	// the generated RBAC — the API server's fallback should the corpus not be loaded — is bound in each
+	// of the management account's namespaces rather than cluster-wide, so it never reaches a member's.
+	clusterWide := account == iamauthz.ManagementAccount
+	members := clusterWide && hasMemberAccounts(in.NamespaceAccounts)
+	rbacWide, rbacNS := clusterWide, nsList
+	var memberNS []string
+	if members {
+		rbacWide, rbacNS = false, in.managementNamespaces(accts)
+		memberNS = memberNamespaces(in.NamespaceAccounts)
+	}
 	if !clusterWide && len(nsList) == 0 {
 		rep.Dropped = append(rep.Dropped, "account "+account+" has no namespaces: nothing to grant on")
 		return principalCompile{report: rep}
@@ -700,7 +743,18 @@ func compilePrincipal(in Input, accts map[string][]string, p Principal) principa
 		verbs := k8sVerbs(v, true)
 		rep.Allows++
 		addCedar(policyengine.Allow, verbs, "*")
-		clusterRules = append(clusterRules, rbacv1.PolicyRule{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: verbs})
+		rule := rbacv1.PolicyRule{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: verbs}
+		if rbacWide {
+			clusterRules = append(clusterRules, rule)
+		} else {
+			// Bound per namespace (buildRBAC): the namespaced resources of the management account's
+			// namespaces; cluster-scoped objects are the corpus's alone (narrower).
+			nsRules = append(nsRules, rule)
+		}
+	}
+	for _, ns := range memberNS {
+		rep.Denies++
+		addCedar(policyengine.Deny, []string{"*"}, "*::"+ns+"/*")
 	}
 	if rep.Allows > 0 {
 		addCedar(policyengine.Allow, []string{"get"}, prefixed("NonResourceURL::", discoveryPaths)...)
@@ -712,7 +766,7 @@ func compilePrincipal(in Input, accts map[string][]string, p Principal) principa
 		g.Caveats = rep.Dropped
 		pc.grant = g
 	}
-	pc.clusterRoles, pc.clusterRoleBindings, pc.roleBindings = buildRBAC(p, id, account, identity, clusterWide, nsList,
+	pc.clusterRoles, pc.clusterRoleBindings, pc.roleBindings = buildRBAC(p, id, account, identity, rbacWide, rbacNS,
 		mergeRules(nsRules), mergeRules(clusterRules))
 	pc.report.RBACRules = len(mergeRules(nsRules)) + len(mergeRules(clusterRules))
 	return pc

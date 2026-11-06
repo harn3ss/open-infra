@@ -76,11 +76,12 @@ func LoadInput(ctx context.Context, dc dynamic.Interface, cs kubernetes.Interfac
 			in.Principals = append(in.Principals, p)
 		}
 	}
-	nss, err := cs.CoreV1().Namespaces().List(ctx, metav1.ListOptions{LabelSelector: AccountIDLabel})
+	nss, err := cs.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return Input{}, fmt.Errorf("list namespaces: %w", err)
 	}
 	for _, ns := range nss.Items {
+		in.Namespaces = append(in.Namespaces, ns.Name)
 		if id := ns.Labels[AccountIDLabel]; validAccountID(id) {
 			in.NamespaceAccounts[ns.Name] = id
 		}

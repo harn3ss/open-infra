@@ -422,19 +422,50 @@ func TestCompile_ManagementLabelsAloneKeepAdministratorsClusterWide(t *testing.T
 	if !wild {
 		t.Fatal("an administrator in a world of management-account namespaces did not get the cluster-wide wildcard")
 	}
-	// With a member account present, the management account's grants are enumerated (a wildcard would
-	// reach the member account's namespaces).
+	// With a member account present, the management account's administrator still reaches every namespace
+	// that is not the member's — labelled into the management account or not (kube-system) — and never
+	// the member's: the corpus denies it, and the generated RBAC is bound per management namespace.
 	out = Compile(Input{
 		World:             world([]iamauthz.Policy{doc(t, "AdministratorAccess", adminDoc)}, map[string][]string{"User::admin": {"AdministratorAccess"}}),
 		Principals:        []Principal{{Kind: "User", Namespace: "open-infra-console", Name: "admin"}},
 		NamespaceAccounts: map[string]string{"open-infra-console": "000000000000", "team-a": "912345678901"},
+		Namespaces:        []string{"open-infra-console", "kube-system", "team-a"},
 	})
-	for _, cr := range out.ClusterRoles {
-		for _, r := range cr.Rules {
-			if len(r.APIGroups) == 1 && r.APIGroups[0] == "*" && len(r.Resources) == 1 && r.Resources[0] == "*" {
-				t.Fatal("with a member account present, the management account's administrator got a cluster-wide wildcard")
+	chk := corpusChecker(t, out)
+	admin := "openinfra:000000000000:admin"
+	for _, c := range []struct {
+		verb, group, resource, ns, name string
+		want                            bool
+	}{
+		{"get", "", "secrets", "kube-system", "x", true},
+		{"delete", "openinfra.dev", "buckets", "open-infra-console", "b", true},
+		{"create", "organizations.openinfra.dev", "accounts", "", "", true},
+		{"get", "", "secrets", "team-a", "x", false},
+		{"delete", "openinfra.dev", "buckets", "team-a", "b", false},
+		{"passrole", "iam.openinfra.dev", "roles", "team-a", "r", false},
+	} {
+		if got := can(chk, admin, c.verb, c.group, c.resource, c.ns, c.name); got != c.want {
+			t.Errorf("corpus: admin %s %s/%s in %q: %v, want %v", c.verb, c.group, c.resource, c.ns, got, c.want)
+		}
+	}
+	for _, crb := range out.ClusterRoleBindings {
+		for _, cr := range out.ClusterRoles {
+			if cr.Name != crb.RoleRef.Name {
+				continue
+			}
+			for _, r := range cr.Rules {
+				if len(r.Resources) == 1 && r.Resources[0] == "*" {
+					t.Fatalf("with a member account present, %s binds a wildcard cluster-wide", crb.Name)
+				}
 			}
 		}
+	}
+	bound := map[string]bool{}
+	for _, rb := range out.RoleBindings {
+		bound[rb.Namespace] = true
+	}
+	if !bound["open-infra-console"] || !bound["kube-system"] || bound["team-a"] {
+		t.Fatalf("the management account's RBAC is bound in %v: want its namespaces (labelled or not), never the member's", bound)
 	}
 }
 
