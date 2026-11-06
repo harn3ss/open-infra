@@ -34,11 +34,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
 )
+
+// Secrets Manager keeps each account's secrets apart: a secret's name is unique within its account, its
+// ARN names that account, and a member account's secret is kept under its account's key (accountKey) —
+// its versions and staging labels with it, and its value bound to that key as associated data, so one
+// account's ciphertext never decrypts as another's secret. The management account's secrets are exactly
+// where, and as, they always were.
+func init() { accountScopedServices["secretsmanager"] = true }
 
 // smDefaultKeyID is the transit key id (→ Vault key kms-aws-secretsmanager) that protects secrets when
 // the caller does not choose one — the analog of AWS's aws/secretsmanager managed key.
@@ -153,6 +161,13 @@ func (h *secretsHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 			"the Secrets Manager data layer is not configured on this shim (set SQS_PG_URI)")
 		return
 	}
+	// A member account's request naming a secret by another account's ARN: AWS reaches another account's
+	// secret only under its resource policy, which this door does not serve — no such secret here.
+	if id, _ := body["SecretId"].(string); op != "CreateSecret" && h.foreignRef(ctx, id) {
+		writeSMError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID,
+			"Secrets Manager can't find the specified secret.")
+		return
+	}
 
 	switch op {
 	case "CreateSecret":
@@ -255,6 +270,12 @@ func (h *secretsHandler) createSecret(ctx context.Context, w http.ResponseWriter
 		writeSMError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "CreateSecret requires a Name.")
 		return
 	}
+	key, own := h.secretKey(ctx, name)
+	if !own {
+		writeSMError(w, http.StatusBadRequest, "InvalidParameterException", requestID,
+			"Invalid name. Must be a valid name containing alphanumeric characters, or any of the following: -/_+=.@!")
+		return
+	}
 	if bad := h.rejectCustomKMS(w, requestID, body); bad {
 		return
 	}
@@ -264,19 +285,20 @@ func (h *secretsHandler) createSecret(ctx context.Context, w http.ResponseWriter
 			"CreateSecret requires either SecretString or SecretBinary.")
 		return
 	}
-	ct, err := h.encryptValue(ctx, name, pt)
+	ct, err := h.encryptValue(ctx, key, pt)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	versionID := clientTokenOrUUID(body)
-	arn := h.secretARN(name)
+	arn := h.secretARN(ctx, name)
 	// A stack's secret keeps the ARN its template's Ref already is (the CloudFormation front door sets it on
-	// its in-process call; no client can).
-	if fixed, ok := ctx.Value(cfnSecretARNKey{}).(string); ok && strings.Contains(fixed, ":secret:"+name+"-") {
+	// its in-process call; no client can) — an ARN of the account the stack acts in.
+	if fixed, ok := ctx.Value(cfnSecretARNKey{}).(string); ok && strings.Contains(fixed, ":secret:"+name+"-") &&
+		(!isMemberRequest(ctx) || awsidentity.AccountOfARN(fixed) == callerAccount(ctx)) {
 		arn = fixed
 	}
-	m := secretMeta{Name: name, Arn: arn, Description: strFromBody(body, "Description"), Tags: tagsFromBody(body["Tags"])}
+	m := secretMeta{Name: key, Arn: arn, Description: strFromBody(body, "Description"), Tags: tagsFromBody(body["Tags"])}
 	if err := h.store.createSecret(ctx, m, versionID, ct, isBinary); err == errSecretExists {
 		writeSMError(w, http.StatusBadRequest, "ResourceExistsException", requestID,
 			"The operation failed because the secret "+name+" already exists.")
@@ -302,7 +324,7 @@ func (h *secretsHandler) getSecretValue(ctx context.Context, w http.ResponseWrit
 	var versionID, ct string
 	var isBinary bool
 	if vid, _ := body["VersionId"].(string); vid != "" {
-		c, b, found, err := h.store.versionByID(ctx, m.Name, vid)
+		c, b, found, err := h.store.versionByID(ctx, m.Key, vid)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
@@ -317,7 +339,7 @@ func (h *secretsHandler) getSecretValue(ctx context.Context, w http.ResponseWrit
 		if stage == "" {
 			stage = "AWSCURRENT"
 		}
-		vid, c, b, found, err := h.store.versionByStage(ctx, m.Name, stage)
+		vid, c, b, found, err := h.store.versionByStage(ctx, m.Key, stage)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
@@ -329,14 +351,14 @@ func (h *secretsHandler) getSecretValue(ctx context.Context, w http.ResponseWrit
 		}
 		versionID, ct, isBinary = vid, c, b
 	}
-	pt, err := h.decryptValue(ctx, m.Name, ct)
+	pt, err := h.decryptValue(ctx, m.Key, ct)
 	if err != nil {
 		writeSMError(w, http.StatusInternalServerError, "DecryptionFailure", requestID,
 			"Secrets Manager can't decrypt the protected secret text using the provided KMS key.")
 		return
 	}
-	h.store.touchAccessed(ctx, m.Name)
-	stages := h.stagesFor(ctx, m.Name, versionID)
+	h.store.touchAccessed(ctx, m.Key)
+	stages := h.stagesFor(ctx, m.Key, versionID)
 	h.audit(ctx, "GetSecretValue", m.Name, "versionId", versionID, "stages", strings.Join(stages, ","))
 	out := map[string]any{"ARN": m.Arn, "Name": m.Name, "VersionId": versionID, "VersionStages": stages, "CreatedDate": epoch(time.Now())}
 	renderValue(out, pt, isBinary)
@@ -359,7 +381,7 @@ func (h *secretsHandler) putSecretValue(ctx context.Context, w http.ResponseWrit
 			"PutSecretValue requires either SecretString or SecretBinary.")
 		return
 	}
-	ct, err := h.encryptValue(ctx, m.Name, pt)
+	ct, err := h.encryptValue(ctx, m.Key, pt)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -367,12 +389,12 @@ func (h *secretsHandler) putSecretValue(ctx context.Context, w http.ResponseWrit
 	versionID := clientTokenOrUUID(body)
 	stages := stringSlice(body["VersionStages"])
 	makeCurrent := len(stages) == 0 || containsStr(stages, "AWSCURRENT")
-	if err := h.store.putVersion(ctx, m.Name, versionID, ct, isBinary, stages, makeCurrent); err != nil {
+	if err := h.store.putVersion(ctx, m.Key, versionID, ct, isBinary, stages, makeCurrent); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	h.audit(ctx, "PutSecretValue", m.Name, "versionId", versionID)
-	writeSMJSON(w, requestID, map[string]any{"ARN": m.Arn, "Name": m.Name, "VersionId": versionID, "VersionStages": h.stagesFor(ctx, m.Name, versionID)})
+	writeSMJSON(w, requestID, map[string]any{"ARN": m.Arn, "Name": m.Name, "VersionId": versionID, "VersionStages": h.stagesFor(ctx, m.Key, versionID)})
 }
 
 func (h *secretsHandler) updateSecret(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, name string) {
@@ -389,20 +411,20 @@ func (h *secretsHandler) updateSecret(ctx context.Context, w http.ResponseWriter
 		return
 	}
 	if d, has := body["Description"].(string); has {
-		if err := h.store.setDescription(ctx, m.Name, d); err != nil {
+		if err := h.store.setDescription(ctx, m.Key, d); err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
 	}
 	resp := map[string]any{"ARN": m.Arn, "Name": m.Name}
 	if pt, isBinary, ok := valueFromBody(body); ok {
-		ct, err := h.encryptValue(ctx, m.Name, pt)
+		ct, err := h.encryptValue(ctx, m.Key, pt)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
 		versionID := clientTokenOrUUID(body)
-		if err := h.store.putVersion(ctx, m.Name, versionID, ct, isBinary, nil, true); err != nil {
+		if err := h.store.putVersion(ctx, m.Key, versionID, ct, isBinary, nil, true); err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
@@ -417,7 +439,7 @@ func (h *secretsHandler) describeSecret(ctx context.Context, w http.ResponseWrit
 	if !ok {
 		return
 	}
-	v2s, _, err := h.store.stagesByVersion(ctx, m.Name)
+	v2s, _, err := h.store.stagesByVersion(ctx, m.Key)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -426,15 +448,23 @@ func (h *secretsHandler) describeSecret(ctx context.Context, w http.ResponseWrit
 }
 
 func (h *secretsHandler) listSecrets(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
-	secs, err := h.store.listSecrets(ctx, toInt(body["MaxResults"]))
+	member := ""
+	if isMemberRequest(ctx) {
+		member = callerAccount(ctx)
+	}
+	secs, err := h.store.listSecrets(ctx, toInt(body["MaxResults"]), member)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	out := make([]any, 0, len(secs))
 	for _, m := range secs {
+		name, own := nameOfAccountKey(ctx, m.Name)
+		if !own {
+			continue // another account's secret
+		}
 		e := map[string]any{
-			"ARN": m.Arn, "Name": m.Name, "Description": m.Description,
+			"ARN": m.Arn, "Name": name, "Description": m.Description,
 			"CreatedDate": epoch(m.Created), "LastChangedDate": epoch(m.LastChanged),
 			"RotationEnabled": false, "Tags": tagList(m.Tags),
 		}
@@ -451,7 +481,7 @@ func (h *secretsHandler) listSecretVersionIds(ctx context.Context, w http.Respon
 	if !ok {
 		return
 	}
-	v2s, order, err := h.store.stagesByVersion(ctx, m.Name)
+	v2s, order, err := h.store.stagesByVersion(ctx, m.Key)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -476,7 +506,7 @@ func (h *secretsHandler) deleteSecret(ctx context.Context, w http.ResponseWriter
 		return
 	}
 	if force {
-		if err := h.store.forceDelete(ctx, m.Name); err != nil {
+		if err := h.store.forceDelete(ctx, m.Key); err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
@@ -494,7 +524,7 @@ func (h *secretsHandler) deleteSecret(ctx context.Context, w http.ResponseWriter
 		return
 	}
 	deletionDate := time.Now().Add(time.Duration(window) * 24 * time.Hour)
-	if _, err := h.store.scheduleDelete(ctx, m.Name, deletionDate); err != nil {
+	if _, err := h.store.scheduleDelete(ctx, m.Key, deletionDate); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -507,7 +537,7 @@ func (h *secretsHandler) restoreSecret(ctx context.Context, w http.ResponseWrite
 	if !ok {
 		return
 	}
-	if _, err := h.store.restore(ctx, m.Name); err != nil {
+	if _, err := h.store.restore(ctx, m.Key); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -533,7 +563,7 @@ func (h *secretsHandler) tagResource(ctx context.Context, w http.ResponseWriter,
 			delete(tags, k)
 		}
 	}
-	if err := h.store.setTags(ctx, m.Name, tags); err != nil {
+	if err := h.store.setTags(ctx, m.Key, tags); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -553,7 +583,7 @@ func (h *secretsHandler) updateSecretVersionStage(ctx context.Context, w http.Re
 	}
 	moveTo := strFromBody(body, "MoveToVersionId")
 	removeFrom := strFromBody(body, "RemoveFromVersionId")
-	moved, err := h.store.moveStage(ctx, m.Name, stage, moveTo, removeFrom)
+	moved, err := h.store.moveStage(ctx, m.Key, stage, moveTo, removeFrom)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -622,12 +652,18 @@ func (h *secretsHandler) getRandomPassword(ctx context.Context, w http.ResponseW
 
 // --- helpers ---
 
+// mustSecret loads the caller's account's secret of this name: its Name is the name, its Key the store
+// key every version, label and value of it is kept (and bound) under.
 func (h *secretsHandler) mustSecret(ctx context.Context, w http.ResponseWriter, requestID, name string) (secretMeta, bool) {
 	if name == "" {
 		writeSMError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "A SecretId is required.")
 		return secretMeta{}, false
 	}
-	m, found, err := h.store.getSecret(ctx, name)
+	key, own := h.secretKey(ctx, name)
+	m, found, err := secretMeta{}, false, error(nil)
+	if own {
+		m, found, err = h.store.getSecret(ctx, key)
+	}
 	if err != nil {
 		h.internal(w, requestID, err)
 		return secretMeta{}, false
@@ -637,7 +673,30 @@ func (h *secretsHandler) mustSecret(ctx context.Context, w http.ResponseWriter, 
 			"Secrets Manager can't find the specified secret.")
 		return secretMeta{}, false
 	}
+	m.Key, m.Name = key, name
 	return m, true
+}
+
+// acct is the account the request acts in, as its responses name it: the management account's own
+// (h.account, exactly as before) or the member account the request acts in.
+func (h *secretsHandler) acct(ctx context.Context) string {
+	if isMemberRequest(ctx) {
+		return callerAccount(ctx)
+	}
+	return h.account
+}
+
+// secretKey is the store key of a secret name in the caller's account, and whether the name can be one of
+// its secrets at all (a name spelled as a member account's key is none of the management account's).
+func (h *secretsHandler) secretKey(ctx context.Context, name string) (string, bool) {
+	k := accountKey(ctx, name)
+	_, ok := nameOfAccountKey(ctx, k)
+	return k, ok
+}
+
+// foreignRef reports whether a member account's request names a secret by the ARN of another account.
+func (h *secretsHandler) foreignRef(ctx context.Context, id string) bool {
+	return isMemberRequest(ctx) && strings.HasPrefix(id, "arn:") && awsidentity.AccountOfARN(id) != callerAccount(ctx)
 }
 
 // rejectCustomKMS refuses a caller-supplied non-default KmsKeyId honestly (item 6). Returns true if it
@@ -686,10 +745,11 @@ func (h *secretsHandler) describeJSON(m secretMeta, v2s map[string][]string) map
 	return out
 }
 
-func (h *secretsHandler) secretARN(name string) string {
+// secretARN is a new ARN for a secret of the account the request acts in.
+func (h *secretsHandler) secretARN(ctx context.Context, name string) string {
 	sfx := make([]byte, 6)
 	_, _ = rand.Read(sfx)
-	return "arn:aws:secretsmanager:" + h.region + ":" + h.account + ":secret:" + name + "-" + arnSuffix(sfx)
+	return "arn:aws:secretsmanager:" + h.region + ":" + h.acct(ctx) + ":secret:" + name + "-" + arnSuffix(sfx)
 }
 
 func (h *secretsHandler) internal(w http.ResponseWriter, requestID string, err error) {

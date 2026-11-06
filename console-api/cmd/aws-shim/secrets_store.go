@@ -22,7 +22,8 @@ import (
 type secretsStore struct{ db *sql.DB }
 
 type secretMeta struct {
-	Name            string
+	Name            string // as stored: the store key (accountKey); the front door sets it to the name
+	Key             string // the store key, set by the front door (mustSecret); not a column
 	Arn             string
 	Description     string
 	KmsKeyID        string // "" = the default managed key (kms-aws-secretsmanager)
@@ -323,13 +324,23 @@ func (s *secretsStore) touchAccessed(ctx context.Context, name string) {
 	_, _ = s.db.ExecContext(ctx, `UPDATE sm_secrets SET last_accessed=now() WHERE name=$1`, name)
 }
 
-func (s *secretsStore) listSecrets(ctx context.Context, limit int) ([]secretMeta, error) {
+// listSecrets lists one account's secrets, by store key: a member account's (member, its account id) are
+// the keys it prefixes, the management account's (member "") every key that is not a member account's.
+func (s *secretsStore) listSecrets(ctx context.Context, limit int, member string) ([]secretMeta, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT name, arn, description, kms_key_id, tags, rotation_enabled, deleted_at, created, last_changed, last_accessed
-		   FROM sm_secrets ORDER BY name LIMIT $1`, limit)
+	where, arg := `name !~ '^[0-9]{12}:.'`, "" // memberKeyRe
+	if member != "" {
+		where, arg = `left(name, length($2)) = $2`, member+":"
+	}
+	q := `SELECT name, arn, description, kms_key_id, tags, rotation_enabled, deleted_at, created, last_changed, last_accessed
+		   FROM sm_secrets WHERE ` + where + ` ORDER BY name LIMIT $1`
+	args := []any{limit}
+	if arg != "" {
+		args = append(args, arg)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
