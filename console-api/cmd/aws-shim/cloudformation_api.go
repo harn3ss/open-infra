@@ -38,7 +38,7 @@ import (
 // stack's queue URLs are built on SQS_QUEUE_URL_BASE (the caps), never on the host this request came in on.
 func (h *cfnDoorway) stackOpts(ctx context.Context, name string, params map[string]string, ex stackExports, body string) cfn.DeployOptions {
 	o := h.optsForIn(ctx, name, params, ex)
-	if p, err := cfn.BuildPlanWithCaps([]byte(body), params, ex.values, name, h.caps()); err == nil {
+	if p, err := cfn.BuildPlanWithCaps([]byte(body), params, ex.values, name, h.caps(ctx)); err == nil {
 		o.Fidelity = fidelityLine(p)
 	}
 	return o

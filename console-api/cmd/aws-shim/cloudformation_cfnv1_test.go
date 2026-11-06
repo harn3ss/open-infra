@@ -277,3 +277,40 @@ func TestCFN_GETQueryJSONForSigV4Callers(t *testing.T) {
 		t.Fatalf("XML by default: %d %s", rr.Code, rr.Body)
 	}
 }
+
+// A member account's instance acts in its own account: its document names that account, and its CFN_V1
+// call signals that account's stack, never the management account's stack of the same name.
+func TestCFNV1_AMemberAccountsInstanceReachesItsAccountsStack(t *testing.T) {
+	fx := newCFNV1Fixture(t)
+	fx.signer.accounts = testDirectory()
+	mctx := memberCtx()
+	rec := &cfn.StackRecord{Name: "web", Namespace: memberHome, Status: "CREATE_IN_PROGRESS", Template: cfnV1Tmpl, CreatedAt: "2026-11-03T10:00:00Z",
+		Resources: []cfn.StackResource{{LogicalID: "Web", APIVersion: "openinfra.dev/v1", Kind: "VirtualMachine", Name: "web-member",
+			Type: "AWS::EC2::Instance", Status: "CREATE_COMPLETE", Timestamp: "2026-11-03T10:05:00Z"}}}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fx.h.recsFor(mctx).apply(mctx, "cfn-stack-web",
+		map[string]any{"app.kubernetes.io/managed-by": "cfn", "cfn.openinfra.dev/stack": "web"},
+		map[string]string{"stack.json": string(data)}); err != nil {
+		t.Fatal(err)
+	}
+	addVM(t, fx.dyn, memberHome, "web-member", "uid-member", "Running")
+	f := fx.fields("uid-member")
+	f.AccountID = testMember
+	auth := cfnV1Auth(t, fx.signer, f, fx.now.Add(time.Hour))
+	if rr := fx.call(auth, signalParams("web")); rr.Code != http.StatusOK {
+		t.Fatalf("a member account's instance signalling its account's stack: %d %s", rr.Code, rr.Body)
+	}
+	if sigs, err := fx.h.signals.Signals(mctx, "web", "Web"); err != nil || len(sigs) != 1 {
+		t.Fatalf("the signal is the member account's stack's: %+v %v", sigs, err)
+	}
+	if sigs, err := fx.h.signals.Signals(context.Background(), "web", "Web"); err != nil || len(sigs) != 0 {
+		t.Fatalf("the management account's stack of the same name got the member's signal: %+v %v", sigs, err)
+	}
+	// The management account's own instance still reaches its own stack.
+	if rr := fx.call(fx.auth(t, "uid-web"), signalParams("web")); rr.Code != http.StatusOK {
+		t.Fatalf("the management account's instance: %d %s", rr.Code, rr.Body)
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,7 +27,7 @@ func TestFileDomains(t *testing.T) {
 		}
 	}
 	h := &cfnDoorway{validatedDomainsFile: list}
-	if got := h.caps().ValidatedDomains; !reflect.DeepEqual(got, want) {
+	if got := h.caps(context.Background()).ValidatedDomains; !reflect.DeepEqual(got, want) {
 		t.Errorf("caps().ValidatedDomains = %v, want %v", got, want)
 	}
 }

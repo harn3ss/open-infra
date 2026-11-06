@@ -224,6 +224,10 @@ func (h *cfnDoorway) serveInstanceCall(w http.ResponseWriter, r *http.Request, r
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, err.Error(), cfnXMLNamespace)
 		return
 	}
+	// The call acts in the instance's own account (a member account's instance reads and signals its
+	// account's stack), as AWS answers an instance's CFN_V1 call; the management account's is unchanged.
+	ctx = h.identity.identityContext(ctx, c)
+	r = r.WithContext(ctx)
 	stack := r.PostFormValue("StackName")
 	if stack == "" {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "StackName is required.", cfnXMLNamespace)

@@ -153,7 +153,7 @@ type cfnDoorway struct {
 
 // caps are the deploy-environment Capabilities this doorway vouches for. Plan, changeset, validate and
 // deploy all use the same value, so a PROVISIONABLE* plan still means deploy won't refuse.
-func (h *cfnDoorway) caps() cfn.Capabilities {
+func (h *cfnDoorway) caps(ctx context.Context) cfn.Capabilities {
 	c := cfn.Capabilities{ObjectEncryption: h.objectEncryption || fileSaysTrue(h.objectEncryptionFile),
 		SQSAPI: h.services.sqsOK(), SNSAPI: h.services.snsOK(), SSMAPI: h.services.ssmOK(), KMSAPI: h.services.kmsOK(),
 		SQSURLBase:        h.sqsURLBase,
@@ -168,10 +168,10 @@ func (h *cfnDoorway) caps() cfn.Capabilities {
 	if ecr, ok := h.services.door("ecr").(*ecrHandler); ok && ecr != nil && c.ECRAPI {
 		c.ECRRepositoryHost = stripScheme(ecr.proxyEndpoint)
 	}
-	// The EC2 key pairs an instance's KeyName may name (ec2_keypairs.go). Unreadable: none are known, and
-	// KeyName stays a caveat rather than refusing a key pair that may exist.
+	// The EC2 key pairs an instance's KeyName may name (ec2_keypairs.go): the stack's account's, as on AWS.
+	// Unreadable: none are known, and KeyName stays a caveat rather than refusing a key pair that may exist.
 	if h.keyPairs != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		kp, err := h.keyPairs(ctx)
 		cancel()
 		if err == nil {
@@ -693,7 +693,7 @@ func (h *cfnDoorway) opts(ctx context.Context, name string, params map[string]st
 		// this nil, so a custom-resource stack there refuses rather than guessing.
 		Invoke: h.invokeCustomResourceFn,
 		// The same Capabilities the doorway's plan/changeset/validate use (#347 Phase 1.8).
-		Caps: h.caps(),
+		Caps: h.caps(ctx),
 	}
 	// Resource signals (CreationPolicy ResourceSignal, WaitCondition) arrive through this front door.
 	if h.signals != nil {
@@ -772,7 +772,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 	// Synchronous validation gate — an unsupported type / bad template is refused WHOLE here, before
 	// anything is created (the DoD's "refused at validation, nothing created"). This mirrors the engine's
 	// own plan gate but surfaces it as an immediate ValidationError to the caller.
-	plan, perr := cfn.BuildPlanForStack([]byte(body), params, ex.values, name, stackID, h.caps())
+	plan, perr := cfn.BuildPlanForStack([]byte(body), params, ex.values, name, stackID, h.caps(r.Context()))
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return
@@ -849,7 +849,7 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 	}
 	h.auditNonOwner("UpdateStack", current, ap)
 	ex := h.exportsFor(ctx, name)
-	plan, perr := cfn.BuildPlanForStack([]byte(body), params, ex.values, name, current.StackID, h.caps())
+	plan, perr := cfn.BuildPlanForStack([]byte(body), params, ex.values, name, current.StackID, h.caps(r.Context()))
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return
@@ -1231,7 +1231,7 @@ func (h *cfnDoorway) validateTemplate(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 	// Validated without parameter values, as AWS does (a parameter with no default is fine here).
-	plan, perr := cfn.ValidatePlan([]byte(body), h.exportsFor(r.Context(), "").values, "validate", h.caps())
+	plan, perr := cfn.ValidatePlan([]byte(body), h.exportsFor(r.Context(), "").values, "validate", h.caps(r.Context()))
 	if perr != nil {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, perr.Error(), cfnXMLNamespace)
 		return

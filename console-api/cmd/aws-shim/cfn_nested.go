@@ -75,7 +75,7 @@ func (d *nestedDriver) CreateNested(ctx context.Context, req cfn.NestedStackRequ
 	}
 	ex := h.exportsFor(ctx, req.Name)
 	stackID := h.newStackIDIn(ctx, req.Name) // in the parent stack's account
-	plan, perr := cfn.BuildPlanForStack([]byte(body), req.Parameters, ex.values, req.Name, stackID, h.caps())
+	plan, perr := cfn.BuildPlanForStack([]byte(body), req.Parameters, ex.values, req.Name, stackID, h.caps(ctx))
 	if perr != nil {
 		return cfn.NestedStackResult{StackID: stackID}, perr
 	}
