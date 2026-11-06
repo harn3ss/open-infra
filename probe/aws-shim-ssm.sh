@@ -59,13 +59,19 @@ secret_name() { printf 'iam-ak-%s' "$(printf '%s' "$1" | sha256sum | cut -c1-40)
 
 mint_key() { # <owner> <group> -> "AK SK"
   local owner="$1" group="$2"
+  # A principal minted with no group is policy-only: its own policies are all it has, decided by IAM
+  # policy alone (the canary label), as an AWS user with no group. A tier group (powerusers, admins)
+  # carries its AWS managed policy (PowerUserAccess, AdministratorAccess), which a scoped policy of the
+  # user's own only adds to, as on AWS — so a principal meant to be scoped has no group.
+  local groups="[\"${group}\"]" labels=""
+  [ -n "$group" ] || { groups="[]"; labels=', labels: { "openinfra.dev/iam-authz": "enforce" }'; }
   local ak="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
   local sk; sk="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
   cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: User
-metadata: { name: "${owner}", namespace: "${USERS_NS}" }
-spec: { displayName: "${owner}", groups: ["${group}"], source: local }
+metadata: { name: "${owner}", namespace: "${USERS_NS}"${labels} }
+spec: { displayName: "${owner}", groups: ${groups}, source: local }
 YAML
   CREATED_USERS+=("$owner")
   local name; name="$(secret_name "$ak")"
@@ -197,12 +203,12 @@ rm -f "$PWD/.ssm_neg"
 log "  ✓ rejected on signature mismatch"
 
 # --- 11b. Per-path Cedar: scoped-to-A can read A, DENIED B ------------------------------------
-log "seeding a path-scoped principal (Parameter::${BASE}/a/*) + a param in a sibling path B"
+log "seeding a policy-only path-scoped principal (Parameter::${BASE}/a/*) + a param in a sibling path B"
 PA="${BASE}/a/token"; PB="${BASE}/b/token"
 ssm "$WAK" "$WSK" put-parameter --name "$PA" --value "in-A-$SFX" --type String >/dev/null 2>&1 || fail "put A failed"
 ssm "$WAK" "$WSK" put-parameter --name "$PB" --value "in-B-$SFX" --type String >/dev/null 2>&1 || fail "put B failed"
 CREATED_PARAMS+=("$PA" "$PB")
-mint_key "ssm-probe-ascoped-$SFX" "powerusers"; AAK="$MK_AK"; ASK="$MK_SK"
+mint_key "ssm-probe-ascoped-$SFX" ""; AAK="$MK_AK"; ASK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy

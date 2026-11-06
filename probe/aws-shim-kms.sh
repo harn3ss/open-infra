@@ -62,13 +62,19 @@ secret_name() { printf 'iam-ak-%s' "$(printf '%s' "$1" | sha256sum | cut -c1-40)
 
 mint_key() { # <owner> <group> -> "AK SK"
   local owner="$1" group="$2"
+  # A principal minted with no group is policy-only: its own policies are all it has, decided by IAM
+  # policy alone (the canary label), as an AWS user with no group. A tier group (powerusers, admins)
+  # carries its AWS managed policy (PowerUserAccess, AdministratorAccess), which a scoped policy of the
+  # user's own only adds to, as on AWS — so a principal meant to be scoped has no group.
+  local groups="[\"${group}\"]" labels=""
+  [ -n "$group" ] || { groups="[]"; labels=', labels: { "openinfra.dev/iam-authz": "enforce" }'; }
   local ak="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
   local sk; sk="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
   cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: User
-metadata: { name: "${owner}", namespace: "${USERS_NS}" }
-spec: { displayName: "${owner}", groups: ["${group}"], source: local }
+metadata: { name: "${owner}", namespace: "${USERS_NS}"${labels} }
+spec: { displayName: "${owner}", groups: ${groups}, source: local }
 YAML
   CREATED_USERS+=("$owner")
   local name; name="$(secret_name "$ak")"
@@ -270,8 +276,8 @@ rm -f "$PWD/.kms_neg" "$TMP_PT"
 log "  ✓ rejected on signature mismatch"
 
 # --- 11b. Negative: encrypt-only principal denied Decrypt (fine-grained Cedar) -----------------
-log "encrypt-only principal: granted only kms:Encrypt via Cedar, must be DENIED kms:Decrypt"
-mint_key "kms-probe-enconly-$SFX" "powerusers"; EAK="$MK_AK"; ESK="$MK_SK"
+log "encrypt-only principal (policy-only): granted only kms:Encrypt via Cedar, must be DENIED kms:Decrypt"
+mint_key "kms-probe-enconly-$SFX" ""; EAK="$MK_AK"; ESK="$MK_SK"
 # A second key the encrypt-only principal may re-encrypt INTO (kms:ReEncrypt* on it alone) — but never out
 # of a key it cannot use: ReEncrypt is authorized on the source key too (11c).
 DEST_KID="$(awsk "$WAK" "$WSK" create-key --description "dest-probe-$SFX" --query KeyMetadata.KeyId 2>/dev/null)"
@@ -298,7 +304,7 @@ EO_CT="$(awsk "$EAK" "$ESK" encrypt --key-id "$KID" --plaintext "fileb://$TMP_PT
 [ -n "$EO_CT" ] && [ "$EO_CT" != "None" ] || fail "encrypt-only principal was denied Encrypt (should be allowed): $(cat "$PWD/.kms_eo")"
 rm -f "$PWD/.kms_eo"
 log "  ✓ encrypt-only principal CAN Encrypt"
-# Decrypt must be DENIED (governed for kms, kms:Decrypt not granted).
+# Decrypt must be DENIED (kms:Decrypt is not in its only policy).
 TMP_EO="$(mktemp)"; printf '%s' "$EO_CT" | base64 -d > "$TMP_EO"
 if awsk "$EAK" "$ESK" decrypt --ciphertext-blob "fileb://$TMP_EO" >/dev/null 2>"$PWD/.kms_dec"; then
   fail "an encrypt-only principal was allowed to Decrypt (Decrypt must be independently denied)"

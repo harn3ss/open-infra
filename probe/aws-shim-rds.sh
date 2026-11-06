@@ -69,13 +69,19 @@ trap cleanup EXIT
 secret_name() { printf 'iam-ak-%s' "$(printf '%s' "$1" | sha256sum | cut -c1-40)"; }
 mint_key() {
   local owner="$1" group="$2"
+  # A principal minted with no group is policy-only: its own policies are all it has, decided by IAM
+  # policy alone (the canary label), as an AWS user with no group. A tier group (powerusers, admins)
+  # carries its AWS managed policy (PowerUserAccess, AdministratorAccess), which a scoped policy of the
+  # user's own only adds to, as on AWS — so a principal meant to be scoped has no group.
+  local groups="[\"${group}\"]" labels=""
+  [ -n "$group" ] || { groups="[]"; labels=', labels: { "openinfra.dev/iam-authz": "enforce" }'; }
   local ak="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
   local sk; sk="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
   cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: User
-metadata: { name: "${owner}", namespace: "${USERS_NS}" }
-spec: { displayName: "${owner}", groups: ["${group}"], source: local }
+metadata: { name: "${owner}", namespace: "${USERS_NS}"${labels} }
+spec: { displayName: "${owner}", groups: ${groups}, source: local }
 YAML
   CREATED_USERS+=("$owner")
   local name; name="$(secret_name "$ak")"
@@ -199,8 +205,8 @@ rm -f "$PWD/.rds_my"
 log "  ✓ StorageEncrypted, MultiAZ, and non-postgres engine all refused honestly"
 
 # --- 6b. describe-only principal denied CreateDBInstance ---
-log "a describe-only principal (Cedar rds:DescribeDBInstances) must be DENIED CreateDBInstance"
-mint_key "rds-probe-desc-$SFX" "powerusers"; DAK="$MK_AK"; DSK="$MK_SK"
+log "a policy-only, describe-only principal (Cedar rds:DescribeDBInstances) must be DENIED CreateDBInstance"
+mint_key "rds-probe-desc-$SFX" ""; DAK="$MK_AK"; DSK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy

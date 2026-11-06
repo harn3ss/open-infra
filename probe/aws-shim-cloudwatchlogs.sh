@@ -53,13 +53,19 @@ trap cleanup EXIT
 secret_name() { printf 'iam-ak-%s' "$(printf '%s' "$1" | sha256sum | cut -c1-40)"; }
 mint_key() {
   local owner="$1" group="$2"
+  # A principal minted with no group is policy-only: its own policies are all it has, decided by IAM
+  # policy alone (the canary label), as an AWS user with no group. A tier group (powerusers, admins)
+  # carries its AWS managed policy (PowerUserAccess, AdministratorAccess), which a scoped policy of the
+  # user's own only adds to, as on AWS — so a principal meant to be scoped has no group.
+  local groups="[\"${group}\"]" labels=""
+  [ -n "$group" ] || { groups="[]"; labels=', labels: { "openinfra.dev/iam-authz": "enforce" }'; }
   local ak="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
   local sk; sk="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
   cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: User
-metadata: { name: "${owner}", namespace: "${USERS_NS}" }
-spec: { displayName: "${owner}", groups: ["${group}"], source: local }
+metadata: { name: "${owner}", namespace: "${USERS_NS}"${labels} }
+spec: { displayName: "${owner}", groups: ${groups}, source: local }
 YAML
   CREATED_USERS+=("$owner")
   local name; name="$(secret_name "$ak")"
@@ -162,12 +168,12 @@ rm -f "$PWD/.cwl_neg"
 log "  ✓ rejected on signature mismatch"
 
 # --- 7b/7c. fine-grained: write-only denied read; A-scoped can't read B ---
-log "create a second group $GB (for cross-group isolation) + seed fine-grained principals"
+log "create a second group $GB (for cross-group isolation) + seed fine-grained policy-only principals"
 logs "$WAK" "$WSK" create-log-group --log-group-name "$GB" >/dev/null 2>&1 || fail "create second group failed"
 logs "$WAK" "$WSK" create-log-stream --log-group-name "$GB" --log-stream-name "$STREAM" >/dev/null 2>&1 || fail "create second stream failed"
 logs "$WAK" "$WSK" put-log-events --log-group-name "$GB" --log-stream-name "$STREAM" --log-events "timestamp=$NOW,message=secret-b-$SFX" >/dev/null 2>&1 || fail "seed B failed"
-mint_key "cwl-probe-writeonly-$SFX" "powerusers"; OAK="$MK_AK"; OSK="$MK_SK"
-mint_key "cwl-probe-ascoped-$SFX" "powerusers"; AAK="$MK_AK"; ASK="$MK_SK"
+mint_key "cwl-probe-writeonly-$SFX" ""; OAK="$MK_AK"; OSK="$MK_SK"
+mint_key "cwl-probe-ascoped-$SFX" ""; AAK="$MK_AK"; ASK="$MK_SK"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: Policy

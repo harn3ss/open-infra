@@ -55,13 +55,19 @@ trap cleanup EXIT
 secret_name() { printf 'iam-ak-%s' "$(printf '%s' "$1" | sha256sum | cut -c1-40)"; }
 mint_key() { # <owner> <group> -> "AK SK"
   local owner="$1" group="$2"
+  # A principal minted with no group is policy-only: its own policies are all it has, decided by IAM
+  # policy alone (the canary label), as an AWS user with no group. A tier group (powerusers, admins)
+  # carries its AWS managed policy (PowerUserAccess, AdministratorAccess), which a scoped policy of the
+  # user's own only adds to, as on AWS — so a principal meant to be scoped has no group.
+  local groups="[\"${group}\"]" labels=""
+  [ -n "$group" ] || { groups="[]"; labels=', labels: { "openinfra.dev/iam-authz": "enforce" }'; }
   local ak="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
   local sk; sk="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
   cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: User
-metadata: { name: "${owner}", namespace: "${USERS_NS}" }
-spec: { displayName: "${owner}", groups: ["${group}"], source: local }
+metadata: { name: "${owner}", namespace: "${USERS_NS}"${labels} }
+spec: { displayName: "${owner}", groups: ${groups}, source: local }
 YAML
   CREATED_USERS+=("$owner")
   local name; name="$(secret_name "$ak")"
@@ -150,8 +156,8 @@ grep -qiE 'SignatureDoesNotMatch' "$PWD/.sns_neg" || fail "wrong secret rejected
 log "  ✓ rejected as SignatureDoesNotMatch"
 
 # --- negative: publish-only principal denied Subscribe (fine-grained Cedar) --------------------
-log "publish-only principal: granted sns:Publish via Cedar, must be DENIED sns:Subscribe"
-mint_key "sns-probe-pubonly-$SFX" "powerusers"; PAK="$MK_AK"; PSK="$MK_SK"
+log "publish-only principal (policy-only): granted sns:Publish via Cedar, must be DENIED sns:Subscribe"
+mint_key "sns-probe-pubonly-$SFX" ""; PAK="$MK_AK"; PSK="$MK_SK"
 POLICY="sns-pubonly-$SFX"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
@@ -165,7 +171,7 @@ spec:
 YAML
 CREATED_POLICIES+=("$POLICY")
 # A second principal for the mismatched pair below: every SNS action, but no sqs:SendMessage on the queue.
-mint_key "sns-probe-nosend-$SFX" "powerusers"; NAK="$MK_AK"; NSK="$MK_SK"
+mint_key "sns-probe-nosend-$SFX" ""; NAK="$MK_AK"; NSK="$MK_SK"
 POLICY2="sns-nosend-$SFX"
 cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
@@ -185,7 +191,7 @@ aws_ "$PAK" "$PSK" sns publish --topic-arn "$TOPIC" --message "pubonly-$SFX" >/d
   || fail "publish-only principal was denied Publish (should be allowed): $(cat "$PWD/.sns_pub")"
 rm -f "$PWD/.sns_pub"
 log "  ✓ publish-only principal CAN Publish"
-# Subscribe must be DENIED (governed for sns, sns:Subscribe not granted).
+# Subscribe must be DENIED (sns:Subscribe is not in its only policy).
 if aws_ "$PAK" "$PSK" sns subscribe --topic-arn "$TOPIC" --protocol sqs --notification-endpoint "$ARNA" >/dev/null 2>"$PWD/.sns_sub"; then
   fail "a publish-only principal was allowed to Subscribe (Subscribe must be independently denied)"
 fi
