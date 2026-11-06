@@ -191,6 +191,9 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r = rt.withAccount(r, claims)
+	if accountScopedServices[cred.Service] {
+		r = r.WithContext(inAccountScope(r.Context()))
+	}
 	// DynamoDB Streams shares the "dynamodb" SigV4 signing name but carries a DynamoDBStreams_
 	// X-Amz-Target, so it arrives under the dynamodb service; route it to its own front door.
 	if cred.Service == "dynamodb" && strings.HasPrefix(r.Header.Get("X-Amz-Target"), "DynamoDBStreams_") {

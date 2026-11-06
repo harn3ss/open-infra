@@ -244,6 +244,16 @@ func TestEnforce_MemberUserIsNotTheManagementUserOfItsName(t *testing.T) {
 		"sqs:SendMessage", "Queue", "jobs", nil); ok {
 		t.Error("a member account's principal reached a management-account queue on its identity policy alone")
 	}
+	// An account-scoped door keeps each account's resources apart: what the member's principal reaches
+	// there is its own account's, decided on its identity policy as AWS decides a same-account request —
+	// and still nothing without a grant.
+	scoped := inAccountScope(withAccountHome(context.Background(), memberHome))
+	if ok, why := decide(scoped, r, checkerInMode(t, "enforce", group), inGroup, "sqs:SendMessage", "Queue", "jobs", nil); !ok {
+		t.Errorf("a member account's principal was refused its own account's queue at an account-scoped door: %s", why)
+	}
+	if ok, _ := decide(scoped, r, checkerInMode(t, "enforce"), inGroup, "sqs:SendMessage", "Queue", "jobs", nil); ok {
+		t.Error("a member account's principal with no grant reached its own account's queue")
+	}
 }
 
 // The denial a caller sees in enforce is AWS's: who, what, on what.

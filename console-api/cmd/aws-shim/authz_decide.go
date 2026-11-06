@@ -49,11 +49,17 @@ func decision(ctx context.Context, r *http.Request, authz *dataplaneauthz.Checke
 	}
 	var d iamauthz.Decision
 	if memberAccount(claims) {
-		// The front doors' resources are the management account's (the doors keep one account's
-		// resources), unless the door names the resource's account (the IAM front door, whose entities are
-		// the caller's account's): a member account's principal reaches them as AWS reaches another
-		// account's resource — its identity policy and the resource's own policy must both allow.
-		opts = append([]iamauthz.RequestOption{iamauthz.WithResourceAccount(awsidentity.Current().AccountID)}, opts...)
+		// A door that keeps one account's resources keeps the management account's: a member account's
+		// principal reaches them as AWS reaches another account's resource — its identity policy and the
+		// resource's own policy must both allow. An account-scoped door (inAccountScope) keeps each
+		// account's resources apart, so what a member account's principal reaches there is its own
+		// account's: decided as AWS decides a request within one account. A door that names the resource's
+		// account (the IAM front door) passes it itself.
+		owner := awsidentity.Current().AccountID
+		if accountScoped(ctx) {
+			owner = claims.Account
+		}
+		opts = append([]iamauthz.RequestOption{iamauthz.WithResourceAccount(owner)}, opts...)
 		d = authz.IAM().Authorize(ctx, p, action, res, reqCtx, opts...)
 		d.Mode = iamauthz.ModeEnforce
 	} else {
@@ -114,6 +120,26 @@ func memberAccount(claims iam.Claims) bool {
 }
 
 type accountHomeKey struct{}
+
+type accountScopedKey struct{}
+
+// inAccountScope marks a request as served by an account-scoped front door: one that keeps each account's
+// resources apart (a member account's in its own names, namespaces and keys; the management account's
+// where they always were), so the resources a member account's principal reaches through it are its own.
+// The router sets it for the doors in accountScopedServices.
+func inAccountScope(ctx context.Context) context.Context {
+	return context.WithValue(ctx, accountScopedKey{}, true)
+}
+
+// accountScoped reports whether the request is served by an account-scoped front door.
+func accountScoped(ctx context.Context) bool {
+	v, _ := ctx.Value(accountScopedKey{}).(bool)
+	return v
+}
+
+// accountScopedServices are the front doors (by SigV4 service) that keep each account's resources apart.
+// Every other door keeps the management account's alone, and a member account reaches it cross-account.
+var accountScopedServices = map[string]bool{}
 
 // withAccountHome carries the home namespace of the member account the caller belongs to (principalOf).
 func withAccountHome(ctx context.Context, home string) context.Context {
