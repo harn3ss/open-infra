@@ -674,6 +674,10 @@ func run(logger *slog.Logger) error {
 			// ACM (acm.*): the reads of a stack's certificates — its distribution's site TLS, issued by
 			// cert-manager (acm.go).
 			services["acm"] = newACMHandler(cfnH, logger)
+			// IAM's instance profiles are a stack's, read from its template (iam_instanceprofile.go).
+			if iamH != nil {
+				iamH.cfn = cfnH
+			}
 			cfnDoor = cfnH
 			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
 		}

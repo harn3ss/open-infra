@@ -80,7 +80,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 7
+      "probe": 8
     },
     "undeployableUses": [
       {
@@ -508,11 +508,15 @@
         "DescribeAvailabilityZones",
         "DescribeImages",
         "DescribeInstances",
+        "DescribeInternetGateways",
         "DescribeKeyPairs",
+        "DescribeNetworkAcls",
         "DescribeRegions",
+        "DescribeRouteTables",
         "DescribeSecurityGroups",
         "DescribeSubnets",
         "DescribeVolumes",
+        "DescribeVpcEndpoints",
         "DescribeVpcs",
         "StartInstances",
         "StopInstances"
@@ -776,7 +780,8 @@
     },
     "iam": {
       "actions": [
-        "iam:ChangePassword"
+        "iam:ChangePassword",
+        "iam:GetInstanceProfile"
       ],
       "conditional": true,
       "deployableTypes": [
@@ -823,6 +828,7 @@
         "GetAccountPasswordPolicy",
         "GetGroup",
         "GetGroupPolicy",
+        "GetInstanceProfile",
         "GetLoginProfile",
         "GetPolicy",
         "GetPolicyVersion",
@@ -837,6 +843,8 @@
         "ListGroupPolicies",
         "ListGroups",
         "ListGroupsForUser",
+        "ListInstanceProfiles",
+        "ListInstanceProfilesForRole",
         "ListPolicies",
         "ListPolicyVersions",
         "ListRolePolicies",
@@ -1428,13 +1436,13 @@
   },
   "summary": {
     "cfnTypes": 97,
-    "covered": 67,
+    "covered": 75,
     "deployable": 75,
     "excFrontDoor": 0,
-    "excRead": 8,
-    "excepted": 8,
+    "excRead": 0,
+    "excepted": 0,
     "flattened": 0,
-    "operations": 568,
+    "operations": 575,
     "planOnly": 11,
     "refused": 11,
     "services": 31,
@@ -2264,27 +2272,26 @@
     },
     "AWS::EC2::InternetGateway": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "tracked \u2014 serve the EC2 structural describes",
-        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
-      },
       "flattened": false,
       "frontDoor": [
         "ec2"
       ],
       "kind": "(implicit)",
       "namespace": "AWS::EC2",
-      "readCalls": [],
+      "readCalls": [
+        "DescribeInternetGateways"
+      ],
       "service": "EC2",
       "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "cfn-structural-reads"
+      ],
       "status": "partial",
-      "templateUses": 0,
-      "verdict": "excepted"
+      "templateUses": 1,
+      "verdict": "ok"
     },
     "AWS::EC2::LaunchTemplate": {
       "deployable": false,
@@ -2332,7 +2339,9 @@
       ],
       "kind": "Subnet(acls)",
       "namespace": "AWS::EC2",
-      "readCalls": [],
+      "readCalls": [
+        "DescribeNetworkAcls"
+      ],
       "service": "EC2",
       "serviceTier": "proven",
       "signingNames": [
@@ -2364,51 +2373,49 @@
     },
     "AWS::EC2::Route": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "tracked \u2014 serve the EC2 structural describes",
-        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
-      },
       "flattened": false,
       "frontDoor": [
         "ec2"
       ],
       "kind": "Vpc(routes)",
       "namespace": "AWS::EC2",
-      "readCalls": [],
+      "readCalls": [
+        "DescribeRouteTables"
+      ],
       "service": "EC2",
       "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "cfn-structural-reads"
+      ],
       "status": "partial",
-      "templateUses": 0,
-      "verdict": "excepted"
+      "templateUses": 1,
+      "verdict": "ok"
     },
     "AWS::EC2::RouteTable": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "tracked \u2014 serve the EC2 structural describes",
-        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
-      },
       "flattened": false,
       "frontDoor": [
         "ec2"
       ],
       "kind": "Vpc(routes)",
       "namespace": "AWS::EC2",
-      "readCalls": [],
+      "readCalls": [
+        "DescribeRouteTables"
+      ],
       "service": "EC2",
       "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "cfn-structural-reads"
+      ],
       "status": "partial",
-      "templateUses": 0,
-      "verdict": "excepted"
+      "templateUses": 1,
+      "verdict": "ok"
     },
     "AWS::EC2::SecurityGroup": {
       "deployable": true,
@@ -2493,26 +2500,24 @@
         "ec2"
       ],
       "stackProbes": [
-        "cfn-api"
+        "cfn-api",
+        "cfn-structural-reads"
       ],
       "status": "partial",
-      "templateUses": 3,
+      "templateUses": 4,
       "verdict": "ok"
     },
     "AWS::EC2::SubnetNetworkAclAssociation": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "tracked \u2014 serve the EC2 structural describes",
-        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
-      },
       "flattened": false,
       "frontDoor": [
         "ec2"
       ],
       "kind": "(implicit)",
       "namespace": "AWS::EC2",
-      "readCalls": [],
+      "readCalls": [
+        "DescribeNetworkAcls"
+      ],
       "service": "EC2",
       "serviceTier": "proven",
       "signingNames": [
@@ -2521,31 +2526,30 @@
       "stackProbes": [],
       "status": "partial",
       "templateUses": 0,
-      "verdict": "excepted"
+      "verdict": "ok"
     },
     "AWS::EC2::SubnetRouteTableAssociation": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "tracked \u2014 serve the EC2 structural describes",
-        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
-      },
       "flattened": false,
       "frontDoor": [
         "ec2"
       ],
       "kind": "(implicit)",
       "namespace": "AWS::EC2",
-      "readCalls": [],
+      "readCalls": [
+        "DescribeRouteTables"
+      ],
       "service": "EC2",
       "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "cfn-structural-reads"
+      ],
       "status": "partial",
-      "templateUses": 0,
-      "verdict": "excepted"
+      "templateUses": 1,
+      "verdict": "ok"
     },
     "AWS::EC2::TransitGateway": {
       "deployable": false,
@@ -2602,59 +2606,58 @@
         "ec2"
       ],
       "stackProbes": [
-        "cfn-api"
+        "cfn-api",
+        "cfn-structural-reads"
       ],
       "status": "partial",
-      "templateUses": 1,
+      "templateUses": 2,
       "verdict": "ok"
     },
     "AWS::EC2::VPCEndpoint": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "tracked \u2014 serve the EC2 structural describes",
-        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
-      },
       "flattened": false,
       "frontDoor": [
         "ec2"
       ],
       "kind": "VpcEndpoint",
       "namespace": "AWS::EC2",
-      "readCalls": [],
+      "readCalls": [
+        "DescribeVpcEndpoints"
+      ],
       "service": "EC2",
       "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "cfn-structural-reads"
+      ],
       "status": "partial",
-      "templateUses": 0,
-      "verdict": "excepted"
+      "templateUses": 1,
+      "verdict": "ok"
     },
     "AWS::EC2::VPCGatewayAttachment": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "tracked \u2014 serve the EC2 structural describes",
-        "reason": "Gateways, route tables and their associations are structural on open-infra (the border device and the VPC's routes are the kind: Vpc and its NatGateway), and an endpoint is a kind: VpcEndpoint; the EC2 front door describes instances, volumes, security groups, VPCs, subnets and addresses, but serves no DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls or DescribeVpcEndpoints."
-      },
       "flattened": false,
       "frontDoor": [
         "ec2"
       ],
       "kind": "(implicit)",
       "namespace": "AWS::EC2",
-      "readCalls": [],
+      "readCalls": [
+        "DescribeInternetGateways"
+      ],
       "service": "EC2",
       "serviceTier": "proven",
       "signingNames": [
         "ec2"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "cfn-structural-reads"
+      ],
       "status": "partial",
-      "templateUses": 0,
-      "verdict": "excepted"
+      "templateUses": 1,
+      "verdict": "ok"
     },
     "AWS::EC2::VPCPeeringConnection": {
       "deployable": false,
@@ -2977,29 +2980,29 @@
     },
     "AWS::IAM::InstanceProfile": {
       "deployable": true,
-      "exception": {
-        "check": "read",
-        "issue": "tracked \u2014 serve the IAM InstanceProfile reads",
-        "reason": "Provisions nothing: the translator only resolves an instance's IamInstanceProfile through it to the role, which binds directly on the VM (kind: VirtualMachine spec.instanceRole). The stack record keeps no resource or event for the profile (DescribeStackResources does not list it) and the VM keeps the role alone; the profile's name, path and roles are only in the stack's recorded template. The IAM front door does not read stack templates yet (the CloudFront and ACM reads resolve theirs with cfn.TemplateResources), so GetInstanceProfile and ListInstanceProfiles are not served."
-      },
       "flattened": false,
       "frontDoor": [
         "iam"
       ],
       "kind": "(implicit)",
       "namespace": "AWS::IAM",
-      "readCalls": [],
+      "readCalls": [
+        "GetInstanceProfile",
+        "ListInstanceProfiles",
+        "ListInstanceProfilesForRole"
+      ],
       "service": "IAM",
       "serviceTier": "proven",
       "signingNames": [
         "iam"
       ],
       "stackProbes": [
+        "cfn-structural-reads",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 2,
-      "verdict": "excepted"
+      "templateUses": 3,
+      "verdict": "ok"
     },
     "AWS::IAM::ManagedPolicy": {
       "deployable": true,
@@ -3065,10 +3068,11 @@
         "iam"
       ],
       "stackProbes": [
+        "cfn-structural-reads",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 3,
+      "templateUses": 4,
       "verdict": "ok"
     },
     "AWS::IAM::User": {

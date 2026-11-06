@@ -37,7 +37,8 @@ var SupportedActions = map[string]map[string]bool{
 	"ec2": {"AllocateAddress": true, "ReleaseAddress": true, "DescribeAddresses": true, "AssociateAddress": true, "DisassociateAddress": true,
 		"DescribeInstances": true, "DescribeVolumes": true, "DescribeSecurityGroups": true, "DescribeVpcs": true, "DescribeSubnets": true,
 		"DescribeImages": true, "DescribeRegions": true, "DescribeAvailabilityZones": true, "DescribeKeyPairs": true,
-		"ImportKeyPair": true, "CreateKeyPair": true, "DeleteKeyPair": true, "DeleteVolume": true},
+		"ImportKeyPair": true, "CreateKeyPair": true, "DeleteKeyPair": true, "DeleteVolume": true,
+		"DescribeInternetGateways": true, "DescribeRouteTables": true, "DescribeNetworkAcls": true, "DescribeVpcEndpoints": true},
 	"ec2messages": {"GetMessages": true, "SendReply": true, "AcknowledgeMessage": true, "DeleteMessage": true, "FailMessage": true, "GetEndpoint": true},
 }
 

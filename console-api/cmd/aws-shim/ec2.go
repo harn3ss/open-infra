@@ -6,7 +6,10 @@
 // over kind: VirtualMachine, DescribeVolumes over kind: Volume (plus each VM's root and data disks),
 // DescribeSecurityGroups, DescribeVpcs and DescribeSubnets over their kinds, DescribeImages over the OS
 // catalog, DescribeRegions and DescribeAvailabilityZones for the install's one region and zone, and
-// DescribeAddresses over a stack's Elastic IP allocations (cfn_addresses.go). The ids are the ones
+// DescribeAddresses over a stack's Elastic IP allocations (cfn_addresses.go), and a VPC's structure —
+// DescribeInternetGateways, DescribeRouteTables, DescribeNetworkAcls and DescribeVpcEndpoints — over the
+// kind: Vpc, its subnets and NAT gateways, the kind: VpcEndpoint, and the gateways, route tables and
+// associations a stack's template gives it (ec2_structural.go). The ids are the ones
 // CloudFormation reports for the same resources (cfn/resource_attrs.go): an instance's is the i- id its
 // guest's instance metadata reports (ec2_ids.go); a volume's, group's, VPC's and subnet's is its kind's
 // name. What a kind does not model (tags, an instance type, a group's description) comes from the AWS
@@ -70,6 +73,10 @@ var ec2Ops = map[string]ec2Op{
 	"DescribeRegions":           {"Region", "get"},
 	"DescribeAvailabilityZones": {"AvailabilityZone", "get"},
 	"DescribeAddresses":         {"ElasticIp", "get"},
+	"DescribeInternetGateways":  {"InternetGateway", "get"},
+	"DescribeRouteTables":       {"RouteTable", "get"},
+	"DescribeNetworkAcls":       {"NetworkAcl", "get"},
+	"DescribeVpcEndpoints":      {"VpcEndpoint", "get"},
 	"DescribeKeyPairs":          {"KeyPair", "get"},
 	"ImportKeyPair":             {"KeyPair", "create"},
 	"CreateKeyPair":             {"KeyPair", "create"},
@@ -194,6 +201,14 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.describeAvailabilityZones(w, r, requestID)
 	case "DescribeAddresses":
 		h.describeAddresses(ctx, w, r, claims, requestID)
+	case "DescribeInternetGateways":
+		h.describeInternetGateways(ctx, w, r, claims, requestID)
+	case "DescribeRouteTables":
+		h.describeRouteTables(ctx, w, r, claims, requestID)
+	case "DescribeNetworkAcls":
+		h.describeNetworkAcls(ctx, w, r, claims, requestID)
+	case "DescribeVpcEndpoints":
+		h.describeVpcEndpoints(ctx, w, r, claims, requestID)
 	case "DescribeKeyPairs":
 		h.describeKeyPairs(ctx, w, r, requestID)
 	case "ImportKeyPair", "CreateKeyPair":
@@ -443,6 +458,11 @@ func ec2Time(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.00
 // RBAC (generated from the same policy by the IAM compiler, and not there before it runs) is never a second
 // decision on a read IAM policy allowed. A write still acts as the caller (applierFor).
 func (h *ec2Handler) listForCaller(ctx context.Context, claims iam.Claims, gvr schema.GroupVersionResource) (items []unstructured.Unstructured, denied bool, err error) {
+	return h.listForCallerIn(ctx, claims, gvr, h.door.ns)
+}
+
+// listForCallerIn is listForCaller in namespace ns (the caller's account's: accountNamespace).
+func (h *ec2Handler) listForCallerIn(ctx context.Context, claims iam.Claims, gvr schema.GroupVersionResource, ns string) (items []unstructured.Unstructured, denied bool, err error) {
 	var cli dynamic.Interface
 	if enforcing(ctx, h.door.authz, claims) {
 		if h.door.shimDyn == nil {
@@ -456,7 +476,7 @@ func (h *ec2Handler) listForCaller(ctx context.Context, claims iam.Claims, gvr s
 		}
 		cli = ap.caller
 	}
-	l, err := cli.Resource(gvr).Namespace(h.door.ns).List(ctx, metav1.ListOptions{})
+	l, err := cli.Resource(gvr).Namespace(ns).List(ctx, metav1.ListOptions{})
 	switch {
 	case apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err):
 		return nil, true, err

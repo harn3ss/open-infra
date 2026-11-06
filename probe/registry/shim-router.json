@@ -251,11 +251,15 @@
         "DescribeAvailabilityZones",
         "DescribeImages",
         "DescribeInstances",
+        "DescribeInternetGateways",
         "DescribeKeyPairs",
+        "DescribeNetworkAcls",
         "DescribeRegions",
+        "DescribeRouteTables",
         "DescribeSecurityGroups",
         "DescribeSubnets",
         "DescribeVolumes",
+        "DescribeVpcEndpoints",
         "DescribeVpcs",
         "StartInstances",
         "StopInstances"
@@ -474,6 +478,7 @@
         "GetAccountPasswordPolicy",
         "GetGroup",
         "GetGroupPolicy",
+        "GetInstanceProfile",
         "GetLoginProfile",
         "GetPolicy",
         "GetPolicyVersion",
@@ -488,6 +493,8 @@
         "ListGroupPolicies",
         "ListGroups",
         "ListGroupsForUser",
+        "ListInstanceProfiles",
+        "ListInstanceProfilesForRole",
         "ListPolicies",
         "ListPolicyVersions",
         "ListRolePolicies",
@@ -509,6 +516,7 @@
       ],
       "actions": [
         "iam:ChangePassword",
+        "iam:GetInstanceProfile",
         "sts:AssumeRole"
       ],
       "conditional": true

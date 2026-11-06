@@ -55,6 +55,9 @@ type iamHandler struct {
 	account string
 	region  string
 	logger  *slog.Logger
+	// cfn is the CloudFormation front door, whose stack records hold the instance profiles a stack made
+	// (iam_instanceprofile.go); nil = none.
+	cfn *cfnDoorway
 }
 
 func newIAMHandler(cs kubernetes.Interface, dyn dynamic.Interface, keys *awskeys.Store, authz *dataplaneauthz.Checker, usersNS, account, region string, logger *slog.Logger) *iamHandler {
@@ -75,6 +78,9 @@ func verbForIAMOp(op string) (verb, resource string, ok bool) {
 		"PutRolePermissionsBoundary", "DeleteRolePermissionsBoundary":
 		return "create", "roles", true
 	case "GetRole", "ListRoles", "ListAttachedRolePolicies", "ListRolePolicies", "GetRolePolicy":
+		return "get", "roles", true
+	// A stack's instance profiles (iam_instanceprofile.go): a profile is a container of roles.
+	case "GetInstanceProfile", "ListInstanceProfiles", "ListInstanceProfilesForRole":
 		return "get", "roles", true
 	case "DeleteRole", "DeleteRolePolicy":
 		return "delete", "roles", true
@@ -175,6 +181,10 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 	if op == "ChangePassword" {
 		h.changePassword(ctx, w, r, claims, requestID) // a user's own password: authorized there
+		return
+	}
+	if iamInstanceProfileOp(op) {
+		h.serveInstanceProfile(ctx, w, r, op, requestID, claims) // on the profile's ARN, or the role: authorized there
 		return
 	}
 

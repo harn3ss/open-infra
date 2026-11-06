@@ -1100,6 +1100,7 @@ spec:
           - cloudwatch:ListMetrics
           - cloudwatch:GetMetricData
           - ec2:DescribeAvailabilityZones
+          - ec2:DescribeInternetGateways
           - ec2:DescribeSecurityGroups
           - ec2:DescribeSubnets
           - ec2:DescribeVpcs
@@ -2093,6 +2094,7 @@ spec:
           - rds:Describe*
           - rds:ListTagsForResource
           - ec2:DescribeAvailabilityZones
+          - ec2:DescribeInternetGateways
           - ec2:DescribeSecurityGroups
           - ec2:DescribeSubnets
           - ec2:DescribeVpcs

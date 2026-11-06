@@ -288,6 +288,16 @@ func missingResourceCases() []missingCase {
 			h := newIAMHandler(csWithSAR(true), fakeDynWith(gvrRoles), nil, a, "default", "000000000000", "us-east-1", discardLogger())
 			return serveWith(h, formOp(url.Values{"Action": {"GetRole"}, "RoleName": {nope}}), c)
 		}},
+		{door: "iam", op: "GetInstanceProfile", call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+			h, _ := profileFixture(t)
+			h.authz = a
+			return serveWith(h, formOp(url.Values{"Action": {"GetInstanceProfile"}, "InstanceProfileName": {nope}}), c)
+		}},
+		{door: "iam", op: "ListInstanceProfilesForRole", call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+			h, _ := profileFixture(t)
+			h.authz = a
+			return serveWith(h, formOp(url.Values{"Action": {"ListInstanceProfilesForRole"}, "RoleName": {nope}}), c)
+		}},
 		{door: "cloudformation", op: "DescribeStacks(name)", call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
 			h, _ := cfnTestDoorway(t, "")
 			h.cfg = &rest.Config{Host: "http://127.0.0.1:1"}
@@ -334,6 +344,26 @@ func missingResourceCases() []missingCase {
 			h, _ := ec2Fixture(t)
 			h.door.authz = a
 			return ec2Call(h, c, url.Values{"Action": {"DescribeVolumes"}, "VolumeId.1": {"vol-00000000000000000"}})
+		}},
+		{door: "ec2", op: "DescribeInternetGateways(id)", call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+			h, _, _ := structuralFixture(t)
+			h.door.authz = a
+			return ec2Call(h, c, url.Values{"Action": {"DescribeInternetGateways"}, "InternetGatewayId.1": {"igw-00000000000000000"}})
+		}},
+		{door: "ec2", op: "DescribeRouteTables(id)", call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+			h, _, _ := structuralFixture(t)
+			h.door.authz = a
+			return ec2Call(h, c, url.Values{"Action": {"DescribeRouteTables"}, "RouteTableId.1": {"rtb-00000000000000000"}})
+		}},
+		{door: "ec2", op: "DescribeNetworkAcls(id)", call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+			h, _, _ := structuralFixture(t)
+			h.door.authz = a
+			return ec2Call(h, c, url.Values{"Action": {"DescribeNetworkAcls"}, "NetworkAclId.1": {"acl-00000000000000000"}})
+		}},
+		{door: "ec2", op: "DescribeVpcEndpoints(id)", call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+			h, _, _ := structuralFixture(t)
+			h.door.authz = a
+			return ec2Call(h, c, url.Values{"Action": {"DescribeVpcEndpoints"}, "VpcEndpointId.1": {"vpce-00000000000000000"}})
 		}},
 		{door: "ec2", op: "DeleteVolume", call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
 			h, _ := ec2Fixture(t)

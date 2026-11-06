@@ -37,15 +37,16 @@ var notImportable = map[string]string{
 // dynamicResourceTypes are the resource types of the checks whose type is a variable, per file (read from
 // the code next to the call): each must be one the importer can produce.
 var dynamicResourceTypes = map[string][]string{
-	"iam.go":                {"Role", "User", "Policy", "ARN"},
-	"cloudfront_read.go":    {"CachePolicy", "OriginRequestPolicy", "ResponseHeadersPolicy", "OriginAccessControl", "OriginAccessIdentity"},
-	"glue.go":               {"Database", "Table"},
-	"athena.go":             {"WorkGroup", "Table"},
-	"ec2.go":                {"Instance", "Volume", "SecurityGroup", "KeyPair", "ElasticIp"},
-	"eventbridge.go":        {"EventBus", "Rule"},
-	"rds.go":                {"DBInstance", "DBSnapshot"},
-	"cfn_services.go":       {"Queue", "Topic", "Parameter", "Key", "ElasticIp", "Repository", "EventBus", "LogGroup", "Secret", "Namespace", "Function"},
-	"cfn_services_doors.go": {"Secret", "LogGroup", "Rule", "EventBus", "Repository", "Namespace"},
+	"iam.go":                 {"Role", "User", "Policy", "ARN"},
+	"iam_instanceprofile.go": {"ARN", "Role"},
+	"cloudfront_read.go":     {"CachePolicy", "OriginRequestPolicy", "ResponseHeadersPolicy", "OriginAccessControl", "OriginAccessIdentity"},
+	"glue.go":                {"Database", "Table"},
+	"athena.go":              {"WorkGroup", "Table"},
+	"ec2.go":                 {"Instance", "Volume", "SecurityGroup", "KeyPair", "ElasticIp"},
+	"eventbridge.go":         {"EventBus", "Rule"},
+	"rds.go":                 {"DBInstance", "DBSnapshot"},
+	"cfn_services.go":        {"Queue", "Topic", "Parameter", "Key", "ElasticIp", "Repository", "EventBus", "LogGroup", "Secret", "Namespace", "Function"},
+	"cfn_services_doors.go":  {"Secret", "LogGroup", "Rule", "EventBus", "Repository", "Namespace"},
 }
 
 // dynamicServices are the services of checks whose action is a variable, per file.

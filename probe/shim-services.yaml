@@ -92,10 +92,11 @@ services:
     note: "Each account's quotas under AWS's codes and names, increase requests an operator approves (`kind: Account` `spec.serviceQuotas`), and Lambda's concurrent executions enforced on a member account's burstable functions, per namespace."
     probes: [servicequotas]
   - name: EC2
-    cell: "`Describe*` over the platform's VMs, volumes, groups, VPCs and subnets (the guest's i- ids); key pairs an instance's `KeyName` carries"
+    cell: "`Describe*` over the platform's VMs, volumes, groups, VPCs and subnets (the guest's i- ids), and a VPC's internet gateways, route tables, network ACLs and endpoints (a stack's by their Refs); key pairs an instance's `KeyName` carries"
     tier: proven
     sigv4: [ec2]
     probes: [ec2]
+    pending: [cfn-structural-reads]
   - name: ECR
     cell: "→ a backing OCI registry (Distribution /v2)"
     tier: proven

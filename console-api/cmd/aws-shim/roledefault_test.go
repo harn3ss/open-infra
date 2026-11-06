@@ -305,6 +305,27 @@ func roleDoorCases() []roleDoorCase {
 				h := newIAMHandler(csWithSAR(true), fakeDynWith(gvrRoles), nil, a, "default", "open-infra", "us-east-1", discardLogger())
 				return serveWith(h, formOp(url.Values{"Action": {"CreateAccessKey"}, "UserName": {"admin"}}), c)
 			}},
+		// Authorized on its ARN (instance-profile/*), as AWS does and as ListGroups is on group/*: a governed
+		// User's policy is read for it.
+		{door: "iam", op: "ListInstanceProfiles", action: "iam:ListInstanceProfiles", resType: "ARN", denyCode: "AccessDenied", userAlwaysChecked: true,
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h, _ := profileFixture(t)
+				h.authz = a
+				return serveWith(h, formOp(url.Values{"Action": {"ListInstanceProfiles"}}), c)
+			}},
+		// --- EC2: a VPC's structure, read from its kinds and its stacks' templates ---
+		{door: "ec2", op: "DescribeRouteTables", action: "ec2:DescribeRouteTables", resType: "RouteTable", denyCode: "UnauthorizedOperation",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h, _, _ := structuralFixture(t)
+				h.door.authz = a
+				return ec2Call(h, c, url.Values{"Action": {"DescribeRouteTables"}})
+			}},
+		{door: "ec2", op: "DescribeInternetGateways", action: "ec2:DescribeInternetGateways", resType: "InternetGateway", denyCode: "UnauthorizedOperation",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h, _, _ := structuralFixture(t)
+				h.door.authz = a
+				return ec2Call(h, c, url.Values{"Action": {"DescribeInternetGateways"}})
+			}},
 		// --- SES ---
 		{door: "ses", op: "GetSendQuota", action: "ses:GetSendQuota", resType: "Identity", denyCode: "AccessDenied",
 			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
