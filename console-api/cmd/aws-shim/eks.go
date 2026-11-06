@@ -339,22 +339,36 @@ func (h *eksHandler) describeCluster(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 	h.audit(ctx, "DescribeCluster", name, "allow", "")
-	writeEKSJSON(w, http.StatusOK, requestID, map[string]any{"cluster": h.clusterObject()})
+	writeEKSJSON(w, http.StatusOK, requestID, map[string]any{"cluster": h.clusterObject(h.arnAccount(ctx))})
 }
 
-// clusterObject projects the open-infra cluster into the EKS Cluster shape the SDK/CLI expects. The
-// load-bearing fields for kubeconfig generation are name + endpoint + certificateAuthority.data; roleArn and
-// resourcesVpcConfig are synthetic (there is no real EKS service role or VPC) but present so the SDK's model
-// is satisfied. createdAt is omitted (optional for update-kubeconfig) rather than fabricated from a live
-// clock a test cannot control.
-func (h *eksHandler) clusterObject() map[string]any {
+// EKS keeps nothing of its own (the one cluster is the platform every account runs in, each in its own
+// namespaces, which Kubernetes RBAC keeps apart), and what it answers is in the caller's account — the
+// cluster's ARN and role ARN carry it — so it is an account-scoped front door.
+func init() { accountScopedServices["eks"] = true }
+
+// arnAccount is the account of the request's ARNs: the install's for the management account, the member
+// account's for a member's.
+func (h *eksHandler) arnAccount(ctx context.Context) string {
+	if !isMemberRequest(ctx) {
+		return h.account
+	}
+	return callerAccount(ctx)
+}
+
+// clusterObject projects the open-infra cluster into the EKS Cluster shape the SDK/CLI expects, as seen
+// from account (its ARNs carry it). The load-bearing fields for kubeconfig generation are name + endpoint +
+// certificateAuthority.data; roleArn and resourcesVpcConfig are synthetic (there is no real EKS service
+// role or VPC) but present so the SDK's model is satisfied. createdAt is omitted (optional for
+// update-kubeconfig) rather than fabricated from a live clock a test cannot control.
+func (h *eksHandler) clusterObject(account string) map[string]any {
 	obj := map[string]any{
 		"name":                    h.clusterName,
-		"arn":                     "arn:aws:eks:" + h.region + ":" + h.account + ":cluster/" + h.clusterName,
+		"arn":                     "arn:aws:eks:" + h.region + ":" + account + ":cluster/" + h.clusterName,
 		"status":                  "ACTIVE",
 		"endpoint":                h.clusterEndpoint,
 		"certificateAuthority":    map[string]any{"data": h.caData},
-		"roleArn":                 "arn:aws:iam::" + h.account + ":role/open-infra-eks-cluster-role",
+		"roleArn":                 "arn:aws:iam::" + account + ":role/open-infra-eks-cluster-role",
 		"resourcesVpcConfig":      map[string]any{"endpointPublicAccess": true, "endpointPrivateAccess": true, "securityGroupIds": []string{}, "subnetIds": []string{}},
 		"kubernetesNetworkConfig": map[string]any{"ipFamily": "ipv4"},
 		"platformVersion":         "eks.1",
