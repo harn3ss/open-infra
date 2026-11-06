@@ -11,7 +11,9 @@
 // identifies it (a TokenReview, bound to the VM's own launcher pod: k8sSARoleResolver). The shim builds the
 // document itself from the cluster: the instance id is derived from the VM composite's uid (the id the
 // EC2, SSM and CloudFormation APIs use), the composite must be bound to this very claim, and nothing in the
-// request shapes the document. The agent serves the document and signatures byte for byte.
+// request shapes the document. The agent serves the document and signatures byte for byte. The document's
+// accountId is the account the VM's namespace belongs to — a member account's instance's names that
+// account — and a call signed with it acts in that account (identityContext).
 //
 // The signing key is an RSA-2048 key in a Secret in the shim's own namespace (identityKeySecretName),
 // created on first use, readable only by the shim (and cluster admins), never a ConfigMap and never in the
@@ -98,6 +100,9 @@ type identitySigner struct {
 	ttl    time.Duration
 	logger *slog.Logger
 	now    func() time.Time
+	// accounts knows the member accounts (vmIdentityHandler documents a member account's instance in its
+	// account): a document of an active member account verifies too. nil: the management account's alone.
+	accounts vmAccounts
 
 	mu      sync.Mutex
 	keys    *identityKeys
@@ -512,9 +517,20 @@ type vmIdentityHandler struct {
 	resolver saRoleResolver
 	dyn      dynamic.Interface
 	signer   *identitySigner
-	account  string
+	account  string // the install's account: the management account's instances'
 	region   string
 	logger   *slog.Logger
+	// accounts says which account a VM's namespace belongs to: a member account's instance's document names
+	// that account, as an EC2 instance's names its own (nil: every instance is the management account's).
+	accounts vmAccounts
+}
+
+// accountOf is the account a VM in namespace ns belongs to: a member account's id, else the install's.
+func (h *vmIdentityHandler) accountOf(ns string) string {
+	if acct, _ := vmMemberAccount(h.accounts, ns); acct != "" {
+		return acct
+	}
+	return h.account
 }
 
 func (h *vmIdentityHandler) serve(w http.ResponseWriter, r *http.Request, requestID string) {
@@ -558,7 +574,7 @@ func (h *vmIdentityHandler) serve(w http.ResponseWriter, r *http.Request, reques
 		return
 	}
 	notAfter := h.signer.clock().Add(h.signer.ttl).Truncate(time.Second)
-	doc := identityDocument(identityFieldsOf(vm, h.account, h.region), notAfter)
+	doc := identityDocument(identityFieldsOf(vm, h.accountOf(id.namespace), h.region), notAfter)
 	sig, p7, err := h.signer.sign(r.Context(), doc)
 	if err != nil {
 		if h.logger != nil {
@@ -576,8 +592,10 @@ func (h *vmIdentityHandler) serve(w http.ResponseWriter, r *http.Request, reques
 
 // verifyIdentity checks a CFN_V1 Authorization header — `CFN_V1 <base64 document>:<signature>`, as
 // aws-cfn-bootstrap writes it — and returns the document's claims: the signature must be the platform's, the
-// document unexpired (and not valid for longer than a document is issued for), and its account and region
-// this shim's.
+// document unexpired (and not valid for longer than a document is issued for), its region this shim's, and
+// its account this shim's (account, the management account) or one of its active member accounts (a member
+// account's instance's document names that account). The caller acts in the document's account
+// (identityContext).
 func (s *identitySigner) verifyIdentity(ctx context.Context, header, account, region string) (*identityClaims, error) {
 	const scheme = "CFN_V1 "
 	if !strings.HasPrefix(header, scheme) {
@@ -613,13 +631,34 @@ func (s *identitySigner) verifyIdentity(ctx context.Context, header, account, re
 	if exp.Sub(now) > s.ttl+5*time.Minute {
 		return nil, errors.New("the instance identity document is valid for longer than one is issued for")
 	}
-	if c.AccountID != account || c.Region != region {
+	if (c.AccountID != account && !s.activeMember(c.AccountID)) || c.Region != region {
 		return nil, errors.New("the instance identity document is for another account or region")
 	}
 	if !instanceIDRe.MatchString(c.InstanceID) {
 		return nil, errors.New("the instance identity document names no instance")
 	}
 	return &c, nil
+}
+
+// activeMember reports whether account is one of the install's member accounts (it has a home) and not
+// suspended.
+func (s *identitySigner) activeMember(account string) bool {
+	if s.accounts == nil || account == "" || s.accounts.IsManagement(account) {
+		return false
+	}
+	home, ok := s.accounts.HomeOf(account)
+	return ok && home != "" && !s.accounts.Suspended(account)
+}
+
+// identityContext is ctx acting in the account a verified document names: unchanged for the management
+// account's instance; a member account's instance's call acts in that account (its identity and home,
+// withAccount), as AWS answers an instance's CFN_V1 call in the instance's own account.
+func (s *identitySigner) identityContext(ctx context.Context, c *identityClaims) context.Context {
+	if c == nil || !s.activeMember(c.AccountID) {
+		return ctx
+	}
+	home, _ := s.accounts.HomeOf(c.AccountID)
+	return withAccount(ctx, c.AccountID, home)
 }
 
 // --- PKCS#7 (CMS) SignedData, RFC 5652 ---

@@ -4,6 +4,12 @@
 // (InProgress), then Success, Failed or TimedOut as the agent reports; one its agent never takes is
 // TimedOut (DeliveryTimedOut) after the command's TimeoutSeconds, and one the agent took but never
 // reported is TimedOut (ExecutionTimedOut) after its executionTimeout. Commands are kept 30 days, as AWS.
+//
+// Accounts: a command is its account's — the account column records it (empty for the management account,
+// every command sent before accounts, and every one it sends; the member account's id for a member's) — and
+// its invocations, listings and existence are its account's alone. A managed instance records the namespace
+// it is in, which is its account's (the stack namespace for the management account, a member account's
+// home); instance and command ids are unique across accounts.
 package main
 
 import (
@@ -84,8 +90,19 @@ CREATE TABLE IF NOT EXISTS ssm_managed_instances (
     computer_name    text NOT NULL DEFAULT '',
     registered       timestamptz NOT NULL DEFAULT now(),
     last_ping        timestamptz NOT NULL DEFAULT now()
-);`)
+);
+-- The account a command was sent in ('' = the management account, which every earlier command is).
+ALTER TABLE ssm_commands ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT '';`)
 	return err
+}
+
+// ssmCommandAccount is the account column of the caller's account's commands: "" for the management
+// account (where every command always was), the member account's id for a member's.
+func ssmCommandAccount(ctx context.Context) string {
+	if !isMemberRequest(ctx) {
+		return ""
+	}
+	return callerAccount(ctx)
 }
 
 // capOutput keeps the first ssmOutputCap characters of s (valid UTF-8, without the NUL Postgres text refuses).
@@ -131,7 +148,7 @@ func (s *ssmStore) managedInstances(ctx context.Context) (map[string]ssmManagedI
 	return out, rows.Err()
 }
 
-// createCommand records a command and a Pending invocation for each of its instances.
+// createCommand records a command of the caller's account and a Pending invocation for each of its instances.
 func (s *ssmStore) createCommand(ctx context.Context, c ssmCommand, execTimeout int) (ssmCommand, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -141,9 +158,10 @@ func (s *ssmStore) createCommand(ctx context.Context, c ssmCommand, execTimeout 
 	params, _ := json.Marshal(c.Parameters)
 	targets, _ := json.Marshal(c.Targets)
 	if err := tx.QueryRowContext(ctx, `INSERT INTO ssm_commands (command_id, document_name, comment, parameters, targets, timeout_seconds,
-    max_concurrency, max_errors, requested_by, expires_at)
-VALUES ($1,$2,$3,$4,$5,$6::int,$7,$8,$9, now() + make_interval(secs => $6::int)) RETURNING requested_at, expires_at`,
-		c.ID, c.Document, c.Comment, string(params), string(targets), c.TimeoutSeconds, c.MaxConcurrency, c.MaxErrors, c.RequestedBy).
+    max_concurrency, max_errors, requested_by, expires_at, account)
+VALUES ($1,$2,$3,$4,$5,$6::int,$7,$8,$9, now() + make_interval(secs => $6::int), $10) RETURNING requested_at, expires_at`,
+		c.ID, c.Document, c.Comment, string(params), string(targets), c.TimeoutSeconds, c.MaxConcurrency, c.MaxErrors, c.RequestedBy,
+		ssmCommandAccount(ctx)).
 		Scan(&c.Requested, &c.Expires); err != nil {
 		return c, err
 	}
@@ -246,10 +264,12 @@ func scanInvocation(row interface{ Scan(...any) error }) (ssmInvocation, error) 
 	return v, nil
 }
 
-// invocations lists invocations, of one command and/or one instance when given, newest command first.
+// invocations lists the caller's account's invocations, of one command and/or one instance when given,
+// newest command first.
 func (s *ssmStore) invocations(ctx context.Context, commandID, instanceID string) ([]ssmInvocation, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+invocationColumns+` FROM ssm_invocations i JOIN ssm_commands c ON c.command_id=i.command_id
-    WHERE ($1='' OR i.command_id=$1) AND ($2='' OR i.instance_id=$2) ORDER BY c.requested_at DESC, i.command_id, i.instance_id`, commandID, instanceID)
+    WHERE c.account=$3 AND ($1='' OR i.command_id=$1) AND ($2='' OR i.instance_id=$2) ORDER BY c.requested_at DESC, i.command_id, i.instance_id`,
+		commandID, instanceID, ssmCommandAccount(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -265,9 +285,10 @@ func (s *ssmStore) invocations(ctx context.Context, commandID, instanceID string
 	return out, rows.Err()
 }
 
-// commandExists reports whether a command is recorded.
+// commandExists reports whether the caller's account has sent a command of that id (another account's is
+// not the caller's to know of).
 func (s *ssmStore) commandExists(ctx context.Context, commandID string) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM ssm_commands WHERE command_id=$1`, commandID).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM ssm_commands WHERE command_id=$1 AND account=$2`, commandID, ssmCommandAccount(ctx)).Scan(&n)
 	return n > 0, err
 }

@@ -833,6 +833,7 @@ func run(logger *slog.Logger) error {
 			cfnDoor.identity = signer
 		}
 		logger.Info("instance identity documents enabled", slog.String("key", keysNS+"/"+identityKeySecretName), slog.Duration("ttl", ttl))
+		vmCredsH.useAccounts(acctDir) // a member account's VM acts, is managed and is documented in its own account
 	}
 	// The platform root CA certificate (public), for VM guests' trust stores: read from a Secret in the
 	// shim's OWN namespace that cert-manager fills with openinfra-ca's certificate (Certificate

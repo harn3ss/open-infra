@@ -9,9 +9,11 @@
 // instance role (its ServiceAccount names one: every VM with instance metadata has a token, for its signed
 // identity document, but a token without a role is refused here) that trusts the vm principal and allows the SSM agent's
 // actions — ssm:UpdateInstanceInformation and ec2messages:GetMessages to register and fetch,
-// ec2messages:SendReply to report (AmazonSSMManagedInstanceCore attaches them) — and when it is in the
-// account's namespace, the one SendCommand reaches. GET long-polls: it answers as soon as a command is
-// pending, or empty after the agent's wait (at most 20 s).
+// ec2messages:SendReply to report (AmazonSSMManagedInstanceCore attaches them) — and when it is in an
+// account's namespace that SendCommand reaches: the management account's stack namespace, or a member
+// account's home. A member account's instance is that account's: its agent acts in it (its role is decided
+// in its own account), and only that account's commands reach it. GET long-polls: it answers as soon as a
+// command is pending, or empty after the agent's wait (at most 20 s).
 package main
 
 import (
@@ -87,11 +89,22 @@ func (b *commandBus) notify(ids ...string) {
 	}
 }
 
-// vmAgent is a verified agent: its instance and the instance role's session identity.
+// vmAgent is a verified agent: its instance, the instance role's session identity, and the member account
+// it acts in ("" for the management account's instance) with that account's home.
 type vmAgent struct {
 	instanceID, namespace, vmName, role string
+	account, accountHome                string
 	claims                              iam.Claims
 	expires                             time.Time
+}
+
+// actingIn is ctx acting in the agent's account: a member account's instance's role is decided as a
+// request within its own account (withAccount, inAccountScope); the management account's ctx is unchanged.
+func (a vmAgent) actingIn(ctx context.Context) context.Context {
+	if a.account == "" {
+		return ctx
+	}
+	return inAccountScope(withAccount(ctx, a.account, a.accountHome))
 }
 
 type vmCommandsHandler struct {
@@ -101,12 +114,15 @@ type vmCommandsHandler struct {
 	dyn        dynamic.Interface // the shim's client: a VM's claim (and composite), for its instance id
 	authz      *dataplaneauthz.Checker
 	home       string          // the IAM home namespace (ROLES_NAMESPACE), as the session principal names it
-	namespaces map[string]bool // the account's namespaces: only their VMs are managed
-	bus        *commandBus
-	maxWait    time.Duration // the longest long-poll
-	recheck    time.Duration // how often a waiting poll re-reads the store
-	cacheTTL   time.Duration // how long a verified token is trusted without a new TokenReview
-	logger     *slog.Logger
+	namespaces map[string]bool // the management account's namespaces: only their VMs (and members' below) are managed
+	// accounts knows the member accounts' homes: a VM in a member account's home is that account's managed
+	// instance (nil: the management account's namespaces alone).
+	accounts vmAccounts
+	bus      *commandBus
+	maxWait  time.Duration // the longest long-poll
+	recheck  time.Duration // how often a waiting poll re-reads the store
+	cacheTTL time.Duration // how long a verified token is trusted without a new TokenReview
+	logger   *slog.Logger
 
 	mu        sync.Mutex
 	cache     map[string]vmAgent
@@ -160,8 +176,16 @@ func (h *vmCommandsHandler) identify(ctx context.Context, token string) (vmAgent
 	if id.role == "" {
 		return vmAgent{}, http.StatusForbidden, "this VM has no instance role (spec.instanceRole), so it is not a managed instance"
 	}
+	// The management account's namespaces, else a member account's home (its instances are there).
+	var acct, acctHome string
 	if !h.namespaces[id.namespace] {
-		return vmAgent{}, http.StatusNotFound, "VMs in namespace " + id.namespace + " are not managed instances of this account"
+		acct, acctHome = vmMemberAccount(h.accounts, id.namespace)
+		if acct == "" || acctHome != id.namespace {
+			return vmAgent{}, http.StatusNotFound, "VMs in namespace " + id.namespace + " are not managed instances of this account"
+		}
+		if h.accounts.Suspended(acct) {
+			return vmAgent{}, http.StatusForbidden, "the instance's account is suspended"
+		}
 	}
 	groups, ok := h.trust.vmTrusted(ctx, id.namespace, id.role)
 	if !ok {
@@ -185,8 +209,11 @@ func (h *vmCommandsHandler) identify(ctx context.Context, token string) (vmAgent
 	if home == "" {
 		home = dataplaneauthz.DefaultHomeNamespace
 	}
-	a := vmAgent{instanceID: inst, namespace: id.namespace, vmName: id.vmName, role: id.role, expires: now.Add(h.cacheTTL),
-		claims: iam.Claims{Sub: "assumed-role/" + id.role + "/" + id.vmName, Groups: groups, AssumedRole: dataplaneauthz.QualifiedName(home, id.namespace, id.role)}}
+	// The role's session, as /v1/vm-credentials mints it: a member account's in that account.
+	a := vmAgent{instanceID: inst, namespace: id.namespace, vmName: id.vmName, role: id.role, account: acct, accountHome: acctHome,
+		expires: now.Add(h.cacheTTL),
+		claims: iam.Claims{Sub: "assumed-role/" + id.role + "/" + id.vmName, Groups: groups,
+			AssumedRole: dataplaneauthz.QualifiedName(home, id.namespace, id.role), Account: acct}}
 	h.mu.Lock()
 	if h.cache == nil {
 		h.cache = map[string]vmAgent{}
@@ -203,9 +230,10 @@ func (h *vmCommandsHandler) identify(ctx context.Context, token string) (vmAgent
 
 // allowed runs the instance role's data-plane check for one of the SSM agent's actions on its instance.
 func (h *vmCommandsHandler) allowed(w http.ResponseWriter, r *http.Request, a vmAgent, actions ...string) bool {
+	ctx := a.actingIn(r.Context())
 	for _, act := range actions {
-		if ok, reason := decide(r.Context(), r, h.authz, a.claims, act, "Instance", a.instanceID,
-			scopedDataPlaneOnly(r.Context(), r, h.authz, a.claims, act, "Instance", a.instanceID)); !ok {
+		if ok, reason := decide(ctx, r, h.authz, a.claims, act, "Instance", a.instanceID,
+			scopedDataPlaneOnly(ctx, r, h.authz, a.claims, act, "Instance", a.instanceID)); !ok {
 			if h.logger != nil {
 				h.logger.Warn("vm-commands: the instance role does not allow "+act, "instance", a.instanceID, "role", a.namespace+"/"+a.role, "reason", reason)
 			}

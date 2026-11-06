@@ -49,6 +49,50 @@ type vmCredsHandler struct {
 	// identity serves the VM's signed instance identity document (instance_identity.go), with the same
 	// identity; nil = off.
 	identity *vmIdentityHandler
+	// accounts says which account a VM's namespace belongs to (the accounts directory); nil: every VM is
+	// the management account's, as before accounts.
+	accounts vmAccounts
+}
+
+// vmAccounts is what the VM paths (credentials, the Run Command agent channel, the identity document) ask
+// the accounts directory (*accounts.Directory): the account a VM's namespace belongs to, that account's
+// home, and whether it is suspended.
+type vmAccounts interface {
+	AccountOf(ns string) string
+	HomeOf(account string) (string, bool)
+	IsManagement(account string) bool
+	Suspended(account string) bool
+}
+
+// useAccounts gives the VM paths the accounts directory: a member account's VM gets its role's credentials
+// in that account, its Run Command agent is that account's managed instance, and its identity document
+// names that account (and verifies).
+func (h *vmCredsHandler) useAccounts(d vmAccounts) {
+	h.accounts = d
+	if h.commands != nil {
+		h.commands.accounts = d
+	}
+	if h.identity != nil {
+		h.identity.accounts = d
+		if h.identity.signer != nil {
+			h.identity.signer.accounts = d
+		}
+	}
+}
+
+// vmMemberAccount is the member account a VM in namespace ns belongs to, and that account's home: "", ""
+// for the management account's VM (and with no directory: every VM is the management account's). As on
+// AWS, an instance is its account's, and what it does with its role's credentials it does in that account.
+func vmMemberAccount(d vmAccounts, ns string) (account, home string) {
+	if d == nil {
+		return "", ""
+	}
+	acct := d.AccountOf(ns)
+	if acct == "" || d.IsManagement(acct) {
+		return "", ""
+	}
+	home, _ = d.HomeOf(acct)
+	return acct, home
 }
 
 // vmCredsPath is the container-credentials endpoint (AWS_CONTAINER_CREDENTIALS_FULL_URI on the VM).
@@ -98,8 +142,15 @@ func (h *vmCredsHandler) serve(w http.ResponseWriter, r *http.Request, requestID
 		return
 	}
 	// The session names the Role's namespace: a VM's role lives in the VM's namespace, so it is a
-	// different principal from a same-named Role anywhere else.
-	akid, sk, tok, exp, err := h.minter.MintIn(id.namespace, id.role, groups, id.vmName, id.caller, h.ttl)
+	// different principal from a same-named Role anywhere else. A member account's VM assumes its role in
+	// that account (the token records it), so the instance's AWS calls act in its own account, as on AWS; a
+	// suspended account's instance gets none.
+	acct, _ := vmMemberAccount(h.accounts, id.namespace)
+	if acct != "" && h.accounts.Suspended(acct) {
+		http.Error(w, "the instance's account is suspended", http.StatusForbidden)
+		return
+	}
+	akid, sk, tok, exp, err := h.minter.MintInAccount(acct, id.namespace, id.role, groups, id.vmName, id.caller, h.ttl)
 	if err != nil {
 		http.Error(w, "could not mint credentials", http.StatusInternalServerError)
 		return

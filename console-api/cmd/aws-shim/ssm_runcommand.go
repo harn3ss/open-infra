@@ -3,10 +3,13 @@
 // DescribeInstanceInformation. A command runs on its instances through their metadata agents
 // (vmcommands.go); its state is the SSM store's (ssm_runcommand_store.go).
 //
-// The instances are the account namespace's VMs the caller may read (the EC2 front door's view, read
-// with the caller's own authority), by the i- ids their guests report. An instance is managed — a target
-// SendCommand accepts, listed by DescribeInstanceInformation — once its agent has registered (its role
-// allows the SSM agent's actions: AmazonSSMManagedInstanceCore).
+// The instances are the caller's account's VMs the caller may read (the EC2 front door's view, read with
+// the caller's own authority, in its account's namespace: the stack namespace for the management account,
+// a member account's home), by the i- ids their guests report. An instance is managed — a target
+// SendCommand accepts, listed by DescribeInstanceInformation — once its agent has registered from that
+// namespace (its role allows the SSM agent's actions: AmazonSSMManagedInstanceCore). A command is its
+// account's: ListCommands, ListCommandInvocations and GetCommandInvocation answer the caller's account's
+// commands alone, and a member account never reaches another account's instance or command.
 //
 // Authorization, as AWS evaluates it: ssm:SendCommand on each instance (Instance::<id>) AND on the
 // document (Document::AWS-RunShellScript); a User also needs RBAC update on the VM itself (running
@@ -83,9 +86,27 @@ func ssmDenied(w http.ResponseWriter, requestID string, claims iam.Claims, actio
 	writeSSMError(w, http.StatusBadRequest, "AccessDeniedException", requestID, msg)
 }
 
-func (h *ssmHandler) instanceARN(id string) string {
-	return "arn:aws:ec2:" + h.region + ":" + h.account + ":instance/" + id
+// runCommandAccount is the account the caller's instances and commands belong to: a member account's own
+// id, the install's for the management account.
+func (h *ssmHandler) runCommandAccount(ctx context.Context) string {
+	if isMemberRequest(ctx) {
+		return callerAccount(ctx)
+	}
+	return h.account
 }
+
+func (h *ssmHandler) instanceARN(ctx context.Context, id string) string {
+	return "arn:aws:ec2:" + h.region + ":" + h.runCommandAccount(ctx) + ":instance/" + id
+}
+
+// instancesNS is the namespace the caller's account's instances are in (the EC2 front door's: the stack
+// namespace for the management account, a member account's home): only a managed instance there is the
+// caller's to send a command to or list.
+func (h *ssmHandler) instancesNS(ctx context.Context) string { return h.ec2.accountNS(ctx) }
+
+// Run Command keeps each account's instances and commands apart (instancesNS, ssmCommandAccount), as
+// Parameter Store keeps its parameters, so the whole "ssm" service is account-scoped.
+func init() { accountScopedServices["ssm"] = true }
 
 func (h *ssmHandler) serveRunCommand(ctx context.Context, w http.ResponseWriter, r *http.Request, op string, body map[string]any, claims iam.Claims, requestID string) {
 	if h.store == nil {
@@ -266,12 +287,12 @@ func (h *ssmHandler) sendCommand(ctx context.Context, w http.ResponseWriter, r *
 			if !seen {
 				return true, ""
 			}
-			if allowed, reason := iam.CanDo(ctx, h.cs, claims, "update", "openinfra.dev", "virtualmachines", h.ec2.door.ns, in.name); !allowed {
+			if allowed, reason := iam.CanDo(ctx, h.cs, claims, "update", "openinfra.dev", "virtualmachines", h.instancesNS(ctx), in.name); !allowed {
 				return false, "running a command changes the instance; it needs update on kind: VirtualMachine " + in.name + ": " + reason
 			}
 			return true, ""
 		}); !ok {
-			ssmDenied(w, requestID, claims, "ssm:SendCommand", h.instanceARN(id), reason)
+			ssmDenied(w, requestID, claims, "ssm:SendCommand", h.instanceARN(ctx, id), reason)
 			return
 		}
 	}
@@ -280,16 +301,19 @@ func (h *ssmHandler) sendCommand(ctx context.Context, w http.ResponseWriter, r *
 		writeSSMError(w, http.StatusInternalServerError, "InternalServerError", requestID, "the SSM store is unavailable; retry")
 		return
 	}
+	// A target is the caller's account's instance (visible: read in its namespace) whose agent registered
+	// from that namespace — never another account's instance, managed or not.
+	ns := h.instancesNS(ctx)
 	var invalid []string
 	for _, id := range ids {
 		in, seen := visible[id]
 		m, reg := managed[id]
-		if !instanceIDRe.MatchString(id) || !seen || !reg || m.Namespace != h.ec2.door.ns || in.windows {
+		if !instanceIDRe.MatchString(id) || !seen || !reg || m.Namespace != ns || in.windows {
 			invalid = append(invalid, id)
 		}
 	}
 	if len(invalid) > 0 {
-		bad("InvalidInstanceId", "Instances [["+strings.Join(invalid, ", ")+"]] not in a valid state for account "+h.account)
+		bad("InvalidInstanceId", "Instances [["+strings.Join(invalid, ", ")+"]] not in a valid state for account "+h.runCommandAccount(ctx))
 		return
 	}
 	maxConc, maxErr := strFromBody(body, "MaxConcurrency"), strFromBody(body, "MaxErrors")
@@ -440,7 +464,7 @@ func (h *ssmHandler) getCommandInvocation(ctx context.Context, w http.ResponseWr
 	// allowed it is denied whether or not either exists.
 	if ok, reason := decide(ctx, r, h.authz, claims, "ssm:GetCommandInvocation", "Instance", iid,
 		dataPlaneOnly(ctx, r, h.authz, claims, "ssm:GetCommandInvocation", "Instance", iid)); !ok {
-		ssmDenied(w, requestID, claims, "ssm:GetCommandInvocation", h.instanceARN(iid), reason)
+		ssmDenied(w, requestID, claims, "ssm:GetCommandInvocation", h.instanceARN(ctx, iid), reason)
 		return
 	}
 	invs, err := h.store.invocations(ctx, cid, iid)
@@ -723,8 +747,9 @@ func (h *ssmHandler) describeInstanceInformation(ctx context.Context, w http.Res
 		}
 	}
 	ids := make([]string, 0, len(managed))
+	ns := h.instancesNS(ctx)
 	for id, m := range managed {
-		if _, ok := visible[id]; ok && m.Namespace == h.ec2.door.ns && !visible[id].windows {
+		if _, ok := visible[id]; ok && m.Namespace == ns && !visible[id].windows {
 			ids = append(ids, id)
 		}
 	}
