@@ -10,6 +10,12 @@
 //
 // Authorization is the one policy world, at NAMESPACE granularity: a tenant cannot write into or READ
 // another tenant's namespace (cross-tenant GetMetricData is a data-exposure hole, same shape as #164).
+//
+// Accounts: the door keeps each account's metrics and alarms apart, as on AWS (cloudwatch_store.go's
+// account column). The management account's are where they always were; a member account's datapoints,
+// series and alarms are its own — the same alarm name or metric may exist in both — and its alarms carry
+// its account (AlarmArn, a notification's AWSAccountId). The evaluator evaluates each alarm over its own
+// account's metrics and publishes its actions in its own account.
 package main
 
 import (
@@ -48,6 +54,47 @@ type cwHandler struct {
 	authz   *dataplaneauthz.Checker
 	sns     snsPublisher
 	logger  *slog.Logger
+	// homeOf is a member account's home namespace (the accounts directory's HomeOf): the evaluator acts in
+	// an alarm's account with it. nil knows none (a member account's alarm then acts in no namespace).
+	homeOf func(account string) (string, bool)
+}
+
+// CloudWatch keeps each account's metrics and alarms apart.
+func init() { accountScopedServices["monitoring"] = true }
+
+// cwAccount is the account column of the caller's account's rows: "" for the management account (where
+// every row always was), the member account's id for a member's.
+func cwAccount(ctx context.Context) string {
+	if !isMemberRequest(ctx) {
+		return ""
+	}
+	return callerAccount(ctx)
+}
+
+// arnAccount is the account id the ARNs and notifications of the account column acct carry: the door's
+// own for the management account (as it always wrote them), the member account's id for a member's.
+func (h *cwHandler) arnAccount(acct string) string {
+	if acct == "" {
+		return h.account
+	}
+	return acct
+}
+
+// alarmARN is the alarm's ARN, in its account.
+func (h *cwHandler) alarmARN(a cwAlarm) string {
+	return "arn:aws:cloudwatch:" + h.region + ":" + h.arnAccount(a.Account) + ":alarm:" + a.Name
+}
+
+// inAccount is a background context acting in the account column acct (the evaluator's, for an alarm).
+func (h *cwHandler) inAccount(ctx context.Context, acct string) context.Context {
+	if acct == "" {
+		return ctx
+	}
+	home := ""
+	if h.homeOf != nil {
+		home, _ = h.homeOf(acct)
+	}
+	return withAccount(ctx, acct, home)
 }
 
 func newCWHandler(cs kubernetes.Interface, authzNS, account, region string, store *cwStore, sns snsPublisher, logger *slog.Logger) *cwHandler {
@@ -184,7 +231,7 @@ func (h *cwHandler) putMetricData(ctx context.Context, w http.ResponseWriter, r 
 			writeCWError(w, http.StatusBadRequest, "InvalidParameterValue", requestID, "each MetricData member requires a MetricName.", cwXMLNamespace)
 			return
 		}
-		if err := h.store.putDatum(ctx, ns, d.MetricName, dimsHash(d.Dims), d.Dims, d.TsMs, d.Value, d.Sum, d.Min, d.Max, d.Count, d.Unit, d.Resolution); err != nil {
+		if err := h.store.putDatum(ctx, cwAccount(ctx), ns, d.MetricName, dimsHash(d.Dims), d.Dims, d.TsMs, d.Value, d.Sum, d.Min, d.Max, d.Count, d.Unit, d.Resolution); err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
@@ -213,7 +260,7 @@ func (h *cwHandler) getMetricStatistics(ctx context.Context, w http.ResponseWrit
 	}
 	unit := r.PostFormValue("Unit")
 
-	dps, err := h.store.queryDatapoints(ctx, ns, name, dimsHash(dims), start.UnixMilli(), end.UnixMilli())
+	dps, err := h.store.queryDatapoints(ctx, cwAccount(ctx), ns, name, dimsHash(dims), start.UnixMilli(), end.UnixMilli())
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -286,7 +333,7 @@ func (h *cwHandler) getMetricData(ctx context.Context, w http.ResponseWriter, r 
 			writeCWError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cwXMLNamespace)
 			return
 		}
-		dps, err := h.store.queryDatapoints(ctx, ns, name, dimsHash(dims), start.UnixMilli(), end.UnixMilli())
+		dps, err := h.store.queryDatapoints(ctx, cwAccount(ctx), ns, name, dimsHash(dims), start.UnixMilli(), end.UnixMilli())
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
@@ -320,7 +367,7 @@ func (h *cwHandler) getMetricData(ctx context.Context, w http.ResponseWriter, r 
 
 func (h *cwHandler) listMetrics(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID, ns string) {
 	name := r.PostFormValue("MetricName")
-	metrics, err := h.store.listMetrics(ctx, ns, name)
+	metrics, err := h.store.listMetrics(ctx, cwAccount(ctx), ns, name)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -383,7 +430,7 @@ func (h *cwHandler) putMetricAlarm(ctx context.Context, w http.ResponseWriter, r
 		}
 	}
 	alarm := cwAlarm{
-		Name: name, Namespace: ns, MetricName: metric, Dims: parseDims(r.PostForm, "Dimensions"),
+		Account: cwAccount(ctx), Name: name, Namespace: ns, MetricName: metric, Dims: parseDims(r.PostForm, "Dimensions"),
 		Statistic: stat, ExtendedStatistic: ext,
 		Period:            atoiDefault(r.PostFormValue("Period"), 60),
 		EvaluationPeriods: atoiDefault(r.PostFormValue("EvaluationPeriods"), 1),
@@ -408,7 +455,7 @@ func (h *cwHandler) putMetricAlarm(ctx context.Context, w http.ResponseWriter, r
 func (h *cwHandler) describeAlarms(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims) {
 	names := memberLeaves(r.PostForm, "AlarmNames")
 	stateFilter := r.PostFormValue("StateValue")
-	alarms, err := h.store.listAlarms(ctx, names, stateFilter)
+	alarms, err := h.store.listAlarms(ctx, cwAccount(ctx), names, stateFilter)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -428,7 +475,7 @@ func (h *cwHandler) describeAlarms(ctx context.Context, w http.ResponseWriter, r
 func (h *cwHandler) alarmJSON(a cwAlarm) map[string]any {
 	m := map[string]any{
 		"AlarmName":          a.Name,
-		"AlarmArn":           "arn:aws:cloudwatch:" + h.region + ":" + h.account + ":alarm:" + a.Name,
+		"AlarmArn":           h.alarmARN(a),
 		"Namespace":          a.Namespace,
 		"MetricName":         a.MetricName,
 		"Period":             a.Period,
@@ -461,7 +508,7 @@ func (h *cwHandler) deleteAlarms(ctx context.Context, w http.ResponseWriter, r *
 	}
 	// per-alarm namespace fence
 	for _, n := range names {
-		a, found, err := h.store.getAlarm(ctx, n)
+		a, found, err := h.store.getAlarm(ctx, cwAccount(ctx), n)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
@@ -471,7 +518,7 @@ func (h *cwHandler) deleteAlarms(ctx context.Context, w http.ResponseWriter, r *
 			return
 		}
 	}
-	if _, err := h.store.deleteAlarms(ctx, names); err != nil {
+	if _, err := h.store.deleteAlarms(ctx, cwAccount(ctx), names); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -491,7 +538,7 @@ func (h *cwHandler) setAlarmState(ctx context.Context, w http.ResponseWriter, r 
 		writeCWError(w, http.StatusBadRequest, "InvalidParameterValue", requestID, "StateValue must be OK, ALARM or INSUFFICIENT_DATA.", cwXMLNamespace)
 		return
 	}
-	a, found, err := h.store.getAlarm(ctx, name)
+	a, found, err := h.store.getAlarm(ctx, cwAccount(ctx), name)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -505,7 +552,7 @@ func (h *cwHandler) setAlarmState(ctx context.Context, w http.ResponseWriter, r 
 		return
 	}
 	prev := a.State
-	if _, err := h.store.setAlarmStateDB(ctx, name, state, reason); err != nil {
+	if _, err := h.store.setAlarmStateDB(ctx, a.Account, name, state, reason); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -547,24 +594,27 @@ func (h *cwHandler) evaluateAll(ctx context.Context) {
 		return
 	}
 	for _, a := range alarms {
-		newState, reason := h.evaluateAlarm(ctx, a)
+		// Each alarm is evaluated in its own account: over its account's metrics, its actions published there.
+		actx := h.inAccount(ctx, a.Account)
+		newState, reason := h.evaluateAlarm(actx, a)
 		if newState == a.State {
 			continue
 		}
-		if _, err := h.store.setAlarmStateDB(ctx, a.Name, newState, reason); err != nil {
+		if _, err := h.store.setAlarmStateDB(actx, a.Account, a.Name, newState, reason); err != nil {
 			h.logger.Warn("cloudwatch evaluator: set state failed", "alarm", a.Name, "error", err.Error())
 			continue
 		}
-		h.logger.InfoContext(ctx, "cloudwatch alarm transition", "alarm", a.Name, "from", a.State, "to", newState, "reason", reason)
+		h.logger.InfoContext(actx, "cloudwatch alarm transition", "alarm", a.Name, "from", a.State, "to", newState, "reason", reason)
 		if newState == "ALARM" {
 			a.State = newState
 			a.StateReason = reason
-			h.fireActions(ctx, a)
+			h.fireActions(actx, a)
 		}
 	}
 }
 
-// evaluateAlarm computes the alarm's next state from the last EvaluationPeriods periods.
+// evaluateAlarm computes the alarm's next state from the last EvaluationPeriods periods of its account's
+// metric.
 func (h *cwHandler) evaluateAlarm(ctx context.Context, a cwAlarm) (string, string) {
 	stat := a.Statistic
 	if stat == "" {
@@ -576,7 +626,7 @@ func (h *cwHandler) evaluateAlarm(ctx context.Context, a cwAlarm) (string, strin
 	}
 	now := time.Now().UnixMilli()
 	startMs := now - int64(a.EvaluationPeriods)*periodMs
-	dps, err := h.store.queryDatapoints(ctx, a.Namespace, a.MetricName, a.DimsHash, startMs, now)
+	dps, err := h.store.queryDatapoints(ctx, a.Account, a.Namespace, a.MetricName, a.DimsHash, startMs, now)
 	if err != nil {
 		return a.State, a.State // keep last state on a transient error
 	}
@@ -620,14 +670,16 @@ func (h *cwHandler) evaluateAlarm(ctx context.Context, a cwAlarm) (string, strin
 	return "OK", "within threshold"
 }
 
-// fireActions publishes the alarm-state notification to each SNS AlarmAction.
+// fireActions publishes the alarm-state notification to each SNS AlarmAction. ctx acts in the alarm's
+// account (the request's, or the evaluator's inAccount): the topic is the one its ARN names, and its policy
+// decides on a publish from this alarm of this account.
 func (h *cwHandler) fireActions(ctx context.Context, a cwAlarm) {
 	if h.sns == nil {
 		return
 	}
 	notif := map[string]any{
 		"AlarmName":       a.Name,
-		"AWSAccountId":    h.account,
+		"AWSAccountId":    h.arnAccount(a.Account),
 		"NewStateValue":   a.State,
 		"NewStateReason":  a.StateReason,
 		"StateChangeTime": time.Now().UTC().Format(time.RFC3339),
@@ -647,7 +699,7 @@ func (h *cwHandler) fireActions(ctx context.Context, a cwAlarm) {
 			continue
 		}
 		accepts, err := h.sns.topicAccepts(ctx, action, resourcepolicy.Request{Service: "cloudwatch.amazonaws.com", Action: "sns:Publish",
-			SourceArn: "arn:aws:cloudwatch:" + h.region + ":" + h.account + ":alarm:" + a.Name, SourceAccount: h.account})
+			SourceArn: h.alarmARN(a), SourceAccount: h.arnAccount(a.Account)})
 		if err != nil || !accepts {
 			h.logger.Warn("cloudwatch: alarm action not published — the topic does not exist or its policy does not let CloudWatch publish to it",
 				"alarm", a.Name, "action", action)

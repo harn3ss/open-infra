@@ -546,6 +546,7 @@ func run(logger *slog.Logger) error {
 	// fires SNS AlarmActions through the SNS handler.
 	cwmH := newCWHandler(cs, authzNS, account, region, cwSt, snsH, logger)
 	cwmH.authz = authzChecker
+	cwmH.homeOf = acctDir.HomeOf // the evaluator acts in a member account's alarm's account
 	// Kinesis Data Streams (ordered, sharded, replayable) — Postgres-backed; SigV4 service name "kinesis".
 	kinesisH := newKinesisHandler(cs, authzNS, account, region, kinesisSt, logger)
 	kinesisH.authz = authzChecker
