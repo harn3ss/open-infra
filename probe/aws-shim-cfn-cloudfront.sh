@@ -247,7 +247,10 @@ JSON
 log "seeding an openinfra:admins caller"
 mint_key "cfprobe-cdn-admin-$SFX" "admins"; AAK="$MK_AK"; ASK="$MK_SK"
 [ -n "$AAK" ] || inconclusive "failed to mint the caller key"
-sleep 2
+# A new principal's policies take effect after the IAM compiler's next pass and the authorizers' policy
+# caches (as AWS IAM changes propagate): the stack acts as its caller, so wait that out first.
+log "  waiting ${IAM_SETTLE_SECONDS:-45}s for the new caller's policies to propagate"
+sleep "${IAM_SETTLE_SECONDS:-45}"
 
 # --- 1. NEGATIVE: an out-of-subset feature refuses the whole stack at validation -----------------------
 log "negative: the same template with a Lambda@Edge association is refused at validation, nothing created"

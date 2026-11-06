@@ -128,7 +128,10 @@ log "seeding an openinfra:admins caller and an openinfra:readers caller"
 mint_key "cfnprobe-admin-$SFX"  "admins"; AAK="$MK_AK"; ASK="$MK_SK"
 mint_key "cfnprobe-reader-$SFX" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
 [ -n "$AAK" ] && [ -n "$RAK" ] || inconclusive "failed to mint caller keys"
-sleep 2
+# A new principal's policies take effect after the IAM compiler's next pass and the authorizers' policy
+# caches (as AWS IAM changes propagate): the stack acts as its caller, so wait that out first.
+log "  waiting ${IAM_SETTLE_SECONDS:-45}s for the new callers' policies to propagate"
+sleep "${IAM_SETTLE_SECONDS:-45}"
 
 # --- 1. UNSUPPORTED type refused WHOLE at validation, nothing created --------------------------------
 log "negative: a stack containing an unsupported type (AWS::Route53::HostedZone) is refused at validation"
