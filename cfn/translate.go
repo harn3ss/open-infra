@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -351,8 +352,9 @@ func translateKMSKey(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 // open-infra Functions are CONTAINER images, so only a PackageType: Image Lambda translates
 // faithfully. A zip/Runtime Lambda has no image to run and is refused.
 // Faithful: Code.ImageUri (-> image), Environment.Variables (-> env), MemorySize (-> memory),
-// Timeout (-> timeout). Declared caveat: Role (Functions connect via secrets/env, not an
-// assumed IAM role). Zip packaging, VpcConfig, Layers, and the rest block.
+// Timeout (-> timeout), Role (-> spec.role, the execution role the function's code runs as: an in-stack
+// role by !GetAtt <Role>.Arn, or a role ARN of the stack's account). Zip packaging, VpcConfig, Layers,
+// and the rest block.
 //
 // The Function is also the ANCHOR of the SNS-subscription collation (#113): it scans the stack for
 // lambda SNS subscriptions (a standalone AWS::SNS::Subscription, or an inline Subscription on a topic)
@@ -400,7 +402,11 @@ func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*M
 		m.Caveats = append(m.Caveats, fmt.Sprintf("FunctionName %q is not a valid open-infra Function name (lowercase letters, digits and hyphens, at most 63) — the Function is named %q, and Ref / Arn resolve to that name", fn, m.Name))
 	}
 	if _, ok := props["Role"]; ok {
-		m.Caveats = append(m.Caveats, "Lambda Role dropped — open-infra Functions connect via injected secrets/env, they do not assume an IAM role")
+		role, rf := lambdaExecutionRole(id, props, ctx)
+		f = append(f, rf...)
+		if role != "" {
+			spec["role"] = role
+		}
 	}
 	if a, ok := props["Architectures"]; ok {
 		if l, _ := a.([]any); len(l) != 1 || fmt.Sprint(l[0]) != "x86_64" {
@@ -408,6 +414,42 @@ func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*M
 		}
 	}
 	return m, f
+}
+
+// lambdaExecutionRole maps a Lambda function's Role (its execution role, an IAM role ARN as Lambda
+// requires) to the Function's spec.role: an in-stack AWS::IAM::Role by !GetAtt <Role>.Arn is that role's
+// kind: Role name; a role ARN is kept as written, when it is a role of the stack's own account (a role of
+// another account cannot be passed, as on AWS). An in-stack role whose trust policy does not name
+// lambda.amazonaws.com is refused, as Lambda refuses a role it cannot assume.
+func lambdaExecutionRole(id string, props map[string]any, ctx *stackCtx) (string, []Finding) {
+	if ctx != nil {
+		if raw, ok := ctx.rawProps(id); ok {
+			if m, isMap := raw["Role"].(map[string]any); isMap {
+				if _, isRef := m["Ref"]; isRef {
+					return "", []Finding{{"Resource " + id, "Role must be the role's ARN (!GetAtt <Role>.Arn), as Lambda requires; !Ref gives the role's name"}}
+				}
+				if target, ok := getAttTarget(m); ok && ctx.isType(target, "AWS::IAM::Role") {
+					if svcs, parsed := trustServices(ctx.template.Resources[target].Properties["AssumeRolePolicyDocument"]); parsed && !slices.Contains(svcs, "lambda.amazonaws.com") {
+						return "", []Finding{{"Resource " + id, "the execution role " + target + " does not trust lambda.amazonaws.com, so Lambda cannot assume it — add lambda.amazonaws.com to its AssumeRolePolicyDocument"}}
+					}
+					return ctx.name(target), nil
+				}
+			}
+		}
+	}
+	arn, ok := concrete(props["Role"])
+	if !ok || arn == "" {
+		return "", []Finding{{"Resource " + id, "Role must resolve to an IAM role ARN — an in-stack role by !GetAtt <Role>.Arn, or a role ARN of this stack's account"}}
+	}
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) != 6 || parts[0] != "arn" || !strings.HasPrefix(parts[1], "aws") || parts[2] != "iam" ||
+		!strings.HasPrefix(parts[5], "role/") || iamRoleNameFromArn(arn) == "" {
+		return "", []Finding{{"Resource " + id, fmt.Sprintf("Role %q is not an IAM role ARN (arn:aws:iam::<account>:role/<name>)", arn)}}
+	}
+	if acct := ctx.account(); parts[4] != acct {
+		return "", []Finding{{"Resource " + id, fmt.Sprintf("Role %s is a role of account %s; a function's execution role must be a role of the stack's account (%s)", arn, parts[4], acct)}}
+	}
+	return arn, nil
 }
 
 // ---- AWS::StepFunctions::StateMachine -> kind: StateMachine ----
@@ -2369,21 +2411,35 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
 
+	// A service role's trust: each service principal is recorded as IAM's CreateRole records it — EC2's as
+	// the instance principal "vm", any other as "Service::<service>" — so the role trusts what its template
+	// says, and GetRole shows it. A service assumes the role only where its open-infra service does so: a
+	// function that names it (lambda.amazonaws.com), a state machine that names it (states.amazonaws.com), an
+	// instance that names it (ec2). Nothing else assumes on a service's trust, so another service's entry
+	// grants nothing — the role exists with its policies, as on AWS, and a caveat says no service assumes it.
 	svcs, ok := trustServices(props["AssumeRolePolicyDocument"])
 	trust := []any{}
 	appsyncTrust := false
+	var idle []string // trusted services no open-infra service assumes a role for
 	for _, s := range svcs {
 		switch s {
 		case "ec2.amazonaws.com":
-			trust = []any{"vm"}
+			trust = append(trust, "vm")
 		case "appsync.amazonaws.com":
 			appsyncTrust = true
+		case "lambda.amazonaws.com", "states.amazonaws.com":
+			trust = append(trust, "Service::"+s)
 		default:
-			ok = false
+			if !awsServicePrincipalRe.MatchString(s) {
+				ok = false
+				continue
+			}
+			trust = append(trust, "Service::"+s)
+			idle = append(idle, s)
 		}
 	}
 	if !ok {
-		f = append(f, Finding{"Resource " + id, "only an EC2 instance role or an AppSync service role translates: the AssumeRolePolicyDocument must Allow sts:AssumeRole for the ec2.amazonaws.com and/or appsync.amazonaws.com service principals and nothing else. A role trusting another service, an account/ARN, a federated/SAML/OIDC principal, or a mix with one of those has no template-derivable open-infra trust — author the kind: Role natively (spec.trust)"})
+		f = append(f, Finding{"Resource " + id, "only a service role translates: the AssumeRolePolicyDocument must Allow sts:AssumeRole for AWS service principals (<service>.amazonaws.com) and nothing else. A role trusting an account/ARN, a federated/SAML/OIDC principal, or a mix with one of those has no template-derivable open-infra trust — author the kind: Role natively (spec.trust)"})
 		return nil, f
 	}
 	spec := map[string]any{"trust": trust}
@@ -2391,6 +2447,11 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 		spec["description"] = d
 	}
 	m := &Manifest{APIVersion: "iam.openinfra.dev/v1", Kind: "Role", Name: ctx.name(id), Spec: spec}
+	if len(idle) > 0 {
+		m.Caveats = append(m.Caveats, "trusted by "+strings.Join(idle, ", ")+": the role exists with its policies and its trust, but no open-infra service assumes a role for "+
+			map[bool]string{true: "that service", false: "those services"}[len(idle) == 1]+
+			" — only a Function (lambda.amazonaws.com), a StateMachine (states.amazonaws.com) and a VirtualMachine (ec2.amazonaws.com) that name a role assume it; for an ECS task role, add the application's ServiceAccount (system:serviceaccount:<namespace>:<application>) to its trust")
+	}
 	if appsyncTrust {
 		// AppSync assumes a service role to reach a data source, and the role's policy bounds what the
 		// source's resolvers may do. open-appsync reaches its sources with the engine's own connection, so
@@ -2734,6 +2795,9 @@ func inStackARN(id string, ctx *stackCtx) (string, bool) {
 // statement Allows sts:AssumeRole for service principals and nothing else; ok is false for any other
 // shape (an account/ARN, a federated principal, a Deny, another action). The caller decides which
 // services have an open-infra form.
+// awsServicePrincipalRe matches an AWS service principal (ecs-tasks.amazonaws.com, logs.us-east-1.amazonaws.com).
+var awsServicePrincipalRe = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*\.amazonaws\.com$`)
+
 func trustServices(doc any) (svcs []string, ok bool) {
 	m, isMap := doc.(map[string]any)
 	if !isMap {

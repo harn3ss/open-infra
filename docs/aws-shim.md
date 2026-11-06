@@ -472,7 +472,10 @@ never stands in for another of the same name: a `kind: User` name (or `User::<na
 (a session of that role; `<namespace>/<name>` for a Role outside the IAM home namespace),
 `system:serviceaccount:<ns>:<sa>` (that workload's token), `OIDC::<provider>` (any token that
 `kind: IdentityProvider` issues) or `OIDC::<provider>:<subject>` (one subject of it), `vm` (the VM
-instance principal, matched only by the instance credentials path), or `"*"` (any authenticated
+instance principal, matched only by the instance credentials path), `Service::<service>` (an AWS service:
+`Service::lambda.amazonaws.com` is matched only for a `kind: Function` that names the role as its
+`spec.role`, presenting its own identity's token — [execution role](serverless.md#execution-role) —
+and `Service::states.amazonaws.com` only for a state machine's executions), or `"*"` (any authenticated
 principal). An IAM `CreateRole` trust policy maps a user ARN to the user's name and a role ARN to
 `Role::<name>`, and takes `MaxSessionDuration`. Later requests signed with the
 temporary credential and carrying the `SessionToken` are then authorized as principal type `Role`,
@@ -571,9 +574,10 @@ namespaces above, skipping one where the caller has no `list` on `functions`, an
 50 a page, as on AWS) through the API server's own list paging, so a page reads at most 50 claims. The
 configuration carries the name, ARN, package type (`Image` for `spec.image`, else `Zip` with the managed
 runtime and handler), memory, timeout (300 s when unset — the platform default), environment variables
-(`spec.env`; injected `spec.secrets` are not read), and a state from the claim's conditions. What a Function
-has no counterpart for is left out rather than invented: an execution role (a stack's `Role` is dropped),
-a code size or hash, and a download location for a zip's code (`GetFunction`'s `Code` names the image of an
+(`spec.env`; injected `spec.secrets` are not read), the execution role as `Role` (`spec.role`, its ARN in
+the function's account — see [execution role](serverless.md#execution-role)), and a state from the claim's
+conditions. What a Function has no counterpart for is left out rather than invented: a `Role` for a
+function that names none, a code size or hash, and a download location for a zip's code (`GetFunction`'s `Code` names the image of an
 image function, or `RepositoryType: S3` alone). A function has no resource policy — a stack's
 `AWS::Lambda::Permission` provisions nothing, because the integration that invokes the function is
 authorized against its creator's authority when it is created — so `GetPolicy` answers

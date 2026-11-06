@@ -37,10 +37,12 @@ func blockersJoined(p *Plan) string { return strings.Join(p.Blockers, "\n") }
 
 // The realistic template exercises mapping, intrinsics, a condition, and dependency ordering — and
 // now that plan runs the TRANSLATE GATE (the same gate deploy runs), it is honestly REJECTED: its
-// shapes are faithful-AWS but open-infra refuses them at deploy (a KMS-SSE bucket, a lambda-trust role,
-// a zip/Runtime Lambda, an ASL that references a sibling's ARN). plan surfaces each refusal per-resource
-// instead of letting deploy discover them — this is the "a PROVISIONABLE* verdict means deploy won't
-// refuse" guarantee. The mapping/ordering/condition logic is still asserted.
+// shapes are faithful-AWS but open-infra refuses them at deploy (a KMS-SSE bucket, a zip/Runtime
+// Lambda, an ASL that references a sibling's ARN). plan surfaces each refusal per-resource instead of
+// letting deploy discover them — this is the "a PROVISIONABLE* verdict means deploy won't refuse"
+// guarantee. The mapping/ordering/condition logic is still asserted. Its Lambda execution role
+// (trusting lambda.amazonaws.com) is no longer a refusal: it translates to a kind: Role the function
+// assumes.
 func TestPlan_Webapp_Dev_TranslateGateSurfacesRefusals(t *testing.T) {
 	p := mustPlan(t, readFixture(t, "webapp.yaml"), map[string]string{"Stage": "dev"}, "web")
 
@@ -50,7 +52,6 @@ func TestPlan_Webapp_Dev_TranslateGateSurfacesRefusals(t *testing.T) {
 	// Each deploy-refusal is surfaced at PLAN now, not at deploy.
 	b := blockersJoined(p)
 	for _, want := range []string{
-		"ec2.amazonaws.com",                        // AppRole trusts lambda, not the ec2 service principal
 		"BucketEncryption",                         // Assets asks for SSE; zero Capabilities = objectEncryption not vouched for → refuse
 		"PackageType: Image",                       // Api is a zip/Runtime Lambda
 		"ASL definition references cross-resource", // Workflow Task Resource is a sibling ARN
@@ -58,6 +59,9 @@ func TestPlan_Webapp_Dev_TranslateGateSurfacesRefusals(t *testing.T) {
 		if !strings.Contains(b, want) {
 			t.Errorf("plan must surface the deploy-refusal %q:\n%s", want, b)
 		}
+	}
+	if strings.Contains(b, "Resource AppRole") {
+		t.Errorf("AppRole (a Lambda execution role) must translate, not refuse:\n%s", b)
 	}
 
 	// ProdAlarms is gated on IsProd, which is false at Stage=dev.

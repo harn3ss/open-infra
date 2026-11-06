@@ -17,3 +17,21 @@ spec:
       - effect: Allow
         actions: ["get"]
         resources: ["serviceaccounts::*"]
+---
+# The same, for Lambda execution roles: the aws-shim confirms a function's identity token is bound to a
+# pod Knative runs for that function — a `get` of the one pod the TokenReview names, of its ReplicaSet and
+# of that ReplicaSet's Deployment (which a Knative Revision must own) — before it hands the function its
+# role's credentials (lambda_role.go). The function's ServiceAccount is read under the grant above.
+apiVersion: iam.openinfra.dev/v1
+kind: Policy
+metadata:
+  name: aws-shim-function-identity
+  namespace: open-infra-console
+spec:
+  description: "aws-shim reads the pod a Lambda function's identity token is bound to (execution roles)."
+  controlPlane:
+    appliesTo: ["ServiceAccount::open-infra-aws-shim/aws-shim"]
+    statements:
+      - effect: Allow
+        actions: ["get"]
+        resources: ["pods::*", "replicasets.apps::*", "deployments.apps::*"]

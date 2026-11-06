@@ -15,9 +15,9 @@
 // A function belongs to an account: a member account's are found and listed in its own namespaces alone,
 // and named by ARNs carrying its account; the management account's are where they always were.
 //
-// What a Function does not have, the answer leaves out rather than invents: there is no execution role
-// (a stack's Role is dropped: functions get their access through injected secrets), no code size or hash,
-// and no download location for a zip's code. A function has no resource policy (a stack's
+// A function's execution role (spec.role) is its Role, the role's ARN in the function's account. What a
+// Function does not have, the answer leaves out rather than invents: no Role when it names none, no code
+// size or hash, and no download location for a zip's code. A function has no resource policy (a stack's
 // AWS::Lambda::Permission provisions nothing: the integration that invokes the function is authorized
 // against its creator's authority when it is created), so GetPolicy answers as AWS does for a function with
 // no policy: ResourceNotFoundException.
@@ -375,6 +375,17 @@ func (h *lambdaHandler) functionConfiguration(ctx context.Context, obj *unstruct
 		if hd := fnStr(code["handler"]); hd != "" {
 			c["Handler"] = hd
 		}
+	}
+	// The execution role, as its ARN in the function's account (a role ARN as the function names it).
+	if role := fnStr(spec["role"]); role != "" {
+		if !strings.HasPrefix(role, "arn:") {
+			id := awsidentity.FromContext(ctx)
+			if !isMemberRequest(ctx) && h.account != "" {
+				id.AccountID = h.account
+			}
+			role = id.IAMARN("role/" + role)
+		}
+		c["Role"] = role
 	}
 	if m := fnStr(spec["memory"]); m != "" {
 		if q, err := resource.ParseQuantity(m); err == nil {

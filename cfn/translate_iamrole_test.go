@@ -1,6 +1,7 @@
 package cfn
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -508,20 +509,21 @@ Resources:
 	}
 }
 
-// A role trusting anything other than the ec2 or appsync service (here an AWS account principal) refuses —
+// A role trusting anything other than AWS service principals (here an AWS account principal) refuses —
 // no template-derivable open-infra trust.
 func TestTranslate_IAMRole_NonEc2TrustRefuses(t *testing.T) {
 	ctx := ecsCtx(t, iamRoleTmpl)
 	_, fs := translateIAMRole("UserRole", resolvedProps(t, ctx, "UserRole"), ctx)
-	if !strings.Contains(findingsText(fs), "appsync.amazonaws.com service principals and nothing else") {
-		t.Fatalf("a non-ec2-trust role must refuse with help, got: %s", findingsText(fs))
+	if !strings.Contains(findingsText(fs), "AWS service principals (<service>.amazonaws.com) and nothing else") {
+		t.Fatalf("a non-service-trust role must refuse with help, got: %s", findingsText(fs))
 	}
 }
 
 // An AppSync service role (trusting appsync.amazonaws.com) translates: the role exists, as on AWS, with
 // its inline policy attached — but with no trust entry, since nothing here assumes it (open-appsync reaches
 // its sources with its own connection), so it grants nothing, and a caveat says so. A role trusting both
-// ec2 and appsync is assumable by its VMs only. Another service still refuses.
+// ec2 and appsync is assumable by its VMs only. A Lambda execution role trusts the Lambda service
+// (TestTranslate_IAMRole_ServiceTrust).
 func TestTranslate_IAMRole_AppSyncServiceRole(t *testing.T) {
 	tmpl := `
 Resources:
@@ -571,8 +573,76 @@ Resources:
 		t.Fatalf("an ec2+appsync role must be assumable by its VMs only, got %#v", m.Spec["trust"])
 	}
 
-	if _, fs = translateIAMRole("Fn", resolvedProps(t, ctx, "Fn"), ctx); len(fs) == 0 {
-		t.Fatal("a role trusting another service must still refuse")
+	m, fs = translateIAMRole("Fn", resolvedProps(t, ctx, "Fn"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("a Lambda execution role must translate: %s", findingsText(fs))
+	}
+	if trust, _ := m.Spec["trust"].([]any); len(trust) != 1 || trust[0] != "Service::lambda.amazonaws.com" {
+		t.Fatalf("a Lambda execution role trusts the Lambda service, got %#v", m.Spec["trust"])
+	}
+}
+
+// A service role's trust is recorded as IAM's CreateRole records it: EC2's as the instance principal, any
+// other service as Service::<service>. Lambda's and Step Functions' are assumed (by a function or a state
+// machine that names the role); another service's is recorded but grants nothing, with a caveat saying so.
+// A principal that is no AWS service still refuses.
+func TestTranslate_IAMRole_ServiceTrust(t *testing.T) {
+	tmpl := `
+Resources:
+  Fn:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement: [ { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: sts:AssumeRole } ]
+  FnAndInstance:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - { Effect: Allow, Principal: { Service: [ lambda.amazonaws.com, ec2.amazonaws.com ] }, Action: sts:AssumeRole }
+  Flow:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement: [ { Effect: Allow, Principal: { Service: states.amazonaws.com }, Action: "sts:AssumeRole" } ]
+  Task:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement: [ { Effect: Allow, Principal: { Service: [ ecs-tasks.amazonaws.com, events.amazonaws.com ] }, Action: sts:AssumeRole } ]
+  Odd:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement: [ { Effect: Allow, Principal: { Service: "lambda.example.com" }, Action: sts:AssumeRole } ]
+`
+	ctx := ecsCtx(t, tmpl)
+	for id, want := range map[string][]any{
+		"Fn":            {"Service::lambda.amazonaws.com"},
+		"FnAndInstance": {"vm", "Service::lambda.amazonaws.com"},
+		"Flow":          {"Service::states.amazonaws.com"},
+		"Task":          {"Service::ecs-tasks.amazonaws.com", "Service::events.amazonaws.com"},
+	} {
+		m, fs := translateIAMRole(id, resolvedProps(t, ctx, id), ctx)
+		if len(fs) != 0 {
+			t.Fatalf("%s must translate: %s", id, findingsText(fs))
+		}
+		got, _ := m.Spec["trust"].([]any)
+		if len(got) != len(want) {
+			t.Fatalf("%s trust = %#v, want %#v", id, got, want)
+		}
+		for _, w := range want {
+			if !slices.Contains(got, w) {
+				t.Errorf("%s trust = %#v, want %#v", id, got, want)
+			}
+		}
+		idleCaveat := strings.Contains(strings.Join(m.Caveats, "\n"), "no open-infra service assumes a role for")
+		if idleCaveat != (id == "Task") {
+			t.Errorf("%s: a caveat that no service assumes it = %v (caveats %v)", id, idleCaveat, m.Caveats)
+		}
+	}
+	if _, fs := translateIAMRole("Odd", resolvedProps(t, ctx, "Odd"), ctx); len(fs) == 0 {
+		t.Error("a principal that is no AWS service must refuse")
 	}
 }
 

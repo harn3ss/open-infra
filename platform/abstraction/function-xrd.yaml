@@ -170,6 +170,21 @@ spec:
                     instances — so it is a HARD concurrency cap, not a soft target. It overrides
                     scaling.max and scaling.target (scaling.min still sets the warm floor, the
                     "provisioned concurrency" analog). Unset = the request-driven scaling block applies.
+                role:
+                  type: string
+                  maxLength: 2048
+                  # A role name (AWS's role-name characters, at most 64), or a role ARN
+                  # (arn:aws:iam::<12-digit account>:role/[<path>/]<name>), as Lambda's Role takes it.
+                  pattern: '^(arn:aws(-[a-z]+)*:iam::[0-9]{12}:role/([A-Za-z0-9+=,.@_-]+/)*)?[A-Za-z0-9+=,.@_-]{1,64}$'
+                  description: >-
+                    The function's execution role (Lambda's Role): the name or ARN of a kind: Role of the
+                    function's own account. The function's code runs with that role's temporary
+                    credentials — its AWS SDK finds them with no keys configured — so its calls are
+                    exactly as authorized as the role's policies. The role's trust policy must name
+                    lambda.amazonaws.com (or this function's identity, system:serviceaccount:<namespace>:fn-<name>).
+                    Naming a role needs iam:PassRole on it. Unset: the function has no role, as before.
+                    Not combinable with code.source.secret (the package's static keys would shadow the
+                    role in the handler's SDK).
                 # Functions are stateless compute: they CONNECT to resources, they
                 # don't own them. To use a database/bucket, provision it on an
                 # Application and reference its secret here (e.g. secrets: [api-db-app]).

@@ -54,7 +54,20 @@ func TestPassRole_AdmissionChecksTheRequesterOnTheNamedRole(t *testing.T) {
 		"authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)",
 		".name(object.metadata.annotations['openinfra.dev/instance-role']).check('passrole').allowed()")
 
-	for _, p := range []string{"openinfra-pass-role", "openinfra-instance-role-binding"} {
+	// A Function's execution role (spec.role): passrole on the role's object name — a name, or a role ARN's
+	// last segment, lower-cased — in the function's namespace, as the requester; only when it is set or
+	// changed, so a role-less Function (and Crossplane's own claim updates) is never checked.
+	fn := yamlDoc(t, passRoleYAML, "ValidatingAdmissionPolicy", "openinfra-pass-role-function")
+	mustContain(t, "Function policy", fn,
+		"apiGroups: [openinfra.dev]", "resources: [functions]", "operations: [CREATE, UPDATE]",
+		"failurePolicy: Fail",
+		"has(object.spec) && has(object.spec.role) && object.spec.role != ''",
+		"request.operation == 'CREATE'", "oldObject.spec.role != object.spec.role",
+		"object.spec.role.substring(object.spec.role.lastIndexOf('/') + 1).lowerAscii()",
+		"authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)",
+		".name(variables.role).check('passrole').allowed()")
+
+	for _, p := range []string{"openinfra-pass-role", "openinfra-instance-role-binding", "openinfra-pass-role-function"} {
 		b := yamlDoc(t, passRoleYAML, "ValidatingAdmissionPolicyBinding", p)
 		mustContain(t, p+" binding", b, "policyName: "+p, "validationActions: [Deny, Audit]")
 	}
@@ -148,4 +161,22 @@ func TestPassRole_ShimCanReadVMIsForTheLauncherCheck(t *testing.T) {
 	cr := yamlDoc(t, "../../platform/aws-shim/aws-shim.yaml", "ClusterRole", "open-infra-aws-shim-policies")
 	mustContain(t, "open-infra-aws-shim-policies", cr,
 		"apiGroups: [kubevirt.io]\n    resources: [virtualmachineinstances]\n    verbs: [get]")
+}
+
+// A Lambda function's execution role is handed only to a pod Knative runs for the function: the shim reads
+// the pod the token is bound to, its ReplicaSet and Deployment (the controller chain a Knative Revision
+// owns), its ServiceAccount and the kind: Function. Read-only, by name — never list,
+// never anything that writes. The control-plane grant mirrors the RBAC, as the VM identity's does.
+func TestPassRole_ShimCanReadTheFunctionIdentitysPod(t *testing.T) {
+	cr := yamlDoc(t, "../../platform/aws-shim/aws-shim.yaml", "ClusterRole", "open-infra-aws-shim-policies")
+	mustContain(t, "open-infra-aws-shim-policies", cr,
+		"apiGroups: [\"\"]\n    resources: [pods]\n    verbs: [get]\n",
+		"apiGroups: [apps]\n    resources: [replicasets, deployments]\n    verbs: [get]\n",
+		"apiGroups: [\"\"]\n    resources: [serviceaccounts]\n    verbs: [get]\n")
+	mustContain(t, "open-infra-aws-shim-functions",
+		yamlDoc(t, "../../platform/aws-shim/aws-shim.yaml", "ClusterRole", "open-infra-aws-shim-functions"),
+		"resources: [functions]\n    verbs: [get, list]")
+	p := yamlDoc(t, "../../platform/aws-shim/vmcreds-controlplane-policy.yaml", "Policy", "aws-shim-function-identity")
+	mustContain(t, "aws-shim-function-identity", p,
+		`appliesTo: ["ServiceAccount::open-infra-aws-shim/aws-shim"]`, `actions: ["get"]`, `resources: ["pods::*", "replicasets.apps::*", "deployments.apps::*"]`)
 }

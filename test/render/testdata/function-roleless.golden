@@ -1,0 +1,1787 @@
+=== image-minimal
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: image-minimal
+        namespace: team-a
+        labels:
+          app.kubernetes.io/name: image-minimal
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "100"
+          spec:
+            containers:
+              - image: "ghcr.io/me/hello:1"
+                ports: [ { containerPort: 8080 } ]
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-a
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-a } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== image-full
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: image-full
+        namespace: team-a
+        labels:
+          app.kubernetes.io/name: image-full
+          # Private: only reachable from inside the cluster.
+          networking.knative.dev/visibility: cluster-local
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "1"
+              autoscaling.knative.dev/max-scale: "20"
+              autoscaling.knative.dev/target: "50"
+            # SecurityGroup membership: attached SGs' NetworkPolicies select these labels.
+            labels:
+              openinfra.dev/sg-web: ""
+              openinfra.dev/sg-db-clients: ""
+          spec:
+            # Max wall-clock per request (Knative revision timeout) — the AWS Lambda timeout knob.
+            timeoutSeconds: 900
+            # Max time to the FIRST byte from the handler. Knative defaults this to 300s (its default
+            # revision timeout), independently of timeoutSeconds — so a quiet-but-working request (a
+            # long report, a batch read, a slow migration step) is silently cut at 300s even when the
+            # declared timeout is higher. This is a SECOND 300s boundary, separate from the gateway's
+            # idle timeout; raising only the gateway does not move it. Couple it to the declared
+            # timeout so the function has ONE deadline — its own — honoured end to end. The Knative
+            # webhook requires responseStartTimeoutSeconds <= timeoutSeconds, so they are set equal.
+            responseStartTimeoutSeconds: 900
+            runtimeClassName: nvidia
+            nodeSelector: { openinfra.dev/gpu: "true" }
+            containers:
+              - image: "ghcr.io/me/infer:2"
+                ports: [ { containerPort: 9000 } ]
+                env:
+                  - { name: MODE, value: "fast" }
+                  - { name: Q, value: "say "hi"" }
+                  - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+                  - { name: OPENINFRA_QUEUES, value: "orders,events" }
+                envFrom:
+                  - secretRef: { name: api-db-app, optional: true }
+                  - secretRef: { name: fn-config, optional: true }
+                # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
+                # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
+                # configured memory is RESERVED even while the pod is warm and idle. burstable true:
+                # request = per-runtime floor ($memReq), limit = memory → Burstable QoS; the pod still
+                # bursts to the full limit for an invocation but reserves far less when warm. This is
+                # the reservation-not-use fix — see docs/function-admission.md.
+                resources:
+                  requests: { memory: "2Gi" }
+                  limits:
+                    memory: "2Gi"
+                    nvidia.com/gpu: 1
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-a
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-a } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== image-reserved
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: image-reserved
+        namespace: team-a
+        labels:
+          app.kubernetes.io/name: image-reserved
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "2"
+              # Reserved concurrency (AWS Lambda analog): a HARD cap on concurrent requests.
+              # One request per instance (containerConcurrency 1 below) + at most this many
+              # instances = at most this many concurrent executions. Overrides scaling.max/target.
+              autoscaling.knative.dev/max-scale: "5"
+              autoscaling.knative.dev/target: "1"
+          spec:
+            # One request per instance (Lambda's 1-per-sandbox model): set by reservedConcurrency
+            # (hard per-function cap) OR burstable (so a running pod == one in-flight request ==
+            # the "concurrent executions" unit the per-tenant concurrency quota counts).
+            containerConcurrency: 1
+            containers:
+              - image: "ghcr.io/me/hello:1"
+                ports: [ { containerPort: 8080 } ]
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-a
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-a } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== image-burstable
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: image-burstable
+        namespace: team-b
+        labels:
+          app.kubernetes.io/name: image-burstable
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              # Burstable / Lambda admission model: one request per instance (containerConcurrency
+              # 1 below), per-function ceiling = scaling.max (the reserved-concurrency analog). The
+              # ACCOUNT total is capped by a per-tenant quota (docs/function-admission.md).
+              autoscaling.knative.dev/max-scale: "30"
+              autoscaling.knative.dev/target: "1"
+              # Queue-proxy sidecar sizing (honored only with config-features
+              # queueproxy.resource-defaults: enabled, set in platform/serverless/knative-serving.yaml):
+              # give the sidecar an explicit small request + limit so the pod's reservation is the
+              # function floor plus a KNOWN sidecar cost, and so a per-tenant requests.memory quota
+              # (which requires every in-scope container to declare a memory request) never rejects
+              # the pod for a request-less sidecar. Inert on non-burstable revisions (no annotation).
+              queue.sidecar.serving.knative.dev/cpu-resource-request: "25m"
+              queue.sidecar.serving.knative.dev/memory-resource-request: "32Mi"
+              queue.sidecar.serving.knative.dev/memory-resource-limit: "64Mi"
+          spec:
+            # One request per instance (Lambda's 1-per-sandbox model): set by reservedConcurrency
+            # (hard per-function cap) OR burstable (so a running pod == one in-flight request ==
+            # the "concurrent executions" unit the per-tenant concurrency quota counts).
+            containerConcurrency: 1
+            # Burstable function pods are overcommitted, so they must lose first under node memory
+            # pressure — not MinIO, databases, or the control plane (which stay Guaranteed and
+            # higher-priority). openinfra-function is below default workloads and non-preempting, so
+            # scheduling a function never evicts anything else. See function-priorityclass.yaml.
+            priorityClassName: openinfra-function
+            containers:
+              - image: "ghcr.io/me/hello:1"
+                ports: [ { containerPort: 8080 } ]
+                # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
+                # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
+                # configured memory is RESERVED even while the pod is warm and idle. burstable true:
+                # request = per-runtime floor ($memReq), limit = memory → Burstable QoS; the pod still
+                # bursts to the full limit for an invocation but reserves far less when warm. This is
+                # the reservation-not-use fix — see docs/function-admission.md.
+                resources:
+                  requests: { memory: "256Mi" }
+                  limits:
+                    memory: "1Gi"
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-b
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-b } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== code-python312-configmap
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: code-python312-configmap
+        namespace: team-a
+        labels:
+          app.kubernetes.io/name: code-python312-configmap
+          # Private: only reachable from inside the cluster.
+          networking.knative.dev/visibility: cluster-local
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "100"
+          spec:
+            containers:
+              - image: "ghcr.io/harn3ss/open-infra-lambda-python:latest"
+                ports: [ { containerPort: 8080 } ]
+                env:
+                  - { name: OPENINFRA_HANDLER, value: "app.handler" }
+                  - { name: OPENINFRA_FUNCTION_NAME, value: "code-python312-configmap" }
+                  # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
+                  # handler relies on them (e.g. an SDK client needs a region). They can't be set
+                  # as function env because AWS reserves the names, so the runtime must inject them.
+                  - { name: AWS_REGION, value: "us-east-1" }
+                  - { name: AWS_DEFAULT_REGION, value: "us-east-1" }
+                  - { name: AWS_LAMBDA_FUNCTION_NAME, value: "code-python312-configmap" }
+                  - { name: AWS_LAMBDA_FUNCTION_VERSION, value: "$LATEST" }
+                  - { name: AWS_LAMBDA_LOG_GROUP_NAME, value: "/aws/lambda/code-python312-configmap" }
+                  - { name: LAMBDA_TASK_ROOT, value: "/var/task" }
+                  - { name: LAMBDA_RUNTIME_DIR, value: "/var/runtime" }
+                  - { name: TZ, value: "UTC" }
+                  - { name: AWS_EXECUTION_ENV, value: "AWS_Lambda_python3.12" }
+                  # DynamoDB data plane: the aws-shim's DynamoDB endpoint (FerretDB / DocumentDB-Postgres
+                  # backed). Service-scoped — AWS_ENDPOINT_URL_DYNAMODB redirects ONLY the handler's DynamoDB
+                  # client; every other AWS service keeps its default resolution (a global AWS_ENDPOINT_URL
+                  # would wrongly capture them all). A handler that never calls DynamoDB is unaffected.
+                  - { name: AWS_ENDPOINT_URL_DYNAMODB, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }
+                volumeMounts:
+                  - { name: openinfra-code, mountPath: /var/task, readOnly: true }
+            volumes:
+              - name: openinfra-code
+                configMap: { name: fn-code }
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-a
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-a } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== code-python313-bucket-layers
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: code-python313-bucket-layers
+        namespace: team-a
+        labels:
+          app.kubernetes.io/name: code-python313-bucket-layers
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "100"
+          spec:
+            # Max wall-clock per request (Knative revision timeout) — the AWS Lambda timeout knob.
+            timeoutSeconds: 30
+            # Max time to the FIRST byte from the handler. Knative defaults this to 300s (its default
+            # revision timeout), independently of timeoutSeconds — so a quiet-but-working request (a
+            # long report, a batch read, a slow migration step) is silently cut at 300s even when the
+            # declared timeout is higher. This is a SECOND 300s boundary, separate from the gateway's
+            # idle timeout; raising only the gateway does not move it. Couple it to the declared
+            # timeout so the function has ONE deadline — its own — honoured end to end. The Knative
+            # webhook requires responseStartTimeoutSeconds <= timeoutSeconds, so they are set equal.
+            responseStartTimeoutSeconds: 30
+            containers:
+              - image: "ghcr.io/harn3ss/open-infra-lambda-python313:latest"
+                ports: [ { containerPort: 8080 } ]
+                env:
+                  - { name: OPENINFRA_HANDLER, value: "main.handle" }
+                  - { name: OPENINFRA_FUNCTION_NAME, value: "code-python313-bucket-layers" }
+                  - { name: OPENINFRA_CODE_BUCKET, value: "fn-artifacts" }
+                  - { name: OPENINFRA_CODE_KEY, value: "f.zip" }
+                  - { name: OPENINFRA_LAYERS, value: "[{\"bucket\":\"fn-artifacts\",\"key\":\"layer1.zip\"},{\"bucket\":\"shared\",\"key\":\"deps.zip\"}]" }
+                  # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
+                  # handler relies on them (e.g. an SDK client needs a region). They can't be set
+                  # as function env because AWS reserves the names, so the runtime must inject them.
+                  - { name: AWS_REGION, value: "eu-west-1" }
+                  - { name: AWS_DEFAULT_REGION, value: "eu-west-1" }
+                  - { name: AWS_LAMBDA_FUNCTION_NAME, value: "code-python313-bucket-layers" }
+                  - { name: AWS_LAMBDA_FUNCTION_VERSION, value: "$LATEST" }
+                  - { name: AWS_LAMBDA_LOG_GROUP_NAME, value: "/aws/lambda/code-python313-bucket-layers" }
+                  - { name: LAMBDA_TASK_ROOT, value: "/var/task" }
+                  - { name: LAMBDA_RUNTIME_DIR, value: "/var/runtime" }
+                  - { name: TZ, value: "UTC" }
+                  - { name: AWS_EXECUTION_ENV, value: "AWS_Lambda_python3.13" }
+                  # DynamoDB data plane: the aws-shim's DynamoDB endpoint (FerretDB / DocumentDB-Postgres
+                  # backed). Service-scoped — AWS_ENDPOINT_URL_DYNAMODB redirects ONLY the handler's DynamoDB
+                  # client; every other AWS service keeps its default resolution (a global AWS_ENDPOINT_URL
+                  # would wrongly capture them all). A handler that never calls DynamoDB is unaffected.
+                  - { name: AWS_ENDPOINT_URL_DYNAMODB, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }
+                  # Code-source creds mapped EXPLICITLY (not envFrom) so the S3/MinIO endpoint is
+                  # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
+                  # global override would point every service — dynamodb, sns, … — at the S3
+                  # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
+                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ACCESS_KEY_ID, optional: true } } }
+                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ENDPOINT_URL, optional: true } } }
+                # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
+                # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
+                # configured memory is RESERVED even while the pod is warm and idle. burstable true:
+                # request = per-runtime floor ($memReq), limit = memory → Burstable QoS; the pod still
+                # bursts to the full limit for an invocation but reserves far less when warm. This is
+                # the reservation-not-use fix — see docs/function-admission.md.
+                resources:
+                  requests: { memory: "512Mi" }
+                  limits:
+                    memory: "512Mi"
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-a
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-a } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== code-nodejs20-bucket-burstable
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: code-nodejs20-bucket-burstable
+        namespace: team-b
+        labels:
+          app.kubernetes.io/name: code-nodejs20-bucket-burstable
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              # Burstable / Lambda admission model: one request per instance (containerConcurrency
+              # 1 below), per-function ceiling = scaling.max (the reserved-concurrency analog). The
+              # ACCOUNT total is capped by a per-tenant quota (docs/function-admission.md).
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "1"
+              # Queue-proxy sidecar sizing (honored only with config-features
+              # queueproxy.resource-defaults: enabled, set in platform/serverless/knative-serving.yaml):
+              # give the sidecar an explicit small request + limit so the pod's reservation is the
+              # function floor plus a KNOWN sidecar cost, and so a per-tenant requests.memory quota
+              # (which requires every in-scope container to declare a memory request) never rejects
+              # the pod for a request-less sidecar. Inert on non-burstable revisions (no annotation).
+              queue.sidecar.serving.knative.dev/cpu-resource-request: "25m"
+              queue.sidecar.serving.knative.dev/memory-resource-request: "32Mi"
+              queue.sidecar.serving.knative.dev/memory-resource-limit: "64Mi"
+          spec:
+            # One request per instance (Lambda's 1-per-sandbox model): set by reservedConcurrency
+            # (hard per-function cap) OR burstable (so a running pod == one in-flight request ==
+            # the "concurrent executions" unit the per-tenant concurrency quota counts).
+            containerConcurrency: 1
+            # Burstable function pods are overcommitted, so they must lose first under node memory
+            # pressure — not MinIO, databases, or the control plane (which stay Guaranteed and
+            # higher-priority). openinfra-function is below default workloads and non-preempting, so
+            # scheduling a function never evicts anything else. See function-priorityclass.yaml.
+            priorityClassName: openinfra-function
+            containers:
+              - image: "ghcr.io/harn3ss/open-infra-lambda-nodejs:latest"
+                ports: [ { containerPort: 8080 } ]
+                env:
+                  - { name: OPENINFRA_HANDLER, value: "index.handler" }
+                  - { name: OPENINFRA_FUNCTION_NAME, value: "code-nodejs20-bucket-burstable" }
+                  - { name: OPENINFRA_CODE_BUCKET, value: "fn-artifacts" }
+                  - { name: OPENINFRA_CODE_KEY, value: "n.zip" }
+                  # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
+                  # handler relies on them (e.g. an SDK client needs a region). They can't be set
+                  # as function env because AWS reserves the names, so the runtime must inject them.
+                  - { name: AWS_REGION, value: "us-east-1" }
+                  - { name: AWS_DEFAULT_REGION, value: "us-east-1" }
+                  - { name: AWS_LAMBDA_FUNCTION_NAME, value: "code-nodejs20-bucket-burstable" }
+                  - { name: AWS_LAMBDA_FUNCTION_VERSION, value: "$LATEST" }
+                  - { name: AWS_LAMBDA_LOG_GROUP_NAME, value: "/aws/lambda/code-nodejs20-bucket-burstable" }
+                  - { name: LAMBDA_TASK_ROOT, value: "/var/task" }
+                  - { name: LAMBDA_RUNTIME_DIR, value: "/var/runtime" }
+                  - { name: TZ, value: "UTC" }
+                  - { name: AWS_EXECUTION_ENV, value: "AWS_Lambda_nodejs20" }
+                  # DynamoDB data plane: the aws-shim's DynamoDB endpoint (FerretDB / DocumentDB-Postgres
+                  # backed). Service-scoped — AWS_ENDPOINT_URL_DYNAMODB redirects ONLY the handler's DynamoDB
+                  # client; every other AWS service keeps its default resolution (a global AWS_ENDPOINT_URL
+                  # would wrongly capture them all). A handler that never calls DynamoDB is unaffected.
+                  - { name: AWS_ENDPOINT_URL_DYNAMODB, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }
+                  # Code-source creds mapped EXPLICITLY (not envFrom) so the S3/MinIO endpoint is
+                  # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
+                  # global override would point every service — dynamodb, sns, … — at the S3
+                  # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
+                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ACCESS_KEY_ID, optional: true } } }
+                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ENDPOINT_URL, optional: true } } }
+                # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
+                # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
+                # configured memory is RESERVED even while the pod is warm and idle. burstable true:
+                # request = per-runtime floor ($memReq), limit = memory → Burstable QoS; the pod still
+                # bursts to the full limit for an invocation but reserves far less when warm. This is
+                # the reservation-not-use fix — see docs/function-admission.md.
+                resources:
+                  requests: { memory: "128Mi" }
+                  limits:
+                    memory: "1024Mi"
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-b
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-b } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== code-nodejs22-configmap
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: code-nodejs22-configmap
+        namespace: team-b
+        labels:
+          app.kubernetes.io/name: code-nodejs22-configmap
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "100"
+          spec:
+            containers:
+              - image: "ghcr.io/harn3ss/open-infra-lambda-nodejs22:latest"
+                ports: [ { containerPort: 8080 } ]
+                env:
+                  - { name: OPENINFRA_HANDLER, value: "app.handler" }
+                  - { name: OPENINFRA_FUNCTION_NAME, value: "code-nodejs22-configmap" }
+                  # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
+                  # handler relies on them (e.g. an SDK client needs a region). They can't be set
+                  # as function env because AWS reserves the names, so the runtime must inject them.
+                  - { name: AWS_REGION, value: "us-east-1" }
+                  - { name: AWS_DEFAULT_REGION, value: "us-east-1" }
+                  - { name: AWS_LAMBDA_FUNCTION_NAME, value: "code-nodejs22-configmap" }
+                  - { name: AWS_LAMBDA_FUNCTION_VERSION, value: "$LATEST" }
+                  - { name: AWS_LAMBDA_LOG_GROUP_NAME, value: "/aws/lambda/code-nodejs22-configmap" }
+                  - { name: LAMBDA_TASK_ROOT, value: "/var/task" }
+                  - { name: LAMBDA_RUNTIME_DIR, value: "/var/runtime" }
+                  - { name: TZ, value: "UTC" }
+                  - { name: AWS_EXECUTION_ENV, value: "AWS_Lambda_nodejs22" }
+                  # DynamoDB data plane: the aws-shim's DynamoDB endpoint (FerretDB / DocumentDB-Postgres
+                  # backed). Service-scoped — AWS_ENDPOINT_URL_DYNAMODB redirects ONLY the handler's DynamoDB
+                  # client; every other AWS service keeps its default resolution (a global AWS_ENDPOINT_URL
+                  # would wrongly capture them all). A handler that never calls DynamoDB is unaffected.
+                  - { name: AWS_ENDPOINT_URL_DYNAMODB, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }
+                  - { name: TABLE, value: "orders" }
+                volumeMounts:
+                  - { name: openinfra-code, mountPath: /var/task, readOnly: true }
+            volumes:
+              - name: openinfra-code
+                configMap: { name: n22 }
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-b
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-b } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== code-dotnet8-bucket
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: code-dotnet8-bucket
+        namespace: team-c
+        labels:
+          app.kubernetes.io/name: code-dotnet8-bucket
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              # Reserved concurrency (AWS Lambda analog): a HARD cap on concurrent requests.
+              # One request per instance (containerConcurrency 1 below) + at most this many
+              # instances = at most this many concurrent executions. Overrides scaling.max/target.
+              autoscaling.knative.dev/max-scale: "3"
+              autoscaling.knative.dev/target: "1"
+          spec:
+            # One request per instance (Lambda's 1-per-sandbox model): set by reservedConcurrency
+            # (hard per-function cap) OR burstable (so a running pod == one in-flight request ==
+            # the "concurrent executions" unit the per-tenant concurrency quota counts).
+            containerConcurrency: 1
+            containers:
+              - image: "ghcr.io/harn3ss/open-infra-lambda-dotnet:latest"
+                ports: [ { containerPort: 8080 } ]
+                env:
+                  - { name: OPENINFRA_HANDLER, value: "App::App.Fn::Handle" }
+                  - { name: OPENINFRA_FUNCTION_NAME, value: "code-dotnet8-bucket" }
+                  - { name: OPENINFRA_CODE_BUCKET, value: "fn-artifacts" }
+                  - { name: OPENINFRA_CODE_KEY, value: "d.zip" }
+                  # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
+                  # handler relies on them (e.g. an SDK client needs a region). They can't be set
+                  # as function env because AWS reserves the names, so the runtime must inject them.
+                  - { name: AWS_REGION, value: "us-east-1" }
+                  - { name: AWS_DEFAULT_REGION, value: "us-east-1" }
+                  - { name: AWS_LAMBDA_FUNCTION_NAME, value: "code-dotnet8-bucket" }
+                  - { name: AWS_LAMBDA_FUNCTION_VERSION, value: "$LATEST" }
+                  - { name: AWS_LAMBDA_LOG_GROUP_NAME, value: "/aws/lambda/code-dotnet8-bucket" }
+                  - { name: LAMBDA_TASK_ROOT, value: "/var/task" }
+                  - { name: LAMBDA_RUNTIME_DIR, value: "/var/runtime" }
+                  - { name: TZ, value: "UTC" }
+                  - { name: AWS_EXECUTION_ENV, value: "AWS_Lambda_dotnet8" }
+                  # DynamoDB data plane: the aws-shim's DynamoDB endpoint (FerretDB / DocumentDB-Postgres
+                  # backed). Service-scoped — AWS_ENDPOINT_URL_DYNAMODB redirects ONLY the handler's DynamoDB
+                  # client; every other AWS service keeps its default resolution (a global AWS_ENDPOINT_URL
+                  # would wrongly capture them all). A handler that never calls DynamoDB is unaffected.
+                  - { name: AWS_ENDPOINT_URL_DYNAMODB, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }
+                  # Code-source creds mapped EXPLICITLY (not envFrom) so the S3/MinIO endpoint is
+                  # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
+                  # global override would point every service — dynamodb, sns, … — at the S3
+                  # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
+                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ACCESS_KEY_ID, optional: true } } }
+                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ENDPOINT_URL, optional: true } } }
+                # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
+                # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
+                # configured memory is RESERVED even while the pod is warm and idle. burstable true:
+                # request = per-runtime floor ($memReq), limit = memory → Burstable QoS; the pod still
+                # bursts to the full limit for an invocation but reserves far less when warm. This is
+                # the reservation-not-use fix — see docs/function-admission.md.
+                resources:
+                  requests: { memory: "256Mi" }
+                  limits:
+                    memory: "256Mi"
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-c
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-c } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== code-runtimeimage-eol
+
+---
+# Egress-denied: an unsupported-runtime fixture may reach in-cluster destinations (its code
+# bucket, DNS, the harness that invokes it) but not the LAN or the internet.
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function-eol-netpol
+spec:
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata: { name: code-runtimeimage-eol-eol-egress, namespace: mirror }
+      spec:
+        podSelector: { matchLabels: { serving.knative.dev/service: code-runtimeimage-eol } }
+        policyTypes: [Egress]
+        egress:
+          - to: [ { namespaceSelector: {} } ]   # in-cluster pods/services only; external denied
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: code-runtimeimage-eol
+        namespace: mirror
+        labels:
+          app.kubernetes.io/name: code-runtimeimage-eol
+          # Unsupported/EOL runtime kept only as a comparison fixture — never production.
+          openinfra.dev/non-production: "true"
+          # Private: only reachable from inside the cluster.
+          networking.knative.dev/visibility: cluster-local
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "100"
+          spec:
+            # Max wall-clock per request (Knative revision timeout) — the AWS Lambda timeout knob.
+            timeoutSeconds: 30
+            # Max time to the FIRST byte from the handler. Knative defaults this to 300s (its default
+            # revision timeout), independently of timeoutSeconds — so a quiet-but-working request (a
+            # long report, a batch read, a slow migration step) is silently cut at 300s even when the
+            # declared timeout is higher. This is a SECOND 300s boundary, separate from the gateway's
+            # idle timeout; raising only the gateway does not move it. Couple it to the declared
+            # timeout so the function has ONE deadline — its own — honoured end to end. The Knative
+            # webhook requires responseStartTimeoutSeconds <= timeoutSeconds, so they are set equal.
+            responseStartTimeoutSeconds: 30
+            containers:
+              - image: "ecr-registry.open-infra-ecr.svc:5000/runtime/nodejs18:latest"
+                ports: [ { containerPort: 8080 } ]
+                env:
+                  - { name: OPENINFRA_HANDLER, value: "index.handler" }
+                  - { name: OPENINFRA_FUNCTION_NAME, value: "code-runtimeimage-eol" }
+                  - { name: OPENINFRA_CODE_BUCKET, value: "mirror-code" }
+                  - { name: OPENINFRA_CODE_KEY, value: "code/0f3a.zip" }
+                  # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
+                  # handler relies on them (e.g. an SDK client needs a region). They can't be set
+                  # as function env because AWS reserves the names, so the runtime must inject them.
+                  - { name: AWS_REGION, value: "us-west-2" }
+                  - { name: AWS_DEFAULT_REGION, value: "us-west-2" }
+                  - { name: AWS_LAMBDA_FUNCTION_NAME, value: "code-runtimeimage-eol" }
+                  - { name: AWS_LAMBDA_FUNCTION_VERSION, value: "$LATEST" }
+                  - { name: AWS_LAMBDA_LOG_GROUP_NAME, value: "/aws/lambda/code-runtimeimage-eol" }
+                  - { name: LAMBDA_TASK_ROOT, value: "/var/task" }
+                  - { name: LAMBDA_RUNTIME_DIR, value: "/var/runtime" }
+                  - { name: TZ, value: "UTC" }
+                  # DynamoDB data plane: the aws-shim's DynamoDB endpoint (FerretDB / DocumentDB-Postgres
+                  # backed). Service-scoped — AWS_ENDPOINT_URL_DYNAMODB redirects ONLY the handler's DynamoDB
+                  # client; every other AWS service keeps its default resolution (a global AWS_ENDPOINT_URL
+                  # would wrongly capture them all). A handler that never calls DynamoDB is unaffected.
+                  - { name: AWS_ENDPOINT_URL_DYNAMODB, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }
+                  # Code-source creds mapped EXPLICITLY (not envFrom) so the S3/MinIO endpoint is
+                  # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
+                  # global override would point every service — dynamodb, sns, … — at the S3
+                  # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
+                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_ACCESS_KEY_ID, optional: true } } }
+                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_ENDPOINT_URL, optional: true } } }
+                envFrom:
+                  - secretRef: { name: fn-env-orders, optional: true }
+                # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
+                # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
+                # configured memory is RESERVED even while the pod is warm and idle. burstable true:
+                # request = per-runtime floor ($memReq), limit = memory → Burstable QoS; the pod still
+                # bursts to the full limit for an invocation but reserves far less when warm. This is
+                # the reservation-not-use fix — see docs/function-admission.md.
+                resources:
+                  requests: { memory: "1024Mi" }
+                  limits:
+                    memory: "1024Mi"
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: mirror
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: mirror } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== code-runtimeimage-allowegress
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: code-runtimeimage-allowegress
+        namespace: mirror
+        labels:
+          app.kubernetes.io/name: code-runtimeimage-allowegress
+          # Unsupported/EOL runtime kept only as a comparison fixture — never production.
+          openinfra.dev/non-production: "true"
+          # Private: only reachable from inside the cluster.
+          networking.knative.dev/visibility: cluster-local
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              # Burstable / Lambda admission model: one request per instance (containerConcurrency
+              # 1 below), per-function ceiling = scaling.max (the reserved-concurrency analog). The
+              # ACCOUNT total is capped by a per-tenant quota (docs/function-admission.md).
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "1"
+              # Queue-proxy sidecar sizing (honored only with config-features
+              # queueproxy.resource-defaults: enabled, set in platform/serverless/knative-serving.yaml):
+              # give the sidecar an explicit small request + limit so the pod's reservation is the
+              # function floor plus a KNOWN sidecar cost, and so a per-tenant requests.memory quota
+              # (which requires every in-scope container to declare a memory request) never rejects
+              # the pod for a request-less sidecar. Inert on non-burstable revisions (no annotation).
+              queue.sidecar.serving.knative.dev/cpu-resource-request: "25m"
+              queue.sidecar.serving.knative.dev/memory-resource-request: "32Mi"
+              queue.sidecar.serving.knative.dev/memory-resource-limit: "64Mi"
+          spec:
+            # One request per instance (Lambda's 1-per-sandbox model): set by reservedConcurrency
+            # (hard per-function cap) OR burstable (so a running pod == one in-flight request ==
+            # the "concurrent executions" unit the per-tenant concurrency quota counts).
+            containerConcurrency: 1
+            # Burstable function pods are overcommitted, so they must lose first under node memory
+            # pressure — not MinIO, databases, or the control plane (which stay Guaranteed and
+            # higher-priority). openinfra-function is below default workloads and non-preempting, so
+            # scheduling a function never evicts anything else. See function-priorityclass.yaml.
+            priorityClassName: openinfra-function
+            containers:
+              - image: "ecr-registry.open-infra-ecr.svc:5000/runtime/python37:latest"
+                ports: [ { containerPort: 8080 } ]
+                env:
+                  - { name: OPENINFRA_HANDLER, value: "lambda_function.lambda_handler" }
+                  - { name: OPENINFRA_FUNCTION_NAME, value: "code-runtimeimage-allowegress" }
+                  - { name: OPENINFRA_CODE_BUCKET, value: "mirror-code" }
+                  - { name: OPENINFRA_CODE_KEY, value: "code/9b1c.zip" }
+                  # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
+                  # handler relies on them (e.g. an SDK client needs a region). They can't be set
+                  # as function env because AWS reserves the names, so the runtime must inject them.
+                  - { name: AWS_REGION, value: "us-east-1" }
+                  - { name: AWS_DEFAULT_REGION, value: "us-east-1" }
+                  - { name: AWS_LAMBDA_FUNCTION_NAME, value: "code-runtimeimage-allowegress" }
+                  - { name: AWS_LAMBDA_FUNCTION_VERSION, value: "$LATEST" }
+                  - { name: AWS_LAMBDA_LOG_GROUP_NAME, value: "/aws/lambda/code-runtimeimage-allowegress" }
+                  - { name: LAMBDA_TASK_ROOT, value: "/var/task" }
+                  - { name: LAMBDA_RUNTIME_DIR, value: "/var/runtime" }
+                  - { name: TZ, value: "UTC" }
+                  # DynamoDB data plane: the aws-shim's DynamoDB endpoint (FerretDB / DocumentDB-Postgres
+                  # backed). Service-scoped — AWS_ENDPOINT_URL_DYNAMODB redirects ONLY the handler's DynamoDB
+                  # client; every other AWS service keeps its default resolution (a global AWS_ENDPOINT_URL
+                  # would wrongly capture them all). A handler that never calls DynamoDB is unaffected.
+                  - { name: AWS_ENDPOINT_URL_DYNAMODB, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }
+                  # Code-source creds mapped EXPLICITLY (not envFrom) so the S3/MinIO endpoint is
+                  # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
+                  # global override would point every service — dynamodb, sns, … — at the S3
+                  # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
+                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_ACCESS_KEY_ID, optional: true } } }
+                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_ENDPOINT_URL, optional: true } } }
+                # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
+                # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
+                # configured memory is RESERVED even while the pod is warm and idle. burstable true:
+                # request = per-runtime floor ($memReq), limit = memory → Burstable QoS; the pod still
+                # bursts to the full limit for an invocation but reserves far less when warm. This is
+                # the reservation-not-use fix — see docs/function-admission.md.
+                resources:
+                  requests: { memory: "128Mi" }
+                  limits:
+                    memory: "512Mi"
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: mirror
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: mirror } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== aliases
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: aliases
+        namespace: team-a
+        labels:
+          app.kubernetes.io/name: aliases
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "100"
+          spec:
+            containers:
+              - image: "ghcr.io/me/hello:3"
+                ports: [ { containerPort: 8080 } ]
+        # Weighted traffic targets (the Lambda alias/version analog): each alias is a
+        # Knative traffic tag routing its percent to a pinned revision or the latest.
+        traffic:
+          - tag: prod
+            percent: 90
+            revisionName: fn-00001
+          - tag: canary
+            percent: 10
+            latestRevision: true
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-a
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-a } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== trigger-stream
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: trigger-stream
+        namespace: team-a
+        labels:
+          app.kubernetes.io/name: trigger-stream
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "100"
+          spec:
+            containers:
+              - image: "ghcr.io/me/cdc:1"
+                ports: [ { containerPort: 8080 } ]
+---
+# Event-source mapping: a Benthos "pump" holds a durable JetStream
+# consumer and POSTs each CDC event to this function (which cold-starts
+# on demand, then scales back to zero). open-infra's Lambda-on-Kinesis.
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: pump-config
+spec:
+  forProvider:
+    manifest:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: trigger-stream-pump-cfg
+        namespace: team-a
+      data:
+        benthos.yaml: |
+          logger: { level: INFO, format: logfmt }
+          input:
+            nats_jetstream:
+              urls: ["nats://nats.nats.svc.cluster.local:4222"]
+              subject: "cdc.orders.>"
+              durable: "fn-trigger-stream"
+              deliver: all
+              ack_wait: 2m
+          output:
+            http_client:
+              url: "http://trigger-stream.team-a.svc.cluster.local"
+              verb: POST
+              timeout: 90s
+              headers: { Content-Type: application/json }
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: pump
+spec:
+  forProvider:
+    manifest:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: trigger-stream-pump
+        namespace: team-a
+        labels: { app: trigger-stream-pump, openinfra.dev/function-pump: "trigger-stream" }
+      spec:
+        replicas: 1
+        selector: { matchLabels: { app: trigger-stream-pump } }
+        template:
+          # function-invoker: the Kourier gateway's internal listener admits it
+          # (platform/serverless/function-gateway-isolation.yaml); it calls only this Function.
+          metadata: { labels: { app: trigger-stream-pump, openinfra.dev/function-invoker: pump } }
+          spec:
+            # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+            enableServiceLinks: false
+            containers:
+              - name: pump
+                image: jeffail/benthos:4.27.0
+                args: ["-c", "/etc/benthos/benthos.yaml"]
+                volumeMounts: [{ name: cfg, mountPath: /etc/benthos }]
+            volumes:
+              - name: cfg
+                configMap: { name: trigger-stream-pump-cfg }
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-a
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-a } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== trigger-subject
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: trigger-subject
+        namespace: team-a
+        labels:
+          app.kubernetes.io/name: trigger-subject
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "100"
+          spec:
+            containers:
+              - image: "ghcr.io/me/cdc:1"
+                ports: [ { containerPort: 8080 } ]
+---
+# Event-source mapping: a Benthos "pump" holds a durable JetStream
+# consumer and POSTs each CDC event to this function (which cold-starts
+# on demand, then scales back to zero). open-infra's Lambda-on-Kinesis.
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: pump-config
+spec:
+  forProvider:
+    manifest:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: trigger-subject-pump-cfg
+        namespace: team-a
+      data:
+        benthos.yaml: |
+          logger: { level: INFO, format: logfmt }
+          input:
+            nats_jetstream:
+              urls: ["nats://nats.nats.svc.cluster.local:4222"]
+              subject: "cdc.orders.public.items"
+              durable: "fn-trigger-subject"
+              deliver: all
+              ack_wait: 2m
+          output:
+            http_client:
+              url: "http://trigger-subject.team-a.svc.cluster.local"
+              verb: POST
+              timeout: 90s
+              headers: { Content-Type: application/json }
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: pump
+spec:
+  forProvider:
+    manifest:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: trigger-subject-pump
+        namespace: team-a
+        labels: { app: trigger-subject-pump, openinfra.dev/function-pump: "trigger-subject" }
+      spec:
+        replicas: 1
+        selector: { matchLabels: { app: trigger-subject-pump } }
+        template:
+          # function-invoker: the Kourier gateway's internal listener admits it
+          # (platform/serverless/function-gateway-isolation.yaml); it calls only this Function.
+          metadata: { labels: { app: trigger-subject-pump, openinfra.dev/function-invoker: pump } }
+          spec:
+            # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
+            enableServiceLinks: false
+            containers:
+              - name: pump
+                image: jeffail/benthos:4.27.0
+                args: ["-c", "/etc/benthos/benthos.yaml"]
+                volumeMounts: [{ name: cfg, mountPath: /etc/benthos }]
+            volumes:
+              - name: cfg
+                configMap: { name: trigger-subject-pump-cfg }
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-a
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-a } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== int-typed
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: int-typed
+        namespace: team-a
+        labels:
+          app.kubernetes.io/name: int-typed
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "4"
+              autoscaling.knative.dev/target: "10"
+          spec:
+            # Max wall-clock per request (Knative revision timeout) — the AWS Lambda timeout knob.
+            timeoutSeconds: 60
+            # Max time to the FIRST byte from the handler. Knative defaults this to 300s (its default
+            # revision timeout), independently of timeoutSeconds — so a quiet-but-working request (a
+            # long report, a batch read, a slow migration step) is silently cut at 300s even when the
+            # declared timeout is higher. This is a SECOND 300s boundary, separate from the gateway's
+            # idle timeout; raising only the gateway does not move it. Couple it to the declared
+            # timeout so the function has ONE deadline — its own — honoured end to end. The Knative
+            # webhook requires responseStartTimeoutSeconds <= timeoutSeconds, so they are set equal.
+            responseStartTimeoutSeconds: 60
+            containers:
+              - image: "ghcr.io/me/hello:1"
+                ports: [ { containerPort: 8081 } ]
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-a
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-a } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+=== extra-resources-ignored
+
+---
+# --- Knative Service: the scale-to-zero "Function" ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: function
+spec:
+  # Derive readiness from the Knative Service's own Ready condition, NOT the provider default
+  # (ready as soon as the Object is CREATED). A revision that fails to come up — crash-looping
+  # user container, unloadable handler, bad image — leaves the ksvc Ready=False, so the XR/claim
+  # now report NotReady instead of a silently-healthy claim over a broken function. (A scale-to-
+  # zero function that only crashes on first activation can still read Ready until then — that
+  # residual cold-start case is caught at emit time, not here.)
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+  forProvider:
+    manifest:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      metadata:
+        name: extra-resources-ignored
+        namespace: team-a
+        labels:
+          app.kubernetes.io/name: extra-resources-ignored
+      spec:
+        template:
+          metadata:
+            annotations:
+              # KPA scaling: min 0 = scale to zero when idle.
+              autoscaling.knative.dev/min-scale: "0"
+              autoscaling.knative.dev/max-scale: "10"
+              autoscaling.knative.dev/target: "100"
+          spec:
+            containers:
+              - image: "ghcr.io/me/hello:1"
+                ports: [ { containerPort: 8080 } ]
+---
+# --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
+#     Knative's data path only (every call comes through the gateway or the activator, so
+#     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
+#     refused, so a Function can no longer be called by pod IP or its private Service from
+#     another tenant, skipping Invoke's authorization. One policy per namespace, shared by
+#     every Function there (a policy per Function would mean thousands of OVN ACL sets).
+#     Each Function renders the same object and none deletes it (no Delete in
+#     managementPolicies), so removing one Function leaves the others covered. ---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: isolation-netpol
+spec:
+  managementPolicies: ["Observe", "Create", "Update", "LateInitialize"]
+  forProvider:
+    manifest:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openinfra-function-isolation
+        namespace: team-a
+        labels: { openinfra.dev/isolation: tenant }
+      spec:
+        podSelector: { matchExpressions: [ { key: serving.knative.dev/service, operator: Exists } ] }
+        policyTypes: [Ingress]
+        ingress:
+          - from:
+              # this namespace
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: team-a } }
+              # Knative's data path: the gateway, the activator (scale from zero) and the autoscaler
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: knative-serving } }
+              # Prometheus, scraping metrics
+              - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+                podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }

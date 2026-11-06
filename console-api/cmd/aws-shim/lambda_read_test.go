@@ -112,6 +112,28 @@ func TestLambdaGetFunction_ImageFunction(t *testing.T) {
 	}
 }
 
+// A function's execution role is its Role: a role name as its ARN in the function's account, a role ARN as
+// given; a function with no role has no Role.
+func TestLambdaGetFunction_Role(t *testing.T) {
+	named, arn, none := fnClaim("default", "named"), fnClaim("default", "byarn"), fnClaim("default", "none")
+	named.Object["spec"] = map[string]any{"image": "registry/web:1", "role": "orders-reader"}
+	arn.Object["spec"] = map[string]any{"image": "registry/web:1", "role": "arn:aws:iam::000000000000:role/service-role/Reader"}
+	none.Object["spec"] = map[string]any{"image": "registry/web:1"}
+	h := readLambda(allowAll, named, arn, none)
+	for fn, want := range map[string]any{
+		"named": "arn:aws:iam::000000000000:role/orders-reader",
+		"byarn": "arn:aws:iam::000000000000:role/service-role/Reader",
+		"none":  nil,
+	} {
+		w := lambdaGet(h, "/2015-03-31/functions/"+fn+"/configuration", iam.Claims{Sub: "u"})
+		var c map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &c)
+		if w.Code != http.StatusOK || c["Role"] != want {
+			t.Errorf("%s: Role = %v (%d), want %v", fn, c["Role"], w.Code, want)
+		}
+	}
+}
+
 func TestLambdaGetFunction_NotFound(t *testing.T) {
 	h := readLambda(allowAll, readFn("default", "orders"))
 	for _, path := range []string{"/2015-03-31/functions/missing", "/2015-03-31/functions/missing/configuration", "/2015-03-31/functions/missing/policy"} {

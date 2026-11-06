@@ -73,6 +73,42 @@ spec:
             {{-   if not $spec.memory }}{{- fail "Lambda function: burstable memory needs a memory size (MemorySize): the runtime's floor is reserved and the memory size is the limit (burstable / memory)" }}{{- end }}
             {{-   $memReq = $spec.memoryRequest | default (index $floors $rt) | default "128Mi" }}
             {{- end }}
+            {{- /* Execution role (spec.role, Lambda's Role). The function's pods run as their own
+                   ServiceAccount, fn-<name>, with a projected token the AWS SDK exchanges for the role's
+                   temporary credentials (sts:AssumeRoleWithWebIdentity on the aws-shim) — no static keys.
+                   The aws-shim mints them only for a pod Knative runs for this function as that
+                   ServiceAccount, and only for the role this claim names (a role trusting
+                   lambda.amazonaws.com) or one whose trust names the ServiceAccount itself. AWS_ROLE_ARN is
+                   the role's ARN in the function's account: an ARN as given, a name in the account of the
+                   function's namespace (its kind: Account, else the install's own — the
+                   openinfra-aws-identity EnvironmentConfig), both read as extra resources. Unset, nothing
+                   below renders and the function renders exactly as before. */}}
+            {{- $role := $spec.role | default "" }}
+            {{- $fnSA := printf "fn-%s" $name }}
+            {{- $roleArn := "" }}
+            {{- $fnRegion := "us-east-1" }}
+            {{- $shimEndpoint := "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }}
+            {{- if $role }}
+            {{-   if $csrc.secret }}{{- fail "Lambda function: an execution role (Role) can't be combined with a deployment package read with static keys (code.source.secret): the handler's AWS SDK would act with those keys instead of the role's credentials — use an image or inline code (code.source.configMap) with a role" }}{{- end }}
+            {{-   $xres := .extraResources | default dict }}
+            {{-   $fnAcct := "000000000000" }}
+            {{-   range $i := (((index $xres "aws-identity") | default dict).items | default list) }}
+            {{-     $d := $i.resource.data | default dict }}
+            {{-     $fnAcct = (index $d "awsAccountId") | default $fnAcct }}
+            {{-     $fnRegion = (index $d "awsRegion") | default $fnRegion }}
+            {{-   end }}
+            {{-   range $a := (((index $xres "accounts") | default dict).items | default list) }}
+            {{-     $as := $a.resource.spec | default dict }}
+            {{-     if has $ns ($as.namespaces | default list) }}{{- $fnAcct = $as.accountId }}{{- end }}
+            {{-   end }}
+            {{-   if hasPrefix "arn:" $role }}
+            {{-     $roleArn = $role }}
+            {{-     $arnAcct := index (splitList ":" $role) 4 }}
+            {{-     if and (hasKey $xres "aws-identity") (ne $arnAcct $fnAcct) }}{{- fail (printf "Lambda function: the execution role (Role) %s is a role of account %s; a function's role must be a role of its own account (%s)" $role $arnAcct $fnAcct) }}{{- end }}
+            {{-   else }}
+            {{-     $roleArn = printf "arn:aws:iam::%s:role/%s" $fnAcct $role }}
+            {{-   end }}
+            {{- end }}
             {{- /* Weighted aliases (Knative traffic) must sum to 100, as Knative requires. */}}
             {{- if $spec.aliases }}
             {{-   $sum := 0 }}
@@ -207,10 +243,14 @@ spec:
                         # scheduling a function never evicts anything else. See function-priorityclass.yaml.
                         priorityClassName: openinfra-function
                         {{- end }}
+                        {{- if $role }}
+                        # Execution role: the function runs as its own identity, whose token assumes the role.
+                        serviceAccountName: {{ $fnSA }}
+                        {{- end }}
                         containers:
                           - image: {{ $img | toJson }}
                             ports: [ { containerPort: {{ $spec.port | default 8080 }} } ]
-                            {{- if or $code $spec.env $spec.queues }}
+                            {{- if or $code $spec.env $spec.queues $role }}
                             env:
                             {{- if $code }}
                               - { name: OPENINFRA_HANDLER, value: "{{ $code.handler }}" }
@@ -251,6 +291,22 @@ spec:
                               - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: {{ $csrc.secret }}, key: AWS_ENDPOINT_URL, optional: true } } }
                               {{- end }}
                             {{- end }}
+                            {{- if $role }}
+                              # Execution role (Lambda's Role): the AWS SDK's web-identity provider reads these and
+                              # calls sts:AssumeRoleWithWebIdentity on the aws-shim with the function's projected
+                              # token, for the role's temporary credentials (session assumed-role/<role>/<function>,
+                              # as Lambda names it). Every AWS call then goes to the aws-shim, where they are valid.
+                              - { name: AWS_ROLE_ARN, value: {{ $roleArn | toJson }} }
+                              - { name: AWS_ROLE_SESSION_NAME, value: "{{ $name }}" }
+                              - { name: AWS_WEB_IDENTITY_TOKEN_FILE, value: "/var/run/secrets/openinfra/token" }
+                              - { name: AWS_ENDPOINT_URL_STS, value: "{{ $shimEndpoint }}" }
+                              - { name: AWS_ENDPOINT_URL, value: "{{ $shimEndpoint }}" }
+                              {{- if not $code }}
+                              # An image function's SDK needs a region too (a code function's runtime sets it above).
+                              - { name: AWS_REGION, value: "{{ $fnRegion }}" }
+                              - { name: AWS_DEFAULT_REGION, value: "{{ $fnRegion }}" }
+                              {{- end }}
+                            {{- end }}
                             {{- range $spec.env }}
                               - { name: {{ .name }}, value: "{{ .value }}" }
                             {{- end }}
@@ -265,9 +321,14 @@ spec:
                               - secretRef: { name: {{ . }}, optional: true }
                             {{- end }}
                             {{- end }}
-                            {{- if and $code $csrc.configMap }}
+                            {{- if or (and $code $csrc.configMap) $role }}
                             volumeMounts:
+                            {{- if and $code $csrc.configMap }}
                               - { name: openinfra-code, mountPath: /var/task, readOnly: true }
+                            {{- end }}
+                            {{- if $role }}
+                              - { name: openinfra-sts-token, mountPath: /var/run/secrets/openinfra, readOnly: true }
+                            {{- end }}
                             {{- end }}
                             {{- if or $spec.memory (gt (int $gpu) 0) }}
                             # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
@@ -288,10 +349,22 @@ spec:
                                 nvidia.com/gpu: {{ $gpu }}
                                 {{- end }}
                             {{- end }}
-                        {{- if and $code $csrc.configMap }}
+                        {{- if or (and $code $csrc.configMap) $role }}
                         volumes:
+                        {{- if and $code $csrc.configMap }}
                           - name: openinfra-code
                             configMap: { name: {{ $csrc.configMap }} }
+                        {{- end }}
+                        {{- if $role }}
+                          # The function identity's token, for the aws-shim's STS (its audience) only.
+                          - name: openinfra-sts-token
+                            projected:
+                              sources:
+                                - serviceAccountToken:
+                                    audience: sts.openinfra
+                                    expirationSeconds: 3600
+                                    path: token
+                        {{- end }}
                         {{- end }}
                     {{- if $spec.aliases }}
                     # Weighted traffic targets (the Lambda alias/version analog): each alias is a
@@ -307,6 +380,45 @@ spec:
                         {{- end }}
                       {{- end }}
                     {{- end }}
+            {{- if $role }}
+            ---
+            # --- Execution identity (spec.role): the ServiceAccount the function's pods run as. The aws-shim
+            #     hands the role's credentials only to a pod Knative runs for this function as this
+            #     ServiceAccount (it checks the token's pod, its serving.knative.dev/service label and this
+            #     ServiceAccount's openinfra.dev/function label). No Kubernetes API token is mounted: the
+            #     function needs only the STS-audience token projected above. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: function-identity-sa
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ServiceAccount
+                  metadata:
+                    name: {{ $fnSA }}
+                    namespace: {{ $ns }}
+                    labels:
+                      app.kubernetes.io/name: {{ $name }}
+                      openinfra.dev/function: {{ $name }}
+                  automountServiceAccountToken: false
+            ---
+            # The account the function's namespace belongs to (the kind: Account that lists it, else the
+            # install's own account) and the install's region, for the role's ARN. Read-only.
+            apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+            kind: ExtraResources
+            requirements:
+              aws-identity:
+                apiVersion: apiextensions.crossplane.io/v1alpha1
+                kind: EnvironmentConfig
+                matchName: openinfra-aws-identity
+              accounts:
+                apiVersion: organizations.openinfra.dev/v1
+                kind: Account
+                matchLabels: {}
+            {{- end }}
             {{- if $spec.trigger }}
             {{- $tstream := $spec.trigger.stream }}
             {{- $tsubject := $spec.trigger.subject | default (printf "cdc.%s.>" $tstream) }}

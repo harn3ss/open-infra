@@ -365,10 +365,16 @@ func run(logger *slog.Logger) error {
 	// Workload identity (sts:AssumeRoleWithWebIdentity, IRSA-shaped): a pod's projected SA token,
 	// verified via a k8s TokenReview against the shim's audience. Enabled alongside AssumeRole.
 	var webIDReviewer tokenReviewer
+	// Lambda execution roles (lambda_role.go): a kind: Function's own identity token assumes the role its
+	// spec.role names, in its account. Enabled with workload identity (it reads the Function claim too).
+	var fnIdentities functionIdentities
 	if stsMinter != nil {
 		aud := getenv("STS_WEB_IDENTITY_AUDIENCE", "sts.openinfra")
 		webIDReviewer = &k8sTokenReviewer{cs: cs, audience: aud}
 		logger.Info("sts:AssumeRoleWithWebIdentity enabled (workload identity)", slog.String("audience", aud))
+		if dyn != nil {
+			fnIdentities = &k8sFunctionIdentities{cs: cs, dyn: dyn, audience: aud, accounts: acctDir}
+		}
 	}
 
 	// External OIDC identity providers (kind: IdentityProvider — #136 §2): a token from a registered
@@ -580,7 +586,8 @@ func run(logger *slog.Logger) error {
 	services := map[string]awsService{
 		"s3": newS3Handler(cs, mc, dyn, kc.Config, authzNS, authzChecker, logger,
 			splitSuffixes(getenv("S3_INTERNAL_VHOST_SUFFIXES", ""), getenv("S3_VHOST_SUFFIXES", ""))),
-		"sts": &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID, accounts: acctDir, logger: logger,
+		"sts": &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID,
+			functions: fnIdentities, accounts: acctDir, logger: logger,
 			mfa: &shimMFA{store: mfa.Store{CS: cs, NS: keysNS}, dyn: dyn, usersNS: usersNS, account: account, homes: acctDir, logger: logger}},
 		"lambda":          lambdaH,
 		"appsync":         appsyncH,

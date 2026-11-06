@@ -3,6 +3,8 @@ package cfn
 import (
 	"strings"
 	"testing"
+
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 )
 
 func findingsText(fs []Finding) string {
@@ -50,7 +52,7 @@ func TestTranslate_LambdaImage_Faithful(t *testing.T) {
 		"MemorySize":  float64(512),
 		"Timeout":     float64(30),
 		"Environment": map[string]any{"Variables": map[string]any{"LOG": "info", "TIER": "b"}},
-		"Role":        "arn:aws:iam::x:role/r",
+		"Role":        "arn:aws:iam::" + awsidentity.Current().AccountID + ":role/service-role/Api",
 	}, nil)
 	if len(fs) != 0 {
 		t.Fatalf("unexpected findings: %s", findingsText(fs))
@@ -65,8 +67,14 @@ func TestTranslate_LambdaImage_Faithful(t *testing.T) {
 	if len(env) != 2 {
 		t.Fatalf("env should have 2 vars, got %#v", m.Spec["env"])
 	}
-	if len(m.Caveats) == 0 || !strings.Contains(m.Caveats[0], "Role") {
-		t.Fatalf("Lambda Role should surface a caveat: %v", m.Caveats)
+	// Role is the execution role the function runs as: a role ARN of the stack's account, kept as written.
+	if m.Spec["role"] != "arn:aws:iam::"+awsidentity.Current().AccountID+":role/service-role/Api" {
+		t.Fatalf("Lambda Role must map to spec.role: %#v", m.Spec["role"])
+	}
+	for _, c := range m.Caveats {
+		if strings.Contains(c, "Role") {
+			t.Fatalf("a mapped Role is no caveat: %v", m.Caveats)
+		}
 	}
 }
 

@@ -77,6 +77,67 @@ So provision stateful resources on an `Application`, and either reference their
 secret from the function (`spec.secrets: [<app>-db-app]`) or drive it from a queue
 (`spec.queues: [...]`).
 
+## Execution role
+
+A function can run as an IAM role — Lambda's **execution role**. Name the role in `spec.role` (Lambda's
+`Role`), and the function's code gets the role's temporary credentials: its AWS SDK finds them with no
+keys configured, and every AWS call it makes is exactly as authorized as the role's policies.
+
+```yaml
+apiVersion: iam.openinfra.dev/v1
+kind: Role
+metadata:
+  name: orders-writer
+spec:
+  trust: ["Service::lambda.amazonaws.com"]     # Lambda may assume it
+---
+apiVersion: openinfra.dev/v1
+kind: Function
+metadata:
+  name: orders
+spec:
+  image: ghcr.io/me/orders
+  role: orders-writer                          # or arn:aws:iam::<account>:role/orders-writer
+```
+
+The same role from the IAM API:
+
+```sh
+aws iam create-role --role-name orders-writer --assume-role-policy-document '{
+  "Version": "2012-10-17",
+  "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]}'
+aws iam put-role-policy --role-name orders-writer --policy-name send --policy-document '{
+  "Version": "2012-10-17",
+  "Statement": [{"Effect": "Allow", "Action": "sqs:SendMessage", "Resource": "arn:aws:sqs:us-east-1:<account>:orders"}]}'
+```
+
+- **The role** is a `kind: Role` of the function's own account: the role of that name in the function's
+  namespace (where a CloudFormation stack creates the roles beside its functions), else in the account's
+  IAM home (where `aws iam create-role` creates them). `spec.role` takes the role's name or its ARN; an
+  ARN naming another account is refused, as AWS refuses passing another account's role.
+- **Its trust policy** must name the Lambda service (`lambda.amazonaws.com`; in `spec.trust`,
+  `Service::lambda.amazonaws.com`). Lambda assumes a role it is trusted with only for a function that
+  names that role: no other function, and no other workload, can assume it. A trust policy may instead
+  name the function's own identity, `system:serviceaccount:<namespace>:fn-<function>`.
+- **Naming a role takes `iam:PassRole` on it**, as `CreateFunction` does on AWS: creating a Function with
+  `spec.role`, or changing it, is refused unless the requester may pass that role. Administrators may pass
+  any role; to let someone else pass one, allow `iam:PassRole` on the role's ARN in their policy.
+- **In the function**, the SDK's standard environment is set for it: `AWS_ROLE_ARN` (the role's ARN in the
+  function's account), `AWS_WEB_IDENTITY_TOKEN_FILE` (a short-lived token of the function's own identity,
+  renewed automatically), `AWS_ROLE_SESSION_NAME` (the function's name, so its session is
+  `assumed-role/<role>/<function>`, as on Lambda), and `AWS_ENDPOINT_URL` / `AWS_ENDPOINT_URL_STS` (the
+  aws-shim, where the credentials are valid). An image function also gets `AWS_REGION` and
+  `AWS_DEFAULT_REGION` (the install's region); a code function keeps its runtime's. The SDK assumes the
+  role on its first call and renews the credentials before they expire. `GetFunctionConfiguration`
+  reports the role as the function's `Role`.
+- **A role and package keys don't combine**: a function whose package is read from a bucket with static
+  keys (`code.source.secret`) can't also have a role — the handler's SDK would act with those keys ahead of
+  the role. Give a function with a role an image or inline code (`code.source.configMap`).
+
+Execution roles need the aws-shim with STS enabled (its session sealing key), as `sts:AssumeRole` does.
+A function without `spec.role` has no role and runs exactly as before: it reaches what it needs through
+the secrets and queues it names.
+
 ## Serverless GPU
 
 `spec.gpu: 1` makes the function GPU-backed (nvidia runtime + a GPU limit) and,

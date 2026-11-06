@@ -70,6 +70,7 @@ services:
     tier: proven
     sigv4: [lambda]
     probes: [lambda]
+    pending: [lambda-execution-role] # a function's code runs as its execution role (spec.role), no keys
   - name: ECS
     cell: "service + task def → one `kind: Application` (cfn engine), caller-authority via impersonation"
     tier: proven

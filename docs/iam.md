@@ -247,19 +247,24 @@ aws sts assume-role --role-arn arn:aws:iam::<account>:role/deployer --role-sessi
 ```
 
 - **Trust** entries name principals by ARN (`arn:aws:iam::<account>:user/alice`, `…:role/…`,
-  `…:root` for a whole account) or a federated provider for `AssumeRoleWithWebIdentity`.
+  `…:root` for a whole account), a federated provider for `AssumeRoleWithWebIdentity`, or a service
+  (`{"Service": "lambda.amazonaws.com"}`).
 - A trust policy's **conditions** gate `AssumeRole` and the console's Switch role too: MFA
   (`aws:MultiFactorAuthPresent`, `aws:MultiFactorAuthAge`) and the other supported keys. A trust statement
   whose condition the platform cannot evaluate (such as `sts:ExternalId`) allows no one.
 - Sessions last up to the role's `MaxSessionDuration` (1 hour by default, at most 12).
 - **Instance roles:** a virtual machine's role (`IamInstanceProfile` in a stack, the VM's role in the
   console) gives the guest credentials through the instance metadata service, as on EC2.
+- **Execution roles:** a function's role (`spec.role`, a Lambda function's `Role` in a stack), trusting
+  `lambda.amazonaws.com`, gives the function's code the role's credentials, as on Lambda
+  ([execution role](serverless.md#execution-role)).
 - "Revoke active sessions" on a role's page ends every session issued before that moment, as AWS's does.
 
 ### Passing a role (`iam:PassRole`)
 
 Naming a role on something that later acts with that role's credentials — a VM's instance role
-(`IamInstanceProfile`), a state machine's `RoleArn` — needs `iam:PassRole` on the role, as on AWS.
+(`IamInstanceProfile`), a function's execution role (`spec.role`), a state machine's `RoleArn` — needs
+`iam:PassRole` on the role, as on AWS.
 `AdministratorAccess` includes it; `PowerUserAccess` does not, so a power user launches such a resource
 only once someone grants `iam:PassRole` on that role:
 
