@@ -11,6 +11,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 )
 
 type snsStore struct{ db *sql.DB }
@@ -56,7 +58,9 @@ type snsSubscription struct {
 // snsFnNamespaceAttr is the internal subscription attribute holding a lambda endpoint's namespace.
 const snsFnNamespaceAttr = "openinfra:fnNamespace"
 
-// topicARNByName is the stored ARN of the topic named name (topic names are unique here).
+// topicARNByName is the stored ARN of the topic stored under name: its store key (accountKey), which is
+// the topic's name for the management account's topics — where every topic always was — and
+// "<account>:<name>" for a member account's (topicARNInAccount). Keys are unique here.
 func (s *snsStore) topicARNByName(ctx context.Context, name string) (string, bool, error) {
 	var arn string
 	err := s.db.QueryRowContext(ctx, `SELECT arn FROM sns_topics WHERE name = $1`, name).Scan(&arn)
@@ -64,6 +68,24 @@ func (s *snsStore) topicARNByName(ctx context.Context, name string) (string, boo
 		return "", false, nil
 	}
 	return arn, err == nil, err
+}
+
+// topicARNInAccount is the stored ARN of account's topic named name (an empty account is the management
+// account): a topic is looked up in the account its ARN names, never by the bare name in the management
+// account.
+func (s *snsStore) topicARNInAccount(ctx context.Context, account, name string) (string, bool, error) {
+	return s.topicARNByName(ctx, accountKeyFor(account, name))
+}
+
+// topicKeyByARN is the store key of the topic stored under arn — which account's topic it is
+// (splitAccountKey).
+func (s *snsStore) topicKeyByARN(ctx context.Context, arn string) (string, bool, error) {
+	var key string
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM sns_topics WHERE arn = $1`, arn).Scan(&key)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	return key, err == nil, err
 }
 
 // replaceTopicAttrs sets a topic's attributes to exactly attrs (a stack update).
@@ -158,8 +180,21 @@ func (s *snsStore) deleteTopic(ctx context.Context, arn string) (bool, error) {
 	return n > 0, nil
 }
 
+// listTopics lists the management account's topics: every topic but a member account's (memberKeyRe).
 func (s *snsStore) listTopics(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT arn FROM sns_topics ORDER BY name`)
+	return s.queryARNs(ctx, `SELECT arn FROM sns_topics WHERE name !~ '^[0-9]{12}:' ORDER BY name`)
+}
+
+// listTopicsIn lists account's topics (listTopics for the management account).
+func (s *snsStore) listTopicsIn(ctx context.Context, account string) ([]string, error) {
+	if awsidentity.Current().IsManagement(account) {
+		return s.listTopics(ctx)
+	}
+	return s.queryARNs(ctx, `SELECT arn FROM sns_topics WHERE starts_with(name, $1) ORDER BY name`, account+":")
+}
+
+func (s *snsStore) queryARNs(ctx context.Context, q string, args ...any) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -195,8 +230,18 @@ func (s *snsStore) subscriptionsForTopic(ctx context.Context, topicArn string) (
 	return s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery, COALESCE(attributes->>'openinfra:fnNamespace', ''), COALESCE(attributes->>'FilterPolicy', ''), COALESCE(attributes->>'FilterPolicyScope', '') FROM sns_subscriptions WHERE topic_arn = $1 AND confirmed ORDER BY created_at`, topicArn)
 }
 
+// listSubscriptions lists the subscriptions to the management account's topics.
 func (s *snsStore) listSubscriptions(ctx context.Context) ([]snsSubscription, error) {
-	return s.querySubs(ctx, `SELECT arn, topic_arn, protocol, endpoint, raw_delivery, COALESCE(attributes->>'openinfra:fnNamespace', ''), COALESCE(attributes->>'FilterPolicy', ''), COALESCE(attributes->>'FilterPolicyScope', '') FROM sns_subscriptions ORDER BY created_at`)
+	return s.querySubs(ctx, `SELECT s.arn, s.topic_arn, s.protocol, s.endpoint, s.raw_delivery, COALESCE(s.attributes->>'openinfra:fnNamespace', ''), COALESCE(s.attributes->>'FilterPolicy', ''), COALESCE(s.attributes->>'FilterPolicyScope', '') FROM sns_subscriptions s JOIN sns_topics t ON t.arn = s.topic_arn WHERE t.name !~ '^[0-9]{12}:' ORDER BY s.created_at`)
+}
+
+// listSubscriptionsIn lists the subscriptions to account's topics (listSubscriptions for the management
+// account).
+func (s *snsStore) listSubscriptionsIn(ctx context.Context, account string) ([]snsSubscription, error) {
+	if awsidentity.Current().IsManagement(account) {
+		return s.listSubscriptions(ctx)
+	}
+	return s.querySubs(ctx, `SELECT s.arn, s.topic_arn, s.protocol, s.endpoint, s.raw_delivery, COALESCE(s.attributes->>'openinfra:fnNamespace', ''), COALESCE(s.attributes->>'FilterPolicy', ''), COALESCE(s.attributes->>'FilterPolicyScope', '') FROM sns_subscriptions s JOIN sns_topics t ON t.arn = s.topic_arn WHERE starts_with(t.name, $1) ORDER BY s.created_at`, account+":")
 }
 
 func (s *snsStore) subByArn(ctx context.Context, arn string) (snsSubscription, bool, error) {

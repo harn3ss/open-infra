@@ -490,7 +490,7 @@ func run(logger *slog.Logger) error {
 	sqsH.urlBase = getenv("SQS_QUEUE_URL_BASE", defaultQueueURLBase)
 	snsH := newSNSHandler(cs, authzNS, account, region, snsSt, sqsSt, logger)
 	snsH.authz = authzChecker
-	sqsH.accounts = acctDir // a member account's id from any other account id a queue URL carries
+	sqsH.accounts, snsH.accounts = acctDir, acctDir // a member account's id from any other account id a queue URL or ARN carries
 	// lambda subscriptions: SNS invokes the Function at its cluster-local address (sns_lambda.go). A
 	// generous timeout covers a scale-from-zero cold start.
 	snsH.lambdaNS, snsH.svcSuffix, snsH.invoker = fnNS, svcSuffix, &http.Client{Timeout: 5 * time.Minute}

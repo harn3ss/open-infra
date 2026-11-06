@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/cfn/resourcepolicy"
 	"github.com/harn3ss/open-infra/cfn/snsfilter"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
@@ -55,6 +56,9 @@ type snsHandler struct {
 	fns       *fnLocator
 	svcSuffix string
 	invoker   *http.Client
+	// accounts tells a member account from any other account id an ARN may carry (topicIn,
+	// endpointQueue); nil knows none.
+	accounts accountHomes
 }
 
 func newSNSHandler(cs kubernetes.Interface, authzNS, account, region string, store *snsStore, sqs *sqsStore, logger *slog.Logger) *snsHandler {
@@ -99,13 +103,32 @@ func (h *snsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	}
 
 	res := snsAuthzTopic(op, r)
+	ctx := r.Context()
+
+	// The topic the request addresses, in the account it belongs to (topicTarget): the caller's own, or —
+	// named by an ARN — another account's, which is then reached across accounts.
+	t, byTopicArn := topicRef{account: h.acct(ctx), name: res}, false
+	if h.store != nil {
+		if !isMemberRequest(ctx) {
+			// A management-account topic made before the account changed answers to either ARN
+			// (identity_compat.go). Only the management account ever had the legacy id.
+			h.resolveLegacyARNs(ctx, r)
+		}
+		var err error
+		if t, byTopicArn, err = h.topicTarget(ctx, op, r); err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+	}
 
 	// sns:<Op> on the topic (decide): in legacy the coarse SubjectAccessReview, then the data-plane
 	// refinement per topic (an assumed role is checked on every op, ListTopics/ListSubscriptions on
-	// Topic::*); in enforce IAM policy alone, with the topic's own policy.
-	if ok, reason := decide(r.Context(), r, h.authz, claims, "sns:"+op, "Topic", res,
-		coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, res,
-			"sns:"+op, "Topic", res), h.topicPolicyOpt(r.Context(), res)...); !ok {
+	// Topic::*); in enforce IAM policy alone, with the topic's own policy. A topic of another account is
+	// decided across accounts.
+	opts, legacy := h.accountAuthz(ctx, t.account, coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, res,
+		"sns:"+op, "Topic", res))
+	if ok, reason := decide(ctx, r, h.authz, claims, "sns:"+op, "Topic", res, legacy,
+		append(h.topicPolicyOpt(ctx, t), opts...)...); !ok {
 		writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID, reason, snsXMLNamespace)
 		return
 	}
@@ -115,16 +138,12 @@ func (h *snsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		return
 	}
 
-	ctx := r.Context()
-	h.resolveLegacyARNs(ctx, r) // a topic made before the account changed answers to either ARN (identity_compat.go)
-	// A topic is its name: a TopicArn naming another region or account (the ARN a stack reported) means
-	// the topic of that name.
-	if a := r.FormValue("TopicArn"); a != "" {
-		if stored, found, err := h.canonicalTopicArn(ctx, a); err == nil && found && stored != a {
-			r.Form.Set("TopicArn", stored)
-			if r.PostForm != nil {
-				r.PostForm.Set("TopicArn", stored)
-			}
+	// A topic is its name: a TopicArn naming another region (the ARN a stack reported) means the topic of
+	// that name in the account the ARN names (topicTarget).
+	if a := r.FormValue("TopicArn"); a != "" && byTopicArn && t.arn != "" && t.arn != a {
+		r.Form.Set("TopicArn", t.arn)
+		if r.PostForm != nil {
+			r.PostForm.Set("TopicArn", t.arn)
 		}
 	}
 	switch op {
@@ -135,19 +154,19 @@ func (h *snsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "ListTopics":
 		h.listTopics(ctx, w, requestID)
 	case "GetTopicAttributes":
-		h.getTopicAttributes(ctx, w, r, requestID)
+		h.getTopicAttributes(ctx, w, r, requestID, t)
 	case "SetTopicAttributes":
 		h.setTopicAttributes(ctx, w, r, requestID)
 	case "Subscribe":
-		h.subscribe(ctx, w, r, requestID, claims)
+		h.subscribe(ctx, w, r, requestID, claims, t)
 	case "Unsubscribe":
 		h.unsubscribe(ctx, w, r, requestID)
 	case "ListSubscriptions":
-		h.listSubscriptions(ctx, w, r, requestID, "")
+		h.listSubscriptions(ctx, w, r, requestID, "", h.acct(ctx))
 	case "ListSubscriptionsByTopic":
-		h.listSubscriptions(ctx, w, r, requestID, r.PostFormValue("TopicArn"))
+		h.listSubscriptions(ctx, w, r, requestID, r.PostFormValue("TopicArn"), t.account)
 	case "GetSubscriptionAttributes":
-		h.getSubscriptionAttributes(ctx, w, r, requestID)
+		h.getSubscriptionAttributes(ctx, w, r, requestID, t)
 	case "SetSubscriptionAttributes":
 		h.setSubscriptionAttributes(ctx, w, r, requestID)
 	case "Publish":
@@ -171,8 +190,14 @@ func (h *snsHandler) createTopic(ctx context.Context, w http.ResponseWriter, r *
 			"FIFO (.fifo) topics are not yet supported by the open-infra shim; standard topics only.", snsXMLNamespace)
 		return
 	}
-	arn := h.topicARN(name)
-	if _, err := h.store.createTopic(ctx, arn, name); err != nil {
+	if memberKeyRe.MatchString(name) {
+		// "<account>:<name>" is a member account's store key (accountKey), and no topic name AWS accepts
+		// (letters, digits, hyphens and underscores): one account cannot make a topic in another's.
+		writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID, "Invalid parameter: Topic Name", snsXMLNamespace)
+		return
+	}
+	arn := h.topicARNIn(h.acct(ctx), name) // a topic is made in the caller's account
+	if _, err := h.store.createTopic(ctx, arn, accountKey(ctx, name)); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -188,8 +213,9 @@ func (h *snsHandler) deleteTopic(ctx context.Context, w http.ResponseWriter, r *
 	h.writeResult(w, requestID, "DeleteTopic", nil) // AWS returns success even if absent (idempotent delete)
 }
 
+// listTopics lists the caller's account's topics — never another account's.
 func (h *snsHandler) listTopics(ctx context.Context, w http.ResponseWriter, requestID string) {
-	arns, err := h.store.listTopics(ctx)
+	arns, err := h.store.listTopicsIn(ctx, callerAccount(ctx))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -197,7 +223,7 @@ func (h *snsHandler) listTopics(ctx context.Context, w http.ResponseWriter, requ
 	h.writeTopicList(w, requestID, arns)
 }
 
-func (h *snsHandler) getTopicAttributes(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+func (h *snsHandler) getTopicAttributes(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, t topicRef) {
 	arn := r.PostFormValue("TopicArn")
 	attrs, ok, err := h.store.topicAttrs(ctx, arn)
 	if err != nil {
@@ -211,7 +237,7 @@ func (h *snsHandler) getTopicAttributes(ctx context.Context, w http.ResponseWrit
 	subs, _ := h.store.subscriptionsForTopic(ctx, arn)
 	out := map[string]string{
 		"TopicArn":               arn,
-		"Owner":                  h.account,
+		"Owner":                  t.account,
 		"SubscriptionsConfirmed": itoa(len(subs)),
 		"SubscriptionsPending":   "0",
 		"DisplayName":            attrs["DisplayName"],
@@ -262,7 +288,7 @@ func (h *snsHandler) setTopicAttributes(ctx context.Context, w http.ResponseWrit
 
 // --- subscriptions ---
 
-func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims) {
+func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, claims iam.Claims, t topicRef) {
 	topicArn := r.PostFormValue("TopicArn")
 	protocol := r.PostFormValue("Protocol")
 	endpoint := r.PostFormValue("Endpoint")
@@ -297,7 +323,7 @@ func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *ht
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "sqs delivery is not configured", snsXMLNamespace)
 		return
 	}
-	queueURL, ok, err := h.sqs.queueURLByName(ctx, nameFromArn(endpoint))
+	queueURL, queueOwner, ok, err := h.endpointQueue(ctx, t.account, endpoint)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -305,7 +331,7 @@ func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *ht
 		writeQueryError(w, http.StatusNotFound, "NotFound", requestID, "the sqs endpoint queue does not exist: "+endpoint, snsXMLNamespace)
 		return
 	}
-	if reason, ok, err := h.mayDeliverToQueue(ctx, r, claims, topicArn, queueURL); err != nil {
+	if reason, ok, err := h.mayDeliverToQueue(ctx, r, claims, topicArn, t.account, queueURL, queueOwner); err != nil {
 		h.internal(w, requestID, err)
 		return
 	} else if !ok {
@@ -327,25 +353,49 @@ func (h *snsHandler) subscribe(ctx context.Context, w http.ResponseWriter, r *ht
 	h.writeResult(w, requestID, "Subscribe", map[string]string{"SubscriptionArn": subArn})
 }
 
-// mayDeliverToQueue reports whether a subscription the caller makes may deliver into the queue at
-// queueURL: the caller may send to that queue itself (sqs:SendMessage, as the SQS front door checks
-// it), or the queue's own policy lets this topic send to it — the queue owner's grant, as on AWS. The
-// shim delivers to a queue with no policy, so without this a subscription could write into any queue.
-func (h *snsHandler) mayDeliverToQueue(ctx context.Context, r *http.Request, claims iam.Claims, topicArn, queueURL string) (string, bool, error) {
+// mayDeliverToQueue reports whether a subscription the caller makes to a topic of account topicOwner may
+// deliver into the queue at queueURL, of account queueOwner: the caller may send to that queue itself
+// (sqs:SendMessage, as the SQS front door checks it — across accounts for another account's queue, with
+// the queue's own policy), or the queue's own policy lets this topic send to it — the queue owner's
+// grant, as on AWS. The shim delivers to a queue with no policy from its own account's topics, so
+// without this a subscription could write into any queue of the account.
+func (h *snsHandler) mayDeliverToQueue(ctx context.Context, r *http.Request, claims iam.Claims, topicArn, topicOwner, queueURL, queueOwner string) (string, bool, error) {
 	queue := queueNameFromURL(queueURL)
 	verb, _ := verbForSQSOp("SendMessage")
-	if ok, reason := decide(ctx, r, h.authz, claims, "sqs:SendMessage", "Queue", queue,
-		coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, queue,
-			"sqs:SendMessage", "Queue", queue)); ok {
+	opts, legacy := h.accountAuthz(ctx, queueOwner, coarseThenDataPlane(ctx, r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, queue,
+		"sqs:SendMessage", "Queue", queue))
+	if h.normAccount(queueOwner) != h.acct(ctx) {
+		opts = append(h.queuePolicyOpt(ctx, queueURL), opts...)
+	}
+	if ok, reason := decide(ctx, r, h.authz, claims, "sqs:SendMessage", "Queue", queue, legacy, opts...); ok {
 		return "", true, nil
 	} else {
-		granted, err := h.queueGrantsTopic(ctx, topicArn, queueURL)
+		granted, err := h.queueGrantsTopicFrom(ctx, topicArn, topicOwner, queueURL, queueOwner)
 		return reason, granted, err
 	}
 }
 
-// queueGrantsTopic reports whether the queue's own policy (one is set) lets the topic send to it.
+// queueGrantsTopic reports whether the queue's own policy (one is set) lets the topic send to it — each
+// in the account it belongs to (its store key; a topic not yet stored, the account its ARN names).
 func (h *snsHandler) queueGrantsTopic(ctx context.Context, topicArn, queueURL string) (bool, error) {
+	if h.sqs == nil {
+		return false, nil
+	}
+	topicOwner, err := h.topicOwner(ctx, topicArn)
+	if err != nil {
+		return false, err
+	}
+	queueOwner := h.account
+	if key, ok, err := h.sqs.queueKeyByURL(ctx, queueURL); err != nil {
+		return false, err
+	} else if ok {
+		queueOwner, _ = splitAccountKey(key)
+	}
+	return h.queueGrantsTopicFrom(ctx, topicArn, topicOwner, queueURL, h.normAccount(queueOwner))
+}
+
+// queueGrantsTopicFrom is queueGrantsTopic with the topic's and the queue's accounts known.
+func (h *snsHandler) queueGrantsTopicFrom(ctx context.Context, topicArn, topicOwner, queueURL, queueOwner string) (bool, error) {
 	if h.sqs == nil {
 		return false, nil
 	}
@@ -353,8 +403,8 @@ func (h *snsHandler) queueGrantsTopic(ctx context.Context, topicArn, queueURL st
 	if err != nil || !found || strings.TrimSpace(attrs[policyAttr]) == "" {
 		return false, err
 	}
-	return queueAccepts(ctx, h.sqs, h.region, h.account, queueURL, resourcepolicy.Request{
-		Service: "sns.amazonaws.com", Action: "sqs:SendMessage", SourceArn: topicArn, SourceAccount: h.account}, h.logger)
+	return queueAcceptsIn(ctx, h.sqs, h.region, h.normAccount(queueOwner), queueURL, resourcepolicy.Request{
+		Service: "sns.amazonaws.com", Action: "sqs:SendMessage", SourceArn: topicArn, SourceAccount: h.normAccount(topicOwner)}, h.logger)
 }
 
 func (h *snsHandler) unsubscribe(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
@@ -366,7 +416,9 @@ func (h *snsHandler) unsubscribe(ctx context.Context, w http.ResponseWriter, r *
 	h.writeResult(w, requestID, "Unsubscribe", nil)
 }
 
-func (h *snsHandler) listSubscriptions(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID, topicArn string) {
+// listSubscriptions lists the subscriptions to topicArn, or (topicArn "") to the caller's account's
+// topics — never another account's; owner is the account they are reported as owned by.
+func (h *snsHandler) listSubscriptions(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID, topicArn, owner string) {
 	var subs []snsSubscription
 	var err error
 	action := "ListSubscriptions"
@@ -374,16 +426,16 @@ func (h *snsHandler) listSubscriptions(ctx context.Context, w http.ResponseWrite
 		subs, err = h.store.subscriptionsForTopic(ctx, topicArn)
 		action = "ListSubscriptionsByTopic"
 	} else {
-		subs, err = h.store.listSubscriptions(ctx)
+		subs, err = h.store.listSubscriptionsIn(ctx, callerAccount(ctx))
 	}
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
-	h.writeSubscriptionList(w, requestID, action, subs)
+	h.writeSubscriptionList(w, requestID, action, subs, owner)
 }
 
-func (h *snsHandler) getSubscriptionAttributes(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+func (h *snsHandler) getSubscriptionAttributes(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string, t topicRef) {
 	arn := r.PostFormValue("SubscriptionArn")
 	sub, ok, err := h.store.subByArn(ctx, arn)
 	if err != nil {
@@ -400,7 +452,7 @@ func (h *snsHandler) getSubscriptionAttributes(ctx context.Context, w http.Respo
 		"Protocol":           sub.Protocol,
 		"Endpoint":           sub.Endpoint,
 		"RawMessageDelivery": boolStr(sub.Raw),
-		"Owner":              h.account,
+		"Owner":              t.account,
 	}
 	if sub.FilterPolicy != "" {
 		out["FilterPolicy"] = sub.FilterPolicy
@@ -481,11 +533,20 @@ func (h *snsHandler) publishMessage(ctx context.Context, topicArn, subject, mess
 }
 
 // publishMessageAttrs is publishMessage for a message with attributes: each subscription's filter policy
-// decides whether it receives the message (sns_filter.go), and the attributes travel with it.
+// decides whether it receives the message (sns_filter.go), and the attributes travel with it. Nothing is
+// taken from ctx's account: the topic's account is the one it is stored in (topicOwner), so a publish
+// without a request (an alarm's) delivers exactly as one through the API — each queue looked up in the
+// account its ARN names, and decided by its policy for this topic's account.
 func (h *snsHandler) publishMessageAttrs(ctx context.Context, topicArn, subject, message string, attrs map[string]snsfilter.Attr) (string, error) {
 	subs, err := h.store.subscriptionsForTopic(ctx, topicArn)
 	if err != nil {
 		return "", err
+	}
+	owner := h.account
+	if len(subs) > 0 {
+		if owner, err = h.topicOwner(ctx, topicArn); err != nil {
+			return "", err
+		}
 	}
 	msgID := uuidLike()
 	for _, sub := range subs {
@@ -499,7 +560,7 @@ func (h *snsHandler) publishMessageAttrs(ctx context.Context, topicArn, subject,
 		if sub.Protocol != "sqs" {
 			continue // only sqs and lambda are deliverable; others were refused at Subscribe
 		}
-		url, ok, err := h.sqs.queueURLByName(ctx, nameFromArn(sub.Endpoint))
+		url, queueOwner, ok, err := h.endpointQueue(ctx, owner, sub.Endpoint)
 		if err != nil {
 			return "", err
 		}
@@ -512,10 +573,11 @@ func (h *snsHandler) publishMessageAttrs(ctx context.Context, topicArn, subject,
 			h.logger.Warn("sns: a FIFO queue cannot take a standard topic's delivery; skipping", "endpoint", sub.Endpoint)
 			continue
 		}
-		// The queue's policy decides whether this topic may send to it (resource_policy.go). A refused
-		// delivery fails as on AWS: the publish succeeds, the queue gets nothing.
-		accepts, err := queueAccepts(ctx, h.sqs, h.region, h.account, url, resourcepolicy.Request{
-			Service: "sns.amazonaws.com", Action: "sqs:SendMessage", SourceArn: topicArn, SourceAccount: h.account}, h.logger)
+		// The queue's policy decides whether this topic may send to it (resource_policy.go) — a queue of
+		// another account takes it only when its policy says so. A refused delivery fails as on AWS: the
+		// publish succeeds, the queue gets nothing.
+		accepts, err := queueAcceptsIn(ctx, h.sqs, h.region, queueOwner, url, resourcepolicy.Request{
+			Service: "sns.amazonaws.com", Action: "sqs:SendMessage", SourceArn: topicArn, SourceAccount: owner}, h.logger)
 		if err != nil {
 			return "", err
 		}
@@ -558,8 +620,9 @@ func (h *snsHandler) publishMessageAttrs(ctx context.Context, topicArn, subject,
 
 // --- XML response writers ---
 
-func (h *snsHandler) topicARN(name string) string {
-	return "arn:aws:sns:" + h.region + ":" + h.account + ":" + name
+// topicARNIn is the ARN of account's topic name.
+func (h *snsHandler) topicARNIn(account, name string) string {
+	return "arn:aws:sns:" + h.region + ":" + account + ":" + name
 }
 
 func (h *snsHandler) internal(w http.ResponseWriter, requestID string, err error) {
@@ -595,7 +658,7 @@ func (h *snsHandler) writeTopicList(w http.ResponseWriter, requestID string, arn
 	h.writeXML(w, requestID, b.String())
 }
 
-func (h *snsHandler) writeSubscriptionList(w http.ResponseWriter, requestID, action string, subs []snsSubscription) {
+func (h *snsHandler) writeSubscriptionList(w http.ResponseWriter, requestID, action string, subs []snsSubscription, owner string) {
 	var b strings.Builder
 	b.WriteString(xml.Header)
 	b.WriteString(`<` + action + `Response xmlns="` + snsXMLNamespace + `"><` + action + `Result><Subscriptions>`)
@@ -605,7 +668,7 @@ func (h *snsHandler) writeSubscriptionList(w http.ResponseWriter, requestID, act
 		b.WriteString(`<TopicArn>` + xmlEscape(s.TopicArn) + `</TopicArn>`)
 		b.WriteString(`<Protocol>` + xmlEscape(s.Protocol) + `</Protocol>`)
 		b.WriteString(`<Endpoint>` + xmlEscape(s.Endpoint) + `</Endpoint>`)
-		b.WriteString(`<Owner>` + xmlEscape(h.account) + `</Owner>`)
+		b.WriteString(`<Owner>` + xmlEscape(owner) + `</Owner>`)
 		b.WriteString(`</member>`)
 	}
 	b.WriteString(`</Subscriptions></` + action + `Result><ResponseMetadata><RequestId>` + xmlEscape(requestID) + `</RequestId></ResponseMetadata></` + action + `Response>`)
@@ -724,21 +787,178 @@ func xmlEscape(s string) string {
 	return b.String()
 }
 
-// topicPolicyOpt carries topic name's Policy attribute (its resource policy) to the evaluator, read only
+// topicPolicyOpt carries topic t's Policy attribute (its resource policy) to the evaluator, read only
 // when IAM policy decides (resourcePolicyOpt).
-func (h *snsHandler) topicPolicyOpt(ctx context.Context, name string) []iamauthz.RequestOption {
-	if h.store == nil || name == "" {
+func (h *snsHandler) topicPolicyOpt(ctx context.Context, t topicRef) []iamauthz.RequestOption {
+	if h.store == nil || t.arn == "" {
 		return nil
 	}
 	return resourcePolicyOpt(h.authz, func() string {
-		arn, found, err := h.store.topicARNByName(ctx, name)
-		if err != nil || !found {
-			return ""
-		}
-		attrs, found, err := h.store.topicAttrs(ctx, arn)
+		attrs, found, err := h.store.topicAttrs(ctx, t.arn)
 		if err != nil || !found {
 			return ""
 		}
 		return attrs["Policy"]
 	})
+}
+
+// queuePolicyOpt carries the Policy attribute of the queue at url to the evaluator (sqsHandler's).
+func (h *snsHandler) queuePolicyOpt(ctx context.Context, url string) []iamauthz.RequestOption {
+	if h.sqs == nil || url == "" {
+		return nil
+	}
+	return resourcePolicyOpt(h.authz, func() string {
+		attrs, _, found, err := h.sqs.queueAttrs(ctx, url)
+		if err != nil || !found {
+			return ""
+		}
+		return attrs[policyAttr]
+	})
+}
+
+// --- accounts ---
+
+func init() { accountScopedServices["sns"] = true }
+
+// topicRef is the topic a request addresses: the account it belongs to (h.account for the management
+// account's), its name, its store key, and the ARN it is stored under ("" when that account has no such
+// topic).
+type topicRef struct {
+	account, name, key, arn string
+}
+
+// acct is the account the caller acts in, as the topics it makes and lists name it: a member account's
+// id, or the handler's own for the management account (every ARN exactly as before accounts).
+func (h *snsHandler) acct(ctx context.Context) string {
+	if isMemberRequest(ctx) {
+		return callerAccount(ctx)
+	}
+	return h.account
+}
+
+// normAccount is account with the management account's id — however it is written — as h.account.
+func (h *snsHandler) normAccount(account string) string { return normAccount(h.account, account) }
+
+// keyFor is the store key of account's topic (or queue) name.
+func (h *snsHandler) keyFor(account, name string) string {
+	if a := h.normAccount(account); a != h.account {
+		return a + ":" + name
+	}
+	return name
+}
+
+// accountAuthz is sqsHandler.accountAuthz for a topic (or, for a subscription's delivery, a queue).
+func (h *snsHandler) accountAuthz(ctx context.Context, owner string, legacy func() (bool, string)) ([]iamauthz.RequestOption, func() (bool, string)) {
+	return accountAuthzFor(ctx, h.acct(ctx), h.normAccount(owner), h.account, legacy)
+}
+
+// topicTarget is the topic op addresses, in the account it belongs to, and whether it was named by the
+// request's TopicArn: CreateTopic's in the caller's account; Publish's by TopicArn (else TargetArn); a
+// subscription op's by its subscription's topic; every other topic op's by TopicArn (topicByARN).
+// ListTopics and ListSubscriptions name none (the caller's account).
+func (h *snsHandler) topicTarget(ctx context.Context, op string, r *http.Request) (topicRef, bool, error) {
+	switch op {
+	case "ListTopics", "ListSubscriptions":
+		return topicRef{account: h.acct(ctx)}, false, nil
+	case "CreateTopic":
+		t, err := h.topicIn(ctx, "", r.PostFormValue("Name"))
+		return t, false, err
+	case "Publish", "PublishBatch":
+		if a := r.PostFormValue("TopicArn"); a != "" {
+			t, err := h.topicByARN(ctx, a)
+			return t, true, err
+		}
+		if a := r.PostFormValue("TargetArn"); a != "" {
+			t, err := h.topicByARN(ctx, a)
+			return t, false, err
+		}
+		return topicRef{account: h.acct(ctx)}, false, nil
+	case "Unsubscribe", "GetSubscriptionAttributes", "SetSubscriptionAttributes":
+		sa := r.PostFormValue("SubscriptionArn")
+		if sa == "" {
+			return topicRef{account: h.acct(ctx)}, false, nil
+		}
+		topic := topicArnOfSub(sa)
+		if sub, ok, err := h.store.subByArn(ctx, sa); err != nil {
+			return topicRef{}, false, err
+		} else if ok {
+			topic = sub.TopicArn // the topic it is a subscription to, whichever account's
+		}
+		t, err := h.topicByARN(ctx, topic)
+		return t, false, err
+	}
+	a := r.PostFormValue("TopicArn")
+	if a == "" {
+		return topicRef{account: h.acct(ctx)}, false, nil
+	}
+	t, err := h.topicByARN(ctx, a)
+	return t, true, err
+}
+
+// topicByARN is the topic a TopicArn addresses: the topic stored under that ARN, whichever account's it
+// is; else the topic its last segment names in the account the ARN names (a topic is its name: the ARN a
+// stack reported for another region) — never another account's for an ARN naming the caller's (topicIn).
+func (h *snsHandler) topicByARN(ctx context.Context, arn string) (topicRef, error) {
+	key, ok, err := h.store.topicKeyByARN(ctx, arn)
+	if err != nil {
+		return topicRef{}, err
+	}
+	if ok {
+		account, name := splitAccountKey(key)
+		return topicRef{account: h.normAccount(account), name: name, key: key, arn: arn}, nil
+	}
+	return h.topicIn(ctx, awsidentity.AccountOfARN(arn), nameFromArn(arn))
+}
+
+// topicIn is topic name of account named ("" = the caller's own), as sqsHandler.queueIn: a topic of
+// another account than the caller's is that account's, reached across accounts; the management account
+// keeps what it always had (a topic it names in an account id that is no member account's is its own of
+// that name); a member account's name never falls back to another account's topic, nor another
+// account's name to a member's own.
+func (h *snsHandler) topicIn(ctx context.Context, named, name string) (topicRef, error) {
+	caller := h.acct(ctx)
+	if named != "" {
+		if named = h.normAccount(named); named != caller {
+			key := h.keyFor(named, name)
+			arn, ok, err := h.store.topicARNByName(ctx, key)
+			if err != nil || ok || isMemberRequest(ctx) || knownMember(h.accounts, named) {
+				return topicRef{account: named, name: name, key: key, arn: arn}, err
+			}
+		}
+	}
+	key := accountKey(ctx, name)
+	arn, _, err := h.store.topicARNByName(ctx, key)
+	return topicRef{account: caller, name: name, key: key, arn: arn}, err
+}
+
+// topicOwner is the account of the topic stored under arn (its store key); a topic not stored is the
+// account its ARN names. Work without a request (an alarm's publish) takes the account from here.
+func (h *snsHandler) topicOwner(ctx context.Context, arn string) (string, error) {
+	key, ok, err := h.store.topicKeyByARN(ctx, arn)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return h.normAccount(awsidentity.AccountOfARN(arn)), nil
+	}
+	account, _ := splitAccountKey(key)
+	return h.normAccount(account), nil
+}
+
+// endpointQueue is the queue an sqs subscription's endpoint (a queue ARN) names, for a topic of account
+// topicOwner: the queue of that name in the account the ARN names (one naming none, or the legacy id:
+// the topic's own account), and that account. A management-account topic keeps what it always had: an
+// endpoint naming an account id that is no member account's means its own account's queue of that name.
+func (h *snsHandler) endpointQueue(ctx context.Context, topicOwner, endpoint string) (url, owner string, ok bool, err error) {
+	name := nameFromArn(endpoint)
+	owner = h.normAccount(topicOwner)
+	if a := awsidentity.AccountOfARN(endpoint); a != "" {
+		owner = h.normAccount(a)
+	}
+	if url, ok, err = h.sqs.queueURLByName(ctx, h.keyFor(owner, name)); err != nil || ok ||
+		owner == h.account || h.normAccount(topicOwner) != h.account || knownMember(h.accounts, owner) {
+		return url, owner, ok, err
+	}
+	url, ok, err = h.sqs.queueURLByName(ctx, name)
+	return url, h.account, ok, err
 }

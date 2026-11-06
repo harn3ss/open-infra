@@ -22,7 +22,7 @@ import (
 // resource still needs its own policy).
 func (f *svcFixture) withAccountPolicies(t *testing.T, mode string) {
 	t.Helper()
-	f.sqs.accounts = testDirectory()
+	f.sqs.accounts, f.sns.accounts = testDirectory(), testDirectory()
 	all := []policyengine.Statement{dpAllow([]string{"sqs:*", "sns:*", "lambda:*"}, "*")}
 	a := checkerInMode(t, mode,
 		dataplaneauthz.PolicyDoc{Name: "alice-all", AppliesTo: []string{"User::alice"}, Statements: all},

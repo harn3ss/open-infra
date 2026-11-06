@@ -21,17 +21,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/cfn/snsfilter"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 )
 
 // canonicalTopicArn is the stored ARN of the topic an ARN addresses: the ARN itself when a topic has it,
-// else the topic named by its last segment (topic names are unique in this store).
+// else the topic named by its last segment in the account the ARN names (topicByARN) — never another
+// account's topic of that name for an ARN naming a member account.
 func (h *snsHandler) canonicalTopicArn(ctx context.Context, arn string) (string, bool, error) {
-	if ok, err := h.store.topicExists(ctx, arn); err != nil || ok {
-		return arn, ok, err
-	}
-	return h.store.topicARNByName(ctx, nameFromArn(arn))
+	t, err := h.topicByARN(ctx, arn)
+	return t.arn, err == nil && t.arn != "", err
 }
 
 // subscribeLambda is Subscribe for the lambda protocol: the endpoint is a function ARN, the caller must
@@ -55,10 +55,15 @@ func (h *snsHandler) subscribeLambda(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 	fn := lambdaNameFromArn(endpoint)
-	ns := h.fns.namespaceOf(ctx, fn, h.lambdaNS)
-	if ok, reason := decide(ctx, r, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
-		coarseThenScopedDataPlane(ctx, r, h.cs, h.authz, claims, "create", "openinfra.dev", "functions", ns, fn,
-			"lambda:InvokeFunction", "Function", fn)); !ok {
+	ns, ok := h.subscriberFunctionNamespace(ctx, fn, endpoint)
+	if !ok {
+		writeQueryError(w, http.StatusBadRequest, "InvalidParameter", requestID,
+			"a lambda subscription delivers to a function of the subscriber's own account; "+endpoint+" names another account's (a function policy granting SNS is not honored by this shim).", snsXMLNamespace)
+		return
+	}
+	opts, legacy := h.accountAuthz(ctx, h.acct(ctx), coarseThenScopedDataPlane(ctx, r, h.cs, h.authz, claims, "create", "openinfra.dev", "functions", ns, fn,
+		"lambda:InvokeFunction", "Function", fn))
+	if ok, reason := decide(ctx, r, h.authz, claims, "lambda:InvokeFunction", "Function", fn, legacy, opts...); !ok {
 		writeQueryError(w, http.StatusForbidden, "AuthorizationError", requestID,
 			"not authorized to subscribe the function "+endpoint+" (a subscription cannot invoke what its creator cannot): "+reason, snsXMLNamespace)
 		return
@@ -71,6 +76,22 @@ func (h *snsHandler) subscribeLambda(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 	h.writeResult(w, requestID, "Subscribe", map[string]string{"SubscriptionArn": subArn})
+}
+
+// subscriberFunctionNamespace is the namespace of the Function a lambda subscription the caller makes
+// delivers to: the caller's account's Function of that name (fnLocator.namespaceFor) — the management
+// account's where a Function of that name is (the Lambda API's namespace, or a stack's), as it always
+// was; a member account's in its own namespaces, its home first. ok=false for an endpoint naming another
+// account's function (a member's naming any other account, the management account's naming a member
+// account): on AWS that needs the function's own policy to let SNS invoke it, which this shim does not
+// honor, so it is refused rather than delivered to a function of that name in the caller's account.
+func (h *snsHandler) subscriberFunctionNamespace(ctx context.Context, fn, endpoint string) (string, bool) {
+	if a := awsidentity.AccountOfARN(endpoint); a != "" {
+		if a = h.normAccount(a); a != h.acct(ctx) && (isMemberRequest(ctx) || knownMember(h.accounts, a)) {
+			return "", false
+		}
+	}
+	return h.fns.namespaceFor(ctx, fn, h.lambdaNS), true
 }
 
 // snsLambdaEvent is the event SNS invokes a Lambda with.
