@@ -1078,7 +1078,8 @@
         "ListRoots"
       ],
       "probes": [
-        "organizations"
+        "organizations",
+        "account-isolation"
       ],
       "refused": [],
       "service": "Organizations",

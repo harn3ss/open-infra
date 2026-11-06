@@ -85,8 +85,7 @@ services:
     cell: "the install's accounts (`kind: Account`): the management account, member accounts by `CreateAccount`, each its own namespaces"
     tier: proven
     sigv4: [organizations]
-    probes: [organizations]
-    pending: [account-isolation] # each account's resources its own, across the account-scoped front doors
+    probes: [organizations, account-isolation] # each account's resources its own, across the account-scoped front doors
   - name: Service Quotas
     cell: "each account's quotas (AWS's codes and names), an operator's approved increases (`spec.serviceQuotas`), increase requests; Lambda concurrency capped on burstable functions"
     tier: proven
