@@ -178,7 +178,9 @@ class Handler(BaseHTTPRequestHandler):
         direct = self.headers.get("X-Openinfra-Invoke") == "direct"
         try:
             event = json.loads(raw) if raw.strip() else {}
-            if not isinstance(event, dict):
+            # Direct: any JSON payload is the event as sent — a list (AppSync's BatchInvoke), a string,
+            # null — as Lambda Invoke passes it. Only the proxy mapping needs a dict to carry _http.
+            if not direct and not isinstance(event, dict):
                 event = {"body": event}
         except Exception:
             event = {"body": raw.decode("utf-8", "replace")}

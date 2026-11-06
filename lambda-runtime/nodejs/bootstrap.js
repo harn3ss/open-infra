@@ -329,7 +329,9 @@ function main() {
         let event;
         try {
           event = raw.trim() ? JSON.parse(raw) : {};
-          if (event === null || typeof event !== "object" || Array.isArray(event)) event = { body: event };
+          // Direct: any JSON payload is the event as sent — a list (AppSync's BatchInvoke), a string,
+          // null — as Lambda Invoke passes it. Only the proxy mapping needs an object to carry _http.
+          if (!direct && (event === null || typeof event !== "object" || Array.isArray(event))) event = { body: event };
         } catch (_e) {
           event = { body: raw };
         }

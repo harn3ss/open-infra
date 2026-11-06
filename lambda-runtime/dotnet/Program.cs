@@ -218,9 +218,11 @@ static class Bootstrap
         JsonNode node;
         try { node = string.IsNullOrWhiteSpace(body) ? new System.Text.Json.Nodes.JsonObject() : JsonNode.Parse(body); }
         catch { node = new System.Text.Json.Nodes.JsonObject { ["body"] = body }; }
+        // AWS Invoke: any JSON payload is the event as sent — a list (AppSync's BatchInvoke), a string,
+        // null — with no _http. Only the proxy mapping needs an object to carry _http.
+        if (direct) return node is null ? "null" : node.ToJsonString();
         if (node is not System.Text.Json.Nodes.JsonObject obj)
             obj = new System.Text.Json.Nodes.JsonObject { ["body"] = node };
-        if (direct) return obj.ToJsonString();  // AWS Invoke: the event is passed verbatim, no _http
         var headers = new System.Text.Json.Nodes.JsonObject();
         foreach (string h in req.Headers) headers[h] = req.Headers[h];
         obj["_http"] = new System.Text.Json.Nodes.JsonObject

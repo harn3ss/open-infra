@@ -224,6 +224,13 @@ static class Bootstrap
     // body).
     static string BuildEvent(string body, HttpListenerRequest req, bool direct)
     {
+        // AWS Invoke: any JSON payload is the event as sent — a list (AppSync's BatchInvoke), a string,
+        // null — with no _http. Only the proxy mapping below needs an object to carry _http.
+        if (direct && !string.IsNullOrWhiteSpace(body))
+        {
+            try { using var d = JsonDocument.Parse(body); return d.RootElement.GetRawText(); }
+            catch (JsonException) { }
+        }
         using var ms = new MemoryStream();
         using (var w = new Utf8JsonWriter(ms))
         {
