@@ -129,9 +129,18 @@ mint_key "cfnprobe-admin-$SFX"  "admins"; AAK="$MK_AK"; ASK="$MK_SK"
 mint_key "cfnprobe-reader-$SFX" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
 [ -n "$AAK" ] && [ -n "$RAK" ] || inconclusive "failed to mint caller keys"
 # A new principal's policies take effect after the IAM compiler's next pass and the authorizers' policy
-# caches (as AWS IAM changes propagate): the stack acts as its caller, so wait that out first.
-log "  waiting ${IAM_SETTLE_SECONDS:-45}s for the new callers' policies to propagate"
-sleep "${IAM_SETTLE_SECONDS:-45}"
+# caches (as AWS IAM changes propagate), and the stack acts as its caller: wait until the API server's
+# authorizer allows the caller a read in the stack namespace (a SubjectAccessReview), then the shim's own
+# policy cache.
+log "  waiting for the new callers' policies to propagate"
+for _ in $(seq 1 40); do
+  allowed="$(printf '{"apiVersion":"authorization.k8s.io/v1","kind":"SubjectAccessReview","spec":{"user":"openinfra:%s:%s","resourceAttributes":{"verb":"get","group":"openinfra.dev","resource":"buckets","namespace":"%s"}}}' "${MGMT_ACCOUNT_ID:-000000000000}" "cfnprobe-admin-$SFX" "$CFN_NS" \
+    | kubectl create -f - -o jsonpath='{.status.allowed}' 2>/dev/null || true)"
+  [ "$allowed" = true ] && break
+  sleep 5
+done
+[ "$allowed" = true ] || inconclusive "the new caller's policies did not propagate within 200s"
+sleep "${IAM_SETTLE_SECONDS:-35}"
 
 # --- 1. UNSUPPORTED type refused WHOLE at validation, nothing created --------------------------------
 log "negative: a stack containing an unsupported type (AWS::Route53::HostedZone) is refused at validation"

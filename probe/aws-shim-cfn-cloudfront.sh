@@ -248,9 +248,18 @@ log "seeding an openinfra:admins caller"
 mint_key "cfprobe-cdn-admin-$SFX" "admins"; AAK="$MK_AK"; ASK="$MK_SK"
 [ -n "$AAK" ] || inconclusive "failed to mint the caller key"
 # A new principal's policies take effect after the IAM compiler's next pass and the authorizers' policy
-# caches (as AWS IAM changes propagate): the stack acts as its caller, so wait that out first.
-log "  waiting ${IAM_SETTLE_SECONDS:-45}s for the new caller's policies to propagate"
-sleep "${IAM_SETTLE_SECONDS:-45}"
+# caches (as AWS IAM changes propagate), and the stack acts as its caller: wait until the API server's
+# authorizer allows the caller a read in the stack namespace (a SubjectAccessReview), then the shim's own
+# policy cache.
+log "  waiting for the new caller' policies to propagate"
+for _ in $(seq 1 40); do
+  allowed="$(printf '{"apiVersion":"authorization.k8s.io/v1","kind":"SubjectAccessReview","spec":{"user":"openinfra:%s:%s","resourceAttributes":{"verb":"get","group":"openinfra.dev","resource":"buckets","namespace":"%s"}}}' "${MGMT_ACCOUNT_ID:-000000000000}" "cfprobe-cdn-admin-$SFX" "$CFN_NS" \
+    | kubectl create -f - -o jsonpath='{.status.allowed}' 2>/dev/null || true)"
+  [ "$allowed" = true ] && break
+  sleep 5
+done
+[ "$allowed" = true ] || inconclusive "the new caller's policies did not propagate within 200s"
+sleep "${IAM_SETTLE_SECONDS:-35}"
 
 # --- 1. NEGATIVE: an out-of-subset feature refuses the whole stack at validation -----------------------
 log "negative: the same template with a Lambda@Edge association is refused at validation, nothing created"
