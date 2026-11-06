@@ -116,19 +116,33 @@ func (h *sesHandler) serveV2(w http.ResponseWriter, r *http.Request, claims iam.
 			return
 		}
 		sesV2JSON(w, requestID, map[string]any{
-			"SendQuota":               map[string]any{"Max24HourSend": -1, "MaxSendRate": -1, "SentLast24Hours": 0},
-			"SendingEnabled":          true,
-			"ProductionAccessEnabled": true,
+			"SendQuota":      map[string]any{"Max24HourSend": -1, "MaxSendRate": -1, "SentLast24Hours": 0},
+			"SendingEnabled": true,
+			// A member account has no verified identity (ses.go), as a new AWS account's SES is in the
+			// sandbox: it is not out of it here.
+			"ProductionAccessEnabled": !sesMemberAccount(r.Context(), claims),
 			"EnforcementStatus":       "HEALTHY",
 		})
 	default:
 		// AWS authorizes before anything else: a caller its policy does not allow is AccessDenied whether or
 		// not the shim serves the operation.
-		if action, resID, verb, known := sesV2Authorized(op, r); known {
+		action, resID, verb, known := sesV2Authorized(op, r)
+		if known {
 			if ok, reason := decide(r.Context(), r, h.authz, claims, action, "Identity", resID,
 				coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, verb, "openinfra.dev", "applications", h.authzNS, "",
 					action, "Identity", resID)); !ok {
 				sesV2Error(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+				return
+			}
+		}
+		// A member account has no identities (ses.go): it lists none, and any it names does not exist.
+		if known && sesMemberAccount(r.Context(), claims) {
+			switch op {
+			case "ListEmailIdentities":
+				sesV2JSON(w, requestID, map[string]any{"EmailIdentities": []any{}})
+				return
+			case "GetEmailIdentity", "DeleteEmailIdentity":
+				sesV2Error(w, http.StatusNotFound, "NotFoundException", requestID, "Email identity "+resID+" does not exist.")
 				return
 			}
 		}
@@ -235,6 +249,11 @@ func (h *sesHandler) v2SendEmail(w http.ResponseWriter, r *http.Request, claims 
 			sesV2Error(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 			return
 		}
+	}
+	// A member account has verified no identity (ses.go): whatever it sends as is unverified.
+	if sesMemberAccount(r.Context(), claims) {
+		sesV2Error(w, http.StatusBadRequest, "MessageRejected", requestID, sesUnverified(r.Context(), senders))
+		return
 	}
 
 	var msg []byte

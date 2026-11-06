@@ -12,7 +12,9 @@
 // Identity verification (VerifyEmailIdentity/VerifyDomainIdentity) is refused honestly — a verified
 // identity is backed by the domain's DNS (SPF/DKIM/DMARC), which this shim cannot fake. Who may send as an
 // identity is the caller's policy: ses:SendEmail / ses:SendRawEmail on Identity::<the From address> or on
-// its domain's identity (Identity::<domain>), for every address the message is sent as.
+// its domain's identity (Identity::<domain>), for every address the message is sent as. Identities are
+// an account's own: those the relay sends as are the management account's, and a member account has none
+// (sesMemberAccount), so its sends are refused as AWS refuses an unverified identity's.
 //
 // SES v2 (REST-JSON, /v2/email/…) is served by the same handler (sesv2.go): SendEmail, with the same
 // relay and the same authorization.
@@ -29,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"k8s.io/client-go/kubernetes"
@@ -168,6 +171,27 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		}
 	}
 
+	// A member account has no verified identities of its own (sesMemberAccount): it sends as none, and
+	// lists none.
+	if sesMemberAccount(r.Context(), claims) {
+		switch op {
+		case "SendEmail", "SendRawEmail":
+			if len(senders) == 0 {
+				writeQueryError(w, http.StatusBadRequest, "InvalidParameterValue", requestID,
+					op+" needs a Source (or, for SendRawEmail, a From header in the message).", sesXMLNamespace)
+				return
+			}
+			writeQueryError(w, http.StatusBadRequest, "MessageRejected", requestID, sesUnverified(r.Context(), senders), sesXMLNamespace)
+			return
+		case "ListIdentities":
+			h.writeXML(w, requestID, sesEmptyResult("ListIdentities", "<Identities/>", requestID))
+			return
+		case "GetIdentityVerificationAttributes":
+			h.writeXML(w, requestID, sesEmptyResult("GetIdentityVerificationAttributes", "<VerificationAttributes/>", requestID))
+			return
+		}
+	}
+
 	switch op {
 	case "SendEmail":
 		h.sendEmail(w, r, requestID)
@@ -182,6 +206,38 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeQueryError(w, http.StatusBadRequest, "InvalidAction", requestID,
 			"SES "+op+" is recognized but not implemented by the open-infra shim.", sesXMLNamespace)
 	}
+}
+
+// SES identities are an account's own, as on AWS. The identities this shim sends as — the sending
+// domains the operator backs with DNS (SPF/DKIM/DMARC) and the relay's smarthost — are the management
+// account's, the installation's own. A member account has verified none, and can verify none here
+// (identity verification is the operator's, for every account), so its identities are none at all: a send
+// as any address is refused as AWS refuses one from an identity the account has not verified
+// (MessageRejected), and its identity listings are empty. The management account's sends and answers are
+// unchanged. So SES keeps each account's identities apart, and is an account-scoped front door: a member
+// account's principal is decided on its own account's identities.
+func init() {
+	accountScopedServices["ses"] = true
+	accountScopedServices["email"] = true
+}
+
+// sesMemberAccount reports whether the request acts in a member account (the router's identity on the
+// request, or a member account's claims made in-process).
+func sesMemberAccount(ctx context.Context, claims iam.Claims) bool {
+	return isMemberRequest(ctx) || memberAccount(claims)
+}
+
+// sesUnverified is AWS's MessageRejected message for a message sent as identities the account has not
+// verified, in the request's region.
+func sesUnverified(ctx context.Context, identities []string) string {
+	return "Email address is not verified. The following identities failed the check in region " +
+		strings.ToUpper(awsidentity.FromContext(ctx).Region) + ": " + strings.Join(identities, ", ")
+}
+
+// sesEmptyResult is a v1 Query response whose result holds one empty element (inner).
+func sesEmptyResult(action, inner, requestID string) string {
+	return `<?xml version="1.0"?><` + action + `Response xmlns="` + sesXMLNamespace + `"><` + action + `Result>` + inner +
+		`</` + action + `Result><ResponseMetadata><RequestId>` + xmlEscape(requestID) + `</RequestId></ResponseMetadata></` + action + `Response>`
 }
 
 // identityDenied authorizes sending as addr the way SES does: on its email address identity
