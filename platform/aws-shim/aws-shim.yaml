@@ -1250,3 +1250,8 @@ rules:
   - apiGroups: [openinfra.dev]
     resources: [virtualmachines, volumes, securitygroups, vpcs, subnets, vpcendpoints, natgateways]
     verbs: [get, list]
+  # EC2's DescribeAddresses: the account's Elastic IP allocations are holder Services in its home, listed
+  # with the shim's client (ec2_describe.go). List only; nothing is read by name or changed.
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [list]
