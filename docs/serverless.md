@@ -118,7 +118,10 @@ aws iam put-role-policy --role-name orders-writer --policy-name send --policy-do
 - **Its trust policy** must name the Lambda service (`lambda.amazonaws.com`; in `spec.trust`,
   `Service::lambda.amazonaws.com`). Lambda assumes a role it is trusted with only for a function that
   names that role: no other function, and no other workload, can assume it. A trust policy may instead
-  name the function's own identity, `system:serviceaccount:<namespace>:fn-<function>`.
+  name the function's own identity, `system:serviceaccount:<namespace>:fn-<function>`. Conditions on a
+  trust statement (`aws:SourceArn`, `aws:SourceAccount`, …) are not evaluated for the Lambda service yet,
+  so Lambda does not assume a role whose trust policy has any: leave them out of an execution role's
+  trust policy.
 - **Naming a role takes `iam:PassRole` on it**, as `CreateFunction` does on AWS: creating a Function with
   `spec.role`, or changing it, is refused unless the requester may pass that role. Administrators may pass
   any role; to let someone else pass one, allow `iam:PassRole` on the role's ARN in their policy.
@@ -128,7 +131,8 @@ aws iam put-role-policy --role-name orders-writer --policy-name send --policy-do
   `assumed-role/<role>/<function>`, as on Lambda), and `AWS_ENDPOINT_URL` / `AWS_ENDPOINT_URL_STS` (the
   aws-shim, where the credentials are valid). An image function also gets `AWS_REGION` and
   `AWS_DEFAULT_REGION` (the install's region); a code function keeps its runtime's. The SDK assumes the
-  role on its first call and renews the credentials before they expire. `GetFunctionConfiguration`
+  role on its first call and renews the credentials before they expire. Like any web-identity session,
+  the function's carries no MFA context (`aws:MultiFactorAuthPresent` is absent). `GetFunctionConfiguration`
   reports the role as the function's `Role`.
 - **A role and package keys don't combine**: a function whose package is read from a bucket with static
   keys (`code.source.secret`) can't also have a role — the handler's SDK would act with those keys ahead of

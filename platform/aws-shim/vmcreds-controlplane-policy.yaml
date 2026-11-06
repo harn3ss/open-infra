@@ -21,7 +21,8 @@ spec:
 # The same, for Lambda execution roles: the aws-shim confirms a function's identity token is bound to a
 # pod Knative runs for that function — a `get` of the one pod the TokenReview names, of its ReplicaSet and
 # of that ReplicaSet's Deployment (which a Knative Revision must own) — before it hands the function its
-# role's credentials (lambda_role.go). The function's ServiceAccount is read under the grant above.
+# role's credentials (lambda_role.go). It reads their metadata only, never their specs (the function's
+# environment). The function's ServiceAccount is read under the grant above.
 apiVersion: iam.openinfra.dev/v1
 kind: Policy
 metadata:

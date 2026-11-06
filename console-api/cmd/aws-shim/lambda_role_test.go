@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	metadatafake "k8s.io/client-go/metadata/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
 
@@ -74,7 +75,31 @@ func roleFnClaim(ns, name, role string) *unstructured.Unstructured {
 
 func functionIdentitiesWith(t *testing.T, tokens map[string]reviewedToken, objs []runtime.Object, claims ...*unstructured.Unstructured) *k8sFunctionIdentities {
 	t.Helper()
-	cs := fake.NewSimpleClientset(objs...)
+	// Pods, ReplicaSets and Deployments are served as metadata only, as the shim reads them; anything else
+	// (the ServiceAccounts) through the typed client.
+	var typed, metas []runtime.Object
+	for _, o := range objs {
+		var om metav1.ObjectMeta
+		var tm metav1.TypeMeta
+		switch v := o.(type) {
+		case *corev1.Pod:
+			om, tm = v.ObjectMeta, metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}
+		case *appsv1.ReplicaSet:
+			om, tm = v.ObjectMeta, metav1.TypeMeta{APIVersion: "apps/v1", Kind: "ReplicaSet"}
+		case *appsv1.Deployment:
+			om, tm = v.ObjectMeta, metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}
+		default:
+			typed = append(typed, o)
+			continue
+		}
+		metas = append(metas, &metav1.PartialObjectMetadata{TypeMeta: tm, ObjectMeta: om})
+	}
+	scheme := runtime.NewScheme()
+	if err := metav1.AddMetaToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	md := metadatafake.NewSimpleMetadataClient(scheme, metas...)
+	cs := fake.NewSimpleClientset(typed...)
 	cs.PrependReactor("create", "tokenreviews", func(a k8stesting.Action) (bool, runtime.Object, error) {
 		tr := a.(k8stesting.CreateAction).GetObject().(*authnv1.TokenReview)
 		out := tr.DeepCopy()
@@ -100,7 +125,7 @@ func functionIdentitiesWith(t *testing.T, tokens map[string]reviewedToken, objs 
 	}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{functionClaimGVR: "FunctionList"}, dobjs...)
-	return &k8sFunctionIdentities{cs: cs, dyn: dyn, audience: "sts.openinfra", accounts: testDirectory()}
+	return &k8sFunctionIdentities{cs: cs, dyn: dyn, meta: md, audience: "sts.openinfra", accounts: testDirectory()}
 }
 
 // Only a pod Knative runs for the function, as its identity ServiceAccount, is the function. Another pod
@@ -117,7 +142,6 @@ func TestFunctionIdentity_OnlyTheFunctionsOwnPod(t *testing.T) {
 		"unowned-pod":      {user: user, podName: "orders-bare", podID: "uid-bare"},
 		"wrong-uid":        {user: user, podName: "orders-00001-deployment-7f9-abc", podID: "uid-other"},
 		"other-functions":  {user: user, podName: "billing-00001-deployment-1-a", podID: "uid-billing"},
-		"runs-as-default":  {user: user, podName: "orders-00002-deployment-2-b", podID: "uid-default"},
 		"unbound":          {user: user},
 		"not-an-identity":  {user: "system:serviceaccount:shop:orders", podName: "orders-00001-deployment-7f9-abc", podID: "uid-rev"},
 		"unlabelled-sa":    {user: "system:serviceaccount:shop:fn-handmade", podName: "handmade-00001-deployment-1-a", podID: "uid-hand"},
@@ -128,7 +152,6 @@ func TestFunctionIdentity_OnlyTheFunctionsOwnPod(t *testing.T) {
 	var objs []runtime.Object
 	objs = append(objs, revisionPod(ns, "orders-00001-deployment-7f9-abc", "uid-rev", "orders", sa)...)
 	objs = append(objs, revisionPod(ns, "billing-00001-deployment-1-a", "uid-billing", "billing", sa)...)
-	objs = append(objs, revisionPod(ns, "orders-00002-deployment-2-b", "uid-default", "orders", "default")...)
 	objs = append(objs, revisionPod(ns, "handmade-00001-deployment-1-a", "uid-hand", "handmade", "fn-handmade")...)
 	objs = append(objs, revisionPod(ns, "plain-00001-deployment-1-a", "uid-plain", "plain", "fn-plain")...)
 	objs = append(objs, revisionPod(ns, "gone-00001-deployment-1-a", "uid-gone", "gone", "fn-gone")...)
@@ -151,7 +174,7 @@ func TestFunctionIdentity_OnlyTheFunctionsOwnPod(t *testing.T) {
 	for tok, want := range map[string]bool{
 		"revision-pod": true,
 		"app-pod":      false, "labelled-app-pod": false, "unowned-pod": false, "wrong-uid": false, "other-functions": false,
-		"runs-as-default": false, "unbound": false, "not-an-identity": false, "unlabelled-sa": false, "no-such-function": false,
+		"unbound": false, "not-an-identity": false, "unlabelled-sa": false, "no-such-function": false,
 		"platform-ns": false, "unknown": false,
 	} {
 		id, ok := f.functionOf(context.Background(), tok)
@@ -234,7 +257,7 @@ func TestFunctionRole_LambdaTrustedRoleTheFunctionNames(t *testing.T) {
 		t.Errorf("session ARN %q", got)
 	}
 	sess, ok := h.minter.Verify(resp.Result.Credentials.AccessKeyId, resp.Result.Credentials.SessionToken)
-	if !ok || sess.RoleName != "orders-reader" || sess.Account != "" || sess.Caller != ordersUser {
+	if !ok || sess.RoleName != "orders-reader" || sess.Account != "" || sess.Caller != ordersUser || !sess.Federated {
 		t.Errorf("the session: %+v %v", sess, ok)
 	}
 	// With no RoleSessionName the session is still the function's.
@@ -283,6 +306,42 @@ func TestFunctionRole_ExplicitIdentityTrust(t *testing.T) {
 			t.Errorf("role %s trusts neither Lambda nor the identity: %d %s", role, w.Code, w.Body)
 		}
 	}
+}
+
+// Lambda's trust is not honoured on a trust policy with conditions (aws:SourceArn, aws:SourceAccount, …):
+// they are not evaluated for the Lambda service, so the assume fails closed rather than ignore them. A
+// policy without conditions is honoured.
+func TestFunctionRole_ConditionedLambdaTrustFailsClosed(t *testing.T) {
+	lambda := []string{"Service::lambda.amazonaws.com"}
+	plain := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
+	conditioned := `{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole",` +
+		`"Condition":{"StringEquals":{"aws:SourceAccount":"` + testMgmt + `"}}}}`
+	h := functionSTS(t, nil, nil, fakeFunctions{"tok": ordersFunction()}, fakeReviewer{"tok": ordersUser})
+	h.roles = fakeTrustDocRoles{"orders-reader": {trust: lambda, doc: plain}}
+	if w := fnWebIdentity(h, "arn:aws:iam::"+testMgmt+":role/orders-reader", "tok", ""); w.Code != http.StatusOK {
+		t.Fatalf("an unconditioned Lambda trust: %d %s", w.Code, w.Body)
+	}
+	h.roles = fakeTrustDocRoles{"orders-reader": {trust: lambda, doc: conditioned}}
+	if w := fnWebIdentity(h, "arn:aws:iam::"+testMgmt+":role/orders-reader", "tok", ""); w.Code != http.StatusForbidden ||
+		!strings.Contains(w.Body.String(), "conditions") {
+		t.Fatalf("a conditioned Lambda trust must fail closed: %d %s", w.Code, w.Body)
+	}
+	for doc, want := range map[string]bool{"": false, plain: false, conditioned: true, "not json": true} {
+		if got := trustConditioned(doc); got != want {
+			t.Errorf("trustConditioned(%q) = %v", doc, got)
+		}
+	}
+}
+
+// fakeTrustDocRoles resolves roles carrying their trust policy as written.
+type fakeTrustDocRoles map[string]struct {
+	trust []string
+	doc   string
+}
+
+func (f fakeTrustDocRoles) Resolve(_ context.Context, name string) (resolvedRole, bool) {
+	r, ok := f[name]
+	return resolvedRole{trust: r.trust, trustDoc: r.doc, groups: []string{"openinfra:users"}}, ok
 }
 
 // The role is the function's account's: one in the function's namespace first (a stack's role beside its

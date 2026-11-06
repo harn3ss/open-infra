@@ -48,6 +48,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/metadata"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -372,8 +373,11 @@ func run(logger *slog.Logger) error {
 		aud := getenv("STS_WEB_IDENTITY_AUDIENCE", "sts.openinfra")
 		webIDReviewer = &k8sTokenReviewer{cs: cs, audience: aud}
 		logger.Info("sts:AssumeRoleWithWebIdentity enabled (workload identity)", slog.String("audience", aud))
-		if dyn != nil {
-			fnIdentities = &k8sFunctionIdentities{cs: cs, dyn: dyn, audience: aud, accounts: acctDir}
+		// The pod and its controllers are read as metadata only: their specs carry the function's env.
+		if md, merr := metadata.NewForConfig(kc.Config); dyn != nil && merr == nil {
+			fnIdentities = &k8sFunctionIdentities{cs: cs, dyn: dyn, meta: md, audience: aud, accounts: acctDir}
+		} else if merr != nil {
+			logger.Warn("Lambda execution roles disabled: cannot build the metadata client", "err", merr)
 		}
 	}
 

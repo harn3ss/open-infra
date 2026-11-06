@@ -181,10 +181,14 @@ rules:
     resources: [virtualmachineinstances]
     verbs: [get]
   # Lambda execution roles (lambda_role.go): a function's identity token must be bound to a pod Knative runs
-  # for that function, so the shim reads the one pod the TokenReview names (its UID, its ServiceAccount, its
+  # for that function, so the shim reads the one pod the TokenReview names (its UID and
   # serving.knative.dev/service label) and that pod's controller chain — its ReplicaSet and that
   # ReplicaSet's Deployment, which a Knative Revision must own — plus the function identity ServiceAccount
-  # (the serviceaccounts get above) and the kind: Function (aws-shim-functions). Read-only, each object by name.
+  # (the serviceaccounts get above) and the kind: Function (aws-shim-functions). get only, each object by
+  # name, never list or watch. The shim asks for METADATA only (PartialObjectMetadata: name, UID, labels,
+  # owner references), never the specs, which carry the function's environment. RBAC cannot express
+  # "metadata only", so this grant itself would allow a full read; it is cluster-wide because a function
+  # can live in any namespace of any account.
   - apiGroups: [""]
     resources: [pods]
     verbs: [get]

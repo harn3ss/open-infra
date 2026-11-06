@@ -11,12 +11,17 @@
 // The identity is the function's own and cannot be borrowed. ServiceAccount names are predictable, and
 // another workload can run as a ServiceAccount of a chosen name (an Application runs as one named after
 // it), so a token for fn-<function> is not enough. The token must also be bound to a pod (the API server
-// says which, in the TokenReview), and that pod must be one Knative runs for that function: its controller
-// chain (pod → ReplicaSet → Deployment) ends at a Knative Revision, the Deployment carrying Knative's
-// serving.knative.dev/service=<function> label — owner references only the controllers that create those
-// objects set, so a pod's own labels are never the proof — and it must run as that ServiceAccount, which
-// carries the composition's openinfra.dev/function=<function> label. The kind: Function of that name
-// in the pod's namespace then names the role (its spec.role, whose naming took iam:PassRole on it).
+// says which, in the TokenReview; it issues a pod-bound token only for the pod's own ServiceAccount), and
+// that pod must be one Knative runs for that function: its controller chain (pod → ReplicaSet → Deployment)
+// ends at a Knative Revision, the Deployment carrying Knative's serving.knative.dev/service=<function> label
+// — owner references only the controllers that create those objects set, so a pod's own labels are never
+// the proof. The ServiceAccount carries the composition's openinfra.dev/function=<function> label. The
+// kind: Function of that name in the pod's namespace then names the role (its spec.role, whose naming took
+// iam:PassRole on it).
+//
+// The pod, its ReplicaSet and its Deployment are read as METADATA only (PartialObjectMetadata: name, UID,
+// labels, owner references): their specs carry the function's environment, which may hold secret values,
+// and the shim never asks for it.
 //
 // The role is a kind: Role of the function's own account: in the function's namespace (where a
 // CloudFormation stack puts the role it creates beside its function), else in the account's IAM home
@@ -24,22 +29,28 @@
 // is assumed when its trust names lambda.amazonaws.com and the function's spec.role names it, or when its
 // trust names the function's identity itself (system:serviceaccount:<namespace>:fn-<function>), or "*".
 // The session is the function's account's, named after the function (assumed-role/<role>/<function>), as
-// Lambda names it.
+// Lambda names it; like any web-identity session it carries no MFA context. A trust policy with conditions
+// (aws:SourceArn, aws:SourceAccount, …) is not evaluated for the Lambda service, so Lambda's trust is not
+// honoured on one: it fails closed rather than ignore a condition.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
+	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	authnv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/metadata"
 )
 
 const (
@@ -88,14 +99,21 @@ func splitSAUsername(u string) (ns, sa string, ok bool) {
 }
 
 // k8sFunctionIdentities verifies the token with a TokenReview (the shim's STS audience, as the workload
-// identity path does), then reads the pod it is bound to, the ServiceAccount and the kind: Function. Fails
-// closed on any error.
+// identity path does), then reads the metadata of the pod it is bound to and of that pod's controllers, the
+// ServiceAccount and the kind: Function. Fails closed on any error.
 type k8sFunctionIdentities struct {
 	cs       kubernetes.Interface
 	dyn      dynamic.Interface
+	meta     metadata.Interface // metadata-only reads of the pod, its ReplicaSet and its Deployment
 	audience string
 	accounts vmAccounts // the accounts directory; nil: every function is the management account's
 }
+
+var (
+	podsGVR        = schema.GroupVersionResource{Version: "v1", Resource: "pods"}
+	replicaSetsGVR = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "replicasets"}
+	deploymentsGVR = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
+)
 
 func (f *k8sFunctionIdentities) functionOf(ctx context.Context, token string) (functionIdentity, bool) {
 	out, err := f.cs.AuthenticationV1().TokenReviews().Create(ctx, &authnv1.TokenReview{
@@ -113,8 +131,9 @@ func (f *k8sFunctionIdentities) functionOf(ctx context.Context, token string) (f
 	if podName == "" || podUID == "" {
 		return functionIdentity{}, false // not a pod-bound token: no pod to check it against
 	}
-	pod, err := f.cs.CoreV1().Pods(ns).Get(ctx, podName, metav1.GetOptions{})
-	if err != nil || string(pod.UID) != podUID || pod.Labels[knativeServiceLabel] != fn || pod.Spec.ServiceAccountName != sa {
+	// A pod-bound token is issued only for the pod's own ServiceAccount, so the pod runs as sa.
+	pod, err := f.meta.Resource(podsGVR).Namespace(ns).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil || string(pod.UID) != podUID || pod.Labels[knativeServiceLabel] != fn {
 		return functionIdentity{}, false
 	}
 	if !f.knativeRevisionPod(ctx, ns, fn, pod.OwnerReferences) {
@@ -150,7 +169,7 @@ func (f *k8sFunctionIdentities) knativeRevisionPod(ctx context.Context, ns, fn s
 	if rsRef == nil || rsRef.Kind != "ReplicaSet" || rsRef.APIVersion != "apps/v1" {
 		return false
 	}
-	rs, err := f.cs.AppsV1().ReplicaSets(ns).Get(ctx, rsRef.Name, metav1.GetOptions{})
+	rs, err := f.meta.Resource(replicaSetsGVR).Namespace(ns).Get(ctx, rsRef.Name, metav1.GetOptions{})
 	if err != nil || rs.UID != rsRef.UID {
 		return false
 	}
@@ -158,7 +177,7 @@ func (f *k8sFunctionIdentities) knativeRevisionPod(ctx context.Context, ns, fn s
 	if depRef == nil || depRef.Kind != "Deployment" || depRef.APIVersion != "apps/v1" {
 		return false
 	}
-	dep, err := f.cs.AppsV1().Deployments(ns).Get(ctx, depRef.Name, metav1.GetOptions{})
+	dep, err := f.meta.Resource(deploymentsGVR).Namespace(ns).Get(ctx, depRef.Name, metav1.GetOptions{})
 	if err != nil || dep.UID != depRef.UID || dep.Labels[knativeServiceLabel] != fn {
 		return false
 	}
@@ -206,9 +225,14 @@ func (h *stsHandler) assumeFunctionRole(w http.ResponseWriter, r *http.Request, 
 		deny("not named by its trust policy")
 		return
 	}
-	// Lambda assumes the role the function names, when the role trusts Lambda; any identity the role's
-	// trust names itself assumes it too.
-	if !(trustsService(role.trust, lambdaService) && namesRole(fn.role, roleName, acct)) && !trustedFrom(who, role.trust, acct) {
+	// Lambda assumes the role the function names, when the role trusts Lambda (with no conditions it would
+	// have to evaluate); any identity the role's trust names itself assumes it too.
+	lambda := trustsService(role.trust, lambdaService) && namesRole(fn.role, roleName, acct)
+	if lambda && trustConditioned(role.trustDoc) {
+		deny("its trust policy has conditions, which are not evaluated for the Lambda service")
+		return
+	}
+	if !lambda && !trustedFrom(who, role.trust, acct) {
 		deny("not named by its trust policy")
 		return
 	}
@@ -220,12 +244,42 @@ func (h *stsHandler) assumeFunctionRole(w http.ResponseWriter, r *http.Request, 
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, bad, stsXMLNamespace)
 		return
 	}
-	akid, sk, tok, exp, err := h.minter.MintInAccount(fn.account, roleNS, roleName, role.groups, sessionName, fn.username, ttl)
+	// A web-identity session: in the function's account, as its role (in roleNS), with no MFA context.
+	akid, sk, tok, exp, err := h.minter.MintSession(awssts.Session{RoleName: roleName, Namespace: roleNS, Account: fn.account,
+		Groups: role.groups, SessionName: sessionName, Caller: fn.username, Federated: true}, ttl, awssts.MaxDuration)
 	if err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not mint credentials", stsXMLNamespace)
 		return
 	}
 	h.writeWebIdentityIn(w, acct, roleName, sessionName, fn.username, akid, sk, tok, exp, requestID)
+}
+
+// trustConditioned reports whether a trust policy, as written, has a statement with a Condition (or does not
+// parse, which never widens a trust).
+func trustConditioned(doc string) bool {
+	if doc == "" {
+		return false
+	}
+	var d struct {
+		Statement json.RawMessage
+	}
+	if json.Unmarshal([]byte(doc), &d) != nil {
+		return true
+	}
+	var many []map[string]json.RawMessage
+	if json.Unmarshal(d.Statement, &many) != nil {
+		var one map[string]json.RawMessage
+		if json.Unmarshal(d.Statement, &one) != nil {
+			return true
+		}
+		many = []map[string]json.RawMessage{one}
+	}
+	for _, st := range many {
+		if _, ok := st["Condition"]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // functionRoleOf finds a function's role: in the function's own namespace, else its account's IAM home.
