@@ -150,7 +150,7 @@ func (h *ecsDoorway) createService(ctx context.Context, w http.ResponseWriter, r
 		h.internal(w, requestID, err)
 		return
 	}
-	if !foundTD {
+	if !foundTD || h.otherAccountsARN(ctx, tdRef) {
 		writeECSError(w, http.StatusBadRequest, "ClientException", requestID,
 			"task definition is not registered via this shim: "+tdRef+" (register it with RegisterTaskDefinition; an external task-definition ARN has no open-infra form)")
 		return
@@ -160,7 +160,7 @@ func (h *ecsDoorway) createService(ctx context.Context, w http.ResponseWriter, r
 	if !ok {
 		return
 	}
-	ap, aerr := h.applierFor(claims)
+	ap, aerr := h.applierFor(ctx, claims)
 	if aerr != nil {
 		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, aerr.Error())
 		return
@@ -176,17 +176,18 @@ func (h *ecsDoorway) createService(ctx context.Context, w http.ResponseWriter, r
 		h.internal(w, requestID, err)
 		return
 	}
+	opts := h.deployOpts(ctx, appName)
 	go func() {
 		bctx, cancel := context.WithTimeout(context.Background(), cfnAsyncTimeout)
 		defer cancel()
-		if _, derr := cfn.Deploy(bctx, tmpl, h.deployOpts(appName), ap); derr != nil {
+		if _, derr := cfn.Deploy(bctx, tmpl, opts, ap); derr != nil {
 			h.logger.Warn("ecs CreateService deploy failed", "service", serviceName, "error", derr.Error())
 			ap.backstopTerminal(bctx, appName, "CREATE_FAILED", derr.Error())
 		}
 	}()
 	h.audit(ctx, "CreateService", serviceName, "allow", "")
 	writeECSJSON(w, requestID, map[string]any{
-		"service": h.serviceObject(serviceName, cluster, body["taskDefinition"].(string), ecsDesired(body), 0, "ACTIVE", now, firstString(body, "launchType")),
+		"service": h.serviceObject(ctx, serviceName, cluster, body["taskDefinition"].(string), ecsDesired(body), 0, "ACTIVE", now, firstString(body, "launchType")),
 	})
 }
 
@@ -210,6 +211,10 @@ func (h *ecsDoorway) updateService(ctx context.Context, w http.ResponseWriter, r
 	// (loadBalancers, networkConfiguration) are preserved, so a desiredCount-only update is faithful.
 	newBody := cloneMap(ref.Body)
 	if v := firstString(body, "taskDefinition"); v != "" {
+		if h.otherAccountsARN(ctx, v) {
+			writeECSError(w, http.StatusBadRequest, "ClientException", requestID, "task definition is not registered via this shim: "+v)
+			return
+		}
 		newBody["taskDefinition"] = v
 	}
 	if v, ok := body["desiredCount"]; ok {
@@ -231,7 +236,7 @@ func (h *ecsDoorway) updateService(ctx context.Context, w http.ResponseWriter, r
 	if !ok {
 		return
 	}
-	ap, aerr := h.applierFor(claims)
+	ap, aerr := h.applierFor(ctx, claims)
 	if aerr != nil {
 		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, aerr.Error())
 		return
@@ -241,17 +246,18 @@ func (h *ecsDoorway) updateService(ctx context.Context, w http.ResponseWriter, r
 		h.internal(w, requestID, err)
 		return
 	}
+	opts := h.deployOpts(ctx, appName)
 	go func() {
 		bctx, cancel := context.WithTimeout(context.Background(), cfnAsyncTimeout)
 		defer cancel()
-		if _, derr := cfn.Update(bctx, tmpl, h.deployOpts(appName), ap); derr != nil {
+		if _, derr := cfn.Update(bctx, tmpl, opts, ap); derr != nil {
 			h.logger.Warn("ecs UpdateService update failed", "service", serviceName, "error", derr.Error())
 			ap.backstopTerminal(bctx, appName, "UPDATE_FAILED", derr.Error())
 		}
 	}()
 	h.audit(ctx, "UpdateService", serviceName, "allow", "")
 	writeECSJSON(w, requestID, map[string]any{
-		"service": h.serviceObject(serviceName, strOrDefault(ref.Cluster, "default"), newBody["taskDefinition"].(string), ecsDesired(newBody), 0, "ACTIVE", ref.CreatedAt, firstString(newBody, "launchType")),
+		"service": h.serviceObject(ctx, serviceName, strOrDefault(ref.Cluster, "default"), newBody["taskDefinition"].(string), ecsDesired(newBody), 0, "ACTIVE", ref.CreatedAt, firstString(newBody, "launchType")),
 	})
 }
 
@@ -271,15 +277,16 @@ func (h *ecsDoorway) deleteService(ctx context.Context, w http.ResponseWriter, r
 		writeECSError(w, http.StatusBadRequest, "ServiceNotFoundException", requestID, "Service not found: "+serviceName)
 		return
 	}
-	ap, aerr := h.applierFor(claims)
+	ap, aerr := h.applierFor(ctx, claims)
 	if aerr != nil {
 		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, aerr.Error())
 		return
 	}
+	opts := h.deployOpts(ctx, appName)
 	go func() {
 		bctx, cancel := context.WithTimeout(context.Background(), cfnAsyncTimeout)
 		defer cancel()
-		if _, derr := cfn.Destroy(bctx, h.deployOpts(appName), ap); derr != nil {
+		if _, derr := cfn.Destroy(bctx, opts, ap); derr != nil {
 			h.logger.Warn("ecs DeleteService destroy failed", "service", serviceName, "error", derr.Error())
 			ap.backstopTerminal(bctx, appName, "DELETE_FAILED", derr.Error())
 		}
@@ -289,7 +296,7 @@ func (h *ecsDoorway) deleteService(ctx context.Context, w http.ResponseWriter, r
 	}
 	h.audit(ctx, "DeleteService", serviceName, "allow", "")
 	writeECSJSON(w, requestID, map[string]any{
-		"service": h.serviceObject(serviceName, strOrDefault(ref.Cluster, "default"), firstString(ref.Body, "taskDefinition"), ecsDesired(ref.Body), 0, "DRAINING", ref.CreatedAt, firstString(ref.Body, "launchType")),
+		"service": h.serviceObject(ctx, serviceName, strOrDefault(ref.Cluster, "default"), firstString(ref.Body, "taskDefinition"), ecsDesired(ref.Body), 0, "DRAINING", ref.CreatedAt, firstString(ref.Body, "launchType")),
 	})
 }
 
@@ -299,7 +306,7 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 		writeECSError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "DescribeServices requires at least one service.")
 		return
 	}
-	ap, aerr := h.applierFor(claims)
+	ap, aerr := h.applierFor(ctx, claims)
 	if aerr != nil {
 		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, aerr.Error())
 		return
@@ -317,10 +324,14 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 				cluster = ref.Cluster
 			}
 		}
+		if h.otherAccountsARN(ctx, raw) {
+			failures = append(failures, map[string]any{"arn": raw, "reason": "MISSING"})
+			continue
+		}
 		obj := ecsAppObject(ctx, ap, appName)
 		spec, found, err := ap.GetSpec(ctx, ecsAppAPIVersion, "Application", obj)
 		if err != nil || !found {
-			failures = append(failures, map[string]any{"arn": h.serviceArn(cluster, svcName), "reason": "MISSING"})
+			failures = append(failures, map[string]any{"arn": h.serviceArn(ctx, cluster, svcName), "reason": "MISSING"})
 			continue
 		}
 		desired := specScalingMin(spec)
@@ -331,13 +342,13 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 		if rdy, _, _ := ap.GetReady(ctx, ecsAppAPIVersion, "Application", obj); rdy {
 			running = desired
 		}
-		services = append(services, h.serviceObject(svcName, cluster, tdRef, desired, running, "ACTIVE", "", ""))
+		services = append(services, h.serviceObject(ctx, svcName, cluster, tdRef, desired, running, "ACTIVE", "", ""))
 	}
 	writeECSJSON(w, requestID, map[string]any{"services": services, "failures": failures})
 }
 
 func (h *ecsDoorway) listServices(ctx context.Context, w http.ResponseWriter, requestID string, claims iam.Claims, body map[string]any) {
-	ap, aerr := h.applierFor(claims)
+	ap, aerr := h.applierFor(ctx, claims)
 	if aerr != nil {
 		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, aerr.Error())
 		return
@@ -348,7 +359,7 @@ func (h *ecsDoorway) listServices(ctx context.Context, w http.ResponseWriter, re
 		if _, found, _ := ap.GetSpec(ctx, ecsAppAPIVersion, "Application", ecsAppObject(ctx, ap, appName)); !found {
 			continue // the service record outlived its Application (mid-delete) — don't report a dead ARN
 		}
-		arns = append(arns, h.serviceArn(strOrDefault(ref.Cluster, "default"), ref.ServiceName))
+		arns = append(arns, h.serviceArn(ctx, strOrDefault(ref.Cluster, "default"), ref.ServiceName))
 	}
 	writeECSJSON(w, requestID, map[string]any{"serviceArns": arns})
 }
@@ -374,12 +385,12 @@ func (h *ecsDoorway) gateTemplate(ctx context.Context, w http.ResponseWriter, re
 	}
 	// The translate gate — the ECS-specific refusals (raw subnet, host/EFS volume, Command override,
 	// untranslatable property) live here, and BuildChangeSet runs it read-only (applies nothing).
-	ap, aerr := h.applierFor(claims)
+	ap, aerr := h.applierFor(ctx, claims)
 	if aerr != nil {
 		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, aerr.Error())
 		return nil, false
 	}
-	if _, _, _, cerr := cfn.BuildChangeSet(ctx, tmpl, h.deployOpts(appName), ap); cerr != nil {
+	if _, _, _, cerr := cfn.BuildChangeSet(ctx, tmpl, h.deployOpts(ctx, appName), ap); cerr != nil {
 		writeECSError(w, http.StatusBadRequest, "InvalidParameterException", requestID,
 			"service refused (nothing created): "+cerr.Error())
 		return nil, false

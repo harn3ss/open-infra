@@ -26,9 +26,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -95,10 +97,37 @@ func (h *ecsDoorway) authFailure(w http.ResponseWriter, _ *http.Request, request
 		"The request signature we calculated does not match the signature you provided.")
 }
 
+// ECS keeps each account's clusters, task definitions and services apart: a member account's records, its
+// services' kind: Applications and their stack records are kept in its home namespace, the management
+// account's in the ECS namespace as always, and every ARN carries the caller's account.
+func init() { accountScopedServices["ecs"] = true }
+
+// nsFor is the namespace the caller's account's ECS resources are kept in: the ECS namespace for the
+// management account (where they always were), a member account's home for a member's.
+func (h *ecsDoorway) nsFor(ctx context.Context) string { return accountNamespace(ctx, h.ns) }
+
+// arnAccount is the account of the request's ARNs: the install's for the management account (exactly as
+// before), the member account's for a member's.
+func (h *ecsDoorway) arnAccount(ctx context.Context) string {
+	if !isMemberRequest(ctx) {
+		return h.account
+	}
+	return callerAccount(ctx)
+}
+
+// otherAccountsARN reports whether a member account's request names a resource by an ARN of another
+// account: no task definition, service or cluster of another account is ever one of the member's, so such
+// a reference is not found (it never resolves to the member's resource of the same name, nor to the other
+// account's). The management account's references resolve by name, as they always did.
+func (h *ecsDoorway) otherAccountsARN(ctx context.Context, ref string) bool {
+	ref = strings.TrimSpace(ref)
+	return isMemberRequest(ctx) && strings.HasPrefix(ref, "arn:") && awsidentity.AccountOfARN(ref) != callerAccount(ctx)
+}
+
 // applierFor builds an Applier that impersonates the caller for resource ops (the authority seam —
 // VERBATIM the CloudFormation doorway's, so ECS provisions with exactly the caller's authority: in
-// enforce its account-qualified identity, callerIdentity).
-func (h *ecsDoorway) applierFor(claims iam.Claims) (*impersonatingApplier, error) {
+// enforce its account-qualified identity, callerIdentity), in the caller's account's namespace.
+func (h *ecsDoorway) applierFor(ctx context.Context, claims iam.Claims) (*impersonatingApplier, error) {
 	user, groups, ok := callerIdentity(context.Background(), h.authz, claims)
 	if !ok {
 		return nil, noCallerIdentity(claims)
@@ -109,7 +138,7 @@ func (h *ecsDoorway) applierFor(claims iam.Claims) (*impersonatingApplier, error
 	if err != nil {
 		return nil, err
 	}
-	return &impersonatingApplier{caller: cdyn, shim: h.shimDyn, mapper: h.mapper, ns: h.ns}, nil
+	return &impersonatingApplier{caller: cdyn, shim: h.shimDyn, mapper: h.mapper, ns: h.nsFor(ctx)}, nil
 }
 
 // verbForECSOp maps an ECS operation to the coarse RBAC verb its SubjectAccessReview checks
@@ -240,7 +269,7 @@ func (h *ecsDoorway) registerTaskDefinition(ctx context.Context, w http.Response
 		return
 	}
 	h.audit(ctx, "RegisterTaskDefinition", family, "allow", "")
-	writeECSJSON(w, requestID, map[string]any{"taskDefinition": h.taskDefObject(family, rev, "ACTIVE", body)})
+	writeECSJSON(w, requestID, map[string]any{"taskDefinition": h.taskDefObject(ctx, family, rev, "ACTIVE", body)})
 }
 
 func (h *ecsDoorway) describeTaskDefinition(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -255,12 +284,12 @@ func (h *ecsDoorway) describeTaskDefinition(ctx context.Context, w http.Response
 		h.internal(w, requestID, err)
 		return
 	}
-	if !found {
+	if !found || h.otherAccountsARN(ctx, ref) {
 		writeECSError(w, http.StatusBadRequest, "ClientException", requestID, "Unable to describe task definition: "+ref)
 		return
 	}
 	h.audit(ctx, "DescribeTaskDefinition", stored.Family, "allow", "")
-	writeECSJSON(w, requestID, map[string]any{"taskDefinition": h.taskDefObject(stored.Family, stored.Revision, "ACTIVE", stored.Body)})
+	writeECSJSON(w, requestID, map[string]any{"taskDefinition": h.taskDefObject(ctx, stored.Family, stored.Revision, "ACTIVE", stored.Body)})
 }
 
 func (h *ecsDoorway) deregisterTaskDefinition(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -276,7 +305,7 @@ func (h *ecsDoorway) deregisterTaskDefinition(ctx context.Context, w http.Respon
 		h.internal(w, requestID, err)
 		return
 	}
-	if !found {
+	if !found || h.otherAccountsARN(ctx, ref) {
 		writeECSError(w, http.StatusBadRequest, "ClientException", requestID, "Unable to describe task definition: "+ref)
 		return
 	}
@@ -285,17 +314,17 @@ func (h *ecsDoorway) deregisterTaskDefinition(ctx context.Context, w http.Respon
 		return
 	}
 	h.audit(ctx, "DeregisterTaskDefinition", family, "allow", "")
-	writeECSJSON(w, requestID, map[string]any{"taskDefinition": h.taskDefObject(stored.Family, stored.Revision, "INACTIVE", stored.Body)})
+	writeECSJSON(w, requestID, map[string]any{"taskDefinition": h.taskDefObject(ctx, stored.Family, stored.Revision, "INACTIVE", stored.Body)})
 }
 
 // taskDefObject echoes the registered task definition (faithful round-trip) plus the synthesized
 // family/revision/arn/status the SDK expects.
-func (h *ecsDoorway) taskDefObject(family string, rev int, status string, body map[string]any) map[string]any {
+func (h *ecsDoorway) taskDefObject(ctx context.Context, family string, rev int, status string, body map[string]any) map[string]any {
 	td := cloneMap(body)
 	td["family"] = family
 	td["revision"] = rev
 	td["status"] = status
-	td["taskDefinitionArn"] = h.taskDefArn(family, rev)
+	td["taskDefinitionArn"] = h.taskDefArn(ctx, family, rev)
 	return td
 }
 
@@ -309,7 +338,7 @@ func (h *ecsDoorway) createCluster(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 	h.audit(ctx, "CreateCluster", name, "allow", "")
-	writeECSJSON(w, requestID, map[string]any{"cluster": h.clusterObject(name, "ACTIVE")})
+	writeECSJSON(w, requestID, map[string]any{"cluster": h.clusterObject(ctx, name, "ACTIVE")})
 }
 
 func (h *ecsDoorway) deleteCluster(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -332,7 +361,7 @@ func (h *ecsDoorway) deleteCluster(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 	h.audit(ctx, "DeleteCluster", name, "allow", "")
-	writeECSJSON(w, requestID, map[string]any{"cluster": h.clusterObject(name, "INACTIVE")})
+	writeECSJSON(w, requestID, map[string]any{"cluster": h.clusterObject(ctx, name, "INACTIVE")})
 }
 
 func (h *ecsDoorway) describeClusters(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
@@ -340,15 +369,15 @@ func (h *ecsDoorway) describeClusters(ctx context.Context, w http.ResponseWriter
 	var clusters, failures []any
 	if len(names) == 0 {
 		for _, c := range h.listClusters(ctx) {
-			clusters = append(clusters, h.clusterObject(c.ClusterName, c.Status))
+			clusters = append(clusters, h.clusterObject(ctx, c.ClusterName, c.Status))
 		}
 	} else {
 		for _, raw := range names {
 			cn := lastSlashSeg(raw)
-			if _, found, _ := h.getCluster(ctx, cn); found {
-				clusters = append(clusters, h.clusterObject(cn, "ACTIVE"))
+			if _, found, _ := h.getCluster(ctx, cn); found && !h.otherAccountsARN(ctx, raw) {
+				clusters = append(clusters, h.clusterObject(ctx, cn, "ACTIVE"))
 			} else {
-				failures = append(failures, map[string]any{"arn": h.clusterArn(cn), "reason": "MISSING"})
+				failures = append(failures, map[string]any{"arn": h.clusterArn(ctx, cn), "reason": "MISSING"})
 			}
 		}
 	}
@@ -358,14 +387,14 @@ func (h *ecsDoorway) describeClusters(ctx context.Context, w http.ResponseWriter
 func (h *ecsDoorway) listClustersOp(ctx context.Context, w http.ResponseWriter, requestID string) {
 	arns := []any{}
 	for _, c := range h.listClusters(ctx) {
-		arns = append(arns, h.clusterArn(c.ClusterName))
+		arns = append(arns, h.clusterArn(ctx, c.ClusterName))
 	}
 	writeECSJSON(w, requestID, map[string]any{"clusterArns": arns})
 }
 
-func (h *ecsDoorway) clusterObject(name, status string) map[string]any {
+func (h *ecsDoorway) clusterObject(ctx context.Context, name, status string) map[string]any {
 	return map[string]any{
-		"clusterArn":                        h.clusterArn(name),
+		"clusterArn":                        h.clusterArn(ctx, name),
 		"clusterName":                       name,
 		"status":                            status,
 		"registeredContainerInstancesCount": 0,
@@ -377,16 +406,25 @@ func (h *ecsDoorway) clusterObject(name, status string) map[string]any {
 
 // --- shared helpers ---
 
-func (h *ecsDoorway) deployOpts(stackName string) cfn.DeployOptions {
-	return cfn.DeployOptions{StackName: stackName, Namespace: h.ns, Wait: true, Timeout: cfnWaitTimeout}
+// deployOpts are the cfn engine options of a service's stack in the caller's account: its namespace, and
+// for a member account the StackId of the stack in that account (derived from its home and the stack's
+// name, so its create, every update and its delete name the same one), from which the engine resolves the
+// stack's AWS::AccountId (and every ARN it builds) to the member account. The management account's stack
+// keeps the derived StackId the engine always gave it.
+func (h *ecsDoorway) deployOpts(ctx context.Context, stackName string) cfn.DeployOptions {
+	opts := cfn.DeployOptions{StackName: stackName, Namespace: h.nsFor(ctx), Wait: true, Timeout: cfnWaitTimeout}
+	if isMemberRequest(ctx) {
+		opts.StackID = awsidentity.FromContext(ctx).StackID(stackName)
+	}
+	return opts
 }
 
-func (h *ecsDoorway) serviceObject(serviceName, cluster, tdRef string, desired, running int, status, createdAt, launchType string) map[string]any {
+func (h *ecsDoorway) serviceObject(ctx context.Context, serviceName, cluster, tdRef string, desired, running int, status, createdAt, launchType string) map[string]any {
 	obj := map[string]any{
-		"serviceArn":         h.serviceArn(cluster, serviceName),
+		"serviceArn":         h.serviceArn(ctx, cluster, serviceName),
 		"serviceName":        serviceName,
-		"clusterArn":         h.clusterArn(cluster),
-		"taskDefinition":     h.taskDefArnFromRef(tdRef),
+		"clusterArn":         h.clusterArn(ctx, cluster),
+		"taskDefinition":     h.taskDefArnFromRef(ctx, tdRef),
 		"desiredCount":       desired,
 		"runningCount":       running,
 		"pendingCount":       0,
@@ -402,21 +440,21 @@ func (h *ecsDoorway) serviceObject(serviceName, cluster, tdRef string, desired, 
 	return obj
 }
 
-func (h *ecsDoorway) serviceArn(cluster, name string) string {
-	return fmt.Sprintf("arn:aws:ecs:%s:%s:service/%s/%s", h.region, h.account, strOrDefault(cluster, "default"), name)
+func (h *ecsDoorway) serviceArn(ctx context.Context, cluster, name string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:service/%s/%s", h.region, h.arnAccount(ctx), strOrDefault(cluster, "default"), name)
 }
-func (h *ecsDoorway) clusterArn(name string) string {
-	return fmt.Sprintf("arn:aws:ecs:%s:%s:cluster/%s", h.region, h.account, name)
+func (h *ecsDoorway) clusterArn(ctx context.Context, name string) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:cluster/%s", h.region, h.arnAccount(ctx), name)
 }
-func (h *ecsDoorway) taskDefArn(family string, rev int) string {
-	return fmt.Sprintf("arn:aws:ecs:%s:%s:task-definition/%s:%d", h.region, h.account, family, rev)
+func (h *ecsDoorway) taskDefArn(ctx context.Context, family string, rev int) string {
+	return fmt.Sprintf("arn:aws:ecs:%s:%s:task-definition/%s:%d", h.region, h.arnAccount(ctx), family, rev)
 }
-func (h *ecsDoorway) taskDefArnFromRef(ref string) string {
+func (h *ecsDoorway) taskDefArnFromRef(ctx context.Context, ref string) string {
 	fam, rev := parseTaskDef(ref)
 	if fam == "" {
 		return ref
 	}
-	return h.taskDefArn(fam, rev)
+	return h.taskDefArn(ctx, fam, rev)
 }
 
 func (h *ecsDoorway) internal(w http.ResponseWriter, requestID string, err error) {

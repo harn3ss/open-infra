@@ -1,9 +1,11 @@
 // ECS doorway bookkeeping.
 //
-// The ECS front door keeps three kinds of small ConfigMap records in the shim's namespace, written
+// The ECS front door keeps three kinds of small ConfigMap records in the caller's account's ECS namespace
+// (the ECS namespace for the management account, a member account's home for a member's — nsFor), written
 // with the shim's OWN ServiceAccount (h.shimDyn) — they are the doorway's internal metadata, not the
 // caller's workload resources (those are the kind: Application the impersonatingApplier creates under
-// the caller's authority). The records are:
+// the caller's authority). An account's records are read, listed and deleted in its namespace alone, so
+// the same family, cluster or service name lives in each account independently. The records are:
 //
 //   - ecs-taskdef-<family>-<rev>  : a registered task definition (the raw RegisterTaskDefinition body
 //   - family/revision). A task definition provisions nothing on its own; it is inlined into an
@@ -70,18 +72,19 @@ func serviceCMName(name string) string { return "ecs-service-" + ecsLabel(name) 
 
 func (h *ecsDoorway) putConfigMap(ctx context.Context, name string, data, labels map[string]any) error {
 	labels["app.kubernetes.io/managed-by"] = ecsManagedBy
+	ns := h.nsFor(ctx)
 	cm := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
 		"kind":       "ConfigMap",
-		"metadata":   map[string]any{"name": name, "namespace": h.ns, "labels": labels},
+		"metadata":   map[string]any{"name": name, "namespace": ns, "labels": labels},
 		"data":       data,
 	}}
-	_, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Apply(ctx, name, cm, metav1.ApplyOptions{FieldManager: ecsFieldManager, Force: true})
+	_, err := h.shimDyn.Resource(configMapGVR).Namespace(ns).Apply(ctx, name, cm, metav1.ApplyOptions{FieldManager: ecsFieldManager, Force: true})
 	return err
 }
 
 func (h *ecsDoorway) getConfigMap(ctx context.Context, name string) (*unstructured.Unstructured, bool, error) {
-	u, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Get(ctx, name, metav1.GetOptions{})
+	u, err := h.shimDyn.Resource(configMapGVR).Namespace(h.nsFor(ctx)).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil, false, nil
 	}
@@ -92,7 +95,7 @@ func (h *ecsDoorway) getConfigMap(ctx context.Context, name string) (*unstructur
 }
 
 func (h *ecsDoorway) deleteConfigMap(ctx context.Context, name string) error {
-	err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).Delete(ctx, name, metav1.DeleteOptions{})
+	err := h.shimDyn.Resource(configMapGVR).Namespace(h.nsFor(ctx)).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -148,7 +151,7 @@ func (h *ecsDoorway) getTaskDef(ctx context.Context, family string, rev int) (ec
 
 // latestRevision returns the highest registered revision for a family (0 when none are registered).
 func (h *ecsDoorway) latestRevision(ctx context.Context, family string) int {
-	list, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).List(ctx, metav1.ListOptions{
+	list, err := h.shimDyn.Resource(configMapGVR).Namespace(h.nsFor(ctx)).List(ctx, metav1.ListOptions{
 		LabelSelector: "app.kubernetes.io/managed-by=" + ecsManagedBy + ",ecs.openinfra.dev/family=" + ecsLabel(family),
 	})
 	if err != nil {
@@ -211,7 +214,7 @@ func (h *ecsDoorway) removeCluster(ctx context.Context, name string) error {
 }
 
 func (h *ecsDoorway) listClusters(ctx context.Context) []ecsStoredCluster {
-	list, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).List(ctx, metav1.ListOptions{
+	list, err := h.shimDyn.Resource(configMapGVR).Namespace(h.nsFor(ctx)).List(ctx, metav1.ListOptions{
 		LabelSelector: "app.kubernetes.io/managed-by=" + ecsManagedBy,
 	})
 	if err != nil {
@@ -268,7 +271,7 @@ func (h *ecsDoorway) deleteServiceRef(ctx context.Context, name string) error {
 }
 
 func (h *ecsDoorway) listServiceRefs(ctx context.Context) []*ecsServiceRef {
-	list, err := h.shimDyn.Resource(configMapGVR).Namespace(h.ns).List(ctx, metav1.ListOptions{
+	list, err := h.shimDyn.Resource(configMapGVR).Namespace(h.nsFor(ctx)).List(ctx, metav1.ListOptions{
 		LabelSelector: "app.kubernetes.io/managed-by=" + ecsManagedBy,
 	})
 	if err != nil {
