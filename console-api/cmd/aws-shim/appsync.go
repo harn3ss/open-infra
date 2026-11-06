@@ -44,6 +44,10 @@ type appsyncHandler struct {
 	logger *slog.Logger
 	// account and region make an API's ARN in the management reads (appsync_read.go).
 	account, region string
+	// accounts names the account each namespace belongs to (internal/accounts.Directory): the management
+	// plane reaches the caller's account's APIs alone (appsync_accounts.go). nil: a member account's APIs
+	// are those in its home alone, and the management account reaches every namespace, as before accounts.
+	accounts appsyncAccounts
 }
 
 func newAppsyncHandler(cs kubernetes.Interface, endpoint, authzNS string, logger *slog.Logger) *appsyncHandler {
@@ -137,8 +141,14 @@ func (h *appsyncHandler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	// data-plane check: an assumed role's authority is its data-plane policy (CanDo passes a role), so it is
 	// default-deny for a role; for a User it holds an explicit Deny of appsync:GraphQL (the gate stays its
 	// grant). In enforce IAM policy alone.
-	if ok, reason := decide(r.Context(), r, h.authz, claims, "appsync:GraphQL", "GraphQLApi", "",
-		coarseThenDataPlane(r.Context(), r, h.cs, h.authz, claims, "get", "openinfra.dev", "applications", h.authzNS, "",
+	//
+	// The engine behind this endpoint is the platform's one open-appsync engine, the management account's
+	// (each account's GraphQLApi claims are its own on the management plane): a member account's principal
+	// reaches it as AWS reaches another account's resource, so the request is decided outside the account
+	// scope the router gave the "appsync" signing name (appsync_accounts.go).
+	dctx := withAccountScope(r.Context(), false)
+	if ok, reason := decide(dctx, r, h.authz, claims, "appsync:GraphQL", "GraphQLApi", "",
+		coarseThenDataPlane(dctx, r, h.cs, h.authz, claims, "get", "openinfra.dev", "applications", h.authzNS, "",
 			"appsync:GraphQL", "GraphQLApi", "")); !ok {
 		h.logger.Warn("appsync denied (data plane)", "user", claims.Sub, "reason", reason)
 		writeAppsyncError(w, http.StatusForbidden, "UnauthorizedException", requestID,

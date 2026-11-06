@@ -18,6 +18,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -55,6 +56,10 @@ func (h *appsyncHandler) serveRead(w http.ResponseWriter, r *http.Request, claim
 		writeMgmtDenied(r.Context(), w, requestID, claims, "appsync:"+verb, p.apiID, reason)
 		return
 	}
+	if !h.ownsNamespace(r.Context(), p.ns) { // another account's API is none of the caller's: not found
+		writeMgmtError(w, http.StatusNotFound, "NotFoundException", requestID, "GraphQL API "+p.apiID+" not found.")
+		return
+	}
 	obj, err := h.apis.Get(r.Context(), p.ns, p.name)
 	if err != nil {
 		writeMgmtError(w, http.StatusNotFound, "NotFoundException", requestID, "GraphQL API "+p.apiID+" not found.")
@@ -64,7 +69,7 @@ func (h *appsyncHandler) serveRead(w http.ResponseWriter, r *http.Request, claim
 	q := r.URL.Query()
 	switch verb {
 	case "GetGraphqlApi":
-		writeMgmtJSON(w, http.StatusOK, requestID, map[string]any{"graphqlApi": h.graphqlAPIJSON(p.apiID, obj)})
+		writeMgmtJSON(w, http.StatusOK, requestID, map[string]any{"graphqlApi": h.graphqlAPIJSON(r.Context(), p.apiID, obj)})
 	case "GetIntrospectionSchema":
 		switch q.Get("format") {
 		case "SDL":
@@ -91,7 +96,7 @@ func (h *appsyncHandler) serveRead(w http.ResponseWriter, r *http.Request, claim
 	case "GetDataSource":
 		for _, it := range specList(spec, "dataSources") {
 			if ds, ok := it.(map[string]any); ok && ds["name"] == p.dsName {
-				writeMgmtJSON(w, http.StatusOK, requestID, map[string]any{"dataSource": h.dataSourceJSON(p.apiID, ds)})
+				writeMgmtJSON(w, http.StatusOK, requestID, map[string]any{"dataSource": h.dataSourceJSON(r.Context(), p.apiID, ds)})
 				return
 			}
 		}
@@ -100,7 +105,7 @@ func (h *appsyncHandler) serveRead(w http.ResponseWriter, r *http.Request, claim
 		var items []map[string]any
 		for _, it := range specList(spec, "dataSources") {
 			if ds, ok := it.(map[string]any); ok {
-				items = append(items, h.dataSourceJSON(p.apiID, ds))
+				items = append(items, h.dataSourceJSON(r.Context(), p.apiID, ds))
 			}
 		}
 		page, next, ok := appsyncPage(items, q)
@@ -112,7 +117,7 @@ func (h *appsyncHandler) serveRead(w http.ResponseWriter, r *http.Request, claim
 	case "GetFunction":
 		for _, fn := range pipelineFunctions(spec) {
 			if fn.id == p.fnID {
-				writeMgmtJSON(w, http.StatusOK, requestID, map[string]any{"functionConfiguration": h.functionJSON(p.apiID, fn)})
+				writeMgmtJSON(w, http.StatusOK, requestID, map[string]any{"functionConfiguration": h.functionJSON(r.Context(), p.apiID, fn)})
 				return
 			}
 		}
@@ -120,7 +125,7 @@ func (h *appsyncHandler) serveRead(w http.ResponseWriter, r *http.Request, claim
 	case "ListFunctions":
 		var items []map[string]any
 		for _, fn := range pipelineFunctions(spec) {
-			items = append(items, h.functionJSON(p.apiID, fn))
+			items = append(items, h.functionJSON(r.Context(), p.apiID, fn))
 		}
 		page, next, ok := appsyncPage(items, q)
 		if !ok {
@@ -165,6 +170,9 @@ func (h *appsyncHandler) listGraphqlApis(w http.ResponseWriter, r *http.Request,
 		md, _ := obj["metadata"].(map[string]any)
 		ns, _ := md["namespace"].(string)
 		name, _ := md["name"].(string)
+		if !h.ownsNamespace(ctx, ns) {
+			continue // another account's API
+		}
 		ok, seen := mayList[ns]
 		if !seen {
 			// In enforce IAM policy allowed appsync:ListGraphqlApis above: the account's APIs are listed.
@@ -175,7 +183,7 @@ func (h *appsyncHandler) listGraphqlApis(w http.ResponseWriter, r *http.Request,
 			mayList[ns] = ok
 		}
 		if ok {
-			apis = append(apis, h.graphqlAPIJSON(ns+"."+name, obj))
+			apis = append(apis, h.graphqlAPIJSON(ctx, ns+"."+name, obj))
 		}
 	}
 	writeMgmtJSON(w, http.StatusOK, requestID, withNext(map[string]any{"graphqlApis": apis}, next))
@@ -228,19 +236,20 @@ func first(v []string) string {
 	return ""
 }
 
-func (h *appsyncHandler) apiARN(apiID string) string {
-	return "arn:aws:appsync:" + h.region + ":" + h.account + ":apis/" + apiID
+// apiARN is the ARN of the caller's account's API apiID: it names the account.
+func (h *appsyncHandler) apiARN(ctx context.Context, apiID string) string {
+	return "arn:aws:appsync:" + h.region + ":" + h.apiAccount(ctx) + ":apis/" + apiID
 }
 
 // graphqlAPIJSON is a GraphQLApi claim in AppSync's GraphqlApi shape.
-func (h *appsyncHandler) graphqlAPIJSON(apiID string, obj map[string]any) map[string]any {
+func (h *appsyncHandler) graphqlAPIJSON(ctx context.Context, apiID string, obj map[string]any) map[string]any {
 	md, _ := obj["metadata"].(map[string]any)
 	spec, _ := obj["spec"].(map[string]any)
 	name, _ := md["name"].(string)
 	if name == "" {
 		_, name = splitAPIID(apiID)
 	}
-	out := map[string]any{"apiId": apiID, "name": name, "arn": h.apiARN(apiID), "apiType": "GRAPHQL", "visibility": "GLOBAL"}
+	out := map[string]any{"apiId": apiID, "name": name, "arn": h.apiARN(ctx, apiID), "apiType": "GRAPHQL", "visibility": "GLOBAL"}
 	if st, _ := obj["status"].(map[string]any); st != nil {
 		if u, _ := st["url"].(string); u != "" {
 			out["uris"] = map[string]any{"GRAPHQL": u}
@@ -288,11 +297,11 @@ func schemaCreationStatus(obj map[string]any) (status, details string) {
 
 // dataSourceJSON is a spec.dataSources entry in AppSync's DataSource shape. A source's credentials (its
 // connectionSecret) are not part of it.
-func (h *appsyncHandler) dataSourceJSON(apiID string, ds map[string]any) map[string]any {
+func (h *appsyncHandler) dataSourceJSON(ctx context.Context, apiID string, ds map[string]any) map[string]any {
 	name, _ := ds["name"].(string)
 	typ, _ := ds["type"].(string)
 	endpoint, _ := ds["endpoint"].(string)
-	out := map[string]any{"name": name, "dataSourceArn": h.apiARN(apiID) + "/datasources/" + name}
+	out := map[string]any{"name": name, "dataSourceArn": h.apiARN(ctx, apiID) + "/datasources/" + name}
 	switch typ {
 	case "dynamodb":
 		out["type"] = "AMAZON_DYNAMODB"
@@ -368,9 +377,9 @@ func pipelineFunctions(spec map[string]any) []appsyncFunction {
 }
 
 // functionJSON is a pipeline function in AppSync's FunctionConfiguration shape.
-func (h *appsyncHandler) functionJSON(apiID string, fn appsyncFunction) map[string]any {
+func (h *appsyncHandler) functionJSON(ctx context.Context, apiID string, fn appsyncFunction) map[string]any {
 	out := map[string]any{"functionId": fn.id, "name": fn.id, "dataSourceName": fn.dataSource,
-		"functionArn": h.apiARN(apiID) + "/functions/" + fn.id}
+		"functionArn": h.apiARN(ctx, apiID) + "/functions/" + fn.id}
 	if fn.runtime == "appsync-js" {
 		out["runtime"] = map[string]any{"name": "APPSYNC_JS", "runtimeVersion": "1.0.0"}
 		out["code"] = fn.request

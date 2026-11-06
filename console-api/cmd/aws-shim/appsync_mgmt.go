@@ -55,6 +55,7 @@ func (h *appsyncHandler) serveManagement(w http.ResponseWriter, r *http.Request,
 		writeMgmtError(w, http.StatusBadRequest, "BadRequestException", requestID, err.Error())
 		return
 	}
+	p = inCallerAccount(r.Context(), p) // a member account's bare apiId is in its home
 	if verb == "" {
 		writeMgmtError(w, http.StatusNotImplemented, "NotImplementedException", requestID,
 			"this AppSync management operation is not fronted by open-infra (proven verbs: CreateResolver, UpdateResolver, DeleteResolver, GetResolver, CreateDataSource, DeleteDataSource, and the reads in appsync_read.go)")
@@ -74,6 +75,12 @@ func (h *appsyncHandler) serveManagement(w http.ResponseWriter, r *http.Request,
 			"appsync:"+verb, "GraphQLApi", p.apiID)); !ok {
 		h.logger.Warn("appsync management denied (data plane)", "user", claims.Sub, "api", p.apiID, "verb", verb, "reason", reason)
 		writeMgmtDenied(r.Context(), w, requestID, claims, "appsync:"+verb, p.apiID, reason)
+		return
+	}
+
+	// An API in a namespace of another account is none of the caller's: not found, as on AWS.
+	if !h.ownsNamespace(r.Context(), p.ns) {
+		writeMgmtError(w, http.StatusNotFound, "NotFoundException", requestID, "no such API: "+p.apiID)
 		return
 	}
 
