@@ -596,6 +596,9 @@ func run(logger *slog.Logger) error {
 		"monitoring":      cwmH,
 		"kinesis":         kinesisH,
 	}
+	if s3H, ok := services["s3"].(*s3Handler); ok {
+		s3H.accounts = acctDir // a bucket belongs to the account of the claim that made it (s3_accounts.go)
+	}
 	if iamH != nil {
 		services["iam"] = iamH
 	}

@@ -16,6 +16,12 @@
 //     objects (policyengine's withBucketObjects), so existing grants keep their meaning, while an
 //     object-prefix entry (Bucket::<bucket>/uploads/*, imported from arn:aws:s3:::<bucket>/uploads/*)
 //     grants only the keys under it.
+//
+// Allow decides the management account's principals on the management account's buckets. Where accounts
+// meet — a member account's principal, or a member account's bucket — AllowAccount decides instead, as AWS
+// does across and within accounts: the bucket's account, the caller's identity policies and the bucket's
+// own policy. Allow refuses a member account's principal outright, so no front door can decide one as a
+// management principal of the same name.
 package s3authz
 
 import (
@@ -26,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
@@ -121,6 +128,12 @@ func (b *Batch) Allow(ctx context.Context, c iam.Claims, q Request, reqCtx map[s
 
 func (g Gate) allow(ctx context.Context, c iam.Claims, q Request, reqCtx map[string]any,
 	coarse func(verb string) (bool, string)) (bool, string) {
+	if !awsidentity.Current().IsManagement(c.Account) {
+		// Allow decides the management account's principals on its own buckets, and knows no other
+		// account: a member account's principal is decided in its account (AllowAccount), never here as a
+		// management principal of the same name.
+		return false, "a member account's principal is decided in its own account (AllowAccount), not by this check"
+	}
 	if IsPlatformBucket(q.Bucket) && !IsAdmin(c) {
 		return false, "bucket " + q.Bucket + " is owned by the platform: only an administrator can reach it"
 	}
@@ -137,6 +150,48 @@ func (g Gate) allow(ctx context.Context, c iam.Claims, q Request, reqCtx map[str
 	d := ev.Decide(ctx, iamauthz.PrincipalFromClaims(c, ""), q.Action, res, reqCtx, func() (bool, string) {
 		return g.legacy(ctx, c, q, reqCtx, coarse)
 	})
+	return d.Allowed, d.Reason
+}
+
+// Account is the account side of a request where accounts meet (AWS Organizations): a member account's
+// principal acts, or a member account's bucket is acted on.
+type Account struct {
+	// Principal is the caller as a principal of its own account (a member account's user qualified by its
+	// home, as the IAM policy world names it).
+	Principal iamauthz.Principal
+	// Owner is the account the bucket belongs to; for an action on no bucket (ListBuckets), the caller's.
+	Owner string
+	// Policy reads the bucket's own policy document ("" when it has none); nil reads none.
+	Policy func() string
+}
+
+// AllowAccount decides a request where accounts meet, as AWS does: IAM policy alone, whatever the mode
+// (accounts exist only in the IAM policy world), on the resource the action acts on in the bucket's
+// account, with the bucket's own policy — within one account the caller's identity policies or the bucket
+// policy allow it, across accounts both must, and an explicit Deny in either refuses. A platform bucket is
+// the platform's, the management account's, and no member account reaches it whatever a policy says.
+// Without an IAM policy world nothing is allowed.
+func (g Gate) AllowAccount(ctx context.Context, q Request, a Account, reqCtx map[string]any) (bool, string) {
+	if IsPlatformBucket(q.Bucket) {
+		return false, "bucket " + q.Bucket + " is owned by the platform: no member account reaches it"
+	}
+	if g.Authz == nil || g.Authz.IAM() == nil {
+		return false, "no IAM policy world (default deny)"
+	}
+	opts := []iamauthz.RequestOption{iamauthz.WithResourceAccount(a.Owner)}
+	if a.Policy != nil && q.Bucket != "" {
+		// A policy that does not parse grants nothing (its statements are left out, never widened).
+		if doc := strings.TrimSpace(a.Policy()); doc != "" {
+			if stmts, _, err := iamauthz.ParseResourcePolicy(doc); err == nil && len(stmts) > 0 {
+				opts = append(opts, iamauthz.WithResourcePolicy(stmts))
+			}
+		}
+	}
+	res := "Bucket::" + q.ResourceID()
+	if q.Bucket == "" {
+		res = "Bucket::*"
+	}
+	d := g.Authz.IAM().Authorize(ctx, a.Principal, q.Action, res, reqCtx, opts...)
 	return d.Allowed, d.Reason
 }
 

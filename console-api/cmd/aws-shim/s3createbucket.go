@@ -26,8 +26,9 @@ import (
 // the resource AWS's bucket is, so the platform's bucket setup creates it in MinIO (with the platform's
 // default encryption), mints its scoped credentials, and the reaper and owner records treat it like any
 // other claim; DeleteBucket deletes it the same way. The claim lives in one account-wide namespace
-// (S3_BUCKET_NAMESPACE, default open-infra-s3), as buckets on AWS belong to the account, not to a stack,
-// and it is created with the CALLER's authority (impersonated), so RBAC decides whether they may make one.
+// (S3_BUCKET_NAMESPACE, default open-infra-s3, for the management account; a member account's home for
+// its own: s3_accounts.go), as buckets on AWS belong to the account, not to a stack, and it is created with
+// the CALLER's authority (impersonated), so RBAC decides whether they may make one.
 // CreateBucket is synchronous on AWS — an immediate PutObject works — so the call answers once the
 // bucket's setup has finished, and otherwise a 503 the SDK retries (the retry finds the caller's bucket
 // and waits again).
@@ -181,20 +182,26 @@ func (h *s3Handler) createBucket(w http.ResponseWriter, r *http.Request, claims 
 		return
 	}
 	// A bucket that is already a claim's: the caller's own (one they may read) is answered as AWS answers
-	// re-creating your own bucket in us-east-1 — 200 — once it is ready; anyone else's name is taken.
-	if claim, found, err := bucketClaimFor(ctx, h.dyn, op.bucket); err != nil {
+	// re-creating your own bucket in us-east-1 — 200 — once it is ready; anyone else's name is taken, a
+	// claim of another account's included (bucket names are global, as on AWS: s3_accounts.go).
+	if claim, found, taken, err := h.accountBucketClaim(ctx, claims, op.bucket); err != nil {
 		h.logger.Error("s3 CreateBucket: listing buckets", "bucket", op.bucket, "err", err)
 		writeS3Error(w, "InternalError", requestID, r.URL.Path)
 		return
 	} else if found {
-		h.createdOrExisting(w, r, cdyn, claim, op, requestID)
+		h.createdOrExisting(w, r, cdyn, claims, claim, op, requestID)
+		return
+	} else if taken {
+		writeS3Error(w, "BucketAlreadyExists", requestID, r.URL.Path)
 		return
 	}
-	claim := bucketClaim{namespace: h.bucketNS, name: bucketClaimName(op.bucket)}
+	// The caller's account's namespace: S3_BUCKET_NAMESPACE for the management account, a member
+	// account's home for its own.
+	claim := bucketClaim{namespace: h.bucketNamespace(ctx, claims), name: bucketClaimName(op.bucket)}
 	// An S3-API claim whose composite Crossplane has not made yet is found at its own name.
 	if cur, err := cdyn.Resource(bucketGVR).Namespace(claim.namespace).Get(ctx, claim.name, metav1.GetOptions{}); err == nil {
 		if b, _, _ := unstructuredString(cur.Object, "spec", "bucketName"); b == op.bucket {
-			h.createdOrExisting(w, r, cdyn, claim, op, requestID)
+			h.createdOrExisting(w, r, cdyn, claims, claim, op, requestID)
 			return
 		}
 	}
@@ -221,7 +228,7 @@ func (h *s3Handler) createBucket(w http.ResponseWriter, r *http.Request, claims 
 	if _, err := cdyn.Resource(bucketGVR).Namespace(claim.namespace).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
 		switch {
 		case apierrors.IsAlreadyExists(err): // a concurrent CreateBucket of the same name
-			h.createdOrExisting(w, r, cdyn, claim, op, requestID)
+			h.createdOrExisting(w, r, cdyn, claims, claim, op, requestID)
 		case apierrors.IsForbidden(err):
 			h.logger.Warn("s3 CreateBucket: creating the claim", "bucket", op.bucket, "user", claims.Sub, "err", err)
 			writeS3ErrorFull(w, "AccessDenied", http.StatusForbidden, requestID,
@@ -239,7 +246,7 @@ func (h *s3Handler) createBucket(w http.ResponseWriter, r *http.Request, claims 
 // createdOrExisting answers CreateBucket for a bucket that already has a claim: the caller's own (they
 // may read the claim, and it names this bucket) is 200 once ready, as AWS answers re-creating your own
 // bucket in us-east-1; one being deleted is OperationAborted; anyone else's is BucketAlreadyExists.
-func (h *s3Handler) createdOrExisting(w http.ResponseWriter, r *http.Request, cdyn dynamic.Interface, claim bucketClaim, op s3op, requestID string) {
+func (h *s3Handler) createdOrExisting(w http.ResponseWriter, r *http.Request, cdyn dynamic.Interface, claims iam.Claims, claim bucketClaim, op s3op, requestID string) {
 	cur, err := cdyn.Resource(bucketGVR).Namespace(claim.namespace).Get(r.Context(), claim.name, metav1.GetOptions{})
 	if err != nil {
 		// Not readable by the caller (another tenant's) or gone: the name is taken either way, as on AWS.
@@ -253,6 +260,17 @@ func (h *s3Handler) createdOrExisting(w http.ResponseWriter, r *http.Request, cd
 	if cur.GetDeletionTimestamp() != nil {
 		writeS3Error(w, "OperationAborted", requestID, r.URL.Path)
 		return
+	}
+	// Where accounts are in play, a claim of the caller's account that names a bucket another account
+	// made (one that existed before this claim) does not make it the caller's: the name is taken.
+	if h.accountsInPlay() {
+		if exists, err := h.mc.BucketExists(r.Context(), op.bucket); err == nil && exists {
+			h.owners.forget() // judged on the claims as they are now
+			if h.bucketOwner(r.Context(), op.bucket) != claimsAccount(claims) {
+				writeS3Error(w, "BucketAlreadyExists", requestID, r.URL.Path)
+				return
+			}
+		}
 	}
 	h.answerWhenReady(w, r, cdyn, claim, op, requestID)
 }
@@ -279,6 +297,7 @@ func (h *s3Handler) answerWhenReady(w http.ResponseWriter, r *http.Request, cdyn
 			writeS3Error(w, "OperationAborted", requestID, r.URL.Path)
 			return
 		case err == nil && h.bucketUsable(ctx, cur, op.bucket):
+			h.owners.forget() // the new bucket is its account's from the next request on
 			w.Header().Set("Location", "/"+op.bucket)
 			w.Header().Set("x-amz-request-id", requestID)
 			w.WriteHeader(http.StatusOK)

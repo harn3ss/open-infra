@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
@@ -54,6 +55,11 @@ type s3Handler struct {
 	// encryptsNewBuckets reports whether the platform gives new buckets default encryption (the same
 	// switch CloudFormation's BucketEncryption reads, live). nil = no.
 	encryptsNewBuckets func() bool
+	// accounts names each namespace's account (internal/accounts.Directory): a bucket belongs to the
+	// account of the claim that made it (s3_accounts.go). nil: every bucket is the management account's.
+	accounts s3Accounts
+	owners   bucketOwners   // the member accounts' buckets, indexed (s3_accounts.go)
+	policies bucketPolicies // bucket policies read for decisions where accounts meet
 }
 
 // s3op describes a decoded S3 request: the operation kind and the target bucket/key.
@@ -123,7 +129,7 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 	// 3. Dispatch to MinIO and re-encode.
 	switch op.kind {
 	case "list-buckets":
-		h.listBuckets(w, r, requestID)
+		h.listBuckets(w, r, claims, requestID)
 	case "head-bucket":
 		h.headBucket(w, r, op, requestID)
 	case "list-objects":
@@ -206,10 +212,14 @@ func (h *s3Handler) allowed(r *http.Request, claims iam.Claims, op s3op) bool {
 func (h *s3Handler) allowedIn(b *s3authz.Batch, r *http.Request, claims iam.Claims, op s3op) bool {
 	var ok bool
 	var reason string
-	if memberAccount(claims) {
-		// The buckets here are the management account's, and the object-storage gate knows no account:
-		// a member account's principal is refused rather than evaluated as a management principal.
-		ok, reason = false, "a member account's principal is not served by object storage yet"
+	owner := claimsAccount(claims) // an operation on no bucket (ListBuckets) is in the caller's account
+	if op.bucket != "" {
+		owner = h.bucketOwner(r.Context(), op.bucket)
+	}
+	if memberAccount(claims) || !awsidentity.Current().IsManagement(owner) {
+		// Accounts meet — a member account's principal, or a member account's bucket: decided in the
+		// bucket's account with its policy, as AWS decides within and across accounts (s3_accounts.go).
+		ok, reason = h.allowedAcrossAccounts(r, claims, op, owner)
 	} else if b != nil {
 		ok, reason = b.Allow(r.Context(), claims, op.authzRequest(), requestContext(claims, r))
 	} else {
@@ -330,14 +340,19 @@ func decodeS3(r *http.Request) (s3op, bool) {
 	return decodeTarget(r.Method, bucket, key, r.URL.Query())
 }
 
-func (h *s3Handler) listBuckets(w http.ResponseWriter, r *http.Request, requestID string) {
+// listBuckets is S3 ListBuckets: the caller's account's buckets alone (s3_accounts.go).
+func (h *s3Handler) listBuckets(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	buckets, err := h.mc.ListBuckets(r.Context())
 	if err != nil {
 		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
 		return
 	}
-	res := listAllMyBucketsResult{Owner: canonicalUser{ID: "open-infra"}}
+	acct := claimsAccount(claims)
+	res := listAllMyBucketsResult{Owner: s3Owner(claims)}
 	for _, b := range buckets {
+		if h.bucketOwner(r.Context(), b.Name) != acct {
+			continue // another account's bucket
+		}
 		res.Buckets.Bucket = append(res.Buckets.Bucket, s3Bucket{
 			Name:         b.Name,
 			CreationDate: bucketCreationDate(b.CreationDate),

@@ -83,3 +83,44 @@ func TestGate_EnforceIsThePoliciesAlone(t *testing.T) {
 		t.Errorf("enforce: root was refused (%s)", why)
 	}
 }
+
+// Allow knows the management account alone: a member account's principal is refused there whatever its
+// policies, never decided as a management principal of the same name. AllowAccount decides it in the
+// bucket's account: its own bucket by its identity policy, another account's only with that bucket's
+// policy too, and never a platform bucket — nor anything without an IAM policy world.
+func TestGate_AccountsMeetInAllowAccount(t *testing.T) {
+	const member = "912345678901"
+	w := iamauthz.World{
+		Docs: []iamauthz.Policy{{Name: "all", Statements: []policyengine.Statement{
+			{Effect: policyengine.Allow, Actions: []string{"s3:*"}, Resources: []string{"*"}}}}},
+		Attach: map[string][]string{"User::bob": {"all"}, "User::team-a/bob": {"all"}},
+	}
+	ctx := context.Background()
+	g := gate(t, iamauthz.ModeEnforce, w)
+	bob := iam.Claims{Sub: "bob", Account: member, Groups: iam.GroupsFromSpec([]string{"admins"})}
+	if ok, _ := g.Allow(ctx, bob, get("reports", "k"), reqCtx); ok {
+		t.Fatal("Allow decided a member account's principal as the management account's bob")
+	}
+	p := iamauthz.Principal{Account: member, Type: iamauthz.User, ID: "team-a/bob"}
+	own := Account{Principal: p, Owner: member}
+	if ok, why := g.AllowAccount(ctx, get("team-bucket", "k"), own, reqCtx); !ok {
+		t.Fatalf("the member account's own bucket: %s", why)
+	}
+	theirs := Account{Principal: p, Owner: iamauthz.ManagementAccount}
+	if ok, _ := g.AllowAccount(ctx, get("reports", "k"), theirs, reqCtx); ok {
+		t.Fatal("another account's bucket without its policy")
+	}
+	theirs.Policy = func() string {
+		return `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::` + member +
+			`:root"},"Action":"s3:GetObject","Resource":"arn:aws:s3:::reports/*"}]}`
+	}
+	if ok, why := g.AllowAccount(ctx, get("reports", "k"), theirs, reqCtx); !ok {
+		t.Fatalf("another account's bucket whose policy lets the member account in: %s", why)
+	}
+	if ok, _ := g.AllowAccount(ctx, get("db-snapshots", "dump"), own, reqCtx); ok {
+		t.Fatal("a member account reached a platform bucket")
+	}
+	if ok, _ := (Gate{}).AllowAccount(ctx, get("team-bucket", "k"), own, reqCtx); ok {
+		t.Fatal("allowed without an IAM policy world")
+	}
+}

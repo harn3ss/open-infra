@@ -541,10 +541,17 @@ func (h *s3Handler) deleteBucket(w http.ResponseWriter, r *http.Request, claims 
 		writeS3Error(w, "NotImplemented", requestID, r.URL.Path)
 		return
 	}
-	claim, ok, err := bucketClaimFor(ctx, h.dyn, op.bucket)
+	// The claim of the caller's account that is this bucket; a bucket is deleted by its own account alone
+	// (s3_accounts.go), whatever another account's policy allows.
+	claim, ok, _, err := h.accountBucketClaim(ctx, claims, op.bucket)
 	if err != nil {
 		h.logger.Error("s3 DeleteBucket: listing buckets", "bucket", op.bucket, "err", err)
 		writeS3Error(w, "InternalError", requestID, r.URL.Path)
+		return
+	}
+	if h.bucketOwner(ctx, op.bucket) != claimsAccount(claims) {
+		writeS3ErrorFull(w, "AccessDenied", http.StatusForbidden, requestID,
+			"Bucket "+op.bucket+" belongs to another account: only its own account deletes it.", r.URL.Path)
 		return
 	}
 	if !ok {
@@ -583,6 +590,7 @@ func (h *s3Handler) deleteBucket(w http.ResponseWriter, r *http.Request, claims 
 		writeS3Error(w, minioErrToS3(err), requestID, r.URL.Path)
 		return
 	}
+	h.owners.forget() // the name is free again, for any account
 	h.logger.Info("s3 DeleteBucket", "bucket", op.bucket, "claim", claim.namespace+"/"+claim.name, "user", claims.Sub)
 	w.Header().Set("x-amz-request-id", requestID)
 	w.WriteHeader(http.StatusNoContent)
