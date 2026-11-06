@@ -270,7 +270,25 @@ func (wr Writer) writeStatus(ctx context.Context, in Input, out Output) error {
 			keys = append(keys, k)
 		}
 		sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
+		// An object's status.compiled is written when it differs from what the compile says — not on
+		// every pass (hundreds of API calls a minute, and a pass a minute long otherwise). The current
+		// statuses are read here, in one list per kind, so a recreated or hand-edited object is put right.
+		current := map[types.NamespacedName]string{}
+		if list, err := wr.DC.Resource(gvr).List(ctx, metav1.ListOptions{}); err == nil {
+			for _, o := range list.Items {
+				if st, _ := o.Object["status"].(map[string]any); st != nil {
+					if c, ok := st["compiled"]; ok {
+						b, _ := json.Marshal(c)
+						current[types.NamespacedName{Namespace: o.GetNamespace(), Name: o.GetName()}] = string(b)
+					}
+				}
+			}
+		}
 		for _, k := range keys {
+			want, _ := json.Marshal(results[gvr][k])
+			if cur, ok := current[k]; ok && cur == string(want) {
+				continue
+			}
 			patch, _ := json.Marshal(map[string]any{"status": map[string]any{"compiled": results[gvr][k]}})
 			_, err := wr.DC.Resource(gvr).Namespace(k.Namespace).Patch(ctx, k.Name, types.MergePatchType, patch, metav1.PatchOptions{}, "status")
 			if err != nil && !apierrors.IsNotFound(err) && firstErr == nil {

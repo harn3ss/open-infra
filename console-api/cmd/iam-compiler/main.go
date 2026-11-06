@@ -37,7 +37,9 @@ func main() {
 	if strings.EqualFold(os.Getenv("IAM_COMPILER_MODE"), string(iamcompile.ModeApply)) {
 		mode = iamcompile.ModeApply
 	}
-	interval := 60 * time.Second
+	// A new principal's control-plane rights reach the webhook one pass (plus its 30 s cache) after it is
+	// made; a pass that changes nothing writes nothing, so passes are cheap.
+	interval := 15 * time.Second
 	if d, err := time.ParseDuration(os.Getenv("IAM_COMPILER_INTERVAL")); err == nil && d >= 10*time.Second {
 		interval = d
 	}

@@ -68,7 +68,7 @@ spec:
           envFrom:
             - configMapRef: { name: openinfra-iam, optional: true }
           env:
-            - { name: IAM_COMPILER_INTERVAL, value: "60s" }
+            - { name: IAM_COMPILER_INTERVAL, value: "15s" }
             - { name: POD_NAMESPACE, valueFrom: { fieldRef: { fieldPath: metadata.namespace } } }
             - { name: GOMEMLIMIT, value: "230MiB" }
           ports: [{ containerPort: 8080, name: health }]

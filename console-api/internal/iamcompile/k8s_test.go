@@ -138,3 +138,58 @@ func TestWriter_ReportThenApply(t *testing.T) {
 		t.Errorf("and its corpus grant: %+v", docs)
 	}
 }
+
+// A pass that changes nothing patches nothing: each object's status.compiled is written when it changes,
+// not on every pass (hundreds of API calls a minute otherwise, and a pass a minute long).
+func TestWriter_StatusIsWrittenOnlyWhenItChanges(t *testing.T) {
+	ctx := context.Background()
+	crd := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
+		"metadata": map[string]any{"name": "users.iam.openinfra.dev"},
+		"spec": map[string]any{"versions": []any{map[string]any{"name": "v1", "schema": map[string]any{
+			"openAPIV3Schema": map[string]any{"properties": map[string]any{"status": map[string]any{
+				"properties": map[string]any{"compiled": map[string]any{"type": "object"}}}}}}}}},
+	}}
+	user := unstr(schema.GroupVersionKind{Group: "iam.openinfra.dev", Version: "v1", Kind: "User"},
+		"open-infra-console", "alice", map[string]any{}, nil)
+	dc := fakeDynamic(crd, user)
+	wr := Writer{CS: fake.NewSimpleClientset(), DC: dc}
+	in := Input{World: world([]iamauthz.Policy{doc(t, "PowerUserAccess", powerUserDoc)}, map[string][]string{"User::alice": {"PowerUserAccess"}}),
+		Principals: []Principal{{Kind: "User", Namespace: "open-infra-console", Name: "alice"}}}
+	patches := func() int {
+		n := 0
+		for _, a := range dc.Actions() {
+			if a.GetVerb() == "patch" && a.GetResource().Resource == "users" {
+				n++
+			}
+		}
+		return n
+	}
+	if err := wr.Write(ctx, ModeReport, in, Compile(in)); err != nil {
+		t.Fatal(err)
+	}
+	if n := patches(); n != 1 {
+		t.Fatalf("first pass: %d status patches of alice, want 1", n)
+	}
+	if err := wr.Write(ctx, ModeReport, in, Compile(in)); err != nil {
+		t.Fatal(err)
+	}
+	if n := patches(); n != 1 {
+		t.Fatalf("an unchanged pass patched alice's status again (%d patches in all)", n)
+	}
+	// An object whose status was lost (recreated, or edited by hand) is put right on the next pass.
+	cur, err := dc.Resource(userGVR).Namespace("open-infra-console").Get(ctx, "alice", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unstructured.RemoveNestedField(cur.Object, "status")
+	if _, err := dc.Resource(userGVR).Namespace("open-infra-console").Update(ctx, cur, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wr.Write(ctx, ModeReport, in, Compile(in)); err != nil {
+		t.Fatal(err)
+	}
+	if n := patches(); n != 2 {
+		t.Fatalf("a lost status was not written again (%d patches in all, want 2)", n)
+	}
+}
