@@ -4,6 +4,8 @@
 // TWO trust domains, not conflated:
 //   - CONTROL plane (CreateUserPool, CreateUserPoolClient, and the Admin* ops) — privileged, SigV4-signed by
 //     an open-infra principal, authorized by the one policy world (coarse SAR + Cedar cognito-idp:<Op>).
+//     A pool belongs to the account that made it: these reach the caller's account's pools alone, and a
+//     pool's ARN carries its account.
 //   - the pool's END-USER auth (SignUp, InitiateAuth, GetUser, GlobalSignOut) — the APPLICATION's users, not
 //     open-infra principals. These are UNAUTHENTICATED at the SigV4 layer (the user has no AWS creds yet); the
 //     router hands them here anonymously, and the handler refuses the admin ops from that path.
@@ -138,6 +140,18 @@ func (h *cognitoHandler) dispatch(w http.ResponseWriter, r *http.Request, reques
 			writeCognitoError(w, http.StatusForbidden, "NotAuthorizedException", requestID, reason)
 			return
 		}
+		// A pool belongs to an account: an administrative operation reaches the caller's account's pools
+		// alone, and another account's pool id is, as on AWS, a pool that does not exist. (The end-user
+		// operations below stay addressed by client id or token, whoever's pool it is, as AWS's are.)
+		if pool != "" && op != "CreateUserPool" {
+			if p, found, err := h.store.getPool(r.Context(), pool); err != nil {
+				h.internal(w, requestID, err)
+				return
+			} else if found && p.Account != cognitoAccount(r.Context()) {
+				writeCognitoError(w, http.StatusBadRequest, "ResourceNotFoundException", requestID, "User pool "+pool+" does not exist.")
+				return
+			}
+		}
 	} else if !cognitoPublicOp(op) {
 		writeCognitoError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "Cognito "+op+" is not implemented by the open-infra shim.")
 		return
@@ -191,7 +205,7 @@ func (h *cognitoHandler) createUserPool(ctx context.Context, w http.ResponseWrit
 		return
 	}
 	id := h.region + "_" + shortID(9)
-	p := cognitoPool{ID: id, Name: name, Policy: parsePasswordPolicy(body)}
+	p := cognitoPool{ID: id, Name: name, Policy: parsePasswordPolicy(body), Account: cognitoAccount(ctx)}
 	if err := h.store.createPool(ctx, p); err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -199,8 +213,30 @@ func (h *cognitoHandler) createUserPool(ctx context.Context, w http.ResponseWrit
 	h.audit(ctx, "CreateUserPool", id)
 	writeCognitoJSON(w, requestID, map[string]any{"UserPool": map[string]any{
 		"Id": id, "Name": name, "Policies": p.Policy.toJSON(), "MfaConfiguration": "OFF",
-		"Arn": "arn:aws:cognito-idp:" + h.region + ":" + h.account + ":userpool/" + id,
+		"Arn": "arn:aws:cognito-idp:" + h.region + ":" + h.arnAccount(ctx) + ":userpool/" + id,
 	}})
+}
+
+// Cognito keeps each account's user pools apart (a pool records its account; an administrative
+// operation reaches the caller's account's alone), so it is an account-scoped front door.
+func init() { accountScopedServices["cognito-idp"] = true }
+
+// cognitoAccount is the account the request's pools are recorded under: "" for the management account
+// (where every pool always was), the member account's id for a member's.
+func cognitoAccount(ctx context.Context) string {
+	if !isMemberRequest(ctx) {
+		return ""
+	}
+	return callerAccount(ctx)
+}
+
+// arnAccount is the account of the request's ARNs: the install's for the management account, the member
+// account's for a member's.
+func (h *cognitoHandler) arnAccount(ctx context.Context) string {
+	if !isMemberRequest(ctx) {
+		return h.account
+	}
+	return callerAccount(ctx)
 }
 
 func (h *cognitoHandler) describeUserPool(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {

@@ -1,6 +1,8 @@
 // Cognito user-pool state for the aws-shim: pools, app clients, and users. Shares the
 // SQS/KMS Postgres. Passwords are stored as bcrypt hashes (never plaintext); GlobalSignOut is enforced via a
-// per-user tokens_valid_after cutoff (an access token minted before the cutoff no longer verifies).
+// per-user tokens_valid_after cutoff (an access token minted before the cutoff no longer verifies). A pool
+// records the account it belongs to (empty for the management account); its clients and users are the
+// pool's.
 package main
 
 import (
@@ -17,6 +19,9 @@ type cognitoPool struct {
 	Name    string
 	Policy  passwordPolicy
 	Created time.Time
+	// Account is the member account the pool belongs to; "" is the management account's (every pool made
+	// before accounts, and every pool the management account makes).
+	Account string
 }
 
 type cognitoClient struct {
@@ -63,21 +68,24 @@ CREATE TABLE IF NOT EXISTS cognito_users (
     tokens_valid_after bigint NOT NULL DEFAULT 0,
     created            timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (pool_id, username)
-);`)
+);
+-- The account a pool belongs to: '' is the management account (every pool made before accounts).
+ALTER TABLE cognito_pools ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT '';`)
 	return err
 }
 
 func (s *cognitoStore) createPool(ctx context.Context, p cognitoPool) error {
 	pol, _ := json.Marshal(p.Policy.toJSON())
-	_, err := s.db.ExecContext(ctx, `INSERT INTO cognito_pools (pool_id, name, password_policy) VALUES ($1,$2,$3)`, p.ID, p.Name, pol)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO cognito_pools (pool_id, name, password_policy, account) VALUES ($1,$2,$3,$4)`,
+		p.ID, p.Name, pol, p.Account)
 	return err
 }
 
 func (s *cognitoStore) getPool(ctx context.Context, id string) (cognitoPool, bool, error) {
 	var p cognitoPool
 	var pol []byte
-	err := s.db.QueryRowContext(ctx, `SELECT pool_id, name, password_policy, created FROM cognito_pools WHERE pool_id=$1`, id).
-		Scan(&p.ID, &p.Name, &pol, &p.Created)
+	err := s.db.QueryRowContext(ctx, `SELECT pool_id, name, password_policy, created, account FROM cognito_pools WHERE pool_id=$1`, id).
+		Scan(&p.ID, &p.Name, &pol, &p.Created, &p.Account)
 	if err == sql.ErrNoRows {
 		return cognitoPool{}, false, nil
 	}
