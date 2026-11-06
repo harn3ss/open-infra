@@ -238,8 +238,9 @@ func TestLenient_AppSyncResolverKind(t *testing.T) {
 }
 
 func TestLenient_AppSyncResolverMaxBatchSize(t *testing.T) {
+	// Batching is a Lambda data source's: on the NONE source it refuses (see the Lambda tests below).
 	f, _ := lenientRun(t, lenientAppSync("", vtlUnit+`, MaxBatchSize: 10`, ""))
-	wantRefused(t, "MaxBatchSize 10", f, "MaxBatchSize turns on BatchInvoke batching")
+	wantRefused(t, "MaxBatchSize 10", f, "it needs an AWS_LAMBDA data source")
 	f, _ = lenientRun(t, lenientAppSync("", vtlUnit+`, MaxBatchSize: many`, ""))
 	wantRefused(t, "MaxBatchSize many", f, "MaxBatchSize must be a whole number")
 	f, _ = lenientRun(t, lenientAppSync("", vtlUnit+`, MaxBatchSize: 0`, ""))
@@ -335,7 +336,79 @@ func TestLenient_AppSyncFunctionS3Locations(t *testing.T) {
 
 func TestLenient_AppSyncFunctionMaxBatchSize(t *testing.T) {
 	f, _ := lenientRun(t, lenientPipeline("", vtlFn+`, MaxBatchSize: 5`))
-	wantRefused(t, "a function's MaxBatchSize 5", f, "MaxBatchSize turns on BatchInvoke batching")
+	wantRefused(t, "a function's MaxBatchSize 5 on a NONE source", f, "it needs an AWS_LAMBDA data source")
+}
+
+// lenientLambdaAppSync is an API whose data source L invokes the stack's own function Fn (AWS_LAMBDA,
+// LambdaFunctionArn !GetAtt Fn.Arn), with the resolver Q (and extras).
+func lenientLambdaAppSync(resolverProps, extra string) string {
+	return `Resources:
+  A: { Type: AWS::AppSync::GraphQLApi, Properties: { Name: a, AuthenticationType: API_KEY } }
+  S:
+    Type: AWS::AppSync::GraphQLSchema
+    Properties: { ApiId: !GetAtt A.ApiId, Definition: "type Query @aws_api_key { x: Int }" }
+  Fn:
+    Type: AWS::Lambda::Function
+    Properties: { PackageType: Image, Code: { ImageUri: "registry.example/fn:1" }, FunctionName: posts-fn }
+  L:
+    Type: AWS::AppSync::DataSource
+    Properties: { ApiId: !GetAtt A.ApiId, Name: fn, Type: AWS_LAMBDA, LambdaConfig: { LambdaFunctionArn: !GetAtt Fn.Arn } }
+  Q:
+    Type: AWS::AppSync::Resolver
+    Properties: { ApiId: !GetAtt A.ApiId, TypeName: Query, FieldName: x, DataSourceName: !GetAtt L.Name` + resolverProps + ` }
+` + extra
+}
+
+// A Direct Lambda Resolver — no mapping templates — on a data source invoking the stack's own function
+// translates, with its MaxBatchSize; the data source names the function it becomes.
+func TestLenient_AppSyncDirectLambdaResolver(t *testing.T) {
+	f, out := lenientRun(t, lenientLambdaAppSync(`, MaxBatchSize: 10`, ""))
+	wantClean(t, "a Direct Lambda Resolver with MaxBatchSize", f)
+	for _, want := range []string{`{"function":"posts-fn","name":"fn","type":"lambda"}`, `"maxBatchSize":10`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %s: %s", want, out)
+		}
+	}
+	if strings.Contains(out, `"request"`) || strings.Contains(out, `"response"`) {
+		t.Fatalf("a Direct Lambda Resolver carries no templates: %s", out)
+	}
+	f, out = lenientRun(t, lenientLambdaAppSync(`, ResponseMappingTemplate: "$util.toJson($ctx.result.data)"`, ""))
+	wantClean(t, "a Lambda resolver with only a response template", f)
+	if !strings.Contains(out, `"response":"$util.toJson($ctx.result.data)"`) || strings.Contains(out, `"request"`) {
+		t.Fatalf("only the response template is carried: %s", out)
+	}
+	f, _ = lenientRun(t, lenientLambdaAppSync(`, MaxBatchSize: 2001`, ""))
+	wantRefused(t, "MaxBatchSize 2001", f, "MaxBatchSize must be a whole number from 0 to 2000")
+}
+
+// A direct Lambda pipeline function translates with its MaxBatchSize; a PIPELINE resolver's own
+// MaxBatchSize refuses (a pipeline batches in its functions).
+func TestLenient_AppSyncDirectLambdaFunction(t *testing.T) {
+	pipeline := func(resolverProps string) string {
+		return strings.Replace(lenientLambdaAppSync("", `
+  F:
+    Type: AWS::AppSync::FunctionConfiguration
+    Properties: { ApiId: !GetAtt A.ApiId, Name: f, FunctionVersion: "2018-05-29", DataSourceName: !GetAtt L.Name, MaxBatchSize: 3 }
+`), `DataSourceName: !GetAtt L.Name }`, `Kind: PIPELINE, PipelineConfig: { Functions: [ !GetAtt F.FunctionId ] }`+resolverProps+` }`, 1)
+	}
+	f, out := lenientRun(t, pipeline(""))
+	wantClean(t, "a direct Lambda pipeline function", f)
+	if !strings.Contains(out, `"functions":[{"dataSource":"fn","maxBatchSize":3,"runtime":"appsync-vtl"}]`) {
+		t.Fatalf("the function must carry its MaxBatchSize and no templates: %s", out)
+	}
+	f, _ = lenientRun(t, pipeline(`, MaxBatchSize: 4`))
+	wantRefused(t, "MaxBatchSize on a PIPELINE resolver", f, "a pipeline batches in its functions")
+}
+
+// Templates may be left out on an AWS_LAMBDA source only; a Lambda data source must invoke the stack's
+// own function.
+func TestLenient_AppSyncDirectLambdaRefusals(t *testing.T) {
+	f, _ := lenientRun(t, lenientAppSync("", `, DataSourceName: none`, ""))
+	wantRefused(t, "a NONE resolver with no templates", f, "may be left out only on a Lambda data source")
+	f, _ = lenientRun(t, lenientAppSync("", `, DataSourceName: none, RequestMappingTemplate: "{}"`, ""))
+	wantRefused(t, "a NONE resolver with no response template", f, "may be left out only on a Lambda data source")
+	f, _ = lenientRun(t, strings.Replace(lenientLambdaAppSync("", ""), "!GetAtt Fn.Arn", `"arn:aws:lambda:us-east-1:111111111111:function:elsewhere"`, 1))
+	wantRefused(t, "a Lambda data source naming an out-of-stack function", f, "references an AWS::Lambda::Function in this stack")
 }
 
 func TestLenient_AppSyncFunctionRuntime(t *testing.T) {

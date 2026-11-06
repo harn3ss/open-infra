@@ -4884,10 +4884,13 @@ func (c *stackCtx) snsQueuesForFunction(fnID string) []string {
 // payoff is open-appsync's whole reason to exist: a resolver's VTL is byte-for-byte identical, so
 // Request/ResponseMappingTemplate carry over verbatim.
 //
-// Faithful: schema SDL, unit + pipeline resolvers (VTL and APPSYNC_JS), and the data-source types
-// open-appsync has (dynamodb, http, none, opensearch, eventbridge). Refused (fail-loud, never a
-// silent half-API): a Lambda-ARN data source (an AWS ARN is not an open-infra Function URL), a
-// relational source with no DSN, and any S3-location template/definition. Caveat: AuthenticationType
+// Faithful: schema SDL, unit + pipeline resolvers (VTL and APPSYNC_JS), Direct Lambda Resolvers and
+// functions (no mapping templates, on an AWS_LAMBDA source) with their MaxBatchSize, and the data-source
+// types open-appsync has (dynamodb, http, none, opensearch, eventbridge, and lambda when LambdaFunctionArn
+// references the stack's own AWS::Lambda::Function). Refused (fail-loud, never a silent half-API): a
+// Lambda data source naming a function outside the stack, a relational source with no DSN, missing
+// mapping templates on a non-Lambda source, MaxBatchSize on a non-Lambda source or a PIPELINE resolver,
+// and any S3-location template/definition. Caveat: AuthenticationType
 // (open-appsync enforces auth via @aws_* schema directives + an apiKeysSecret, configured separately)
 // and a dynamodb source's spec.mongoURI (a deploy-time FerretDB endpoint, not knowable here).
 func translateAppSyncGraphQLApi(id string, props map[string]any, ctx *stackCtx) (*Manifest, []Finding) {
@@ -4923,7 +4926,7 @@ func translateAppSyncGraphQLApi(id string, props map[string]any, ctx *stackCtx) 
 	hasDynamo := false
 	for _, cid := range ctx.appsyncChildren("AWS::AppSync::DataSource", id) {
 		sp, _ := ctx.resolveProps(cid)
-		ds, isDynamo := appsyncDataSource(cid, sp, &f, &childCaveats)
+		ds, isDynamo := ctx.appsyncDataSource(cid, sp, &f, &childCaveats)
 		hasDynamo = hasDynamo || isDynamo
 		dataSources = append(dataSources, ds)
 	}
@@ -5036,7 +5039,7 @@ func (c *stackCtx) appsyncChildren(cfnType, apiID string) []string {
 
 // appsyncDataSource maps one AWS::AppSync::DataSource to an open-appsync data source; the bool
 // reports whether it is a dynamodb source (so the caller can surface the mongoURI caveat).
-func appsyncDataSource(cid string, sp map[string]any, f *[]Finding, cav *[]string) (map[string]any, bool) {
+func (c *stackCtx) appsyncDataSource(cid string, sp map[string]any, f *[]Finding, cav *[]string) (map[string]any, bool) {
 	known := map[string]bool{
 		"ApiId": true, "Name": true, "Type": true, "Description": true, "ServiceRoleArn": true,
 		"DynamoDBConfig": true, "LambdaConfig": true, "HttpConfig": true, "MetricsConfig": true,
@@ -5109,7 +5112,18 @@ func appsyncDataSource(cid string, sp map[string]any, f *[]Finding, cav *[]strin
 	case "AMAZON_EVENTBRIDGE":
 		ds["type"] = "eventbridge"
 	case "AWS_LAMBDA":
-		*f = append(*f, Finding{"Resource " + cid, "a Lambda data source (AWS_LAMBDA) has no faithful form — an AWS LambdaFunctionArn is not an open-infra Function URL; remap to a lambda data source with the kind: Function URL as its endpoint, or an http source"})
+		// The function a stack's Lambda data source invokes is the stack's own: LambdaConfig's
+		// LambdaFunctionArn referencing an in-stack AWS::Lambda::Function (!GetAtt Fn.Arn) is the kind:
+		// Function it becomes, in the same namespace. An ARN of a function outside the stack names
+		// nothing open-infra deploys.
+		ds["type"] = "lambda"
+		raw, _ := c.rawProps(cid)
+		lc, _ := raw["LambdaConfig"].(map[string]any)
+		if fnID, ok := getAttTarget(lc["LambdaFunctionArn"]); ok && c.isType(fnID, "AWS::Lambda::Function") {
+			ds["function"] = c.functionName(fnID)
+		} else {
+			*f = append(*f, Finding{"Resource " + cid, "a Lambda data source (AWS_LAMBDA) translates when its LambdaConfig.LambdaFunctionArn references an AWS::Lambda::Function in this stack (!GetAtt <Function>.Arn) — the ARN of a function outside the stack names no open-infra function"})
+		}
 	case "RELATIONAL_DATABASE":
 		*f = append(*f, Finding{"Resource " + cid, "a relational data source has no faithful form — provide a connectionSecret with a DSN out of band (the AWS RelationalDatabaseConfig names a cluster ARN, not a DSN)"})
 	default:
@@ -5132,7 +5146,7 @@ func (c *stackCtx) appsyncResolver(cid string, f *[]Finding, cav *[]string) map[
 	}
 	*f = append(*f, blockUnknownProps(cid, sp, known)...)
 	appsyncS3Locations(cid, sp, f)
-	appsyncBatchAndSync(cid, sp, f)
+	maxBatchSize := appsyncBatchAndSync(cid, sp, f)
 	appsyncMetricsConfig(cid, "resolver", sp, f, cav)
 
 	r := map[string]any{}
@@ -5171,11 +5185,15 @@ func (c *stackCtx) appsyncResolver(cid string, f *[]Finding, cav *[]string) map[
 			}
 		}
 		r["functions"] = c.appsyncPipelineFunctions(cid, f, cav)
+		if maxBatchSize > 0 {
+			*f = append(*f, Finding{"Resource " + cid, "MaxBatchSize is set on a PIPELINE resolver — a pipeline batches in its functions (each FunctionConfiguration's MaxBatchSize)"})
+		}
 	} else {
 		if _, set := sp["PipelineConfig"]; set {
 			*f = append(*f, Finding{"Resource " + cid, "PipelineConfig belongs to a PIPELINE resolver — this one's Kind is UNIT, so its functions would not run"})
 		}
-		// A unit resolver binds one data source with a request/response template (or JS code).
+		// A unit resolver binds one data source with a request/response template (or JS code). On an
+		// AWS_LAMBDA source the templates may be left out: a Direct Lambda Resolver.
 		if isJS {
 			r["request"] = code
 		} else {
@@ -5191,8 +5209,55 @@ func (c *stackCtx) appsyncResolver(cid string, f *[]Finding, cav *[]string) map[
 		} else {
 			*f = append(*f, Finding{"Resource " + cid, "a unit resolver requires a DataSourceName naming an in-stack AWS::AppSync::DataSource"})
 		}
+		if c.appsyncLambdaStep(cid, "resolver", isJS, r, maxBatchSize, f) {
+			r["maxBatchSize"] = maxBatchSize
+		}
 	}
 	return r
+}
+
+// appsyncLambdaStep applies AWS's rules for a unit resolver's or a function's templates and
+// MaxBatchSize, which depend on its data source: mapping templates are optional only on an AWS_LAMBDA
+// source (a Direct Lambda Resolver; AWS requires both on every other), and MaxBatchSize batches Lambda
+// invocations (BatchInvoke), so it needs an AWS_LAMBDA source. It reports whether maxBatchSize is
+// carried.
+func (c *stackCtx) appsyncLambdaStep(cid, what string, isJS bool, step map[string]any, maxBatchSize int, f *[]Finding) bool {
+	lambda := c.dataSourceType(cid, "DataSourceName") == "AWS_LAMBDA"
+	if !isJS && !lambda && (step["request"] == nil || step["response"] == nil) {
+		*f = append(*f, Finding{"Resource " + cid, "a " + what + " on a data source other than AWS_LAMBDA needs its RequestMappingTemplate and ResponseMappingTemplate — they may be left out only on a Lambda data source (a Direct Lambda Resolver)"})
+	}
+	if maxBatchSize > 0 && !lambda {
+		*f = append(*f, Finding{"Resource " + cid, "MaxBatchSize batches Lambda invocations (BatchInvoke) — it needs an AWS_LAMBDA data source"})
+		return false
+	}
+	return maxBatchSize > 0
+}
+
+// dataSourceType is the Type of the in-stack AWS::AppSync::DataSource a resolver or function's field
+// names (by !GetAtt, or by the data source's Name), or "".
+func (c *stackCtx) dataSourceType(id, field string) string {
+	raw, _ := c.rawProps(id)
+	dsID, ok := getAttTarget(raw[field])
+	if !ok {
+		name := c.resolveDSName(id, field)
+		for rid, res := range c.template.Resources {
+			if res.Type != "AWS::AppSync::DataSource" {
+				continue
+			}
+			if dp, _ := c.resolveProps(rid); dp != nil {
+				if n, _ := concrete(dp["Name"]); n == name && name != "" {
+					dsID, ok = rid, true
+					break
+				}
+			}
+		}
+	}
+	if !ok || !c.isType(dsID, "AWS::AppSync::DataSource") {
+		return ""
+	}
+	dp, _ := c.resolveProps(dsID)
+	t, _ := concrete(dp["Type"])
+	return t
 }
 
 // appsyncPipelineFunctions maps a pipeline resolver's PipelineConfig.Functions (references to
@@ -5232,24 +5297,29 @@ func (c *stackCtx) appsyncPipelineFunctions(cid string, f *[]Finding, cav *[]str
 		}
 		*f = append(*f, blockUnknownProps(fid, fp, fnknown)...)
 		appsyncS3Locations(fid, fp, f)
-		appsyncBatchAndSync(fid, fp, f)
+		maxBatchSize := appsyncBatchAndSync(fid, fp, f)
 		fn := map[string]any{"runtime": "appsync-vtl"}
 		if dsn := c.resolveDSName(fid, "DataSourceName"); dsn != "" {
 			fn["dataSource"] = dsn
 		} else {
 			*f = append(*f, Finding{"Resource " + fid, "a FunctionConfiguration requires a DataSourceName naming an in-stack AWS::AppSync::DataSource"})
 		}
-		if isJS, code := appsyncCode(fid, fp, f); isJS {
+		isJS, code := appsyncCode(fid, fp, f)
+		if isJS {
 			// A JavaScript function is one module (request + response); the engine reads it as the
-			// function's source, and the response field (required by the kind) carries the same module.
+			// function's source, and the response field carries the same module.
 			fn["runtime"], fn["request"], fn["response"] = "appsync-js", code, code
 		} else {
-			if req, ok := concrete(fp["RequestMappingTemplate"]); ok {
+			// On an AWS_LAMBDA source a template may be left out (a direct Lambda function).
+			if req, ok := concrete(fp["RequestMappingTemplate"]); ok && req != "" {
 				fn["request"] = req
 			}
-			if resp, ok := concrete(fp["ResponseMappingTemplate"]); ok {
+			if resp, ok := concrete(fp["ResponseMappingTemplate"]); ok && resp != "" {
 				fn["response"] = resp
 			}
+		}
+		if c.appsyncLambdaStep(fid, "function", isJS, fn, maxBatchSize, f) {
+			fn["maxBatchSize"] = maxBatchSize
 		}
 		out = append(out, fn)
 	}
@@ -5308,15 +5378,16 @@ func appsyncCode(cid string, sp map[string]any, f *[]Finding) (isJS bool, code s
 	return isJS, code
 }
 
-// appsyncBatchAndSync reads MaxBatchSize and SyncConfig. Batching (BatchInvoke to a Lambda source) and
-// conflict detection (versioned data sources) have no open-appsync form, so a value that turns either
-// on refuses; MaxBatchSize 0 and ConflictDetection NONE are their off settings and change nothing.
-func appsyncBatchAndSync(cid string, sp map[string]any, f *[]Finding) {
+// appsyncBatchAndSync reads MaxBatchSize and SyncConfig. MaxBatchSize (0–2000) is returned for the
+// caller to carry: batching (BatchInvoke) is a Lambda data source's, so the caller refuses it on any
+// other. Conflict detection (versioned data sources) has no open-appsync form, so turning it on
+// refuses; ConflictDetection NONE is its off setting and changes nothing.
+func appsyncBatchAndSync(cid string, sp map[string]any, f *[]Finding) (maxBatchSize int) {
 	where := "Resource " + cid
 	if v, set := sp["MaxBatchSize"]; set && v != nil {
 		if s, _ := concrete(v); s != "0" {
-			if _, ok := positiveWhole(v); ok {
-				*f = append(*f, Finding{where, "MaxBatchSize turns on BatchInvoke batching, which open-appsync does not do — each item would be resolved one call at a time"})
+			if n, ok := positiveWhole(v); ok && n <= 2000 {
+				maxBatchSize = n
 			} else {
 				*f = append(*f, Finding{where, fmt.Sprintf("MaxBatchSize must be a whole number from 0 to 2000 (got %v)", v)})
 			}
@@ -5337,6 +5408,7 @@ func appsyncBatchAndSync(cid string, sp map[string]any, f *[]Finding) {
 			*f = append(*f, Finding{where, fmt.Sprintf("SyncConfig.ConflictDetection must be VERSION or NONE (got %v)", sc["ConflictDetection"])})
 		}
 	}
+	return maxBatchSize
 }
 
 // appsyncMetricsConfig reads a resolver or data source's MetricsConfig: DISABLED changes nothing; ENABLED
