@@ -9,8 +9,12 @@
 # forward through SES/SendGrid/Mailgun/your MTA. Empty by default (best-effort
 # direct delivery). SPF/DKIM/DMARC on the sending domain are an operator concern.
 #
-# The relay is ClusterIP-only (never internet-exposed) and relays for in-cluster
-# senders (mynetworks), so no per-sender SMTP AUTH is minted in this slice.
+# The relay is ClusterIP-only (never internet-exposed) and accepts mail from the aws-shim
+# alone (the NetworkPolicy at the end): every message reaches it through the SES front
+# door — SendEmail / SendRawEmail, SES v2 SendEmail, and the SES SMTP interface — which
+# authenticates the sender and authorizes every identity the message is sent as. Apps
+# send with SES SMTP credentials (kind: EmailSender mints them) to the aws-shim's SMTP
+# listener, never to this relay.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -49,9 +53,11 @@ spec:
           # releases before relying on it for delivery.
           image: boky/postfix:v5.1.0
           env:
+            # Which identities may send is decided before a message gets here (the SES front door: IAM
+            # policy, and the account's verified identities); the relay forwards what the shim hands it.
             - { name: ALLOWED_SENDER_DOMAINS, value: "*" }
-            # Relay for in-cluster senders (broad private ranges; the Service is
-            # ClusterIP-only so this is not internet-open).
+            # Postfix relays for the in-cluster address ranges; which pods can connect at all is the
+            # NetworkPolicy below (the aws-shim only).
             - { name: POSTFIX_mynetworks, value: "127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16" }
             - { name: POSTFIX_myhostname, value: "smtp-relay.mail.svc.cluster.local" }
           envFrom:
@@ -76,3 +82,24 @@ spec:
   ports:
     - { name: submission, port: 587, targetPort: 587 }
     - { name: smtp, port: 25, targetPort: 25 }
+---
+# The relay accepts mail from the aws-shim alone, on its submission port. A pod that could reach the relay
+# directly could send as any identity, unauthenticated; through the shim every message is sent by an IAM
+# principal its policy allows to send as each address the message names, from an identity its account has
+# verified. Port 25 admits nothing. Kubelet probes come from the pod's own node, which kube-ovn always
+# admits. Egress is not restricted: the relay delivers to the internet, or to the operator's smarthost.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: smtp-relay-isolation
+  namespace: mail
+  labels: { app: smtp-relay, openinfra.dev/isolation: platform }
+spec:
+  podSelector: { matchLabels: { app: smtp-relay } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-aws-shim } }
+          podSelector: { matchLabels: { app: aws-shim } }
+      ports:
+        - { protocol: TCP, port: 587 }

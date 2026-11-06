@@ -159,12 +159,16 @@ incl objectEncryptionKes "security/minio-kes.yaml"
 incl mail "abstraction/emailsender-xrd.yaml,abstraction/emailsender-composition.yaml,mail/relay.yaml,mail/relay-capture.yaml"
 # Exactly one relay: the delivering postfix relay (mail/relay.yaml), or, on a test cluster
 # (mail.capture: true), the capturing sink that delivers nothing (mail/relay-capture.yaml). Both are the
-# smtp-relay Service, so EmailSender apps and the aws-shim's SES front door use either unchanged.
+# smtp-relay Service, and either accepts mail from the aws-shim alone: the SES front door (the SES API,
+# and the SES SMTP interface kind: EmailSender's credentials use) is the only way to send.
 if [ "$(yget components.mail)" = "true" ] && [ "$(yget mail.capture)" = "true" ]; then
   EXCLUDES="${EXCLUDES},mail/relay.yaml"
   LOG "mail: capture mode (mail.capture) — the relay accepts and keeps mail, delivering none"
 else
   EXCLUDES="${EXCLUDES},mail/relay-capture.yaml"
+fi
+if [ "$(yget components.mail)" = "true" ] && [ "$(yget components.awsShim)" != "true" ]; then
+  WARN "components.mail is on but components.awsShim is not: mail is sent only through the aws-shim's SES front door (its API and SMTP interface), so nothing can send until awsShim is on"
 fi
 # Daily immutable compliance-attestation snapshots to the WORM audit store. OFF by default; requires
 # audit off-siting. Signing is an out-of-band operator/CI step (docs/compliance-attestation.md).

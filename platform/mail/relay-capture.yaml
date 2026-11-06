@@ -1,7 +1,8 @@
 # The capturing SMTP relay for a TEST cluster (components.mail: true + mail.capture: true): it stands in
-# for mail/relay.yaml as the same smtp-relay Service, so kind: EmailSender apps and the aws-shim's SES
-# front door (SendEmail / SendRawEmail) submit to smtp-relay.mail.svc:587 unchanged — but every message
-# is kept here and NONE is delivered. install.sh includes exactly one of the two relays.
+# for mail/relay.yaml as the same smtp-relay Service, so the aws-shim's SES front door (SendEmail /
+# SendRawEmail, SES v2, and the SES SMTP interface kind: EmailSender apps send through) submits to
+# smtp-relay.mail.svc:587 unchanged — but every message is kept here and NONE is delivered. Like the
+# delivering relay it accepts mail from the aws-shim alone. install.sh includes exactly one of the two.
 #
 # The sink is Mailpit. It has no relay configured and its pod may not open any connection (the egress
 # NetworkPolicy below), so nothing it accepts can leave the cluster. Its HTTP API, which shows every
@@ -44,7 +45,8 @@ spec:
             - { name: MP_SMTP_DISABLE_RDNS, value: "true" }
             # The API/UI shows every captured message: loopback only (read it with kubectl exec).
             - { name: MP_UI_BIND_ADDR, value: "127.0.0.1:8025" }
-            # Submitters do not authenticate (the platform relay does not either), over plain SMTP.
+            # The aws-shim, its only submitter, does not authenticate to the relay (the platform relay does
+            # not ask either): who may send was decided at the shim. Plain SMTP, in-cluster.
             - { name: MP_SMTP_AUTH_ACCEPT_ANY, value: "true" }
             - { name: MP_SMTP_AUTH_ALLOW_INSECURE, value: "true" }
             - { name: MP_MAX_MESSAGES, value: "1000" }
@@ -85,8 +87,10 @@ spec:
     - { name: smtp, port: 25, targetPort: 1025 }
 ---
 # Nothing the sink accepts may leave: its pod opens no connection at all. It accepts SMTP (and only
-# SMTP) from the cluster: the Ingress rule also matters on kube-ovn, which drops the replies to an
-# inbound connection under an Egress-only deny unless an Ingress rule admitted that connection.
+# SMTP) from the aws-shim alone, as the delivering relay does (mail/relay.yaml): every message reaches it
+# through the SES front door, authenticated and authorized. The Ingress rule also matters on kube-ovn,
+# which drops the replies to an inbound connection under an Egress-only deny unless an Ingress rule
+# admitted that connection. Kubelet probes come from the pod's own node, which kube-ovn always admits.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -96,5 +100,8 @@ spec:
   podSelector: { matchLabels: { openinfra.dev/mail-capture: "true" } }
   policyTypes: [Ingress, Egress]
   ingress:
-    - ports: [{ protocol: TCP, port: 1025 }]
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-aws-shim } }
+          podSelector: { matchLabels: { app: aws-shim } }
+      ports: [{ protocol: TCP, port: 1025 }]
   egress: []

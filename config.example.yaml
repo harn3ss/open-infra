@@ -243,7 +243,7 @@ components:
   objectEncryptionKes: false   # MinIO KES with a Vault KV keystore (customer-held keys + crypto-erase); experimental, opt-in, OFF; shipped but not wired to the platform MinIO (requires the encryption component — see docs/encryption.md)
   attestation: false           # daily immutable compliance-attestation snapshots to the WORM audit store; opt-in, OFF (sign out-of-band with the release key — see docs/compliance-attestation.md)
   airgap: false                # air-gap support: in-cluster registry mirror + image prefetch (front-load), and the optional public-egress cutoff; opt-in, OFF (internet allowed by default — see docs/airgapping.md)
-  mail: false                  # transactional email: kind: EmailSender + the shared in-cluster SMTP relay, which also serves the aws-shim's SES front door; opt-in, OFF (internet delivery needs a smarthost + SPF/DKIM — see docs/email.md)
+  mail: false                  # transactional email (Amazon SES): kind: EmailSender (SES SMTP credentials) + the platform SMTP relay behind the aws-shim's SES front door, the only way to send (needs awsShim: true); opt-in, OFF (internet delivery needs a smarthost + SPF/DKIM — see docs/email.md)
 
 # Mail (issue #23). Only meaningful when components.mail: true.
 mail:
