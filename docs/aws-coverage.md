@@ -43,9 +43,9 @@ template that declares one of their resources is refused, although the API serve
 | Rank | Service | Signing name | Template uses | Example apps | Probes | Operations served | Types the engine knows there |
 |---|---|---|---|---|---|---|---|
 | 1 | Kinesis Data Streams | `kinesis` | 0 | 1 | 1 | 12 | none |
-| 2 | Glue | `glue` | 0 | 0 | 1 | 32 | none |
-| 3 | Athena | `athena` | 0 | 0 | 1 | 28 | none |
-| 4 | SES | `email`, `ses` | 0 | 0 | 1 | 14 | none |
+| 2 | SES | `email`, `ses` | 0 | 0 | 2 | 14 | none |
+| 3 | Glue | `glue` | 0 | 0 | 1 | 32 | none |
+| 4 | Athena | `athena` | 0 | 0 | 1 | 28 | none |
 | 5 | EKS | `eks` | 0 | 0 | 1 | 5 | none |
 
 The other side of the same demand — types the in-repo templates use that no stack can create here (plan-only or refused), most used first:

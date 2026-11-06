@@ -46,8 +46,7 @@ services:
     cell: "roles/policies/users → AWS policy JSON → Cedar"
     tier: proven
     sigv4: [iam]
-    probes: [iam, iam-timecond, iam-username-like, iam-login-profile]
-    pending: [iam-mfa] # virtual MFA devices, GetSessionToken with MFA, "deny unless MFA" (not yet run live)
+    probes: [iam, iam-timecond, iam-username-like, iam-login-profile, iam-mfa]
   - name: KMS
     cell: "→ Vault Transit"
     tier: proven
@@ -204,8 +203,7 @@ services:
     tier: proven
     sigv4: [ses, email]
     note: "Served while the `mail` component's relay exists; with it off, SES answers as not fronted."
-    probes: [ses]
-    pending: [ses-smtp] # the SMTP interface: derived credentials, 530/535/554 refusals, a member account's verified identities
+    probes: [ses, ses-smtp]
 
   # --- honest 501 (no handler) ---
   - name: Route 53

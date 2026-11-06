@@ -20,11 +20,27 @@
         "exampleApps": 0,
         "knownTypes": [],
         "namespaces": [
+          "AWS::SES"
+        ],
+        "operations": 14,
+        "probes": 2,
+        "rank": 2,
+        "service": "SES",
+        "signingNames": [
+          "email",
+          "ses"
+        ],
+        "templateUses": 0
+      },
+      {
+        "exampleApps": 0,
+        "knownTypes": [],
+        "namespaces": [
           "AWS::Glue"
         ],
         "operations": 32,
         "probes": 1,
-        "rank": 2,
+        "rank": 3,
         "service": "Glue",
         "signingNames": [
           "glue"
@@ -39,26 +55,10 @@
         ],
         "operations": 28,
         "probes": 1,
-        "rank": 3,
+        "rank": 4,
         "service": "Athena",
         "signingNames": [
           "athena"
-        ],
-        "templateUses": 0
-      },
-      {
-        "exampleApps": 0,
-        "knownTypes": [],
-        "namespaces": [
-          "AWS::SES"
-        ],
-        "operations": 14,
-        "probes": 1,
-        "rank": 4,
-        "service": "SES",
-        "signingNames": [
-          "email",
-          "ses"
         ],
         "templateUses": 0
       },
@@ -690,7 +690,8 @@
         "VerifyEmailIdentity"
       ],
       "probes": [
-        "ses"
+        "ses",
+        "ses-smtp"
       ],
       "refused": [],
       "service": "SES",
@@ -879,7 +880,8 @@
         "iam",
         "iam-timecond",
         "iam-username-like",
-        "iam-login-profile"
+        "iam-login-profile",
+        "iam-mfa"
       ],
       "refused": [],
       "service": "IAM",
@@ -1260,7 +1262,8 @@
         "VerifyEmailIdentity"
       ],
       "probes": [
-        "ses"
+        "ses",
+        "ses-smtp"
       ],
       "refused": [],
       "service": "SES",
