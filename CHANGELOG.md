@@ -6,6 +6,24 @@ the product's public contract.
 
 ## Unreleased
 
+### Security — email is sent only as an authenticated, authorized identity (#277)
+- **The SES SMTP interface.** The aws-shim serves SMTP submission the way Amazon SES's
+  `email-smtp` endpoint does — STARTTLS on 587, TLS Wrapper on 465 — signed in with **SES SMTP
+  credentials**: an IAM user's access key id and the SMTP password derived from its secret with AWS's
+  algorithm. Every message is `SendRawEmail` as that user, authorized by IAM policy on every address it
+  is sent as, with SES's replies (`530`, `535 Authentication Credentials Invalid`, `554 Access denied`,
+  `554 Message rejected: Email address is not verified`). Failed sign-ins are rate-limited.
+- **The platform relay takes mail from the aws-shim alone.** A NetworkPolicy admits only the shim's pods
+  to the relay (and to the capturing sink on test clusters): no workload can submit mail directly, so no
+  workload can send as an identity it was never granted.
+- **`kind: EmailSender` mints SES SMTP credentials.** Each claim gets an IAM user allowed
+  `ses:SendRawEmail` as its From address only, an access key, and the derived password, in its
+  `<name>-smtp` secret (`SMTP_USERNAME` / `SMTP_PASSWORD`), pointing at the SMTP interface. Apps that sent
+  to the relay unauthenticated must sign in with these credentials.
+- **A member account's verified identities.** A member account sends as the identities its
+  `kind: Account` lists in `spec.ses.verifiedIdentities`, and leaves the SES sandbox with
+  `spec.ses.productionAccessEnabled`; its identity listings and `GetAccount` answer accordingly.
+
 ## v3.3.0 — 2026-10-29
 
 Where v3.2.0 made the managed services *real*, v3.3.0 makes them **resilient and operable at estate
