@@ -316,7 +316,11 @@ func (h *appsyncHandler) dataSourceJSON(ctx context.Context, apiID string, ds ma
 			out["httpConfig"] = map[string]any{"endpoint": endpoint}
 		}
 	case "lambda":
-		out["type"] = "AWS_LAMBDA" // its endpoint is the function's URL, not a function ARN
+		out["type"] = "AWS_LAMBDA"
+		// A source that names its function has its ARN; one given as a URL (endpoint) has none to give.
+		if fn, _ := ds["function"].(string); fn != "" {
+			out["lambdaConfig"] = map[string]any{"lambdaFunctionArn": "arn:aws:lambda:" + h.region + ":" + h.apiAccount(ctx) + ":function:" + fn}
+		}
 	case "rds":
 		out["type"] = "RELATIONAL_DATABASE"
 	case "opensearch":
@@ -337,6 +341,7 @@ type appsyncFunction struct {
 	id                  string
 	dataSource, runtime string
 	request, response   string
+	maxBatchSize        int64
 }
 
 // pipelineFunctions is every distinct function the API's pipeline resolvers run, in the order first run.
@@ -361,11 +366,15 @@ func pipelineFunctions(spec map[string]any) []appsyncFunction {
 		for _, f := range fl {
 			m, _ := f.(map[string]any)
 			fn := appsyncFunction{dataSource: fnStr(m["dataSource"]), runtime: fnStr(m["runtime"]),
-				request: fnStr(m["request"]), response: fnStr(m["response"])}
+				request: fnStr(m["request"]), response: fnStr(m["response"]), maxBatchSize: specInt(m["maxBatchSize"])}
 			if fn.runtime == "" {
 				fn.runtime = "appsync-vtl"
 			}
-			sum := sha256.Sum256([]byte(fn.dataSource + "\x00" + fn.runtime + "\x00" + fn.request + "\x00" + fn.response))
+			key := fn.dataSource + "\x00" + fn.runtime + "\x00" + fn.request + "\x00" + fn.response
+			if fn.maxBatchSize > 0 { // only when set, so a function without one keeps its id
+				key += "\x00" + strconv.FormatInt(fn.maxBatchSize, 10)
+			}
+			sum := sha256.Sum256([]byte(key))
 			fn.id = hex.EncodeToString(sum[:])[:26]
 			if !seen[fn.id] {
 				seen[fn.id] = true
@@ -385,10 +394,16 @@ func (h *appsyncHandler) functionJSON(ctx context.Context, apiID string, fn apps
 		out["code"] = fn.request
 	} else {
 		out["functionVersion"] = "2018-05-29"
-		out["requestMappingTemplate"] = fn.request
+		// A template the function leaves out (a direct Lambda function's) is absent, as AppSync returns it.
+		if fn.request != "" {
+			out["requestMappingTemplate"] = fn.request
+		}
 		if fn.response != "" {
 			out["responseMappingTemplate"] = fn.response
 		}
+	}
+	if fn.maxBatchSize > 0 {
+		out["maxBatchSize"] = fn.maxBatchSize
 	}
 	return out
 }

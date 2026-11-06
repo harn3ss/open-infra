@@ -42,6 +42,7 @@ type mgmtParams struct {
 	fieldName string
 	dsName    string
 	fnID      string // a pipeline function's id (GetFunction)
+	account   string // the API's account (a Lambda data source's function must be in it)
 	body      map[string]any
 }
 
@@ -56,6 +57,7 @@ func (h *appsyncHandler) serveManagement(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	p = inCallerAccount(r.Context(), p) // a member account's bare apiId is in its home
+	p.account = h.apiAccount(r.Context())
 	if verb == "" {
 		writeMgmtError(w, http.StatusNotImplemented, "NotImplementedException", requestID,
 			"this AppSync management operation is not fronted by open-infra (proven verbs: CreateResolver, UpdateResolver, DeleteResolver, GetResolver, CreateDataSource, DeleteDataSource, and the reads in appsync_read.go)")
@@ -226,14 +228,30 @@ func applyManagement(obj map[string]any, verb string, p mgmtParams) (map[string]
 		if ds, ok := p.body["dataSourceName"].(string); ok && ds != "" {
 			entry["dataSource"] = ds
 		}
-		// Runtime mapping: AWS APPSYNC_JS → our appsync-js (code carried in `code`); absent → VTL.
+		// Runtime mapping: AWS APPSYNC_JS → our appsync-js (code carried in `code`); absent → VTL. A VTL
+		// resolver may leave out either mapping template: on a Lambda data source that is a direct Lambda
+		// resolver (the engine refuses one on any other source).
 		if rt, ok := p.body["runtime"].(map[string]any); ok && rt["name"] == "APPSYNC_JS" {
 			entry["runtime"] = "appsync-js"
 			entry["request"], _ = p.body["code"].(string)
 		} else {
 			entry["runtime"] = "appsync-vtl"
-			entry["request"], _ = p.body["requestMappingTemplate"].(string)
-			entry["response"], _ = p.body["responseMappingTemplate"].(string)
+			if s, _ := p.body["requestMappingTemplate"].(string); s != "" {
+				entry["request"] = s
+			}
+			if s, _ := p.body["responseMappingTemplate"].(string); s != "" {
+				entry["response"] = s
+			}
+		}
+		// maxBatchSize: AppSync's 0–2000; > 0 batches the resolver's Lambda invocations (BatchInvoke).
+		if v, set := p.body["maxBatchSize"]; set && v != nil {
+			n, ok := v.(float64)
+			if !ok || n != float64(int(n)) || n < 0 || n > 2000 {
+				return nil, fmt.Errorf("maxBatchSize must be a whole number from 0 to 2000")
+			}
+			if n > 0 {
+				entry["maxBatchSize"] = int64(n)
+			}
 		}
 		upsert(spec, "resolvers", entry, func(e map[string]any) bool {
 			return e["type"] == p.typeName && e["field"] == p.fieldName
@@ -263,6 +281,13 @@ func applyManagement(obj map[string]any, verb string, p mgmtParams) (map[string]
 		if t, ok := p.body["type"].(string); ok {
 			entry["type"] = mapDataSourceType(t)
 		}
+		if entry["type"] == "lambda" {
+			fn, err := lambdaFunctionName(p.body, p.account)
+			if err != nil {
+				return nil, err
+			}
+			entry["function"] = fn
+		}
 		upsert(spec, "dataSources", entry, func(e map[string]any) bool { return e["name"] == p.dsName })
 		return map[string]any{"dataSource": map[string]any{"name": p.dsName, "dataSourceArn": "arn:open-infra:appsync:" + p.apiID + ":datasource/" + p.dsName}}, nil
 
@@ -276,27 +301,81 @@ func applyManagement(obj map[string]any, verb string, p mgmtParams) (map[string]
 // awsResolver re-dresses our resolver entry in AppSync's response shape (enough for tooling to accept
 // the round-trip). resolverArn carries the skin's identity mapping back to the caller.
 func awsResolver(p mgmtParams, e map[string]any) map[string]any {
-	return map[string]any{
-		"typeName":                e["type"],
-		"fieldName":               e["field"],
-		"dataSourceName":          e["dataSource"],
-		"requestMappingTemplate":  e["request"],
-		"responseMappingTemplate": e["response"],
-		"resolverArn":             fmt.Sprintf("arn:open-infra:appsync:%s:types/%v/resolvers/%v", p.apiID, e["type"], e["field"]),
+	out := map[string]any{
+		"typeName":       e["type"],
+		"fieldName":      e["field"],
+		"dataSourceName": e["dataSource"],
+		"resolverArn":    fmt.Sprintf("arn:open-infra:appsync:%s:types/%v/resolvers/%v", p.apiID, e["type"], e["field"]),
 	}
+	// A template the resolver leaves out (a direct Lambda resolver's) is absent, as AppSync returns it.
+	if s, _ := e["request"].(string); s != "" {
+		out["requestMappingTemplate"] = s
+	}
+	if s, _ := e["response"].(string); s != "" {
+		out["responseMappingTemplate"] = s
+	}
+	if n := specInt(e["maxBatchSize"]); n > 0 {
+		out["maxBatchSize"] = n
+	}
+	return out
+}
+
+// specInt reads a whole number from a claim's spec (JSON decodes it as float64, a typed client as int64).
+func specInt(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	}
+	return 0
 }
 
 // mapDataSourceType maps AWS data-source types onto open-appsync's. AMAZON_DYNAMODB → dynamodb,
-// HTTP → http, otherwise memory (dev). (open-appsync's neutral set; the skin owns the translation.)
+// HTTP → http, AWS_LAMBDA → lambda, NONE → none, otherwise memory (dev). (open-appsync's neutral set;
+// the skin owns the translation.)
 func mapDataSourceType(awsType string) string {
 	switch awsType {
 	case "AMAZON_DYNAMODB":
 		return "dynamodb"
 	case "HTTP":
 		return "http"
+	case "AWS_LAMBDA":
+		return "lambda"
+	case "NONE":
+		return "none"
 	default:
 		return "memory"
 	}
+}
+
+// lambdaFunctionName reads an AWS_LAMBDA data source's lambdaConfig.lambdaFunctionArn as the kind:
+// Function it names, in the API's namespace (the data source's function). A function of another account
+// and a version or alias of one have no form here and refuse, as does a source with no function.
+func lambdaFunctionName(body map[string]any, account string) (string, error) {
+	cfg, _ := body["lambdaConfig"].(map[string]any)
+	arn, _ := cfg["lambdaFunctionArn"].(string)
+	if arn == "" {
+		return "", fmt.Errorf("an AWS_LAMBDA data source needs lambdaConfig.lambdaFunctionArn")
+	}
+	// arn:aws:lambda:<region>:<account>:function:<name>[:<qualifier>]
+	parts := strings.Split(arn, ":")
+	if len(parts) < 7 || parts[0] != "arn" || parts[2] != "lambda" || parts[5] != "function" {
+		return "", fmt.Errorf("lambdaFunctionArn %q is not a Lambda function ARN", arn)
+	}
+	if parts[4] != "" && account != "" && parts[4] != account {
+		return "", fmt.Errorf("lambdaFunctionArn %q names a function in another account (%s) — a data source invokes a function in the API's account", arn, parts[4])
+	}
+	name, qualifier, ok := parseFunctionRef(arn, "")
+	if !ok {
+		return "", fmt.Errorf("lambdaFunctionArn %q does not name a function", arn)
+	}
+	if qualifier != "" && qualifier != "$LATEST" {
+		return "", fmt.Errorf("lambdaFunctionArn %q names a version or alias (%s) — a data source invokes the function itself", arn, qualifier)
+	}
+	return name, nil
 }
 
 // --- small helpers over the raw object's spec arrays ---

@@ -618,8 +618,14 @@ answers it), `GetSchemaCreationStatus` (`SUCCESS` once the claim is Ready, `NOT_
 schema), `GetDataSource`/`ListDataSources` (AWS's data-source types; a source's credentials secret is not
 part of the answer) and `GetFunction`/`ListFunctions` (the distinct functions the pipeline resolvers run —
 a pipeline keeps its functions inline without their FunctionConfiguration name, so a function's id is a
-hash of its data source, runtime and templates, and serves as its name). An API has no API-wide
-authentication type here (the schema's `@aws_*` directives are enforced), so none is answered. An
+hash of its data source, runtime and templates, and serves as its name). `CreateResolver` /
+`UpdateResolver` take `maxBatchSize` (0–2000) and may leave out `requestMappingTemplate` and
+`responseMappingTemplate` — on a Lambda data source that is a **direct Lambda resolver** (batched when
+`maxBatchSize` > 0; see [open-appsync/README.md](../open-appsync/README.md#lambda-resolvers-direct-and-batched)),
+and `GetResolver`/`GetFunction` answer them the same way. `CreateDataSource` of type `AWS_LAMBDA` takes
+`lambdaConfig.lambdaFunctionArn` naming a `kind: Function` in the API's namespace (`GetDataSource`
+answers that ARN); a function of another account, or a version or alias of one, is refused. An API has
+no API-wide authentication type here (the schema's `@aws_*` directives are enforced), so none is answered. An
 unhandled verb answers an honest `NotImplemented`. The caller is gated by the same impersonated
 `SubjectAccessReview` as every other front door: `update graphqlapis` in the target namespace for the
 writes, `get graphqlapis` for the reads, and `list graphqlapis` in each namespace for `ListGraphqlApis`

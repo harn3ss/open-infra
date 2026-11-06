@@ -144,6 +144,38 @@ func TestAppsyncReads_AnswerTheClaim(t *testing.T) {
 	}
 }
 
+// A Lambda data source that names its function reads back with its function ARN (in the API's account),
+// and a direct Lambda pipeline function reads back without templates and with its maxBatchSize.
+func TestAppsyncReads_DirectLambda(t *testing.T) {
+	h, store := readAppsync(func(a *authzv1.ResourceAttributes) bool { return a.Verb == "get" && a.Namespace == "team-a" })
+	spec := store.objs["team-a/notes"]["spec"].(map[string]any)
+	spec["dataSources"] = append(spec["dataSources"].([]any), map[string]any{"name": "fn", "type": "lambda", "function": "blog-fn"})
+	spec["resolvers"] = append(spec["resolvers"].([]any), map[string]any{"type": "Post", "field": "author",
+		"functions": []any{map[string]any{"dataSource": "fn", "runtime": "appsync-vtl", "maxBatchSize": int64(25)}}})
+	u := iam.Claims{Sub: "u"}
+
+	_, out := appsyncRead(h, u, "/v1/apis/team-a.notes/datasources/fn")
+	ds, _ := out["dataSource"].(map[string]any)
+	lc, _ := ds["lambdaConfig"].(map[string]any)
+	if ds["type"] != "AWS_LAMBDA" || lc["lambdaFunctionArn"] != "arn:aws:lambda:us-east-1:000000000000:function:blog-fn" {
+		t.Errorf("GetDataSource (lambda) = %v", out)
+	}
+
+	_, out = appsyncRead(h, u, "/v1/apis/team-a.notes/functions")
+	var direct map[string]any
+	for _, f := range out["functions"].([]any) {
+		if m := f.(map[string]any); m["dataSourceName"] == "fn" {
+			direct = m
+		}
+	}
+	if direct == nil || direct["maxBatchSize"] != float64(25) {
+		t.Fatalf("the direct function = %v, want maxBatchSize 25", direct)
+	}
+	if _, has := direct["requestMappingTemplate"]; has {
+		t.Errorf("a direct Lambda function has no request template to answer: %v", direct)
+	}
+}
+
 func TestAppsyncReads_Denied(t *testing.T) {
 	h, _ := readAppsync(func(a *authzv1.ResourceAttributes) bool { return a.Namespace != "team-a" })
 	for _, p := range []string{"/v1/apis/team-a.notes", "/v1/apis/team-a.notes/schema?format=SDL", "/v1/apis/team-a.notes/schemacreation",

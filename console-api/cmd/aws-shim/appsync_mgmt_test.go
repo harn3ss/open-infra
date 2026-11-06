@@ -137,6 +137,76 @@ func TestApplyManagement_CreateDataSourceTypeMap(t *testing.T) {
 	}
 }
 
+// A direct Lambda resolver — CreateResolver with no mapping templates — leaves the templates out of the
+// claim (the engine then sends AppSync's Context), and maxBatchSize carries through and back.
+func TestApplyManagement_DirectLambdaResolverWithMaxBatchSize(t *testing.T) {
+	obj := map[string]any{"spec": map[string]any{}}
+	p := mgmtParams{apiID: "team-a.blog", typeName: "Post", fieldName: "author",
+		body: map[string]any{"fieldName": "author", "dataSourceName": "fn", "maxBatchSize": float64(10)}}
+	res, err := applyManagement(obj, "CreateResolver", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := obj["spec"].(map[string]any)["resolvers"].([]any)[0].(map[string]any)
+	if _, has := r["request"]; has {
+		t.Errorf("a direct resolver has no request template in the claim: %v", r)
+	}
+	if _, has := r["response"]; has {
+		t.Errorf("a direct resolver has no response template in the claim: %v", r)
+	}
+	if r["maxBatchSize"] != int64(10) {
+		t.Errorf("maxBatchSize = %v, want 10", r["maxBatchSize"])
+	}
+	out := res["resolver"].(map[string]any)
+	if out["maxBatchSize"] != int64(10) {
+		t.Errorf("the resolver answered maxBatchSize %v, want 10", out["maxBatchSize"])
+	}
+	if _, has := out["requestMappingTemplate"]; has {
+		t.Errorf("a direct resolver is answered without templates, as AppSync answers it: %v", out)
+	}
+	// maxBatchSize 0 is batching off: nothing is stored.
+	_, _ = applyManagement(obj, "UpdateResolver", mgmtParams{typeName: "Post", fieldName: "author", body: map[string]any{"dataSourceName": "fn", "maxBatchSize": float64(0)}})
+	if r := obj["spec"].(map[string]any)["resolvers"].([]any)[0].(map[string]any); r["maxBatchSize"] != nil {
+		t.Errorf("maxBatchSize 0 stores nothing, got %v", r["maxBatchSize"])
+	}
+	for _, bad := range []any{float64(2001), float64(-1), 1.5, "ten"} {
+		if _, err := applyManagement(map[string]any{"spec": map[string]any{}}, "CreateResolver",
+			mgmtParams{typeName: "Post", fieldName: "author", body: map[string]any{"maxBatchSize": bad}}); err == nil {
+			t.Errorf("maxBatchSize %v must be refused (AppSync takes 0–2000)", bad)
+		}
+	}
+}
+
+// An AWS_LAMBDA data source names its function by ARN: the claim's lambda source names that kind:
+// Function. A function of another account, a version/alias, and a missing ARN refuse.
+func TestApplyManagement_CreateLambdaDataSource(t *testing.T) {
+	obj := map[string]any{"spec": map[string]any{}}
+	body := map[string]any{"type": "AWS_LAMBDA", "lambdaConfig": map[string]any{"lambdaFunctionArn": "arn:aws:lambda:us-east-1:000000000000:function:blog-fn"}}
+	if _, err := applyManagement(obj, "CreateDataSource", mgmtParams{dsName: "fn", account: "000000000000", body: body}); err != nil {
+		t.Fatal(err)
+	}
+	ds := obj["spec"].(map[string]any)["dataSources"].([]any)[0].(map[string]any)
+	if ds["type"] != "lambda" || ds["function"] != "blog-fn" {
+		t.Fatalf("AWS_LAMBDA did not map to a lambda source naming its function: %v", ds)
+	}
+	for name, arn := range map[string]any{
+		"another account": "arn:aws:lambda:us-east-1:111111111111:function:blog-fn",
+		"an alias":        "arn:aws:lambda:us-east-1:000000000000:function:blog-fn:live",
+		"not a function":  "arn:aws:s3:::bucket",
+		"no ARN":          nil,
+	} {
+		b := map[string]any{"type": "AWS_LAMBDA", "lambdaConfig": map[string]any{"lambdaFunctionArn": arn}}
+		if _, err := applyManagement(map[string]any{"spec": map[string]any{}}, "CreateDataSource", mgmtParams{dsName: "fn", account: "000000000000", body: b}); err == nil {
+			t.Errorf("%s: must be refused", name)
+		}
+	}
+	// NONE is AppSync's no-backend source.
+	_, _ = applyManagement(obj, "CreateDataSource", mgmtParams{dsName: "local", body: map[string]any{"type": "NONE"}})
+	if ds := obj["spec"].(map[string]any)["dataSources"].([]any)[1].(map[string]any); ds["type"] != "none" {
+		t.Errorf("NONE maps to the none source, got %v", ds)
+	}
+}
+
 func TestSplitAPIID(t *testing.T) {
 	if ns, name := splitAPIID("team-a.notes"); ns != "team-a" || name != "notes" {
 		t.Fatalf("ns.name split wrong: %s/%s", ns, name)
