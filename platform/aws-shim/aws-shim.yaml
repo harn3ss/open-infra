@@ -897,6 +897,12 @@ spec:
               containerPort: 4567
             - name: https-aws
               containerPort: 8443
+            # The SES SMTP interface (STARTTLS, and TLS Wrapper): SES's alternate ports, which a non-root
+            # process may bind; the Service answers on the usual 587 and 465.
+            - name: smtp
+              containerPort: 2587
+            - name: smtps
+              containerPort: 2465
           env:
             - { name: LISTEN_ADDR, value: ":4566" }
             # EC2 instance metadata (IMDS): serve rotating role credentials (/v1/vm-credentials) to the
@@ -948,6 +954,13 @@ spec:
             # mail/relay-capture.yaml). The shim serves SES only while this name resolves, so with the mail
             # component off SES stays not-fronted; turning it on needs no shim change.
             - { name: SES_SMTP_RELAY, value: "smtp-relay.mail.svc.cluster.local:587" }
+            # The SES SMTP interface (the analog of email-smtp.<region>.amazonaws.com), served while SES is:
+            # SES SMTP credentials (an IAM user's access key id + the SMTP password derived from its secret,
+            # AWS's algorithm) over STARTTLS (Service port 587) or TLS Wrapper (465), with the in-cluster
+            # certificate above; each message is SendRawEmail as that user. The relay accepts mail from this
+            # shim alone (mail/relay.yaml), so this is the only way into it.
+            - { name: SES_SMTP_LISTEN_ADDR, value: ":2587" }
+            - { name: SES_SMTPS_LISTEN_ADDR, value: ":2465" }
             # The DNS suffix instances' public DNS names are built on (ec2-a-b-c-d.<suffix>, GetAtt
             # PublicDnsName): a site value (config.yaml awsShim.publicDnsSuffix, applied by install.sh),
             # never in the repo. Absent: instances have no public DNS name, as in a VPC without DNS hostnames.
@@ -1159,6 +1172,13 @@ spec:
     - name: https-aws
       port: 443
       targetPort: 8443
+    # The SES SMTP interface: submission with STARTTLS, and TLS Wrapper (SMTPS), on SES's usual ports.
+    - name: smtp
+      port: 587
+      targetPort: 2587
+    - name: smtps
+      port: 465
+      targetPort: 2465
 ---
 # Step Functions StartSyncExecution endpoint alias. The AWS SDK/CLI resolve StartSyncExecution to a
 # SEPARATE, "sync-"prefixed host (AWS's sync-states.<region>.amazonaws.com), and apply that prefix even

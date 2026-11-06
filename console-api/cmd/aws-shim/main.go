@@ -610,8 +610,11 @@ func run(logger *slog.Logger) error {
 	// (the mail component is off). Internet deliverability is the operator's smarthost + the sending
 	// domain's DNS (SPF/DKIM/DMARC), exactly as AWS gates SES behind domain verification; we do not accept
 	// mail that cannot be delivered.
+	var sesFront *sesHandler // the SES front door the SES SMTP interface sends through (ses_smtp.go)
 	if relay := getenv("SES_SMTP_RELAY", ""); relay != "" {
 		sesH := newSESHandler(cs, authzNS, relay, authzChecker, logger)
+		sesH.dyn = dyn // a member account's verified identities are its kind: Account's (ses.go)
+		sesFront = sesH
 		services["ses"] = sesH
 		services["email"] = sesH
 		logger.Info("SES front door configured (served while its relay resolves)", slog.String("relay", relay))
@@ -901,6 +904,16 @@ func run(logger *slog.Logger) error {
 		}()
 	}
 
+	// The SES SMTP interface (ses_smtp.go), served while SES is: SES SMTP credentials (an IAM user's access
+	// key id + its derived SMTP password) over STARTTLS or TLS Wrapper; each message is SendRawEmail as that
+	// user. The platform relay accepts mail from this shim alone (mail/relay.yaml's NetworkPolicy).
+	var sesSMTPSrv interface{ Shutdown(context.Context) error }
+	if sesFront != nil {
+		if s := startSESSMTP(sesFront, auth, logger, serverErr); s != nil {
+			sesSMTPSrv = s
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if cfnDoor != nil {
@@ -1032,6 +1045,9 @@ func run(logger *slog.Logger) error {
 	defer cancel()
 	if internalTLS != nil {
 		_ = internalTLS.Shutdown(shutdownCtx)
+	}
+	if sesSMTPSrv != nil {
+		_ = sesSMTPSrv.Shutdown(shutdownCtx)
 	}
 	if tlsSrv != nil {
 		_ = tlsSrv.Shutdown(shutdownCtx)

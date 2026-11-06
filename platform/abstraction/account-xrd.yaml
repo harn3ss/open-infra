@@ -154,6 +154,35 @@ spec:
                       value:
                         type: number
                         minimum: 0
+                ses:
+                  type: object
+                  description: >-
+                    The account's Amazon SES identities and sending status, as the operator has verified and
+                    granted them. SES verifies an identity by proving its owner controls it (a DNS record for a
+                    domain, a confirmation link for an address); here the operator, who holds the sending
+                    domains' DNS and the platform relay's smarthost, does that and records it on the account.
+                    A member account sends — SES SendEmail / SendRawEmail, SES v2 SendEmail, and the SES SMTP
+                    interface (kind: EmailSender) — only as these identities. The management account sends as
+                    every identity the relay is configured for, and ignores this.
+                  properties:
+                    verifiedIdentities:
+                      type: array
+                      maxItems: 1000
+                      x-kubernetes-list-type: set
+                      description: >-
+                        Verified identities: domains (example.com — every address at the domain; a subdomain is
+                        an identity of its own) and email addresses (noreply@example.com).
+                      items:
+                        type: string
+                        maxLength: 320
+                        pattern: '^([A-Za-z0-9._%+-]+@)?[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$'
+                    productionAccessEnabled:
+                      type: boolean
+                      default: false
+                      description: >-
+                        Whether the account is out of the SES sandbox (AWS's production access). In the sandbox
+                        an account also sends only TO its verified identities. An operator sets it to grant an
+                        account's request for production access.
             status:
               type: object
               properties:

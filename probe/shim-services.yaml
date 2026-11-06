@@ -199,11 +199,12 @@ services:
     probes: [appsync]
 
   - name: SES
-    cell: "v1 `SendEmail`/`SendRawEmail` + v2 `SendEmail` → the platform SMTP relay (the `mail` component; a capturing sink on test clusters)"
+    cell: "v1 `SendEmail`/`SendRawEmail` + v2 `SendEmail`, and the SES SMTP interface (SES SMTP credentials, STARTTLS) → the platform SMTP relay (the `mail` component; a capturing sink on test clusters), which takes mail from the shim alone"
     tier: proven
     sigv4: [ses, email]
     note: "Served while the `mail` component's relay exists; with it off, SES answers as not fronted."
     probes: [ses]
+    pending: [ses-smtp] # the SMTP interface: derived credentials, 530/535/554 refusals, a member account's verified identities
 
   # --- honest 501 (no handler) ---
   - name: Route 53

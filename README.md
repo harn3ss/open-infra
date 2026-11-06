@@ -273,7 +273,7 @@ unlike LocalStack — fidelity isn't bounded by what a mock chose to implement.
 | **SSM** Parameter Store → Postgres + KMS-encrypted `SecureString`; Run Command (`AWS-RunShellScript`) on the platform's VMs through their metadata agent | **API Gateway** HTTP API v2 + REST v1 → runtime proxy to Lambda | **CloudWatch** metrics + alarms that evaluate and fire SNS |
 | **CloudWatch Logs** → Postgres; a service's own groups (`/aws/lambda/<fn>`, SageMaker jobs, ECS) → the platform log store | **Step Functions** (experimental) owned ASL engine; Tasks run under the state machine's IAM role (per-execution STS) | **CloudFormation** owned cfn engine; stacks provision under the caller's authority (impersonation) |
 | **CloudFront** a stack's distribution (`kind: StaticSite`): its invalidations (Completed once the site serves the upload) and reads of it, its policies and origin access | **ACM** a stack's certificates (its distribution's site TLS, issued by cert-manager): `ListCertificates` / `DescribeCertificate` / `GetCertificate`, never the key | **AppSync** (experimental) → open-appsync (VTL-faithful engine) |
-| **SES** v1 `SendEmail`/`SendRawEmail` + v2 `SendEmail` → the platform SMTP relay (the `mail` component; a capturing sink on test clusters) |  |  |
+| **SES** v1 `SendEmail`/`SendRawEmail` + v2 `SendEmail`, and the SES SMTP interface (SES SMTP credentials, STARTTLS) → the platform SMTP relay (the `mail` component; a capturing sink on test clusters), which takes mail from the shim alone |  |  |
 <!-- END shimgen:readme-matrix -->
 
 ```sh

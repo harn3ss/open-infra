@@ -209,10 +209,17 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // (awsidentity.WithIdentity): the ARNs, StackIds and AWS::AccountId built for this request follow the
 // caller's account. The management account's identity is the install's own, so nothing changes for it.
 func (rt *serviceRouter) withAccount(r *http.Request, claims iam.Claims) *http.Request {
-	if claims.Account == "" || rt.auth == nil || !rt.auth.memberAccount(claims.Account) {
+	return rt.auth.inCallerAccount(r, claims)
+}
+
+// inCallerAccount is r acting in the account claims belong to: a member account's identity and home on its
+// context (the management account's request is unchanged). The router does this for every SigV4 request;
+// the SES SMTP interface does it for the message an SMTP credential sends.
+func (a *authenticator) inCallerAccount(r *http.Request, claims iam.Claims) *http.Request {
+	if claims.Account == "" || a == nil || !a.memberAccount(claims.Account) {
 		return r
 	}
-	home, _ := rt.auth.dir.HomeOf(claims.Account)
+	home, _ := a.dir.HomeOf(claims.Account)
 	ctx := withAccountHome(r.Context(), home)
 	return r.WithContext(awsidentity.WithIdentity(ctx, awsidentity.Current().ForAccount(claims.Account, home)))
 }

@@ -118,9 +118,9 @@ func (h *sesHandler) serveV2(w http.ResponseWriter, r *http.Request, claims iam.
 		sesV2JSON(w, requestID, map[string]any{
 			"SendQuota":      map[string]any{"Max24HourSend": -1, "MaxSendRate": -1, "SentLast24Hours": 0},
 			"SendingEnabled": true,
-			// A member account has no verified identity (ses.go), as a new AWS account's SES is in the
-			// sandbox: it is not out of it here.
-			"ProductionAccessEnabled": !sesMemberAccount(r.Context(), claims),
+			// A member account is in the sandbox, as a new AWS account's SES is, until its operator grants it
+			// production access (ses.go).
+			"ProductionAccessEnabled": !h.sesInSandbox(r.Context(), claims),
 			"EnforcementStatus":       "HEALTHY",
 		})
 	default:
@@ -135,14 +135,32 @@ func (h *sesHandler) serveV2(w http.ResponseWriter, r *http.Request, claims iam.
 				return
 			}
 		}
-		// A member account has no identities (ses.go): it lists none, and any it names does not exist.
+		// A member account's identities are the ones verified for it (ses.go): it lists those, and any other
+		// it names does not exist. One the operator verified is not the account's to delete.
 		if known && sesMemberAccount(r.Context(), claims) {
+			ids := h.accountIdentities(r.Context(), claims)
 			switch op {
 			case "ListEmailIdentities":
-				sesV2JSON(w, requestID, map[string]any{"EmailIdentities": []any{}})
+				list := []any{}
+				for _, id := range ids.verified {
+					list = append(list, map[string]any{"IdentityType": sesV2IdentityType(id), "IdentityName": id,
+						"SendingEnabled": true, "VerificationStatus": "SUCCESS"})
+				}
+				sesV2JSON(w, requestID, map[string]any{"EmailIdentities": list})
 				return
 			case "GetEmailIdentity", "DeleteEmailIdentity":
-				sesV2Error(w, http.StatusNotFound, "NotFoundException", requestID, "Email identity "+resID+" does not exist.")
+				if !ids.isIdentity(resID) {
+					sesV2Error(w, http.StatusNotFound, "NotFoundException", requestID, "Email identity "+resID+" does not exist.")
+					return
+				}
+				if op == "GetEmailIdentity" {
+					sesV2JSON(w, requestID, map[string]any{"IdentityType": sesV2IdentityType(resID), "FeedbackForwardingStatus": true,
+						"VerifiedForSendingStatus": true, "VerificationStatus": "SUCCESS",
+						"DkimAttributes": map[string]any{"SigningEnabled": false, "Status": "NOT_STARTED"}})
+					return
+				}
+				sesV2Error(w, http.StatusBadRequest, "BadRequestException", requestID,
+					"Email identity "+resID+" was verified for this account by the operator, and is removed only by the operator.")
 				return
 			}
 		}
@@ -250,12 +268,6 @@ func (h *sesHandler) v2SendEmail(w http.ResponseWriter, r *http.Request, claims 
 			return
 		}
 	}
-	// A member account has verified no identity (ses.go): whatever it sends as is unverified.
-	if sesMemberAccount(r.Context(), claims) {
-		sesV2Error(w, http.StatusBadRequest, "MessageRejected", requestID, sesUnverified(r.Context(), senders))
-		return
-	}
-
 	var msg []byte
 	var rcpts []string
 	if c.Simple != nil {
@@ -303,10 +315,25 @@ func (h *sesHandler) v2SendEmail(w http.ResponseWriter, r *http.Request, claims 
 	if from == "" {
 		from = senders[0]
 	}
+	// A member account sends only as its verified identities, and in the sandbox only to them (ses.go).
+	if sesMemberAccount(r.Context(), claims) {
+		if failed := h.accountIdentities(r.Context(), claims).failing(senders, rcpts); len(failed) > 0 {
+			sesV2Error(w, http.StatusBadRequest, "MessageRejected", requestID, sesUnverified(r.Context(), failed))
+			return
+		}
+	}
 	if err := h.smtpSend(from, rcpts, msg); err != nil {
 		h.logger.Error("ses relay submission failed", "error", err.Error())
 		sesV2Error(w, http.StatusInternalServerError, "InternalFailure", requestID, "the SES relay could not accept the message: "+err.Error())
 		return
 	}
 	sesV2JSON(w, requestID, map[string]string{"MessageId": uuidLike() + "@open-infra-ses"})
+}
+
+// sesV2IdentityType is an identity's SES v2 IdentityType: an address, or a domain.
+func sesV2IdentityType(id string) string {
+	if strings.Contains(id, "@") {
+		return "EMAIL_ADDRESS"
+	}
+	return "DOMAIN"
 }

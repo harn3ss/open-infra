@@ -13,11 +13,13 @@
 // identity is backed by the domain's DNS (SPF/DKIM/DMARC), which this shim cannot fake. Who may send as an
 // identity is the caller's policy: ses:SendEmail / ses:SendRawEmail on Identity::<the From address> or on
 // its domain's identity (Identity::<domain>), for every address the message is sent as. Identities are
-// an account's own: those the relay sends as are the management account's, and a member account has none
-// (sesMemberAccount), so its sends are refused as AWS refuses an unverified identity's.
+// an account's own: those the relay sends as are the management account's, and a member account's are
+// the ones the operator verified for it (sesAccountIdentities), so its sends as any other are refused as
+// AWS refuses an unverified identity's.
 //
 // SES v2 (REST-JSON, /v2/email/…) is served by the same handler (sesv2.go): SendEmail, with the same
-// relay and the same authorization.
+// relay and the same authorization. The SES SMTP interface (ses_smtp.go) sends each message through this
+// handler's SendRawEmail, as the IAM user whose SMTP credentials signed in.
 package main
 
 import (
@@ -34,6 +36,9 @@ import (
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -52,6 +57,12 @@ type sesHandler struct {
 	relayMu   sync.Mutex
 	relayAt   time.Time
 	relayLive bool
+
+	// dyn is the shim's own client: it reads a member account's kind: Account for the SES identities the
+	// operator verified for it (accountIdentities). nil: a member account has none.
+	dyn        dynamic.Interface
+	accountsMu sync.Mutex
+	accounts   map[string]sesAccountEntry
 }
 
 // sesRelayCheckTTL is how long the shim trusts its last answer to "does the relay exist".
@@ -171,9 +182,10 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		}
 	}
 
-	// A member account has no verified identities of its own (sesMemberAccount): it sends as none, and
-	// lists none.
+	// A member account sends only as the identities verified for it (sesAccountIdentities), and, while it
+	// is in the sandbox, only to them; it lists exactly those.
 	if sesMemberAccount(r.Context(), claims) {
+		ids := h.accountIdentities(r.Context(), claims)
 		switch op {
 		case "SendEmail", "SendRawEmail":
 			if len(senders) == 0 {
@@ -181,13 +193,25 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 					op+" needs a Source (or, for SendRawEmail, a From header in the message).", sesXMLNamespace)
 				return
 			}
-			writeQueryError(w, http.StatusBadRequest, "MessageRejected", requestID, sesUnverified(r.Context(), senders), sesXMLNamespace)
-			return
+			if failed := ids.failing(senders, sesV1Recipients(r, op)); len(failed) > 0 {
+				writeQueryError(w, http.StatusBadRequest, "MessageRejected", requestID, sesUnverified(r.Context(), failed), sesXMLNamespace)
+				return
+			}
 		case "ListIdentities":
-			h.writeXML(w, requestID, sesEmptyResult("ListIdentities", "<Identities/>", requestID))
+			var b strings.Builder
+			for _, id := range ids.verified {
+				b.WriteString("<member>" + xmlEscape(id) + "</member>")
+			}
+			h.writeXML(w, requestID, sesEmptyResult("ListIdentities", xmlList("Identities", b.String()), requestID))
 			return
 		case "GetIdentityVerificationAttributes":
-			h.writeXML(w, requestID, sesEmptyResult("GetIdentityVerificationAttributes", "<VerificationAttributes/>", requestID))
+			var b strings.Builder
+			for _, id := range sesAddrList(r, "Identities.member") {
+				if ids.isIdentity(id) {
+					b.WriteString("<entry><key>" + xmlEscape(id) + "</key><value><VerificationStatus>Success</VerificationStatus></value></entry>")
+				}
+			}
+			h.writeXML(w, requestID, sesEmptyResult("GetIdentityVerificationAttributes", xmlList("VerificationAttributes", b.String()), requestID))
 			return
 		}
 	}
@@ -210,15 +234,149 @@ func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 
 // SES identities are an account's own, as on AWS. The identities this shim sends as — the sending
 // domains the operator backs with DNS (SPF/DKIM/DMARC) and the relay's smarthost — are the management
-// account's, the installation's own. A member account has verified none, and can verify none here
-// (identity verification is the operator's, for every account), so its identities are none at all: a send
-// as any address is refused as AWS refuses one from an identity the account has not verified
-// (MessageRejected), and its identity listings are empty. The management account's sends and answers are
-// unchanged. So SES keeps each account's identities apart, and is an account-scoped front door: a member
-// account's principal is decided on its own account's identities.
+// account's, the installation's own. A member account's verified identities are the ones the operator has
+// verified for it (its kind: Account's spec.ses.verifiedIdentities: domains and email addresses): SES
+// verifies an identity by proving its owner controls it, a DNS record or a confirmation link, and here the
+// operator, who holds the DNS and the relay, does that for the account. A member account's send as any
+// other address is refused as AWS refuses one from an identity the account has not verified
+// (MessageRejected), and its listings are its verified identities. A member account is in the SES sandbox
+// until its Account sets spec.ses.productionAccessEnabled: it then also sends only to its verified
+// identities, as AWS's sandbox allows. The management account's sends and answers are unchanged. So SES
+// keeps each account's identities apart, and is an account-scoped front door: a member account's principal
+// is decided on its own account's identities.
 func init() {
 	accountScopedServices["ses"] = true
 	accountScopedServices["email"] = true
+}
+
+// sesAccountIdentities is what a member account's kind: Account says of its SES identities.
+type sesAccountIdentities struct {
+	verified   []string // domain and email-address identities, lower-cased
+	production bool     // out of the sandbox (spec.ses.productionAccessEnabled)
+}
+
+// has reports whether addr is a verified identity, or an address of a verified domain identity (SES's
+// rule: a verified domain sends as any address at it; a subdomain is an identity of its own).
+func (a sesAccountIdentities) has(addr string) bool {
+	addr = strings.ToLower(strings.TrimSpace(addr))
+	dom := identityDomain(addr)
+	for _, id := range a.verified {
+		if id == addr || (dom != "" && id == dom) {
+			return true
+		}
+	}
+	return false
+}
+
+// isIdentity reports whether id is itself one of the verified identities (an address at a verified domain
+// sends, but is not an identity of its own).
+func (a sesAccountIdentities) isIdentity(id string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	for _, v := range a.verified {
+		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+// xmlList is the element name holding inner, or the empty element when there is nothing in it.
+func xmlList(name, inner string) string {
+	if inner == "" {
+		return "<" + name + "/>"
+	}
+	return "<" + name + ">" + inner + "</" + name + ">"
+}
+
+// failing is every identity of a send that fails SES's verification check: each sender that is not
+// verified, and, in the sandbox, each recipient that is not.
+func (a sesAccountIdentities) failing(senders, rcpts []string) []string {
+	var out []string
+	for _, s := range senders {
+		if !a.has(s) {
+			out = appendUnique(out, s)
+		}
+	}
+	if !a.production {
+		for _, rc := range rcpts {
+			if !a.has(rc) {
+				out = appendUnique(out, rc)
+			}
+		}
+	}
+	return out
+}
+
+// sesAccountsTTL is how long the shim trusts what it last read of an account's identities.
+const sesAccountsTTL = 30 * time.Second
+
+type sesAccountEntry struct {
+	at  time.Time
+	ids sesAccountIdentities
+}
+
+// accountIdentities is the caller's member account's SES identities, read from its kind: Account (cached
+// for sesAccountsTTL). An account the shim cannot read has none verified and is in the sandbox — it fails
+// closed.
+func (h *sesHandler) accountIdentities(ctx context.Context, claims iam.Claims) sesAccountIdentities {
+	acct := claims.Account
+	if acct == "" {
+		acct = callerAccount(ctx)
+	}
+	if h.dyn == nil || acct == "" {
+		return sesAccountIdentities{}
+	}
+	h.accountsMu.Lock()
+	if e, ok := h.accounts[acct]; ok && time.Since(e.at) < sesAccountsTTL {
+		h.accountsMu.Unlock()
+		return e.ids
+	}
+	h.accountsMu.Unlock()
+	var ids sesAccountIdentities
+	if a, err := h.dyn.Resource(gvrAccounts).Get(ctx, acct, metav1.GetOptions{}); err == nil {
+		spec, _ := a.Object["spec"].(map[string]any)
+		ses, _ := spec["ses"].(map[string]any)
+		items, _ := ses["verifiedIdentities"].([]any)
+		for _, it := range items {
+			if s, _ := it.(string); strings.TrimSpace(s) != "" {
+				ids.verified = appendUnique(ids.verified, strings.ToLower(strings.TrimSpace(s)))
+			}
+		}
+		ids.production, _ = ses["productionAccessEnabled"].(bool)
+	} else if !apierrors.IsNotFound(err) {
+		h.logger.Warn("ses: the account's identities could not be read; none are verified until they can", "account", acct, "error", err.Error())
+		return ids // not cached: the next send reads again
+	}
+	h.accountsMu.Lock()
+	if h.accounts == nil {
+		h.accounts = map[string]sesAccountEntry{}
+	}
+	h.accounts[acct] = sesAccountEntry{at: time.Now(), ids: ids}
+	h.accountsMu.Unlock()
+	return ids
+}
+
+// sesInSandbox reports whether the caller's account is in the SES sandbox: a member account until its
+// operator grants it production access; never the management account.
+func (h *sesHandler) sesInSandbox(ctx context.Context, claims iam.Claims) bool {
+	return sesMemberAccount(ctx, claims) && !h.accountIdentities(ctx, claims).production
+}
+
+// sesV1Recipients is every recipient of a v1 send: SendEmail's destinations; SendRawEmail's Destinations,
+// else its To/Cc/Bcc headers.
+func sesV1Recipients(r *http.Request, op string) []string {
+	if op == "SendEmail" {
+		return addrsOnly(append(append(sesAddrList(r, "Destination.ToAddresses.member"),
+			sesAddrList(r, "Destination.CcAddresses.member")...), sesAddrList(r, "Destination.BccAddresses.member")...))
+	}
+	if rcpts := addrsOnly(sesAddrList(r, "Destinations.member")); len(rcpts) > 0 {
+		return rcpts
+	}
+	if data, err := b64Decode(r.PostFormValue("RawMessage.Data")); err == nil {
+		_, to := envelopeFromRaw(data)
+		return to
+	}
+	return nil
 }
 
 // sesMemberAccount reports whether the request acts in a member account (the router's identity on the
