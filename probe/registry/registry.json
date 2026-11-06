@@ -990,7 +990,8 @@
         "ListFunctions"
       ],
       "probes": [
-        "lambda"
+        "lambda",
+        "lambda-execution-role"
       ],
       "refused": [],
       "service": "Lambda",
