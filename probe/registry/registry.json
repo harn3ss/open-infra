@@ -522,7 +522,8 @@
         "StopInstances"
       ],
       "probes": [
-        "ec2"
+        "ec2",
+        "cfn-structural-reads"
       ],
       "refused": [],
       "service": "EC2",

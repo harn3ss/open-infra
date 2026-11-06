@@ -95,8 +95,7 @@ services:
     cell: "`Describe*` over the platform's VMs, volumes, groups, VPCs and subnets (the guest's i- ids), and a VPC's internet gateways, route tables, network ACLs and endpoints (a stack's by their Refs); key pairs an instance's `KeyName` carries"
     tier: proven
     sigv4: [ec2]
-    probes: [ec2]
-    pending: [cfn-structural-reads]
+    probes: [ec2, cfn-structural-reads]
   - name: ECR
     cell: "→ a backing OCI registry (Distribution /v2)"
     tier: proven
