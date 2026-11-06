@@ -13,8 +13,9 @@
 # A translator that mapped the grant to resource "*" (or ignored the key id) would let key B through; this
 # is the fail that would make per-key policies meaningless.
 #
-# On-demand (needs a deployed shim + Vault Transit + the KMS Postgres + the platform IAM + an
-# openinfra:powerusers coarse grant for kms). Exit 0 = pass, 1 = a real failure, 42 = INCONCLUSIVE.
+# On-demand (needs a deployed shim + Vault Transit + the KMS Postgres + the platform IAM). The scoped
+# principals are policy-only (no group): a tier group's AWS managed policy would add kms:* on every key,
+# as on AWS. Exit 0 = pass, 1 = a real failure, 42 = INCONCLUSIVE.
 #
 #   SHIM_ENDPOINT=http://localhost:4566 ./probe/aws-shim-kms-keypolicy.sh
 set -euo pipefail
@@ -52,13 +53,19 @@ trap cleanup EXIT
 secret_name() { printf 'iam-ak-%s' "$(printf '%s' "$1" | sha256sum | cut -c1-40)"; }
 mint_key() { # <owner> <group> -> "AK SK"
   local owner="$1" group="$2"
+  # A principal minted with no group is policy-only: its own policies are all it has, decided by IAM
+  # policy alone (the canary label), as an AWS user with no group. A tier group (powerusers) carries its
+  # AWS managed policy (PowerUserAccess: kms:* on every key), which a per-key grant of the user's own only
+  # adds to, as on AWS — so a principal meant to be scoped to one key has no group.
+  local groups="[\"${group}\"]" labels=""
+  [ -n "$group" ] || { groups="[]"; labels=', labels: { "openinfra.dev/iam-authz": "enforce" }'; }
   local ak="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
   local sk; sk="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
   cat <<YAML | kubectl apply -f - >/dev/null
 apiVersion: iam.openinfra.dev/v1
 kind: User
-metadata: { name: "${owner}", namespace: "${USERS_NS}" }
-spec: { displayName: "${owner}", groups: ["${group}"], source: local }
+metadata: { name: "${owner}", namespace: "${USERS_NS}"${labels} }
+spec: { displayName: "${owner}", groups: ${groups}, source: local }
 YAML
   CREATED_USERS+=("$owner")
   local name; name="$(secret_name "$ak")"
@@ -86,7 +93,7 @@ log "  ✓ key A=$KA  key B=$KB"
 
 # --- 2. A per-key grant: the user may use key A ONLY (the key-policy equivalent) ---------------
 USER="kms-kp-user-$SFX"
-mint_key "$USER" "powerusers"; UAK="$MK_AK"; USK="$MK_SK"   # powerusers = coarse kms allow; the dataPlane tightens to key A
+mint_key "$USER" ""; UAK="$MK_AK"; USK="$MK_SK"   # policy-only: the per-key grant below is all it has
 POLICY="kms-kp-$SFX"
 log "grant User::$USER kms:Encrypt/Decrypt on Key::$KA ONLY (open-infra's per-key policy)"
 cat <<YAML | kubectl apply -f - >/dev/null
@@ -129,7 +136,7 @@ log "  ✓ key B: Encrypt DENIED (the per-key grant does not leak across keys)"
 # --- 5. PutKeyPolicy IMPORT: a SUPPLIED AWS key-policy JSON is translated to the --------
 #        equivalent kind: Policy grant + enforced + round-trips. This is the import convenience #267 lacked.
 USER2="kms-kp2-user-$SFX"
-mint_key "$USER2" "powerusers"; U2AK="$MK_AK"; U2SK="$MK_SK"   # powerusers = coarse kms allow; the key policy tightens
+mint_key "$USER2" ""; U2AK="$MK_AK"; U2SK="$MK_SK"   # policy-only: the key policy below is all it has
 sleep 2
 log "PutKeyPolicy on key A: a REAL AWS key-policy JSON granting User::$USER2 kms:Encrypt/Decrypt (+ the root default)"
 KP_DOC="$(cat <<JSON
