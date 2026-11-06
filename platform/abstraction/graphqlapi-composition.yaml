@@ -206,7 +206,7 @@ spec:
                           seccompProfile: { type: RuntimeDefault }
                         containers:
                           - name: engine
-                            image: {{ $image }}
+                            image: {{ $image | toJson }}
                             imagePullPolicy: Always
                             ports:
                               - { name: http, containerPort: 8080 }
@@ -231,8 +231,8 @@ spec:
                               - { name: APPSYNC_CACHE_BUCKET, value: "open_appsync_cache_{{ $name | replace "." "_" }}" }
                               {{- end }}
                               {{- if $spec.mongoURI }}
-                              - { name: MONGO_URI, value: "{{ $spec.mongoURI }}" }
-                              - { name: MONGO_DB, value: "{{ $spec.mongoDB | default "open_appsync" }}" }
+                              - { name: MONGO_URI, value: {{ $spec.mongoURI | toJson }} }
+                              - { name: MONGO_DB, value: {{ $spec.mongoDB | default "open_appsync" | toJson }} }
                               {{- end }}
                               {{- if $spec.apiKeysSecret }}
                               # API-key auth (@aws_api_key): the mounted Secret's apikeys.json maps each key
@@ -241,16 +241,16 @@ spec:
                               {{- end }}
                               {{- range $ds := ($spec.dataSources | default list) }}
                               {{- if eq ($ds.type | default "memory") "rds" }}
-                              # rds data source {{ $ds.name }}: DSN from its connectionSecret (key `dsn`), never the CR.
-                              - name: APPSYNC_RDS_DSN_{{ $ds.name | upper | replace "-" "_" | replace "." "_" }}
-                                valueFrom: { secretKeyRef: { name: "{{ $ds.connectionSecret }}", key: dsn } }
+                              # rds data source {{ $ds.name | toJson }}: DSN from its connectionSecret (key `dsn`), never the CR.
+                              - name: {{ printf "APPSYNC_RDS_DSN_%s" ($ds.name | upper | replace "-" "_" | replace "." "_") | toJson }}
+                                valueFrom: { secretKeyRef: { name: {{ $ds.connectionSecret | toJson }}, key: dsn } }
                               {{- end }}
                               {{- if and (eq ($ds.type | default "memory") "opensearch") $ds.connectionSecret }}
-                              # opensearch data source {{ $ds.name }}: optional basic auth from its connectionSecret.
-                              - name: APPSYNC_OPENSEARCH_USER_{{ $ds.name | upper | replace "-" "_" | replace "." "_" }}
-                                valueFrom: { secretKeyRef: { name: "{{ $ds.connectionSecret }}", key: username, optional: true } }
-                              - name: APPSYNC_OPENSEARCH_PASS_{{ $ds.name | upper | replace "-" "_" | replace "." "_" }}
-                                valueFrom: { secretKeyRef: { name: "{{ $ds.connectionSecret }}", key: password, optional: true } }
+                              # opensearch data source {{ $ds.name | toJson }}: optional basic auth from its connectionSecret.
+                              - name: {{ printf "APPSYNC_OPENSEARCH_USER_%s" ($ds.name | upper | replace "-" "_" | replace "." "_") | toJson }}
+                                valueFrom: { secretKeyRef: { name: {{ $ds.connectionSecret | toJson }}, key: username, optional: true } }
+                              - name: {{ printf "APPSYNC_OPENSEARCH_PASS_%s" ($ds.name | upper | replace "-" "_" | replace "." "_") | toJson }}
+                                valueFrom: { secretKeyRef: { name: {{ $ds.connectionSecret | toJson }}, key: password, optional: true } }
                               {{- end }}
                               {{- end }}
                             volumeMounts:
@@ -281,7 +281,7 @@ spec:
                           {{- if $spec.apiKeysSecret }}
                           - name: apikeys
                             secret:
-                              secretName: {{ $spec.apiKeysSecret }}
+                              secretName: {{ $spec.apiKeysSecret | toJson }}
                           {{- end }}
             ---
             # --- The in-cluster GraphQL endpoint for this API ---
