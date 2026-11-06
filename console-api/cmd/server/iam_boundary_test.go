@@ -125,18 +125,22 @@ func TestPolicyBoundaryNoDrift(t *testing.T) {
 		}
 	})
 
-	// ── 6. builtinGroups ∪ {users} == impersonator resourceNames (mirror group 3) ──
+	// ── 6. builtinGroups == impersonator resourceNames (mirror group 3) ──
 	t.Run("builtin_groups_match_impersonator", func(t *testing.T) {
 		pinned := impersonatorGroupResourceNames(t) // e.g. openinfra:admins → admins
-		// The `users` group is the auto-appended sentinel every identity lands in; it is
-		// pinned in the impersonator but is NOT a selectable builtinGroup, so it is named
-		// here explicitly rather than silently ignored.
-		want := append(append([]string{}, builtinGroups...), "users")
+		// The `users` group, the implicit group every identity landed in before IAM policy was the
+		// authority (#360), is no longer pinned: once IAM policy decides, nothing impersonates it (the
+		// IAM cutover's step 4 took it out of the ceilings).
 		if msg := diffSets("impersonator group resourceNames (rbac-roles.yaml, minus openinfra: prefix)",
-			pinned, want,
+			pinned, builtinGroups,
 			"a pinned group is missing from builtinGroups (or vice versa) — if you pinned a new "+
-				"impersonable group, add it to builtinGroups in iam.go; `users` is the known sentinel"); msg != "" {
+				"impersonable group, add it to builtinGroups in iam.go"); msg != "" {
 			t.Error(msg)
+		}
+		for _, g := range pinned {
+			if g == "users" {
+				t.Error("the impersonation ceiling pins openinfra:users again: nothing impersonates it once IAM policy decides (#360)")
+			}
 		}
 	})
 }
