@@ -680,7 +680,7 @@ func (e *Engine) projectValue(ec *execCtx, val any, sels []selection, declaredTy
 	case []any:
 		// The list's objects are siblings: a field whose resolver can batch is resolved for all of them
 		// at once (AppSync's BatchInvoke) before each object is projected with its own result.
-		plans := e.planSiblings(ec, v, sels, declaredType, path)
+		plans := e.planSiblings(ec, v, sels, declaredType)
 		out := make([]any, len(v))
 		var errs []GqlError
 		for i, elem := range v {
@@ -717,7 +717,7 @@ type siblingPlan struct {
 // (nil for an element that is not an object). Only fields the caller may read are resolved here (the
 // auth gates run first, as resolveObject runs them again per object); a cached item is served from the
 // cache and stays out of the batch. With no batching resolver selected this is just field collection.
-func (e *Engine) planSiblings(ec *execCtx, list []any, sels []selection, declaredType string, path []any) []*siblingPlan {
+func (e *Engine) planSiblings(ec *execCtx, list []any, sels []selection, declaredType string) []*siblingPlan {
 	plans := make([]*siblingPlan, len(list))
 	type group struct {
 		concreteType string
@@ -752,6 +752,9 @@ func (e *Engine) planSiblings(ec *execCtx, list []any, sels []selection, declare
 				g = &group{concreteType: ct, sel: sel, r: r}
 				byKey[key] = g
 				groups = append(groups, g)
+			}
+			if n := len(g.members); n > 0 && g.members[n-1] == i {
+				continue // the same field selected twice on this object resolves once
 			}
 			g.members = append(g.members, i)
 		}

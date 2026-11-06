@@ -109,6 +109,14 @@ func TestBatch_AliasesBatchSeparately(t *testing.T) {
 	if got := fmt.Sprint(src.sizes); got != "[3 3]" {
 		t.Errorf("batches = %s, want [3 3]", got)
 	}
+	// The same field selected twice on each object is one resolution per object.
+	src.sizes = nil
+	if res := e.Execute(context.Background(), `{ posts { author { id } author { id } } }`, nil); len(res.Errors) != 0 {
+		t.Fatalf("errors: %v", res.Errors)
+	}
+	if got := fmt.Sprint(src.sizes); got != "[3]" {
+		t.Errorf("batches = %s, want [3]", got)
+	}
 }
 
 // $ctx.info: selectionSetList lists each selected field by its response key (nested as parent/child),
