@@ -13,7 +13,8 @@
 //   - /ecs/<application>            a kind: Application's pods, stream ecs/<container>/<task id>
 //
 // They exist while the resource does, in the namespaces the Lambda API serves (the functions namespace and
-// the stack namespace) of the caller's account. They are read-only: the workload writes them, retention is
+// the stack namespace) of the caller's account — a member account's in its home namespace, where its
+// functions and stacks are. They are read-only: the workload writes them, retention is
 // the log store's (retentionInDays says so), and DescribeLogGroups, DescribeLogStreams, GetLogEvents and
 // FilterLogEvents answer for them as for any group. A group an SDK creates (CreateLogGroup/PutLogEvents)
 // is the front door's own store (cloudwatchlogs.go), as before.
@@ -31,6 +32,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -137,7 +139,9 @@ func isDerivedName(name string) bool {
 		strings.HasPrefix(name, cwlECSPrefix)
 }
 
-// namespaces are the namespaces whose resources the caller's account owns, of those the front door serves.
+// namespaces are the namespaces whose resources the caller's account owns: of those the front door serves,
+// the ones in the caller's account, and a member account's home — where the account-scoped front doors
+// (Lambda, CloudFormation) keep a member account's functions and stacks.
 func (d *cwlDerived) namespaces(ctx context.Context, claims iam.Claims) []string {
 	acct := claims.Account
 	if acct == "" {
@@ -152,6 +156,11 @@ func (d *cwlDerived) namespaces(ctx context.Context, claims iam.Claims) []string
 		}
 		if d.dir.AccountOf(ns) == acct {
 			out = append(out, ns)
+		}
+	}
+	if isMemberRequest(ctx) && callerAccount(ctx) == acct {
+		if home, _ := ctx.Value(accountHomeKey{}).(string); home != "" && !slices.Contains(out, home) {
+			out = append(out, home)
 		}
 	}
 	return out
@@ -634,8 +643,12 @@ func lineFilters(terms []string) string {
 	return b.String()
 }
 
-// accountOf is the caller's account, for ARNs (the management account until requests carry one).
+// accountOf is the caller's account, for ARNs: the member account a request acts in, else the caller's
+// claims' account, else the door's own (the management account's).
 func (h *cwlHandler) accountOf(ctx context.Context) string {
+	if isMemberRequest(ctx) {
+		return callerAccount(ctx)
+	}
 	if a, ok := ctx.Value(cwlAccountKey{}).(string); ok && a != "" {
 		return a
 	}

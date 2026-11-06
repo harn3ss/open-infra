@@ -15,6 +15,12 @@
 // patterns beyond term/phrase matching (JSON-selector and metric-filter syntaxes) — refused, never
 // silently returning unfiltered data. Sequence tokens: accepted with or without, always echoed back, never
 // rejected on mismatch (AWS's current relaxed behavior). See docs/aws-shim.md.
+//
+// Accounts: the door keeps each account's log groups apart, as on AWS. The management account's groups are
+// where they always were; a member account's are stored under its account key ("<account>:<group>",
+// accountKey — a log group name has no ":"), their streams and events with them, and carry its account in
+// their ARNs. A member account's service groups (/aws/lambda/<fn> …) are its own workloads', in its home
+// namespace.
 package main
 
 import (
@@ -45,6 +51,9 @@ type cwlHandler struct {
 	// log store (cloudwatchlogs_loki.go); nil => none.
 	derived *cwlDerived
 }
+
+// CloudWatch Logs keeps each account's log groups apart.
+func init() { accountScopedServices["logs"] = true }
 
 func newCWLHandler(cs kubernetes.Interface, authzNS, account, region string, store *cwlStore, logger *slog.Logger) *cwlHandler {
 	if region == "" {
@@ -114,6 +123,12 @@ func (h *cwlHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	}
 	body := readJSONBody(r)
 	group, _ := body["logGroupName"].(string)
+	if memberKeyRe.MatchString(group) {
+		// An account key's form, which no log group name has (AWS's have no ":"): never another account's group.
+		writeCWLError(w, http.StatusBadRequest, "InvalidParameterException", requestID,
+			"1 validation error detected: Value '"+group+"' at 'logGroupName' failed to satisfy constraint: Member must satisfy regular expression pattern: [\\.\\-_/#A-Za-z0-9]+")
+		return
+	}
 
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 	// logs:<Op> on the log group (decide): in legacy the coarse SubjectAccessReview, then the data-plane
@@ -199,7 +214,7 @@ func (h *cwlHandler) createLogGroup(ctx context.Context, w http.ResponseWriter, 
 		writeCWLError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "logGroupName is required.")
 		return
 	}
-	created, err := h.store.createGroup(ctx, name, h.groupARN(name), stringMap(body["tags"]))
+	created, err := h.store.createGroup(ctx, accountKey(ctx, name), h.groupARN(ctx, name), stringMap(body["tags"]))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -215,7 +230,7 @@ func (h *cwlHandler) createLogGroup(ctx context.Context, w http.ResponseWriter, 
 func (h *cwlHandler) createLogStream(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	group, _ := body["logGroupName"].(string)
 	stream, _ := body["logStreamName"].(string)
-	created, groupExists, err := h.store.createStream(ctx, group, stream)
+	created, groupExists, err := h.store.createStream(ctx, accountKey(ctx, group), stream)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -244,7 +259,8 @@ func (h *cwlHandler) putLogEvents(ctx context.Context, w http.ResponseWriter, re
 		writeCWLError(w, http.StatusBadRequest, "InvalidParameterException", requestID, "A single PutLogEvents call cannot contain more than 10000 events.")
 		return
 	}
-	if ok, err := h.store.streamExists(ctx, group, stream); err != nil {
+	groupK := accountKey(ctx, group)
+	if ok, err := h.store.streamExists(ctx, groupK, stream); err != nil {
 		h.internal(w, requestID, err)
 		return
 	} else if !ok {
@@ -252,7 +268,7 @@ func (h *cwlHandler) putLogEvents(ctx context.Context, w http.ResponseWriter, re
 		return
 	}
 	// Retention window for the "expired" rejection.
-	g, _, _ := h.store.getGroup(ctx, group)
+	g, _, _ := h.store.getGroup(ctx, groupK)
 	nowMs := time.Now().UnixMilli()
 	futureLimit := nowMs + 2*60*60*1000 // 2 hours ahead
 	var expiredCutoff int64 = -1
@@ -295,7 +311,7 @@ func (h *cwlHandler) putLogEvents(ctx context.Context, w http.ResponseWriter, re
 		}
 	}
 	if len(accepted) > 0 {
-		if err := h.store.putEvents(ctx, group, stream, accepted, nowMs); err != nil {
+		if err := h.store.putEvents(ctx, groupK, stream, accepted, nowMs); err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
@@ -308,26 +324,30 @@ func (h *cwlHandler) putLogEvents(ctx context.Context, w http.ResponseWriter, re
 	writeCWLJSON(w, requestID, out)
 }
 
-// describeLogGroups lists the groups SDKs created (the store) and the services' own groups (the log store),
-// by name, as AWS does; a service's group shadows a stored group of the same name.
+// describeLogGroups lists the caller's account's groups SDKs created (the store) and the services' own groups
+// (the log store), by name, as AWS does; a service's group shadows a stored group of the same name.
 func (h *cwlHandler) describeLogGroups(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any, claims iam.Claims) {
 	prefix, _ := body["logGroupNamePrefix"].(string)
 	entries := map[string]map[string]any{}
 	if h.store != nil {
-		groups, err := h.store.listGroups(ctx, prefix)
+		groups, err := h.store.listGroups(ctx, accountKey(ctx, prefix))
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
 		for _, g := range groups {
+			name, mine := nameOfAccountKey(ctx, g.Name)
+			if !mine {
+				continue // another account's group
+			}
 			e := map[string]any{
-				"logGroupName": g.Name, "arn": g.Arn,
+				"logGroupName": name, "arn": g.Arn,
 				"creationTime": g.Created.UnixMilli(), "storedBytes": 0,
 			}
 			if g.RetentionDays.Valid {
 				e["retentionInDays"] = g.RetentionDays.Int64
 			}
-			entries[g.Name] = e
+			entries[name] = e
 		}
 	}
 	if h.derived != nil {
@@ -369,7 +389,7 @@ func (h *cwlHandler) describeLogStreams(ctx context.Context, w http.ResponseWrit
 	if ok, err := h.groupMustExist(ctx, w, requestID, group); err != nil || !ok {
 		return
 	}
-	streams, err := h.store.listStreams(ctx, group, strFromBody(body, "logStreamNamePrefix"))
+	streams, err := h.store.listStreams(ctx, accountKey(ctx, group), strFromBody(body, "logStreamNamePrefix"))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -378,7 +398,7 @@ func (h *cwlHandler) describeLogStreams(ctx context.Context, w http.ResponseWrit
 	for _, st := range streams {
 		e := map[string]any{
 			"logStreamName": st.Name, "creationTime": st.Created.UnixMilli(),
-			"arn": h.streamARN(group, st.Name),
+			"arn": h.streamARN(ctx, group, st.Name),
 		}
 		if st.FirstEvent.Valid {
 			e["firstEventTimestamp"] = st.FirstEvent.Int64
@@ -402,7 +422,7 @@ func (h *cwlHandler) putRetentionPolicy(ctx context.Context, w http.ResponseWrit
 			"retentionInDays must be one of the AWS-allowed values (1,3,5,7,14,30,60,90,120,150,180,365,400,545,731,1096,1827,2192,2557,2922,3288,3653).")
 		return
 	}
-	ok, err := h.store.setRetention(ctx, group, days)
+	ok, err := h.store.setRetention(ctx, accountKey(ctx, group), days)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -418,7 +438,7 @@ func (h *cwlHandler) putRetentionPolicy(ctx context.Context, w http.ResponseWrit
 // deleteRetentionPolicy makes the group keep its events forever again (AWS's default).
 func (h *cwlHandler) deleteRetentionPolicy(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	group, _ := body["logGroupName"].(string)
-	ok, err := h.store.clearRetention(ctx, group)
+	ok, err := h.store.clearRetention(ctx, accountKey(ctx, group))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -433,7 +453,7 @@ func (h *cwlHandler) deleteRetentionPolicy(ctx context.Context, w http.ResponseW
 
 func (h *cwlHandler) deleteLogGroup(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	group, _ := body["logGroupName"].(string)
-	ok, err := h.store.deleteGroup(ctx, group)
+	ok, err := h.store.deleteGroup(ctx, accountKey(ctx, group))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -450,7 +470,7 @@ func (h *cwlHandler) deleteLogGroup(ctx context.Context, w http.ResponseWriter, 
 func (h *cwlHandler) deleteLogStream(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	group, _ := body["logGroupName"].(string)
 	stream, _ := body["logStreamName"].(string)
-	ok, err := h.store.deleteStream(ctx, group, stream)
+	ok, err := h.store.deleteStream(ctx, accountKey(ctx, group), stream)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -465,7 +485,8 @@ func (h *cwlHandler) deleteLogStream(ctx context.Context, w http.ResponseWriter,
 
 func (h *cwlHandler) tagLogGroup(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	group, _ := body["logGroupName"].(string)
-	g, ok, err := h.store.getGroup(ctx, group)
+	groupK := accountKey(ctx, group)
+	g, ok, err := h.store.getGroup(ctx, groupK)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -481,7 +502,7 @@ func (h *cwlHandler) tagLogGroup(ctx context.Context, w http.ResponseWriter, req
 	for k, v := range stringMap(body["tags"]) {
 		tags[k] = v
 	}
-	if err := h.store.setTags(ctx, group, tags); err != nil {
+	if err := h.store.setTags(ctx, groupK, tags); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -493,7 +514,8 @@ func (h *cwlHandler) tagLogGroup(ctx context.Context, w http.ResponseWriter, req
 func (h *cwlHandler) getLogEvents(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	group, _ := body["logGroupName"].(string)
 	stream, _ := body["logStreamName"].(string)
-	if ok, err := h.store.streamExists(ctx, group, stream); err != nil {
+	groupK := accountKey(ctx, group)
+	if ok, err := h.store.streamExists(ctx, groupK, stream); err != nil {
 		h.internal(w, requestID, err)
 		return
 	} else if !ok {
@@ -503,7 +525,7 @@ func (h *cwlHandler) getLogEvents(ctx context.Context, w http.ResponseWriter, re
 	startFromHead, _ := body["startFromHead"].(bool)
 	limit := toInt(body["limit"])
 	afterID := parseCursor(strFromBody(body, "nextToken"))
-	events, minID, maxID, err := h.store.getEvents(ctx, group, stream, startFromHead, limit, afterID)
+	events, minID, maxID, err := h.store.getEvents(ctx, groupK, stream, startFromHead, limit, afterID)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -543,7 +565,7 @@ func (h *cwlHandler) filterLogEvents(ctx context.Context, w http.ResponseWriter,
 	endMs := toInt64(body["endTime"])
 	limit := toInt(body["limit"])
 	afterID := parseCursor(strFromBody(body, "nextToken"))
-	events, maxID, err := h.store.filterEvents(ctx, group, startMs, endMs, terms, limit, afterID)
+	events, maxID, err := h.store.filterEvents(ctx, accountKey(ctx, group), startMs, endMs, terms, limit, afterID)
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -565,8 +587,9 @@ func (h *cwlHandler) filterLogEvents(ctx context.Context, w http.ResponseWriter,
 
 // --- helpers ---
 
+// groupMustExist reports whether the caller's account has the group (answering the request when it does not).
 func (h *cwlHandler) groupMustExist(ctx context.Context, w http.ResponseWriter, requestID, group string) (bool, error) {
-	_, ok, err := h.store.getGroup(ctx, group)
+	_, ok, err := h.store.getGroup(ctx, accountKey(ctx, group))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return false, err
@@ -578,12 +601,14 @@ func (h *cwlHandler) groupMustExist(ctx context.Context, w http.ResponseWriter, 
 	return true, nil
 }
 
-func (h *cwlHandler) groupARN(name string) string {
-	return "arn:aws:logs:" + h.region + ":" + h.account + ":log-group:" + name + ":*"
+// groupARN is the ARN of the caller's account's group name.
+func (h *cwlHandler) groupARN(ctx context.Context, name string) string {
+	return h.groupARNIn(h.accountOf(ctx), name)
 }
 
-func (h *cwlHandler) streamARN(group, stream string) string {
-	return "arn:aws:logs:" + h.region + ":" + h.account + ":log-group:" + group + ":log-stream:" + stream
+// streamARN is the ARN of a stream of the caller's account's group.
+func (h *cwlHandler) streamARN(ctx context.Context, group, stream string) string {
+	return h.streamARNIn(h.accountOf(ctx), group, stream)
 }
 
 func (h *cwlHandler) internal(w http.ResponseWriter, requestID string, err error) {
