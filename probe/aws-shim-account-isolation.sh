@@ -28,7 +28,7 @@ SFX="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 NAME="iso-$SFX"
 TMP="$(mktemp -d)"
 START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-SERVICES="${SERVICES:-sqs sns kms secretsmanager ssm kinesis dynamodb logs events monitoring lambda glue athena ses}"
+SERVICES="${SERVICES:-sqs sns kms secretsmanager ssm kinesis dynamodb logs events monitoring lambda glue athena ses apigateway ecs ecr s3 states rds}"
 
 log()  { printf '▸ %s\n' "$*"; }
 fail() { printf '✗ FAIL: %s\n' "$*" >&2; FAILED=1; }
@@ -232,6 +232,106 @@ check_ses() {
   B ses send-email --from "probe@example.com" --to probe@example.com --subject x --text x \
     >/dev/null 2>"$TMP/err" && { fail "ses: a member account sent as an identity it has not verified"; return; }
   has "$TMP/err" "not verified" || has "$TMP/err" "MessageRejected" || has "$TMP/err" "AccessDenied" || fail "ses: the member's refusal is not AWS's: $(head -c 200 "$TMP/err")"
+}
+
+check_apigateway() {
+  for who in M B; do
+    $who apigateway create-rest-api --name "$NAME" --query id --output text > "$TMP/$who.api" 2>"$TMP/err" || { fail "apigateway: $who create-rest-api: $(cat "$TMP/err")"; return; }
+    CLEAN+=("$who apigateway delete-rest-api --rest-api-id $(cat "$TMP/$who.api")")
+  done
+  B apigateway get-rest-api --rest-api-id "$(cat "$TMP/M.api")" >/dev/null 2>"$TMP/err" && fail "apigateway: the member read the management account's API by its id"
+  B apigateway get-rest-apis --query 'items[].id' --output text > "$TMP/bl" 2>/dev/null
+  has "$TMP/bl" "$(cat "$TMP/M.api")" && fail "apigateway: the member listed the management account's API"
+  has "$TMP/bl" "$(cat "$TMP/B.api")" || fail "apigateway: the member does not list its own API"
+  M apigateway get-rest-apis --query 'items[].id' --output text > "$TMP/ml" 2>/dev/null
+  has "$TMP/ml" "$(cat "$TMP/B.api")" && fail "apigateway: the management account listed the member's API"
+  return 0
+}
+check_ecs() {
+  for who in M B; do
+    $who ecs create-cluster --cluster-name "$NAME" --query cluster.clusterArn --output text > "$TMP/$who.cl" 2>"$TMP/err" || { fail "ecs: $who create-cluster: $(cat "$TMP/err")"; return; }
+    CLEAN+=("$who ecs delete-cluster --cluster $NAME")
+    $who ecs register-task-definition --family "$NAME" --container-definitions '[{"name":"c","image":"busybox","memory":64,"essential":true}]' \
+      --query taskDefinition.taskDefinitionArn --output text > "$TMP/$who.td" 2>"$TMP/err" || { fail "ecs: $who register-task-definition: $(cat "$TMP/err")"; return; }
+    CLEAN+=("$who ecs deregister-task-definition --task-definition $NAME:1")
+  done
+  [ "$(cat "$TMP/B.cl")" = "arn:aws:ecs:$REGION:$NEW_ACCOUNT:cluster/$NAME" ] || fail "ecs: the member's cluster ARN is $(cat "$TMP/B.cl")"
+  has "$TMP/B.td" ":$NEW_ACCOUNT:task-definition/$NAME:1" || fail "ecs: the member's first revision is $(cat "$TMP/B.td") (a revision counts within its account)"
+  has "$TMP/M.td" ":$NAME:1" || fail "ecs: the management account's first revision is $(cat "$TMP/M.td")"
+  B ecs list-clusters --query 'clusterArns' --output text > "$TMP/bl" 2>/dev/null
+  has "$TMP/bl" "$(cat "$TMP/M.cl")" && fail "ecs: the member listed the management account's cluster"
+  M ecs list-clusters --query 'clusterArns' --output text > "$TMP/ml" 2>/dev/null
+  has "$TMP/ml" "$(cat "$TMP/B.cl")" && fail "ecs: the management account listed the member's cluster"
+  return 0
+}
+check_ecr() {
+  for who in M B; do
+    $who ecr create-repository --repository-name "$NAME" --query repository.[repositoryArn,repositoryUri] --output text > "$TMP/$who.repo" 2>"$TMP/err" || { fail "ecr: $who create-repository: $(cat "$TMP/err")"; return; }
+    CLEAN+=("$who ecr delete-repository --repository-name $NAME --force")
+  done
+  has "$TMP/B.repo" ":$NEW_ACCOUNT:repository/$NAME" || fail "ecr: the member's repository ARN: $(cat "$TMP/B.repo")"
+  has "$TMP/B.repo" "/$NEW_ACCOUNT/$NAME" || fail "ecr: the member's repository URI does not name its registry: $(cat "$TMP/B.repo")"
+  B ecr describe-repositories --query 'repositories[].repositoryArn' --output text > "$TMP/bl" 2>/dev/null
+  has "$TMP/bl" ":$MGMT:repository/$NAME" && fail "ecr: the member listed the management account's repository"
+  return 0
+}
+check_s3() {
+  M s3api create-bucket --bucket "$NAME-mg" >/dev/null 2>"$TMP/err" || { fail "s3: management create-bucket: $(cat "$TMP/err")"; return; }
+  CLEAN+=("M s3api delete-bucket --bucket $NAME-mg")
+  B s3api create-bucket --bucket "$NAME-mb" >/dev/null 2>"$TMP/err" || { fail "s3: member create-bucket: $(cat "$TMP/err")"; return; }
+  CLEAN+=("B s3api delete-bucket --bucket $NAME-mb")
+  for _ in $(seq 1 40); do M s3api head-bucket --bucket "$NAME-mg" >/dev/null 2>&1 && B s3api head-bucket --bucket "$NAME-mb" >/dev/null 2>&1 && break; sleep 3; done
+  B s3api create-bucket --bucket "$NAME-mg" >/dev/null 2>"$TMP/err" && fail "s3: the member made a bucket of the management account's name"
+  B s3api list-buckets --query 'Buckets[].Name' --output text > "$TMP/bl" 2>/dev/null
+  has "$TMP/bl" "$NAME-mb" || fail "s3: the member does not list its own bucket"
+  has "$TMP/bl" "$NAME-mg" && fail "s3: the member listed the management account's bucket"
+  M s3api list-buckets --query 'Buckets[].Name' --output text > "$TMP/ml" 2>/dev/null
+  has "$TMP/ml" "$NAME-mb" && fail "s3: the management account listed the member's bucket"
+  printf member > "$TMP/obj"
+  B s3api put-object --bucket "$NAME-mg" --key k --body "$TMP/obj" >/dev/null 2>&1 && fail "s3: the member wrote into the management account's bucket"
+  B s3api put-object --bucket "$NAME-mb" --key k --body "$TMP/obj" >/dev/null 2>"$TMP/err" || fail "s3: the member could not write its own bucket: $(head -c 200 "$TMP/err")"
+  CLEAN+=("B s3api delete-object --bucket $NAME-mb --key k")
+  return 0
+}
+check_states() {
+  local trust='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"states.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+  local def='{"StartAt":"P","States":{"P":{"Type":"Pass","Result":"ok","End":true}}}'
+  for who in M B; do
+    $who iam create-role --role-name "$NAME-sfn" --assume-role-policy-document "$trust" --query Role.Arn --output text > "$TMP/$who.role" 2>"$TMP/err" || { fail "states: $who create-role: $(cat "$TMP/err")"; return; }
+    CLEAN+=("$who iam delete-role --role-name $NAME-sfn")
+  done
+  sleep "$SETTLE"
+  for who in M B; do
+    $who stepfunctions create-state-machine --name "$NAME" --definition "$def" --role-arn "$(cat "$TMP/$who.role")" \
+      --query stateMachineArn --output text > "$TMP/$who.sm" 2>"$TMP/err" || { fail "states: $who create-state-machine: $(cat "$TMP/err")"; return; }
+    CLEAN+=("$who stepfunctions delete-state-machine --state-machine-arn $(cat "$TMP/$who.sm")")
+  done
+  [ "$(cat "$TMP/B.sm")" = "arn:aws:states:$REGION:$NEW_ACCOUNT:stateMachine:$NAME" ] || fail "states: the member's state machine ARN is $(cat "$TMP/B.sm")"
+  B stepfunctions describe-state-machine --state-machine-arn "$(cat "$TMP/M.sm")" >/dev/null 2>&1 && fail "states: the member described the management account's state machine"
+  B stepfunctions list-state-machines --query 'stateMachines[].stateMachineArn' --output text > "$TMP/bl" 2>/dev/null
+  has "$TMP/bl" "$(cat "$TMP/M.sm")" && fail "states: the member listed the management account's state machine"
+  B stepfunctions start-execution --state-machine-arn "$(cat "$TMP/B.sm")" --query executionArn --output text > "$TMP/bx" 2>"$TMP/err" || { fail "states: member start-execution: $(cat "$TMP/err")"; return; }
+  st=""
+  for _ in $(seq 1 30); do
+    st="$(B stepfunctions describe-execution --execution-arn "$(cat "$TMP/bx")" --query status --output text 2>/dev/null)"
+    [ "$st" = SUCCEEDED ] || [ "$st" = FAILED ] && break
+    sleep 2
+  done
+  [ "$st" = SUCCEEDED ] || fail "states: the member's execution ended $st"
+  return 0
+}
+check_rds() {
+  B rds create-db-instance --db-instance-identifier "$NAME" --engine postgres --db-instance-class db.t3.micro \
+    --allocated-storage 1 --master-username probe --master-user-password "Pw$SFX$SFX" \
+    --query DBInstance.DBInstanceArn --output text > "$TMP/ba" 2>"$TMP/err" || { fail "rds: member create-db-instance: $(cat "$TMP/err")"; return; }
+  CLEAN+=("B rds delete-db-instance --db-instance-identifier $NAME --skip-final-snapshot")
+  [ "$(cat "$TMP/ba")" = "arn:aws:rds:$REGION:$NEW_ACCOUNT:db:$NAME" ] || fail "rds: the member's DBInstanceArn is $(cat "$TMP/ba")"
+  M rds describe-db-instances --db-instance-identifier "$NAME" >/dev/null 2>&1 && fail "rds: the management account described the member's DB instance"
+  B rds describe-db-instances --query 'DBInstances[].DBInstanceArn' --output text > "$TMP/bl" 2>/dev/null
+  has "$TMP/bl" ":$MGMT:" && fail "rds: the member listed the management account's DB instances"
+  has "$TMP/bl" "$(cat "$TMP/ba")" || fail "rds: the member does not list its own DB instance"
+  B rds delete-db-instance --db-instance-identifier "$NAME" --skip-final-snapshot >/dev/null 2>"$TMP/err" || fail "rds: member delete-db-instance: $(cat "$TMP/err")"
+  return 0
 }
 
 for s in $SERVICES; do
