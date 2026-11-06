@@ -127,8 +127,12 @@ type accountScopedKey struct{}
 // resources apart (a member account's in its own names, namespaces and keys; the management account's
 // where they always were), so the resources a member account's principal reaches through it are its own.
 // The router sets it for the doors in accountScopedServices.
-func inAccountScope(ctx context.Context) context.Context {
-	return context.WithValue(ctx, accountScopedKey{}, true)
+func inAccountScope(ctx context.Context) context.Context { return withAccountScope(ctx, true) }
+
+// withAccountScope sets (or clears) the account-scoped mark: a door that calls another in-process passes
+// the target door's own scope, never its own.
+func withAccountScope(ctx context.Context, scoped bool) context.Context {
+	return context.WithValue(ctx, accountScopedKey{}, scoped)
 }
 
 // accountScoped reports whether the request is served by an account-scoped front door.
@@ -139,6 +143,7 @@ func accountScoped(ctx context.Context) bool {
 
 // accountScopedServices are the front doors (by SigV4 service) that keep each account's resources apart.
 // Every other door keeps the management account's alone, and a member account reaches it cross-account.
+// A door adds itself, in its own file: func init() { accountScopedServices["sqs"] = true }.
 var accountScopedServices = map[string]bool{}
 
 // withAccountHome carries the home namespace of the member account the caller belongs to (principalOf).

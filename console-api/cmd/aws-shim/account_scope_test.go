@@ -46,3 +46,25 @@ func TestAccountScope_KeysAndNamespaces(t *testing.T) {
 		t.Error("a member request without a home must not reach the door's own namespace")
 	}
 }
+
+// A key names its account outright, for the work that runs without a request.
+func TestAccountScope_KeysForAnAccount(t *testing.T) {
+	mgmt := awsidentity.Current().AccountID
+	if accountKeyFor(mgmt, "jobs") != "jobs" || accountKeyFor("", "jobs") != "jobs" {
+		t.Fatal("the management account's key is the name")
+	}
+	k := accountKeyFor(testMember, "jobs")
+	if a, n := splitAccountKey(k); a != testMember || n != "jobs" {
+		t.Fatalf("split %q = %q %q", k, a, n)
+	}
+	if a, n := splitAccountKey("jobs"); a != mgmt || n != "jobs" {
+		t.Fatalf("a bare key is the management account's: %q %q", a, n)
+	}
+	ctx := withAccount(context.Background(), testMember, memberHome)
+	if callerAccount(ctx) != testMember || accountKey(ctx, "jobs") != k || accountNamespace(ctx, "x") != memberHome {
+		t.Fatalf("a background context in the member account: %q %q %q", callerAccount(ctx), accountKey(ctx, "jobs"), accountNamespace(ctx, "x"))
+	}
+	if withAccount(context.Background(), mgmt, "") != context.Background() {
+		t.Error("the management account's background context is unchanged")
+	}
+}

@@ -65,3 +65,31 @@ func nameOfAccountKey(ctx context.Context, key string) (string, bool) {
 
 // memberKeyRe matches a member account's store key ("<12-digit account>:<name>").
 var memberKeyRe = regexp.MustCompile(`^[0-9]{12}:.`)
+
+// accountKeyFor is accountKey for an account named outright (a background worker, a delivery to another
+// door's resource): the name in the management account, "<account>:<name>" in a member account.
+func accountKeyFor(account, name string) string {
+	if awsidentity.Current().IsManagement(account) {
+		return name
+	}
+	return account + ":" + name
+}
+
+// splitAccountKey is accountKeyFor's inverse for any key: the account it belongs to and the resource's name
+// (a key without a member account's prefix is the management account's).
+func splitAccountKey(key string) (account, name string) {
+	if memberKeyRe.MatchString(key) {
+		return key[:12], key[13:]
+	}
+	return awsidentity.Current().AccountID, key
+}
+
+// withAccount is a background context acting in account: its identity (ARNs, StackIds) and, for a member
+// account, its home — what the router puts on a request, for work that runs without one (a scheduler, an
+// evaluator, a reaper, an asynchronous delivery).
+func withAccount(ctx context.Context, account, home string) context.Context {
+	if awsidentity.Current().IsManagement(account) {
+		return ctx
+	}
+	return awsidentity.WithIdentity(withAccountHome(ctx, home), awsidentity.Current().ForAccount(account, home))
+}

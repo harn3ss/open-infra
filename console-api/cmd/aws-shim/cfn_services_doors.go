@@ -76,6 +76,10 @@ func (c svcCtx) call(ctx context.Context, service, op string, body map[string]an
 		return nil, fmt.Errorf("the %s front door is not configured on this shim", service)
 	}
 	b, _ := json.Marshal(body)
+	// The target door's own account scope, as the router would set it for a call made to it directly —
+	// never CloudFormation's (a door that keeps one account's resources must not be taken for one that
+	// keeps each account's apart, nor the other way round).
+	ctx = withAccountScope(ctx, accountScopedServices[service])
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/", bytes.NewReader(b))
 	if err != nil {
 		return nil, err
