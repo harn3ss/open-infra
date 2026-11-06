@@ -1,6 +1,8 @@
 package awssts
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -33,5 +35,32 @@ func TestMintSession_UserSessionWithMFA(t *testing.T) {
 	akid, _, tok, _, _ = m.Mint("r", nil, "s", "alice", time.Hour)
 	if s, _ := m.Verify(akid, tok); s.MFA || s.Federated || s.User != "" {
 		t.Errorf("a plain role session: %+v", s)
+	}
+}
+
+// A user session is sealed apart from role sessions: an opener that knows only role sessions (a replica
+// that predates user sessions opens with no additional data) cannot open it at all, so it is never read
+// as a role session of no role.
+func TestUserSessionIsSealedApart(t *testing.T) {
+	m := newTestMinter(t)
+	_, _, tok, _, err := m.MintSession(Session{User: "alice"}, time.Hour, MaxUserSessionDuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead := m.entries[0].aead
+	ns := aead.NonceSize()
+	if _, err := aead.Open(nil, raw[:ns], raw[ns:], nil); err == nil {
+		t.Fatal("a user session opened without its additional data: an older replica would read it as a role session")
+	}
+	// And the reverse: a role session's payload claiming a user does not open as a user session.
+	nonce := make([]byte, ns)
+	plain, _ := json.Marshal(Session{User: "alice", AccessKeyID: "ASIAX", Expiry: time.Now().Add(time.Hour)})
+	forged := base64.RawURLEncoding.EncodeToString(aead.Seal(nonce, nonce, plain, nil))
+	if _, ok := m.Verify("ASIAX", forged); ok {
+		t.Fatal("a token sealed as a role session opened as a user session")
 	}
 }

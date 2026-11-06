@@ -244,8 +244,21 @@ func (m *Minter) seal(s Session) (string, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", err
 	}
-	ct := aead.Seal(nonce, nonce, plain, nil)
+	ct := aead.Seal(nonce, nonce, plain, sealAD(s))
 	return base64.RawURLEncoding.EncodeToString(ct), nil
+}
+
+// userSessionAD is the additional data an IAM user's own session (GetSessionToken) is sealed with. A
+// role session is sealed with none. So a minter that predates user sessions — a replica mid-rollout —
+// cannot open one at all (its GCM tag fails) and never reads it as a role session of no role; and a token
+// opens as a user session only if it was sealed as one.
+var userSessionAD = []byte("openinfra-sts-user-session-v1")
+
+func sealAD(s Session) []byte {
+	if s.User != "" {
+		return userSessionAD
+	}
+	return nil
 }
 
 func (m *Minter) open(token string) (Session, error) {
@@ -264,15 +277,20 @@ func (m *Minter) open(token string) (Session, error) {
 			continue
 		}
 		nonce, ct := raw[:ns], raw[ns:]
-		plain, oerr := e.aead.Open(nil, nonce, ct, nil)
-		if oerr != nil {
-			continue
+		for _, ad := range [][]byte{nil, userSessionAD} {
+			plain, oerr := e.aead.Open(nil, nonce, ct, ad)
+			if oerr != nil {
+				continue
+			}
+			var s Session
+			if err := json.Unmarshal(plain, &s); err != nil {
+				return Session{}, err
+			}
+			if (ad != nil) != (s.User != "") {
+				return Session{}, errBadToken // a user session sealed as a role's, or the reverse
+			}
+			return s, nil
 		}
-		var s Session
-		if err := json.Unmarshal(plain, &s); err != nil {
-			return Session{}, err
-		}
-		return s, nil
 	}
 	return Session{}, errBadToken
 }
