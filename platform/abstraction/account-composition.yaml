@@ -207,7 +207,10 @@ spec:
                   spec:
                     description: The management account's administrator access into this account (AWS Organizations).
                     trust: [{{ printf "arn:aws:iam::%s:root" $mgmt | toJson }}]
-                    policies: ["arn:aws:iam::aws:policy/AdministratorAccess"]
+                    # AWS's AdministratorAccess: the platform's managed library names it aws-administratoraccess
+                    # (a Role's spec.policies are Policy names, resolved from the library in the management
+                    # account's IAM home when this namespace has no Policy of that name).
+                    policies: ["aws-administratoraccess"]
             {{- end }}
             ---
             apiVersion: organizations.openinfra.dev/v1

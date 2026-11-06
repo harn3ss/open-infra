@@ -409,6 +409,23 @@ func TestIAM_MemberAccountActsInItsAccount(t *testing.T) {
 	if got, _, _ := unstructured.NestedStringSlice(object(t, dyn, userEntity, iamHome, "bob").Object, "spec", "policies"); len(got) != 0 {
 		t.Errorf("the management account's bob was changed: %v", got)
 	}
+
+	// A role's spec.policies are bare Policy names (the Role schema refuses a "/"): an AWS managed policy is
+	// attached to a member account's role as the library's bare name, and listed back as AWS's ARN.
+	call(t, h, ctx, bob, 200, "Action", "CreateRole", "RoleName", "app", "AssumeRolePolicyDocument",
+		`{"Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::`+testMember+`:user/bob"},"Action":"sts:AssumeRole"}]}`)
+	call(t, h, ctx, bob, 200, "Action", "AttachRolePolicy", "RoleName", "app", "PolicyArn", "arn:aws:iam::aws:policy/PowerUserAccess")
+	got, _, _ = unstructured.NestedStringSlice(object(t, dyn, roleEntity, memberHome, "app").Object, "spec", "policies")
+	if strings.Join(got, ",") != "aws-poweruseraccess" {
+		t.Errorf("member role spec.policies = %v, want [aws-poweruseraccess]", got)
+	}
+	if w := call(t, h, ctx, bob, 200, "Action", "ListAttachedRolePolicies", "RoleName", "app"); !strings.Contains(w.Body.String(), "arn:aws:iam::aws:policy/PowerUserAccess") {
+		t.Errorf("ListAttachedRolePolicies: %s", w.Body.String())
+	}
+	call(t, h, ctx, bob, 200, "Action", "DetachRolePolicy", "RoleName", "app", "PolicyArn", "arn:aws:iam::aws:policy/PowerUserAccess")
+	// An account's own policy of the library's name would stand in for AWS's: the attach is refused.
+	call(t, h, ctx, bob, 200, "Action", "CreatePolicy", "PolicyName", "aws-AdministratorAccess", "PolicyDocument", queueDoc)
+	call(t, h, ctx, bob, 400, "Action", "AttachRolePolicy", "RoleName", "app", "PolicyArn", "arn:aws:iam::aws:policy/AdministratorAccess")
 }
 
 func between(s, a, b string) string {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -157,6 +158,13 @@ func TestAccount_MemberGetsBaselineQuotasAndAccessRole(t *testing.T) {
 	if mstr(role, "metadata", "namespace") != "team-a" || mstr(role, "metadata", "annotations", "openinfra.dev/aws-name") != "OrganizationAccountAccessRole" ||
 		len(trust) != 1 || trust[0] != "arn:aws:iam::000000000000:root" {
 		t.Errorf("OrganizationAccountAccessRole %v", role)
+	}
+	// Its AdministratorAccess is the library Policy's name, which the Role schema accepts (spec.policies
+	// are Policy names, never ARNs: the API server refused the ARN, and no member account had the role).
+	pols, _ := mget(role, "spec", "policies").([]any)
+	namePattern := regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+	if len(pols) != 1 || pols[0] != "aws-administratoraccess" || !namePattern.MatchString(fmt.Sprint(pols[0])) {
+		t.Errorf("OrganizationAccountAccessRole policies %v, want [aws-administratoraccess]", pols)
 	}
 	st := k["Account"][0]
 	if fmt.Sprint(mget(st, "status", "management")) != "false" || mstr(st, "status", "accessRoleArn") != "arn:aws:iam::912345678901:role/OrganizationAccountAccessRole" {

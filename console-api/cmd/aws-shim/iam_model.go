@@ -695,6 +695,17 @@ func (h *iamHandler) attachPolicy(ctx context.Context, w http.ResponseWriter, r 
 		h.fail(w, requestID, err)
 		return
 	}
+	// A Role's spec.policies are bare Policy names (the role composition turns each into a label key,
+	// which cannot hold a "/"): an AWS managed policy is attached to a member account's role as the
+	// library's bare name, which resolves to the library while the account has no Policy of that name
+	// (iamauthz.ResolvePolicyRef) — so one of its own by that name must not stand in for AWS's.
+	if attach && t.managed && e.kind == "Role" && strings.Contains(t.ref, "/") {
+		if _, gerr := h.dyn.Resource(gvrPolicies).Namespace(sc.ns).Get(ctx, t.name, metav1.GetOptions{}); gerr == nil {
+			h.fail(w, requestID, invalidInputErr("A policy of this account named "+t.name+" would stand in for "+arn+": rename it first."))
+			return
+		}
+		t.ref = t.name
+	}
 	err = h.mutate(ctx, e, sc.ns, name, func(u *unstructured.Unstructured) error {
 		cur, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "policies")
 		next := make([]string, 0, len(cur)+1)
