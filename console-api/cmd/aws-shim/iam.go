@@ -330,7 +330,7 @@ func (h *iamHandler) createRole(ctx context.Context, w http.ResponseWriter, r *h
 		return
 	}
 	trustDoc := r.PostFormValue("AssumeRolePolicyDocument")
-	trust, err := parseTrustPolicy(trustDoc)
+	trust, err := parseTrustPolicy(trustDoc, sc.account)
 	if err != nil {
 		h.malformed(w, requestID, "AssumeRolePolicyDocument: "+err.Error())
 		return

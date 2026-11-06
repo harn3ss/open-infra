@@ -196,7 +196,7 @@ func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims i
 	}
 	who := callerTrust(claims)
 	who.account = h.callerAccount(claims)
-	if !trusted(who, role.trust) {
+	if !trustedFrom(who, role.trust, roleAcct) {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
 			who.String()+" is not authorized to assume role "+roleName+" (not named by its trust policy)", stsXMLNamespace)
 		return
@@ -402,6 +402,22 @@ func trusted(c trustCaller, trust []string) bool {
 		}
 	}
 	return false
+}
+
+// trustedFrom is trusted for a role of roleAccount: a caller of another account is named only by "*" or
+// by an ARN (its account's root, or itself) — a bare name in a trust policy is always a principal of the
+// role's own account, as on AWS, where another account's principal is named by its ARN.
+func trustedFrom(c trustCaller, trust []string, roleAccount string) bool {
+	if c.account == "" || roleAccount == "" || c.account == roleAccount {
+		return trusted(c, trust)
+	}
+	var cross []string
+	for _, t := range trust {
+		if t == "*" || strings.HasPrefix(t, "arn:") {
+			cross = append(cross, t)
+		}
+	}
+	return trusted(c, cross)
 }
 
 // trustedARN reports whether an ARN trust entry names the caller: its account's root (every principal of

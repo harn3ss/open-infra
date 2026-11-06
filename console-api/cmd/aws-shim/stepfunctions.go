@@ -15,8 +15,9 @@
 // gets, at StartExecution, a freshly minted STS session for that role, stored in a per-execution Secret
 // the controller injects into every Task. A Task therefore acts under the role's authority — it can do
 // exactly what the role's policies grant and no more — instead of the controller's ambient position.
-// Running a state machine under a role requires the caller to be trusted to assume it (the PassRole
-// analog): fail closed if the role is unknown or its trust does not name the caller.
+// Running a state machine under a role requires the role to trust the Step Functions service
+// (states.amazonaws.com), as on AWS, whose passing of it took iam:PassRole, or to name the caller: fail
+// closed if the role is unknown or its trust names neither.
 //
 // Accounts: each account's state machines and executions are its own. A member account's StateMachines,
 // Executions and execution credentials are kept in its home namespace (the management account's in the
@@ -645,10 +646,10 @@ func (h *sfnHandler) mintExecutionCreds(ctx context.Context, roleName, execName 
 		return nil, &sfnErr{http.StatusBadRequest, "InvalidArn", "role " + roleName + " does not exist."}
 	}
 	who := callerTrust(claims)
-	if isMemberRequest(ctx) {
-		who.account = callerAccount(ctx) // a member's role may name its own account's principals by ARN
-	}
-	if !trusted(who, role.trust) {
+	who.account = callerAccount(ctx) // a role may name its own account's principals by ARN
+	// The role is the state machine's to run under when its trust names the Step Functions service, as on
+	// AWS (passing it took iam:PassRole at CreateStateMachine/UpdateStateMachine), or names the caller.
+	if !trustsService(role.trust, "states.amazonaws.com") && !trusted(who, role.trust) {
 		return nil, &sfnErr{http.StatusForbidden, "AccessDeniedException",
 			who.String() + " is not authorized to run executions under role " + roleName + " (not named by its trust policy)."}
 	}

@@ -1296,24 +1296,37 @@ func (h *iamHandler) trustDocument(sc iamScope, u *unstructured.Unstructured) st
 		return doc
 	}
 	trust, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "trust")
-	var principals []string
+	var principals, services []string
 	for _, t := range trust {
 		switch {
 		case t == "*":
-			principals = append(principals, sc.arn("root"))
+			principals = append(principals, "*")
+		case t == "vm":
+			services = append(services, "ec2.amazonaws.com") // the instance principal is EC2's
+		case strings.HasPrefix(t, "Service::"):
+			services = append(services, strings.TrimPrefix(t, "Service::"))
 		case strings.HasPrefix(t, "arn:"):
 			principals = append(principals, t)
 		case strings.HasPrefix(t, "Role::"):
 			principals = append(principals, sc.arn("role/"+strings.TrimPrefix(t, "Role::")))
+		case strings.Contains(t, "::") || strings.HasPrefix(t, "system:"):
+			// a federated or workload principal this document form does not carry
 		default:
 			principals = append(principals, sc.arn("user/"+t))
 		}
 	}
-	if len(principals) == 0 {
+	if len(principals) == 0 && len(services) == 0 {
 		return ""
 	}
+	prin := map[string]any{}
+	if len(principals) > 0 {
+		prin["AWS"] = principals
+	}
+	if len(services) > 0 {
+		prin["Service"] = services
+	}
 	b, _ := json.Marshal(map[string]any{"Version": "2012-10-17", "Statement": []any{map[string]any{
-		"Effect": "Allow", "Principal": map[string]any{"AWS": principals}, "Action": "sts:AssumeRole"}}})
+		"Effect": "Allow", "Principal": prin, "Action": "sts:AssumeRole"}}})
 	return string(b)
 }
 

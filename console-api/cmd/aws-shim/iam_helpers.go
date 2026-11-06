@@ -77,10 +77,17 @@ func statementsToSpecAny(stmts []policyengine.Statement) []any {
 	return out
 }
 
-// parseTrustPolicy extracts the principals a role may be assumed by from an AWS AssumeRolePolicyDocument,
-// returning the kind: Role spec.trust list (User names, or "*"). Only the sts:AssumeRole Allow statements
-// are considered; a Principal of "*" or an account/root ARN maps to "*" (any authenticated principal).
-func parseTrustPolicy(doc string) ([]string, error) {
+// parseTrustPolicy extracts the principals a role of account may be assumed by from an AWS
+// AssumeRolePolicyDocument, returning the kind: Role spec.trust list. Only the sts:AssumeRole Allow
+// statements count. As AWS reads a trust policy:
+//   - Principal "*" (or {"AWS":"*"}) is "*": any principal, of any account;
+//   - a user or role of the role's own account is that User ("<name>") or that role's sessions
+//     ("Role::<name>");
+//   - an account's root, and any user or role of another account, stay the ARN they are: the account's
+//     principals, or that one principal, matched by the caller's account (sts.go trustedARN) — never "*";
+//   - a service principal is recorded as "Service::<service>" (EC2's as "vm", the instance principal the
+//     instance-credentials path honours); a service assumes the role only where its front door does so.
+func parseTrustPolicy(doc, account string) ([]string, error) {
 	if strings.TrimSpace(doc) == "" {
 		return nil, errors.New("empty trust policy")
 	}
@@ -119,23 +126,74 @@ func parseTrustPolicy(doc string) ([]string, error) {
 		}
 		prin := st["Principal"]
 		for _, p := range principalARNs(prin) {
-			if p == "*" {
+			switch {
+			case p == "*":
 				add("*")
+			case !strings.HasPrefix(p, "arn:"):
+				// A bare account id is that account's root, as AWS reads it.
+				if accountIDRe.MatchString(p) {
+					add("arn:aws:iam::" + p + ":root")
+				}
+			case arnAccountField(p) != account || isRootOrAccountArn(p):
+				add(p) // another account's principal, or an account's root: matched by account
+			case userFromArn(p) != "":
+				add(lastSegment(userFromArn(p)))
+			case strings.Contains(p, ":role/"):
+				add("Role::" + lastSegment(p[strings.Index(p, ":role/")+len(":role/"):])) // a role's sessions (role chaining)
+			}
+		}
+		for _, svc := range servicePrincipals(prin) {
+			if svc == "ec2.amazonaws.com" {
+				add("vm")
 				continue
 			}
-			if n := userFromArn(p); n != "" {
-				add(n)
-			} else if i := strings.Index(p, ":role/"); i >= 0 {
-				add("Role::" + p[i+len(":role/"):]) // a role's sessions (role chaining), never a User of its name
-			} else if isRootOrAccountArn(p) {
-				add("*")
-			}
+			add("Service::" + svc)
 		}
 	}
 	if len(out) == 0 {
 		return nil, errors.New("no sts:AssumeRole Allow principal found")
 	}
 	return out, nil
+}
+
+// arnAccountField is an ARN's account field, as written ("" when it has none).
+func arnAccountField(arn string) string {
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) < 6 {
+		return ""
+	}
+	return parts[4]
+}
+
+// servicePrincipals extracts a trust statement's {"Service": ...} principals (a string or a list).
+func servicePrincipals(v any) []string {
+	p, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	switch s := p["Service"].(type) {
+	case string:
+		return []string{s}
+	case []any:
+		var out []string
+		for _, e := range s {
+			if v, _ := e.(string); v != "" {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// trustsService reports whether a role's trust names a service principal (Service::<service>).
+func trustsService(trust []string, service string) bool {
+	for _, t := range trust {
+		if t == "Service::"+service {
+			return true
+		}
+	}
+	return false
 }
 
 func actionAllowsAssume(v any) bool {
@@ -152,8 +210,8 @@ func actionAllowsAssume(v any) bool {
 	return false
 }
 
-// principalARNs extracts the principal ARN strings from a trust statement's Principal (which may be "*", a
-// {"AWS": ...} map with a string or list, or {"Service": ...} which we ignore).
+// principalARNs extracts the AWS principals from a trust statement's Principal: "*", or a {"AWS": ...}
+// map with a string or list (servicePrincipals reads its {"Service": ...}).
 func principalARNs(v any) []string {
 	switch p := v.(type) {
 	case string:
