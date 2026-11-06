@@ -54,6 +54,8 @@ spec:
             {{- end }}
             {{- range $s := ($spec.subscriptions | default list) }}{{ $texts = append $texts ($s.response | default "") }}{{ end }}
             {{- range $t := $texts }}{{ if regexMatch "\r([^\n]|$)|[\u0085\u2028\u2029]" (printf "%v" $t) }}{{ fail "AppSync API: the schema or a resolver mapping template contains a line break other than LF or CRLF" }}{{ end }}{{ end }}
+            {{- /* Batching (maxBatchSize) belongs to a Lambda step: a unit resolver or a pipeline function. */}}
+            {{- range $r := ($spec.resolvers | default list) }}{{ if and $r.functions $r.maxBatchSize }}{{ fail (printf "AppSync API: resolver %s.%s is a pipeline resolver \u2014 its batching is configured on its functions (each function's maxBatchSize)" $r.type $r.field) }}{{ end }}{{ end }}
             {{- /* Per-resource override: annotation openinfra.dev/arch (amd64|arm64) beats the cluster
                    default, so a specific claim can target the other arch in a MIXED cluster. */}}
             {{- $annos := .observed.composite.resource.metadata.annotations | default dict }}
@@ -78,8 +80,9 @@ spec:
             {{- /* Checksum over schema + every data source + every resolver, so ANY authoring change
                    rolls the pod (the reload mechanism, since the engine reads a directory once). */ -}}
             {{- $blob := $spec.schema | default "" }}
-            {{- range $ds := ($spec.dataSources | default list) }}{{ $blob = printf "%s|ds|%s|%s|%s|%s" $blob $ds.name ($ds.type | default "memory") ($ds.collection | default "") ($ds.endpoint | default "") }}{{ end }}
-            {{- range $r := $spec.resolvers }}{{ $blob = printf "%s|r|%s|%s|%s|%s|%s|%s|%s|%s" $blob $r.type $r.field ($r.dataSource | default "") ($r.runtime | default "") ($r.request | default "") ($r.response | default "") ($r.before | default "") ($r.after | default "") }}{{ range $f := ($r.functions | default list) }}{{ $blob = printf "%s|fn|%s|%s|%s|%s" $blob ($f.dataSource | default "") ($f.runtime | default "") ($f.request | default "") ($f.response | default "") }}{{ end }}{{ with $r.auth }}{{ $blob = printf "%s|auth|%s|%s|%s|%s|%s" $blob (.group | default "") (.resource | default "") (.verb | default "") (.namespace | default "") (.name | default "") }}{{ end }}{{ with $r.caching }}{{ $blob = printf "%s|cache|%v|%v" $blob (.ttlSeconds | default 0) (.keys | default list) }}{{ end }}{{ end }}
+            {{- /* function / maxBatchSize join the checksum only when set, so an API that sets neither keeps its checksum. */}}
+            {{- range $ds := ($spec.dataSources | default list) }}{{ $blob = printf "%s|ds|%s|%s|%s|%s" $blob $ds.name ($ds.type | default "memory") ($ds.collection | default "") ($ds.endpoint | default "") }}{{ with $ds.function }}{{ $blob = printf "%s|dsfn|%s" $blob . }}{{ end }}{{ end }}
+            {{- range $r := $spec.resolvers }}{{ $blob = printf "%s|r|%s|%s|%s|%s|%s|%s|%s|%s" $blob $r.type $r.field ($r.dataSource | default "") ($r.runtime | default "") ($r.request | default "") ($r.response | default "") ($r.before | default "") ($r.after | default "") }}{{ with $r.maxBatchSize }}{{ $blob = printf "%s|mbs|%v" $blob . }}{{ end }}{{ range $f := ($r.functions | default list) }}{{ $blob = printf "%s|fn|%s|%s|%s|%s" $blob ($f.dataSource | default "") ($f.runtime | default "") ($f.request | default "") ($f.response | default "") }}{{ with $f.maxBatchSize }}{{ $blob = printf "%s|mbs|%v" $blob . }}{{ end }}{{ end }}{{ with $r.auth }}{{ $blob = printf "%s|auth|%s|%s|%s|%s|%s" $blob (.group | default "") (.resource | default "") (.verb | default "") (.namespace | default "") (.name | default "") }}{{ end }}{{ with $r.caching }}{{ $blob = printf "%s|cache|%v|%v" $blob (.ttlSeconds | default 0) (.keys | default list) }}{{ end }}{{ end }}
             {{- with $spec.limits }}{{ $blob = printf "%s|lim|%v|%v|%v" $blob (.maxDepth | default 0) (.maxCost | default 0) (.persistedOnly | default false) }}{{ range $q := (.persistedQueries | default list) }}{{ $blob = printf "%s|pq|%s" $blob $q }}{{ end }}{{ end }}
             {{- range $s := ($spec.subscriptions | default list) }}{{ $blob = printf "%s|sub|%s|%s|%s|%s" $blob $s.field ($s.subject | default "") ($s.runtime | default "") ($s.response | default "") }}{{ range $m := ($s.triggeredBy | default list) }}{{ $blob = printf "%s|trig|%s" $blob $m }}{{ end }}{{ end }}
             {{- $checksum := $blob | sha256sum | trunc 16 }}
@@ -107,13 +110,22 @@ spec:
                         "limits": { "maxDepth": {{ $spec.limits.maxDepth | default 0 }}, "maxCost": {{ $spec.limits.maxCost | default 0 }}, "persistedOnly": {{ $spec.limits.persistedOnly | default false }}{{ if $spec.limits.introspection }}, "introspection": {{ $spec.limits.introspection | quote }}{{ end }}{{ if $spec.limits.persistedQueries }}, "persistedQueries": [{{ range $i, $q := $spec.limits.persistedQueries }}{{ if $i }},{{ end }}{{ $q | quote }}{{ end }}]{{ end }} },
                         {{- end }}
                         "dataSources": [{{ range $i, $ds := ($spec.dataSources | default list) }}{{ if $i }},{{ end }}
-                          { "name": {{ $ds.name | toJson }}, "type": {{ $ds.type | default "memory" | toJson }}{{ if $ds.collection }}, "collection": {{ $ds.collection | toJson }}{{ end }}{{ if $ds.endpoint }}, "endpoint": {{ $ds.endpoint | toJson }}{{ end }} }{{ end }}
+                          {{- /* A lambda source may name its kind: Function (as AppSync's LambdaConfig names
+                                 its function): the engine invokes it at its cluster-local URL in this
+                                 namespace. The name is the URL's host label, so it must be a DNS label. */}}
+                          {{- $endpoint := $ds.endpoint | default "" }}
+                          {{- with $ds.function }}
+                          {{-   if or (ne ($ds.type | default "memory") "lambda") $ds.endpoint }}{{ fail "AppSync API: a data source's function names the Lambda function of a lambda data source, in place of its endpoint" }}{{ end }}
+                          {{-   if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .) }}{{ fail "AppSync API: a lambda data source's function must be the name of a Lambda function (kind: Function) in this namespace" }}{{ end }}
+                          {{-   $endpoint = printf "http://%s.%s.svc.cluster.local/" . $ns }}
+                          {{- end }}
+                          { "name": {{ $ds.name | toJson }}, "type": {{ $ds.type | default "memory" | toJson }}{{ if $ds.collection }}, "collection": {{ $ds.collection | toJson }}{{ end }}{{ if $endpoint }}, "endpoint": {{ $endpoint | toJson }}{{ end }} }{{ end }}
                         ],
                         "resolvers": [{{ range $i, $r := $spec.resolvers }}{{ if $i }},{{ end }}
                           {{- if $r.functions }}
-                          { "type": {{ $r.type | toJson }}, "field": {{ $r.field | toJson }}, {{ with $r.auth }}"auth": { "group": {{ .group | default "" | toJson }}, "resource": {{ .resource | default "" | toJson }}, "verb": {{ .verb | default "" | toJson }}, "namespace": {{ .namespace | default "" | toJson }}, "name": {{ .name | default "" | toJson }} }, {{ end }}{{ if eq ($r.runtime | default "appsync-vtl") "appsync-js" }}"runtime": "appsync-js", {{ end }}"before": {{ if $r.before }}{{ printf "%s.%s.before.vtl" $r.type $r.field | toJson }}{{ else }}""{{ end }}, "after": {{ if $r.after }}{{ printf "%s.%s.after.vtl" $r.type $r.field | toJson }}{{ else }}""{{ end }}, "functions": [{{ range $j, $f := $r.functions }}{{ if $j }},{{ end }} { "dataSource": {{ $f.dataSource | toJson }}, "runtime": {{ $f.runtime | default "appsync-vtl" | toJson }}, "request": {{ printf "%s.%s.fn%d.request.vtl" $r.type $r.field $j | toJson }}, "response": {{ printf "%s.%s.fn%d.response.vtl" $r.type $r.field $j | toJson }} }{{ end }} ]{{ with $r.caching }}, "caching": { "ttlSeconds": {{ .ttlSeconds | default 0 }}, "keys": [{{ range $k, $key := (.keys | default list) }}{{ if $k }},{{ end }}{{ $key | quote }}{{ end }}] }{{ end }} }
+                          { "type": {{ $r.type | toJson }}, "field": {{ $r.field | toJson }}, {{ with $r.auth }}"auth": { "group": {{ .group | default "" | toJson }}, "resource": {{ .resource | default "" | toJson }}, "verb": {{ .verb | default "" | toJson }}, "namespace": {{ .namespace | default "" | toJson }}, "name": {{ .name | default "" | toJson }} }, {{ end }}{{ if eq ($r.runtime | default "appsync-vtl") "appsync-js" }}"runtime": "appsync-js", {{ end }}"before": {{ if $r.before }}{{ printf "%s.%s.before.vtl" $r.type $r.field | toJson }}{{ else }}""{{ end }}, "after": {{ if $r.after }}{{ printf "%s.%s.after.vtl" $r.type $r.field | toJson }}{{ else }}""{{ end }}, "functions": [{{ range $j, $f := $r.functions }}{{ if $j }},{{ end }} { "dataSource": {{ $f.dataSource | toJson }}, "runtime": {{ $f.runtime | default "appsync-vtl" | toJson }}, "request": {{ if $f.request }}{{ printf "%s.%s.fn%d.request.vtl" $r.type $r.field $j | toJson }}{{ else }}""{{ end }}, "response": {{ if $f.response }}{{ printf "%s.%s.fn%d.response.vtl" $r.type $r.field $j | toJson }}{{ else }}""{{ end }}{{ with $f.maxBatchSize }}, "maxBatchSize": {{ . }}{{ end }} }{{ end }} ]{{ with $r.caching }}, "caching": { "ttlSeconds": {{ .ttlSeconds | default 0 }}, "keys": [{{ range $k, $key := (.keys | default list) }}{{ if $k }},{{ end }}{{ $key | quote }}{{ end }}] }{{ end }} }
                           {{- else }}
-                          { "type": {{ $r.type | toJson }}, "field": {{ $r.field | toJson }}, {{ with $r.auth }}"auth": { "group": {{ .group | default "" | toJson }}, "resource": {{ .resource | default "" | toJson }}, "verb": {{ .verb | default "" | toJson }}, "namespace": {{ .namespace | default "" | toJson }}, "name": {{ .name | default "" | toJson }} }, {{ end }}"dataSource": {{ $r.dataSource | toJson }}, "runtime": {{ $r.runtime | default "appsync-vtl" | toJson }}, "request": {{ printf "%s.%s.request.vtl" $r.type $r.field | toJson }}, "response": {{ printf "%s.%s.response.vtl" $r.type $r.field | toJson }}{{ with $r.caching }}, "caching": { "ttlSeconds": {{ .ttlSeconds | default 0 }}, "keys": [{{ range $k, $key := (.keys | default list) }}{{ if $k }},{{ end }}{{ $key | quote }}{{ end }}] }{{ end }} }
+                          { "type": {{ $r.type | toJson }}, "field": {{ $r.field | toJson }}, {{ with $r.auth }}"auth": { "group": {{ .group | default "" | toJson }}, "resource": {{ .resource | default "" | toJson }}, "verb": {{ .verb | default "" | toJson }}, "namespace": {{ .namespace | default "" | toJson }}, "name": {{ .name | default "" | toJson }} }, {{ end }}"dataSource": {{ $r.dataSource | toJson }}, "runtime": {{ $r.runtime | default "appsync-vtl" | toJson }}, "request": {{ if $r.request }}{{ printf "%s.%s.request.vtl" $r.type $r.field | toJson }}{{ else }}""{{ end }}, "response": {{ if $r.response }}{{ printf "%s.%s.response.vtl" $r.type $r.field | toJson }}{{ else }}""{{ end }}{{ with $r.maxBatchSize }}, "maxBatchSize": {{ . }}{{ end }}{{ with $r.caching }}, "caching": { "ttlSeconds": {{ .ttlSeconds | default 0 }}, "keys": [{{ range $k, $key := (.keys | default list) }}{{ if $k }},{{ end }}{{ $key | quote }}{{ end }}] }{{ end }} }
                           {{- end }}{{ end }}
                         ]{{ if $spec.subscriptions }},
                         "subscriptions": [{{ range $i, $s := $spec.subscriptions }}{{ if $i }},{{ end }}
@@ -142,16 +154,25 @@ spec:
                       {{- $r.after | nindent 22 }}
                     {{- end }}
                     {{- range $j, $f := $r.functions }}
+                    {{- if $f.request }}
                     {{ $r.type }}.{{ $r.field }}.fn{{ $j }}.request.vtl: |
                       {{- $f.request | nindent 22 }}
+                    {{- end }}
+                    {{- if $f.response }}
                     {{ $r.type }}.{{ $r.field }}.fn{{ $j }}.response.vtl: |
                       {{- $f.response | nindent 22 }}
                     {{- end }}
+                    {{- end }}
                     {{- else }}
+                    {{- /* A template left out (a direct Lambda resolver's) has no file: config.json names none. */}}
+                    {{- if $r.request }}
                     {{ $r.type }}.{{ $r.field }}.request.vtl: |
                       {{- $r.request | nindent 22 }}
+                    {{- end }}
+                    {{- if $r.response }}
                     {{ $r.type }}.{{ $r.field }}.response.vtl: |
                       {{- $r.response | nindent 22 }}
+                    {{- end }}
                     {{- end }}
                     {{- end }}
             ---
