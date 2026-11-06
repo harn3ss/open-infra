@@ -3,6 +3,8 @@
 // methods + integrations, an immutable DEPLOYMENT snapshot of that tree, and a STAGE that points at a
 // deployment (+ stage variables). Invoke resolves stage -> deployment snapshot -> resource -> method
 // -> integration. Shares the same Postgres as the v2 store; own tables (rest_*), never overloads agw_*.
+// An API, an API key and a usage plan record the account they belong to (empty for the management
+// account); everything under an API is the API's.
 package main
 
 import (
@@ -18,6 +20,9 @@ type restAPI struct {
 	ID      string
 	Name    string
 	Created time.Time
+	// Account is the member account the API belongs to; "" is the management account's (every API made
+	// before accounts, and every API the management account makes).
+	Account string
 }
 
 type restResource struct {
@@ -55,6 +60,9 @@ type restAPIKey struct {
 	Name    string `json:"name"`
 	Value   string `json:"value"`
 	Enabled bool   `json:"enabled"`
+	// Account is the member account the key belongs to ("" the management account's). Its value stays
+	// unique across accounts; the key unlocks only its own account's APIs.
+	Account string `json:"-"`
 }
 
 // restUsagePlan ties a set of api+stage targets (apiStages) to the keys associated with the plan
@@ -64,6 +72,9 @@ type restUsagePlan struct {
 	ID        string             `json:"id"`
 	Name      string             `json:"name"`
 	APIStages []restUsagePlanAPI `json:"apiStages,omitempty"`
+	// Account is the member account the plan belongs to ("" the management account's): it unlocks its own
+	// account's keys to its own account's APIs alone.
+	Account string `json:"-"`
 }
 
 type restUsagePlanAPI struct {
@@ -276,29 +287,35 @@ ALTER TABLE rest_methods ADD COLUMN IF NOT EXISTS request_parameters   jsonb;
 -- increment 4 (API keys): add the method gate column in place for an already-live rest_methods table.
 ALTER TABLE rest_methods ADD COLUMN IF NOT EXISTS api_key_required boolean NOT NULL DEFAULT false;
 -- increment 5 (GetAuthorizer): the providerARNs an authorizer was created with, answered back as given.
-ALTER TABLE rest_authorizers ADD COLUMN IF NOT EXISTS provider_arns jsonb;`)
+ALTER TABLE rest_authorizers ADD COLUMN IF NOT EXISTS provider_arns jsonb;
+-- The account an API, an API key and a usage plan belong to: '' is the management account (every one
+-- made before accounts).
+ALTER TABLE rest_apis        ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT '';
+ALTER TABLE rest_api_keys    ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT '';
+ALTER TABLE rest_usage_plans ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT '';`)
 	return err
 }
 
 // --- APIs ---
 
 func (s *apigwV1Store) createAPI(ctx context.Context, a restAPI) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO rest_apis (api_id, name) VALUES ($1,$2)`, a.ID, a.Name)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO rest_apis (api_id, name, account) VALUES ($1,$2,$3)`, a.ID, a.Name, a.Account)
 	return err
 }
 
 func (s *apigwV1Store) getAPI(ctx context.Context, id string) (restAPI, bool, error) {
 	var a restAPI
-	err := s.db.QueryRowContext(ctx, `SELECT api_id, name, created FROM rest_apis WHERE api_id=$1`, id).
-		Scan(&a.ID, &a.Name, &a.Created)
+	err := s.db.QueryRowContext(ctx, `SELECT api_id, name, created, account FROM rest_apis WHERE api_id=$1`, id).
+		Scan(&a.ID, &a.Name, &a.Created, &a.Account)
 	if err == sql.ErrNoRows {
 		return restAPI{}, false, nil
 	}
 	return a, err == nil, err
 }
 
-func (s *apigwV1Store) listAPIs(ctx context.Context) ([]restAPI, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT api_id, name, created FROM rest_apis ORDER BY created`)
+// listAPIs is account's REST APIs ("" the management account's), oldest first.
+func (s *apigwV1Store) listAPIs(ctx context.Context, account string) ([]restAPI, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT api_id, name, created, account FROM rest_apis WHERE account=$1 ORDER BY created`, account)
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +323,7 @@ func (s *apigwV1Store) listAPIs(ctx context.Context) ([]restAPI, error) {
 	var out []restAPI
 	for rows.Next() {
 		var a restAPI
-		if err := rows.Scan(&a.ID, &a.Name, &a.Created); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.Created, &a.Account); err != nil {
 			return nil, err
 		}
 		out = append(out, a)
@@ -660,23 +677,24 @@ func (s *apigwV1Store) putMethodResponse(ctx context.Context, apiID string, mr r
 
 func (s *apigwV1Store) createAPIKey(ctx context.Context, k restAPIKey) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO rest_api_keys (key_id, name, value, enabled) VALUES ($1,$2,$3,$4)`,
-		k.ID, k.Name, k.Value, k.Enabled)
+		`INSERT INTO rest_api_keys (key_id, name, value, enabled, account) VALUES ($1,$2,$3,$4,$5)`,
+		k.ID, k.Name, k.Value, k.Enabled, k.Account)
 	return err
 }
 
 func (s *apigwV1Store) getAPIKey(ctx context.Context, id string) (restAPIKey, bool, error) {
 	var k restAPIKey
-	err := s.db.QueryRowContext(ctx, `SELECT key_id, name, value, enabled FROM rest_api_keys WHERE key_id=$1`, id).
-		Scan(&k.ID, &k.Name, &k.Value, &k.Enabled)
+	err := s.db.QueryRowContext(ctx, `SELECT key_id, name, value, enabled, account FROM rest_api_keys WHERE key_id=$1`, id).
+		Scan(&k.ID, &k.Name, &k.Value, &k.Enabled, &k.Account)
 	if err == sql.ErrNoRows {
 		return restAPIKey{}, false, nil
 	}
 	return k, err == nil, err
 }
 
-func (s *apigwV1Store) listAPIKeys(ctx context.Context) ([]restAPIKey, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT key_id, name, value, enabled FROM rest_api_keys ORDER BY created`)
+// listAPIKeys is account's API keys ("" the management account's), oldest first.
+func (s *apigwV1Store) listAPIKeys(ctx context.Context, account string) ([]restAPIKey, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key_id, name, value, enabled, account FROM rest_api_keys WHERE account=$1 ORDER BY created`, account)
 	if err != nil {
 		return nil, err
 	}
@@ -684,7 +702,7 @@ func (s *apigwV1Store) listAPIKeys(ctx context.Context) ([]restAPIKey, error) {
 	var out []restAPIKey
 	for rows.Next() {
 		var k restAPIKey
-		if err := rows.Scan(&k.ID, &k.Name, &k.Value, &k.Enabled); err != nil {
+		if err := rows.Scan(&k.ID, &k.Name, &k.Value, &k.Enabled, &k.Account); err != nil {
 			return nil, err
 		}
 		out = append(out, k)
@@ -698,7 +716,7 @@ func (s *apigwV1Store) createUsagePlan(ctx context.Context, p restUsagePlan) err
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO rest_usage_plans (plan_id, name) VALUES ($1,$2)`, p.ID, p.Name); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO rest_usage_plans (plan_id, name, account) VALUES ($1,$2,$3)`, p.ID, p.Name, p.Account); err != nil {
 		return err
 	}
 	for _, st := range p.APIStages {
@@ -716,7 +734,7 @@ func (s *apigwV1Store) createUsagePlan(ctx context.Context, p restUsagePlan) err
 
 func (s *apigwV1Store) getUsagePlan(ctx context.Context, id string) (restUsagePlan, bool, error) {
 	var p restUsagePlan
-	err := s.db.QueryRowContext(ctx, `SELECT plan_id, name FROM rest_usage_plans WHERE plan_id=$1`, id).Scan(&p.ID, &p.Name)
+	err := s.db.QueryRowContext(ctx, `SELECT plan_id, name, account FROM rest_usage_plans WHERE plan_id=$1`, id).Scan(&p.ID, &p.Name, &p.Account)
 	if err == sql.ErrNoRows {
 		return restUsagePlan{}, false, nil
 	}
@@ -738,8 +756,9 @@ func (s *apigwV1Store) getUsagePlan(ctx context.Context, id string) (restUsagePl
 	return p, true, rows.Err()
 }
 
-func (s *apigwV1Store) listUsagePlans(ctx context.Context) ([]restUsagePlan, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT plan_id, name FROM rest_usage_plans ORDER BY created`)
+// listUsagePlans is account's usage plans ("" the management account's), oldest first.
+func (s *apigwV1Store) listUsagePlans(ctx context.Context, account string) ([]restUsagePlan, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT plan_id, name FROM rest_usage_plans WHERE account=$1 ORDER BY created`, account)
 	if err != nil {
 		return nil, err
 	}
@@ -766,13 +785,14 @@ func (s *apigwV1Store) listUsagePlans(ctx context.Context) ([]restUsagePlan, err
 	return ids, nil
 }
 
-// createUsagePlanKey associates an existing key with a usage plan. Both must exist (AWS NotFound
-// otherwise); a missing one returns sql.ErrNoRows.
-func (s *apigwV1Store) createUsagePlanKey(ctx context.Context, planID, keyID string) error {
+// createUsagePlanKey associates an existing key with a usage plan, both of account ("" the management
+// account). Both must exist there (AWS NotFound otherwise: another account's plan or key is one that does
+// not exist); a missing one returns sql.ErrNoRows.
+func (s *apigwV1Store) createUsagePlanKey(ctx context.Context, planID, keyID, account string) error {
 	var ok bool
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM rest_usage_plans WHERE plan_id=$1) AND EXISTS(SELECT 1 FROM rest_api_keys WHERE key_id=$2)`,
-		planID, keyID).Scan(&ok); err != nil {
+		`SELECT EXISTS(SELECT 1 FROM rest_usage_plans WHERE plan_id=$1 AND account=$3) AND EXISTS(SELECT 1 FROM rest_api_keys WHERE key_id=$2 AND account=$3)`,
+		planID, keyID, account).Scan(&ok); err != nil {
 		return err
 	}
 	if !ok {
@@ -804,8 +824,10 @@ func (s *apigwV1Store) listUsagePlanKeys(ctx context.Context, planID string) ([]
 // apiKeyAuthorized is the data-plane gate for a method with apiKeyRequired: the presented x-api-key
 // VALUE must match an ENABLED key that is associated (via a usage plan) with the invoked api+stage.
 // This is checked LIVE (not from the deployment snapshot), so enabling/disabling or (dis)associating a
-// key takes effect without a redeploy — AWS semantics. A blank value is never authorized.
-func (s *apigwV1Store) apiKeyAuthorized(ctx context.Context, value, apiID, stage string) (bool, error) {
+// key takes effect without a redeploy — AWS semantics. A blank value is never authorized. The key and its
+// usage plan must be the API's own account's (account, "" the management account): another account's key
+// or plan never unlocks it, whatever api+stage that plan names.
+func (s *apigwV1Store) apiKeyAuthorized(ctx context.Context, value, apiID, stage, account string) (bool, error) {
 	if value == "" {
 		return false, nil
 	}
@@ -814,9 +836,11 @@ func (s *apigwV1Store) apiKeyAuthorized(ctx context.Context, value, apiID, stage
 		`SELECT EXISTS (
 		   SELECT 1 FROM rest_api_keys k
 		   JOIN rest_usage_plan_keys pk ON pk.key_id = k.key_id
+		   JOIN rest_usage_plans p ON p.plan_id = pk.plan_id
 		   JOIN rest_usage_plan_stages ps ON ps.plan_id = pk.plan_id
 		   WHERE k.value = $1 AND k.enabled = true AND ps.api_id = $2 AND ps.stage_name = $3
-		 )`, value, apiID, stage).Scan(&ok)
+		     AND k.account = $4 AND p.account = $4
+		 )`, value, apiID, stage, account).Scan(&ok)
 	return ok, err
 }
 

@@ -1,6 +1,8 @@
 // API Gateway (HTTP API v2) control-plane state for the aws-shim: APIs, routes,
 // integrations, stages, authorizers, deployments. Shares the SQS/KMS Postgres. The data plane (the
 // runtime HTTP→Lambda proxy) reads this state on every invoke; nothing here holds request/response bodies.
+// An API records the account it belongs to (empty for the management account); its routes, integrations,
+// stages, authorizers and deployments are the API's.
 package main
 
 import (
@@ -19,6 +21,9 @@ type agwAPI struct {
 	ProtocolType string
 	CORS         map[string]any // AWS Cors config, stored as-sent; nil = CORS not configured
 	Created      time.Time
+	// Account is the member account the API belongs to; "" is the management account's (every API made
+	// before accounts, and every API the management account makes).
+	Account string
 }
 
 type agwRoute struct {
@@ -99,7 +104,9 @@ CREATE TABLE IF NOT EXISTS agw_deployments (
     deployment_id text NOT NULL,
     created       timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (api_id, deployment_id)
-);`)
+);
+-- The account an API belongs to: '' is the management account (every API made before accounts).
+ALTER TABLE agw_apis ADD COLUMN IF NOT EXISTS account text NOT NULL DEFAULT '';`)
 	return err
 }
 
@@ -111,8 +118,8 @@ func (s *apigwStore) createAPI(ctx context.Context, a agwAPI) error {
 		cors = nil
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO agw_apis (api_id, name, protocol_type, cors) VALUES ($1,$2,$3,$4)`,
-		a.ID, a.Name, a.ProtocolType, cors)
+		`INSERT INTO agw_apis (api_id, name, protocol_type, cors, account) VALUES ($1,$2,$3,$4,$5)`,
+		a.ID, a.Name, a.ProtocolType, cors, a.Account)
 	return err
 }
 
@@ -120,8 +127,8 @@ func (s *apigwStore) getAPI(ctx context.Context, id string) (agwAPI, bool, error
 	var a agwAPI
 	var cors []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT api_id, name, protocol_type, cors, created FROM agw_apis WHERE api_id=$1`, id).
-		Scan(&a.ID, &a.Name, &a.ProtocolType, &cors, &a.Created)
+		`SELECT api_id, name, protocol_type, cors, created, account FROM agw_apis WHERE api_id=$1`, id).
+		Scan(&a.ID, &a.Name, &a.ProtocolType, &cors, &a.Created, &a.Account)
 	if err == sql.ErrNoRows {
 		return agwAPI{}, false, nil
 	}
@@ -134,8 +141,9 @@ func (s *apigwStore) getAPI(ctx context.Context, id string) (agwAPI, bool, error
 	return a, true, nil
 }
 
-func (s *apigwStore) listAPIs(ctx context.Context) ([]agwAPI, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT api_id, name, protocol_type, cors, created FROM agw_apis ORDER BY created`)
+// listAPIs is account's APIs ("" the management account's), oldest first.
+func (s *apigwStore) listAPIs(ctx context.Context, account string) ([]agwAPI, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT api_id, name, protocol_type, cors, created, account FROM agw_apis WHERE account=$1 ORDER BY created`, account)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +152,7 @@ func (s *apigwStore) listAPIs(ctx context.Context) ([]agwAPI, error) {
 	for rows.Next() {
 		var a agwAPI
 		var cors []byte
-		if err := rows.Scan(&a.ID, &a.Name, &a.ProtocolType, &cors, &a.Created); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.ProtocolType, &cors, &a.Created, &a.Account); err != nil {
 			return nil, err
 		}
 		if len(cors) > 0 {

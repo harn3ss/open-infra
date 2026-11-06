@@ -43,14 +43,22 @@ type apigwV1Handler struct {
 	origins      *originGuard
 	originClient *http.Client
 	fns          *fnLocator // where an integration's Function lives (fn_locate.go); nil = fnNS
+	// homeOf is a member account's home namespace (the accounts directory's HomeOf): an invoke of a
+	// member account's API acts in that account, where its functions are.
+	homeOf func(account string) (string, bool)
+	// pools is the Cognito user-pool store: a COGNITO_USER_POOLS authorizer admits tokens of its own
+	// account's pools alone (poolOfAnotherAccount). nil: no pool of the shim's to check.
+	pools *cognitoStore
 
 	oidcMu    sync.Mutex
 	providers map[string]*oidc.Provider // issuer -> provider (JWKS discovery is network; cache). Reused by the COGNITO_USER_POOLS authorizer, the SAME coreos/go-oidc path the v2 handler uses.
 }
 
-// fnNamespace is where the kind: Function named fn lives — the Lambda API's namespace or a stack's.
+// fnNamespace is where the kind: Function named fn lives — the Lambda API's namespace or a stack's for
+// the management account, one of a member account's own namespaces for a member's (the account ctx acts
+// in: the caller's, or on invoke the API's).
 func (h *apigwV1Handler) fnNamespace(ctx context.Context, fn string) string {
-	return h.fns.namespaceOf(ctx, fn, h.fnNS)
+	return h.fns.namespaceFor(ctx, fn, h.fnNS)
 }
 
 func newAPIGWV1Handler(cs kubernetes.Interface, authzNS, fnNS, svcSuffix, cognitoIssuerBase string, store *apigwV1Store, authz *dataplaneauthz.Checker, logger *slog.Logger) *apigwV1Handler {
@@ -107,6 +115,9 @@ func (h *apigwV1Handler) serve(w http.ResponseWriter, r *http.Request, claims ia
 		coarseThenScopedDataPlane(ctx, r, h.cs, h.authz, claims, restVerb(v.Op), "openinfra.dev", "applications", h.authzNS, resID,
 			"apigateway:"+v.Op, "Api", scopeFor(claims, resID))); !ok {
 		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
+		return
+	}
+	if !h.ownedByCaller(ctx, w, requestID, v) {
 		return
 	}
 
@@ -182,6 +193,47 @@ func (h *apigwV1Handler) serve(w http.ResponseWriter, r *http.Request, claims ia
 	}
 }
 
+// ownedByCaller refuses an operation on another account's REST API, API key or usage plan as AWS answers
+// one that does not exist: an API, a key and a plan belong to an account, and an operation reaches the
+// caller's account's alone. One that does not exist at all is left to the operation, as before.
+func (h *apigwV1Handler) ownedByCaller(ctx context.Context, w http.ResponseWriter, requestID string, v restV1Op) bool {
+	acct := apigwAccount(ctx)
+	if v.APIID != "" && v.Op != "CreateRestApi" {
+		a, found, err := h.store.getAPI(ctx, v.APIID)
+		if err != nil {
+			h.internal(w, requestID, err)
+			return false
+		}
+		if found && a.Account != acct {
+			writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Invalid API identifier specified: "+v.APIID)
+			return false
+		}
+	}
+	if v.KeyID != "" {
+		k, found, err := h.store.getAPIKey(ctx, v.KeyID)
+		if err != nil {
+			h.internal(w, requestID, err)
+			return false
+		}
+		if found && k.Account != acct {
+			writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Invalid API Key identifier specified: "+v.KeyID)
+			return false
+		}
+	}
+	if v.PlanID != "" {
+		p, found, err := h.store.getUsagePlan(ctx, v.PlanID)
+		if err != nil {
+			h.internal(w, requestID, err)
+			return false
+		}
+		if found && p.Account != acct {
+			writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Invalid Usage Plan ID specified: "+v.PlanID)
+			return false
+		}
+	}
+	return true
+}
+
 func (h *apigwV1Handler) mustAPI(ctx context.Context, w http.ResponseWriter, requestID, apiID string) bool {
 	_, ok, err := h.store.getAPI(ctx, apiID)
 	if err != nil {
@@ -202,7 +254,7 @@ func (h *apigwV1Handler) createRestApi(ctx context.Context, w http.ResponseWrite
 		return
 	}
 	id := shortID(10)
-	if err := h.store.createAPI(ctx, restAPI{ID: id, Name: name}); err != nil {
+	if err := h.store.createAPI(ctx, restAPI{ID: id, Name: name, Account: apigwAccount(ctx)}); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -218,7 +270,7 @@ func (h *apigwV1Handler) createRestApi(ctx context.Context, w http.ResponseWrite
 }
 
 func (h *apigwV1Handler) getRestApis(ctx context.Context, w http.ResponseWriter, requestID string) {
-	apis, err := h.store.listAPIs(ctx)
+	apis, err := h.store.listAPIs(ctx, apigwAccount(ctx))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -368,6 +420,12 @@ func (h *apigwV1Handler) putIntegration(ctx context.Context, w http.ResponseWrit
 			return
 		}
 		fn := functionFromURI(uri)
+		// The function is one of the API's own account's (fnOfAnotherAccount).
+		if arn, other := fnOfAnotherAccount(ctx, h.fns, uri); other {
+			writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID,
+				"not authorized to integrate function "+fn+": "+crossAccountFnReason(ctx, claims, arn))
+			return
+		}
 		if ok, reason := decide(ctx, r, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
 			scopedDataPlaneThenCoarse(ctx, r, h.cs, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
 				"create", "openinfra.dev", "functions", h.fnNamespace(ctx, fn), fn)); !ok {
@@ -623,7 +681,7 @@ func (h *apigwV1Handler) createAPIKey(ctx context.Context, w http.ResponseWriter
 	if value == "" {
 		value = shortID(40)
 	}
-	k := restAPIKey{ID: shortID(10), Name: name, Value: value, Enabled: enabled}
+	k := restAPIKey{ID: shortID(10), Name: name, Value: value, Enabled: enabled, Account: apigwAccount(ctx)}
 	if err := h.store.createAPIKey(ctx, k); err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -632,7 +690,7 @@ func (h *apigwV1Handler) createAPIKey(ctx context.Context, w http.ResponseWriter
 }
 
 func (h *apigwV1Handler) getAPIKeys(ctx context.Context, w http.ResponseWriter, requestID string, r *http.Request) {
-	keys, err := h.store.listAPIKeys(ctx)
+	keys, err := h.store.listAPIKeys(ctx, apigwAccount(ctx))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -662,7 +720,23 @@ func (h *apigwV1Handler) getAPIKey(ctx context.Context, w http.ResponseWriter, r
 // throttle/quota fields are accepted but NOT enforced (the shim does not rate-limit — documented).
 func (h *apigwV1Handler) createUsagePlan(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
 	name, _ := body["name"].(string)
-	p := restUsagePlan{ID: shortID(10), Name: name, APIStages: parseAPIStages(body["apiStages"])}
+	p := restUsagePlan{ID: shortID(10), Name: name, APIStages: parseAPIStages(body["apiStages"]), Account: apigwAccount(ctx)}
+	// A member account's plan names its own account's REST APIs: any other id — another account's API, or
+	// none — is, as on AWS, an API that does not exist. (The invoke gate unlocks an API only with a key and
+	// plan of the API's own account in any case.)
+	if isMemberRequest(ctx) {
+		for _, st := range p.APIStages {
+			a, found, err := h.store.getAPI(ctx, st.APIID)
+			if err != nil {
+				h.internal(w, requestID, err)
+				return
+			}
+			if !found || a.Account != p.Account {
+				writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Invalid API identifier specified: "+st.APIID)
+				return
+			}
+		}
+	}
 	if err := h.store.createUsagePlan(ctx, p); err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -671,7 +745,7 @@ func (h *apigwV1Handler) createUsagePlan(ctx context.Context, w http.ResponseWri
 }
 
 func (h *apigwV1Handler) getUsagePlans(ctx context.Context, w http.ResponseWriter, requestID string) {
-	plans, err := h.store.listUsagePlans(ctx)
+	plans, err := h.store.listUsagePlans(ctx, apigwAccount(ctx))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -709,7 +783,7 @@ func (h *apigwV1Handler) createUsagePlanKey(ctx context.Context, w http.Response
 		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID, "keyType must be API_KEY.")
 		return
 	}
-	if err := h.store.createUsagePlanKey(ctx, planID, keyID); err != nil {
+	if err := h.store.createUsagePlanKey(ctx, planID, keyID, apigwAccount(ctx)); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Invalid Usage Plan ID or API Key identifier specified.")
 			return
@@ -799,6 +873,15 @@ func (h *apigwV1Handler) createAuthorizer(ctx context.Context, w http.ResponseWr
 	if issuer == "" {
 		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID,
 			"a COGNITO_USER_POOLS authorizer requires providerARNs — a Cognito user pool ARN (arn:aws:cognito-idp:…:userpool/<poolId>) or an OIDC issuer URL.")
+		return
+	}
+	// The pool is one of the API's own account's: another account's pool never authorizes its methods.
+	if pool, other, err := h.poolOfAnotherAccount(ctx, stringSlice(body["providerARNs"])...); err != nil {
+		h.internal(w, requestID, err)
+		return
+	} else if other {
+		writeAGWError(w, http.StatusBadRequest, "BadRequestException", requestID,
+			"Invalid provider ARN: user pool "+pool+" is not a user pool of this account.")
 		return
 	}
 	var auds []string
@@ -926,13 +1009,17 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 		writeAGWError(w, http.StatusNotImplemented, "InternalServerException", requestID, "data layer not configured")
 		return
 	}
-	if _, ok, err := h.store.getAPI(r.Context(), apiID); err != nil {
+	api, ok, err := h.store.getAPI(r.Context(), apiID)
+	if err != nil {
 		h.internal(w, requestID, err)
 		return
 	} else if !ok {
 		writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Not Found")
 		return
 	}
+	// The invoke acts in the API's own account (the URL is unsigned): its functions, its keys and plans and
+	// its authorizers' pools are that account's, and the proxy event names that account.
+	r = r.WithContext(inAPIAccount(r.Context(), api.Account, h.homeOf))
 	// REST v1 always serves under a stage: the leading path segment is the stage name.
 	stage, routePath := firstSeg(path)
 	if stage == "" {
@@ -977,7 +1064,7 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 	// enabled/disabled or (dis)associated without a redeploy. Missing/invalid → 403 Forbidden, exactly
 	// as AWS, BEFORE the body is read or the integration runs — never a silent admit of a keyless call.
 	if meth.APIKeyRequired {
-		authorized, err := h.store.apiKeyAuthorized(r.Context(), r.Header.Get("x-api-key"), apiID, stage)
+		authorized, err := h.store.apiKeyAuthorized(r.Context(), r.Header.Get("x-api-key"), apiID, stage, api.Account)
 		if err != nil {
 			h.internal(w, requestID, err)
 			return
@@ -1001,6 +1088,9 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 
 	switch integ.Type {
 	case "AWS_PROXY":
+		if h.refusedOtherAccountFn(w, r, integ, apiID, requestID) {
+			return
+		}
 		pfv := integ.PayloadFormatVersion
 		if pfv == "" {
 			pfv = "1.0"
@@ -1053,6 +1143,9 @@ func (h *apigwV1Handler) serveInvoke(w http.ResponseWriter, r *http.Request, api
 // matching requestTemplates VTL template (pass-through if none), POSTs the result to the Function's URL,
 // then maps the response body with the matching responseTemplates template (pass-through if none).
 func (h *apigwV1Handler) invokeAWSIntegration(w http.ResponseWriter, r *http.Request, integ restIntegration, apiID, stage, routePath, requestID string, pathParams, stageVars map[string]string, reqBody []byte) {
+	if h.refusedOtherAccountFn(w, r, integ, apiID, requestID) {
+		return
+	}
 	eventBody, ok := h.mapRequestBody(w, r, integ, apiID, stage, routePath, requestID, pathParams, stageVars, reqBody)
 	if !ok {
 		return
@@ -1074,6 +1167,20 @@ func (h *apigwV1Handler) invokeAWSIntegration(w http.ResponseWriter, r *http.Req
 	defer resp.Body.Close()
 	h.logger.Info("apigw v1 invoke", "api", apiID, "stage", stage, "method", r.Method, "path", routePath, "integration", "AWS", "function", integ.URI)
 	h.writeMappedResponse(w, r, integ, resp, apiID, stage, routePath, requestID, pathParams, stageVars)
+}
+
+// refusedOtherAccountFn refuses, on invoke, a Lambda integration whose URI names a function of an account
+// other than the API's (one a stack provisioned, which no wiring-time check saw): AWS answers such an
+// invoke, which no resource-based policy allows, with a 5xx, and the function of the same name in the API's
+// own account is never invoked in its place.
+func (h *apigwV1Handler) refusedOtherAccountFn(w http.ResponseWriter, r *http.Request, integ restIntegration, apiID, requestID string) bool {
+	arn, other := fnOfAnotherAccount(r.Context(), h.fns, integ.URI)
+	if !other {
+		return false
+	}
+	h.logger.Warn("apigw v1 integration names another account's function", "api", apiID, "account", callerAccount(r.Context()), "function", arn)
+	writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")
+	return true
 }
 
 // invokeHTTPIntegration serves a non-proxy "HTTP" integration: same request/response VTL mapping as AWS,
@@ -1195,6 +1302,16 @@ func (h *apigwV1Handler) enforceMethodAuthorizer(w http.ResponseWriter, r *http.
 	}
 	if authz == nil || authz.Type != "COGNITO_USER_POOLS" {
 		// method asks for an authorizer the deployment doesn't carry / the shim doesn't enforce — fail closed.
+		writeAGWError(w, http.StatusUnauthorized, "UnauthorizedException", requestID, "Unauthorized")
+		return false
+	}
+	// Only the API's own account's user pools authorize it (the invoke acts in the API's account): an
+	// authorizer naming another account's pool — one a stack provisioned, or kept from before — admits no one.
+	if pool, other, err := h.poolOfAnotherAccount(r.Context(), append(append([]string(nil), authz.ProviderARNs...), authz.Issuer)...); err != nil {
+		h.internal(w, requestID, err)
+		return false
+	} else if other {
+		h.logger.Warn("apigw v1 cognito authorizer names another account's user pool", "authorizer", authz.ID, "pool", pool, "account", callerAccount(r.Context()))
 		writeAGWError(w, http.StatusUnauthorized, "UnauthorizedException", requestID, "Unauthorized")
 		return false
 	}

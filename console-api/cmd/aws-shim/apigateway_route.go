@@ -246,7 +246,7 @@ func buildProxyEvent(pfv string, r *http.Request, apiID, stage, routeKey, path s
 			"pathParameters":                  nilIfEmpty(pathParams),
 			"isBase64Encoded":                 isB64,
 			"requestContext": map[string]any{
-				"accountId":    awsidentity.Current().AccountID,
+				"accountId":    awsidentity.FromContext(r.Context()).AccountID,
 				"apiId":        apiID,
 				"httpMethod":   r.Method,
 				"path":         "/" + stage + path,
@@ -275,7 +275,7 @@ func buildProxyEvent(pfv string, r *http.Request, apiID, stage, routeKey, path s
 		"pathParameters":        nilIfEmpty(pathParams),
 		"isBase64Encoded":       isB64,
 		"requestContext": map[string]any{
-			"accountId":  awsidentity.Current().AccountID,
+			"accountId":  awsidentity.FromContext(r.Context()).AccountID,
 			"apiId":      apiID,
 			"domainName": apiID + ".execute-api.amazonaws.com",
 			"http": map[string]any{

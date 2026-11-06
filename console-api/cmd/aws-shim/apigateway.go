@@ -56,6 +56,9 @@ type apigwHandler struct {
 	logger     *slog.Logger
 	client     *http.Client
 	fns        *fnLocator // where an integration's Function lives (fn_locate.go); nil = fnNS
+	// homeOf is a member account's home namespace (the accounts directory's HomeOf): an invoke of a
+	// member account's API acts in that account, where its functions are.
+	homeOf func(account string) (string, bool)
 
 	oidcMu    sync.Mutex
 	providers map[string]*oidc.Provider // issuer -> provider (JWKS discovery is network; cache)
@@ -131,6 +134,17 @@ func (h *apigwHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.
 		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 		return
 	}
+	// An API belongs to an account: an operation reaches the caller's account's APIs alone, and another
+	// account's api id is, as on AWS, an API that does not exist.
+	if apiID != "" && op != "CreateApi" {
+		if a, found, err := h.store.getAPI(ctx, apiID); err != nil {
+			h.internal(w, requestID, err)
+			return
+		} else if found && a.Account != apigwAccount(ctx) {
+			writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "api "+apiID+" not found")
+			return
+		}
+	}
 
 	switch op {
 	case "CreateApi":
@@ -178,13 +192,19 @@ func (h *apigwHandler) createApi(ctx context.Context, w http.ResponseWriter, r *
 	target, _ := body["target"].(string)
 	if target != "" {
 		fn := functionFromURI(target)
+		if arn, other := fnOfAnotherAccount(ctx, h.fns, target); other {
+			reason := crossAccountFnReason(ctx, claims, arn)
+			h.auditDeny(ctx, "CreateApi", name, reason)
+			writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, "not authorized to integrate function "+fn+": "+reason)
+			return
+		}
 		if reason, ok := h.authorizeIntegrationTarget(ctx, r, claims, fn); !ok {
 			h.auditDeny(ctx, "CreateApi", name, reason)
 			writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, "not authorized to integrate function "+fn+": "+reason)
 			return
 		}
 	}
-	api := agwAPI{ID: shortID(10), Name: name, ProtocolType: proto}
+	api := agwAPI{ID: shortID(10), Name: name, ProtocolType: proto, Account: apigwAccount(ctx)}
 	if c, ok := body["corsConfiguration"].(map[string]any); ok {
 		api.CORS = c
 	}
@@ -209,7 +229,7 @@ func (h *apigwHandler) createApi(ctx context.Context, w http.ResponseWriter, r *
 }
 
 func (h *apigwHandler) getApis(ctx context.Context, w http.ResponseWriter, requestID string) {
-	apis, err := h.store.listAPIs(ctx)
+	apis, err := h.store.listAPIs(ctx, apigwAccount(ctx))
 	if err != nil {
 		h.internal(w, requestID, err)
 		return
@@ -304,11 +324,12 @@ func (h *apigwHandler) getRoutes(ctx context.Context, w http.ResponseWriter, req
 // carry no SigV4), so target authority is enforced here — when the route is wired — not per-invoke, exactly
 // as EventBridge enforces target authority at PutTargets (authorizeTarget, eventbridge.go). Without this an
 // apigateway-only principal could expose ANY function through a NONE-auth route and bypass the Lambda
-// doorway's lambda:InvokeFunction gate.
+// doorway's lambda:InvokeFunction gate. The function is the caller's account's (a member account's in its
+// own namespaces), where the caller's right to invoke it is checked.
 func (h *apigwHandler) authorizeIntegrationTarget(ctx context.Context, r *http.Request, claims iam.Claims, fn string) (string, bool) {
 	if ok, reason := decide(ctx, r, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
 		scopedDataPlaneThenCoarse(ctx, r, h.cs, h.authz, claims, "lambda:InvokeFunction", "Function", fn,
-			"create", "openinfra.dev", "functions", h.fns.namespaceOf(ctx, fn, h.fnNS), fn)); !ok {
+			"create", "openinfra.dev", "functions", h.fns.namespaceFor(ctx, fn, h.fnNS), fn)); !ok {
 		return reason, false
 	}
 	return "", true
@@ -330,8 +351,15 @@ func (h *apigwHandler) createIntegration(ctx context.Context, w http.ResponseWri
 		return
 	}
 	// Wiring-time escalation fence: a caller may only integrate a Lambda it is authorized to invoke, since the
-	// data-plane invoke path is unsigned by design. Mirrors EventBridge's authorizeTarget.
+	// data-plane invoke path is unsigned by design. Mirrors EventBridge's authorizeTarget. The function is
+	// one of the API's own account's (fnOfAnotherAccount).
 	fn := functionFromURI(uri)
+	if arn, other := fnOfAnotherAccount(ctx, h.fns, uri); other {
+		reason := crossAccountFnReason(ctx, claims, arn)
+		h.auditDeny(ctx, "CreateIntegration", apiID, reason)
+		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, "not authorized to integrate function "+fn+": "+reason)
+		return
+	}
 	if reason, ok := h.authorizeIntegrationTarget(ctx, r, claims, fn); !ok {
 		h.auditDeny(ctx, "CreateIntegration", apiID, reason)
 		writeAGWError(w, http.StatusForbidden, "AccessDeniedException", requestID, "not authorized to integrate function "+fn+": "+reason)
@@ -490,6 +518,9 @@ func (h *apigwHandler) serveInvoke(w http.ResponseWriter, r *http.Request, apiID
 		writeAGWError(w, http.StatusNotFound, "NotFoundException", requestID, "Not Found")
 		return
 	}
+	// The invoke acts in the API's own account (the URL is unsigned): its function is found among that
+	// account's, and the proxy event names that account.
+	r = r.WithContext(inAPIAccount(r.Context(), api.Account, h.homeOf))
 	// Resolve the stage: $default serves at the root; a named stage is the leading path segment.
 	stage := "$default"
 	routePath := path
@@ -546,7 +577,7 @@ func (h *apigwHandler) serveInvoke(w http.ResponseWriter, r *http.Request, apiID
 	event := buildProxyEvent(integ.PayloadFormatVersion, r, apiID, stage, match.RouteKey, routePath, pathParams, reqBody, requestID)
 	evJSON, _ := json.Marshal(event)
 
-	target := "http://" + integ.IntegrationURI + "." + h.fns.namespaceOf(r.Context(), integ.IntegrationURI, h.fnNS) + "." + h.svcSuffix + "/"
+	target := "http://" + integ.IntegrationURI + "." + h.fns.namespaceFor(r.Context(), integ.IntegrationURI, h.fnNS) + "." + h.svcSuffix + "/"
 	upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(evJSON))
 	if err != nil {
 		writeAGWError(w, http.StatusBadGateway, "InternalServerException", requestID, "Internal Server Error")

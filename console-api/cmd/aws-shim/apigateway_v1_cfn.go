@@ -37,7 +37,9 @@ func (h *apigwV1Handler) provisionRestAPIPlan(ctx context.Context, plan cfn.Rest
 		_, _ = h.store.deleteAPI(ctx, apiID)
 		return "", err
 	}
-	if err := h.store.createAPI(ctx, restAPI{ID: apiID, Name: name}); err != nil {
+	// The API, its keys and its usage plans are the stack's account's (the account ctx acts in).
+	acct := apigwAccount(ctx)
+	if err := h.store.createAPI(ctx, restAPI{ID: apiID, Name: name, Account: acct}); err != nil {
 		return "", fmt.Errorf("create REST API: %w", err)
 	}
 	// Seed the root resource "/" and map the plan's logical references to real ids as we create things.
@@ -106,6 +108,11 @@ func (h *apigwV1Handler) provisionRestAPIPlan(ctx context.Context, plan cfn.Rest
 		if issuer == "" {
 			return fail(fmt.Errorf("authorizer %s: providerARNs resolve to no issuer", ap.LogicalID))
 		}
+		if pool, other, err := h.poolOfAnotherAccount(ctx, ap.ProviderARNs...); err != nil {
+			return fail(fmt.Errorf("authorizer %s: %w", ap.LogicalID, err))
+		} else if other {
+			return fail(fmt.Errorf("authorizer %s: user pool %s is not a user pool of this account", ap.LogicalID, pool))
+		}
 		id := shortID(10)
 		if err := h.store.createAuthorizer(ctx, apiID, restAuthorizer{ID: id, Name: ap.Name, Type: "COGNITO_USER_POOLS", Issuer: issuer, IdentitySource: headerFromIdentitySource(ap.IdentitySource), ProviderARNs: ap.ProviderARNs}); err != nil {
 			return fail(fmt.Errorf("create authorizer %s: %w", ap.LogicalID, err))
@@ -137,6 +144,11 @@ func (h *apigwV1Handler) provisionRestAPIPlan(ctx context.Context, plan cfn.Rest
 			if ig.Type == "HTTP" || ig.Type == "HTTP_PROXY" {
 				if err := h.origins.checkURI(ig.URI); err != nil {
 					return fail(fmt.Errorf("integration on %s %s: %w", mp.HTTPMethod, mp.Resource, err))
+				}
+			}
+			if ig.Type == "AWS" || ig.Type == "AWS_PROXY" {
+				if arn, other := fnOfAnotherAccount(ctx, h.fns, ig.URI); other {
+					return fail(fmt.Errorf("integration on %s %s: %s is a function of another account, which no resource-based policy lets this API invoke", mp.HTTPMethod, mp.Resource, arn))
 				}
 			}
 			if err := h.store.putIntegration(ctx, apiID, restIntegration{
@@ -181,14 +193,14 @@ func (h *apigwV1Handler) provisionRestAPIPlan(ctx context.Context, plan cfn.Rest
 		if value == "" {
 			value = shortID(40)
 		}
-		if err := h.store.createAPIKey(ctx, restAPIKey{ID: id, Name: kp.Name, Value: value, Enabled: kp.Enabled}); err != nil {
+		if err := h.store.createAPIKey(ctx, restAPIKey{ID: id, Name: kp.Name, Value: value, Enabled: kp.Enabled, Account: acct}); err != nil {
 			return fail(fmt.Errorf("create api key %s: %w", kp.LogicalID, err))
 		}
 		keyID[kp.LogicalID] = id
 	}
 	for _, pp := range plan.UsagePlans {
 		id := shortID(10)
-		up := restUsagePlan{ID: id, Name: pp.Name}
+		up := restUsagePlan{ID: id, Name: pp.Name, Account: acct}
 		for _, as := range pp.APIStages {
 			up.APIStages = append(up.APIStages, restUsagePlanAPI{APIID: apiID, Stage: as.Stage})
 		}
@@ -200,7 +212,7 @@ func (h *apigwV1Handler) provisionRestAPIPlan(ctx context.Context, plan cfn.Rest
 			if !ok {
 				return fail(fmt.Errorf("usage plan %s references unknown api key %q", pp.LogicalID, kLogical))
 			}
-			if err := h.store.createUsagePlanKey(ctx, id, kid); err != nil {
+			if err := h.store.createUsagePlanKey(ctx, id, kid, acct); err != nil {
 				return fail(fmt.Errorf("associate key %s with usage plan %s: %w", kLogical, pp.LogicalID, err))
 			}
 		}
@@ -210,9 +222,14 @@ func (h *apigwV1Handler) provisionRestAPIPlan(ctx context.Context, plan cfn.Rest
 }
 
 // deprovisionRestAPI deletes a provisioned REST v1 API (idempotent — a missing api is not an error), for
-// stack rollback and teardown.
+// stack rollback and teardown. Another account's API is, to the stack's account, one that does not exist.
 func (h *apigwV1Handler) deprovisionRestAPI(ctx context.Context, apiID string) error {
 	if h.store == nil || apiID == "" {
+		return nil
+	}
+	if a, found, err := h.store.getAPI(ctx, apiID); err != nil {
+		return err
+	} else if found && a.Account != apigwAccount(ctx) {
 		return nil
 	}
 	_, err := h.store.deleteAPI(ctx, apiID)

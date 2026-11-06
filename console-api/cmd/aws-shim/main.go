@@ -542,6 +542,7 @@ func run(logger *slog.Logger) error {
 	// /restapis/... to v1 and /v2/apis/... to v2 (and picks the right data plane by api id on invoke).
 	apigwV1H := newAPIGWV1Handler(cs, authzNS, fnNS, svcSuffix, getenv("COGNITO_ISSUER_BASE", apigwInvokeBase), apigwV1St, authzChecker, logger)
 	apigwV1H.fns = fns
+	apigwH.homeOf, apigwV1H.homeOf, apigwV1H.pools = acctDir.HomeOf, acctDir.HomeOf, cognitoSt // an invoke acts in its API's account; an authorizer admits its own account's pools
 	apigwMuxH := &apigwMux{v1: apigwV1H, v2: apigwH}
 	// CloudWatch metrics + alarms (SigV4 service name "monitoring"). The alarm evaluator (started below)
 	// fires SNS AlarmActions through the SNS handler.
