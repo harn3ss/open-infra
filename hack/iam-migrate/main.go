@@ -99,7 +99,45 @@ func write(kubectl string, c Change) error {
 		return run(kubectl, b, "apply", "-f", "-")
 	}
 	b, _ := json.Marshal(map[string]any{"spec": c.Patch})
+	// A Crossplane claim's spec is kept in step with its composite's: a field removed from the claim alone
+	// comes back from the composite on the next sync. So a removal is written to the composite
+	// (spec.resourceRef) first, then to the claim.
+	if removesFields(c.Patch) {
+		ref, err := output(kubectl, "-n", c.Namespace, "get", resources[c.Kind], c.Name, "-o",
+			"jsonpath={.spec.resourceRef.apiVersion} {.spec.resourceRef.kind} {.spec.resourceRef.name}")
+		if err != nil {
+			return err
+		}
+		if f := strings.Fields(ref); len(f) == 3 {
+			group, _, _ := strings.Cut(f[0], "/")
+			composite := strings.ToLower(f[1]) + "s." + group
+			if err := run(kubectl, nil, "patch", composite, f[2], "--type", "merge", "-p", string(b)); err != nil {
+				return fmt.Errorf("composite %s %s: %w", composite, f[2], err)
+			}
+		}
+	}
 	return run(kubectl, nil, "-n", c.Namespace, "patch", resources[c.Kind], c.Name, "--type", "merge", "-p", string(b))
+}
+
+// removesFields reports whether a merge patch removes a field (a null value).
+func removesFields(patch map[string]any) bool {
+	for _, v := range patch {
+		if v == nil {
+			return true
+		}
+		if m, ok := v.(map[string]any); ok && removesFields(m) {
+			return true
+		}
+	}
+	return false
+}
+
+func output(kubectl string, args ...string) (string, error) {
+	out, err := exec.Command(kubectl, args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("%s %s: %v", kubectl, strings.Join(args, " "), err)
+	}
+	return string(out), nil
 }
 
 func run(kubectl string, stdin []byte, args ...string) error {
