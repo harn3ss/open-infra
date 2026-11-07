@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # STS refuses an AssumeRole the role's trust policy does not admit, as AWS does.
 #
-# An administrator (AdministratorAccess) creates two throwaway roles through the IAM API: one whose trust
-# policy names only a made-up user, one whose trust names the caller. The caller is a throwaway User whose
-# policy allows sts:AssumeRole on every role. Through the real AWS CLI it is:
-#   - refused, with AccessDenied, assuming the role whose trust does not name it;
-#   - given credentials for the role whose trust names it, and is that role (GetCallerIdentity).
+# An administrator (AdministratorAccess) creates three throwaway roles through the IAM API: one whose trust
+# policy names only a made-up user, one whose trust names the caller, and one whose trust names the account
+# (its root), which delegates the decision to the account's own policies. The caller is a throwaway User
+# whose policy allows sts:AssumeRole on every role; a second User has no policy. Through the real AWS CLI:
+#   - the caller is refused, with AccessDenied, the role whose trust does not name it;
+#   - the caller is given credentials for the role whose trust names it, and is that role (GetCallerIdentity);
+#   - the User with no policy is refused, with AccessDenied, the role whose trust names only the account, as
+#     AWS requires the caller's own policy to allow sts:AssumeRole there; the caller, whose policy does, is not.
 # The roles are deleted on exit.
 #
 # Needs IAM policy to decide for the principals (IAM_AUTHZ=enforce, or shadow with PRINCIPAL_MODE=canary).
@@ -30,10 +33,13 @@ kubectl -n "$USERS_NS" get policies.iam.openinfra.dev aws-administratoraccess >/
   || inconclusive "managed policy aws-administratoraccess is not installed (platform/abstraction/managed-policies)"
 ADMIN="sts-deny-admin-$SFX"
 CALLER="sts-deny-caller-$SFX"
+NOPOL="sts-deny-nopolicy-$SFX"
 iamp_user "$ADMIN" aws-administratoraccess ""
 A_AK="$U_AK"; A_SK="$U_SK"
 iamp_user "$CALLER" "" '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole","Resource":"*"}]}'
 C_AK="$U_AK"; C_SK="$U_SK"
+iamp_user "$NOPOL" "" ""
+N_AK="$U_AK"; N_SK="$U_SK"
 iamp_settle
 
 as() { # <ak> <sk> <aws args…>
@@ -45,6 +51,7 @@ trust() { printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Princi
 
 UNTRUSTED="sts-deny-other-$SFX"
 TRUSTED="sts-deny-mine-$SFX"
+DELEGATED="sts-deny-account-$SFX"
 as "$A_AK" "$A_SK" iam create-role --role-name "$UNTRUSTED" \
   --assume-role-policy-document "$(trust "arn:aws:iam::$ACCOUNT:user/nobody-$SFX")" >/dev/null 2>"$PROBE_TMP/err" \
   || inconclusive "the administrator could not create a role: $(head -c 300 "$PROBE_TMP/err")"
@@ -53,6 +60,10 @@ as "$A_AK" "$A_SK" iam create-role --role-name "$TRUSTED" \
   --assume-role-policy-document "$(trust "arn:aws:iam::$ACCOUNT:user/$CALLER")" >/dev/null 2>"$PROBE_TMP/err" \
   || inconclusive "the administrator could not create a role: $(head -c 300 "$PROBE_TMP/err")"
 ROLES+=("$TRUSTED")
+as "$A_AK" "$A_SK" iam create-role --role-name "$DELEGATED" \
+  --assume-role-policy-document "$(trust "arn:aws:iam::$ACCOUNT:root")" >/dev/null 2>"$PROBE_TMP/err" \
+  || inconclusive "the administrator could not create a role: $(head -c 300 "$PROBE_TMP/err")"
+ROLES+=("$DELEGATED")
 sleep "$IAM_SETTLE_SECONDS"   # the shim's policy world picks the roles up
 
 d="$(shim_decision "$C_AK" "$C_SK" sts assume-role --role-arn "arn:aws:iam::$ACCOUNT:role/$UNTRUSTED" --role-session-name probe)"
@@ -70,4 +81,12 @@ case "$WHO" in
   "arn:aws:sts::$ACCOUNT:assumed-role/$TRUSTED/probe") log "  ✓ assume a role whose trust names the caller: $WHO" ;;
   *) fail "the assumed role's identity is '$WHO', want arn:aws:sts::$ACCOUNT:assumed-role/$TRUSTED/probe ($(head -c 200 "$PROBE_TMP/err"))" ;;
 esac
-log "PASS: STS assumes a role only for a caller its trust policy admits"
+d="$(shim_decision "$N_AK" "$N_SK" sts assume-role --role-arn "arn:aws:iam::$ACCOUNT:role/$DELEGATED" --role-session-name probe)"
+decided "$d"
+[ "$d" = deny ] || fail "a role whose trust names only the account was assumed by a User whose policy does not allow sts:AssumeRole"
+grep -q AccessDenied "$PROBE_TMP/s.err" || fail "the delegated AssumeRole was refused, but not with AccessDenied: $(head -c 300 "$PROBE_TMP/s.err")"
+log "  ✓ assume a role whose trust names the account, with no policy allowing it: AccessDenied"
+as "$C_AK" "$C_SK" sts assume-role --role-arn "arn:aws:iam::$ACCOUNT:role/$DELEGATED" --role-session-name probe \
+  >/dev/null 2>"$PROBE_TMP/err" || fail "a role whose trust names the account was refused to a User whose policy allows sts:AssumeRole: $(head -c 300 "$PROBE_TMP/err")"
+log "  ✓ assume a role whose trust names the account, with a policy allowing it"
+log "PASS: STS assumes a role only for a caller its trust policy admits and, where the trust names the account, its own policy allows"

@@ -595,7 +595,7 @@ func run(logger *slog.Logger) error {
 		"s3": newS3Handler(cs, mc, dyn, kc.Config, authzNS, authzChecker, logger,
 			splitSuffixes(getenv("S3_INTERNAL_VHOST_SUFFIXES", ""), getenv("S3_VHOST_SUFFIXES", ""))),
 		"sts": &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID,
-			functions: fnIdentities, applications: appIdentities, accounts: acctDir, logger: logger,
+			functions: fnIdentities, applications: appIdentities, accounts: acctDir, authz: authzChecker, logger: logger,
 			mfa: &shimMFA{store: mfa.Store{CS: cs, NS: keysNS}, dyn: dyn, usersNS: usersNS, account: account, homes: acctDir, logger: logger}},
 		"lambda":          lambdaH,
 		"appsync":         appsyncH,

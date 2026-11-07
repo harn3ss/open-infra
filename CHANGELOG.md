@@ -29,6 +29,11 @@ the product's public contract.
   account's `AdministratorAccess` used to reach its own namespaces' raw objects. A member account's root
   is its account's root user, never the console's break-glass identity: it no longer reaches requests no
   IAM action maps, nor watches the whole cluster.
+- **`AssumeRole` asks the caller's own policy where AWS does.** A role whose trust names only an account
+  (`arn:aws:iam::<account>:root`, as OrganizationAccountAccessRole's does) is assumed only by a principal
+  whose own policy allows `sts:AssumeRole` on it, and a role in another account only with that permission
+  whatever its trust names; an explicit Deny refuses it everywhere. The trust alone used to decide, so
+  any user of a trusted account could assume such a role.
 - **The customer surface, inventoried.** [`docs/customer-surface.md`](docs/customer-surface.md) lists every
   resource type, property, console route, console screen and AWS API a customer can reach, each AWS-shaped,
   a platform extra, or the operator's alone, generated from the code. CI fails when a capability has no

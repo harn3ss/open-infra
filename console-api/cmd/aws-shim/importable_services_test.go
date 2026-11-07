@@ -39,6 +39,7 @@ var notImportable = map[string]string{
 var dynamicResourceTypes = map[string][]string{
 	"iam.go":                 {"Role", "User", "Policy", "ARN"},
 	"iam_instanceprofile.go": {"ARN", "Role"},
+	"sts.go":                 {"ARN"},
 	"cloudfront_read.go":     {"CachePolicy", "OriginRequestPolicy", "ResponseHeadersPolicy", "OriginAccessControl", "OriginAccessIdentity"},
 	"glue.go":                {"Database", "Table"},
 	"athena.go":              {"WorkGroup", "Table"},

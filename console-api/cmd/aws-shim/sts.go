@@ -12,6 +12,7 @@ import (
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 )
@@ -119,7 +120,12 @@ type stsHandler struct {
 	accounts accountHomes
 	// mfa verifies an IAM user's MFA code (GetSessionToken's and AssumeRole's SerialNumber + TokenCode);
 	// nil refuses every code.
-	mfa    mfaChecker
+	mfa mfaChecker
+	// authz decides the caller's own IAM policy for sts:AssumeRole, which AWS requires whenever the role's
+	// trust delegates to the caller's account (its root) or the role is another account's. A nil checker
+	// has no IAM policy world: the management account's callers are decided by the trust alone, as before
+	// IAM policy, and a member account's caller is refused wherever its own policy must allow.
+	authz  *dataplaneauthz.Checker
 	logger *slog.Logger
 }
 
@@ -260,6 +266,10 @@ func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims i
 				who.String()+" is not authorized to perform: sts:AssumeRole on resource: "+h.identIn(roleAcct).IAMARN("role/"+roleName)+" ("+why+")", stsXMLNamespace)
 			return
 		}
+	}
+	if ok, why := h.identityAllows(r, claims, mfaCtx, who, role.trust, roleAcct, roleName); !ok {
+		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, why, stsXMLNamespace)
+		return
 	}
 	ttl, bad := sessionDuration(r, role, claims.AssumedRole != "")
 	if bad != "" {
@@ -495,6 +505,42 @@ func trustedFrom(c trustCaller, trust []string, roleAccount string) bool {
 		}
 	}
 	return trusted(c, cross)
+}
+
+// trustNamesCaller reports whether a role's trust names the caller itself — its user, its role, or "*" —
+// rather than only its account's root, which delegates the decision to the account's own policies.
+func trustNamesCaller(c trustCaller, trust []string) bool {
+	var named []string
+	for _, t := range trust {
+		if strings.HasPrefix(t, "arn:") && strings.HasSuffix(t, ":root") {
+			continue
+		}
+		named = append(named, t)
+	}
+	return trusted(c, named)
+}
+
+// identityAllows is the caller's own side of sts:AssumeRole, as AWS evaluates it; the role's trust, its
+// resource policy, was decided before. Within one account, a trust naming the caller itself grants the
+// assume on its own, and only an explicit Deny in the caller's policies refuses it. A trust naming the
+// caller's account (arn:aws:iam::<account>:root) delegates to that account: its policies must allow
+// sts:AssumeRole on the role. Another account's role always needs both the trust and the caller's policy.
+func (h *stsHandler) identityAllows(r *http.Request, claims iam.Claims, mfaCtx *iam.MFAContext, who trustCaller,
+	trust []string, roleAcct, roleName string) (bool, string) {
+	c := claims
+	c.MFA = mfaCtx
+	callerAcct := h.callerAccount(claims)
+	// The caller's policies alone, in its own account: the resource's side is the trust, already decided.
+	// Before IAM policy decides (legacy, shadow) the trust alone decided, so legacy's answer is an allow.
+	d := decision(r.Context(), r, h.authz, c, "sts:AssumeRole", arnType, h.identIn(roleAcct).IAMARN("role/"+roleName),
+		func() (bool, string) { return true, "" }, iamauthz.WithResourceAccount(callerAcct))
+	if callerAcct == roleAcct && trustNamesCaller(who, trust) {
+		if d.ExplicitDeny {
+			return false, d.Reason
+		}
+		return true, ""
+	}
+	return d.Allowed, d.Reason
 }
 
 // trustedARN reports whether an ARN trust entry names the caller: its account's root (every principal of

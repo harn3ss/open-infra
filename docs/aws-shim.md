@@ -163,8 +163,8 @@ accounts is the management account's), an assumed-role session the account of th
 live in its home namespace — its `bob` is never the management account's `bob` — and a member account's
 principal is decided by IAM policy whatever `IAM_AUTHZ` says. `AssumeRole` into another account's role (its
 `RoleArn` names the account) needs the role's trust to name the caller (`arn:aws:iam::<account>:root`,
-`…:user/<name>`, `…:role/<name>`); a resource in another account needs both the caller's identity policy and
-the resource's own policy, as on AWS. A principal of a suspended account does not authenticate.
+`…:user/<name>`, `…:role/<name>`) and the caller's own policy to allow `sts:AssumeRole` on the role; a
+resource in another account needs both the caller's identity policy and the resource's own policy, as on AWS. A principal of a suspended account does not authenticate.
 
 ### The credential store
 
@@ -479,7 +479,11 @@ instance principal, matched only by the instance credentials path), `Service::<s
 `spec.assumeRole`, presenting a token of one of its own pods — [task roles](iam.md#task-roles-applications) —
 and `Service::states.amazonaws.com` only for a state machine's executions), or `"*"` (any authenticated
 principal). An IAM `CreateRole` trust policy maps a user ARN to the user's name and a role ARN to
-`Role::<name>`, and takes `MaxSessionDuration`. Later requests signed with the
+`Role::<name>`, and takes `MaxSessionDuration`. The trust is the role's resource policy, and the caller's
+own policy is decided beside it, as on AWS: a trust that names the caller (or `"*"`) in the caller's own
+account admits it unless the caller's policy explicitly denies `sts:AssumeRole`; a trust that names only the
+account (`arn:aws:iam::<account>:root`) delegates to the account, whose policy must allow `sts:AssumeRole`
+on the role; and another account's role needs the caller's policy to allow it whatever its trust names. Later requests signed with the
 temporary credential and carrying the `SessionToken` are then authorized as principal type `Role`,
 so the Role's `kind: Policy` data-plane blocks govern the session — one policy world, no parallel
 authz.

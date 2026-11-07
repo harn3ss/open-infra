@@ -26,6 +26,9 @@ var SupportedServices = map[string]bool{
 	"iam": true, "states": true, "cloudformation": true, "appsync": true, "acm": true,
 	"cognito-idp": true, "glue": true, "athena": true, "eks": true, "events": true,
 	"servicequotas": true,
+	// sts: sts:AssumeRole on a role's ARN, which the caller's own policy must allow when the role's trust
+	// names only the caller's account (its root) or the role is another account's.
+	"sts": true,
 }
 
 // SupportedActions are the actions of a service the aws-shim enforces only in part: just these import
