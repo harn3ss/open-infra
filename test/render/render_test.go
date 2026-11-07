@@ -2628,7 +2628,7 @@ func TestAssumeRole_TrustBindingCondition(t *testing.T) {
 			}
 		}
 		// It must request the role via ExtraResources, keyed by the app's claim labels.
-		if !strings.Contains(out, "kind: ExtraResources") || !strings.Contains(out, "crossplane.io/claim-name: myrole") {
+		if !strings.Contains(out, "kind: ExtraResources") || !strings.Contains(out, `crossplane.io/claim-name: "myrole"`) {
 			t.Errorf("must fetch the assumed role via ExtraResources by claim label; got:\n%s", grepCtx(out, "ExtraResources"))
 		}
 		// The rail: it must NEVER write/mutate the Role. The only XRole reference allowed is
@@ -2644,6 +2644,27 @@ func TestAssumeRole_TrustBindingCondition(t *testing.T) {
 		out := render(t, tmpl, appCtx("myrole", roleExtra(saPrincipal)))
 		if strings.Contains(out, "RoleTrustsWorkload") {
 			t.Errorf("a role that trusts the app's SA must NOT raise a condition; got:\n%s", grepCtx(out, "RoleTrustsWorkload"))
+		}
+	})
+
+	// The ECS task-role trust (ecs-tasks.amazonaws.com) admits the app that names the role: no condition.
+	t.Run("ecs-tasks trust emits no condition", func(t *testing.T) {
+		out := render(t, tmpl, appCtx("myrole", roleExtra("Service::ecs-tasks.amazonaws.com")))
+		if strings.Contains(out, "RoleTrustsWorkload") {
+			t.Errorf("a role trusting ecs-tasks.amazonaws.com must NOT raise a condition; got:\n%s", grepCtx(out, "RoleTrustsWorkload"))
+		}
+		// Another service's trust does not admit the app.
+		out = render(t, tmpl, appCtx("myrole", roleExtra("Service::lambda.amazonaws.com")))
+		if !strings.Contains(out, "type: RoleTrustsWorkload") || !strings.Contains(out, "Service::ecs-tasks.amazonaws.com") {
+			t.Errorf("a role trusting only Lambda must warn and name the ECS task-role trust; got:\n%s", grepCtx(out, "RoleTrustsWorkload"))
+		}
+	})
+
+	// A role ARN (mixed case) is looked up by its object name: the ARN's last segment, lower-cased.
+	t.Run("an ARN is looked up by the role's object name", func(t *testing.T) {
+		out := render(t, tmpl, appCtx("arn:aws:iam::000000000000:role/team/MyRole", nil))
+		if !strings.Contains(out, `crossplane.io/claim-name: "myrole"`) {
+			t.Errorf("an ARN must be looked up as its role's object name; got:\n%s", grepCtx(out, "claim-name"))
 		}
 	})
 

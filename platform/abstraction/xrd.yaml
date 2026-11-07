@@ -130,13 +130,19 @@ spec:
                     in this subnet" model. Omit to use the namespace's default network.
                 assumeRole:
                   type: string
+                  maxLength: 2048
+                  # A role name (AWS's role-name characters, at most 64), or a role ARN
+                  # (arn:aws:iam::<12-digit account>:role/[<path>/]<name>), as an ECS task's TaskRoleArn takes it.
+                  pattern: '^(arn:aws(-[a-z]+)*:iam::[0-9]{12}:role/([A-Za-z0-9+=,.@_-]+/)*)?[A-Za-z0-9+=,.@_-]{1,64}$'
                   description: >-
-                    Name of a kind: Role this app runs as (workload identity, IRSA-shaped). The app
-                    gets a dedicated ServiceAccount and a projected token; the AWS SDK exchanges it
-                    for the role's temporary credentials via sts:AssumeRoleWithWebIdentity on the
-                    aws-shim — no static keys. The role's spec.trust MUST name
-                    system:serviceaccount:<this-namespace>:<this-app-name>. Requires the aws-shim
-                    with assume-role enabled.
+                    The app's task role (an ECS task's TaskRoleArn): the name or ARN of a kind: Role of
+                    the app's own account. The app's code runs with that role's temporary credentials —
+                    its AWS SDK finds them with no keys configured (workload identity: a dedicated
+                    ServiceAccount, a projected token, sts:AssumeRoleWithWebIdentity on the aws-shim) —
+                    so its calls are exactly as authorized as the role's policies. The role's trust
+                    policy must name ecs-tasks.amazonaws.com (or this app's identity,
+                    system:serviceaccount:<namespace>:<name>). Naming a role needs iam:PassRole on it.
+                    Requires the aws-shim with assume-role enabled.
                 expose:
                   type: boolean
                   default: false

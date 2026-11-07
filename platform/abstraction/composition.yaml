@@ -47,17 +47,50 @@ spec:
             {{- $hpaMax := int ($scaling.max | default 5) }}
             {{- $hpaRendered := gt $hpaMax $hpaMin }}
             {{- $quota := $spec.quota | default dict }}
-            {{- /* assumeRole (#111 workload identity, IRSA-shaped): the app runs under a dedicated
-                   ServiceAccount, projects an SA token, and the AWS SDK exchanges it for the role's
-                   temporary credentials via sts:AssumeRoleWithWebIdentity on the shim. The role's
-                   trust must name system:serviceaccount:<ns>:<name>. */}}
+            {{- /* assumeRole (#111 workload identity, IRSA-shaped): the app's task role, an ECS task's
+                   TaskRoleArn. The app runs under a dedicated ServiceAccount, projects an SA token, and
+                   the AWS SDK exchanges it for the role's temporary credentials via
+                   sts:AssumeRoleWithWebIdentity on the aws-shim — no static keys. The aws-shim mints them
+                   for this app's own pods (a pod of its Deployment, as its ServiceAccount) when the role
+                   trusts ecs-tasks.amazonaws.com and this claim names it, or when the role's trust names
+                   system:serviceaccount:<ns>:<name> itself. AWS_ROLE_ARN is the role's ARN in the app's
+                   account: an ARN as given, a name in the account of the app's namespace (its kind:
+                   Account, else the install's own — the openinfra-aws-identity EnvironmentConfig), both
+                   read as extra resources. Unset, nothing below renders and the app renders exactly as
+                   before. */}}
             {{- $assume := $spec.assumeRole | default "" }}
             {{- /* The workload ServiceAccount is named after the app, and vm-<x> is a VirtualMachine's own
                    identity (vm-composition.yaml): an app of that name would run as the VM's
                    ServiceAccount, fight over it, and hold a token for it. The prefix is reserved. */}}
             {{- if and $assume (hasPrefix "vm-" $name) }}{{- fail (printf "kind: Application %s/%s: an app named vm-* cannot use assumeRole (ServiceAccounts named vm-<name> are VirtualMachine identities); rename the app" $ns $name) }}{{- end }}
-            {{- $stsEndpoint := "http://open-infra-aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }}
             {{- $stsAudience := "sts.openinfra" }}
+            {{- $shimEndpoint := "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }}
+            {{- $appRoleArn := "" }}
+            {{- $appRegion := "us-east-1" }}
+            {{- /* The kind: Role's object name: the role name, or a role ARN's last path segment,
+                   lower-cased (an AWS role name is mixed case; its kind: Role is the lower-cased name). */}}
+            {{- $appRoleObj := "" }}
+            {{- if $assume }}
+            {{-   $xres := .extraResources | default dict }}
+            {{-   $appAcct := "000000000000" }}
+            {{-   range $i := (((index $xres "aws-identity") | default dict).items | default list) }}
+            {{-     $d := $i.resource.data | default dict }}
+            {{-     $appAcct = (index $d "awsAccountId") | default $appAcct }}
+            {{-     $appRegion = (index $d "awsRegion") | default $appRegion }}
+            {{-   end }}
+            {{-   range $a := (((index $xres "accounts") | default dict).items | default list) }}
+            {{-     $as := $a.resource.spec | default dict }}
+            {{-     if has $ns ($as.namespaces | default list) }}{{- $appAcct = $as.accountId }}{{- end }}
+            {{-   end }}
+            {{-   if hasPrefix "arn:" $assume }}
+            {{-     $appRoleArn = $assume }}
+            {{-     $arnAcct := index (splitList ":" $assume) 4 }}
+            {{-     if and (hasKey $xres "aws-identity") (ne $arnAcct $appAcct) }}{{- fail (printf "kind: Application %s/%s: the task role (assumeRole) %s is a role of account %s; an application's role must be a role of its own account (%s)" $ns $name $assume $arnAcct $appAcct) }}{{- end }}
+            {{-   else }}
+            {{-     $appRoleArn = printf "arn:aws:iam::%s:role/%s" $appAcct $assume }}
+            {{-   end }}
+            {{-   $appRoleObj = lower (regexReplaceAll "^.*/" $assume "") }}
+            {{- end }}
             {{- /* database.engine: postgres (CloudNativePG) or mongo (FerretDB on
                    the DocumentDB-Postgres extension). dbPass is derived from the
                    composite UID so it's stable across reconciles (never committed). */}}
@@ -287,14 +320,19 @@ spec:
                             {{- if or $spec.env $spec.database $spec.queues $assume }}
                             env:
                             {{- if $assume }}
-                              # Workload identity: the AWS SDK's web-identity provider reads these and
-                              # calls sts:AssumeRoleWithWebIdentity on the shim, exchanging the projected
-                              # SA token for the role's temporary credentials — no static keys.
-                              - { name: AWS_ROLE_ARN, value: "arn:openinfra:iam::open-infra:role/{{ $assume }}" }
+                              # Task role (workload identity): the AWS SDK's web-identity provider reads these
+                              # and calls sts:AssumeRoleWithWebIdentity on the aws-shim with the app's projected
+                              # token, for the role's temporary credentials — no static keys. The session is
+                              # named after the pod (assumed-role/<role>/<pod>, as ECS names a task role's
+                              # session after the task), and every AWS call goes to the aws-shim, where the
+                              # credentials are valid.
+                              - { name: AWS_ROLE_ARN, value: {{ $appRoleArn | toJson }} }
+                              - { name: AWS_ROLE_SESSION_NAME, valueFrom: { fieldRef: { fieldPath: metadata.name } } }
                               - { name: AWS_WEB_IDENTITY_TOKEN_FILE, value: "/var/run/secrets/openinfra/token" }
-                              - { name: AWS_ENDPOINT_URL_STS, value: "{{ $stsEndpoint }}" }
-                              - { name: AWS_ENDPOINT_URL, value: "{{ $stsEndpoint }}" }
-                              - { name: AWS_REGION, value: "us-east-1" }
+                              - { name: AWS_ENDPOINT_URL_STS, value: "{{ $shimEndpoint }}" }
+                              - { name: AWS_ENDPOINT_URL, value: "{{ $shimEndpoint }}" }
+                              - { name: AWS_REGION, value: "{{ $appRegion }}" }
+                              - { name: AWS_DEFAULT_REGION, value: "{{ $appRegion }}" }
                             {{- end }}
                             {{- range $spec.env }}
                               - { name: {{ .name }}, value: {{ .value | toJson }} }
@@ -413,8 +451,11 @@ spec:
                         {{- end }}
             {{- if $assume }}
             ---
-            # --- Workload-identity ServiceAccount (assumeRole): the pod runs as this SA; the
-            #     assumed role's trust policy must name system:serviceaccount:<ns>:<name>. ---
+            # --- Workload-identity ServiceAccount (assumeRole): the pod runs as this SA. The aws-shim
+            #     hands the task role's credentials to a pod of this app's Deployment running as it (it
+            #     checks the token's pod, the pod's ReplicaSet and Deployment, and this ServiceAccount's
+            #     openinfra.dev/application label) when the role trusts ecs-tasks.amazonaws.com, or to any
+            #     pod running as it when the role's trust names system:serviceaccount:<ns>:<name>. ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -428,34 +469,46 @@ spec:
                   metadata:
                     name: {{ $name }}
                     namespace: {{ $ns }}
-                    labels: { app.kubernetes.io/name: {{ $name }} }
-            {{- /* assumeRole trust binding (#111 §2 — the IRSA trust gap): the pod's workload
-                   identity is the SA principal system:serviceaccount:<ns>:<name>, which the
-                   assumed role's spec.trust MUST name (or "*") for sts:AssumeRoleWithWebIdentity
-                   to succeed. We READ the role's trust and, if it does not admit this app, surface
-                   a warning condition on the Application naming the exact principal to add. We
-                   NEVER mutate the role — trust stays admin-managed (the rail). Fetch the
-                   cluster-scoped XRole composite (it mirrors the Role claim's spec.trust) by its
-                   claim labels; on the first reconcile before it is observed, nothing is emitted
-                   (no false warning), so an app whose role already trusts it — or that has no
-                   assumeRole — renders exactly as before. */}}
+                    labels: { app.kubernetes.io/name: {{ $name }}, openinfra.dev/application: {{ $name }} }
+            {{- /* assumeRole trust binding (#111 §2 — the IRSA trust gap): the role's spec.trust MUST
+                   name ecs-tasks.amazonaws.com (the ECS task-role trust), the app's SA principal
+                   system:serviceaccount:<ns>:<name>, or "*" for sts:AssumeRoleWithWebIdentity to
+                   succeed. We READ the role's trust and, if it admits none of them, surface a warning
+                   condition on the Application naming the exact fix. We NEVER mutate the role — trust
+                   stays admin-managed (the rail). Fetch the cluster-scoped XRole composite (it mirrors
+                   the Role claim's spec.trust) beside the app, by its claim labels — the role the
+                   aws-shim finds first; on the first reconcile before it is observed, and for a role of
+                   the account's IAM home, nothing is emitted (no false warning). The same request reads
+                   the account and region for the role's ARN (above). */}}
             ---
             apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
             kind: ExtraResources
             requirements:
+              {{- if regexMatch "^[a-z0-9]([-a-z0-9.]{0,61}[a-z0-9])?$" $appRoleObj }}
               assumed-role:
                 apiVersion: iam.openinfra.dev/v1
                 kind: XRole
                 matchLabels:
-                  crossplane.io/claim-name: {{ $assume }}
+                  crossplane.io/claim-name: {{ $appRoleObj | quote }}
                   crossplane.io/claim-namespace: {{ $ns }}
+              {{- end }}
+              # The account the app's namespace belongs to (the kind: Account that lists it, else the
+              # install's own account) and the install's region, for the role's ARN. Read-only.
+              aws-identity:
+                apiVersion: apiextensions.crossplane.io/v1alpha1
+                kind: EnvironmentConfig
+                matchName: openinfra-aws-identity
+              accounts:
+                apiVersion: organizations.openinfra.dev/v1
+                kind: Account
+                matchLabels: {}
             {{- $saPrincipal := printf "system:serviceaccount:%s:%s" $ns $name }}
             {{- $roleReq := index (.extraResources | default dict) "assumed-role" }}
             {{- $roleItems := list }}
             {{- if $roleReq }}{{ $roleItems = ($roleReq.items | default list) }}{{- end }}
             {{- if $roleItems }}
             {{- $trust := ((index $roleItems 0).resource.spec.trust) | default list }}
-            {{- if not (or (has "*" $trust) (has $saPrincipal $trust)) }}
+            {{- if not (or (has "*" $trust) (has $saPrincipal $trust) (has "Service::ecs-tasks.amazonaws.com" $trust)) }}
             ---
             # The assumed role does NOT trust this app's workload identity. Surface it as an
             # Application condition (RoleTrustsWorkload=False) that names the exact fix. The role
@@ -469,7 +522,8 @@ spec:
                   reason: RoleMissingWorkloadTrust
                   message: >-
                     Role "{{ $assume }}" does not trust this app's workload identity. Add
-                    "{{ $saPrincipal }}" to Role "{{ $assume }}" spec.trust (or "*") so
+                    "Service::ecs-tasks.amazonaws.com" (the ECS task-role trust) or
+                    "{{ $saPrincipal }}" to Role "{{ $assume }}" spec.trust so
                     sts:AssumeRoleWithWebIdentity can succeed. Trust is admin-managed; it is
                     not modified automatically.
             {{- end }}

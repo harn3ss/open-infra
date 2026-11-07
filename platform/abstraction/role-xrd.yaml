@@ -105,7 +105,9 @@ spec:
                     credentials from the instance metadata service, no static keys). "Service::<service>"
                     names an AWS service principal: "Service::lambda.amazonaws.com" makes the role a
                     Lambda execution role, assumable by a kind: Function that names it as its spec.role;
-                    "Service::states.amazonaws.com" a state machine's. A role with no
+                    "Service::ecs-tasks.amazonaws.com" an ECS task role, assumable by a kind: Application
+                    that names it as its spec.assumeRole; "Service::states.amazonaws.com" a state
+                    machine's. A role with no
                     trust entries cannot be assumed by anyone (fail closed), exactly as an AWS role
                     needs a trust policy. An assumed session acts with the role's attached policies.
                   items:

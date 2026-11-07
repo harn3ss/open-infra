@@ -156,7 +156,10 @@ type liveCounts struct {
 
 // liveComposite turns an exported object into the composite the composition is called with: an XFunction
 // as it is; a Function claim given the claim labels its composite carries.
-func liveComposite(o any) (map[string]any, bool) {
+func liveComposite(o any) (map[string]any, bool) { return liveCompositeOf(o, "XFunction", "Function") }
+
+// liveCompositeOf is liveComposite for any composite kind and its claim kind.
+func liveCompositeOf(o any, xrKind, claimKind string) (map[string]any, bool) {
 	m, ok := o.(map[string]any)
 	if !ok {
 		return nil, false
@@ -166,9 +169,9 @@ func liveComposite(o any) (map[string]any, bool) {
 		return nil, false
 	}
 	switch m["kind"] {
-	case "XFunction":
+	case xrKind:
 		return m, true
-	case "Function":
+	case claimKind:
 		labels := map[string]any{}
 		if l, ok := md["labels"].(map[string]any); ok {
 			for k, v := range l {
@@ -186,7 +189,7 @@ func liveComposite(o any) (map[string]any, bool) {
 		for k, v := range m {
 			xr[k] = v
 		}
-		xr["kind"], xr["metadata"] = "XFunction", xmd
+		xr["kind"], xr["metadata"] = xrKind, xmd
 		return xr, true
 	}
 	return nil, false
