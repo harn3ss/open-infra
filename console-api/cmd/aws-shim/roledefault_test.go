@@ -388,6 +388,118 @@ func roleDoorCases() []roleDoorCase {
 				defer cancel()
 				return serveWith(h, httptest.NewRequest(http.MethodGet, "http://shim/", nil).WithContext(ctx), c)
 			}},
+		// --- SES v2 (signing name email; the same handler and actions as v1, under /v2/email/) ---
+		{door: "email", op: "GetAccount", action: "ses:GetAccount", resType: "Identity", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newSESHandler(csWithSAR(true), "default", "127.0.0.1:1", a, discardLogger())
+				return serveWith(h, httptest.NewRequest(http.MethodGet, "http://shim/v2/email/account", nil), c)
+			}},
+		// Authorized before anything else, as on AWS: an authorized call then ends at "not served".
+		{door: "email", op: "GetEmailIdentity", action: "ses:GetEmailIdentity", resType: "Identity", resName: "ops@example.com", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newSESHandler(csWithSAR(true), "default", "127.0.0.1:1", a, discardLogger())
+				return serveWith(h, httptest.NewRequest(http.MethodGet, "http://shim/v2/email/identities/ops@example.com", nil), c)
+			}},
+		// --- ACM (a stack's certificates: no stacks here, so an authorized call finds none) ---
+		{door: "acm", op: "ListCertificates", action: "acm:ListCertificates", resType: "Certificate", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				door, _ := cfnTestDoorway(t, "")
+				door.authz = a
+				return serveWith(newACMHandler(door, discardLogger()), jsonOp("CertificateManager.ListCertificates", `{}`), c)
+			}},
+		{door: "acm", op: "DescribeCertificate", action: "acm:DescribeCertificate", resType: "Certificate", resName: "0a1b2c3d", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				door, _ := cfnTestDoorway(t, "")
+				door.authz = a
+				return serveWith(newACMHandler(door, discardLogger()), jsonOp("CertificateManager.DescribeCertificate",
+					`{"CertificateArn":"arn:aws:acm:us-east-1:000000000000:certificate/0a1b2c3d"}`), c)
+			}},
+		// --- CloudFront (a stack's distributions) ---
+		{door: "cloudfront", op: "ListDistributions", action: "cloudfront:ListDistributions", resType: "Distribution", denyCode: "AccessDenied",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				door, _ := cfnTestDoorway(t, "")
+				door.authz = a
+				return serveWith(newCloudFrontHandler(door, discardLogger()), httptest.NewRequest(http.MethodGet, "http://shim/2020-05-31/distribution", nil), c)
+			}},
+		{door: "cloudfront", op: "CreateInvalidation", action: "cloudfront:CreateInvalidation", resType: "Distribution", resName: "E1ABCDEF", denyCode: "AccessDenied",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				door, _ := cfnTestDoorway(t, "")
+				door.authz = a
+				return serveWith(newCloudFrontHandler(door, discardLogger()),
+					httptest.NewRequest(http.MethodPost, "http://shim/2020-05-31/distribution/E1ABCDEF/invalidation", nil), c)
+			}},
+		// --- ECR (the control plane; the registry's own token realm is ecr_role_test.go's) ---
+		{door: "ecr", op: "DescribeRepositories", action: "ecr:DescribeRepositories", resType: "Repository", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newECRTestHandler(csWithSAR(true), "")
+				h.authz = a
+				return serveWith(h, ecrRequest("DescribeRepositories", `{}`), c)
+			}},
+		{door: "ecr", op: "CreateRepository", action: "ecr:CreateRepository", resType: "Repository", resName: "app", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newECRTestHandler(csWithSAR(true), "")
+				h.authz = a
+				return serveWith(h, ecrRequest("CreateRepository", `{"repositoryName":"app"}`), c)
+			}},
+		// --- EKS (every operation is on the one cluster the shim fronts) ---
+		{door: "eks", op: "DescribeCluster", action: "eks:DescribeCluster", resType: "Cluster", resName: "open-infra", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newEKSTestHandler(true)
+				h.authz = a
+				return serveWith(h, eksReq(http.MethodGet, "/clusters/open-infra"), c)
+			}},
+		// --- Lambda ---
+		// DryRun is authorized exactly as an invoke and then returns, before any upstream call.
+		{door: "lambda", op: "Invoke(DryRun)", action: "lambda:InvokeFunction", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.authz = a
+				req := httptest.NewRequest(http.MethodPost, "http://shim/2015-03-31/functions/orders/invocations", nil)
+				req.Header.Set("X-Amz-Invocation-Type", "DryRun")
+				return serveWith(h, req, c)
+			}},
+		{door: "lambda", op: "ListFunctions", action: "lambda:ListFunctions", resType: "Function", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, httptest.NewRequest(http.MethodGet, "http://shim/2015-03-31/functions/", nil), c)
+			}},
+		{door: "lambda", op: "GetFunction", action: "lambda:GetFunction", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, httptest.NewRequest(http.MethodGet, "http://shim/2015-03-31/functions/orders", nil), c)
+			}},
+		// --- Organizations (the management account's; an operation that names no account is checked on
+		// Account::* for a User too, so a governed User without the grant is denied it) ---
+		// No cluster client here: an authorized call ends at "not available", after the gate.
+		{door: "organizations", op: "ListAccounts", action: "organizations:ListAccounts", resType: "Account", denyCode: "AccessDeniedException", userAlwaysChecked: true,
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newOrganizationsHandler(csWithSAR(true), nil, "default", a, orgMgmt, discardLogger())
+				return serveWith(h, jsonOp(organizationsTargetPrefix+"ListAccounts", `{}`), c)
+			}},
+		{door: "organizations", op: "DescribeAccount", action: "organizations:DescribeAccount", resType: "Account", resName: "912345678901", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newOrganizationsHandler(csWithSAR(true), nil, "default", a, orgMgmt, discardLogger())
+				return serveWith(h, jsonOp(organizationsTargetPrefix+"DescribeAccount", `{"AccountId":"912345678901"}`), c)
+			}},
+		// --- Service Quotas (the caller's own account's; a call that names no quota is checked on Quota::*
+		// for a User too) ---
+		{door: "servicequotas", op: "ListServices", action: "servicequotas:ListServices", resType: "Quota", denyCode: "AccessDeniedException", userAlwaysChecked: true,
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h, _ := sqTestHandler(t, true)
+				h.authz = a
+				return serveWith(h, jsonOp(serviceQuotasTargetPrefix+"ListServices", `{}`), c)
+			}},
+		{door: "servicequotas", op: "RequestServiceQuotaIncrease", action: "servicequotas:RequestServiceQuotaIncrease", resType: "Quota", resName: "lambda/L-B99A9384", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h, _ := sqTestHandler(t, true)
+				h.authz = a
+				return serveWith(h, jsonOp(serviceQuotasTargetPrefix+"RequestServiceQuotaIncrease",
+					`{"ServiceCode":"lambda","QuotaCode":"L-B99A9384","DesiredValue":2000}`), c)
+			}},
 	}
 }
 
