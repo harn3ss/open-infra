@@ -68,6 +68,26 @@ func (g *Registry) Lookup(method, path string) (Route, bool) {
 	return rt, ok
 }
 
+// PublicRoute is a route that needs no authorization, and why.
+type PublicRoute struct {
+	Method, Path, Reason string
+}
+
+// PublicRoutes returns every route recorded as public, sorted by method and path.
+func (g *Registry) PublicRoutes() []PublicRoute {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]PublicRoute, 0, len(g.public))
+	for k, why := range g.public {
+		m, p, _ := strings.Cut(k, " ")
+		out = append(out, PublicRoute{Method: m, Path: p, Reason: why})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return routeKey(out[i].Method, out[i].Path) < routeKey(out[j].Method, out[j].Path)
+	})
+	return out
+}
+
 // Routes returns every registered route, sorted by method and path.
 func (g *Registry) Routes() []Route {
 	g.mu.Lock()

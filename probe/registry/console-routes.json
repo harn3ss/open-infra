@@ -1,0 +1,842 @@
+{
+ "generatedBy": "console-api/cmd/server/route_registry_test.go (go test; UPDATE_REGISTRY=1 rewrites)",
+ "routes": [
+  {
+   "method": "DELETE",
+   "path": "/api/buckets/{bucket}",
+   "action": "s3:DeleteBucket",
+   "resource": "arn:aws:s3:::{bucket}"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/buckets/{bucket}/object",
+   "action": "s3:DeleteObject",
+   "resource": "arn:aws:s3:::{bucket}/{key}"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/iam/grants/{name}",
+   "action": "iam:DetachUserPolicy",
+   "resource": "*"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/iam/groups/{name}",
+   "action": "iam:DeleteGroup",
+   "resource": "arn:aws:iam::{account}:group/{name}"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/iam/policies/{name}",
+   "action": "iam:DeletePolicy",
+   "resource": "arn:aws:iam::{account}:policy/{name}"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/iam/roles/{name}",
+   "action": "iam:DeleteRole",
+   "resource": "arn:aws:iam::{account}:role/{name}"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/iam/users/{name}",
+   "action": "iam:DeleteUser",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/iam/users/{name}/access-keys/{id}",
+   "action": "iam:DeleteAccessKey",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/iam/users/{name}/mfa-devices",
+   "action": "iam:DeactivateMFADevice",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/iam/users/{name}/mfa-devices/pending",
+   "action": "iam:DeleteVirtualMFADevice",
+   "resource": "*"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/snapshots",
+   "action": "rds:DeleteDBSnapshot",
+   "resource": "arn:aws:rds:us-east-1:{account}:snapshot:{id}"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/vm-snapshots",
+   "action": "ec2:DeleteSnapshot",
+   "resource": "arn:aws:ec2:us-east-1:{account}:snapshot/{id}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/audit",
+   "action": "cloudtrail:LookupEvents",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/audit/integrity",
+   "action": "cloudtrail:GetTrailStatus",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/buckets",
+   "action": "s3:ListAllMyBuckets",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/buckets/{bucket}/object",
+   "action": "s3:GetObject",
+   "resource": "arn:aws:s3:::{bucket}/{key}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/buckets/{bucket}/objects",
+   "action": "s3:ListBucket",
+   "resource": "arn:aws:s3:::{bucket}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/ca",
+   "action": "acm-pca:ListCertificateAuthorities",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/catalog/tables",
+   "action": "glue:GetTables",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/compliance/attestation",
+   "action": "auditmanager:GetAssessment",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/compliance/classification",
+   "action": "macie2:GetFindingStatistics",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/cost",
+   "action": "ce:GetCostAndUsage",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/encryption/destructions",
+   "action": "kms:ListKeys",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/encryption/keys",
+   "action": "kms:ListKeys",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/functions/{namespace}/{name}/code",
+   "action": "lambda:GetFunction",
+   "resource": "arn:aws:lambda:us-east-1:{account}:function:{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/functions/{namespace}/{name}/routes",
+   "action": "lambda:GetFunction",
+   "resource": "arn:aws:lambda:us-east-1:{account}:function:{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/grafana/dashboards",
+   "action": "cloudwatch:ListDashboards",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/access-advisor",
+   "action": "iam:GetServiceLastAccessedDetails",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/access-review",
+   "action": "iam:GetCredentialReport",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/grants",
+   "action": "iam:ListAttachedUserPolicies",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/grants/{name}",
+   "action": "iam:ListAttachedUserPolicies",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/groups",
+   "action": "iam:ListGroups",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/groups/{name}",
+   "action": "iam:GetGroup",
+   "resource": "arn:aws:iam::{account}:group/{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/policies",
+   "action": "iam:ListPolicies",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/policies/{name}",
+   "action": "iam:GetPolicy",
+   "resource": "arn:aws:iam::{account}:policy/{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/policies/{name}/revision",
+   "action": "iam:GetPolicyVersion",
+   "resource": "arn:aws:iam::{account}:policy/{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/roles",
+   "action": "iam:ListRoles",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/roles/{name}",
+   "action": "iam:GetRole",
+   "resource": "arn:aws:iam::{account}:role/{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/users",
+   "action": "iam:ListUsers",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/users/{name}",
+   "action": "iam:GetUser",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/users/{name}/access-keys",
+   "action": "iam:ListAccessKeys",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/users/{name}/mfa-devices",
+   "action": "iam:ListMFADevices",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/jobs/{namespace}/{name}/logs",
+   "action": "logs:GetLogEvents",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/jobs/{namespace}/{name}/metrics",
+   "action": "cloudwatch:GetMetricData",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/lineage",
+   "action": "datazone:GetLineageNode",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/migrations/{namespace}/{name}/status",
+   "action": "dms:DescribeReplicationTasks",
+   "resource": "arn:aws:dms:us-east-1:{account}:task:{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/modelmonitors/{namespace}/{name}/report",
+   "action": "sagemaker:DescribeMonitoringSchedule",
+   "resource": "arn:aws:sagemaker:us-east-1:{account}:monitoring-schedule/{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/nodes/disk",
+   "action": "openinfra-operator:ListNodes",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/queries/{namespace}/{name}/result",
+   "action": "athena:GetQueryResults",
+   "resource": "arn:aws:athena:us-east-1:{account}:workgroup/primary"
+  },
+  {
+   "method": "GET",
+   "path": "/api/queues",
+   "action": "sqs:ListQueues",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/queues/{stream}/messages",
+   "action": "sqs:ReceiveMessage",
+   "resource": "arn:aws:sqs:us-east-1:{account}:{stream}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/replications/{namespace}/{name}/status",
+   "action": "dms:DescribeReplicationTasks",
+   "resource": "arn:aws:dms:us-east-1:{account}:task:{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/snapshots",
+   "action": "rds:DescribeDBSnapshots",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/vm-snapshots",
+   "action": "ec2:DescribeSnapshots",
+   "resource": "*"
+  },
+  {
+   "method": "PATCH",
+   "path": "/api/iam/groups/{name}",
+   "action": "iam:UpdateGroup",
+   "resource": "arn:aws:iam::{account}:group/{name}"
+  },
+  {
+   "method": "PATCH",
+   "path": "/api/iam/policies/{name}",
+   "action": "iam:CreatePolicyVersion",
+   "resource": "arn:aws:iam::{account}:policy/{name}"
+  },
+  {
+   "method": "PATCH",
+   "path": "/api/iam/roles/{name}",
+   "action": "iam:UpdateRole",
+   "resource": "arn:aws:iam::{account}:role/{name}"
+  },
+  {
+   "method": "PATCH",
+   "path": "/api/iam/users/{name}",
+   "action": "iam:UpdateUser",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  },
+  {
+   "method": "PATCH",
+   "path": "/api/iam/users/{name}/access-keys/{id}",
+   "action": "iam:UpdateAccessKey",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/buckets",
+   "action": "s3:CreateBucket",
+   "resource": "arn:aws:s3:::{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/ca/{namespace}/{name}/issue",
+   "action": "acm-pca:IssueCertificate",
+   "resource": "arn:aws:acm-pca:us-east-1:{account}:certificate-authority/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/ca/{namespace}/{name}/revoke",
+   "action": "acm-pca:RevokeCertificate",
+   "resource": "arn:aws:acm-pca:us-east-1:{account}:certificate-authority/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/databases/{namespace}/{name}/backtrack",
+   "action": "rds:BacktrackDBCluster",
+   "resource": "arn:aws:rds:us-east-1:{account}:cluster:{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/databases/{namespace}/{name}/snapshot",
+   "action": "rds:CreateDBSnapshot",
+   "resource": "arn:aws:rds:us-east-1:{account}:db:{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/databases/{namespace}/{name}/stats",
+   "action": "pi:GetResourceMetrics",
+   "resource": "*"
+  },
+  {
+   "method": "POST",
+   "path": "/api/dataflows/{namespace}/{name}/status",
+   "action": "openinfra:GetDataFlow",
+   "resource": "arn:aws:openinfra:us-east-1:{account}:dataflow/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/db-stats",
+   "action": "pi:DescribeDimensionKeys",
+   "resource": "*"
+  },
+  {
+   "method": "POST",
+   "path": "/api/directories/{namespace}/{name}/ldap",
+   "action": "ds:DescribeDirectories",
+   "resource": "arn:aws:ds:us-east-1:{account}:directory/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/functions/{namespace}/{name}/invoke",
+   "action": "lambda:InvokeFunction",
+   "resource": "arn:aws:lambda:us-east-1:{account}:function:{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/graphqlapis/{namespace}/{name}/test-resolver",
+   "action": "appsync:EvaluateMappingTemplate",
+   "resource": "*"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/grants/{name}/approve",
+   "action": "iam:AttachUserPolicy",
+   "resource": "*"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/groups",
+   "action": "iam:CreateGroup",
+   "resource": "arn:aws:iam::{account}:group/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/import",
+   "action": "access-analyzer:ValidatePolicy",
+   "resource": "*"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/policies",
+   "action": "iam:CreatePolicy",
+   "resource": "arn:aws:iam::{account}:policy/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/roles",
+   "action": "iam:CreateRole",
+   "resource": "arn:aws:iam::{account}:role/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/roles/{name}/revoke-sessions",
+   "action": "iam:PutRolePolicy",
+   "resource": "arn:aws:iam::{account}:role/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/simulate",
+   "action": "iam:SimulatePrincipalPolicy",
+   "resource": "*"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/users",
+   "action": "iam:CreateUser",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/users/{name}/access-keys",
+   "action": "iam:CreateAccessKey",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/users/{name}/mfa-devices",
+   "action": "iam:CreateVirtualMFADevice",
+   "resource": "arn:aws:iam::{account}:mfa/{deviceName}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/users/{name}/mfa-devices/enable",
+   "action": "iam:EnableMFADevice",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/migrations/discover",
+   "action": "dms:RefreshSchemas",
+   "resource": "*"
+  },
+  {
+   "method": "POST",
+   "path": "/api/models/{namespace}/{name}/chat",
+   "action": "sagemaker:InvokeEndpoint",
+   "resource": "arn:aws:sagemaker:us-east-1:{account}:endpoint/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/queues/publish",
+   "action": "sqs:SendMessage",
+   "resource": "arn:aws:sqs:us-east-1:{account}:{subject}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/queues/{stream}/purge",
+   "action": "sqs:PurgeQueue",
+   "resource": "arn:aws:sqs:us-east-1:{account}:{stream}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/snapshots/restore",
+   "action": "rds:RestoreDBInstanceFromDBSnapshot",
+   "resource": "arn:aws:rds:us-east-1:{account}:snapshot:{id}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/trainingjobs/{namespace}/{name}/register",
+   "action": "sagemaker:CreateModelPackage",
+   "resource": "*"
+  },
+  {
+   "method": "POST",
+   "path": "/api/vm-snapshots/restore",
+   "action": "ec2:RunInstances",
+   "resource": "arn:aws:ec2:us-east-1:{account}:snapshot/{id}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/vms/{namespace}/{name}/snapshot",
+   "action": "ec2:CreateSnapshots",
+   "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/buckets/{bucket}/object",
+   "action": "s3:PutObject",
+   "resource": "arn:aws:s3:::{bucket}/{key}"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/iam/policies/{name}/tags",
+   "action": "iam:TagPolicy",
+   "resource": "arn:aws:iam::{account}:policy/{name}"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/iam/roles/{name}/tags",
+   "action": "iam:TagRole",
+   "resource": "arn:aws:iam::{account}:role/{name}"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/iam/users/{name}/tags",
+   "action": "iam:TagUser",
+   "resource": "arn:aws:iam::{account}:user/{name}"
+  }
+ ],
+ "perRequest": [
+  {
+   "method": "CONNECT",
+   "path": "/api/k8s",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "CONNECT",
+   "path": "/api/k8s/*",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "CONNECT",
+   "path": "/grafana",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "CONNECT",
+   "path": "/grafana/*",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/k8s",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "DELETE",
+   "path": "/api/k8s/*",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "DELETE",
+   "path": "/grafana",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "DELETE",
+   "path": "/grafana/*",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "GET",
+   "path": "/api/k8s",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "GET",
+   "path": "/api/k8s/*",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "GET",
+   "path": "/api/watch",
+   "decided": "the watched resource's list action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "GET",
+   "path": "/grafana",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "GET",
+   "path": "/grafana/*",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "HEAD",
+   "path": "/api/k8s",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "HEAD",
+   "path": "/api/k8s/*",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "HEAD",
+   "path": "/grafana",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "HEAD",
+   "path": "/grafana/*",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "OPTIONS",
+   "path": "/api/k8s",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "OPTIONS",
+   "path": "/api/k8s/*",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "OPTIONS",
+   "path": "/grafana",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "OPTIONS",
+   "path": "/grafana/*",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "PATCH",
+   "path": "/api/k8s",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "PATCH",
+   "path": "/api/k8s/*",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "PATCH",
+   "path": "/grafana",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "PATCH",
+   "path": "/grafana/*",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/grants",
+   "decided": "iam:Attach{User,Group,Role}Policy"
+  },
+  {
+   "method": "POST",
+   "path": "/api/iam/users/{name}/password",
+   "decided": "iam:ChangePassword | iam:UpdateLoginProfile"
+  },
+  {
+   "method": "POST",
+   "path": "/api/k8s",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "POST",
+   "path": "/api/k8s/*",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "POST",
+   "path": "/api/sts/switch-role",
+   "decided": "sts:AssumeRole on the role"
+  },
+  {
+   "method": "POST",
+   "path": "/grafana",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "POST",
+   "path": "/grafana/*",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/k8s",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "PUT",
+   "path": "/api/k8s/*",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "PUT",
+   "path": "/grafana",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "PUT",
+   "path": "/grafana/*",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "QUERY",
+   "path": "/api/k8s",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "QUERY",
+   "path": "/api/k8s/*",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "QUERY",
+   "path": "/grafana",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "QUERY",
+   "path": "/grafana/*",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "TRACE",
+   "path": "/api/k8s",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "TRACE",
+   "path": "/api/k8s/*",
+   "decided": "the Kubernetes request's AWS action (awsaction.ForKubernetes)"
+  },
+  {
+   "method": "TRACE",
+   "path": "/grafana",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  },
+  {
+   "method": "TRACE",
+   "path": "/grafana/*",
+   "decided": "cloudwatch:GetDashboard (the dashboards proxy)"
+  }
+ ],
+ "public": [
+  {
+   "method": "GET",
+   "path": "/api/auth/me",
+   "reason": "who am I: the UI renders for any signed-in principal, policy or not"
+  },
+  {
+   "method": "GET",
+   "path": "/api/capabilities",
+   "reason": "which resource types the cluster's architectures can run; no resource data"
+  },
+  {
+   "method": "GET",
+   "path": "/api/config",
+   "reason": "runtime UI configuration (cluster name, version, auth mode); no resource data"
+  },
+  {
+   "method": "GET",
+   "path": "/api/crd-schema",
+   "reason": "the published form schema of a platform resource type; no resource data"
+  },
+  {
+   "method": "GET",
+   "path": "/api/iam/config",
+   "reason": "static IAM page metadata (identity namespace, policy vocabulary)"
+  },
+  {
+   "method": "GET",
+   "path": "/healthz",
+   "reason": "liveness probe"
+  },
+  {
+   "method": "POST",
+   "path": "/api/auth/change-password",
+   "reason": "a signed-in user changes its own password, proving the old one (the forced change at sign-in)"
+  },
+  {
+   "method": "POST",
+   "path": "/api/auth/login",
+   "reason": "sign-in"
+  },
+  {
+   "method": "POST",
+   "path": "/api/auth/login/mfa",
+   "reason": "sign-in: the MFA code of a user whose password step passed"
+  },
+  {
+   "method": "POST",
+   "path": "/api/auth/logout",
+   "reason": "sign-out"
+  },
+  {
+   "method": "POST",
+   "path": "/api/sts/switch-back",
+   "reason": "returns the session to the signed-in user (drops the assumed role)"
+  }
+ ]
+}

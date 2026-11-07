@@ -32,6 +32,23 @@ Run it all locally:
 (cd test/render  && go test -race ./...)
 ```
 
+## The AWS-shape gates
+
+The same workflow holds every customer-facing change to AWS's shape ([AGENTS.md](../AGENTS.md)):
+
+- every claim kind has a row of IAM actions AWS documents, and every console route an IAM action
+  (`console-api/internal/awsaction`, `console-api/cmd/server`);
+- every gated console route refuses a principal with no policy, every aws-shim front door has an
+  enforce-mode deny case, and no tenant reaches a raw Kubernetes object through the console
+  (`TestConsoleRoutes_EveryGatedRouteDeniesWithoutPolicy`, `TestEveryFrontDoorHasADenyCase`,
+  `TestTenantKubernetesAccessIsRefused`);
+- `python3 probe/shimgen.py --check`: every service is in the coverage registry with a probe, every
+  probe-proven service has a probe that asserts a denial, and every claim kind, spec field, console route,
+  console screen and AWS API a customer can reach has an AWS-shaped entry in the customer-surface
+  registry ([customer-surface.md](customer-surface.md));
+- `probe/test_coverage.py` and `probe/test_surface.py` prove those gates go red on a deliberately
+  unregistered capability.
+
 ## The gate
 
 `test.yml` is a **reusable workflow** (`on: workflow_call`). Every image-publishing workflow runs it

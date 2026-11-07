@@ -21,6 +21,20 @@ the product's public contract.
 - **No hand-written user authority.** No manifest and no composition binds a user or group by hand any
   more (the one exception is the management account's break-glass root); a CI check fails on any
   binding of an `openinfra:*` user or group outside the RBAC the IAM compiler generates.
+### Security — tenants get no Kubernetes access, and every customer capability is AWS-shaped
+- **The operator surface is the management account's alone.** The platform's own Kubernetes objects
+  (`openinfra-operator:*`: Secrets, pods with their logs and exec, ServiceAccount tokens, RBAC, nodes,
+  namespaces) are refused to every principal of a member account — its administrators, its roles' sessions
+  and its root — whatever its policies, through the console's resource API and watch stream. A member
+  account's `AdministratorAccess` used to reach its own namespaces' raw objects. A member account's root
+  is its account's root user, never the console's break-glass identity: it no longer reaches requests no
+  IAM action maps, nor watches the whole cluster.
+- **The customer surface, inventoried.** [`docs/customer-surface.md`](docs/customer-surface.md) lists every
+  resource type, property, console route, console screen and AWS API a customer can reach, each AWS-shaped,
+  a platform extra, or the operator's alone, generated from the code. CI fails when a capability has no
+  AWS-shaped entry, when a console route's action is not one AWS documents, when a gated route does not
+  refuse a principal with no policy, when an aws-shim front door has no deny case, and when a proven
+  service's probes assert no denial.
 
 ### Security — email is sent only as an authenticated, authorized identity (#277)
 - **The SES SMTP interface.** The aws-shim serves SMTP submission the way Amazon SES's

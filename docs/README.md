@@ -15,7 +15,7 @@ short *Operators* note; skip it unless you run the platform.
 
 **Start here:** [Web console](console.md) · [AWS-SDK shim](aws-shim.md) (the AWS CLI and SDKs) ·
 [CloudFormation](cloudformation.md) · [Terraform](terraform.md) · [Migrating from AWS](aws-migration.md) ·
-[AWS coverage](aws-coverage.md)
+[AWS coverage](aws-coverage.md) · [The customer surface](customer-surface.md)
 
 | Area | Guides |
 |---|---|

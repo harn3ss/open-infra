@@ -21,6 +21,13 @@
 # `pending` lists a service's probes that are written but have not yet run live (exit 0): claimed, so
 # the filesystem check still holds, but never counted as proof. Move one to `probes` once it passes.
 #
+# A proven service is proven to DENY as well: one of its `probes` asserts AWS's access-denied (a call the
+# principal's policy does not allow, refused with AccessDenied or the service's own code, before the
+# probe's `|| fail`). Until one does, `denialPending` says why — shown in docs/customer-surface.md — and the
+# gate fails once a probe does assert it, so the note cannot outlive the gap. probe/iam-no-policy.sh is the
+# baseline every service shares: it calls each service the router serves as a principal with no policy,
+# and the gate fails when the router serves one it does not call.
+#
 # `cell` is the short backend phrase shown next to the service name. `experimental: true` marks a
 # service whose engine is on the experimental tier (see README "Maturity & guarantees").
 #
@@ -42,7 +49,8 @@ services:
     tier: proven
     sigv4: [sts]
     probes: [sts, vm-credentials]
-    pending: [app-assume-role]
+    pending: [app-assume-role, sts-deny]
+    denialPending: "Its probes assert a wrong secret's signature mismatch and an instance's refusal of a role that does not trust it (an HTTP 403), not an AssumeRole refused with AccessDenied; aws-shim-sts-deny.sh asserts that and awaits its first live run."
   - name: IAM
     cell: "roles/policies/users → AWS policy JSON → Cedar"
     tier: proven
@@ -80,6 +88,8 @@ services:
     tier: proven
     sigv4: [eks]
     probes: [eks]
+    pending: [eks-tenant-refused]
+    denialPending: "Its probe proves the cluster's connection details, not a refusal; aws-shim-eks-tenant-refused.sh asserts DescribeCluster refused without the action, and an IAM principal refused by the Kubernetes API and by the console's raw objects, and awaits its first live run."
   - name: Organizations
     cell: "the install's accounts (`kind: Account`): the management account, member accounts by `CreateAccount`, each its own namespaces"
     tier: proven
@@ -113,6 +123,8 @@ services:
     tier: proven
     sigv4: [dynamodb, dynamodbstreams]
     probes: [dynamodb, dynamodb-lsi, dynamodb-restore, dynamodb-streams]
+    pending: [dynamodb-deny]
+    denialPending: "Its probes run as an administrator; aws-shim-dynamodb-deny.sh asserts a read-only principal refused writes and other tables with AccessDeniedException, and awaits its first live run."
   - name: Athena
     cell: "serverless SQL → Trino over the Iceberg lake"
     tier: proven
@@ -197,6 +209,8 @@ services:
     sigv4: [appsync]
     experimental: true
     probes: [appsync]
+    pending: [appsync-deny]
+    denialPending: "Its probe runs as an administrator; aws-shim-appsync-deny.sh asserts a read-only principal refused creating, deleting and changing an API, and awaits its first live run."
 
   - name: SES
     cell: "v1 `SendEmail`/`SendRawEmail` + v2 `SendEmail`, and the SES SMTP interface (SES SMTP credentials, STARTTLS) → the platform SMTP relay (the `mail` component; a capturing sink on test clusters), which takes mail from the shim alone"

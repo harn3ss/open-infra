@@ -1,11 +1,16 @@
-# AWS IAM actions the table maps to, each as AWS's Service Authorization Reference names it
-# (https://docs.aws.amazon.com/service-authorization/latest/reference/). The table may use only these
-# for an AWS service prefix, so a misspelled or invented action fails the test instead of reaching a
-# policy. Add an action here only after checking it in the reference.
+# AWS IAM actions the platform names: the kinds table's (each kind's verbs and field changes) and the
+# console's routes', each as AWS's Service Authorization Reference names it
+# (https://docs.aws.amazon.com/service-authorization/latest/reference/). The table and the routes may use
+# only these for an AWS service prefix (TestActionsAreAWSDocumented; probe/surface.py for the routes), so a
+# misspelled or invented action fails the test instead of reaching a policy. Add an action here only after
+# checking it in the reference.
+access-analyzer:ValidatePolicy
 acm-pca:CreateCertificateAuthority
 acm-pca:DeleteCertificateAuthority
 acm-pca:DescribeCertificateAuthority
+acm-pca:IssueCertificate
 acm-pca:ListCertificateAuthorities
+acm-pca:RevokeCertificate
 acm-pca:UpdateCertificateAuthority
 apigateway:DELETE
 apigateway:GET
@@ -13,6 +18,7 @@ apigateway:PATCH
 apigateway:POST
 appsync:CreateGraphqlApi
 appsync:DeleteGraphqlApi
+appsync:EvaluateMappingTemplate
 appsync:GetGraphqlApi
 appsync:ListGraphqlApis
 appsync:StartSchemaCreation
@@ -20,9 +26,11 @@ appsync:UpdateDataSource
 appsync:UpdateGraphqlApi
 appsync:UpdateResolver
 athena:GetQueryExecution
+athena:GetQueryResults
 athena:ListQueryExecutions
 athena:StartQueryExecution
 athena:StopQueryExecution
+auditmanager:GetAssessment
 autoscaling:CreateAutoScalingGroup
 autoscaling:DeleteAutoScalingGroup
 autoscaling:DescribeAutoScalingGroups
@@ -37,11 +45,16 @@ backup:ListBackupPlans
 backup:ListBackupVaults
 backup:PutBackupVaultAccessPolicy
 backup:UpdateBackupPlan
+ce:GetCostAndUsage
 cloudfront:CreateDistribution
 cloudfront:DeleteDistribution
 cloudfront:GetDistribution
 cloudfront:ListDistributions
 cloudfront:UpdateDistribution
+cloudtrail:GetTrailStatus
+cloudtrail:LookupEvents
+cloudwatch:GetMetricData
+cloudwatch:ListDashboards
 cognito-idp:CreateUserPool
 cognito-idp:DeleteUserPool
 cognito-idp:DescribeUserPool
@@ -50,10 +63,12 @@ cognito-idp:UpdateUserPool
 config:DeleteConfigRule
 config:DescribeConfigRules
 config:PutConfigRule
+datazone:GetLineageNode
 dms:CreateReplicationTask
 dms:DeleteReplicationTask
 dms:DescribeReplicationTasks
 dms:ModifyReplicationTask
+dms:RefreshSchemas
 ds:CreateMicrosoftAD
 ds:DeleteDirectory
 ds:DescribeDirectories
@@ -73,6 +88,7 @@ ec2:AuthorizeSecurityGroupIngress
 ec2:CreateFlowLogs
 ec2:CreateNatGateway
 ec2:CreateSecurityGroup
+ec2:CreateSnapshots
 ec2:CreateSubnet
 ec2:CreateTransitGateway
 ec2:CreateVolume
@@ -81,6 +97,7 @@ ec2:CreateVpcEndpoint
 ec2:DeleteFlowLogs
 ec2:DeleteNatGateway
 ec2:DeleteSecurityGroup
+ec2:DeleteSnapshot
 ec2:DeleteSubnet
 ec2:DeleteTransitGateway
 ec2:DeleteVolume
@@ -93,6 +110,7 @@ ec2:DescribeImages
 ec2:DescribeInstances
 ec2:DescribeNatGateways
 ec2:DescribeSecurityGroups
+ec2:DescribeSnapshots
 ec2:DescribeSubnets
 ec2:DescribeTransitGateways
 ec2:DescribeVolumes
@@ -127,11 +145,13 @@ fis:GetExperiment
 fis:ListExperiments
 fis:StartExperiment
 fis:StopExperiment
+glue:GetTables
 iam:AddClientIDToOpenIDConnectProvider
 iam:AddUserToGroup
 iam:AttachGroupPolicy
 iam:AttachRolePolicy
 iam:AttachUserPolicy
+iam:CreateAccessKey
 iam:CreateGroup
 iam:CreateOpenIDConnectProvider
 iam:CreatePolicy
@@ -140,6 +160,7 @@ iam:CreateRole
 iam:CreateUser
 iam:CreateVirtualMFADevice
 iam:DeactivateMFADevice
+iam:DeleteAccessKey
 iam:DeleteGroup
 iam:DeleteOpenIDConnectProvider
 iam:DeletePolicy
@@ -150,11 +171,15 @@ iam:DetachGroupPolicy
 iam:DetachRolePolicy
 iam:DetachUserPolicy
 iam:EnableMFADevice
+iam:GetCredentialReport
 iam:GetGroup
 iam:GetOpenIDConnectProvider
 iam:GetPolicy
+iam:GetPolicyVersion
 iam:GetRole
+iam:GetServiceLastAccessedDetails
 iam:GetUser
+iam:ListAccessKeys
 iam:ListAttachedUserPolicies
 iam:ListGroups
 iam:ListMFADeviceTags
@@ -166,12 +191,18 @@ iam:ListUsers
 iam:ListVirtualMFADevices
 iam:PassRole
 iam:PutRolePermissionsBoundary
+iam:PutRolePolicy
 iam:PutUserPermissionsBoundary
 iam:RemoveClientIDFromOpenIDConnectProvider
 iam:RemoveUserFromGroup
 iam:ResyncMFADevice
+iam:SimulatePrincipalPolicy
 iam:TagMFADevice
+iam:TagPolicy
+iam:TagRole
+iam:TagUser
 iam:UntagMFADevice
+iam:UpdateAccessKey
 iam:UpdateAssumeRolePolicy
 iam:UpdateGroup
 iam:UpdateLoginProfile
@@ -192,28 +223,42 @@ kms:UpdateKeyDescription
 lambda:CreateFunction
 lambda:DeleteFunction
 lambda:GetFunction
+lambda:InvokeFunction
 lambda:ListFunctions
 lambda:PutFunctionConcurrency
 lambda:UpdateAlias
 lambda:UpdateFunctionCode
 lambda:UpdateFunctionConfiguration
+logs:GetLogEvents
+macie2:GetFindingStatistics
+pi:DescribeDimensionKeys
+pi:GetResourceMetrics
+rds:BacktrackDBCluster
 rds:CreateDBInstance
 rds:CreateDBProxy
+rds:CreateDBSnapshot
 rds:DeleteDBInstance
 rds:DeleteDBProxy
+rds:DeleteDBSnapshot
 rds:DescribeDBInstances
 rds:DescribeDBProxies
+rds:DescribeDBSnapshots
 rds:ModifyDBInstance
 rds:ModifyDBProxy
+rds:RestoreDBInstanceFromDBSnapshot
 s3:CreateBucket
 s3:DeleteBucket
+s3:DeleteObject
 s3:GetBucketLocation
+s3:GetObject
 s3:ListAllMyBuckets
+s3:ListBucket
 s3:PutBucketObjectLockConfiguration
 s3:PutBucketPolicy
 s3:PutBucketTagging
 s3:PutBucketVersioning
 s3:PutLifecycleConfiguration
+s3:PutObject
 sagemaker:CreateEndpoint
 sagemaker:CreateFeatureGroup
 sagemaker:CreateHyperParameterTuningJob
@@ -234,6 +279,7 @@ sagemaker:DescribeMonitoringSchedule
 sagemaker:DescribeProcessingJob
 sagemaker:DescribeTrainingJob
 sagemaker:DescribeTransformJob
+sagemaker:InvokeEndpoint
 sagemaker:ListEndpoints
 sagemaker:ListFeatureGroups
 sagemaker:ListHyperParameterTuningJobs
@@ -269,6 +315,9 @@ sqs:CreateQueue
 sqs:DeleteQueue
 sqs:GetQueueAttributes
 sqs:ListQueues
+sqs:PurgeQueue
+sqs:ReceiveMessage
+sqs:SendMessage
 sqs:SetQueueAttributes
 ssm:DeleteParameter
 ssm:DescribeParameters

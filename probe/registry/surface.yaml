@@ -1,0 +1,195 @@
+# The HAND-KEPT rulings of the customer-surface registry. Everything else is read from code:
+#   platform/**/*.yaml                    — the claim kinds and their spec fields
+#   probe/registry/iam-actions.json       — the kinds table (console-api/internal/awsaction, go test)
+#   probe/registry/console-routes.json    — the console's routes (console-api/cmd/server, go test)
+#   ui/src/router.tsx, nav-items.ts       — the console's screens and their services
+#   probe/registry/shim-router.json       — the aws-shim's AWS APIs (console-api/cmd/aws-shim, go test)
+# probe/shimgen.py joins them (probe/surface.py) into probe/registry/customer-surface.json and the
+# inventory docs/customer-surface.md, and FAILS when a customer-reachable capability has no AWS-shaped
+# entry. Every capability is AWS-shaped (an AWS service's action on an AWS ARN), a platform extra with its
+# own AWS-style API (openinfra:*), the operator's alone (openinfra-operator:*), or removed.
+#
+# Nothing here makes a capability AWS-shaped: that is the code's (the kinds table, the route table). What
+# is here is what only a person can decide — and each entry fails the gate once it no longer matches the
+# code, so the file cannot outlive what it rules on.
+
+# Platform extras: capabilities with no AWS analog, served under the openinfra service prefix
+# (openinfra:<Action> on arn:aws:openinfra:<region>:<account>:<type>/<name>). One exists only on the
+# operator's say-so: adding an entry here is that decision, recorded with its reason. approval: pending
+# marks an extra that predates the rule and awaits the operator's ruling (keep, give it an AWS analog, or
+# remove it).
+extras:
+  kinds:
+    DataClassification:
+      reason: "A data classification level a resource carries (who may read it, how long it is kept). AWS has no resource for it: Macie reports findings, it does not hold a level."
+      approval: pending
+    DataFlow:
+      reason: "A graph of cross-engine data movements (sources, transforms, sinks) as one resource. AWS splits it across DMS tasks, Glue jobs and Kinesis streams, with no single resource for the graph."
+      approval: pending
+  # openinfra:* actions a console route is decided on that are not one of an extra kind's own verbs.
+  actions: {}
+
+# Platform kinds that are not claim kinds: no account holds them, so their Kubernetes object is the
+# operator's (openinfra-operator:*). `via` names the AWS API a customer reaches them through.
+operatorKinds:
+  Account:
+    reason: "An account of the install's organization. Its object is cluster-wide and the operator's."
+    via: "Organizations (organizations:CreateAccount, ListAccounts, DescribeAccount)"
+
+# Spec fields whose name is Kubernetes vocabulary (probe/surface.py KUBERNETES_FIELD): a customer would
+# need to know Kubernetes to use them. Each has a disposition:
+#   extra    — a platform extra, kept on the operator's say-so;
+#   operator — the operator's alone;
+#   pending  — predates the rule; awaits the operator's ruling (an AWS name for it, or remove it).
+# A NEW field in Kubernetes vocabulary fails the gate until it is given an AWS name or a disposition here.
+kubernetesFields:
+  Directory.storageClass:
+    disposition: pending
+    reason: "The disk class of the directory's data volume, as a Kubernetes StorageClass name. AWS's term is the volume type."
+  Execution.credentialsNamespace:
+    disposition: pending
+    reason: "Where an execution's Task credentials are read from, as a namespace. AWS runs a Task as the state machine's role, which the execution already names."
+  FileShare.nodeIP:
+    disposition: pending
+    reason: "A node address the file share is served from. AWS's file systems are reached through mount targets in a subnet."
+  FileShare.storageClass:
+    disposition: pending
+    reason: "The disk class of the share, as a Kubernetes StorageClass name. AWS's term is the performance mode or storage class of the file system."
+  FlowLog.namespace:
+    disposition: pending
+    reason: "The namespace whose traffic is logged. AWS logs a VPC, subnet or network interface."
+  FlowLog.nodeSelector:
+    disposition: pending
+    reason: "Which nodes capture the flow log. AWS captures it in the network fabric, with nothing to place."
+  Migration.storageClass:
+    disposition: pending
+    reason: "The disk class of the migration's working volume, as a Kubernetes StorageClass name. AWS's term is the replication instance's storage."
+  NatGateway.nodeSelector:
+    disposition: pending
+    reason: "Which nodes may host the gateway. AWS places a NAT gateway in the subnet it names."
+  Stream.storageClass:
+    disposition: pending
+    reason: "The disk class of the stream's storage, as a Kubernetes StorageClass name. Kinesis exposes none."
+  Subnet.namespaces:
+    disposition: pending
+    reason: "The namespaces attached to the subnet. On AWS a resource names its subnet, not the other way round."
+  User.passwordSecretRef:
+    disposition: pending
+    reason: "A Kubernetes Secret holding the user's console password. AWS sets it with CreateLoginProfile, which the console and the IAM API already serve."
+  UserPool.storageClass:
+    disposition: pending
+    reason: "The disk class of the pool's store, as a Kubernetes StorageClass name. Cognito exposes none."
+  VmImage.storageClass:
+    disposition: pending
+    reason: "The disk class an image is stored on, as a Kubernetes StorageClass name. EC2's term is the snapshot's storage tier."
+  Vpc.namespaces:
+    disposition: pending
+    reason: "The namespaces attached to the VPC. On AWS a resource names its VPC, not the other way round."
+  DataFlow.storageClass:
+    disposition: extra
+    reason: "Part of the DataFlow extra: the disk class its stages' working volumes use."
+
+# Console routes whose IAM action depends on the request: how each is still AWS-shaped.
+perRequest:
+  /api/k8s:
+    class: aws
+    how: "The console's resource API. Each request is the AWS action the kinds table maps it to (a resource type's own action on its ARN); every other object is the operator's (openinfra-operator:*, the management account's AdministratorAccess alone); anything unmapped is refused."
+  /api/k8s/*:
+    class: aws
+    how: "As /api/k8s."
+  /api/watch:
+    class: aws
+    how: "The watched resource type's List action, as the kinds table maps it; the operator's objects are openinfra-operator:List*."
+  /grafana:
+    class: aws
+    how: "cloudwatch:GetDashboard: the dashboards are CloudWatch's."
+  /grafana/*:
+    class: aws
+    how: "As /grafana."
+  /api/iam/grants:
+    class: aws
+    how: "iam:AttachUserPolicy, iam:AttachGroupPolicy or iam:AttachRolePolicy, on the entity the grant names."
+  /api/iam/users/{name}/password:
+    class: aws
+    how: "iam:ChangePassword on the caller's own user, iam:UpdateLoginProfile on anyone else's (as AWS)."
+  /api/sts/switch-role:
+    class: aws
+    how: "sts:AssumeRole on the role, decided by its trust policy (the console's Switch Role)."
+
+# The console's screens, by the service they belong to in the console's own catalog
+# (ui/src/components/layout/nav-items.ts: "<service>" or "<service> / <sub-nav item>"), or by path for a
+# screen no service owns. service: the IAM prefix(es) of the actions the screen's calls are; class:
+# operator for the platform operations views (which the console shows only to the operator).
+screens:
+  "/":
+    reason: "Console Home: no resource of its own; each widget's call is authorized as itself"
+  Active Directory: {service: ds}
+  Applications: {service: ecs}
+  Attestation: {service: auditmanager}
+  Audit: {service: cloudtrail}
+  Auto Scaling Groups: {service: autoscaling}
+  Buckets: {service: s3}
+  Certificate Authority: {service: acm-pca}
+  Chaos: {service: fis}
+  Cost Explorer: {service: ce}
+  Data Classification: {class: extra, service: openinfra}
+  Data Flows / Data flows: {class: extra, service: openinfra}
+  Data Flows / Lineage: {service: datazone}
+  Data Flows / Migrations: {service: dms}
+  Data Flows / Replications: {service: dms}
+  Data Flows / Streams: {service: kinesis}
+  Databases: {service: rds}
+  Databases / Database proxies: {service: rds}
+  Email Senders: {service: ses}
+  Encryption Keys: {service: kms}
+  File Shares: {service: elasticfilesystem}
+  Functions: {service: lambda}
+  GraphQL: {service: appsync}
+  HTTP APIs: {service: apigateway}
+  IAM / Access review: {service: iam}
+  IAM / Dashboard: {service: iam}
+  IAM / Grants: {service: iam}
+  IAM / Policies: {service: iam}
+  IAM / Policy simulator: {service: [iam, access-analyzer]}
+  IAM / Roles: {service: iam}
+  IAM / User groups: {service: iam}
+  IAM / Users: {service: iam}
+  Identity Providers: {service: iam}
+  Machine Learning / Batch transform: {service: sagemaker}
+  Machine Learning / Feature store: {service: sagemaker}
+  Machine Learning / Model monitor: {service: sagemaker}
+  Machine Learning / Model registry: {service: sagemaker}
+  Machine Learning / Models: {service: sagemaker}
+  Machine Learning / Processing jobs: {service: sagemaker}
+  Machine Learning / Training jobs: {service: sagemaker}
+  Machine Learning / Tuning jobs: {service: sagemaker}
+  Monitoring: {service: cloudwatch}
+  Network: {class: operator}
+  Nodes: {class: operator}
+  Parameters: {service: ssm}
+  Query: {service: athena}
+  Queues: {service: sqs}
+  Scheduled Jobs: {service: scheduler}
+  Snapshots: {service: [rds, ec2]}
+  State Machines: {service: states}
+  State Machines / State machines: {service: states}
+  Static Sites: {service: cloudfront}
+  Tables: {service: dynamodb}
+  User Pools: {service: cognito-idp}
+  Virtual Machines / Images: {service: ec2}
+  Virtual Machines / Instances: {service: ec2}
+  Volumes: {service: ec2}
+  VPC / Elastic IPs: {service: ec2}
+  VPC / Flow logs: {service: ec2}
+  VPC / NAT gateways: {service: ec2}
+  VPC / Security groups: {service: ec2}
+  VPC / Subnets: {service: ec2}
+  VPC / Transit gateways: {service: ec2}
+  VPC / VPC dashboard: {service: ec2}
+  VPC / Your VPCs: {service: ec2}
+  Workloads: {class: operator}
+
+# Capabilities withdrawn from the customer surface because they could not be expressed in AWS's terms,
+# each with why and what serves the need instead (section: kinds|fields|routes|screens|services). The gate
+# fails if one is still reachable.
+removed: []

@@ -35,6 +35,7 @@ on:
       - "docs/aws-shim.md" # generated shim service blocks — re-run the drift gate when it changes
       - "docs/cloudformation.md" # generated coverage block + hand tables the coverage gate checks
       - "docs/aws-coverage.md" # the generated AWS coverage registry page
+      - "docs/customer-surface.md" # the generated customer-surface inventory
       - "README.md" # generated shim service matrix — re-run the drift gate when it changes
       - ".github/workflows/test.yml"
   pull_request:
@@ -61,6 +62,7 @@ on:
       - "docs/aws-shim.md" # generated shim service blocks — re-run the drift gate when it changes
       - "docs/cloudformation.md" # generated coverage block + hand tables the coverage gate checks
       - "docs/aws-coverage.md" # the generated AWS coverage registry page
+      - "docs/customer-surface.md" # the generated customer-surface inventory
       - "README.md" # generated shim service matrix — re-run the drift gate when it changes
       - ".github/workflows/test.yml"
   workflow_dispatch: {}
@@ -231,7 +233,13 @@ jobs:
 
       # The aws-shim service list + count in README.md and docs/aws-shim.md are generated from
       # probe/shim-services.yaml and cross-checked against probe/aws-shim-*.sh — fail if they drifted
-      # (e.g. a new probe not added to the registry, or a hand-edited generated block).
+      # (e.g. a new probe not added to the registry, or a hand-edited generated block). The same command
+      # holds every probe-proven service to a live denial (one of its probes asserts AWS's access-denied,
+      # and probe/iam-no-policy.sh calls every service the router serves), and is the customer-surface
+      # gate: every claim kind, spec field, console route, console screen and AWS API a customer can reach
+      # (read from the XRDs, the kinds table, the console's route table and screens, the shim's router)
+      # has an AWS-shaped entry in probe/registry/customer-surface.json — or a ruling in
+      # probe/registry/surface.yaml — and docs/customer-surface.md is current.
       # The same command is the AWS coverage gate: it joins the CloudFormation engine's types with the
       # shim router's front doors (probe/registry/, read from code by the cfn and console-api Go tests,
       # which fail when those halves are stale) and fails when a type a stack can create has no front
@@ -249,6 +257,16 @@ jobs:
         run: |
           python3 -c "import yaml" 2>/dev/null || pip3 install --quiet pyyaml
           python3 probe/test_coverage.py
+
+      # The customer-surface and denial gates proven RED as well as green: a claim kind with no IAM
+      # action row, a claim field or console route the committed registry does not list, a route on an
+      # action AWS does not document, a screen that belongs to no service, a platform extra without the
+      # operator's ruling, and a proven service whose probes assert no denial each fail — in the module and
+      # end to end through `shimgen.py --check` on a copy of the repository.
+      - name: customer-surface + denial gate tests (prove-red)
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip3 install --quiet pyyaml
+          python3 probe/test_surface.py
 
       # The IAM probes' own self-tests, against fakes (no cluster): each probe's allow/deny logic, cleanup
       # and inconclusive paths.

@@ -1,0 +1,6926 @@
+{
+  "fields": {
+    "Application.additionalPorts": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "additionalPorts",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.args": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "args",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.assumeRole": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "assumeRole",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.command": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "command",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.cpu": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "cpu",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.database": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "database",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.domain": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "domain",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.env": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "env",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.expose": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "expose",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.image": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "image",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.memory": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "memory",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.port": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "port",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.queues": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "queues",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.quota": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "quota",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.scaling": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "scaling",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.secrets": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "secrets",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.securityGroups": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "securityGroups",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.sidecars": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "sidecars",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.startupGraceSeconds": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "startupGraceSeconds",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.storage": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "storage",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.subnet": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "subnet",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.volumeMounts": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "volumeMounts",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.volumes": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "volumes",
+      "how": "update",
+      "kind": "Application"
+    },
+    "AutoScalingGroup.desiredCapacity": {
+      "actions": [
+        "autoscaling:UpdateAutoScalingGroup"
+      ],
+      "class": "aws",
+      "field": "desiredCapacity",
+      "how": "update",
+      "kind": "AutoScalingGroup"
+    },
+    "AutoScalingGroup.healthCheck": {
+      "actions": [
+        "autoscaling:UpdateAutoScalingGroup"
+      ],
+      "class": "aws",
+      "field": "healthCheck",
+      "how": "update",
+      "kind": "AutoScalingGroup"
+    },
+    "AutoScalingGroup.instanceRefresh": {
+      "actions": [
+        "autoscaling:UpdateAutoScalingGroup"
+      ],
+      "class": "aws",
+      "field": "instanceRefresh",
+      "how": "update",
+      "kind": "AutoScalingGroup"
+    },
+    "AutoScalingGroup.launchTemplate": {
+      "actions": [
+        "autoscaling:UpdateAutoScalingGroup"
+      ],
+      "class": "aws",
+      "field": "launchTemplate",
+      "how": "update",
+      "kind": "AutoScalingGroup"
+    },
+    "AutoScalingGroup.maxSize": {
+      "actions": [
+        "autoscaling:UpdateAutoScalingGroup"
+      ],
+      "class": "aws",
+      "field": "maxSize",
+      "how": "update",
+      "kind": "AutoScalingGroup"
+    },
+    "AutoScalingGroup.minSize": {
+      "actions": [
+        "autoscaling:UpdateAutoScalingGroup"
+      ],
+      "class": "aws",
+      "field": "minSize",
+      "how": "update",
+      "kind": "AutoScalingGroup"
+    },
+    "BackupPlan.rules": {
+      "actions": [
+        "backup:UpdateBackupPlan"
+      ],
+      "class": "aws",
+      "field": "rules",
+      "how": "update",
+      "kind": "BackupPlan"
+    },
+    "BackupPlan.selection": {
+      "actions": [
+        "backup:UpdateBackupPlan"
+      ],
+      "class": "aws",
+      "field": "selection",
+      "how": "update",
+      "kind": "BackupPlan"
+    },
+    "BackupVault.description": {
+      "actions": [
+        "backup:PutBackupVaultAccessPolicy"
+      ],
+      "class": "aws",
+      "field": "description",
+      "how": "update",
+      "kind": "BackupVault"
+    },
+    "BatchTransform.args": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "args",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.artifact": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "artifact",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.backoffLimit": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "backoffLimit",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.command": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "command",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.cpu": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "cpu",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.env": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "env",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.gpu": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "gpu",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.gpuTier": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "gpuTier",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.image": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "image",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.input": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "input",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.maxRuntimeSeconds": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "maxRuntimeSeconds",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.memory": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "memory",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.modelPackage": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "modelPackage",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.output": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "output",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "BatchTransform.secrets": {
+      "actions": [
+        "sagemaker:CreateTransformJob"
+      ],
+      "class": "aws",
+      "field": "secrets",
+      "how": "update",
+      "kind": "BatchTransform"
+    },
+    "Bucket.bucketName": {
+      "actions": [
+        "s3:PutBucketPolicy"
+      ],
+      "class": "aws",
+      "field": "bucketName",
+      "how": "update",
+      "kind": "Bucket"
+    },
+    "Bucket.lifecycleRules": {
+      "actions": [
+        "s3:PutLifecycleConfiguration"
+      ],
+      "class": "aws",
+      "field": "lifecycleRules",
+      "how": "field",
+      "kind": "Bucket"
+    },
+    "Bucket.objectLock": {
+      "actions": [
+        "s3:PutBucketObjectLockConfiguration"
+      ],
+      "class": "aws",
+      "field": "objectLock",
+      "how": "field",
+      "kind": "Bucket"
+    },
+    "Bucket.policy": {
+      "actions": [
+        "s3:PutBucketPolicy"
+      ],
+      "class": "aws",
+      "field": "policy",
+      "how": "field",
+      "kind": "Bucket"
+    },
+    "Bucket.tags": {
+      "actions": [
+        "s3:PutBucketTagging"
+      ],
+      "class": "aws",
+      "field": "tags",
+      "how": "field",
+      "kind": "Bucket"
+    },
+    "Bucket.versioning": {
+      "actions": [
+        "s3:PutBucketVersioning"
+      ],
+      "class": "aws",
+      "field": "versioning",
+      "how": "field",
+      "kind": "Bucket"
+    },
+    "CertificateAuthority.allowedDomains": {
+      "actions": [
+        "acm-pca:UpdateCertificateAuthority"
+      ],
+      "class": "aws",
+      "field": "allowedDomains",
+      "how": "update",
+      "kind": "CertificateAuthority"
+    },
+    "CertificateAuthority.commonName": {
+      "actions": [
+        "acm-pca:UpdateCertificateAuthority"
+      ],
+      "class": "aws",
+      "field": "commonName",
+      "how": "update",
+      "kind": "CertificateAuthority"
+    },
+    "CertificateAuthority.hierarchy": {
+      "actions": [
+        "acm-pca:UpdateCertificateAuthority"
+      ],
+      "class": "aws",
+      "field": "hierarchy",
+      "how": "update",
+      "kind": "CertificateAuthority"
+    },
+    "CertificateAuthority.keyType": {
+      "actions": [
+        "acm-pca:UpdateCertificateAuthority"
+      ],
+      "class": "aws",
+      "field": "keyType",
+      "how": "update",
+      "kind": "CertificateAuthority"
+    },
+    "CertificateAuthority.maxTtl": {
+      "actions": [
+        "acm-pca:UpdateCertificateAuthority"
+      ],
+      "class": "aws",
+      "field": "maxTtl",
+      "how": "update",
+      "kind": "CertificateAuthority"
+    },
+    "CertificateAuthority.parent": {
+      "actions": [
+        "acm-pca:UpdateCertificateAuthority"
+      ],
+      "class": "aws",
+      "field": "parent",
+      "how": "update",
+      "kind": "CertificateAuthority"
+    },
+    "ConfigRule.description": {
+      "actions": [
+        "config:PutConfigRule"
+      ],
+      "class": "aws",
+      "field": "description",
+      "how": "update",
+      "kind": "ConfigRule"
+    },
+    "ConfigRule.match": {
+      "actions": [
+        "config:PutConfigRule"
+      ],
+      "class": "aws",
+      "field": "match",
+      "how": "update",
+      "kind": "ConfigRule"
+    },
+    "ConfigRule.message": {
+      "actions": [
+        "config:PutConfigRule"
+      ],
+      "class": "aws",
+      "field": "message",
+      "how": "update",
+      "kind": "ConfigRule"
+    },
+    "ConfigRule.requirePattern": {
+      "actions": [
+        "config:PutConfigRule"
+      ],
+      "class": "aws",
+      "field": "requirePattern",
+      "how": "update",
+      "kind": "ConfigRule"
+    },
+    "ConfigRule.severity": {
+      "actions": [
+        "config:PutConfigRule"
+      ],
+      "class": "aws",
+      "field": "severity",
+      "how": "update",
+      "kind": "ConfigRule"
+    },
+    "DataClassification.description": {
+      "actions": [
+        "openinfra:UpdateDataClassification"
+      ],
+      "class": "extra",
+      "field": "description",
+      "how": "update",
+      "kind": "DataClassification"
+    },
+    "DataClassification.level": {
+      "actions": [
+        "openinfra:UpdateDataClassification"
+      ],
+      "class": "extra",
+      "field": "level",
+      "how": "update",
+      "kind": "DataClassification"
+    },
+    "DataClassification.requires": {
+      "actions": [
+        "openinfra:UpdateDataClassification"
+      ],
+      "class": "extra",
+      "field": "requires",
+      "how": "update",
+      "kind": "DataClassification"
+    },
+    "DataFlow.autoSyncTables": {
+      "actions": [
+        "openinfra:UpdateDataFlow"
+      ],
+      "class": "extra",
+      "field": "autoSyncTables",
+      "how": "update",
+      "kind": "DataFlow"
+    },
+    "DataFlow.driftDetection": {
+      "actions": [
+        "openinfra:UpdateDataFlow"
+      ],
+      "class": "extra",
+      "field": "driftDetection",
+      "how": "update",
+      "kind": "DataFlow"
+    },
+    "DataFlow.edges": {
+      "actions": [
+        "openinfra:UpdateDataFlow"
+      ],
+      "class": "extra",
+      "field": "edges",
+      "how": "update",
+      "kind": "DataFlow"
+    },
+    "DataFlow.nodes": {
+      "actions": [
+        "openinfra:UpdateDataFlow"
+      ],
+      "class": "extra",
+      "field": "nodes",
+      "how": "update",
+      "kind": "DataFlow"
+    },
+    "DataFlow.originColumn": {
+      "actions": [
+        "openinfra:UpdateDataFlow"
+      ],
+      "class": "extra",
+      "field": "originColumn",
+      "how": "update",
+      "kind": "DataFlow"
+    },
+    "DataFlow.storageClass": {
+      "actions": [
+        "openinfra:UpdateDataFlow"
+      ],
+      "class": "extra",
+      "field": "storageClass",
+      "how": "update",
+      "kind": "DataFlow",
+      "kubernetes": {
+        "disposition": "extra",
+        "reason": "Part of the DataFlow extra: the disk class its stages' working volumes use."
+      }
+    },
+    "DataFlow.tables": {
+      "actions": [
+        "openinfra:UpdateDataFlow"
+      ],
+      "class": "extra",
+      "field": "tables",
+      "how": "update",
+      "kind": "DataFlow"
+    },
+    "DataFlow.versionColumn": {
+      "actions": [
+        "openinfra:UpdateDataFlow"
+      ],
+      "class": "extra",
+      "field": "versionColumn",
+      "how": "update",
+      "kind": "DataFlow"
+    },
+    "DatabaseProxy.acquireTimeoutMs": {
+      "actions": [
+        "rds:ModifyDBProxy"
+      ],
+      "class": "aws",
+      "field": "acquireTimeoutMs",
+      "how": "update",
+      "kind": "DatabaseProxy"
+    },
+    "DatabaseProxy.engineFamily": {
+      "actions": [
+        "rds:ModifyDBProxy"
+      ],
+      "class": "aws",
+      "field": "engineFamily",
+      "how": "update",
+      "kind": "DatabaseProxy"
+    },
+    "DatabaseProxy.poolMax": {
+      "actions": [
+        "rds:ModifyDBProxy"
+      ],
+      "class": "aws",
+      "field": "poolMax",
+      "how": "update",
+      "kind": "DatabaseProxy"
+    },
+    "DatabaseProxy.replicas": {
+      "actions": [
+        "rds:ModifyDBProxy"
+      ],
+      "class": "aws",
+      "field": "replicas",
+      "how": "update",
+      "kind": "DatabaseProxy"
+    },
+    "DatabaseProxy.targetDatabase": {
+      "actions": [
+        "rds:ModifyDBProxy"
+      ],
+      "class": "aws",
+      "field": "targetDatabase",
+      "how": "update",
+      "kind": "DatabaseProxy"
+    },
+    "DatabaseProxy.tls": {
+      "actions": [
+        "rds:ModifyDBProxy"
+      ],
+      "class": "aws",
+      "field": "tls",
+      "how": "update",
+      "kind": "DatabaseProxy"
+    },
+    "DatabaseProxy.transactionMultiplexing": {
+      "actions": [
+        "rds:ModifyDBProxy"
+      ],
+      "class": "aws",
+      "field": "transactionMultiplexing",
+      "how": "update",
+      "kind": "DatabaseProxy"
+    },
+    "Destruction.confirm": {
+      "actions": [
+        "kms:ScheduleKeyDeletion"
+      ],
+      "class": "aws",
+      "field": "confirm",
+      "how": "update",
+      "kind": "Destruction"
+    },
+    "Destruction.encryptionKey": {
+      "actions": [
+        "kms:ScheduleKeyDeletion"
+      ],
+      "class": "aws",
+      "field": "encryptionKey",
+      "how": "update",
+      "kind": "Destruction"
+    },
+    "Destruction.pendingWindowInDays": {
+      "actions": [
+        "kms:ScheduleKeyDeletion"
+      ],
+      "class": "aws",
+      "field": "pendingWindowInDays",
+      "how": "update",
+      "kind": "Destruction"
+    },
+    "Destruction.reason": {
+      "actions": [
+        "kms:ScheduleKeyDeletion"
+      ],
+      "class": "aws",
+      "field": "reason",
+      "how": "update",
+      "kind": "Destruction"
+    },
+    "Directory.domain": {
+      "actions": [
+        "ds:UpdateSettings"
+      ],
+      "class": "aws",
+      "field": "domain",
+      "how": "update",
+      "kind": "Directory"
+    },
+    "Directory.expose": {
+      "actions": [
+        "ds:UpdateSettings"
+      ],
+      "class": "aws",
+      "field": "expose",
+      "how": "update",
+      "kind": "Directory"
+    },
+    "Directory.size": {
+      "actions": [
+        "ds:UpdateSettings"
+      ],
+      "class": "aws",
+      "field": "size",
+      "how": "update",
+      "kind": "Directory"
+    },
+    "Directory.storageClass": {
+      "actions": [
+        "ds:UpdateSettings"
+      ],
+      "class": "extra",
+      "field": "storageClass",
+      "how": "update",
+      "kind": "Directory",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "The disk class of the directory's data volume, as a Kubernetes StorageClass name. AWS's term is the volume type."
+      }
+    },
+    "ElasticIp.address": {
+      "actions": [
+        "ec2:AssociateAddress"
+      ],
+      "class": "aws",
+      "field": "address",
+      "how": "update",
+      "kind": "ElasticIp"
+    },
+    "ElasticIp.externalNetwork": {
+      "actions": [
+        "ec2:AssociateAddress"
+      ],
+      "class": "aws",
+      "field": "externalNetwork",
+      "how": "update",
+      "kind": "ElasticIp"
+    },
+    "ElasticIp.mode": {
+      "actions": [
+        "ec2:AssociateAddress"
+      ],
+      "class": "aws",
+      "field": "mode",
+      "how": "update",
+      "kind": "ElasticIp"
+    },
+    "ElasticIp.natGateway": {
+      "actions": [
+        "ec2:AssociateAddress"
+      ],
+      "class": "aws",
+      "field": "natGateway",
+      "how": "update",
+      "kind": "ElasticIp"
+    },
+    "ElasticIp.ports": {
+      "actions": [
+        "ec2:AssociateAddress"
+      ],
+      "class": "aws",
+      "field": "ports",
+      "how": "update",
+      "kind": "ElasticIp"
+    },
+    "ElasticIp.target": {
+      "actions": [
+        "ec2:AssociateAddress"
+      ],
+      "class": "aws",
+      "field": "target",
+      "how": "update",
+      "kind": "ElasticIp"
+    },
+    "EmailSender.fromAddress": {
+      "actions": [
+        "ses:PutEmailIdentityMailFromAttributes"
+      ],
+      "class": "aws",
+      "field": "fromAddress",
+      "how": "update",
+      "kind": "EmailSender"
+    },
+    "EmailSender.fromName": {
+      "actions": [
+        "ses:PutEmailIdentityMailFromAttributes"
+      ],
+      "class": "aws",
+      "field": "fromName",
+      "how": "update",
+      "kind": "EmailSender"
+    },
+    "EncryptionKey.description": {
+      "actions": [
+        "kms:UpdateKeyDescription"
+      ],
+      "class": "aws",
+      "field": "description",
+      "how": "update",
+      "kind": "EncryptionKey"
+    },
+    "EncryptionKey.keyType": {
+      "actions": [
+        "kms:UpdateKeyDescription"
+      ],
+      "class": "aws",
+      "field": "keyType",
+      "how": "update",
+      "kind": "EncryptionKey"
+    },
+    "EncryptionKey.rotationDays": {
+      "actions": [
+        "kms:EnableKeyRotation"
+      ],
+      "class": "aws",
+      "field": "rotationDays",
+      "how": "field",
+      "kind": "EncryptionKey"
+    },
+    "Execution.credentialsNamespace": {
+      "actions": [
+        "states:StartExecution"
+      ],
+      "class": "extra",
+      "field": "credentialsNamespace",
+      "how": "update",
+      "kind": "Execution",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "Where an execution's Task credentials are read from, as a namespace. AWS runs a Task as the state machine's role, which the execution already names."
+      }
+    },
+    "Execution.credentialsSecret": {
+      "actions": [
+        "states:StartExecution"
+      ],
+      "class": "aws",
+      "field": "credentialsSecret",
+      "how": "update",
+      "kind": "Execution"
+    },
+    "Execution.input": {
+      "actions": [
+        "states:StartExecution"
+      ],
+      "class": "aws",
+      "field": "input",
+      "how": "update",
+      "kind": "Execution"
+    },
+    "Execution.stateMachineRef": {
+      "actions": [
+        "states:StartExecution"
+      ],
+      "class": "aws",
+      "field": "stateMachineRef",
+      "how": "update",
+      "kind": "Execution"
+    },
+    "FaultInjection.cpuLoad": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "cpuLoad",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.cpuWorkers": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "cpuWorkers",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.direction": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "direction",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.duration": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "duration",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.latency": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "latency",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.loss": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "loss",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.memory": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "memory",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.mode": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "mode",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.partitionPeer": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "partitionPeer",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.target": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "target",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.timeOffset": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "timeOffset",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.type": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "type",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FaultInjection.value": {
+      "actions": [
+        "fis:StartExperiment"
+      ],
+      "class": "aws",
+      "field": "value",
+      "how": "update",
+      "kind": "FaultInjection"
+    },
+    "FeatureGroup.eventTime": {
+      "actions": [
+        "sagemaker:UpdateFeatureGroup"
+      ],
+      "class": "aws",
+      "field": "eventTime",
+      "how": "update",
+      "kind": "FeatureGroup"
+    },
+    "FeatureGroup.features": {
+      "actions": [
+        "sagemaker:UpdateFeatureGroup"
+      ],
+      "class": "aws",
+      "field": "features",
+      "how": "update",
+      "kind": "FeatureGroup"
+    },
+    "FeatureGroup.recordIdentifier": {
+      "actions": [
+        "sagemaker:UpdateFeatureGroup"
+      ],
+      "class": "aws",
+      "field": "recordIdentifier",
+      "how": "update",
+      "kind": "FeatureGroup"
+    },
+    "FeatureGroup.ttlSeconds": {
+      "actions": [
+        "sagemaker:UpdateFeatureGroup"
+      ],
+      "class": "aws",
+      "field": "ttlSeconds",
+      "how": "update",
+      "kind": "FeatureGroup"
+    },
+    "FileShare.expose": {
+      "actions": [
+        "elasticfilesystem:UpdateFileSystem"
+      ],
+      "class": "aws",
+      "field": "expose",
+      "how": "update",
+      "kind": "FileShare"
+    },
+    "FileShare.nodeIP": {
+      "actions": [
+        "elasticfilesystem:UpdateFileSystem"
+      ],
+      "class": "extra",
+      "field": "nodeIP",
+      "how": "update",
+      "kind": "FileShare",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "A node address the file share is served from. AWS's file systems are reached through mount targets in a subnet."
+      }
+    },
+    "FileShare.size": {
+      "actions": [
+        "elasticfilesystem:UpdateFileSystem"
+      ],
+      "class": "aws",
+      "field": "size",
+      "how": "update",
+      "kind": "FileShare"
+    },
+    "FileShare.storageClass": {
+      "actions": [
+        "elasticfilesystem:UpdateFileSystem"
+      ],
+      "class": "extra",
+      "field": "storageClass",
+      "how": "update",
+      "kind": "FileShare",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "The disk class of the share, as a Kubernetes StorageClass name. AWS's term is the performance mode or storage class of the file system."
+      }
+    },
+    "FlowLog.namespace": {
+      "actions": [
+        "ec2:CreateFlowLogs"
+      ],
+      "class": "extra",
+      "field": "namespace",
+      "how": "update",
+      "kind": "FlowLog",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "The namespace whose traffic is logged. AWS logs a VPC, subnet or network interface."
+      }
+    },
+    "FlowLog.nodeSelector": {
+      "actions": [
+        "ec2:CreateFlowLogs"
+      ],
+      "class": "extra",
+      "field": "nodeSelector",
+      "how": "update",
+      "kind": "FlowLog",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "Which nodes capture the flow log. AWS captures it in the network fabric, with nothing to place."
+      }
+    },
+    "FlowLog.samplingRate": {
+      "actions": [
+        "ec2:CreateFlowLogs"
+      ],
+      "class": "aws",
+      "field": "samplingRate",
+      "how": "update",
+      "kind": "FlowLog"
+    },
+    "Function.aliases": {
+      "actions": [
+        "lambda:UpdateAlias"
+      ],
+      "class": "aws",
+      "field": "aliases",
+      "how": "field",
+      "kind": "Function"
+    },
+    "Function.burstable": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "burstable",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.code": {
+      "actions": [
+        "lambda:UpdateFunctionCode"
+      ],
+      "class": "aws",
+      "field": "code",
+      "how": "field",
+      "kind": "Function"
+    },
+    "Function.env": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "env",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.expose": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "expose",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.gpu": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "gpu",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.image": {
+      "actions": [
+        "lambda:UpdateFunctionCode"
+      ],
+      "class": "aws",
+      "field": "image",
+      "how": "field",
+      "kind": "Function"
+    },
+    "Function.memory": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "memory",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.memoryRequest": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "memoryRequest",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.port": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "port",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.queues": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "queues",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.reservedConcurrency": {
+      "actions": [
+        "lambda:PutFunctionConcurrency"
+      ],
+      "class": "aws",
+      "field": "reservedConcurrency",
+      "how": "field",
+      "kind": "Function"
+    },
+    "Function.role": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "role",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.scaling": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "scaling",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.secrets": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "secrets",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.securityGroups": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "securityGroups",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.timeout": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "timeout",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Function.trigger": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "trigger",
+      "how": "update",
+      "kind": "Function"
+    },
+    "Grant.approval": {
+      "actions": [
+        "iam:AttachUserPolicy"
+      ],
+      "class": "aws",
+      "field": "approval",
+      "how": "update",
+      "kind": "Grant"
+    },
+    "Grant.clusterRole": {
+      "actions": [
+        "iam:AttachUserPolicy"
+      ],
+      "class": "aws",
+      "field": "clusterRole",
+      "how": "update",
+      "kind": "Grant"
+    },
+    "Grant.duration": {
+      "actions": [
+        "iam:AttachUserPolicy"
+      ],
+      "class": "aws",
+      "field": "duration",
+      "how": "update",
+      "kind": "Grant"
+    },
+    "Grant.reason": {
+      "actions": [
+        "iam:AttachUserPolicy"
+      ],
+      "class": "aws",
+      "field": "reason",
+      "how": "update",
+      "kind": "Grant"
+    },
+    "Grant.requestedBy": {
+      "actions": [
+        "iam:AttachUserPolicy"
+      ],
+      "class": "aws",
+      "field": "requestedBy",
+      "how": "update",
+      "kind": "Grant"
+    },
+    "Grant.subject": {
+      "actions": [
+        "iam:AttachUserPolicy"
+      ],
+      "class": "aws",
+      "field": "subject",
+      "how": "update",
+      "kind": "Grant"
+    },
+    "GraphQLApi.apiKeysSecret": {
+      "actions": [
+        "appsync:UpdateGraphqlApi"
+      ],
+      "class": "aws",
+      "field": "apiKeysSecret",
+      "how": "update",
+      "kind": "GraphQLApi"
+    },
+    "GraphQLApi.dataSources": {
+      "actions": [
+        "appsync:UpdateDataSource"
+      ],
+      "class": "aws",
+      "field": "dataSources",
+      "how": "field",
+      "kind": "GraphQLApi"
+    },
+    "GraphQLApi.image": {
+      "actions": [
+        "appsync:UpdateGraphqlApi"
+      ],
+      "class": "aws",
+      "field": "image",
+      "how": "update",
+      "kind": "GraphQLApi"
+    },
+    "GraphQLApi.limits": {
+      "actions": [
+        "appsync:UpdateGraphqlApi"
+      ],
+      "class": "aws",
+      "field": "limits",
+      "how": "update",
+      "kind": "GraphQLApi"
+    },
+    "GraphQLApi.mongoDB": {
+      "actions": [
+        "appsync:UpdateGraphqlApi"
+      ],
+      "class": "aws",
+      "field": "mongoDB",
+      "how": "update",
+      "kind": "GraphQLApi"
+    },
+    "GraphQLApi.mongoURI": {
+      "actions": [
+        "appsync:UpdateGraphqlApi"
+      ],
+      "class": "aws",
+      "field": "mongoURI",
+      "how": "update",
+      "kind": "GraphQLApi"
+    },
+    "GraphQLApi.replicas": {
+      "actions": [
+        "appsync:UpdateGraphqlApi"
+      ],
+      "class": "aws",
+      "field": "replicas",
+      "how": "update",
+      "kind": "GraphQLApi"
+    },
+    "GraphQLApi.resolvers": {
+      "actions": [
+        "appsync:UpdateResolver"
+      ],
+      "class": "aws",
+      "field": "resolvers",
+      "how": "field",
+      "kind": "GraphQLApi"
+    },
+    "GraphQLApi.schema": {
+      "actions": [
+        "appsync:StartSchemaCreation"
+      ],
+      "class": "aws",
+      "field": "schema",
+      "how": "field",
+      "kind": "GraphQLApi"
+    },
+    "GraphQLApi.subscriptions": {
+      "actions": [
+        "appsync:UpdateGraphqlApi"
+      ],
+      "class": "aws",
+      "field": "subscriptions",
+      "how": "update",
+      "kind": "GraphQLApi"
+    },
+    "Group.clusterRole": {
+      "actions": [
+        "iam:UpdateGroup"
+      ],
+      "class": "aws",
+      "field": "clusterRole",
+      "how": "update",
+      "kind": "Group"
+    },
+    "Group.description": {
+      "actions": [
+        "iam:UpdateGroup"
+      ],
+      "class": "aws",
+      "field": "description",
+      "how": "update",
+      "kind": "Group"
+    },
+    "Group.inlinePolicies": {
+      "actions": [
+        "iam:UpdateGroup"
+      ],
+      "class": "aws",
+      "field": "inlinePolicies",
+      "how": "update",
+      "kind": "Group"
+    },
+    "Group.policies": {
+      "actions": [
+        "iam:AttachGroupPolicy",
+        "iam:DetachGroupPolicy"
+      ],
+      "class": "aws",
+      "field": "policies",
+      "how": "field",
+      "kind": "Group"
+    },
+    "HttpApi.authorizer": {
+      "actions": [
+        "apigateway:PATCH"
+      ],
+      "class": "aws",
+      "field": "authorizer",
+      "how": "update",
+      "kind": "HttpApi"
+    },
+    "HttpApi.basePath": {
+      "actions": [
+        "apigateway:PATCH"
+      ],
+      "class": "aws",
+      "field": "basePath",
+      "how": "update",
+      "kind": "HttpApi"
+    },
+    "HttpApi.cors": {
+      "actions": [
+        "apigateway:PATCH"
+      ],
+      "class": "aws",
+      "field": "cors",
+      "how": "update",
+      "kind": "HttpApi"
+    },
+    "HttpApi.domain": {
+      "actions": [
+        "apigateway:PATCH"
+      ],
+      "class": "aws",
+      "field": "domain",
+      "how": "update",
+      "kind": "HttpApi"
+    },
+    "HttpApi.domains": {
+      "actions": [
+        "apigateway:PATCH"
+      ],
+      "class": "aws",
+      "field": "domains",
+      "how": "update",
+      "kind": "HttpApi"
+    },
+    "HttpApi.rateLimit": {
+      "actions": [
+        "apigateway:PATCH"
+      ],
+      "class": "aws",
+      "field": "rateLimit",
+      "how": "update",
+      "kind": "HttpApi"
+    },
+    "HttpApi.routes": {
+      "actions": [
+        "apigateway:PATCH"
+      ],
+      "class": "aws",
+      "field": "routes",
+      "how": "update",
+      "kind": "HttpApi"
+    },
+    "HttpApi.tls": {
+      "actions": [
+        "apigateway:PATCH"
+      ],
+      "class": "aws",
+      "field": "tls",
+      "how": "update",
+      "kind": "HttpApi"
+    },
+    "HttpApi.waf": {
+      "actions": [
+        "apigateway:PATCH"
+      ],
+      "class": "aws",
+      "field": "waf",
+      "how": "update",
+      "kind": "HttpApi"
+    },
+    "IdentityProvider.audiences": {
+      "actions": [
+        "iam:AddClientIDToOpenIDConnectProvider",
+        "iam:RemoveClientIDFromOpenIDConnectProvider"
+      ],
+      "class": "aws",
+      "field": "audiences",
+      "how": "field",
+      "kind": "IdentityProvider"
+    },
+    "IdentityProvider.issuerURL": {
+      "actions": [
+        "iam:UpdateOpenIDConnectProviderThumbprint"
+      ],
+      "class": "aws",
+      "field": "issuerURL",
+      "how": "update",
+      "kind": "IdentityProvider"
+    },
+    "IdentityProvider.subjectClaim": {
+      "actions": [
+        "iam:UpdateOpenIDConnectProviderThumbprint"
+      ],
+      "class": "aws",
+      "field": "subjectClaim",
+      "how": "update",
+      "kind": "IdentityProvider"
+    },
+    "Migration.mode": {
+      "actions": [
+        "dms:ModifyReplicationTask"
+      ],
+      "class": "aws",
+      "field": "mode",
+      "how": "update",
+      "kind": "Migration"
+    },
+    "Migration.source": {
+      "actions": [
+        "dms:ModifyReplicationTask"
+      ],
+      "class": "aws",
+      "field": "source",
+      "how": "update",
+      "kind": "Migration"
+    },
+    "Migration.storageClass": {
+      "actions": [
+        "dms:ModifyReplicationTask"
+      ],
+      "class": "extra",
+      "field": "storageClass",
+      "how": "update",
+      "kind": "Migration",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "The disk class of the migration's working volume, as a Kubernetes StorageClass name. AWS's term is the replication instance's storage."
+      }
+    },
+    "Migration.tables": {
+      "actions": [
+        "dms:ModifyReplicationTask"
+      ],
+      "class": "aws",
+      "field": "tables",
+      "how": "update",
+      "kind": "Migration"
+    },
+    "Migration.target": {
+      "actions": [
+        "dms:ModifyReplicationTask"
+      ],
+      "class": "aws",
+      "field": "target",
+      "how": "update",
+      "kind": "Migration"
+    },
+    "Model.domain": {
+      "actions": [
+        "sagemaker:UpdateEndpoint"
+      ],
+      "class": "aws",
+      "field": "domain",
+      "how": "update",
+      "kind": "Model"
+    },
+    "Model.expose": {
+      "actions": [
+        "sagemaker:UpdateEndpoint"
+      ],
+      "class": "aws",
+      "field": "expose",
+      "how": "update",
+      "kind": "Model"
+    },
+    "Model.highAvailability": {
+      "actions": [
+        "sagemaker:UpdateEndpoint"
+      ],
+      "class": "aws",
+      "field": "highAvailability",
+      "how": "update",
+      "kind": "Model"
+    },
+    "Model.model": {
+      "actions": [
+        "sagemaker:UpdateEndpoint"
+      ],
+      "class": "aws",
+      "field": "model",
+      "how": "update",
+      "kind": "Model"
+    },
+    "Model.serve": {
+      "actions": [
+        "sagemaker:UpdateEndpoint"
+      ],
+      "class": "aws",
+      "field": "serve",
+      "how": "update",
+      "kind": "Model"
+    },
+    "Model.storageSize": {
+      "actions": [
+        "sagemaker:UpdateEndpoint"
+      ],
+      "class": "aws",
+      "field": "storageSize",
+      "how": "update",
+      "kind": "Model"
+    },
+    "ModelMonitor.baseline": {
+      "actions": [
+        "sagemaker:UpdateMonitoringSchedule"
+      ],
+      "class": "aws",
+      "field": "baseline",
+      "how": "update",
+      "kind": "ModelMonitor"
+    },
+    "ModelMonitor.current": {
+      "actions": [
+        "sagemaker:UpdateMonitoringSchedule"
+      ],
+      "class": "aws",
+      "field": "current",
+      "how": "update",
+      "kind": "ModelMonitor"
+    },
+    "ModelMonitor.features": {
+      "actions": [
+        "sagemaker:UpdateMonitoringSchedule"
+      ],
+      "class": "aws",
+      "field": "features",
+      "how": "update",
+      "kind": "ModelMonitor"
+    },
+    "ModelMonitor.modelRef": {
+      "actions": [
+        "sagemaker:UpdateMonitoringSchedule"
+      ],
+      "class": "aws",
+      "field": "modelRef",
+      "how": "update",
+      "kind": "ModelMonitor"
+    },
+    "ModelMonitor.output": {
+      "actions": [
+        "sagemaker:UpdateMonitoringSchedule"
+      ],
+      "class": "aws",
+      "field": "output",
+      "how": "update",
+      "kind": "ModelMonitor"
+    },
+    "ModelMonitor.schedule": {
+      "actions": [
+        "sagemaker:UpdateMonitoringSchedule"
+      ],
+      "class": "aws",
+      "field": "schedule",
+      "how": "update",
+      "kind": "ModelMonitor"
+    },
+    "ModelMonitor.threshold": {
+      "actions": [
+        "sagemaker:UpdateMonitoringSchedule"
+      ],
+      "class": "aws",
+      "field": "threshold",
+      "how": "update",
+      "kind": "ModelMonitor"
+    },
+    "ModelPackage.approvalStatus": {
+      "actions": [
+        "sagemaker:UpdateModelPackage"
+      ],
+      "class": "aws",
+      "field": "approvalStatus",
+      "how": "update",
+      "kind": "ModelPackage"
+    },
+    "ModelPackage.artifact": {
+      "actions": [
+        "sagemaker:UpdateModelPackage"
+      ],
+      "class": "aws",
+      "field": "artifact",
+      "how": "update",
+      "kind": "ModelPackage"
+    },
+    "ModelPackage.description": {
+      "actions": [
+        "sagemaker:UpdateModelPackage"
+      ],
+      "class": "aws",
+      "field": "description",
+      "how": "update",
+      "kind": "ModelPackage"
+    },
+    "ModelPackage.framework": {
+      "actions": [
+        "sagemaker:UpdateModelPackage"
+      ],
+      "class": "aws",
+      "field": "framework",
+      "how": "update",
+      "kind": "ModelPackage"
+    },
+    "ModelPackage.image": {
+      "actions": [
+        "sagemaker:UpdateModelPackage"
+      ],
+      "class": "aws",
+      "field": "image",
+      "how": "update",
+      "kind": "ModelPackage"
+    },
+    "ModelPackage.metrics": {
+      "actions": [
+        "sagemaker:UpdateModelPackage"
+      ],
+      "class": "aws",
+      "field": "metrics",
+      "how": "update",
+      "kind": "ModelPackage"
+    },
+    "ModelPackage.modelName": {
+      "actions": [
+        "sagemaker:UpdateModelPackage"
+      ],
+      "class": "aws",
+      "field": "modelName",
+      "how": "update",
+      "kind": "ModelPackage"
+    },
+    "ModelPackage.port": {
+      "actions": [
+        "sagemaker:UpdateModelPackage"
+      ],
+      "class": "aws",
+      "field": "port",
+      "how": "update",
+      "kind": "ModelPackage"
+    },
+    "ModelPackage.version": {
+      "actions": [
+        "sagemaker:UpdateModelPackage"
+      ],
+      "class": "aws",
+      "field": "version",
+      "how": "update",
+      "kind": "ModelPackage"
+    },
+    "NatGateway.egress": {
+      "actions": [
+        "ec2:CreateNatGateway"
+      ],
+      "class": "aws",
+      "field": "egress",
+      "how": "update",
+      "kind": "NatGateway"
+    },
+    "NatGateway.externalNetwork": {
+      "actions": [
+        "ec2:CreateNatGateway"
+      ],
+      "class": "aws",
+      "field": "externalNetwork",
+      "how": "update",
+      "kind": "NatGateway"
+    },
+    "NatGateway.internalIp": {
+      "actions": [
+        "ec2:CreateNatGateway"
+      ],
+      "class": "aws",
+      "field": "internalIp",
+      "how": "update",
+      "kind": "NatGateway"
+    },
+    "NatGateway.nodeSelector": {
+      "actions": [
+        "ec2:CreateNatGateway"
+      ],
+      "class": "extra",
+      "field": "nodeSelector",
+      "how": "update",
+      "kind": "NatGateway",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "Which nodes may host the gateway. AWS places a NAT gateway in the subnet it names."
+      }
+    },
+    "NatGateway.subnet": {
+      "actions": [
+        "ec2:CreateNatGateway"
+      ],
+      "class": "aws",
+      "field": "subnet",
+      "how": "update",
+      "kind": "NatGateway"
+    },
+    "NatGateway.vpc": {
+      "actions": [
+        "ec2:CreateNatGateway"
+      ],
+      "class": "aws",
+      "field": "vpc",
+      "how": "update",
+      "kind": "NatGateway"
+    },
+    "Parameter.expiresAt": {
+      "actions": [
+        "ssm:PutParameter"
+      ],
+      "class": "aws",
+      "field": "expiresAt",
+      "how": "update",
+      "kind": "Parameter"
+    },
+    "Parameter.path": {
+      "actions": [
+        "ssm:PutParameter"
+      ],
+      "class": "aws",
+      "field": "path",
+      "how": "update",
+      "kind": "Parameter"
+    },
+    "Parameter.tier": {
+      "actions": [
+        "ssm:PutParameter"
+      ],
+      "class": "aws",
+      "field": "tier",
+      "how": "update",
+      "kind": "Parameter"
+    },
+    "Parameter.type": {
+      "actions": [
+        "ssm:PutParameter"
+      ],
+      "class": "aws",
+      "field": "type",
+      "how": "update",
+      "kind": "Parameter"
+    },
+    "Parameter.value": {
+      "actions": [
+        "ssm:PutParameter"
+      ],
+      "class": "aws",
+      "field": "value",
+      "how": "update",
+      "kind": "Parameter"
+    },
+    "Policy.arn": {
+      "actions": [
+        "iam:CreatePolicyVersion"
+      ],
+      "class": "aws",
+      "field": "arn",
+      "how": "update",
+      "kind": "Policy"
+    },
+    "Policy.controlPlane": {
+      "actions": [
+        "iam:CreatePolicyVersion"
+      ],
+      "class": "aws",
+      "field": "controlPlane",
+      "how": "update",
+      "kind": "Policy"
+    },
+    "Policy.dataPlane": {
+      "actions": [
+        "iam:CreatePolicyVersion"
+      ],
+      "class": "aws",
+      "field": "dataPlane",
+      "how": "update",
+      "kind": "Policy"
+    },
+    "Policy.description": {
+      "actions": [
+        "iam:CreatePolicyVersion"
+      ],
+      "class": "aws",
+      "field": "description",
+      "how": "update",
+      "kind": "Policy"
+    },
+    "Policy.document": {
+      "actions": [
+        "iam:CreatePolicyVersion"
+      ],
+      "class": "aws",
+      "field": "document",
+      "how": "update",
+      "kind": "Policy"
+    },
+    "Policy.policyName": {
+      "actions": [
+        "iam:CreatePolicyVersion"
+      ],
+      "class": "aws",
+      "field": "policyName",
+      "how": "update",
+      "kind": "Policy"
+    },
+    "Policy.statements": {
+      "actions": [
+        "iam:CreatePolicyVersion"
+      ],
+      "class": "aws",
+      "field": "statements",
+      "how": "update",
+      "kind": "Policy"
+    },
+    "ProcessingJob.args": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "args",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.backoffLimit": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "backoffLimit",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.command": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "command",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.cpu": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "cpu",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.env": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "env",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.gpu": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "gpu",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.gpuTier": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "gpuTier",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.image": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "image",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.inputs": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "inputs",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.maxRuntimeSeconds": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "maxRuntimeSeconds",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.memory": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "memory",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.outputs": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "outputs",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.secrets": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "secrets",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.volumeMounts": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "volumeMounts",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "ProcessingJob.volumes": {
+      "actions": [
+        "sagemaker:CreateProcessingJob"
+      ],
+      "class": "aws",
+      "field": "volumes",
+      "how": "update",
+      "kind": "ProcessingJob"
+    },
+    "Query.engine": {
+      "actions": [
+        "athena:StartQueryExecution"
+      ],
+      "class": "aws",
+      "field": "engine",
+      "how": "update",
+      "kind": "Query"
+    },
+    "Query.outputBucket": {
+      "actions": [
+        "athena:StartQueryExecution"
+      ],
+      "class": "aws",
+      "field": "outputBucket",
+      "how": "update",
+      "kind": "Query"
+    },
+    "Query.sql": {
+      "actions": [
+        "athena:StartQueryExecution"
+      ],
+      "class": "aws",
+      "field": "sql",
+      "how": "update",
+      "kind": "Query"
+    },
+    "Queue.deduplicationWindowMinutes": {
+      "actions": [
+        "sqs:SetQueueAttributes"
+      ],
+      "class": "aws",
+      "field": "deduplicationWindowMinutes",
+      "how": "update",
+      "kind": "Queue"
+    },
+    "Queue.fanout": {
+      "actions": [
+        "sqs:SetQueueAttributes"
+      ],
+      "class": "aws",
+      "field": "fanout",
+      "how": "update",
+      "kind": "Queue"
+    },
+    "Queue.fifo": {
+      "actions": [
+        "sqs:SetQueueAttributes"
+      ],
+      "class": "aws",
+      "field": "fifo",
+      "how": "update",
+      "kind": "Queue"
+    },
+    "Queue.maxBytes": {
+      "actions": [
+        "sqs:SetQueueAttributes"
+      ],
+      "class": "aws",
+      "field": "maxBytes",
+      "how": "update",
+      "kind": "Queue"
+    },
+    "Queue.queueName": {
+      "actions": [
+        "sqs:SetQueueAttributes"
+      ],
+      "class": "aws",
+      "field": "queueName",
+      "how": "update",
+      "kind": "Queue"
+    },
+    "Queue.retentionHours": {
+      "actions": [
+        "sqs:SetQueueAttributes"
+      ],
+      "class": "aws",
+      "field": "retentionHours",
+      "how": "update",
+      "kind": "Queue"
+    },
+    "Replication.originColumn": {
+      "actions": [
+        "dms:ModifyReplicationTask"
+      ],
+      "class": "aws",
+      "field": "originColumn",
+      "how": "update",
+      "kind": "Replication"
+    },
+    "Replication.scheduling": {
+      "actions": [
+        "dms:ModifyReplicationTask"
+      ],
+      "class": "aws",
+      "field": "scheduling",
+      "how": "update",
+      "kind": "Replication"
+    },
+    "Replication.siteA": {
+      "actions": [
+        "dms:ModifyReplicationTask"
+      ],
+      "class": "aws",
+      "field": "siteA",
+      "how": "update",
+      "kind": "Replication"
+    },
+    "Replication.siteB": {
+      "actions": [
+        "dms:ModifyReplicationTask"
+      ],
+      "class": "aws",
+      "field": "siteB",
+      "how": "update",
+      "kind": "Replication"
+    },
+    "Replication.tables": {
+      "actions": [
+        "dms:ModifyReplicationTask"
+      ],
+      "class": "aws",
+      "field": "tables",
+      "how": "update",
+      "kind": "Replication"
+    },
+    "Replication.versionColumn": {
+      "actions": [
+        "dms:ModifyReplicationTask"
+      ],
+      "class": "aws",
+      "field": "versionColumn",
+      "how": "update",
+      "kind": "Replication"
+    },
+    "Role.description": {
+      "actions": [
+        "iam:UpdateRole"
+      ],
+      "class": "aws",
+      "field": "description",
+      "how": "update",
+      "kind": "Role"
+    },
+    "Role.inlinePolicies": {
+      "actions": [
+        "iam:UpdateRole"
+      ],
+      "class": "aws",
+      "field": "inlinePolicies",
+      "how": "update",
+      "kind": "Role"
+    },
+    "Role.maxSessionDuration": {
+      "actions": [
+        "iam:UpdateRole"
+      ],
+      "class": "aws",
+      "field": "maxSessionDuration",
+      "how": "update",
+      "kind": "Role"
+    },
+    "Role.permissionBoundary": {
+      "actions": [
+        "iam:PutRolePermissionsBoundary"
+      ],
+      "class": "aws",
+      "field": "permissionBoundary",
+      "how": "field",
+      "kind": "Role"
+    },
+    "Role.policies": {
+      "actions": [
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy"
+      ],
+      "class": "aws",
+      "field": "policies",
+      "how": "field",
+      "kind": "Role"
+    },
+    "Role.revokeSessionsBefore": {
+      "actions": [
+        "iam:UpdateRole"
+      ],
+      "class": "aws",
+      "field": "revokeSessionsBefore",
+      "how": "update",
+      "kind": "Role"
+    },
+    "Role.trust": {
+      "actions": [
+        "iam:UpdateAssumeRolePolicy"
+      ],
+      "class": "aws",
+      "field": "trust",
+      "how": "field",
+      "kind": "Role"
+    },
+    "ScheduledJob.args": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "args",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.command": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "command",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.concurrencyPolicy": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "concurrencyPolicy",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.cpu": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "cpu",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.env": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "env",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.failedJobsHistoryLimit": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "failedJobsHistoryLimit",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.gpu": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "gpu",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.gpuTier": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "gpuTier",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.image": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "image",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.memory": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "memory",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.queues": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "queues",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.retries": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "retries",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.schedule": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "schedule",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.secrets": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "secrets",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.startingDeadline": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "startingDeadline",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.successfulJobsHistoryLimit": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "successfulJobsHistoryLimit",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.suspend": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "suspend",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.timeZone": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "timeZone",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "ScheduledJob.timeout": {
+      "actions": [
+        "scheduler:UpdateSchedule"
+      ],
+      "class": "aws",
+      "field": "timeout",
+      "how": "update",
+      "kind": "ScheduledJob"
+    },
+    "SecurityGroup.egress": {
+      "actions": [
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupEgress"
+      ],
+      "class": "aws",
+      "field": "egress",
+      "how": "field",
+      "kind": "SecurityGroup"
+    },
+    "SecurityGroup.ingress": {
+      "actions": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress"
+      ],
+      "class": "aws",
+      "field": "ingress",
+      "how": "field",
+      "kind": "SecurityGroup"
+    },
+    "StateMachine.definition": {
+      "actions": [
+        "states:UpdateStateMachine"
+      ],
+      "class": "aws",
+      "field": "definition",
+      "how": "update",
+      "kind": "StateMachine"
+    },
+    "StateMachine.roleArn": {
+      "actions": [
+        "states:UpdateStateMachine"
+      ],
+      "class": "aws",
+      "field": "roleArn",
+      "how": "update",
+      "kind": "StateMachine"
+    },
+    "StateMachine.type": {
+      "actions": [
+        "states:UpdateStateMachine"
+      ],
+      "class": "aws",
+      "field": "type",
+      "how": "update",
+      "kind": "StateMachine"
+    },
+    "StaticSite.bucket": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "bucket",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "StaticSite.build": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "build",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "StaticSite.compress": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "compress",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "StaticSite.domain": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "domain",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "StaticSite.domains": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "domains",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "StaticSite.errorDocument": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "errorDocument",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "StaticSite.indexDocument": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "indexDocument",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "StaticSite.responseHeaders": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "responseHeaders",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "StaticSite.spa": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "spa",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "StaticSite.syncIntervalSeconds": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "syncIntervalSeconds",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "StaticSite.tls": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "tls",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "StaticSite.viewerProtocolPolicy": {
+      "actions": [
+        "cloudfront:UpdateDistribution"
+      ],
+      "class": "aws",
+      "field": "viewerProtocolPolicy",
+      "how": "update",
+      "kind": "StaticSite"
+    },
+    "Stream.source": {
+      "actions": [
+        "kinesis:CreateStream"
+      ],
+      "class": "aws",
+      "field": "source",
+      "how": "update",
+      "kind": "Stream"
+    },
+    "Stream.storageClass": {
+      "actions": [
+        "kinesis:CreateStream"
+      ],
+      "class": "extra",
+      "field": "storageClass",
+      "how": "update",
+      "kind": "Stream",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "The disk class of the stream's storage, as a Kubernetes StorageClass name. Kinesis exposes none."
+      }
+    },
+    "Subnet.acls": {
+      "actions": [
+        "ec2:ModifySubnetAttribute"
+      ],
+      "class": "aws",
+      "field": "acls",
+      "how": "update",
+      "kind": "Subnet"
+    },
+    "Subnet.allowSubnets": {
+      "actions": [
+        "ec2:ModifySubnetAttribute"
+      ],
+      "class": "aws",
+      "field": "allowSubnets",
+      "how": "update",
+      "kind": "Subnet"
+    },
+    "Subnet.cidr": {
+      "actions": [
+        "ec2:ModifySubnetAttribute"
+      ],
+      "class": "aws",
+      "field": "cidr",
+      "how": "update",
+      "kind": "Subnet"
+    },
+    "Subnet.gateway": {
+      "actions": [
+        "ec2:ModifySubnetAttribute"
+      ],
+      "class": "aws",
+      "field": "gateway",
+      "how": "update",
+      "kind": "Subnet"
+    },
+    "Subnet.namespaces": {
+      "actions": [
+        "ec2:ModifySubnetAttribute"
+      ],
+      "class": "extra",
+      "field": "namespaces",
+      "how": "update",
+      "kind": "Subnet",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "The namespaces attached to the subnet. On AWS a resource names its subnet, not the other way round."
+      }
+    },
+    "Subnet.private": {
+      "actions": [
+        "ec2:ModifySubnetAttribute"
+      ],
+      "class": "aws",
+      "field": "private",
+      "how": "update",
+      "kind": "Subnet"
+    },
+    "Subnet.vpc": {
+      "actions": [
+        "ec2:ModifySubnetAttribute"
+      ],
+      "class": "aws",
+      "field": "vpc",
+      "how": "update",
+      "kind": "Subnet"
+    },
+    "Table.billingMode": {
+      "actions": [
+        "dynamodb:UpdateTable"
+      ],
+      "class": "aws",
+      "field": "billingMode",
+      "how": "update",
+      "kind": "Table"
+    },
+    "Table.globalSecondaryIndexes": {
+      "actions": [
+        "dynamodb:UpdateTable"
+      ],
+      "class": "aws",
+      "field": "globalSecondaryIndexes",
+      "how": "update",
+      "kind": "Table"
+    },
+    "Table.hashKey": {
+      "actions": [
+        "dynamodb:UpdateTable"
+      ],
+      "class": "aws",
+      "field": "hashKey",
+      "how": "update",
+      "kind": "Table"
+    },
+    "Table.localSecondaryIndexes": {
+      "actions": [
+        "dynamodb:UpdateTable"
+      ],
+      "class": "aws",
+      "field": "localSecondaryIndexes",
+      "how": "update",
+      "kind": "Table"
+    },
+    "Table.rangeKey": {
+      "actions": [
+        "dynamodb:UpdateTable"
+      ],
+      "class": "aws",
+      "field": "rangeKey",
+      "how": "update",
+      "kind": "Table"
+    },
+    "Table.streamSpecification": {
+      "actions": [
+        "dynamodb:UpdateTable"
+      ],
+      "class": "aws",
+      "field": "streamSpecification",
+      "how": "update",
+      "kind": "Table"
+    },
+    "Table.tableName": {
+      "actions": [
+        "dynamodb:UpdateTable"
+      ],
+      "class": "aws",
+      "field": "tableName",
+      "how": "update",
+      "kind": "Table"
+    },
+    "Table.ttlAttribute": {
+      "actions": [
+        "dynamodb:UpdateTimeToLive"
+      ],
+      "class": "aws",
+      "field": "ttlAttribute",
+      "how": "field",
+      "kind": "Table"
+    },
+    "TrainingJob.args": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "args",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.backoffLimit": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "backoffLimit",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.command": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "command",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.cpu": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "cpu",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.dataset": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "dataset",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.env": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "env",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.gpu": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "gpu",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.gpuTier": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "gpuTier",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.image": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "image",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.maxRuntimeSeconds": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "maxRuntimeSeconds",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.memory": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "memory",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.output": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "output",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TrainingJob.secrets": {
+      "actions": [
+        "sagemaker:CreateTrainingJob"
+      ],
+      "class": "aws",
+      "field": "secrets",
+      "how": "update",
+      "kind": "TrainingJob"
+    },
+    "TransitGateway.attachments": {
+      "actions": [
+        "ec2:ModifyTransitGateway"
+      ],
+      "class": "aws",
+      "field": "attachments",
+      "how": "update",
+      "kind": "TransitGateway"
+    },
+    "TuningJob.maxParallel": {
+      "actions": [
+        "sagemaker:CreateHyperParameterTuningJob"
+      ],
+      "class": "aws",
+      "field": "maxParallel",
+      "how": "update",
+      "kind": "TuningJob"
+    },
+    "TuningJob.maxTrials": {
+      "actions": [
+        "sagemaker:CreateHyperParameterTuningJob"
+      ],
+      "class": "aws",
+      "field": "maxTrials",
+      "how": "update",
+      "kind": "TuningJob"
+    },
+    "TuningJob.metricRegex": {
+      "actions": [
+        "sagemaker:CreateHyperParameterTuningJob"
+      ],
+      "class": "aws",
+      "field": "metricRegex",
+      "how": "update",
+      "kind": "TuningJob"
+    },
+    "TuningJob.objective": {
+      "actions": [
+        "sagemaker:CreateHyperParameterTuningJob"
+      ],
+      "class": "aws",
+      "field": "objective",
+      "how": "update",
+      "kind": "TuningJob"
+    },
+    "TuningJob.parameters": {
+      "actions": [
+        "sagemaker:CreateHyperParameterTuningJob"
+      ],
+      "class": "aws",
+      "field": "parameters",
+      "how": "update",
+      "kind": "TuningJob"
+    },
+    "TuningJob.training": {
+      "actions": [
+        "sagemaker:CreateHyperParameterTuningJob"
+      ],
+      "class": "aws",
+      "field": "training",
+      "how": "update",
+      "kind": "TuningJob"
+    },
+    "User.disabled": {
+      "actions": [
+        "iam:UpdateLoginProfile"
+      ],
+      "class": "aws",
+      "field": "disabled",
+      "how": "field",
+      "kind": "User"
+    },
+    "User.displayName": {
+      "actions": [
+        "iam:UpdateUser"
+      ],
+      "class": "aws",
+      "field": "displayName",
+      "how": "update",
+      "kind": "User"
+    },
+    "User.email": {
+      "actions": [
+        "iam:UpdateUser"
+      ],
+      "class": "aws",
+      "field": "email",
+      "how": "update",
+      "kind": "User"
+    },
+    "User.groups": {
+      "actions": [
+        "iam:AddUserToGroup",
+        "iam:RemoveUserFromGroup"
+      ],
+      "class": "aws",
+      "field": "groups",
+      "how": "field",
+      "kind": "User"
+    },
+    "User.inlinePolicies": {
+      "actions": [
+        "iam:UpdateUser"
+      ],
+      "class": "aws",
+      "field": "inlinePolicies",
+      "how": "update",
+      "kind": "User"
+    },
+    "User.passwordSecretRef": {
+      "actions": [
+        "iam:UpdateLoginProfile"
+      ],
+      "class": "extra",
+      "field": "passwordSecretRef",
+      "how": "field",
+      "kind": "User",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "A Kubernetes Secret holding the user's console password. AWS sets it with CreateLoginProfile, which the console and the IAM API already serve."
+      }
+    },
+    "User.permissionBoundary": {
+      "actions": [
+        "iam:PutUserPermissionsBoundary"
+      ],
+      "class": "aws",
+      "field": "permissionBoundary",
+      "how": "field",
+      "kind": "User"
+    },
+    "User.policies": {
+      "actions": [
+        "iam:AttachUserPolicy",
+        "iam:DetachUserPolicy"
+      ],
+      "class": "aws",
+      "field": "policies",
+      "how": "field",
+      "kind": "User"
+    },
+    "User.source": {
+      "actions": [
+        "iam:UpdateUser"
+      ],
+      "class": "aws",
+      "field": "source",
+      "how": "update",
+      "kind": "User"
+    },
+    "UserPool.clientId": {
+      "actions": [
+        "cognito-idp:UpdateUserPool"
+      ],
+      "class": "aws",
+      "field": "clientId",
+      "how": "update",
+      "kind": "UserPool"
+    },
+    "UserPool.hostname": {
+      "actions": [
+        "cognito-idp:UpdateUserPool"
+      ],
+      "class": "aws",
+      "field": "hostname",
+      "how": "update",
+      "kind": "UserPool"
+    },
+    "UserPool.realm": {
+      "actions": [
+        "cognito-idp:UpdateUserPool"
+      ],
+      "class": "aws",
+      "field": "realm",
+      "how": "update",
+      "kind": "UserPool"
+    },
+    "UserPool.registrationAllowed": {
+      "actions": [
+        "cognito-idp:UpdateUserPool"
+      ],
+      "class": "aws",
+      "field": "registrationAllowed",
+      "how": "update",
+      "kind": "UserPool"
+    },
+    "UserPool.size": {
+      "actions": [
+        "cognito-idp:UpdateUserPool"
+      ],
+      "class": "aws",
+      "field": "size",
+      "how": "update",
+      "kind": "UserPool"
+    },
+    "UserPool.storageClass": {
+      "actions": [
+        "cognito-idp:UpdateUserPool"
+      ],
+      "class": "extra",
+      "field": "storageClass",
+      "how": "update",
+      "kind": "UserPool",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "The disk class of the pool's store, as a Kubernetes StorageClass name. Cognito exposes none."
+      }
+    },
+    "VirtualMachine.cpu": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "cpu",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.cpuModel": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "cpuModel",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.dataDisks": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "dataDisks",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.diskSize": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "diskSize",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.elasticIp": {
+      "actions": [
+        "ec2:AssociateAddress"
+      ],
+      "class": "aws",
+      "field": "elasticIp",
+      "how": "field",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.existingRootClaim": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "existingRootClaim",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.expose": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "expose",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.firmware": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "firmware",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.highAvailability": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "highAvailability",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.instanceRole": {
+      "actions": [
+        "ec2:AssociateIamInstanceProfile"
+      ],
+      "class": "aws",
+      "field": "instanceRole",
+      "how": "field",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.memory": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "memory",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.metadataOptions": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "metadataOptions",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.network": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "network",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.os": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "os",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.ports": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "ports",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.rootDisk": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "rootDisk",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.running": {
+      "actions": [
+        "ec2:StartInstances",
+        "ec2:StopInstances"
+      ],
+      "class": "aws",
+      "field": "running",
+      "how": "field",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.securityGroups": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "securityGroups",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.sshKey": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "sshKey",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.subnet": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "subnet",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.userData": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "userData",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
+    "VirtualMachine.volumes": {
+      "actions": [
+        "ec2:AttachVolume",
+        "ec2:DetachVolume"
+      ],
+      "class": "aws",
+      "field": "volumes",
+      "how": "field",
+      "kind": "VirtualMachine"
+    },
+    "VmImage.diskSize": {
+      "actions": [
+        "ec2:ModifyImageAttribute"
+      ],
+      "class": "aws",
+      "field": "diskSize",
+      "how": "update",
+      "kind": "VmImage"
+    },
+    "VmImage.existingGoldenClaim": {
+      "actions": [
+        "ec2:ModifyImageAttribute"
+      ],
+      "class": "aws",
+      "field": "existingGoldenClaim",
+      "how": "update",
+      "kind": "VmImage"
+    },
+    "VmImage.os": {
+      "actions": [
+        "ec2:ModifyImageAttribute"
+      ],
+      "class": "aws",
+      "field": "os",
+      "how": "update",
+      "kind": "VmImage"
+    },
+    "VmImage.sourceUrl": {
+      "actions": [
+        "ec2:ModifyImageAttribute"
+      ],
+      "class": "aws",
+      "field": "sourceUrl",
+      "how": "update",
+      "kind": "VmImage"
+    },
+    "VmImage.storageClass": {
+      "actions": [
+        "ec2:ModifyImageAttribute"
+      ],
+      "class": "extra",
+      "field": "storageClass",
+      "how": "update",
+      "kind": "VmImage",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "The disk class an image is stored on, as a Kubernetes StorageClass name. EC2's term is the snapshot's storage tier."
+      }
+    },
+    "Volume.encrypted": {
+      "actions": [
+        "ec2:ModifyVolume"
+      ],
+      "class": "aws",
+      "field": "encrypted",
+      "how": "update",
+      "kind": "Volume"
+    },
+    "Volume.encryptionKey": {
+      "actions": [
+        "ec2:ModifyVolume"
+      ],
+      "class": "aws",
+      "field": "encryptionKey",
+      "how": "update",
+      "kind": "Volume"
+    },
+    "Volume.migratable": {
+      "actions": [
+        "ec2:ModifyVolume"
+      ],
+      "class": "aws",
+      "field": "migratable",
+      "how": "update",
+      "kind": "Volume"
+    },
+    "Volume.mode": {
+      "actions": [
+        "ec2:ModifyVolume"
+      ],
+      "class": "aws",
+      "field": "mode",
+      "how": "update",
+      "kind": "Volume"
+    },
+    "Volume.size": {
+      "actions": [
+        "ec2:ModifyVolume"
+      ],
+      "class": "aws",
+      "field": "size",
+      "how": "update",
+      "kind": "Volume"
+    },
+    "Volume.source": {
+      "actions": [
+        "ec2:ModifyVolume"
+      ],
+      "class": "aws",
+      "field": "source",
+      "how": "update",
+      "kind": "Volume"
+    },
+    "Vpc.namespaces": {
+      "actions": [
+        "ec2:ModifyVpcAttribute"
+      ],
+      "class": "extra",
+      "field": "namespaces",
+      "how": "update",
+      "kind": "Vpc",
+      "kubernetes": {
+        "disposition": "pending",
+        "reason": "The namespaces attached to the VPC. On AWS a resource names its VPC, not the other way round."
+      }
+    },
+    "Vpc.peerings": {
+      "actions": [
+        "ec2:ModifyVpcAttribute"
+      ],
+      "class": "aws",
+      "field": "peerings",
+      "how": "update",
+      "kind": "Vpc"
+    },
+    "Vpc.routes": {
+      "actions": [
+        "ec2:ModifyVpcAttribute"
+      ],
+      "class": "aws",
+      "field": "routes",
+      "how": "update",
+      "kind": "Vpc"
+    },
+    "VpcEndpoint.service": {
+      "actions": [
+        "ec2:ModifyVpcEndpoint"
+      ],
+      "class": "aws",
+      "field": "service",
+      "how": "update",
+      "kind": "VpcEndpoint"
+    },
+    "VpcEndpoint.vpc": {
+      "actions": [
+        "ec2:ModifyVpcEndpoint"
+      ],
+      "class": "aws",
+      "field": "vpc",
+      "how": "update",
+      "kind": "VpcEndpoint"
+    },
+    "VpcEndpoint.vpcEndpointType": {
+      "actions": [
+        "ec2:ModifyVpcEndpoint"
+      ],
+      "class": "aws",
+      "field": "vpcEndpointType",
+      "how": "update",
+      "kind": "VpcEndpoint"
+    }
+  },
+  "generatedBy": "probe/shimgen.py (probe/surface.py) from platform/, probe/registry/iam-actions.json, probe/registry/console-routes.json, ui/src/router.tsx, ui/src/components/layout/nav-items.ts, probe/registry/shim-router.json, probe/shim-services.yaml and probe/registry/surface.yaml",
+  "kinds": {
+    "Account": {
+      "actions": {},
+      "arn": "",
+      "cfnType": "",
+      "class": "operator",
+      "file": "platform/abstraction/account-xrd.yaml",
+      "group": "organizations.openinfra.dev",
+      "reason": "An account of the install's organization. Its object is cluster-wide and the operator's.",
+      "resource": "accounts",
+      "resourceType": "",
+      "service": "openinfra-operator",
+      "via": "Organizations (organizations:CreateAccount, ListAccounts, DescribeAccount)"
+    },
+    "Application": {
+      "actions": {
+        "create": "ecs:CreateService",
+        "delete": "ecs:DeleteService",
+        "get": "ecs:DescribeServices",
+        "list": "ecs:ListServices",
+        "update": "ecs:UpdateService"
+      },
+      "arn": "arn:{partition}:ecs:{region}:{account}:service/default/{name}",
+      "cfnType": "AWS::ECS::Service",
+      "class": "aws",
+      "file": "platform/abstraction/xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "applications",
+      "resourceType": "service",
+      "service": "ecs"
+    },
+    "AutoScalingGroup": {
+      "actions": {
+        "create": "autoscaling:CreateAutoScalingGroup",
+        "delete": "autoscaling:DeleteAutoScalingGroup",
+        "get": "autoscaling:DescribeAutoScalingGroups",
+        "list": "autoscaling:DescribeAutoScalingGroups",
+        "update": "autoscaling:UpdateAutoScalingGroup"
+      },
+      "arn": "arn:{partition}:autoscaling:{region}:{account}:autoScalingGroup:{uuid}:autoScalingGroupName/{name}",
+      "cfnType": "AWS::AutoScaling::AutoScalingGroup",
+      "class": "aws",
+      "file": "platform/abstraction/autoscalinggroup-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "autoscalinggroups",
+      "resourceType": "autoScalingGroup",
+      "service": "autoscaling"
+    },
+    "BackupPlan": {
+      "actions": {
+        "create": "backup:CreateBackupPlan",
+        "delete": "backup:DeleteBackupPlan",
+        "get": "backup:GetBackupPlan",
+        "list": "backup:ListBackupPlans",
+        "update": "backup:UpdateBackupPlan"
+      },
+      "arn": "arn:{partition}:backup:{region}:{account}:backup-plan:{name}",
+      "cfnType": "AWS::Backup::BackupPlan",
+      "class": "aws",
+      "file": "platform/abstraction/backupplan-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "backupplans",
+      "resourceType": "backupPlan",
+      "service": "backup"
+    },
+    "BackupVault": {
+      "actions": {
+        "create": "backup:CreateBackupVault",
+        "delete": "backup:DeleteBackupVault",
+        "get": "backup:DescribeBackupVault",
+        "list": "backup:ListBackupVaults",
+        "update": "backup:PutBackupVaultAccessPolicy"
+      },
+      "arn": "arn:{partition}:backup:{region}:{account}:backup-vault:{name}",
+      "cfnType": "AWS::Backup::BackupVault",
+      "class": "aws",
+      "file": "platform/abstraction/backupvault-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "backupvaults",
+      "resourceType": "backupVault",
+      "service": "backup"
+    },
+    "BatchTransform": {
+      "actions": {
+        "create": "sagemaker:CreateTransformJob",
+        "delete": "sagemaker:StopTransformJob",
+        "get": "sagemaker:DescribeTransformJob",
+        "list": "sagemaker:ListTransformJobs",
+        "update": "sagemaker:CreateTransformJob"
+      },
+      "arn": "arn:{partition}:sagemaker:{region}:{account}:transform-job/{name}",
+      "cfnType": "",
+      "class": "aws",
+      "file": "platform/abstraction/batchtransform-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "batchtransforms",
+      "resourceType": "transform-job",
+      "service": "sagemaker"
+    },
+    "Bucket": {
+      "actions": {
+        "create": "s3:CreateBucket",
+        "delete": "s3:DeleteBucket",
+        "get": "s3:GetBucketLocation",
+        "list": "s3:ListAllMyBuckets",
+        "update": "s3:PutBucketPolicy"
+      },
+      "arn": "arn:{partition}:s3:::{name}",
+      "cfnType": "AWS::S3::Bucket",
+      "class": "aws",
+      "file": "platform/abstraction/bucket-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "buckets",
+      "resourceType": "bucket",
+      "service": "s3"
+    },
+    "CertificateAuthority": {
+      "actions": {
+        "create": "acm-pca:CreateCertificateAuthority",
+        "delete": "acm-pca:DeleteCertificateAuthority",
+        "get": "acm-pca:DescribeCertificateAuthority",
+        "list": "acm-pca:ListCertificateAuthorities",
+        "update": "acm-pca:UpdateCertificateAuthority"
+      },
+      "arn": "arn:{partition}:acm-pca:{region}:{account}:certificate-authority/{name}",
+      "cfnType": "AWS::ACMPCA::CertificateAuthority",
+      "class": "aws",
+      "file": "platform/abstraction/certificateauthority-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "certificateauthorities",
+      "resourceType": "certificate-authority",
+      "service": "acm-pca"
+    },
+    "ConfigRule": {
+      "actions": {
+        "create": "config:PutConfigRule",
+        "delete": "config:DeleteConfigRule",
+        "get": "config:DescribeConfigRules",
+        "list": "config:DescribeConfigRules",
+        "update": "config:PutConfigRule"
+      },
+      "arn": "arn:{partition}:config:{region}:{account}:config-rule/{name}",
+      "cfnType": "AWS::Config::ConfigRule",
+      "class": "aws",
+      "file": "platform/abstraction/configrule-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "configrules",
+      "resourceType": "ConfigRule",
+      "service": "config"
+    },
+    "DataClassification": {
+      "actions": {
+        "create": "openinfra:CreateDataClassification",
+        "delete": "openinfra:DeleteDataClassification",
+        "get": "openinfra:GetDataClassification",
+        "list": "openinfra:ListDataClassifications",
+        "update": "openinfra:UpdateDataClassification"
+      },
+      "approval": "pending",
+      "arn": "arn:{partition}:openinfra:{region}:{account}:data-classification/{name}",
+      "cfnType": "",
+      "class": "extra",
+      "file": "platform/abstraction/dataclassification-xrd.yaml",
+      "group": "openinfra.dev",
+      "reason": "A data classification level a resource carries (who may read it, how long it is kept). AWS has no resource for it: Macie reports findings, it does not hold a level.",
+      "resource": "dataclassifications",
+      "resourceType": "data-classification",
+      "service": "openinfra"
+    },
+    "DataFlow": {
+      "actions": {
+        "create": "openinfra:CreateDataFlow",
+        "delete": "openinfra:DeleteDataFlow",
+        "get": "openinfra:GetDataFlow",
+        "list": "openinfra:ListDataFlows",
+        "update": "openinfra:UpdateDataFlow"
+      },
+      "approval": "pending",
+      "arn": "arn:{partition}:openinfra:{region}:{account}:dataflow/{name}",
+      "cfnType": "",
+      "class": "extra",
+      "file": "platform/abstraction/dataflow-xrd.yaml",
+      "group": "openinfra.dev",
+      "reason": "A graph of cross-engine data movements (sources, transforms, sinks) as one resource. AWS splits it across DMS tasks, Glue jobs and Kinesis streams, with no single resource for the graph.",
+      "resource": "dataflows",
+      "resourceType": "dataflow",
+      "service": "openinfra"
+    },
+    "DatabaseProxy": {
+      "actions": {
+        "create": "rds:CreateDBProxy",
+        "delete": "rds:DeleteDBProxy",
+        "get": "rds:DescribeDBProxies",
+        "list": "rds:DescribeDBProxies",
+        "update": "rds:ModifyDBProxy"
+      },
+      "arn": "arn:{partition}:rds:{region}:{account}:db-proxy:{name}",
+      "cfnType": "AWS::RDS::DBProxy",
+      "class": "aws",
+      "file": "platform/abstraction/databaseproxy-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "databaseproxies",
+      "resourceType": "db-proxy",
+      "service": "rds"
+    },
+    "Destruction": {
+      "actions": {
+        "create": "kms:ScheduleKeyDeletion",
+        "delete": "kms:CancelKeyDeletion",
+        "get": "kms:DescribeKey",
+        "list": "kms:ListKeys",
+        "update": "kms:ScheduleKeyDeletion"
+      },
+      "arn": "arn:{partition}:kms:{region}:{account}:key/{name}",
+      "cfnType": "",
+      "class": "aws",
+      "file": "platform/abstraction/destruction-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "destructions",
+      "resourceType": "key",
+      "service": "kms"
+    },
+    "Directory": {
+      "actions": {
+        "create": "ds:CreateMicrosoftAD",
+        "delete": "ds:DeleteDirectory",
+        "get": "ds:DescribeDirectories",
+        "list": "ds:DescribeDirectories",
+        "update": "ds:UpdateSettings"
+      },
+      "arn": "arn:{partition}:ds:{region}:{account}:directory/{name}",
+      "cfnType": "AWS::DirectoryService::MicrosoftAD",
+      "class": "aws",
+      "file": "platform/abstraction/directory-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "directories",
+      "resourceType": "directory",
+      "service": "ds"
+    },
+    "ElasticIp": {
+      "actions": {
+        "create": "ec2:AllocateAddress",
+        "delete": "ec2:ReleaseAddress",
+        "get": "ec2:DescribeAddresses",
+        "list": "ec2:DescribeAddresses",
+        "update": "ec2:AssociateAddress"
+      },
+      "arn": "arn:{partition}:ec2:{region}:{account}:elastic-ip/{name}",
+      "cfnType": "AWS::EC2::EIP",
+      "class": "aws",
+      "file": "platform/networking/kube-ovn/elasticip-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "elasticips",
+      "resourceType": "elastic-ip",
+      "service": "ec2"
+    },
+    "EmailSender": {
+      "actions": {
+        "create": "ses:CreateEmailIdentity",
+        "delete": "ses:DeleteEmailIdentity",
+        "get": "ses:GetEmailIdentity",
+        "list": "ses:ListEmailIdentities",
+        "update": "ses:PutEmailIdentityMailFromAttributes"
+      },
+      "arn": "arn:{partition}:ses:{region}:{account}:identity/{name}",
+      "cfnType": "AWS::SES::EmailIdentity",
+      "class": "aws",
+      "file": "platform/abstraction/emailsender-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "emailsenders",
+      "resourceType": "identity",
+      "service": "ses"
+    },
+    "EncryptionKey": {
+      "actions": {
+        "create": "kms:CreateKey",
+        "delete": "kms:ScheduleKeyDeletion",
+        "get": "kms:DescribeKey",
+        "list": "kms:ListKeys",
+        "update": "kms:UpdateKeyDescription"
+      },
+      "arn": "arn:{partition}:kms:{region}:{account}:key/{name}",
+      "cfnType": "AWS::KMS::Key",
+      "class": "aws",
+      "file": "platform/abstraction/encryptionkey-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "encryptionkeys",
+      "resourceType": "key",
+      "service": "kms"
+    },
+    "Execution": {
+      "actions": {
+        "create": "states:StartExecution",
+        "delete": "states:StopExecution",
+        "get": "states:DescribeExecution",
+        "list": "states:ListExecutions",
+        "update": "states:StartExecution"
+      },
+      "arn": "arn:{partition}:states:{region}:{account}:execution:{spec.stateMachineRef}:{name}",
+      "cfnType": "",
+      "class": "aws",
+      "file": "platform/abstraction/execution-crd.yaml",
+      "group": "openinfra.dev",
+      "resource": "executions",
+      "resourceType": "execution",
+      "service": "states"
+    },
+    "FaultInjection": {
+      "actions": {
+        "create": "fis:StartExperiment",
+        "delete": "fis:StopExperiment",
+        "get": "fis:GetExperiment",
+        "list": "fis:ListExperiments",
+        "update": "fis:StartExperiment"
+      },
+      "arn": "arn:{partition}:fis:{region}:{account}:experiment/{name}",
+      "cfnType": "AWS::FIS::ExperimentTemplate",
+      "class": "aws",
+      "file": "platform/abstraction/faultinjection-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "faultinjections",
+      "resourceType": "experiment",
+      "service": "fis"
+    },
+    "FeatureGroup": {
+      "actions": {
+        "create": "sagemaker:CreateFeatureGroup",
+        "delete": "sagemaker:DeleteFeatureGroup",
+        "get": "sagemaker:DescribeFeatureGroup",
+        "list": "sagemaker:ListFeatureGroups",
+        "update": "sagemaker:UpdateFeatureGroup"
+      },
+      "arn": "arn:{partition}:sagemaker:{region}:{account}:feature-group/{name}",
+      "cfnType": "AWS::SageMaker::FeatureGroup",
+      "class": "aws",
+      "file": "platform/abstraction/featuregroup-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "featuregroups",
+      "resourceType": "feature-group",
+      "service": "sagemaker"
+    },
+    "FileShare": {
+      "actions": {
+        "create": "elasticfilesystem:CreateFileSystem",
+        "delete": "elasticfilesystem:DeleteFileSystem",
+        "get": "elasticfilesystem:DescribeFileSystems",
+        "list": "elasticfilesystem:DescribeFileSystems",
+        "update": "elasticfilesystem:UpdateFileSystem"
+      },
+      "arn": "arn:{partition}:elasticfilesystem:{region}:{account}:file-system/{name}",
+      "cfnType": "AWS::EFS::FileSystem",
+      "class": "aws",
+      "file": "platform/abstraction/fileshare-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "fileshares",
+      "resourceType": "file-system",
+      "service": "elasticfilesystem"
+    },
+    "FlowLog": {
+      "actions": {
+        "create": "ec2:CreateFlowLogs",
+        "delete": "ec2:DeleteFlowLogs",
+        "get": "ec2:DescribeFlowLogs",
+        "list": "ec2:DescribeFlowLogs",
+        "update": "ec2:CreateFlowLogs"
+      },
+      "arn": "arn:{partition}:ec2:{region}:{account}:vpc-flow-log/{name}",
+      "cfnType": "AWS::EC2::FlowLog",
+      "class": "aws",
+      "file": "platform/networking/kube-ovn/flowlog-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "flowlogs",
+      "resourceType": "vpc-flow-log",
+      "service": "ec2"
+    },
+    "Function": {
+      "actions": {
+        "create": "lambda:CreateFunction",
+        "delete": "lambda:DeleteFunction",
+        "get": "lambda:GetFunction",
+        "list": "lambda:ListFunctions",
+        "update": "lambda:UpdateFunctionConfiguration"
+      },
+      "arn": "arn:{partition}:lambda:{region}:{account}:function:{name}",
+      "cfnType": "AWS::Lambda::Function",
+      "class": "aws",
+      "file": "platform/abstraction/function-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "functions",
+      "resourceType": "function",
+      "service": "lambda"
+    },
+    "Grant": {
+      "actions": {
+        "create": "iam:AttachUserPolicy",
+        "delete": "iam:DetachUserPolicy",
+        "get": "iam:ListAttachedUserPolicies",
+        "list": "iam:ListAttachedUserPolicies",
+        "update": "iam:AttachUserPolicy"
+      },
+      "arn": "arn:{partition}:iam::{account}:user/{spec.subject}",
+      "cfnType": "",
+      "class": "aws",
+      "file": "platform/abstraction/grant-xrd.yaml",
+      "group": "iam.openinfra.dev",
+      "resource": "grants",
+      "resourceType": "user",
+      "service": "iam"
+    },
+    "GraphQLApi": {
+      "actions": {
+        "create": "appsync:CreateGraphqlApi",
+        "delete": "appsync:DeleteGraphqlApi",
+        "get": "appsync:GetGraphqlApi",
+        "list": "appsync:ListGraphqlApis",
+        "update": "appsync:UpdateGraphqlApi"
+      },
+      "arn": "arn:{partition}:appsync:{region}:{account}:apis/{name}",
+      "cfnType": "AWS::AppSync::GraphQLApi",
+      "class": "aws",
+      "file": "platform/abstraction/graphqlapi-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "graphqlapis",
+      "resourceType": "apis",
+      "service": "appsync"
+    },
+    "Group": {
+      "actions": {
+        "create": "iam:CreateGroup",
+        "delete": "iam:DeleteGroup",
+        "get": "iam:GetGroup",
+        "list": "iam:ListGroups",
+        "update": "iam:UpdateGroup"
+      },
+      "arn": "arn:{partition}:iam::{account}:group/{name}",
+      "cfnType": "AWS::IAM::Group",
+      "class": "aws",
+      "file": "platform/abstraction/group-xrd.yaml",
+      "group": "iam.openinfra.dev",
+      "resource": "groups",
+      "resourceType": "group",
+      "service": "iam"
+    },
+    "HttpApi": {
+      "actions": {
+        "create": "apigateway:POST",
+        "delete": "apigateway:DELETE",
+        "get": "apigateway:GET",
+        "list": "apigateway:GET",
+        "update": "apigateway:PATCH"
+      },
+      "arn": "arn:{partition}:apigateway:{region}::/apis/{name}",
+      "cfnType": "AWS::ApiGatewayV2::Api",
+      "class": "aws",
+      "file": "platform/abstraction/httpapi-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "httpapis",
+      "resourceType": "apis",
+      "service": "apigateway"
+    },
+    "IdentityProvider": {
+      "actions": {
+        "create": "iam:CreateOpenIDConnectProvider",
+        "delete": "iam:DeleteOpenIDConnectProvider",
+        "get": "iam:GetOpenIDConnectProvider",
+        "list": "iam:ListOpenIDConnectProviders",
+        "update": "iam:UpdateOpenIDConnectProviderThumbprint"
+      },
+      "arn": "arn:{partition}:iam::{account}:oidc-provider/{name}",
+      "cfnType": "AWS::IAM::OIDCProvider",
+      "class": "aws",
+      "file": "platform/abstraction/identityprovider-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "identityproviders",
+      "resourceType": "oidc-provider",
+      "service": "iam"
+    },
+    "Migration": {
+      "actions": {
+        "create": "dms:CreateReplicationTask",
+        "delete": "dms:DeleteReplicationTask",
+        "get": "dms:DescribeReplicationTasks",
+        "list": "dms:DescribeReplicationTasks",
+        "update": "dms:ModifyReplicationTask"
+      },
+      "arn": "arn:{partition}:dms:{region}:{account}:task:{name}",
+      "cfnType": "AWS::DMS::ReplicationTask",
+      "class": "aws",
+      "file": "platform/abstraction/migration-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "migrations",
+      "resourceType": "task",
+      "service": "dms"
+    },
+    "Model": {
+      "actions": {
+        "create": "sagemaker:CreateEndpoint",
+        "delete": "sagemaker:DeleteEndpoint",
+        "get": "sagemaker:DescribeEndpoint",
+        "list": "sagemaker:ListEndpoints",
+        "update": "sagemaker:UpdateEndpoint"
+      },
+      "arn": "arn:{partition}:sagemaker:{region}:{account}:endpoint/{name}",
+      "cfnType": "AWS::SageMaker::Endpoint",
+      "class": "aws",
+      "file": "platform/abstraction/model-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "models",
+      "resourceType": "endpoint",
+      "service": "sagemaker"
+    },
+    "ModelMonitor": {
+      "actions": {
+        "create": "sagemaker:CreateMonitoringSchedule",
+        "delete": "sagemaker:DeleteMonitoringSchedule",
+        "get": "sagemaker:DescribeMonitoringSchedule",
+        "list": "sagemaker:ListMonitoringSchedules",
+        "update": "sagemaker:UpdateMonitoringSchedule"
+      },
+      "arn": "arn:{partition}:sagemaker:{region}:{account}:monitoring-schedule/{name}",
+      "cfnType": "AWS::SageMaker::MonitoringSchedule",
+      "class": "aws",
+      "file": "platform/abstraction/modelmonitor-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "modelmonitors",
+      "resourceType": "monitoring-schedule",
+      "service": "sagemaker"
+    },
+    "ModelPackage": {
+      "actions": {
+        "create": "sagemaker:CreateModelPackage",
+        "delete": "sagemaker:DeleteModelPackage",
+        "get": "sagemaker:DescribeModelPackage",
+        "list": "sagemaker:ListModelPackages",
+        "update": "sagemaker:UpdateModelPackage"
+      },
+      "arn": "arn:{partition}:sagemaker:{region}:{account}:model-package/{name}",
+      "cfnType": "AWS::SageMaker::ModelPackage",
+      "class": "aws",
+      "file": "platform/abstraction/modelpackage-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "modelpackages",
+      "resourceType": "model-package",
+      "service": "sagemaker"
+    },
+    "NatGateway": {
+      "actions": {
+        "create": "ec2:CreateNatGateway",
+        "delete": "ec2:DeleteNatGateway",
+        "get": "ec2:DescribeNatGateways",
+        "list": "ec2:DescribeNatGateways",
+        "update": "ec2:CreateNatGateway"
+      },
+      "arn": "arn:{partition}:ec2:{region}:{account}:natgateway/{name}",
+      "cfnType": "AWS::EC2::NatGateway",
+      "class": "aws",
+      "file": "platform/networking/kube-ovn/natgateway-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "natgateways",
+      "resourceType": "natgateway",
+      "service": "ec2"
+    },
+    "Parameter": {
+      "actions": {
+        "create": "ssm:PutParameter",
+        "delete": "ssm:DeleteParameter",
+        "get": "ssm:GetParameter",
+        "list": "ssm:DescribeParameters",
+        "update": "ssm:PutParameter"
+      },
+      "arn": "arn:{partition}:ssm:{region}:{account}:parameter{name}",
+      "cfnType": "AWS::SSM::Parameter",
+      "class": "aws",
+      "file": "platform/abstraction/parameter-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "parameters",
+      "resourceType": "parameter",
+      "service": "ssm"
+    },
+    "Policy": {
+      "actions": {
+        "create": "iam:CreatePolicy",
+        "delete": "iam:DeletePolicy",
+        "get": "iam:GetPolicy",
+        "list": "iam:ListPolicies",
+        "update": "iam:CreatePolicyVersion"
+      },
+      "arn": "arn:{partition}:iam::{account}:policy/{name}",
+      "cfnType": "AWS::IAM::ManagedPolicy",
+      "class": "aws",
+      "file": "platform/abstraction/policy-xrd.yaml",
+      "group": "iam.openinfra.dev",
+      "resource": "policies",
+      "resourceType": "policy",
+      "service": "iam"
+    },
+    "ProcessingJob": {
+      "actions": {
+        "create": "sagemaker:CreateProcessingJob",
+        "delete": "sagemaker:StopProcessingJob",
+        "get": "sagemaker:DescribeProcessingJob",
+        "list": "sagemaker:ListProcessingJobs",
+        "update": "sagemaker:CreateProcessingJob"
+      },
+      "arn": "arn:{partition}:sagemaker:{region}:{account}:processing-job/{name}",
+      "cfnType": "",
+      "class": "aws",
+      "file": "platform/abstraction/processingjob-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "processingjobs",
+      "resourceType": "processing-job",
+      "service": "sagemaker"
+    },
+    "Query": {
+      "actions": {
+        "create": "athena:StartQueryExecution",
+        "delete": "athena:StopQueryExecution",
+        "get": "athena:GetQueryExecution",
+        "list": "athena:ListQueryExecutions",
+        "update": "athena:StartQueryExecution"
+      },
+      "arn": "arn:{partition}:athena:{region}:{account}:workgroup/primary",
+      "cfnType": "",
+      "class": "aws",
+      "file": "platform/abstraction/query-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "queries",
+      "resourceType": "workgroup",
+      "service": "athena"
+    },
+    "Queue": {
+      "actions": {
+        "create": "sqs:CreateQueue",
+        "delete": "sqs:DeleteQueue",
+        "get": "sqs:GetQueueAttributes",
+        "list": "sqs:ListQueues",
+        "update": "sqs:SetQueueAttributes"
+      },
+      "arn": "arn:{partition}:sqs:{region}:{account}:{name}",
+      "cfnType": "AWS::SQS::Queue",
+      "class": "aws",
+      "file": "platform/abstraction/queue-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "queues",
+      "resourceType": "queue",
+      "service": "sqs"
+    },
+    "Replication": {
+      "actions": {
+        "create": "dms:CreateReplicationTask",
+        "delete": "dms:DeleteReplicationTask",
+        "get": "dms:DescribeReplicationTasks",
+        "list": "dms:DescribeReplicationTasks",
+        "update": "dms:ModifyReplicationTask"
+      },
+      "arn": "arn:{partition}:dms:{region}:{account}:task:{name}",
+      "cfnType": "AWS::DMS::ReplicationTask",
+      "class": "aws",
+      "file": "platform/abstraction/replication-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "replications",
+      "resourceType": "task",
+      "service": "dms"
+    },
+    "Role": {
+      "actions": {
+        "create": "iam:CreateRole",
+        "delete": "iam:DeleteRole",
+        "get": "iam:GetRole",
+        "list": "iam:ListRoles",
+        "update": "iam:UpdateRole"
+      },
+      "arn": "arn:{partition}:iam::{account}:role/{name}",
+      "cfnType": "AWS::IAM::Role",
+      "class": "aws",
+      "file": "platform/abstraction/role-xrd.yaml",
+      "group": "iam.openinfra.dev",
+      "resource": "roles",
+      "resourceType": "role",
+      "service": "iam"
+    },
+    "ScheduledJob": {
+      "actions": {
+        "create": "scheduler:CreateSchedule",
+        "delete": "scheduler:DeleteSchedule",
+        "get": "scheduler:GetSchedule",
+        "list": "scheduler:ListSchedules",
+        "update": "scheduler:UpdateSchedule"
+      },
+      "arn": "arn:{partition}:scheduler:{region}:{account}:schedule/default/{name}",
+      "cfnType": "AWS::Scheduler::Schedule",
+      "class": "aws",
+      "file": "platform/abstraction/scheduledjob-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "scheduledjobs",
+      "resourceType": "schedule",
+      "service": "scheduler"
+    },
+    "SecurityGroup": {
+      "actions": {
+        "create": "ec2:CreateSecurityGroup",
+        "delete": "ec2:DeleteSecurityGroup",
+        "get": "ec2:DescribeSecurityGroups",
+        "list": "ec2:DescribeSecurityGroups",
+        "update": "ec2:AuthorizeSecurityGroupIngress"
+      },
+      "arn": "arn:{partition}:ec2:{region}:{account}:security-group/{name}",
+      "cfnType": "AWS::EC2::SecurityGroup",
+      "class": "aws",
+      "file": "platform/abstraction/securitygroup-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "securitygroups",
+      "resourceType": "security-group",
+      "service": "ec2"
+    },
+    "StateMachine": {
+      "actions": {
+        "create": "states:CreateStateMachine",
+        "delete": "states:DeleteStateMachine",
+        "get": "states:DescribeStateMachine",
+        "list": "states:ListStateMachines",
+        "update": "states:UpdateStateMachine"
+      },
+      "arn": "arn:{partition}:states:{region}:{account}:stateMachine:{name}",
+      "cfnType": "AWS::StepFunctions::StateMachine",
+      "class": "aws",
+      "file": "platform/abstraction/statemachine-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "statemachines",
+      "resourceType": "stateMachine",
+      "service": "states"
+    },
+    "StaticSite": {
+      "actions": {
+        "create": "cloudfront:CreateDistribution",
+        "delete": "cloudfront:DeleteDistribution",
+        "get": "cloudfront:GetDistribution",
+        "list": "cloudfront:ListDistributions",
+        "update": "cloudfront:UpdateDistribution"
+      },
+      "arn": "arn:{partition}:cloudfront::{account}:distribution/{name}",
+      "cfnType": "AWS::CloudFront::Distribution",
+      "class": "aws",
+      "file": "platform/abstraction/staticsite-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "staticsites",
+      "resourceType": "distribution",
+      "service": "cloudfront"
+    },
+    "Stream": {
+      "actions": {
+        "create": "kinesis:CreateStream",
+        "delete": "kinesis:DeleteStream",
+        "get": "kinesis:DescribeStream",
+        "list": "kinesis:ListStreams",
+        "update": "kinesis:CreateStream"
+      },
+      "arn": "arn:{partition}:kinesis:{region}:{account}:stream/{name}",
+      "cfnType": "AWS::Kinesis::Stream",
+      "class": "aws",
+      "file": "platform/abstraction/stream-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "streams",
+      "resourceType": "stream",
+      "service": "kinesis"
+    },
+    "Subnet": {
+      "actions": {
+        "create": "ec2:CreateSubnet",
+        "delete": "ec2:DeleteSubnet",
+        "get": "ec2:DescribeSubnets",
+        "list": "ec2:DescribeSubnets",
+        "update": "ec2:ModifySubnetAttribute"
+      },
+      "arn": "arn:{partition}:ec2:{region}:{account}:subnet/{name}",
+      "cfnType": "AWS::EC2::Subnet",
+      "class": "aws",
+      "file": "platform/networking/kube-ovn/subnet-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "subnets",
+      "resourceType": "subnet",
+      "service": "ec2"
+    },
+    "Table": {
+      "actions": {
+        "create": "dynamodb:CreateTable",
+        "delete": "dynamodb:DeleteTable",
+        "get": "dynamodb:DescribeTable",
+        "list": "dynamodb:ListTables",
+        "update": "dynamodb:UpdateTable"
+      },
+      "arn": "arn:{partition}:dynamodb:{region}:{account}:table/{name}",
+      "cfnType": "AWS::DynamoDB::Table",
+      "class": "aws",
+      "file": "platform/abstraction/table-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "tables",
+      "resourceType": "table",
+      "service": "dynamodb"
+    },
+    "TrainingJob": {
+      "actions": {
+        "create": "sagemaker:CreateTrainingJob",
+        "delete": "sagemaker:StopTrainingJob",
+        "get": "sagemaker:DescribeTrainingJob",
+        "list": "sagemaker:ListTrainingJobs",
+        "update": "sagemaker:CreateTrainingJob"
+      },
+      "arn": "arn:{partition}:sagemaker:{region}:{account}:training-job/{name}",
+      "cfnType": "",
+      "class": "aws",
+      "file": "platform/abstraction/trainingjob-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "trainingjobs",
+      "resourceType": "training-job",
+      "service": "sagemaker"
+    },
+    "TransitGateway": {
+      "actions": {
+        "create": "ec2:CreateTransitGateway",
+        "delete": "ec2:DeleteTransitGateway",
+        "get": "ec2:DescribeTransitGateways",
+        "list": "ec2:DescribeTransitGateways",
+        "update": "ec2:ModifyTransitGateway"
+      },
+      "arn": "arn:{partition}:ec2:{region}:{account}:transit-gateway/{name}",
+      "cfnType": "AWS::EC2::TransitGateway",
+      "class": "aws",
+      "file": "platform/networking/kube-ovn/transitgateway-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "transitgateways",
+      "resourceType": "transit-gateway",
+      "service": "ec2"
+    },
+    "TuningJob": {
+      "actions": {
+        "create": "sagemaker:CreateHyperParameterTuningJob",
+        "delete": "sagemaker:StopHyperParameterTuningJob",
+        "get": "sagemaker:DescribeHyperParameterTuningJob",
+        "list": "sagemaker:ListHyperParameterTuningJobs",
+        "update": "sagemaker:CreateHyperParameterTuningJob"
+      },
+      "arn": "arn:{partition}:sagemaker:{region}:{account}:hyper-parameter-tuning-job/{name}",
+      "cfnType": "",
+      "class": "aws",
+      "file": "platform/abstraction/tuningjob-crd.yaml",
+      "group": "openinfra.dev",
+      "resource": "tuningjobs",
+      "resourceType": "hyper-parameter-tuning-job",
+      "service": "sagemaker"
+    },
+    "User": {
+      "actions": {
+        "create": "iam:CreateUser",
+        "delete": "iam:DeleteUser",
+        "get": "iam:GetUser",
+        "list": "iam:ListUsers",
+        "update": "iam:UpdateUser"
+      },
+      "arn": "arn:{partition}:iam::{account}:user/{name}",
+      "cfnType": "AWS::IAM::User",
+      "class": "aws",
+      "file": "platform/abstraction/user-xrd.yaml",
+      "group": "iam.openinfra.dev",
+      "resource": "users",
+      "resourceType": "user",
+      "service": "iam"
+    },
+    "UserPool": {
+      "actions": {
+        "create": "cognito-idp:CreateUserPool",
+        "delete": "cognito-idp:DeleteUserPool",
+        "get": "cognito-idp:DescribeUserPool",
+        "list": "cognito-idp:ListUserPools",
+        "update": "cognito-idp:UpdateUserPool"
+      },
+      "arn": "arn:{partition}:cognito-idp:{region}:{account}:userpool/{name}",
+      "cfnType": "AWS::Cognito::UserPool",
+      "class": "aws",
+      "file": "platform/abstraction/userpool-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "userpools",
+      "resourceType": "userpool",
+      "service": "cognito-idp"
+    },
+    "VirtualMachine": {
+      "actions": {
+        "create": "ec2:RunInstances",
+        "delete": "ec2:TerminateInstances",
+        "get": "ec2:DescribeInstances",
+        "list": "ec2:DescribeInstances",
+        "update": "ec2:ModifyInstanceAttribute"
+      },
+      "arn": "arn:{partition}:ec2:{region}:{account}:instance/{name}",
+      "cfnType": "AWS::EC2::Instance",
+      "class": "aws",
+      "file": "platform/abstraction/vm-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "virtualmachines",
+      "resourceType": "instance",
+      "service": "ec2"
+    },
+    "VmImage": {
+      "actions": {
+        "create": "ec2:ImportImage",
+        "delete": "ec2:DeregisterImage",
+        "get": "ec2:DescribeImages",
+        "list": "ec2:DescribeImages",
+        "update": "ec2:ModifyImageAttribute"
+      },
+      "arn": "arn:{partition}:ec2:{region}::image/{name}",
+      "cfnType": "",
+      "class": "aws",
+      "file": "platform/abstraction/vmimage-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "vmimages",
+      "resourceType": "image",
+      "service": "ec2"
+    },
+    "Volume": {
+      "actions": {
+        "create": "ec2:CreateVolume",
+        "delete": "ec2:DeleteVolume",
+        "get": "ec2:DescribeVolumes",
+        "list": "ec2:DescribeVolumes",
+        "update": "ec2:ModifyVolume"
+      },
+      "arn": "arn:{partition}:ec2:{region}:{account}:volume/{name}",
+      "cfnType": "AWS::EC2::Volume",
+      "class": "aws",
+      "file": "platform/abstraction/volume-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "volumes",
+      "resourceType": "volume",
+      "service": "ec2"
+    },
+    "Vpc": {
+      "actions": {
+        "create": "ec2:CreateVpc",
+        "delete": "ec2:DeleteVpc",
+        "get": "ec2:DescribeVpcs",
+        "list": "ec2:DescribeVpcs",
+        "update": "ec2:ModifyVpcAttribute"
+      },
+      "arn": "arn:{partition}:ec2:{region}:{account}:vpc/{name}",
+      "cfnType": "AWS::EC2::VPC",
+      "class": "aws",
+      "file": "platform/networking/kube-ovn/vpc-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "vpcs",
+      "resourceType": "vpc",
+      "service": "ec2"
+    },
+    "VpcEndpoint": {
+      "actions": {
+        "create": "ec2:CreateVpcEndpoint",
+        "delete": "ec2:DeleteVpcEndpoints",
+        "get": "ec2:DescribeVpcEndpoints",
+        "list": "ec2:DescribeVpcEndpoints",
+        "update": "ec2:ModifyVpcEndpoint"
+      },
+      "arn": "arn:{partition}:ec2:{region}:{account}:vpc-endpoint/{name}",
+      "cfnType": "AWS::EC2::VPCEndpoint",
+      "class": "aws",
+      "file": "platform/networking/kube-ovn/vpcendpoint-xrd.yaml",
+      "group": "openinfra.dev",
+      "resource": "vpcendpoints",
+      "resourceType": "vpc-endpoint",
+      "service": "ec2"
+    }
+  },
+  "removed": [],
+  "routes": {
+    "* /api/iam/grants": {
+      "action": "iam:Attach{User,Group,Role}Policy",
+      "class": "aws",
+      "how": "iam:AttachUserPolicy, iam:AttachGroupPolicy or iam:AttachRolePolicy, on the entity the grant names.",
+      "methods": [
+        "POST"
+      ],
+      "resource": "per request"
+    },
+    "* /api/iam/users/{name}/password": {
+      "action": "iam:ChangePassword | iam:UpdateLoginProfile",
+      "class": "aws",
+      "how": "iam:ChangePassword on the caller's own user, iam:UpdateLoginProfile on anyone else's (as AWS).",
+      "methods": [
+        "POST"
+      ],
+      "resource": "per request"
+    },
+    "* /api/k8s": {
+      "action": "the Kubernetes request's AWS action (awsaction.ForKubernetes)",
+      "class": "aws",
+      "how": "The console's resource API. Each request is the AWS action the kinds table maps it to (a resource type's own action on its ARN); every other object is the operator's (openinfra-operator:*, the management account's AdministratorAccess alone); anything unmapped is refused.",
+      "methods": [
+        "CONNECT",
+        "DELETE",
+        "GET",
+        "HEAD",
+        "OPTIONS",
+        "PATCH",
+        "POST",
+        "PUT",
+        "QUERY",
+        "TRACE"
+      ],
+      "resource": "per request"
+    },
+    "* /api/k8s/*": {
+      "action": "the Kubernetes request's AWS action (awsaction.ForKubernetes)",
+      "class": "aws",
+      "how": "As /api/k8s.",
+      "methods": [
+        "CONNECT",
+        "DELETE",
+        "GET",
+        "HEAD",
+        "OPTIONS",
+        "PATCH",
+        "POST",
+        "PUT",
+        "QUERY",
+        "TRACE"
+      ],
+      "resource": "per request"
+    },
+    "* /api/sts/switch-role": {
+      "action": "sts:AssumeRole on the role",
+      "class": "aws",
+      "how": "sts:AssumeRole on the role, decided by its trust policy (the console's Switch Role).",
+      "methods": [
+        "POST"
+      ],
+      "resource": "per request"
+    },
+    "* /api/watch": {
+      "action": "the watched resource's list action (awsaction.ForKubernetes)",
+      "class": "aws",
+      "how": "The watched resource type's List action, as the kinds table maps it; the operator's objects are openinfra-operator:List*.",
+      "methods": [
+        "GET"
+      ],
+      "resource": "per request"
+    },
+    "* /grafana": {
+      "action": "cloudwatch:GetDashboard (the dashboards proxy)",
+      "class": "aws",
+      "how": "cloudwatch:GetDashboard: the dashboards are CloudWatch's.",
+      "methods": [
+        "CONNECT",
+        "DELETE",
+        "GET",
+        "HEAD",
+        "OPTIONS",
+        "PATCH",
+        "POST",
+        "PUT",
+        "QUERY",
+        "TRACE"
+      ],
+      "resource": "per request"
+    },
+    "* /grafana/*": {
+      "action": "cloudwatch:GetDashboard (the dashboards proxy)",
+      "class": "aws",
+      "how": "As /grafana.",
+      "methods": [
+        "CONNECT",
+        "DELETE",
+        "GET",
+        "HEAD",
+        "OPTIONS",
+        "PATCH",
+        "POST",
+        "PUT",
+        "QUERY",
+        "TRACE"
+      ],
+      "resource": "per request"
+    },
+    "DELETE /api/buckets/{bucket}": {
+      "action": "s3:DeleteBucket",
+      "class": "aws",
+      "resource": "arn:aws:s3:::{bucket}"
+    },
+    "DELETE /api/buckets/{bucket}/object": {
+      "action": "s3:DeleteObject",
+      "class": "aws",
+      "resource": "arn:aws:s3:::{bucket}/{key}"
+    },
+    "DELETE /api/iam/grants/{name}": {
+      "action": "iam:DetachUserPolicy",
+      "class": "aws",
+      "resource": "*"
+    },
+    "DELETE /api/iam/groups/{name}": {
+      "action": "iam:DeleteGroup",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:group/{name}"
+    },
+    "DELETE /api/iam/policies/{name}": {
+      "action": "iam:DeletePolicy",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:policy/{name}"
+    },
+    "DELETE /api/iam/roles/{name}": {
+      "action": "iam:DeleteRole",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:role/{name}"
+    },
+    "DELETE /api/iam/users/{name}": {
+      "action": "iam:DeleteUser",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    },
+    "DELETE /api/iam/users/{name}/access-keys/{id}": {
+      "action": "iam:DeleteAccessKey",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    },
+    "DELETE /api/iam/users/{name}/mfa-devices": {
+      "action": "iam:DeactivateMFADevice",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    },
+    "DELETE /api/iam/users/{name}/mfa-devices/pending": {
+      "action": "iam:DeleteVirtualMFADevice",
+      "class": "aws",
+      "resource": "*"
+    },
+    "DELETE /api/snapshots": {
+      "action": "rds:DeleteDBSnapshot",
+      "class": "aws",
+      "resource": "arn:aws:rds:us-east-1:{account}:snapshot:{id}"
+    },
+    "DELETE /api/vm-snapshots": {
+      "action": "ec2:DeleteSnapshot",
+      "class": "aws",
+      "resource": "arn:aws:ec2:us-east-1:{account}:snapshot/{id}"
+    },
+    "GET /api/audit": {
+      "action": "cloudtrail:LookupEvents",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/audit/integrity": {
+      "action": "cloudtrail:GetTrailStatus",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/auth/me": {
+      "action": "",
+      "class": "aws",
+      "public": true,
+      "reason": "who am I: the UI renders for any signed-in principal, policy or not",
+      "resource": ""
+    },
+    "GET /api/buckets": {
+      "action": "s3:ListAllMyBuckets",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/buckets/{bucket}/object": {
+      "action": "s3:GetObject",
+      "class": "aws",
+      "resource": "arn:aws:s3:::{bucket}/{key}"
+    },
+    "GET /api/buckets/{bucket}/objects": {
+      "action": "s3:ListBucket",
+      "class": "aws",
+      "resource": "arn:aws:s3:::{bucket}"
+    },
+    "GET /api/ca": {
+      "action": "acm-pca:ListCertificateAuthorities",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/capabilities": {
+      "action": "",
+      "class": "aws",
+      "public": true,
+      "reason": "which resource types the cluster's architectures can run; no resource data",
+      "resource": ""
+    },
+    "GET /api/catalog/tables": {
+      "action": "glue:GetTables",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/compliance/attestation": {
+      "action": "auditmanager:GetAssessment",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/compliance/classification": {
+      "action": "macie2:GetFindingStatistics",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/config": {
+      "action": "",
+      "class": "aws",
+      "public": true,
+      "reason": "runtime UI configuration (cluster name, version, auth mode); no resource data",
+      "resource": ""
+    },
+    "GET /api/cost": {
+      "action": "ce:GetCostAndUsage",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/crd-schema": {
+      "action": "",
+      "class": "aws",
+      "public": true,
+      "reason": "the published form schema of a platform resource type; no resource data",
+      "resource": ""
+    },
+    "GET /api/encryption/destructions": {
+      "action": "kms:ListKeys",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/encryption/keys": {
+      "action": "kms:ListKeys",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/functions/{namespace}/{name}/code": {
+      "action": "lambda:GetFunction",
+      "class": "aws",
+      "resource": "arn:aws:lambda:us-east-1:{account}:function:{name}"
+    },
+    "GET /api/functions/{namespace}/{name}/routes": {
+      "action": "lambda:GetFunction",
+      "class": "aws",
+      "resource": "arn:aws:lambda:us-east-1:{account}:function:{name}"
+    },
+    "GET /api/grafana/dashboards": {
+      "action": "cloudwatch:ListDashboards",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/iam/access-advisor": {
+      "action": "iam:GetServiceLastAccessedDetails",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/iam/access-review": {
+      "action": "iam:GetCredentialReport",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/iam/config": {
+      "action": "",
+      "class": "aws",
+      "public": true,
+      "reason": "static IAM page metadata (identity namespace, policy vocabulary)",
+      "resource": ""
+    },
+    "GET /api/iam/grants": {
+      "action": "iam:ListAttachedUserPolicies",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/iam/grants/{name}": {
+      "action": "iam:ListAttachedUserPolicies",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/iam/groups": {
+      "action": "iam:ListGroups",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/iam/groups/{name}": {
+      "action": "iam:GetGroup",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:group/{name}"
+    },
+    "GET /api/iam/policies": {
+      "action": "iam:ListPolicies",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/iam/policies/{name}": {
+      "action": "iam:GetPolicy",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:policy/{name}"
+    },
+    "GET /api/iam/policies/{name}/revision": {
+      "action": "iam:GetPolicyVersion",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:policy/{name}"
+    },
+    "GET /api/iam/roles": {
+      "action": "iam:ListRoles",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/iam/roles/{name}": {
+      "action": "iam:GetRole",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:role/{name}"
+    },
+    "GET /api/iam/users": {
+      "action": "iam:ListUsers",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/iam/users/{name}": {
+      "action": "iam:GetUser",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    },
+    "GET /api/iam/users/{name}/access-keys": {
+      "action": "iam:ListAccessKeys",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    },
+    "GET /api/iam/users/{name}/mfa-devices": {
+      "action": "iam:ListMFADevices",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    },
+    "GET /api/jobs/{namespace}/{name}/logs": {
+      "action": "logs:GetLogEvents",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/jobs/{namespace}/{name}/metrics": {
+      "action": "cloudwatch:GetMetricData",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/lineage": {
+      "action": "datazone:GetLineageNode",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/migrations/{namespace}/{name}/status": {
+      "action": "dms:DescribeReplicationTasks",
+      "class": "aws",
+      "resource": "arn:aws:dms:us-east-1:{account}:task:{name}"
+    },
+    "GET /api/modelmonitors/{namespace}/{name}/report": {
+      "action": "sagemaker:DescribeMonitoringSchedule",
+      "class": "aws",
+      "resource": "arn:aws:sagemaker:us-east-1:{account}:monitoring-schedule/{name}"
+    },
+    "GET /api/nodes/disk": {
+      "action": "openinfra-operator:ListNodes",
+      "class": "operator",
+      "resource": "*"
+    },
+    "GET /api/queries/{namespace}/{name}/result": {
+      "action": "athena:GetQueryResults",
+      "class": "aws",
+      "resource": "arn:aws:athena:us-east-1:{account}:workgroup/primary"
+    },
+    "GET /api/queues": {
+      "action": "sqs:ListQueues",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/queues/{stream}/messages": {
+      "action": "sqs:ReceiveMessage",
+      "class": "aws",
+      "resource": "arn:aws:sqs:us-east-1:{account}:{stream}"
+    },
+    "GET /api/replications/{namespace}/{name}/status": {
+      "action": "dms:DescribeReplicationTasks",
+      "class": "aws",
+      "resource": "arn:aws:dms:us-east-1:{account}:task:{name}"
+    },
+    "GET /api/snapshots": {
+      "action": "rds:DescribeDBSnapshots",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/vm-snapshots": {
+      "action": "ec2:DescribeSnapshots",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /healthz": {
+      "action": "",
+      "class": "aws",
+      "public": true,
+      "reason": "liveness probe",
+      "resource": ""
+    },
+    "PATCH /api/iam/groups/{name}": {
+      "action": "iam:UpdateGroup",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:group/{name}"
+    },
+    "PATCH /api/iam/policies/{name}": {
+      "action": "iam:CreatePolicyVersion",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:policy/{name}"
+    },
+    "PATCH /api/iam/roles/{name}": {
+      "action": "iam:UpdateRole",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:role/{name}"
+    },
+    "PATCH /api/iam/users/{name}": {
+      "action": "iam:UpdateUser",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    },
+    "PATCH /api/iam/users/{name}/access-keys/{id}": {
+      "action": "iam:UpdateAccessKey",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    },
+    "POST /api/auth/change-password": {
+      "action": "",
+      "class": "aws",
+      "public": true,
+      "reason": "a signed-in user changes its own password, proving the old one (the forced change at sign-in)",
+      "resource": ""
+    },
+    "POST /api/auth/login": {
+      "action": "",
+      "class": "aws",
+      "public": true,
+      "reason": "sign-in",
+      "resource": ""
+    },
+    "POST /api/auth/login/mfa": {
+      "action": "",
+      "class": "aws",
+      "public": true,
+      "reason": "sign-in: the MFA code of a user whose password step passed",
+      "resource": ""
+    },
+    "POST /api/auth/logout": {
+      "action": "",
+      "class": "aws",
+      "public": true,
+      "reason": "sign-out",
+      "resource": ""
+    },
+    "POST /api/buckets": {
+      "action": "s3:CreateBucket",
+      "class": "aws",
+      "resource": "arn:aws:s3:::{name}"
+    },
+    "POST /api/ca/{namespace}/{name}/issue": {
+      "action": "acm-pca:IssueCertificate",
+      "class": "aws",
+      "resource": "arn:aws:acm-pca:us-east-1:{account}:certificate-authority/{name}"
+    },
+    "POST /api/ca/{namespace}/{name}/revoke": {
+      "action": "acm-pca:RevokeCertificate",
+      "class": "aws",
+      "resource": "arn:aws:acm-pca:us-east-1:{account}:certificate-authority/{name}"
+    },
+    "POST /api/databases/{namespace}/{name}/backtrack": {
+      "action": "rds:BacktrackDBCluster",
+      "class": "aws",
+      "resource": "arn:aws:rds:us-east-1:{account}:cluster:{name}"
+    },
+    "POST /api/databases/{namespace}/{name}/snapshot": {
+      "action": "rds:CreateDBSnapshot",
+      "class": "aws",
+      "resource": "arn:aws:rds:us-east-1:{account}:db:{name}"
+    },
+    "POST /api/databases/{namespace}/{name}/stats": {
+      "action": "pi:GetResourceMetrics",
+      "class": "aws",
+      "resource": "*"
+    },
+    "POST /api/dataflows/{namespace}/{name}/status": {
+      "action": "openinfra:GetDataFlow",
+      "class": "extra",
+      "resource": "arn:aws:openinfra:us-east-1:{account}:dataflow/{name}"
+    },
+    "POST /api/db-stats": {
+      "action": "pi:DescribeDimensionKeys",
+      "class": "aws",
+      "resource": "*"
+    },
+    "POST /api/directories/{namespace}/{name}/ldap": {
+      "action": "ds:DescribeDirectories",
+      "class": "aws",
+      "resource": "arn:aws:ds:us-east-1:{account}:directory/{name}"
+    },
+    "POST /api/functions/{namespace}/{name}/invoke": {
+      "action": "lambda:InvokeFunction",
+      "class": "aws",
+      "resource": "arn:aws:lambda:us-east-1:{account}:function:{name}"
+    },
+    "POST /api/graphqlapis/{namespace}/{name}/test-resolver": {
+      "action": "appsync:EvaluateMappingTemplate",
+      "class": "aws",
+      "resource": "*"
+    },
+    "POST /api/iam/grants/{name}/approve": {
+      "action": "iam:AttachUserPolicy",
+      "class": "aws",
+      "resource": "*"
+    },
+    "POST /api/iam/groups": {
+      "action": "iam:CreateGroup",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:group/{name}"
+    },
+    "POST /api/iam/import": {
+      "action": "access-analyzer:ValidatePolicy",
+      "class": "aws",
+      "resource": "*"
+    },
+    "POST /api/iam/policies": {
+      "action": "iam:CreatePolicy",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:policy/{name}"
+    },
+    "POST /api/iam/roles": {
+      "action": "iam:CreateRole",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:role/{name}"
+    },
+    "POST /api/iam/roles/{name}/revoke-sessions": {
+      "action": "iam:PutRolePolicy",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:role/{name}"
+    },
+    "POST /api/iam/simulate": {
+      "action": "iam:SimulatePrincipalPolicy",
+      "class": "aws",
+      "resource": "*"
+    },
+    "POST /api/iam/users": {
+      "action": "iam:CreateUser",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    },
+    "POST /api/iam/users/{name}/access-keys": {
+      "action": "iam:CreateAccessKey",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    },
+    "POST /api/iam/users/{name}/mfa-devices": {
+      "action": "iam:CreateVirtualMFADevice",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:mfa/{deviceName}"
+    },
+    "POST /api/iam/users/{name}/mfa-devices/enable": {
+      "action": "iam:EnableMFADevice",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    },
+    "POST /api/migrations/discover": {
+      "action": "dms:RefreshSchemas",
+      "class": "aws",
+      "resource": "*"
+    },
+    "POST /api/models/{namespace}/{name}/chat": {
+      "action": "sagemaker:InvokeEndpoint",
+      "class": "aws",
+      "resource": "arn:aws:sagemaker:us-east-1:{account}:endpoint/{name}"
+    },
+    "POST /api/queues/publish": {
+      "action": "sqs:SendMessage",
+      "class": "aws",
+      "resource": "arn:aws:sqs:us-east-1:{account}:{subject}"
+    },
+    "POST /api/queues/{stream}/purge": {
+      "action": "sqs:PurgeQueue",
+      "class": "aws",
+      "resource": "arn:aws:sqs:us-east-1:{account}:{stream}"
+    },
+    "POST /api/snapshots/restore": {
+      "action": "rds:RestoreDBInstanceFromDBSnapshot",
+      "class": "aws",
+      "resource": "arn:aws:rds:us-east-1:{account}:snapshot:{id}"
+    },
+    "POST /api/sts/switch-back": {
+      "action": "",
+      "class": "aws",
+      "public": true,
+      "reason": "returns the session to the signed-in user (drops the assumed role)",
+      "resource": ""
+    },
+    "POST /api/trainingjobs/{namespace}/{name}/register": {
+      "action": "sagemaker:CreateModelPackage",
+      "class": "aws",
+      "resource": "*"
+    },
+    "POST /api/vm-snapshots/restore": {
+      "action": "ec2:RunInstances",
+      "class": "aws",
+      "resource": "arn:aws:ec2:us-east-1:{account}:snapshot/{id}"
+    },
+    "POST /api/vms/{namespace}/{name}/snapshot": {
+      "action": "ec2:CreateSnapshots",
+      "class": "aws",
+      "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+    },
+    "PUT /api/buckets/{bucket}/object": {
+      "action": "s3:PutObject",
+      "class": "aws",
+      "resource": "arn:aws:s3:::{bucket}/{key}"
+    },
+    "PUT /api/iam/policies/{name}/tags": {
+      "action": "iam:TagPolicy",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:policy/{name}"
+    },
+    "PUT /api/iam/roles/{name}/tags": {
+      "action": "iam:TagRole",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:role/{name}"
+    },
+    "PUT /api/iam/users/{name}/tags": {
+      "action": "iam:TagUser",
+      "class": "aws",
+      "resource": "arn:aws:iam::{account}:user/{name}"
+    }
+  },
+  "screens": {
+    "/": {
+      "class": "aws",
+      "flag": "",
+      "nav": "/",
+      "reason": "Console Home: no resource of its own; each widget's call is authorized as itself",
+      "service": []
+    },
+    "/access-review": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Access review",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/applications": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Applications",
+      "reason": "",
+      "service": [
+        "ecs"
+      ]
+    },
+    "/applications/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Applications",
+      "reason": "",
+      "service": [
+        "ecs"
+      ]
+    },
+    "/applications/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Applications",
+      "reason": "",
+      "service": [
+        "ecs"
+      ]
+    },
+    "/attestation": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Attestation",
+      "reason": "",
+      "service": [
+        "auditmanager"
+      ]
+    },
+    "/audit": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Audit",
+      "reason": "",
+      "service": [
+        "cloudtrail"
+      ]
+    },
+    "/auto-scaling-groups": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Auto Scaling Groups",
+      "reason": "",
+      "service": [
+        "autoscaling"
+      ]
+    },
+    "/auto-scaling-groups/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Auto Scaling Groups",
+      "reason": "",
+      "service": [
+        "autoscaling"
+      ]
+    },
+    "/auto-scaling-groups/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Auto Scaling Groups",
+      "reason": "",
+      "service": [
+        "autoscaling"
+      ]
+    },
+    "/batch-transform": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Batch transform",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/batch-transform/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Batch transform",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/batch-transform/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Batch transform",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/buckets": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Buckets",
+      "reason": "",
+      "service": [
+        "s3"
+      ]
+    },
+    "/buckets/$bucket": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Buckets",
+      "reason": "",
+      "service": [
+        "s3"
+      ]
+    },
+    "/buckets/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Buckets",
+      "reason": "",
+      "service": [
+        "s3"
+      ]
+    },
+    "/chaos": {
+      "class": "aws",
+      "flag": "chaosUiEnabled",
+      "nav": "Chaos",
+      "reason": "",
+      "service": [
+        "fis"
+      ]
+    },
+    "/chaos/$namespace/$name": {
+      "class": "aws",
+      "flag": "chaosUiEnabled",
+      "nav": "Chaos",
+      "reason": "",
+      "service": [
+        "fis"
+      ]
+    },
+    "/chaos/new": {
+      "class": "aws",
+      "flag": "chaosUiEnabled",
+      "nav": "Chaos",
+      "reason": "",
+      "service": [
+        "fis"
+      ]
+    },
+    "/cost": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Cost Explorer",
+      "reason": "",
+      "service": [
+        "ce"
+      ]
+    },
+    "/data-classification": {
+      "class": "extra",
+      "flag": "",
+      "nav": "Data Classification",
+      "reason": "",
+      "service": [
+        "openinfra"
+      ]
+    },
+    "/database-proxies": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Databases / Database proxies",
+      "reason": "",
+      "service": [
+        "rds"
+      ]
+    },
+    "/database-proxies/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Databases / Database proxies",
+      "reason": "",
+      "service": [
+        "rds"
+      ]
+    },
+    "/database-proxies/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Databases / Database proxies",
+      "reason": "",
+      "service": [
+        "rds"
+      ]
+    },
+    "/databases": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Databases",
+      "reason": "",
+      "service": [
+        "rds"
+      ]
+    },
+    "/databases/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Databases",
+      "reason": "",
+      "service": [
+        "rds"
+      ]
+    },
+    "/databases/managed/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Databases",
+      "reason": "",
+      "service": [
+        "rds"
+      ]
+    },
+    "/databases/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Databases",
+      "reason": "",
+      "service": [
+        "rds"
+      ]
+    },
+    "/dataflows": {
+      "class": "extra",
+      "flag": "",
+      "nav": "Data Flows / Data flows",
+      "reason": "",
+      "service": [
+        "openinfra"
+      ]
+    },
+    "/dataflows/$namespace/$name": {
+      "class": "extra",
+      "flag": "",
+      "nav": "Data Flows / Data flows",
+      "reason": "",
+      "service": [
+        "openinfra"
+      ]
+    },
+    "/dataflows/new": {
+      "class": "extra",
+      "flag": "",
+      "nav": "Data Flows / Data flows",
+      "reason": "",
+      "service": [
+        "openinfra"
+      ]
+    },
+    "/directories": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Active Directory",
+      "reason": "",
+      "service": [
+        "ds"
+      ]
+    },
+    "/directories/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Active Directory",
+      "reason": "",
+      "service": [
+        "ds"
+      ]
+    },
+    "/directories/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Active Directory",
+      "reason": "",
+      "service": [
+        "ds"
+      ]
+    },
+    "/elastic-ips": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Elastic IPs",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/elastic-ips/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Elastic IPs",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/elastic-ips/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Elastic IPs",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/emailsenders": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Email Senders",
+      "reason": "",
+      "service": [
+        "ses"
+      ]
+    },
+    "/emailsenders/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Email Senders",
+      "reason": "",
+      "service": [
+        "ses"
+      ]
+    },
+    "/emailsenders/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Email Senders",
+      "reason": "",
+      "service": [
+        "ses"
+      ]
+    },
+    "/encryption": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Encryption Keys",
+      "reason": "",
+      "service": [
+        "kms"
+      ]
+    },
+    "/executions/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "State Machines",
+      "reason": "",
+      "service": [
+        "states"
+      ]
+    },
+    "/feature-store": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Feature store",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/feature-store/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Feature store",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/feature-store/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Feature store",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/fileshares": {
+      "class": "aws",
+      "flag": "",
+      "nav": "File Shares",
+      "reason": "",
+      "service": [
+        "elasticfilesystem"
+      ]
+    },
+    "/fileshares/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "File Shares",
+      "reason": "",
+      "service": [
+        "elasticfilesystem"
+      ]
+    },
+    "/fileshares/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "File Shares",
+      "reason": "",
+      "service": [
+        "elasticfilesystem"
+      ]
+    },
+    "/flow-logs": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Flow logs",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/flow-logs/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Flow logs",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/flow-logs/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Flow logs",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/functions": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Functions",
+      "reason": "",
+      "service": [
+        "lambda"
+      ]
+    },
+    "/functions/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Functions",
+      "reason": "",
+      "service": [
+        "lambda"
+      ]
+    },
+    "/functions/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Functions",
+      "reason": "",
+      "service": [
+        "lambda"
+      ]
+    },
+    "/grants": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Grants",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/grants/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Grants",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/grants/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Grants",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/graphql": {
+      "class": "aws",
+      "flag": "",
+      "nav": "GraphQL",
+      "reason": "",
+      "service": [
+        "appsync"
+      ]
+    },
+    "/graphql/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "GraphQL",
+      "reason": "",
+      "service": [
+        "appsync"
+      ]
+    },
+    "/graphql/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "GraphQL",
+      "reason": "",
+      "service": [
+        "appsync"
+      ]
+    },
+    "/groups": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / User groups",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/groups/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / User groups",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/groups/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / User groups",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/http-apis": {
+      "class": "aws",
+      "flag": "",
+      "nav": "HTTP APIs",
+      "reason": "",
+      "service": [
+        "apigateway"
+      ]
+    },
+    "/http-apis/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "HTTP APIs",
+      "reason": "",
+      "service": [
+        "apigateway"
+      ]
+    },
+    "/http-apis/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "HTTP APIs",
+      "reason": "",
+      "service": [
+        "apigateway"
+      ]
+    },
+    "/iam": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Dashboard",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/identity-providers": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Identity Providers",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/identity-providers/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Identity Providers",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/identity-providers/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Identity Providers",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/lineage": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Data Flows / Lineage",
+      "reason": "",
+      "service": [
+        "datazone"
+      ]
+    },
+    "/migrations": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Data Flows / Migrations",
+      "reason": "",
+      "service": [
+        "dms"
+      ]
+    },
+    "/migrations/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Data Flows / Migrations",
+      "reason": "",
+      "service": [
+        "dms"
+      ]
+    },
+    "/migrations/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Data Flows / Migrations",
+      "reason": "",
+      "service": [
+        "dms"
+      ]
+    },
+    "/model-monitor": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Model monitor",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/model-monitor/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Model monitor",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/model-monitor/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Model monitor",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/model-registry": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Model registry",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/model-registry/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Model registry",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/model-registry/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Model registry",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/models": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Models",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/models/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Models",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/models/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Models",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/monitoring": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Monitoring",
+      "reason": "",
+      "service": [
+        "cloudwatch"
+      ]
+    },
+    "/nat-gateways": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / NAT gateways",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/nat-gateways/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / NAT gateways",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/nat-gateways/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / NAT gateways",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/network": {
+      "class": "operator",
+      "flag": "",
+      "nav": "Network",
+      "reason": "",
+      "service": []
+    },
+    "/networking": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / VPC dashboard",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/networking/create": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / VPC dashboard",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/networking/map": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / VPC dashboard",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/nodes": {
+      "class": "operator",
+      "flag": "",
+      "nav": "Nodes",
+      "reason": "",
+      "service": []
+    },
+    "/parameters": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Parameters",
+      "reason": "",
+      "service": [
+        "ssm"
+      ]
+    },
+    "/parameters/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Parameters",
+      "reason": "",
+      "service": [
+        "ssm"
+      ]
+    },
+    "/parameters/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Parameters",
+      "reason": "",
+      "service": [
+        "ssm"
+      ]
+    },
+    "/pki": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Certificate Authority",
+      "reason": "",
+      "service": [
+        "acm-pca"
+      ]
+    },
+    "/pki/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Certificate Authority",
+      "reason": "",
+      "service": [
+        "acm-pca"
+      ]
+    },
+    "/pki/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Certificate Authority",
+      "reason": "",
+      "service": [
+        "acm-pca"
+      ]
+    },
+    "/policies": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Policies",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/policies/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Policies",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/policies/$name/edit": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Policies",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/policies/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Policies",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/policy-simulator": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Policy simulator",
+      "reason": "",
+      "service": [
+        "iam",
+        "access-analyzer"
+      ]
+    },
+    "/processing": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Processing jobs",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/processing/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Processing jobs",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/processing/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Processing jobs",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/queries": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Query",
+      "reason": "",
+      "service": [
+        "athena"
+      ]
+    },
+    "/queues": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Queues",
+      "reason": "",
+      "service": [
+        "sqs"
+      ]
+    },
+    "/queues/$stream": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Queues",
+      "reason": "",
+      "service": [
+        "sqs"
+      ]
+    },
+    "/replications": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Data Flows / Replications",
+      "reason": "",
+      "service": [
+        "dms"
+      ]
+    },
+    "/replications/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Data Flows / Replications",
+      "reason": "",
+      "service": [
+        "dms"
+      ]
+    },
+    "/replications/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Data Flows / Replications",
+      "reason": "",
+      "service": [
+        "dms"
+      ]
+    },
+    "/roles": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Roles",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/roles/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Roles",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/roles/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Roles",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/scheduled-jobs": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Scheduled Jobs",
+      "reason": "",
+      "service": [
+        "scheduler"
+      ]
+    },
+    "/scheduled-jobs/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Scheduled Jobs",
+      "reason": "",
+      "service": [
+        "scheduler"
+      ]
+    },
+    "/scheduled-jobs/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Scheduled Jobs",
+      "reason": "",
+      "service": [
+        "scheduler"
+      ]
+    },
+    "/security-groups": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Security groups",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/security-groups/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Security groups",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/security-groups/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Security groups",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/snapshots": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Snapshots",
+      "reason": "",
+      "service": [
+        "rds",
+        "ec2"
+      ]
+    },
+    "/statemachines": {
+      "class": "aws",
+      "flag": "",
+      "nav": "State Machines / State machines",
+      "reason": "",
+      "service": [
+        "states"
+      ]
+    },
+    "/statemachines/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "State Machines / State machines",
+      "reason": "",
+      "service": [
+        "states"
+      ]
+    },
+    "/statemachines/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "State Machines / State machines",
+      "reason": "",
+      "service": [
+        "states"
+      ]
+    },
+    "/staticsites": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Static Sites",
+      "reason": "",
+      "service": [
+        "cloudfront"
+      ]
+    },
+    "/staticsites/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Static Sites",
+      "reason": "",
+      "service": [
+        "cloudfront"
+      ]
+    },
+    "/staticsites/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Static Sites",
+      "reason": "",
+      "service": [
+        "cloudfront"
+      ]
+    },
+    "/streams": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Data Flows / Streams",
+      "reason": "",
+      "service": [
+        "kinesis"
+      ]
+    },
+    "/streams/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Data Flows / Streams",
+      "reason": "",
+      "service": [
+        "kinesis"
+      ]
+    },
+    "/streams/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Data Flows / Streams",
+      "reason": "",
+      "service": [
+        "kinesis"
+      ]
+    },
+    "/subnets": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Subnets",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/subnets/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Subnets",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/subnets/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Subnets",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/tables": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Tables",
+      "reason": "",
+      "service": [
+        "dynamodb"
+      ]
+    },
+    "/tables/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Tables",
+      "reason": "",
+      "service": [
+        "dynamodb"
+      ]
+    },
+    "/tables/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Tables",
+      "reason": "",
+      "service": [
+        "dynamodb"
+      ]
+    },
+    "/trainingjobs": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Training jobs",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/trainingjobs/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Training jobs",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/trainingjobs/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Training jobs",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/transit-gateways": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Transit gateways",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/transit-gateways/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Transit gateways",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/transit-gateways/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Transit gateways",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/tuning": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Tuning jobs",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/tuning/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Tuning jobs",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/tuning/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Machine Learning / Tuning jobs",
+      "reason": "",
+      "service": [
+        "sagemaker"
+      ]
+    },
+    "/user-pools": {
+      "class": "aws",
+      "flag": "",
+      "nav": "User Pools",
+      "reason": "",
+      "service": [
+        "cognito-idp"
+      ]
+    },
+    "/user-pools/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "User Pools",
+      "reason": "",
+      "service": [
+        "cognito-idp"
+      ]
+    },
+    "/user-pools/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "User Pools",
+      "reason": "",
+      "service": [
+        "cognito-idp"
+      ]
+    },
+    "/users": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Users",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/users/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Users",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/users/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "IAM / Users",
+      "reason": "",
+      "service": [
+        "iam"
+      ]
+    },
+    "/vms": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Virtual Machines / Instances",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/vms/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Virtual Machines / Instances",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/vms/images": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Virtual Machines / Images",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/vms/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Virtual Machines / Instances",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/volumes": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Volumes",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/volumes/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Volumes",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/volumes/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Volumes",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/vpcs": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Your VPCs",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/vpcs/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Your VPCs",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/vpcs/new": {
+      "class": "aws",
+      "flag": "",
+      "nav": "VPC / Your VPCs",
+      "reason": "",
+      "service": [
+        "ec2"
+      ]
+    },
+    "/workloads": {
+      "class": "operator",
+      "flag": "",
+      "nav": "Workloads",
+      "reason": "",
+      "service": []
+    }
+  },
+  "services": {
+    "acm": {
+      "actions": 3,
+      "class": "aws",
+      "operations": 3,
+      "service": "ACM",
+      "tier": "proven"
+    },
+    "apigateway": {
+      "actions": 1,
+      "class": "aws",
+      "operations": 40,
+      "service": "API Gateway",
+      "tier": "proven"
+    },
+    "appsync": {
+      "actions": 2,
+      "class": "aws",
+      "operations": 14,
+      "service": "AppSync",
+      "tier": "proven"
+    },
+    "athena": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 28,
+      "service": "Athena",
+      "tier": "proven"
+    },
+    "cloudformation": {
+      "actions": 8,
+      "class": "aws",
+      "operations": 23,
+      "service": "CloudFormation",
+      "tier": "proven"
+    },
+    "cloudfront": {
+      "actions": 1,
+      "class": "aws",
+      "operations": 11,
+      "service": "CloudFront",
+      "tier": "proven"
+    },
+    "cognito-idp": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 20,
+      "service": "Cognito",
+      "tier": "proven"
+    },
+    "dynamodb": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 19,
+      "service": "DynamoDB",
+      "tier": "proven"
+    },
+    "dynamodbstreams": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 4,
+      "service": "DynamoDB",
+      "tier": "proven"
+    },
+    "ec2": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 19,
+      "service": "EC2",
+      "tier": "proven"
+    },
+    "ecr": {
+      "actions": 8,
+      "class": "aws",
+      "operations": 37,
+      "service": "ECR",
+      "tier": "proven"
+    },
+    "ecs": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 13,
+      "service": "ECS",
+      "tier": "proven"
+    },
+    "eks": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 5,
+      "service": "EKS",
+      "tier": "proven"
+    },
+    "email": {
+      "actions": 5,
+      "class": "aws",
+      "operations": 14,
+      "service": "SES",
+      "tier": "proven"
+    },
+    "events": {
+      "actions": 2,
+      "class": "aws",
+      "operations": 14,
+      "service": "EventBridge",
+      "tier": "proven"
+    },
+    "glue": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 32,
+      "service": "Glue",
+      "tier": "proven"
+    },
+    "iam": {
+      "actions": 3,
+      "class": "aws",
+      "operations": 77,
+      "service": "IAM",
+      "tier": "proven"
+    },
+    "kinesis": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 12,
+      "service": "Kinesis Data Streams",
+      "tier": "proven"
+    },
+    "kms": {
+      "actions": 5,
+      "class": "aws",
+      "operations": 23,
+      "service": "KMS",
+      "tier": "proven"
+    },
+    "lambda": {
+      "actions": 5,
+      "class": "aws",
+      "operations": 4,
+      "service": "Lambda",
+      "tier": "proven"
+    },
+    "logs": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 16,
+      "service": "CloudWatch Logs",
+      "tier": "proven"
+    },
+    "monitoring": {
+      "actions": 5,
+      "class": "aws",
+      "operations": 8,
+      "service": "CloudWatch",
+      "tier": "proven"
+    },
+    "organizations": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 7,
+      "service": "Organizations",
+      "tier": "proven"
+    },
+    "rds": {
+      "actions": 1,
+      "class": "aws",
+      "operations": 12,
+      "service": "RDS",
+      "tier": "proven"
+    },
+    "s3": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 33,
+      "service": "S3",
+      "tier": "proven"
+    },
+    "secretsmanager": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 15,
+      "service": "Secrets Manager",
+      "tier": "proven"
+    },
+    "servicequotas": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 9,
+      "service": "Service Quotas",
+      "tier": "proven"
+    },
+    "ses": {
+      "actions": 5,
+      "class": "aws",
+      "operations": 14,
+      "service": "SES",
+      "tier": "proven"
+    },
+    "sns": {
+      "actions": 2,
+      "class": "aws",
+      "operations": 27,
+      "service": "SNS",
+      "tier": "proven"
+    },
+    "sqs": {
+      "actions": 1,
+      "class": "aws",
+      "operations": 14,
+      "service": "SQS",
+      "tier": "proven"
+    },
+    "ssm": {
+      "actions": 8,
+      "class": "aws",
+      "operations": 17,
+      "service": "SSM",
+      "tier": "proven"
+    },
+    "states": {
+      "actions": 1,
+      "class": "aws",
+      "operations": 12,
+      "service": "Step Functions",
+      "tier": "proven"
+    },
+    "sts": {
+      "actions": 1,
+      "class": "aws",
+      "operations": 4,
+      "service": "STS",
+      "tier": "proven"
+    }
+  },
+  "summary": {
+    "fields": {
+      "aws": 363,
+      "extra": 25,
+      "operator": 0,
+      "removed": 0,
+      "total": 388
+    },
+    "kinds": {
+      "aws": 54,
+      "extra": 2,
+      "operator": 1,
+      "removed": 0,
+      "total": 57
+    },
+    "pendingExtras": 2,
+    "pendingKubernetesFields": 14,
+    "publicRoutes": 11,
+    "routes": {
+      "aws": 110,
+      "extra": 1,
+      "operator": 1,
+      "removed": 0,
+      "total": 112
+    },
+    "screens": {
+      "aws": 156,
+      "extra": 4,
+      "operator": 3,
+      "removed": 0,
+      "total": 163
+    },
+    "services": {
+      "aws": 33,
+      "extra": 0,
+      "operator": 0,
+      "removed": 0,
+      "total": 33
+    }
+  }
+}

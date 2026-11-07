@@ -248,6 +248,12 @@ class EndToEndRed(unittest.TestCase):
         if os.path.isdir(os.path.join(ROOT, "examples")):
             shutil.copytree(os.path.join(ROOT, "examples"), os.path.join(tmp, "examples"))
         shutil.copy(os.path.join(ROOT, "README.md"), os.path.join(tmp, "README.md"))
+        # what the same command's customer-surface gate reads (probe/surface.py)
+        shutil.copytree(os.path.join(ROOT, "platform"), os.path.join(tmp, "platform"))
+        for f in (os.path.join("ui", "src", "router.tsx"), os.path.join("ui", "src", "components", "layout", "nav-items.ts"),
+                  os.path.join("console-api", "internal", "awsaction", "testdata", "aws-actions.txt")):
+            os.makedirs(os.path.dirname(os.path.join(tmp, f)), exist_ok=True)
+            shutil.copy(os.path.join(ROOT, f), os.path.join(tmp, f))
         return tmp
 
     def test_ci_command_green_then_red(self):

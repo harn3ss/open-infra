@@ -2144,6 +2144,13 @@ generated kubeconfig works for in-cluster clients and for `kubectl` behind a por
 clients set `EKS_CLUSTER_ENDPOINT` out-of-band to the externally-reachable API URL (kept out of the public
 manifest).
 
+**No IAM principal is a Kubernetes identity.** The kubeconfig authenticates with `aws eks get-token`, a token
+made from the caller's IAM credentials, and the API server accepts none: an account's principals reach the
+platform through its AWS APIs and the console, never the Kubernetes API (the [customer
+surface](customer-surface.md)). `probe/aws-shim-eks-tenant-refused.sh` asserts it live: `DescribeCluster`
+refused without `eks:DescribeCluster`, the kubeconfig's token refused by the API server, and the console's
+raw Kubernetes objects refused to the same principal.
+
 `probe/aws-shim-eks.sh` proves it: `DescribeCluster` returns `ACTIVE`, an `https` endpoint, a
 `certificateAuthority.data` that base64-decodes to a real PEM certificate, and a `version` that **matches the
 live Kubernetes server version**; `aws eks update-kubeconfig` generates a kubeconfig whose server + CA match
