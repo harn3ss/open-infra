@@ -133,12 +133,55 @@ spec:
               valueFrom: { secretKeyRef: { name: vault-bootstrap, key: token, optional: true } }
           args:
             - |
-              # Post-bootstrap the operator deletes vault-bootstrap (it is a root token). With no token
-              # there is nothing to do — Vault is already configured — so no-op rather than fail the hook
-              # on every subsequent sync. (optional: true above keeps the missing Secret from wedging the pod.)
-              [ -n "${VAULT_TOKEN:-}" ] || { echo "no bootstrap token — Vault already configured; nothing to do"; exit 0; }
+              # The bootstrap token is a root token, used ONCE: its run writes vault-config — Vault's
+              # configuration administrator, a Kubernetes-auth role bound to this Job's ServiceAccount
+              # with short-lived tokens — and every later run logs in as vault-config instead, so the
+              # operator revokes and deletes the root token after the first success (docs/encryption.md),
+              # as AWS has an account's root credentials put away and its automation use a role.
+              if [ -z "${VAULT_TOKEN:-}" ]; then
+                # Sealed or unreachable: nothing to configure yet (no-op rather than fail every sync).
+                vault status >/dev/null 2>&1 || { echo "Vault is sealed or unreachable — nothing to do until it is unsealed"; exit 0; }
+                if ! VAULT_TOKEN="$(vault write -field=token auth/kubernetes/login role=vault-config \
+                    jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null)"; then
+                  echo "no bootstrap token and no vault-config identity yet — provide the bootstrap token once (docs/encryption.md)"
+                  exit 0
+                fi
+                export VAULT_TOKEN
+                echo "logged in as vault-config (no root token)"
+              fi
               # Wait until Vault is reachable AND unsealed.
               until vault status >/dev/null 2>&1; do echo "waiting for Vault to be unsealed…"; sleep 5; done
+              echo "writing the vault-config identity (Vault's configuration administrator, for this Job alone)…"
+              # Exactly what this Job configures: the mounts it enables (never disabling one), Kubernetes
+              # auth and its roles, the ACL policies, the audit device, and the STS sealing key — which it
+              # may create once but never read (its existence is checked on the metadata path).
+              vault policy write vault-config - <<'POLICY'
+              path "sys/mounts"               { capabilities = ["read"] }
+              path "sys/mounts/*"             { capabilities = ["create", "read", "update"] }
+              path "sys/auth"                 { capabilities = ["read"] }
+              path "sys/auth/kubernetes"      { capabilities = ["create", "read", "update", "sudo"] }
+              path "sys/policies/acl"         { capabilities = ["list"] }
+              path "sys/policies/acl/*"       { capabilities = ["create", "read", "update"] }
+              path "auth/kubernetes/config"   { capabilities = ["create", "read", "update"] }
+              path "auth/kubernetes/role/*"   { capabilities = ["create", "read", "update"] }
+              path "sys/audit"                { capabilities = ["read", "sudo"] }
+              path "sys/audit/stdout"         { capabilities = ["create", "update", "sudo"] }
+              path "sts/metadata/signing-key" { capabilities = ["read"] }
+              path "sts/data/signing-key"     { capabilities = ["create"] }
+              POLICY
+              vault auth enable kubernetes 2>/dev/null || echo "  kubernetes auth already enabled"
+              vault write auth/kubernetes/config \
+                kubernetes_host="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}"
+              vault write auth/kubernetes/role/vault-config \
+                bound_service_account_names=vault-transit-setup \
+                bound_service_account_namespaces=vault \
+                token_policies=vault-config token_ttl=15m token_max_ttl=30m
+              echo "enabling the audit device (every request, sensitive fields HMAC'd, to the pod log → Loki)…"
+              if vault audit list 2>/dev/null | grep -q '^stdout/'; then
+                echo "  audit device already enabled"
+              else
+                vault audit enable -path=stdout file file_path=stdout && echo "  audit device enabled"
+              fi
 
               echo "enabling Transit engine (idempotent)…"
               vault secrets enable transit 2>/dev/null || echo "  transit already enabled"
@@ -248,7 +291,7 @@ spec:
               # Write the 32-byte AES sealing key on first bootstrap if absent — this is what ENABLES
               # sts:AssumeRole (without it the shim answers "no signing key configured"). Only-if-absent, so a
               # re-run never rotates it (rotation, the session revoke-all lever, is a deliberate separate action).
-              if vault kv get -field=key sts/signing-key >/dev/null 2>&1; then
+              if vault kv metadata get sts/signing-key >/dev/null 2>&1; then
                 echo "  sts/signing-key already present (STS already enabled)"
               else
                 vault kv put sts/signing-key key="$(head -c 32 /dev/urandom | base64)" >/dev/null && echo "  wrote sts/signing-key — sts:AssumeRole is now ENABLED"

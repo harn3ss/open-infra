@@ -98,15 +98,25 @@ kubectl -n vault exec -it vault-0 -- vault operator unseal    # x3 with differen
 kubectl -n vault create secret generic vault-bootstrap --from-literal=token=<root-or-admin-token>
 ```
 
-The `vault-transit-setup` Job then enables the Transit engine and Kubernetes auth, and creates the
-reconciler's role (bound to its ServiceAccount). No standing Vault secret is written anywhere.
+The `vault-transit-setup` Job then enables the Transit engine and Kubernetes auth, creates each
+component's role (bound to its ServiceAccount), turns on Vault's audit device (every request, with
+sensitive fields HMAC'd, to the Vault pod's log), and writes `vault-config`: Vault's configuration
+administrator, a Kubernetes-auth role bound to the setup Job's own ServiceAccount with short-lived tokens.
+Every later run of the Job (each sync) logs in as `vault-config`, so the root token is needed exactly once.
+No standing Vault secret is written anywhere.
 
 ```sh
-# 4. The bootstrap token is a root/admin token and was ONLY needed for setup — REVOKE and DELETE it
-#    once the setup Job has completed, so it can't be stolen later.
-kubectl -n vault exec -it vault-0 -- vault token revoke <the-bootstrap-token>
+# 4. The bootstrap token is a root token and was ONLY needed for the first run — REVOKE and DELETE it
+#    once the setup Job has completed (as AWS has an account's root credentials put away and its
+#    automation use a role), so it can't be stolen later. The script revokes every other root token
+#    (found by accessor, so none copied from an earlier bootstrap survives), then the bootstrap token
+#    with itself, and shows a call made with it is refused — inside the cluster, printing counts only:
+./hack/vault-revoke-root.sh
 kubectl -n vault delete secret vault-bootstrap
 ```
+
+A root token can be generated again from the unseal keys (`vault operator generate-root`) should one be
+needed for recovery.
 
 After that, create `EncryptionKey`s. Because the reconciler uses Kubernetes auth, there is no
 `encryptionkey-reconciler-vault` Secret to guard — a console compromise cannot reach Vault through it.
