@@ -307,7 +307,7 @@ step3() {
   [ -f "$STATE/step-2.done" ] || die "step 2 (the canary) has not passed"
   verify_root
   say "step 3: the compiler applies (generated RBAC + the IAM corpus)"
-  kubectl apply -f "$REPO/platform/security/manifests/iam-compiler-apply.yaml" >/dev/null || die "could not grant the compiler its apply rights"
+  kubectl apply -f "$REPO/platform/security/iam-compiler-apply.yaml" >/dev/null || die "could not grant the compiler its apply rights"
   # The webhook decides the compiler's ServiceAccount from the RBAC corpus: its new rights reach the
   # control plane only once the corpus carries them, so regenerate it before the compiler writes.
   say "the RBAC corpus with the compiler's apply rights"
@@ -480,7 +480,8 @@ step6() {
   Then, in git (GitOps-managed, so a commit, not a live edit):
     - delete the bindings labelled openinfra.dev/legacy (platform/console/manifests/rbac-roles.yaml,
       platform/security/pass-role.yaml, platform/aws-shim/ecr-pusher.yaml, ecr-node-pull.yaml);
-    - delete the 25 kebab-case alias policies (platform/security/managed-policies.yaml);
+    - delete the kebab-case policies that alias an AWS managed policy (platform/security/managed-policies.yaml,
+      those whose openinfra.dev/aws-equivalent names one; the platform policies, "none", stay);
     - make test/render/rbac_user_authority_test.go blocking with no legacy allowance.
 TXT
   verify_root

@@ -3,13 +3,11 @@
 # iam:PassRole on its role). Without it, anyone who could create a VirtualMachine in a namespace could
 # take the credentials of any VM-trusted Role there.
 #
-# The permission is the custom RBAC verb `passrole` on roles.iam.openinfra.dev:
-#   - the built-in admins (openinfra:admins) hold it on every Role (ClusterRole openinfra-pass-role);
-#   - power users do not, matching AWS's PowerUserAccess, which excludes iam:PassRole;
-#   - to let someone else pass one Role, an admin grants the verb on that Role, e.g. in its namespace:
-#       kubectl -n <ns> create role pass-<role> --verb=passrole --resource=roles.iam.openinfra.dev --resource-name=<role>
-#       kubectl -n <ns> create rolebinding pass-<role> --role=pass-<role> --group=openinfra:<group>
-#     then regenerate the control-plane Cedar corpus (docs/authz-webhook.md).
+# The permission is IAM policy, as on AWS: iam:PassRole on the role's ARN. AdministratorAccess includes it;
+# PowerUserAccess does not, as AWS's excludes it; any policy may allow it on chosen roles. The IAM compiler
+# compiles it into the custom RBAC verb `passrole` on roles.iam.openinfra.dev for exactly the roles the
+# policy allows, which the admission policies below check. Platform ServiceAccounts that pass roles on a
+# user's behalf hold the verb through ClusterRole openinfra-pass-role.
 #
 # Where it is checked:
 #   - VirtualMachine (spec.instanceRole): by the admission policy below, as the requester (the console
@@ -40,20 +38,6 @@ rules:
   - apiGroups: [iam.openinfra.dev]
     resources: [roles]
     verbs: [passrole]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: openinfra-pass-role-admins
-  labels: { openinfra.dev/legacy: "true" }   # a legacy tier grant, deleted at the IAM cutover (iam:PassRole is IAM policy then)
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: openinfra-pass-role
-subjects:
-  - kind: Group
-    name: openinfra:admins
-    apiGroup: rbac.authorization.k8s.io
 ---
 # provider-kubernetes creates the per-VM ServiceAccount (with its instance-role annotation) from a
 # VirtualMachine claim that already passed the check. It runs as the fixed ServiceAccount name

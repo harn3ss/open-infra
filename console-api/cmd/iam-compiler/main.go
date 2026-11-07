@@ -6,7 +6,7 @@
 //	IAM_COMPILER_MODE=report  (default) write the report (and status.compiled) only — nothing enforces it
 //	IAM_COMPILER_MODE=apply   also write the iam-corpus and reconcile the generated RBAC
 //
-// Apply needs RBAC write rights (platform/security/manifests/iam-compiler-apply.yaml), granted at the
+// Apply needs RBAC write rights (platform/security/iam-compiler-apply.yaml), granted at the
 // IAM cutover; report needs only reads.
 package main
 

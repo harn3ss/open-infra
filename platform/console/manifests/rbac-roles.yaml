@@ -93,23 +93,6 @@ subjects:
     name: console
     namespace: open-infra-console
 ---
-# 2. Admins: everything the console itself can do.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: open-infra-admins
-  # A legacy permission tier: deleted at the IAM cutover, when the iam-compiler's generated bindings
-  # take over (the rbac-user-authority check allows it only while it carries this label).
-  labels: { openinfra.dev/legacy: "true" }
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: open-infra-console
-subjects:
-  - kind: Group
-    name: openinfra:admins
-    apiGroup: rbac.authorization.k8s.io
----
 # 2b. Break-glass: the management account's root, as the account-qualified identity names it
 #     (openinfra:000000000000:root), holds everything the console can do through RBAC alone, so
 #     neither a regenerated corpus nor a missing IAM grant can lock root out, and nothing generated
@@ -217,20 +200,6 @@ rules:
     resources: [pods, nodes]
     verbs: [get, list]
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: open-infra-powerusers
-  labels: { openinfra.dev/legacy: "true" }   # a legacy tier, deleted at the IAM cutover
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: open-infra-poweruser
-subjects:
-  - kind: Group
-    name: openinfra:powerusers
-    apiGroup: rbac.authorization.k8s.io
----
 # 4. Readers: look, don't touch. Deliberately excludes secrets — reading a
 #    connection Secret is equivalent to holding the database password.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -259,17 +228,3 @@ rules:
   - apiGroups: [metrics.k8s.io]
     resources: [pods, nodes]
     verbs: [get, list]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: open-infra-readers
-  labels: { openinfra.dev/legacy: "true" }   # a legacy tier, deleted at the IAM cutover
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: open-infra-readonly
-subjects:
-  - kind: Group
-    name: openinfra:readers
-    apiGroup: rbac.authorization.k8s.io

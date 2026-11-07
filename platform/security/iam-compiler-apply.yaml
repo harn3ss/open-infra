@@ -1,5 +1,5 @@
-# The iam-compiler's APPLY-mode rights, granted at the IAM cutover (kubectl apply, a deliberate step:
-# under manifests/ so ArgoCD does not sync it). Writing generated RBAC needs these: create/update/delete
+# The iam-compiler's APPLY-mode rights, under GitOps since the IAM cutover completed (IAM policy is the one
+# authorization plane, and the compiler is how its RBAC is written). Writing generated RBAC needs these: create/update/delete
 # on ClusterRoles, ClusterRoleBindings and RoleBindings, and escalate/bind, because the RBAC it writes
 # grants what IAM policy grants — rights the compiler does not hold itself. That makes this
 # ServiceAccount as powerful as the IAM policies it compiles, which is the point; it writes only objects

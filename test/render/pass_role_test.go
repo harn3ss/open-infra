@@ -75,17 +75,20 @@ func TestPassRole_AdmissionChecksTheRequesterOnTheNamedRole(t *testing.T) {
 
 // The persona decision (AWS parity): admins may pass any Role, power users may not — AWS's
 // PowerUserAccess excludes iam:PassRole. The provider holds it to render the per-VM ServiceAccount.
-func TestPassRole_AdminsYesPowerUsersNo(t *testing.T) {
+func TestPassRole_NoUserGroupHoldsItByHand(t *testing.T) {
 	cr := yamlDoc(t, passRoleYAML, "ClusterRole", "openinfra-pass-role")
 	mustContain(t, "openinfra-pass-role", cr, "apiGroups: [iam.openinfra.dev]", "resources: [roles]", "verbs: [passrole]")
-	mustContain(t, "admins binding", yamlDoc(t, passRoleYAML, "ClusterRoleBinding", "openinfra-pass-role-admins"),
-		"name: openinfra-pass-role\n", "name: openinfra:admins")
 	mustContain(t, "provider binding", yamlDoc(t, passRoleYAML, "ClusterRoleBinding", "openinfra-pass-role-provider"),
 		"name: openinfra-pass-role\n", "kind: ServiceAccount\n    name: provider-kubernetes\n    namespace: crossplane-system")
 
 	b, err := os.ReadFile(passRoleYAML)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// A principal's iam:PassRole is IAM policy (AdministratorAccess carries it): the IAM compiler generates
+	// the passrole RBAC from it, and no hand-written binding grants it to a user group.
+	if strings.Contains(string(b), "openinfra:admins") {
+		t.Errorf("pass-role.yaml must not grant passrole to openinfra:admins by hand: IAM policy grants iam:PassRole")
 	}
 	if strings.Contains(string(b), "openinfra:powerusers") {
 		t.Errorf("pass-role.yaml must not grant passrole to openinfra:powerusers")

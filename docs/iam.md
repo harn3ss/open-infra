@@ -393,7 +393,7 @@ verifies and prints its rollback. State is kept in `~/.local/state/openinfra-iam
 | 3 | the compiler's apply rights (and the RBAC corpus that carries them), the compiler in `apply` (generated RBAC + IAM corpus), then `enforce`, and only then the RBAC corpus without user principals; the probes again for every principal | `shadow`, compiler `report`, generated RBAC deleted, the full RBAC corpus back |
 | 4 | checks nothing names the implicit `openinfra:users` group; the impersonation ceilings are a commit | revert that commit |
 | 5 | the estate mirror's namespace becomes its own member account (`MIRROR_NAMESPACE`, `MIRROR_ACCOUNT_ID` to override the discovered namespace and derived id), with its claims checked as Ready as before | delete the account and unlabel the namespace |
-| 6 | after 24 h clean: `hack/iam-migrate --drop-legacy`, then the repo changes it prints (legacy bindings, the kebab-case alias policies) | none — roll back step 3 before this |
+| 6 | after 24 h clean: `hack/iam-migrate --drop-legacy`, then the repo changes it prints (legacy bindings, the kebab-case policies that alias an AWS managed policy) and the compiler's apply rights move under GitOps (`platform/security/iam-compiler-apply.yaml`) | none — roll back step 3 before this |
 
 A canary is decided by IAM policy alone, at every door, for every read. A write that the console or the
 AWS front door makes on the cluster as the principal (a stack, an instance's state, a volume, a bucket, an

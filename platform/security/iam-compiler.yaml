@@ -4,9 +4,9 @@
 # openinfra.dev/generated-by: iam-compiler). Never widened: what RBAC cannot express exactly is dropped
 # and reported (the iam-compiler-report ConfigMap beside the corpus).
 #
-# Shipped in REPORT mode: it reads the IAM world and writes only its report, so nothing it compiles
-# enforces yet. The IAM cutover switches IAM_COMPILER_MODE to apply and grants the RBAC-write rights in
-# manifests/iam-compiler-apply.yaml (not synced by ArgoCD: those rights let it write any RBAC).
+# Its mode is IAM_COMPILER_MODE (report: it reads the IAM world and writes only its report; apply: it also
+# writes the iam-corpus and the generated RBAC). Its RBAC-write rights are iam-compiler-apply.yaml; the IAM
+# cutover switches the mode to apply.
 # Platform-internal: its own RBAC below is hand-written and binds a ServiceAccount, never a user.
 apiVersion: v1
 kind: ServiceAccount
