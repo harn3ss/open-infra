@@ -145,6 +145,10 @@ incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-co
 # reconciler, and the synchronous ca-issuer. OFF unless components.pki: true; RIDES ON the encryption
 # component (reuses its Vault + Kubernetes-auth wiring — see docs/certificate-authority.md).
 incl pki "abstraction/certificateauthority-xrd.yaml,abstraction/certificateauthority-composition.yaml,security/ca-reconciler.yaml,security/ca-issuer.yaml"
+# OpenBao, the platform's key and secrets service: three members on three physical nodes, auto-unsealed
+# by an OpenBao outside the cluster. OFF unless components.openbao: true; needs the unseal host, its
+# token Secret and an operator to initialize it (docs/openbao.md). Its site values are written below (2a-bao).
+incl openbao "security/openbao.yaml"
 # Object encryption at rest: the platform MinIO's own static KMS key (secret/minio-kms), so every NEW
 # bucket is encrypted by default (AES256) and the aws-shim accepts a template's BucketEncryption.
 # OFF unless components.objectEncryption: true. Turning it on restarts all MinIO servers together once
@@ -516,6 +520,17 @@ if [ "$(yget components.awsShim)" = "true" ] && [ -n "$PUBLIC_DNS_SUFFIX" ]; the
     $KUBECTL -n open-infra-aws-shim create configmap openinfra-public-dns \
       --from-literal=PUBLIC_DNS_SUFFIX="$PUBLIC_DNS_SUFFIX" --dry-run=client -o yaml | $KUBECTL apply -f -
   fi
+fi
+
+# ── 2a-bao. OpenBao's site values (components.openbao) ──
+# Where the unseal host is, its CA (pinned by fingerprint) and which nodes hold the members are site
+# values from config.yaml's openbao section, so they are written here, never committed. The seal
+# token (secret openbao/openbao-seal) is the operator's to create; this only checks it exists.
+if [ "$(yget components.openbao)" = "true" ]; then
+  LOG "OpenBao: unseal host $(yget openbao.unsealHost.address), members on $(yget openbao.nodes)"
+  KUBECTL="$KUBECTL" DRY_RUN="$DRY_RUN" "$REPO_DIR/scripts/openbao-site.sh" \
+    "$(yget openbao.unsealHost.address)" "$(yget openbao.unsealHost.caFingerprint)" "$(yget openbao.nodes)" \
+    || WARN "OpenBao's site values were not written (above): its members wait until they are"
 fi
 
 # ── 2a-edge. traefik as a host-network edge (networking.traefik.hostNetwork) ──

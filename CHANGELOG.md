@@ -6,6 +6,25 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — OpenBao, the platform's key and secrets service, ready to turn on (#359)
+- **Three members, unsealed from outside the cluster.** `components.openbao` runs OpenBao 2.7 as three
+  members sharing integrated Raft storage, each on a different physical machine the operator names
+  (`openbao.nodes`) and on a solid-state disk. An OpenBao on a machine outside the cluster unseals them
+  when they start (a transit seal); [`scripts/openbao-unseal-host.ps1`](scripts/openbao-unseal-host.ps1)
+  sets one up on a Windows PC and operates it (unseal, status, a new cluster token, certificate renewal,
+  backup and restore). A member that starts while that host is down stays sealed until it answers: there
+  is no static key, dev mode or unsealed fallback.
+- **Its site values stay out of git.** `install.sh` records the unseal host's address and CA, accepting
+  the CA only when its SHA-256 fingerprint is `openbao.unsealHost.caFingerprint`, and labels the member
+  nodes. The cluster's token for the unseal host is a Secret the operator creates from the host's output.
+- **TLS 1.3, members only, audited.** The API serves TLS 1.3 with a certificate from the platform CA,
+  renewed without a restart; only the members reach one another until a client is admitted; every request
+  and response is audited, with sensitive fields HMAC'd, into Loki. `openbao` is a platform namespace: no
+  account can make it its home.
+- **Rehearsed, holding nothing yet.** Losing the active member, losing the unseal host, a rolling change
+  and a certificate renewal were rehearsed on a live cluster ([`docs/openbao.md`](docs/openbao.md),
+  `probe/openbao-ha.sh`). The platform's keys still live in Vault; moving them is a separate step the
+  operator approves.
 ### Changed — temporary access and groups are IAM policy alone (#360)
 - **A grant attaches IAM policies for its window.** `kind: Grant` names the policies it attaches
   (`spec.policies`: AWS managed policies such as `aws-readonlyaccess` or `aws-poweruseraccess`, or your

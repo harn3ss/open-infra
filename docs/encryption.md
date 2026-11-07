@@ -19,6 +19,7 @@ crypto-erases everything wrapped by it (the basis for [`crypto-erase`](destructi
 | Piece | What it is | State |
 |---|---|---|
 | **Vault (Transit)** | the KMS holding customer keys (`platform/security/vault.yaml`) | shipped, opt-in |
+| **OpenBao** | the key service replacing Vault: three members, unsealed from outside the cluster ([`openbao.md`](openbao.md)) | built, opt-in; holds no keys yet |
 | **`kind: EncryptionKey`** | a customer-owned KEK = a Vault Transit key | shipped, opt-in |
 | **encryptionkey-reconciler** | provisions/rotates the Transit key per EncryptionKey | shipped, opt-in |
 | **`longhorn-encrypted` StorageClass** | LUKS volumes (SC-28); additive, not the default | shipped, opt-in |

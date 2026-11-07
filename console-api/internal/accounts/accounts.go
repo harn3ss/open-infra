@@ -55,8 +55,8 @@ var PlatformNamespaces = []string{
 	"argocd", "cdi", "cert-manager", "chaos-mesh", "cnpg-system", "crossplane-system", "dcgm-exporter",
 	"gpu-operator", "keda", "kourier-system", "kubevirt", "kyverno", "lakehouse", "longhorn-system", "mail",
 	"mariadb-operator", "metallb-system", "minio", "monitoring", "nats", "nvidia-device-plugin",
-	"open-infra-authz", "open-infra-aws-shim", "open-infra-prepull", "redis", "sealed-secrets", "vault",
-	"velero",
+	"open-infra-authz", "open-infra-aws-shim", "open-infra-prepull", "openbao", "redis", "sealed-secrets",
+	"vault", "velero",
 }
 
 // PlatformPrefixes are name prefixes reserved for platform namespaces.

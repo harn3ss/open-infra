@@ -67,7 +67,7 @@ spec:
                     'crossplane-system', 'dcgm-exporter', 'gpu-operator', 'keda', 'kourier-system', 'kubevirt',
                     'kyverno', 'lakehouse', 'longhorn-system', 'mail', 'mariadb-operator', 'metallb-system', 'minio',
                     'monitoring', 'nats', 'nvidia-device-plugin', 'open-infra-authz', 'open-infra-aws-shim',
-                    'open-infra-prepull', 'redis', 'sealed-secrets', 'vault', 'velero']) &&
+                    'open-infra-prepull', 'openbao', 'redis', 'sealed-secrets', 'vault', 'velero']) &&
                     !n.startsWith('kube-') && !n.startsWith('knative-') && !n.startsWith('openinfra-'))
                   message: a platform namespace (the cluster's own machinery) cannot belong to an account
               properties:

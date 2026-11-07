@@ -1,0 +1,265 @@
+# OpenBao: the platform's key and secrets service (#359). Three members on three different physical
+# nodes share integrated Raft storage, and an OpenBao outside the cluster unseals them (transit seal).
+# docs/openbao.md is the operator guide.
+#
+# OPT-IN, OFF BY DEFAULT (components.openbao). It runs beside the existing Vault (security/vault.yaml)
+# and holds nothing until the platform's keys are moved onto it, a step the operator approves.
+#
+# Site values are never in this file:
+#   - EndpointSlice openbao-unseal-host and ConfigMap openbao-unseal-host (ns openbao): where the unseal
+#     host is, and its CA certificate. scripts/openbao-site.sh (run by install.sh) renders them from
+#     config.yaml openbao.unsealHost; it fetches the CA from the host and refuses it unless its SHA-256
+#     fingerprint is the one in config.yaml.
+#   - Secret openbao-seal (ns openbao, key token): the unseal host's token for the cluster, which can
+#     encrypt and decrypt with the unseal key and do nothing else. The operator creates it from the
+#     unseal host's output; nothing in git holds it.
+#   - the member nodes: install.sh labels the nodes config.yaml openbao.nodes lists
+#     openinfra.dev/openbao=true.
+#
+# Fail-closed: a member that cannot reach the unseal host exits, and Kubernetes restarts it until the
+# host answers. It never starts unsealed, and there is no static key or dev mode to fall back to.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openbao
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+---
+# The unseal host, by a fixed in-cluster name. The members' seal stanza dials this Service and checks the
+# host's certificate for the name openbao-unseal-host (scripts/openbao-unseal-host.ps1 issues it with that
+# name), so the host's address is a site value in the EndpointSlice alone.
+apiVersion: v1
+kind: Service
+metadata:
+  name: openbao-unseal-host
+  namespace: openbao
+spec:
+  ports:
+    - { name: https, port: 8200, protocol: TCP }
+---
+# The members' API listener certificate, from the platform CA (networking/cluster-ca.yaml), whose name
+# constraints admit only in-cluster names: clients use the .svc names below. The key is a leaf key; no
+# CA key lives in this namespace. A renewal is picked up live (the tls-reload container below).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-listener
+  namespace: openbao
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  secretName: openbao-listener-tls
+  issuerRef: { name: openinfra-ca, kind: ClusterIssuer, group: cert-manager.io }
+  duration: 8760h
+  renewBefore: 2160h
+  privateKey: { algorithm: ECDSA, size: 256, rotationPolicy: Always }
+  usages: [server auth, digital signature]
+  dnsNames:
+    - openbao.openbao.svc
+    - openbao.openbao.svc.cluster.local
+    - openbao-active.openbao.svc
+    - openbao-active.openbao.svc.cluster.local
+    - openbao-internal.openbao.svc
+    - openbao-internal.openbao.svc.cluster.local
+    - openbao-0.openbao-internal.openbao.svc
+    - openbao-0.openbao-internal.openbao.svc.cluster.local
+    - openbao-1.openbao-internal.openbao.svc
+    - openbao-1.openbao-internal.openbao.svc.cluster.local
+    - openbao-2.openbao-internal.openbao.svc
+    - openbao-2.openbao-internal.openbao.svc.cluster.local
+---
+# Only the members reach one another (Raft and request forwarding); no other pod, in this namespace or
+# any other, reaches them. Each client that moves onto OpenBao is admitted here by name when it moves.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openbao-server
+  namespace: openbao
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: openbao, component: server }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: openbao, component: server }
+      ports:
+        - { port: 8200, protocol: TCP }
+        - { port: 8201, protocol: TCP }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: openbao
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  project: default
+  source:
+    repoURL: https://openbao.github.io/openbao-helm
+    chart: openbao
+    targetRevision: 0.30.7
+    helm:
+      values: |
+        global:
+          tlsDisable: false
+        injector:
+          enabled: false
+        server:
+          image:
+            registry: quay.io
+            repository: openbao/openbao
+            tag: "2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f"
+          # All members start together (a member waits for the unseal host, not for its peers), and a
+          # change rolls one member at a time, each unsealed before the next.
+          podManagementPolicy: Parallel
+          updateStrategyType: RollingUpdate
+          configAnnotation: true
+          priorityClassName: system-cluster-critical
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          terminationGracePeriodSeconds: 30
+          shareProcessNamespace: true   # lets tls-reload signal the server
+          # On distinct physical nodes the operator chose (openinfra.dev/openbao), never two on one, and
+          # only on solid-state disks (openinfra.dev/disk-class, measured by storage/disk-class-labeler).
+          nodeSelector:
+            openinfra.dev/openbao: "true"
+          affinity: |
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: openbao
+                      app.kubernetes.io/instance: openbao
+                      component: server
+                  topologyKey: kubernetes.io/hostname
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - { key: openinfra.dev/disk-class, operator: In, values: [nvme, sata-ssd] }
+          extraEnvironmentVars:
+            GOMEMLIMIT: 460MiB
+            # The bao command inside a member talks to its own server over TLS.
+            BAO_CACERT: /openbao/userconfig/openbao-listener-tls/ca.crt
+            BAO_TLS_SERVER_NAME: openbao.openbao.svc
+          # The transit seal's token (see the header). Fixed, not optional: without it no member starts.
+          extraSecretEnvironmentVars:
+            - { envName: BAO_TOKEN, secretName: openbao-seal, secretKey: token }
+          extraVolumes:
+            - { type: secret, name: openbao-listener-tls }
+            - { type: configMap, name: openbao-unseal-host }
+          volumes:
+            - { name: tmp, emptyDir: {} }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+          statefulSet:
+            securityContext:
+              # The chart's defaults, plus OnRootMismatch: the kubelet sets the data volume's group once,
+              # instead of widening the Raft database's mode (0600) on every restart.
+              pod:
+                runAsNonRoot: true
+                runAsUser: 100
+                runAsGroup: 1000
+                fsGroup: 1000
+                fsGroupChangePolicy: OnRootMismatch
+                seccompProfile: { type: RuntimeDefault }
+              container:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+          # OpenBao reads its listener certificate at start and on SIGHUP. cert-manager renews it in the
+          # Secret mounted here; when the file changes, this sends the server SIGHUP.
+          extraContainers:
+            - name: tls-reload
+              image: "quay.io/openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f"
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  crt=/openbao/userconfig/openbao-listener-tls/tls.crt
+                  last="$(sha256sum "$crt")"
+                  while sleep 60; do
+                    now="$(sha256sum "$crt")"
+                    if [ "$now" != "$last" ] && pkill -HUP -x bao; then
+                      echo "listener certificate renewed: the server reloads it"; last="$now"
+                    fi
+                  done
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: [ALL] }
+              resources:
+                requests: { cpu: 1m, memory: 8Mi }
+                limits: { cpu: 50m, memory: 32Mi }
+              volumeMounts:
+                - { name: userconfig-openbao-listener-tls, mountPath: /openbao/userconfig/openbao-listener-tls, readOnly: true }
+          dataStorage:
+            enabled: true
+            size: 10Gi
+            storageClass: local-path   # node-local; Raft keeps the three copies
+          service:
+            publishNotReadyAddresses: false   # clients reach unsealed members only
+          ha:
+            enabled: true
+            replicas: 3
+            apiAddr: "https://$(BAO_K8S_POD_NAME).openbao-internal.openbao.svc:8200"
+            disruptionBudget: { enabled: true, maxUnavailable: 1 }
+            raft:
+              enabled: true
+              setNodeId: true
+              config: |
+                ui           = false
+                cluster_name = "open-infra"
+
+                listener "tcp" {
+                  address         = "[::]:8200"
+                  cluster_address = "[::]:8201"
+                  tls_cert_file   = "/openbao/userconfig/openbao-listener-tls/tls.crt"
+                  tls_key_file    = "/openbao/userconfig/openbao-listener-tls/tls.key"
+                  tls_min_version = "tls13"
+                }
+
+                storage "raft" {
+                  path = "/openbao/data"
+                  retry_join {
+                    leader_api_addr     = "https://openbao-0.openbao-internal.openbao.svc:8200"
+                    leader_ca_cert_file = "/openbao/userconfig/openbao-listener-tls/ca.crt"
+                  }
+                  retry_join {
+                    leader_api_addr     = "https://openbao-1.openbao-internal.openbao.svc:8200"
+                    leader_ca_cert_file = "/openbao/userconfig/openbao-listener-tls/ca.crt"
+                  }
+                  retry_join {
+                    leader_api_addr     = "https://openbao-2.openbao-internal.openbao.svc:8200"
+                    leader_ca_cert_file = "/openbao/userconfig/openbao-listener-tls/ca.crt"
+                  }
+                }
+
+                # The unseal host (see the header). Its token comes from the environment (BAO_TOKEN).
+                seal "transit" {
+                  address         = "https://openbao-unseal-host.openbao.svc:8200"
+                  tls_server_name = "openbao-unseal-host"
+                  tls_ca_cert     = "/openbao/userconfig/openbao-unseal-host/ca.pem"
+                  mount_path      = "transit/"
+                  key_name        = "autounseal"
+                }
+
+                # Every request and response, sensitive fields HMAC'd, into the pod's log (and Loki).
+                audit "file" "stdout" {
+                  description = "every request and response"
+                  options {
+                    file_path = "stdout"
+                  }
+                }
+
+                service_registration "kubernetes" {}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: openbao
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }

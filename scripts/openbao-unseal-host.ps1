@@ -454,6 +454,9 @@ function Show-Summary([string]$Ip, [string]$Backup) {
         Write-Host '     Copy it off this PC (a USB stick, say), kept apart from the unseal keys.'
     }
     Write-Host ''
+    Write-Host " The address and the fingerprint go in the cluster's config.yaml, as openbao.unsealHost.address and"
+    Write-Host " openbao.unsealHost.caFingerprint. Neither is secret."
+    Write-Host ''
     Write-Host " After every restart of this PC, open PowerShell and run 'bao operator unseal' twice, one key each time."
     Write-Host " Status and the other actions:"
     Write-Host "   powershell -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'openbao-unseal-host.ps1')`" -Action Status"
