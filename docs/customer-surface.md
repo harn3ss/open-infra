@@ -24,11 +24,11 @@ by `probe/shimgen.py`), and CI fails when a capability a customer can reach has 
 | Capability | AWS-shaped | Platform extra (own API) | Operator-only | Removed | Total |
 |---|---|---|---|---|---|
 | Resource types (claim kinds) | 54 | 2 | 1 | 0 | 57 |
-| Resource properties (spec fields) | 363 | 25 | 0 | 0 | 388 |
+| Resource properties (spec fields) | 364 | 25 | 0 | 0 | 389 |
 | Console API routes | 110 | 1 | 1 | 0 | 112 |
 | Console screens | 156 | 4 | 3 | 0 | 163 |
 | AWS APIs (signing names) | 33 | 0 | 0 | 0 | 33 |
-| **All** | **716** | **32** | **5** | **0** | **753** |
+| **All** | **717** | **32** | **5** | **0** | **754** |
 
 11 of the console routes need no authorization (sign-in, sign-out, who-am-I, the console's own configuration), as AWS's sign-in and console metadata need none. 2 platform extras and 14 properties in Kubernetes vocabulary await the operator's ruling (below).
 <!-- END shimgen:surface-summary -->
@@ -206,7 +206,7 @@ Changing a property is its own AWS action where AWS has one (a function's code i
 | `FileShare` | 4 | expose, nodeIP, size, storageClass → `elasticfilesystem:UpdateFileSystem` |
 | `FlowLog` | 3 | namespace, nodeSelector, samplingRate → `ec2:CreateFlowLogs` |
 | `Function` | 18 | burstable, env, expose, gpu, memory, memoryRequest, port, queues, role, scaling, secrets, securityGroups, timeout, trigger → `lambda:UpdateFunctionConfiguration`; aliases → `lambda:UpdateAlias`; code → `lambda:UpdateFunctionCode`; image → `lambda:UpdateFunctionCode`; reservedConcurrency → `lambda:PutFunctionConcurrency` |
-| `Grant` | 6 | approval, clusterRole, duration, reason, requestedBy, subject → `iam:AttachUserPolicy` |
+| `Grant` | 7 | approval, clusterRole, duration, policies, reason, requestedBy, subject → `iam:AttachUserPolicy` |
 | `GraphQLApi` | 10 | apiKeysSecret, image, limits, mongoDB, mongoURI, replicas, subscriptions → `appsync:UpdateGraphqlApi`; dataSources → `appsync:UpdateDataSource`; resolvers → `appsync:UpdateResolver`; schema → `appsync:StartSchemaCreation` |
 | `Group` | 4 | clusterRole, description, inlinePolicies → `iam:UpdateGroup`; policies → `iam:AttachGroupPolicy`, `iam:DetachGroupPolicy` |
 | `HttpApi` | 9 | authorizer, basePath, cors, domain, domains, rateLimit, routes, tls, waf → `apigateway:PATCH` |

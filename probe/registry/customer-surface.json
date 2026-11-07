@@ -1378,6 +1378,15 @@
       "how": "update",
       "kind": "Grant"
     },
+    "Grant.policies": {
+      "actions": [
+        "iam:AttachUserPolicy"
+      ],
+      "class": "aws",
+      "field": "policies",
+      "how": "update",
+      "kind": "Grant"
+    },
     "Grant.reason": {
       "actions": [
         "iam:AttachUserPolicy"
@@ -6885,11 +6894,11 @@
   },
   "summary": {
     "fields": {
-      "aws": 363,
+      "aws": 364,
       "extra": 25,
       "operator": 0,
       "removed": 0,
-      "total": 388
+      "total": 389
     },
     "kinds": {
       "aws": 54,
