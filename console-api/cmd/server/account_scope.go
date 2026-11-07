@@ -14,7 +14,6 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/accounts"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
-	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/proxy"
 	"github.com/harn3ss/open-infra/console-api/internal/watch"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -132,15 +131,15 @@ func (z *consoleAuthz) inAccount(acct string) func(string) bool {
 // accountScoped reports whether the request asks for the caller's account (scope=account).
 func accountScoped(r *http.Request) bool { return r.URL.Query().Get(scopeParam) == scopeAccount }
 
-// unrestrictedWatcher reports whether the caller may watch the whole cluster in enforce: the account's
-// root user, or the platform's operator.
+// unrestrictedWatcher reports whether the caller may watch the whole cluster in enforce: the management
+// account's root user, or the platform's operator.
 func (z *consoleAuthz) unrestrictedWatcher(r *http.Request) bool {
 	c, ok := claimsFrom(r)
 	if !ok {
 		return false
 	}
 	p := z.principal(c)
-	return p.Type == iamauthz.Root || z.isOperator(r, c, p, z.modeFor(r))
+	return breakGlassRoot(p) || z.isOperator(r, c, p, z.modeFor(r))
 }
 
 // bufferedResponse captures one sub-request's answer from the proxy.

@@ -440,6 +440,9 @@ func list(v any) []string {
 // or "*", as AdministratorAccess does — grants the operator surface. A Deny's NotAction is left as written.
 const operatorActions = "openinfra-operator:*"
 
+// operatorPrefix is the operator actions' service prefix, with its colon.
+const operatorPrefix = "openinfra-operator:"
+
 // reserveOperator adds the operator actions to an Allow's NotAction set (narrower, never wider).
 func reserveOperator(notActions []string) []string {
 	for _, a := range notActions {

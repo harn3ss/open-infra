@@ -132,6 +132,13 @@ func (z *consoleAuthz) decide(r *http.Request, action, arn string, legacy func()
 	return d.Allowed, d.Reason
 }
 
+// breakGlassRoot reports whether the principal is the management account's root user, the console's
+// break-glass identity, which reaches what no IAM action maps. A member account's root is its own
+// account's root user and nothing more: never the platform's operator, never break-glass.
+func breakGlassRoot(p iamauthz.Principal) bool {
+	return p.Type == iamauthz.Root && p.AccountID() == iam.ManagementAccount
+}
+
 // allowLegacy is the legacy decision of a route gate that did not exist before: the route is reached and
 // the handler's own checks decide, exactly as before the gate.
 func allowLegacy() (bool, string) { return true, "" }
@@ -334,7 +341,7 @@ func (z *consoleAuthz) authorizeKubernetes(r *http.Request, k proxy.Request, leg
 	if !ok {
 		action, arn = "openinfra:Unmapped", "*"
 		if z.enforced(r) && z.auth != nil && z.auth.mode != "none" {
-			if c, signed := claimsFrom(r); signed && z.principal(c).Type == iamauthz.Root {
+			if c, signed := claimsFrom(r); signed && breakGlassRoot(z.principal(c)) {
 				return true, "", action, arn // root reaches the whole API, as break-glass must
 			}
 			return false, fmt.Sprintf("%s %s/%s has no IAM action", k.Verb, k.Group, k.ResourcePath()), action, arn
@@ -491,7 +498,7 @@ func (z *consoleAuthz) authorizeKubernetesVerb(r *http.Request, cs kubernetes.In
 	acct := z.namespaceAccount(r.Context(), namespace)
 	action, arn, ok := awsaction.ForKubernetes(verb, group, resource, namespace, name, acct)
 	if !ok {
-		if mode == iamauthz.ModeEnforce && z.principal(c).Type != iamauthz.Root {
+		if mode == iamauthz.ModeEnforce && !breakGlassRoot(z.principal(c)) {
 			return false, verb + " " + group + "/" + resource + " has no IAM action"
 		}
 		return legacy()

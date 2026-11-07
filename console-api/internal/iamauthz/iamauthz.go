@@ -214,6 +214,12 @@ func WithResourcePolicy(stmts []ResourceStatement) RequestOption {
 // that cannot be compiled, denies.
 func (e *Evaluator) Authorize(ctx context.Context, p Principal, action, resource string, reqCtx map[string]any,
 	opts ...RequestOption) Decision {
+	if p.AccountID() != ManagementAccount && strings.HasPrefix(action, operatorPrefix) {
+		// The operator surface is the platform's own machinery under every account, as the hosts under an
+		// AWS account are AWS's: no member account's principal reaches it, its root and administrators
+		// included, whatever its policies say.
+		return Decision{Reason: "the platform's operator surface (" + operatorActions + ") is the management account's alone"}
+	}
 	if e == nil || !e.cache.Enabled() {
 		if p.Type == Root {
 			return Decision{Allowed: true, Reason: "the account's root user", MatchedPolicy: "root"}

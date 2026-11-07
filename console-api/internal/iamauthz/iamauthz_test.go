@@ -145,6 +145,36 @@ func TestAuthorize_OperatorSurfaceNeedsAnAllowThatNamesIt(t *testing.T) {
 	})
 }
 
+// The operator surface is the management account's alone: a member account's administrator, root and a
+// policy naming the operator actions outright are all refused it, while the rest of AdministratorAccess
+// stands in their own account.
+func TestAuthorize_OperatorSurfaceIsTheManagementAccounts(t *testing.T) {
+	w := World{Docs: []Policy{
+		mustDoc(t, "AdministratorAccess", `{"Statement":{"Effect":"Allow","Action":"*","Resource":"*"}}`),
+		mustDoc(t, "operator", `{"Statement":{"Effect":"Allow","Action":"openinfra-operator:*","Resource":"*"}}`),
+	}, Attach: map[string][]string{"User::admin": {"AdministratorAccess"}, "User::op": {"operator"},
+		"Role::OrganizationAccountAccessRole": {"AdministratorAccess"}}}
+	const member = "900000000001"
+	madmin := Principal{Account: member, Type: User, ID: "admin"}
+	mop := Principal{Account: member, Type: User, ID: "op"}
+	mrole := Principal{Account: member, Type: Role, ID: "OrganizationAccountAccessRole"}
+	mroot := Principal{Account: member, Type: Root, ID: "root"}
+	own := "arn:aws:openinfra-operator:us-east-1:" + member + ":secrets/team/s"
+	runChecks(t, evaluator(w), []check{
+		{name: "member administrator: a Secret", p: madmin, action: "openinfra-operator:GetSecret", resource: own},
+		{name: "member administrator: pods", p: madmin, action: "openinfra-operator:ListPods", resource: "*"},
+		{name: "member administrator: exec", p: madmin, action: "openinfra-operator:CreatePodExec", resource: own},
+		{name: "member, a policy naming it", p: mop, action: "openinfra-operator:ListNodes", resource: "*"},
+		{name: "member role session", p: mrole, action: "openinfra-operator:GetSecret", resource: own},
+		{name: "member root", p: mroot, action: "openinfra-operator:ListNamespaces", resource: "*"},
+		{name: "member administrator: its own bucket", p: madmin, action: "s3:CreateBucket", resource: "arn:aws:s3:::b", allow: true},
+		{name: "management administrator", p: user("admin"), action: "openinfra-operator:GetSecret", resource: "*", allow: true},
+	})
+	if d := (*Evaluator)(nil).Authorize(context.Background(), mroot, "openinfra-operator:GetSecret", "*", ctxAuth); d.Allowed {
+		t.Error("with no policy world a member account's root reached the operator surface")
+	}
+}
+
 func TestAuthorize_PermissionBoundaryIntersects(t *testing.T) {
 	w := World{
 		Docs: []Policy{
