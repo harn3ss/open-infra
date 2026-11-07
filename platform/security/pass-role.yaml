@@ -24,9 +24,11 @@
 #     It is checked in the function's namespace: iam:PassRole compiled from IAM policy holds in every
 #     namespace of the account (a role is the account's, wherever its object lives), and a hand-made
 #     grant for a function's role is made in the function's namespace.
-#   - Application (spec.assumeRole) needs no PassRole: as with IRSA, the Role's trust policy names the
-#     workload's ServiceAccount, and only that identity can assume it (an Application never assumes a role
-#     on a service's trust, so naming one grants nothing its trust does not).
+#   - Application (spec.assumeRole, an ECS task's task role): by the admission policy below, as the
+#     requester, on the role's name (a name, or the last segment of a role ARN, lower-cased), as ECS needs
+#     iam:PassRole on a task definition's TaskRoleArn. A role trusting ecs-tasks.amazonaws.com is assumable
+#     by any Application that names it, so naming it is the gate (a role whose trust names the app's
+#     ServiceAccount itself is the app's anyway). Checked in the app's namespace, as for a Function.
 #
 # Each check applies when the Role is set or changed, never to updates that leave it alone (Crossplane's
 # own claim updates, status writes).
@@ -117,6 +119,40 @@ spec:
         'iam:PassRole denied: ' + request.userInfo.username + ' may not pass Role ' + object.spec.role +
         ' to Function ' + request.namespace + '/' + object.metadata.name + ' (an admin can grant passrole on that Role)'
 ---
+# An Application's task role. An Application with no spec.assumeRole, and an update that leaves it alone, is
+# not checked at all (the condition below), so the applications already on the platform are untouched.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-pass-role-application
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [openinfra.dev]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [applications]
+  matchConditions:
+    - name: sets-or-changes-the-task-role
+      expression: >-
+        has(object.spec) && has(object.spec.assumeRole) && object.spec.assumeRole != '' &&
+        (request.operation == 'CREATE' || !has(oldObject.spec) || !has(oldObject.spec.assumeRole) ||
+         oldObject.spec.assumeRole != object.spec.assumeRole)
+  variables:
+    # The Role's object name: a role name, or a role ARN's last path segment, lower-cased (an AWS role name
+    # is mixed case; its kind: Role is the lower-cased name).
+    - name: role
+      expression: "object.spec.assumeRole.substring(object.spec.assumeRole.lastIndexOf('/') + 1).lowerAscii()"
+  validations:
+    - expression: >-
+        authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
+        .name(variables.role).check('passrole').allowed()
+      reason: Forbidden
+      messageExpression: >-
+        'iam:PassRole denied: ' + request.userInfo.username + ' may not pass Role ' + object.spec.assumeRole +
+        ' to Application ' + request.namespace + '/' + object.metadata.name + ' (an admin can grant passrole on that Role)'
+---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -163,6 +199,16 @@ metadata:
   name: openinfra-pass-role-function
 spec:
   policyName: openinfra-pass-role-function
+  validationActions: [Deny, Audit]
+---
+# Deny, as for a Function: only a request that sets or changes spec.assumeRole is checked, so no Application
+# already on the platform is, and a refusal is a requester with no passrole on the role it names.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-pass-role-application
+spec:
+  policyName: openinfra-pass-role-application
   validationActions: [Deny, Audit]
 ---
 apiVersion: admissionregistration.k8s.io/v1

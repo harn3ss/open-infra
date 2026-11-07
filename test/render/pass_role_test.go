@@ -67,7 +67,19 @@ func TestPassRole_AdmissionChecksTheRequesterOnTheNamedRole(t *testing.T) {
 		"authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)",
 		".name(variables.role).check('passrole').allowed()")
 
-	for _, p := range []string{"openinfra-pass-role", "openinfra-instance-role-binding", "openinfra-pass-role-function"} {
+	// An Application's task role (spec.assumeRole), the same way: a role trusting ecs-tasks.amazonaws.com is
+	// assumable by any app that names it, so naming it is the gate; an app without one is never checked.
+	app := yamlDoc(t, passRoleYAML, "ValidatingAdmissionPolicy", "openinfra-pass-role-application")
+	mustContain(t, "Application policy", app,
+		"apiGroups: [openinfra.dev]", "resources: [applications]", "operations: [CREATE, UPDATE]",
+		"failurePolicy: Fail",
+		"has(object.spec) && has(object.spec.assumeRole) && object.spec.assumeRole != ''",
+		"request.operation == 'CREATE'", "oldObject.spec.assumeRole != object.spec.assumeRole",
+		"object.spec.assumeRole.substring(object.spec.assumeRole.lastIndexOf('/') + 1).lowerAscii()",
+		"authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)",
+		".name(variables.role).check('passrole').allowed()")
+
+	for _, p := range []string{"openinfra-pass-role", "openinfra-instance-role-binding", "openinfra-pass-role-function", "openinfra-pass-role-application"} {
 		b := yamlDoc(t, passRoleYAML, "ValidatingAdmissionPolicyBinding", p)
 		mustContain(t, p+" binding", b, "policyName: "+p, "validationActions: [Deny, Audit]")
 	}
@@ -179,6 +191,10 @@ func TestPassRole_ShimCanReadTheFunctionIdentitysPod(t *testing.T) {
 	mustContain(t, "open-infra-aws-shim-functions",
 		yamlDoc(t, "../../platform/aws-shim/aws-shim.yaml", "ClusterRole", "open-infra-aws-shim-functions"),
 		"resources: [functions]\n    verbs: [get, list]")
+	// An Application's task role (app_role.go) reads the same pod chain and the kind: Application.
+	mustContain(t, "open-infra-aws-shim-log-sources",
+		yamlDoc(t, "../../platform/aws-shim/aws-shim.yaml", "ClusterRole", "open-infra-aws-shim-log-sources"),
+		"resources: [applications, trainingjobs, processingjobs]\n    verbs: [get, list]")
 	p := yamlDoc(t, "../../platform/aws-shim/vmcreds-controlplane-policy.yaml", "Policy", "aws-shim-function-identity")
 	mustContain(t, "aws-shim-function-identity", p,
 		`appliesTo: ["ServiceAccount::open-infra-aws-shim/aws-shim"]`, `actions: ["get"]`, `resources: ["pods::*", "replicasets.apps::*", "deployments.apps::*"]`)
