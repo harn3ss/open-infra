@@ -311,7 +311,7 @@ jobs:
       # version, which predates AWS_ENDPOINT_URL) proves the shipped [plugins] endpoint plugin: it builds only
       # on an older Python (PyYAML 5.4.1 has no 3.12 wheel), so it is installed on a 3.10 and passed in by path.
       - name: python 3.10 for the aws-cli v1 build
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.10"
       - name: install aws-cli v1 1.22 (the distro v1 the endpoint plugin targets)
