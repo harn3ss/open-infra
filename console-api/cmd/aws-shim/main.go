@@ -369,15 +369,19 @@ func run(logger *slog.Logger) error {
 	// Lambda execution roles (lambda_role.go): a kind: Function's own identity token assumes the role its
 	// spec.role names, in its account. Enabled with workload identity (it reads the Function claim too).
 	var fnIdentities functionIdentities
+	// ECS task roles (app_role.go): a kind: Application's own identity token assumes the role its
+	// spec.assumeRole names, in its account. Enabled with execution roles (the same reads).
+	var appIdentities applicationIdentities
 	if stsMinter != nil {
 		aud := getenv("STS_WEB_IDENTITY_AUDIENCE", "sts.openinfra")
 		webIDReviewer = &k8sTokenReviewer{cs: cs, audience: aud}
 		logger.Info("sts:AssumeRoleWithWebIdentity enabled (workload identity)", slog.String("audience", aud))
-		// The pod and its controllers are read as metadata only: their specs carry the function's env.
+		// The pod and its controllers are read as metadata only: their specs carry the workload's env.
 		if md, merr := metadata.NewForConfig(kc.Config); dyn != nil && merr == nil {
 			fnIdentities = &k8sFunctionIdentities{cs: cs, dyn: dyn, meta: md, audience: aud, accounts: acctDir}
+			appIdentities = &k8sApplicationIdentities{cs: cs, dyn: dyn, meta: md, audience: aud, accounts: acctDir}
 		} else if merr != nil {
-			logger.Warn("Lambda execution roles disabled: cannot build the metadata client", "err", merr)
+			logger.Warn("Lambda execution roles and ECS task roles disabled: cannot build the metadata client", "err", merr)
 		}
 	}
 
@@ -591,7 +595,7 @@ func run(logger *slog.Logger) error {
 		"s3": newS3Handler(cs, mc, dyn, kc.Config, authzNS, authzChecker, logger,
 			splitSuffixes(getenv("S3_INTERNAL_VHOST_SUFFIXES", ""), getenv("S3_VHOST_SUFFIXES", ""))),
 		"sts": &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID,
-			functions: fnIdentities, accounts: acctDir, logger: logger,
+			functions: fnIdentities, applications: appIdentities, accounts: acctDir, logger: logger,
 			mfa: &shimMFA{store: mfa.Store{CS: cs, NS: keysNS}, dyn: dyn, usersNS: usersNS, account: account, homes: acctDir, logger: logger}},
 		"lambda":          lambdaH,
 		"appsync":         appsyncH,

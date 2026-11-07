@@ -188,7 +188,9 @@ rules:
   # name, never list or watch. The shim asks for METADATA only (PartialObjectMetadata: name, UID, labels,
   # owner references), never the specs, which carry the function's environment. RBAC cannot express
   # "metadata only", so this grant itself would allow a full read; it is cluster-wide because a function
-  # can live in any namespace of any account.
+  # can live in any namespace of any account. ECS task roles (app_role.go) read the same chain for an
+  # Application's identity token — the pod, its ReplicaSet and the app's own Deployment — plus the app's
+  # identity ServiceAccount and the kind: Application (aws-shim-log-sources), the same way.
   - apiGroups: [""]
     resources: [pods]
     verbs: [get]
@@ -522,7 +524,8 @@ subjects:
 # /aws/sagemaker/TrainingJobs and ProcessingJobs, /ecs/<application> (and /aws/lambda/<function>, through
 # the functions grant above) — exist while their resource does. Reading which ones exist: get and list
 # only; the events are read from the log store, and the caller's logs:* right
-# is checked on each group. Bound in every namespace, as the functions grant is.
+# is checked on each group. Bound in every namespace, as the functions grant is. An Application's task role
+# (app_role.go) reads the kind: Application its identity token is for under the same grant (get, by name).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

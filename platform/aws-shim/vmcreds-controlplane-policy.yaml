@@ -22,7 +22,9 @@ spec:
 # pod Knative runs for that function — a `get` of the one pod the TokenReview names, of its ReplicaSet and
 # of that ReplicaSet's Deployment (which a Knative Revision must own) — before it hands the function its
 # role's credentials (lambda_role.go). It reads their metadata only, never their specs (the function's
-# environment). The function's ServiceAccount is read under the grant above.
+# environment). The function's ServiceAccount is read under the grant above. An Application's task role
+# (app_role.go) is checked the same way under this grant: the token's pod, its ReplicaSet and the app's
+# own Deployment.
 apiVersion: iam.openinfra.dev/v1
 kind: Policy
 metadata:

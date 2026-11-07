@@ -42,8 +42,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/harn3ss/open-infra/cfn/awsidentity"
-	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	authnv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -165,93 +163,20 @@ func (f *k8sFunctionIdentities) functionOf(ctx context.Context, token string) (f
 // set by the controllers that create the objects (a pod's by its ReplicaSet, a ReplicaSet's by its
 // Deployment, the Deployment's by Knative), so a pod's labels alone are never the proof. Fails closed.
 func (f *k8sFunctionIdentities) knativeRevisionPod(ctx context.Context, ns, fn string, owners []metav1.OwnerReference) bool {
-	rsRef := metav1.GetControllerOfNoCopy(&metav1.ObjectMeta{OwnerReferences: owners})
-	if rsRef == nil || rsRef.Kind != "ReplicaSet" || rsRef.APIVersion != "apps/v1" {
-		return false
-	}
-	rs, err := f.meta.Resource(replicaSetsGVR).Namespace(ns).Get(ctx, rsRef.Name, metav1.GetOptions{})
-	if err != nil || rs.UID != rsRef.UID {
-		return false
-	}
-	depRef := metav1.GetControllerOfNoCopy(rs)
-	if depRef == nil || depRef.Kind != "Deployment" || depRef.APIVersion != "apps/v1" {
-		return false
-	}
-	dep, err := f.meta.Resource(deploymentsGVR).Namespace(ns).Get(ctx, depRef.Name, metav1.GetOptions{})
-	if err != nil || dep.UID != depRef.UID || dep.Labels[knativeServiceLabel] != fn {
+	dep, ok := podDeployment(ctx, f.meta, ns, owners)
+	if !ok || dep.Labels[knativeServiceLabel] != fn {
 		return false
 	}
 	revRef := metav1.GetControllerOfNoCopy(dep)
 	return revRef != nil && revRef.Kind == "Revision" && revRef.APIVersion == "serving.knative.dev/v1"
 }
 
-// namesRole reports whether a function's spec.role names role of account acct: by name, or by an ARN of
-// that account (a role's object is its lower-cased AWS name, so the comparison ignores case).
-func namesRole(spec, role, acct string) bool {
-	if spec == "" {
-		return false
-	}
-	if a := awsidentity.AccountOfARN(spec); strings.HasPrefix(spec, "arn:") && a != acct {
-		return false
-	}
-	return strings.EqualFold(roleNameOf(spec), role)
-}
-
-// assumeFunctionRole decides an AssumeRoleWithWebIdentity whose token is function fn's own identity.
+// assumeFunctionRole decides an AssumeRoleWithWebIdentity whose token is function fn's own identity: Lambda
+// assumes the role its spec.role names when the role trusts lambda.amazonaws.com (service_role.go).
 func (h *stsHandler) assumeFunctionRole(w http.ResponseWriter, r *http.Request, fn functionIdentity, sessionName, requestID string) {
-	roleArn := r.PostFormValue("RoleArn")
-	roleName := roleNameOf(roleArn)
-	acct := fn.account
-	if acct == "" {
-		acct = h.account
-	}
-	who := trustCaller{kind: "ServiceAccount", name: fn.username, account: acct}
-	deny := func(why string) {
-		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID,
-			who.String()+" is not authorized to assume role "+roleName+" ("+why+")", stsXMLNamespace)
-	}
-	if fn.suspended {
-		deny("the function's account is suspended")
-		return
-	}
-	// A role of the function's own account only: an ARN naming another account is never the function's.
-	if a := awsidentity.AccountOfARN(roleArn); a != "" && a != acct {
-		deny("a role of another account")
-		return
-	}
-	role, roleNS, ok := h.functionRoleOf(r.Context(), fn, roleName)
-	if !ok {
-		// AWS answers AccessDenied (not "not found"), so a caller can't probe which roles exist.
-		deny("not named by its trust policy")
-		return
-	}
-	// Lambda assumes the role the function names, when the role trusts Lambda (with no conditions it would
-	// have to evaluate); any identity the role's trust names itself assumes it too.
-	lambda := trustsService(role.trust, lambdaService) && namesRole(fn.role, roleName, acct)
-	if lambda && trustConditioned(role.trustDoc) {
-		deny("its trust policy has conditions, which are not evaluated for the Lambda service")
-		return
-	}
-	if !lambda && !trustedFrom(who, role.trust, acct) {
-		deny("not named by its trust policy")
-		return
-	}
-	if sessionName == "" {
-		sessionName = fn.name
-	}
-	ttl, bad := sessionDuration(r, role, false)
-	if bad != "" {
-		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, bad, stsXMLNamespace)
-		return
-	}
-	// A web-identity session: in the function's account, as its role (in roleNS), with no MFA context.
-	akid, sk, tok, exp, err := h.minter.MintSession(awssts.Session{RoleName: roleName, Namespace: roleNS, Account: fn.account,
-		Groups: role.groups, SessionName: sessionName, Caller: fn.username, Federated: true}, ttl, awssts.MaxDuration)
-	if err != nil {
-		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not mint credentials", stsXMLNamespace)
-		return
-	}
-	h.writeWebIdentityIn(w, acct, roleName, sessionName, fn.username, akid, sk, tok, exp, requestID)
+	h.assumeServiceRole(w, r, serviceWorkload{namespace: fn.namespace, name: fn.name, role: fn.role, username: fn.username,
+		account: fn.account, home: fn.home, suspended: fn.suspended,
+		service: lambdaService, serviceName: "Lambda", what: "function"}, sessionName, requestID)
 }
 
 // trustConditioned reports whether a trust policy, as written, has a statement with a Condition (or does not
@@ -280,26 +205,6 @@ func trustConditioned(doc string) bool {
 		}
 	}
 	return false
-}
-
-// functionRoleOf finds a function's role: in the function's own namespace, else its account's IAM home.
-// roleNS is the namespace the session records (the home's is "" for the management account).
-func (h *stsHandler) functionRoleOf(ctx context.Context, fn functionIdentity, roleName string) (role resolvedRole, roleNS string, ok bool) {
-	in, canIn := h.roles.(roleResolverIn)
-	if canIn {
-		if role, ok = in.ResolveIn(ctx, fn.namespace, roleName); ok {
-			return role, fn.namespace, true
-		}
-	}
-	if fn.account == "" {
-		role, ok = h.roles.Resolve(ctx, roleName)
-		return role, "", ok
-	}
-	if !canIn || fn.home == "" {
-		return resolvedRole{}, "", false
-	}
-	role, ok = in.ResolveIn(ctx, fn.home, roleName)
-	return role, fn.home, ok
 }
 
 // writeWebIdentityIn is writeWebIdentity for a role of account acct: the session's ARN is that account's.

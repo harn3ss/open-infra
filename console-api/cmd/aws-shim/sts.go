@@ -111,6 +111,9 @@ type stsHandler struct {
 	// functions recognizes a Lambda function's own identity token, which assumes the function's execution
 	// role (lambda_role.go); nil disables execution roles.
 	functions functionIdentities
+	// applications recognizes an Application's own identity token, which assumes the app's task role
+	// (app_role.go); nil disables task roles (an app's token is then decided by the role's trust alone).
+	applications applicationIdentities
 	// accounts maps member accounts to their home namespaces; nil means every role is the management
 	// account's (a RoleArn naming another account is AccessDenied).
 	accounts accountHomes
@@ -322,10 +325,18 @@ func (h *stsHandler) assumeRoleWithWebIdentity(w http.ResponseWriter, r *http.Re
 		return
 	}
 	// A Lambda function's own identity assumes its execution role in its account, as Lambda assumes a role
-	// trusting lambda.amazonaws.com (lambda_role.go). Any other token is decided below, as before.
+	// trusting lambda.amazonaws.com (lambda_role.go); an Application's own identity its task role, as ECS
+	// assumes a role trusting ecs-tasks.amazonaws.com (app_role.go). Any other token is decided below, as
+	// before.
 	if who.kind == "ServiceAccount" && h.functions != nil && isFunctionIdentity(username) {
 		if fn, ok := h.functions.functionOf(r.Context(), token); ok {
 			h.assumeFunctionRole(w, r, fn, sessionName, requestID)
+			return
+		}
+	}
+	if who.kind == "ServiceAccount" && h.applications != nil {
+		if app, ok := h.applications.applicationOf(r.Context(), token); ok {
+			h.assumeApplicationRole(w, r, app, sessionName, requestID)
 			return
 		}
 	}
