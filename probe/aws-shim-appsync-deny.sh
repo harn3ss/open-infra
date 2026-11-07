@@ -3,8 +3,12 @@
 #
 # The principal is a throwaway User whose one inline policy allows only appsync:ListGraphqlApis and
 # appsync:GetGraphqlApi. Through the real AWS CLI it is allowed to list and read APIs (a NotFoundException
-# for a made-up API id is an allow: authorization passed), and refused with an access-denied error creating
-# an API, deleting one, and changing one's schema. Decisions are read on made-up names, so nothing is made.
+# for a made-up API id is an allow: authorization passed), and refused with an access-denied error on each
+# change the AppSync front door serves: creating and deleting a data source, and creating, updating and
+# deleting a resolver. (CreateGraphqlApi and the schema operations are not served by the front door: an API
+# is a stack's or the console's kind: GraphQLApi, so they answer NotImplementedException and prove nothing
+# here.) The front door decides IAM policy before it reads the API, so the decisions are read on made-up
+# names and nothing is made.
 #
 # Needs IAM policy to decide for the principal (IAM_AUTHZ=enforce, or shadow with PRINCIPAL_MODE=canary).
 # Exit 0 = pass, 1 = fail, 42 = inconclusive.
@@ -39,7 +43,9 @@ denied() { # <what> <aws args…>
 
 allowed "list GraphQL APIs" appsync list-graphql-apis
 allowed "get a GraphQL API" appsync get-graphql-api --api-id "$API"
-denied "create a GraphQL API" appsync create-graphql-api --name "$API" --authentication-type API_KEY
-denied "delete a GraphQL API" appsync delete-graphql-api --api-id "$API"
-denied "start a schema creation" appsync start-schema-creation --api-id "$API" --definition "dHlwZSBRdWVyeSB7IHg6IFN0cmluZyB9"
-log "PASS: AppSync allows the principal its policy's reads and refuses its writes"
+denied "create a data source" appsync create-data-source --api-id "$API" --name probe --type NONE
+denied "delete a data source" appsync delete-data-source --api-id "$API" --name probe
+denied "create a resolver" appsync create-resolver --api-id "$API" --type-name Query --field-name probe --data-source-name probe
+denied "update a resolver" appsync update-resolver --api-id "$API" --type-name Query --field-name probe --data-source-name probe
+denied "delete a resolver" appsync delete-resolver --api-id "$API" --type-name Query --field-name probe
+log "PASS: AppSync allows the principal its policy's reads and refuses its changes"

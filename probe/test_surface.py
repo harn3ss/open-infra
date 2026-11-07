@@ -349,8 +349,8 @@ class EndToEndRed(unittest.TestCase):
         def mutate(tree):
             path = os.path.join(tree, "probe", "shim-services.yaml")
             text = surface.read_text(path)
-            text = text.replace("    pending: [dynamodb-deny]\n", "")
-            text = "\n".join(l for l in text.splitlines() if "aws-shim-dynamodb-deny.sh asserts" not in l) + "\n"
+            assert ", dynamodb-deny]" in text
+            text = text.replace(", dynamodb-deny]", "]")
             write_file(path, text)
             os.remove(os.path.join(tree, "probe", "aws-shim-dynamodb-deny.sh"))
         self.red(mutate, "not proven to deny", "DynamoDB: proven, but none of its probes asserts a denial")

@@ -36,11 +36,26 @@
         "exampleApps": 0,
         "knownTypes": [],
         "namespaces": [
+          "AWS::EKS"
+        ],
+        "operations": 5,
+        "probes": 2,
+        "rank": 3,
+        "service": "EKS",
+        "signingNames": [
+          "eks"
+        ],
+        "templateUses": 0
+      },
+      {
+        "exampleApps": 0,
+        "knownTypes": [],
+        "namespaces": [
           "AWS::Glue"
         ],
         "operations": 32,
         "probes": 1,
-        "rank": 3,
+        "rank": 4,
         "service": "Glue",
         "signingNames": [
           "glue"
@@ -55,25 +70,10 @@
         ],
         "operations": 28,
         "probes": 1,
-        "rank": 4,
+        "rank": 5,
         "service": "Athena",
         "signingNames": [
           "athena"
-        ],
-        "templateUses": 0
-      },
-      {
-        "exampleApps": 0,
-        "knownTypes": [],
-        "namespaces": [
-          "AWS::EKS"
-        ],
-        "operations": 5,
-        "probes": 1,
-        "rank": 5,
-        "service": "EKS",
-        "signingNames": [
-          "eks"
         ],
         "templateUses": 0
       }
@@ -229,7 +229,8 @@
         "UpdateResolver"
       ],
       "probes": [
-        "appsync"
+        "appsync",
+        "appsync-deny"
       ],
       "refused": [],
       "service": "AppSync",
@@ -446,7 +447,8 @@
         "dynamodb",
         "dynamodb-lsi",
         "dynamodb-restore",
-        "dynamodb-streams"
+        "dynamodb-streams",
+        "dynamodb-deny"
       ],
       "refused": [],
       "service": "DynamoDB",
@@ -468,7 +470,8 @@
         "dynamodb",
         "dynamodb-lsi",
         "dynamodb-restore",
-        "dynamodb-streams"
+        "dynamodb-streams",
+        "dynamodb-deny"
       ],
       "refused": [],
       "service": "DynamoDB",
@@ -645,7 +648,8 @@
         "ListNodegroups"
       ],
       "probes": [
-        "eks"
+        "eks",
+        "eks-tenant-refused"
       ],
       "refused": [
         "CreateCluster",
@@ -1446,7 +1450,9 @@
       ],
       "probes": [
         "sts",
-        "vm-credentials"
+        "vm-credentials",
+        "app-assume-role",
+        "sts-deny"
       ],
       "refused": [],
       "service": "STS",

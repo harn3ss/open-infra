@@ -48,9 +48,7 @@ services:
     cell: "identity + `AssumeRole` / web-identity"
     tier: proven
     sigv4: [sts]
-    probes: [sts, vm-credentials]
-    pending: [app-assume-role, sts-deny]
-    denialPending: "Its probes assert a wrong secret's signature mismatch and an instance's refusal of a role that does not trust it (an HTTP 403), not an AssumeRole refused with AccessDenied; aws-shim-sts-deny.sh asserts that and awaits its first live run."
+    probes: [sts, vm-credentials, app-assume-role, sts-deny]
   - name: IAM
     cell: "roles/policies/users → AWS policy JSON → Cedar"
     tier: proven
@@ -87,9 +85,7 @@ services:
     cell: "`DescribeCluster` → a working `aws eks update-kubeconfig` against the real API server"
     tier: proven
     sigv4: [eks]
-    probes: [eks]
-    pending: [eks-tenant-refused]
-    denialPending: "Its probe proves the cluster's connection details, not a refusal; aws-shim-eks-tenant-refused.sh asserts DescribeCluster refused without the action, and an IAM principal refused by the Kubernetes API and by the console's raw objects, and awaits its first live run."
+    probes: [eks, eks-tenant-refused]
   - name: Organizations
     cell: "the install's accounts (`kind: Account`): the management account, member accounts by `CreateAccount`, each its own namespaces"
     tier: proven
@@ -122,9 +118,7 @@ services:
     cell: "→ FerretDB (+ transactions, Streams)"
     tier: proven
     sigv4: [dynamodb, dynamodbstreams]
-    probes: [dynamodb, dynamodb-lsi, dynamodb-restore, dynamodb-streams]
-    pending: [dynamodb-deny]
-    denialPending: "Its probes run as an administrator; aws-shim-dynamodb-deny.sh asserts a read-only principal refused writes and other tables with AccessDeniedException, and awaits its first live run."
+    probes: [dynamodb, dynamodb-lsi, dynamodb-restore, dynamodb-streams, dynamodb-deny]
   - name: Athena
     cell: "serverless SQL → Trino over the Iceberg lake"
     tier: proven
@@ -208,9 +202,7 @@ services:
     tier: proven
     sigv4: [appsync]
     experimental: true
-    probes: [appsync]
-    pending: [appsync-deny]
-    denialPending: "Its probe runs as an administrator; aws-shim-appsync-deny.sh asserts a read-only principal refused creating, deleting and changing an API, and awaits its first live run."
+    probes: [appsync, appsync-deny]
 
   - name: SES
     cell: "v1 `SendEmail`/`SendRawEmail` + v2 `SendEmail`, and the SES SMTP interface (SES SMTP credentials, STARTTLS) → the platform SMTP relay (the `mail` component; a capturing sink on test clusters), which takes mail from the shim alone"
