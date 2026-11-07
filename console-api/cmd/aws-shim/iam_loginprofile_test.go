@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -264,5 +265,29 @@ func TestAccountPasswordPolicy(t *testing.T) {
 	}
 	if code, body := lpCall(h, lpAdmin, "Action", "DeleteAccountPasswordPolicy"); code != 404 || !strings.Contains(body, "NoSuchEntity") {
 		t.Fatalf("deleting an absent policy: %d %s", code, body)
+	}
+}
+
+// A member account's principal manages its own account's users' login profiles: a user of the same name
+// in the management account is another account's, never reached (NoSuchEntity), and keeps its password.
+func TestLoginProfile_StaysInTheCallersAccount(t *testing.T) {
+	h, _ := lpHandler(t, true)
+	// The member's administrator may do anything in its own account: only the lookup's scope can refuse it.
+	h.authz = doorAccountsAuthz(t)
+	member := iam.Claims{Sub: "bob", Account: testMember}
+	v := url.Values{}
+	v.Set("Action", "CreateLoginProfile")
+	v.Set("UserName", "alice")
+	v.Set("Password", "Str0ng!Passw0rd-123")
+	w := serveWith(h, formOp(v).WithContext(memberCtx()), member)
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "NoSuchEntity") {
+		t.Fatalf("a member account's CreateLoginProfile for the management account's alice = %d %s", w.Code, w.Body.String())
+	}
+	if ref, _, _ := unstructured.NestedMap(lpUser(t, h, "alice").Object, "spec", "passwordSecretRef"); ref != nil {
+		t.Fatalf("the management account's alice got a password from another account: %v", ref)
+	}
+	v.Set("Action", "UpdateLoginProfile")
+	if w := serveWith(h, formOp(v).WithContext(memberCtx()), member); w.Code != http.StatusNotFound {
+		t.Fatalf("a member account's UpdateLoginProfile for the management account's alice = %d %s", w.Code, w.Body.String())
 	}
 }

@@ -127,7 +127,9 @@ func (h *iamHandler) profileOf(ctx context.Context, u *unstructured.Unstructured
 	return p, nil
 }
 
-// userFor reads the User a login-profile operation acts on, answering NoSuchEntity when there is none.
+// userFor reads the User a login-profile operation acts on — a user of the caller's own account, in its IAM
+// home (the management account's, or a member account's), as AWS names a user within its account —
+// answering NoSuchEntity when there is none.
 func (h *iamHandler) userFor(ctx context.Context, w http.ResponseWriter, requestID, name string) (*unstructured.Unstructured, bool) {
 	if name == "" {
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "UserName is required.", iamXMLNamespace)
@@ -138,7 +140,7 @@ func (h *iamHandler) userFor(ctx context.Context, w http.ResponseWriter, request
 		h.noSuchEntity(w, requestID, "The user with name "+name+" cannot be found.")
 		return nil, false
 	}
-	u, err := h.dyn.Resource(gvrUsers).Namespace(h.usersNS).Get(ctx, name, metav1.GetOptions{})
+	u, err := h.dyn.Resource(gvrUsers).Namespace(h.scope(ctx).ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		h.noSuchEntity(w, requestID, "The user with name "+name+" cannot be found.")
 		return nil, false
@@ -197,7 +199,7 @@ func (h *iamHandler) patchUser(ctx context.Context, name string, patch map[strin
 	if err != nil {
 		return err
 	}
-	_, err = h.dyn.Resource(gvrUsers).Namespace(h.usersNS).Patch(ctx, name, types.MergePatchType, b, metav1.PatchOptions{})
+	_, err = h.dyn.Resource(gvrUsers).Namespace(h.scope(ctx).ns).Patch(ctx, name, types.MergePatchType, b, metav1.PatchOptions{})
 	return err
 }
 
@@ -379,7 +381,7 @@ func (h *iamHandler) changePassword(ctx context.Context, w http.ResponseWriter, 
 			explicitLegacy = true
 			return false, reason
 		}
-		return iam.CanDo(ctx, h.cs, claims, "update", "iam.openinfra.dev", "users", h.usersNS, name)
+		return iam.CanDo(ctx, h.cs, claims, "update", "iam.openinfra.dev", "users", h.scope(ctx).ns, name)
 	})
 	if d.ExplicitDeny || explicitLegacy || (!d.Allowed && !(custom && pol.AllowUsersToChangePassword)) {
 		h.audit(ctx, "ChangePassword", name, "deny", d.Reason)
@@ -395,7 +397,7 @@ func (h *iamHandler) changePassword(ctx context.Context, w http.ResponseWriter, 
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, "OldPassword and NewPassword are required.", iamXMLNamespace)
 		return
 	}
-	u, err := h.dyn.Resource(gvrUsers).Namespace(h.usersNS).Get(ctx, name, metav1.GetOptions{})
+	u, err := h.dyn.Resource(gvrUsers).Namespace(h.scope(ctx).ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		h.noSuchEntity(w, requestID, "The user with name "+name+" cannot be found.")
 		return
