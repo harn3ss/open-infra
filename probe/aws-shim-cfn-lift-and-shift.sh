@@ -132,7 +132,17 @@ if [ "${MINT:-0}" = 1 ]; then
   command -v kubectl >/dev/null || inconclusive "MINT=1 needs kubectl"
   mint_key "lsfix-admin-$SFX" admins || inconclusive "could not mint a deployer key"
   export AWS_ACCESS_KEY_ID="$MK_AK" AWS_SECRET_ACCESS_KEY="$MK_SK"
-  sleep 3
+  # A new principal's policies take effect after the IAM compiler's next pass and the authorizers' policy
+  # caches (as AWS IAM changes propagate), and the stack acts as its caller: wait until the API server's
+  # authorizer allows the deployer a read in the stack namespace, then the shim's own policy cache.
+  for _ in $(seq 1 40); do
+    allowed="$(printf '{"apiVersion":"authorization.k8s.io/v1","kind":"SubjectAccessReview","spec":{"user":"openinfra:%s:%s","resourceAttributes":{"verb":"get","group":"openinfra.dev","resource":"buckets","namespace":"%s"}}}' "${MGMT_ACCOUNT_ID:-000000000000}" "lsfix-admin-$SFX" "${CFN_NS:-open-infra-cfn}" \
+      | kubectl create -f - -o jsonpath='{.status.allowed}' 2>/dev/null || true)"
+    [ "$allowed" = true ] && break
+    sleep 5
+  done
+  [ "$allowed" = true ] || inconclusive "the minted deployer's policies did not propagate within 200s"
+  sleep "${IAM_SETTLE_SECONDS:-35}"
 fi
 [ -n "${AWS_ACCESS_KEY_ID:-}" ] || inconclusive "set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (or MINT=1)"
 export AWS_REGION="$REGION" AWS_ENDPOINT_URL="$SHIM_ENDPOINT"
