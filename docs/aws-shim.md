@@ -475,6 +475,8 @@ never stands in for another of the same name: a `kind: User` name (or `User::<na
 instance principal, matched only by the instance credentials path), `Service::<service>` (an AWS service:
 `Service::lambda.amazonaws.com` is matched only for a `kind: Function` that names the role as its
 `spec.role`, presenting its own identity's token — [execution role](serverless.md#execution-role) —
+`Service::ecs-tasks.amazonaws.com` only for a `kind: Application` that names the role as its
+`spec.assumeRole`, presenting a token of one of its own pods — [task roles](iam.md#task-roles-applications) —
 and `Service::states.amazonaws.com` only for a state machine's executions), or `"*"` (any authenticated
 principal). An IAM `CreateRole` trust policy maps a user ARN to the user's name and a role ARN to
 `Role::<name>`, and takes `MaxSessionDuration`. Later requests signed with the
@@ -1878,7 +1880,8 @@ authorization layers are the one policy world: the coarse impersonated `SubjectA
 → the Service port, `Environment` → env vars, per-container `Cpu`/`Memory` → requests/limits, `DesiredCount`
 → a fixed replica count, and a **multi-container task** → a multi-container Pod (the load-balanced container
 is primary, the rest become sidecars with shared scratch `emptyDir` volumes + `MountPoints`). `TaskRoleArn`
-maps to workload identity (the app assumes the named `kind: Role` via `sts:AssumeRoleWithWebIdentity`), and a
+maps to the app's task role (`spec.assumeRole`: its SDK assumes the named `kind: Role` of its own account
+with no keys — [task roles](iam.md#task-roles-applications)), and a
 `LoadBalancers` HTTP target port maps to the app's in-cluster Service port — to expose it over HTTPS set
 `Application.domain` (the ELB DNS name does not transfer as a hostname).
 

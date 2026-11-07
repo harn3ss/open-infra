@@ -258,13 +258,78 @@ aws sts assume-role --role-arn arn:aws:iam::<account>:role/deployer --role-sessi
 - **Execution roles:** a function's role (`spec.role`, a Lambda function's `Role` in a stack), trusting
   `lambda.amazonaws.com`, gives the function's code the role's credentials, as on Lambda
   ([execution role](serverless.md#execution-role)).
+- **Task roles:** an application's role (`spec.assumeRole`, an ECS task definition's `TaskRoleArn` in a
+  stack), trusting `ecs-tasks.amazonaws.com`, gives the application's code the role's credentials, as on
+  ECS ([task roles](#task-roles-applications)).
 - "Revoke active sessions" on a role's page ends every session issued before that moment, as AWS's does.
+
+### Task roles (applications)
+
+An application can run as an IAM role — an ECS task's **task role**. Name the role in `spec.assumeRole`,
+and the application's code gets the role's temporary credentials: its AWS SDK finds them with no keys
+configured, and every AWS call it makes is exactly as authorized as the role's policies.
+
+```yaml
+apiVersion: iam.openinfra.dev/v1
+kind: Role
+metadata:
+  name: web-reader
+spec:
+  trust: ["Service::ecs-tasks.amazonaws.com"]  # ECS may assume it for a task
+---
+apiVersion: openinfra.dev/v1
+kind: Application
+metadata:
+  name: web
+spec:
+  image: ghcr.io/me/web
+  port: 8080
+  assumeRole: web-reader                       # or arn:aws:iam::<account>:role/web-reader
+```
+
+The same role from the IAM API:
+
+```sh
+aws iam create-role --role-name web-reader --assume-role-policy-document '{
+  "Version": "2012-10-17",
+  "Statement": [{"Effect": "Allow", "Principal": {"Service": "ecs-tasks.amazonaws.com"}, "Action": "sts:AssumeRole"}]}'
+aws iam put-role-policy --role-name web-reader --policy-name read --policy-document '{
+  "Version": "2012-10-17",
+  "Statement": [{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::web-assets/*"}]}'
+```
+
+- **The role** is a `kind: Role` of the application's own account: the role of that name in the
+  application's namespace (where a CloudFormation stack creates the roles beside its resources), else in
+  the account's IAM home (where `aws iam create-role` creates them). `spec.assumeRole` takes the role's
+  name or its ARN; an ARN naming another account is refused, as AWS refuses passing another account's
+  role.
+- **Its trust policy** must name the ECS tasks service (`ecs-tasks.amazonaws.com`; in `spec.trust`,
+  `Service::ecs-tasks.amazonaws.com`). ECS assumes a role it is trusted with only for an application that
+  names that role, presenting a token of one of that application's own pods: no other application, and no
+  other workload, can assume it. A trust policy may instead name the application's own identity,
+  `system:serviceaccount:<namespace>:<application>` (the IRSA form); that role is assumable by any pod
+  running as that identity. Conditions on a trust statement (`aws:SourceArn`, `aws:SourceAccount`, …) are
+  not evaluated for the ECS service yet, so ECS does not assume a role whose trust policy has any: leave
+  them out of a task role's trust policy. When the role beside the application trusts neither, the
+  application reports a `RoleTrustsWorkload=False` condition naming the fix.
+- **Naming a role takes `iam:PassRole` on it**, as registering a task definition with a task role does on
+  AWS: creating an Application with `spec.assumeRole`, or changing it, is refused unless the requester may
+  pass that role. Applications that already exist are not re-checked.
+- **In the application**, the SDK's standard environment is set for it: `AWS_ROLE_ARN` (the role's ARN in
+  the application's account), `AWS_WEB_IDENTITY_TOKEN_FILE` (a short-lived token of the application's own
+  identity, renewed automatically), `AWS_ROLE_SESSION_NAME` (the pod's name, so each pod's session is
+  `assumed-role/<role>/<pod>`, as ECS names a session after its task), `AWS_ENDPOINT_URL` /
+  `AWS_ENDPOINT_URL_STS` (the aws-shim, where the credentials are valid), and `AWS_REGION` /
+  `AWS_DEFAULT_REGION` (the install's region). The SDK assumes the role on its first call and renews the
+  credentials before they expire. Like any web-identity session, the application's carries no MFA context.
+- **The application runs as its own identity**, a ServiceAccount named after it, so an application named
+  `vm-<name>` cannot have a task role (that name is a virtual machine's identity).
 
 ### Passing a role (`iam:PassRole`)
 
 Naming a role on something that later acts with that role's credentials — a VM's instance role
-(`IamInstanceProfile`), a function's execution role (`spec.role`), a state machine's `RoleArn` — needs
-`iam:PassRole` on the role, as on AWS.
+(`IamInstanceProfile`), a function's execution role (`spec.role`), an application's task role
+(`spec.assumeRole`), a state machine's `RoleArn` — needs `iam:PassRole` on the role, as on AWS.
 `AdministratorAccess` includes it; `PowerUserAccess` does not, so a power user launches such a resource
 only once someone grants `iam:PassRole` on that role:
 
