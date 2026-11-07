@@ -78,8 +78,9 @@ spec:
 # openinfra-ca issues only in platform namespaces (see the header). To let another platform namespace
 # use it, add the namespace to the list below. cert-manager is one because a ClusterIssuer's CA lives
 # there: the validated-domain CA (openinfra-acm, install.sh certificates.validatedDomains) is an
-# intermediate this root signs, name-constrained to the operator's validated domains. Only cluster
-# administrators can create anything in that namespace. Kubernetes CSRs that name the issuer as signer are
+# intermediate this root signs, name-constrained to the operator's validated domains. openbao holds the
+# listener certificate of the platform's key service (security/openbao.yaml). Only cluster
+# administrators can create anything in these namespaces. Kubernetes CSRs that name the issuer as signer are
 # refused too, in case cert-manager's CSR signing is ever turned on.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -92,7 +93,7 @@ spec:
       matchExpressions:
         - key: kubernetes.io/metadata.name
           operator: NotIn
-          values: [open-infra-aws-shim, open-infra-ecr, cert-manager]
+          values: [open-infra-aws-shim, open-infra-ecr, cert-manager, openbao]
     resourceRules:
       - apiGroups: [cert-manager.io]
         apiVersions: ["*"]
