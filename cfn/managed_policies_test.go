@@ -247,7 +247,7 @@ func TestManagedPolicies_JobFunctionsMeanWhatAWSDocuments(t *testing.T) {
 
 // Every kebab-case built-in (platform/security/managed-policies.yaml) names its AWS equivalent — a policy
 // this library ships — or "none" with a reason; hack/iam-migrate re-points attachments by it.
-func TestManagedPolicies_BuiltInAliasesNameShippedPolicies(t *testing.T) {
+func TestManagedPolicies_BuiltInsCoverWhatNoAWSPolicyDoes(t *testing.T) {
 	raw, err := os.ReadFile("../platform/security/managed-policies.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -271,11 +271,11 @@ func TestManagedPolicies_BuiltInAliasesNameShippedPolicies(t *testing.T) {
 			}
 			continue
 		}
-		if _, ok := ManagedPolicyByName(eq[1]); !ok {
-			t.Errorf("built-in alias of %s, which the library does not ship", eq[1])
-		}
+		// The deprecated aliases of AWS managed policies were removed at the IAM cutover: a built-in here
+		// covers open-infra kinds no AWS managed policy does.
+		t.Errorf("a built-in policy aliases the AWS managed policy %s; attach the AWS policy itself", eq[1])
 	}
-	if n != 25 {
-		t.Fatalf("found %d built-in policies, want 25", n)
+	if n != 9 {
+		t.Fatalf("found %d built-in policies, want the 9 platform policies", n)
 	}
 }
