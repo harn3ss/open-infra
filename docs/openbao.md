@@ -21,7 +21,7 @@ until then OpenBao holds nothing and nothing uses it.
 | Members | three, sharing integrated Raft storage; one is active and the other two forward to it |
 | Placement | one per node, on three nodes the operator names, each a different physical machine with a solid-state disk |
 | Unsealing | automatic, by an OpenBao outside the cluster (the *unseal host*); see below |
-| API | TLS 1.3 only, at `https://openbao-active.openbao.svc:8200` (any member: `openbao.openbao.svc`); the certificate comes from the platform CA and renews without a restart |
+| API | TLS 1.3 only. Clients use `https://openbao-active.openbao.svc:8200`, the active member: a standby answers some requests from its own copy, which trails the active member by milliseconds, so a key created and used at once through a standby can be reported missing. The certificate comes from the platform CA and renews without a restart |
 | Network | only the members reach one another; each client that moves onto OpenBao is admitted by name |
 | Audit | every request and response, sensitive fields HMAC'd, written to the members' logs and so to Loki |
 | Changes | roll one member at a time, each unsealed before the next; at most one member is down for maintenance |
@@ -159,6 +159,7 @@ cluster whose keys were never displayed.
 | the listener certificate reissued | all three members served the new certificate without a restart |
 | audit | requests and responses recorded, with the client token as an HMAC |
 | network | a pod in the same namespace that is not a member could not connect |
+| a key created, then used at once, through a standby | reported missing when the calls came back to back; found after 50 ms, and always found through the active member |
 | a wrong CA fingerprint in `config.yaml` | refused by `install.sh`, nothing changed |
 
 ## What it does not do yet
