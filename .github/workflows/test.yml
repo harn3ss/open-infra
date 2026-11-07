@@ -21,9 +21,7 @@ on:
       - "dynamodb/**"
       - "console-api/**"
       - "test/**"
-      - "platform/abstraction/**"
-      # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
-      - "platform/console/manifests/**"
+      - "platform/**" # every manifest: the user-authority check (rbac_user_authority_test.go) walks them all
       - "platform/storage/longhorn*.yaml" # volume_render_test.go pins the Volume's classes to Immediate binding
       - "platform/security/volume-crypto.yaml" # crypto_reconcilers_test.go runs these reconciler scripts
       - "platform/security/encryptionkey-reconciler.yaml"
@@ -49,9 +47,7 @@ on:
       - "dynamodb/**"
       - "console-api/**"
       - "test/**"
-      - "platform/abstraction/**"
-      # render_test.go Assertion 6 reads rbac-roles.yaml here — drift must trigger the gate.
-      - "platform/console/manifests/**"
+      - "platform/**" # every manifest: the user-authority check (rbac_user_authority_test.go) walks them all
       - "platform/storage/longhorn*.yaml" # volume_render_test.go pins the Volume's classes to Immediate binding
       - "platform/security/volume-crypto.yaml" # crypto_reconcilers_test.go runs these reconciler scripts
       - "platform/security/encryptionkey-reconciler.yaml"
