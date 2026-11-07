@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"time"
 
 	"github.com/harn3ss/open-infra/policyengine"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,9 +23,10 @@ var (
 func K8sLoader(dc dynamic.Interface) Loader { return K8sLoaderIn(dc, DefaultHomeNamespace) }
 
 // K8sLoaderIn reads the IAM policy world from the cluster: every kind: Policy (its AWS document,
-// spec.document, and its native data-plane statements, spec.dataPlane), and each kind: Role / User /
+// spec.document, and its native data-plane statements, spec.dataPlane), each kind: Role / User /
 // Group's attachments (spec.policies), inline policies (spec.inlinePolicies), permission boundary
-// (spec.permissionBoundary) and canary label. Every principal key and Policy name is canonical
+// (spec.permissionBoundary) and canary label, and the policies each approved kind: Grant attaches for
+// its window (grant.go). Every principal key and Policy name is canonical
 // (QualifiedName). It fails closed on any list error. A document that does not compile is skipped and
 // its Policy carries the report (its Allows then grant nothing; a Deny in it is lost only when the whole
 // document is malformed, which admission refuses).
@@ -70,6 +72,9 @@ func K8sLoaderIn(dc dynamic.Interface, home string) Loader {
 			if err := loadPrincipals(ctx, dc, home, k.gvr, k.kind, func(n string) bool { return defined[n] }, &w); err != nil {
 				return World{}, err
 			}
+		}
+		if err := loadGrants(ctx, dc, home, func(n string) bool { return defined[n] }, time.Now(), &w); err != nil {
+			return World{}, err
 		}
 		if len(w.Inline) == 0 {
 			w.Inline = nil

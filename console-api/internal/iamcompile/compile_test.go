@@ -497,3 +497,56 @@ func TestCompile_PassRoleIsThePassroleVerb(t *testing.T) {
 		}
 	}
 }
+
+// An approved kind: Grant compiles as an attachment of its policies for its window: the corpus and the
+// generated RBAC carry them for the user (or each member of the group) while it is open, the report
+// names the grant, and a pass after the window compiles the principal back to what it holds without it.
+func TestCompile_GrantAttachesForItsWindow(t *testing.T) {
+	approved := time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)
+	w := world([]iamauthz.Policy{doc(t, "aws-poweruseraccess", powerUserDoc)}, nil)
+	w.Temporary = map[string][]iamauthz.TemporaryAttachment{
+		"User::alice":   {{Grant: "jit-alice", Policies: []string{"aws-poweruseraccess"}, From: approved, Until: approved.Add(4 * time.Hour)}},
+		"Group::oncall": {{Grant: "jit-oncall", Policies: []string{"aws-poweruseraccess"}, From: approved, Until: approved.Add(time.Hour)}},
+	}
+	in := Input{World: w, Principals: []Principal{
+		{Kind: "User", Namespace: "open-infra-console", Name: "alice"},
+		{Kind: "User", Namespace: "open-infra-console", Name: "bob", Groups: []string{"oncall"}},
+	}}
+	create := []string{"create", "openinfra.dev", "buckets", "team-a", ""}
+	for _, c := range []struct {
+		name       string
+		at         time.Time
+		alice, bob bool
+	}{
+		{"before approval", approved.Add(-time.Minute), false, false},
+		{"both windows open", approved.Add(30 * time.Minute), true, true},
+		{"the group's hour is up", approved.Add(2 * time.Hour), true, false},
+		{"alice's four hours are up", approved.Add(4 * time.Hour), false, false},
+	} {
+		in.Now = c.at
+		out := Compile(in)
+		chk := corpusChecker(t, out)
+		for _, u := range []struct {
+			name, identity string
+			want           bool
+		}{{"alice", alice, c.alice}, {"bob", bob, c.bob}} {
+			if got := can(chk, u.identity, create[0], create[1], create[2], create[3], create[4]); got != u.want {
+				t.Errorf("%s: corpus lets %s create a bucket: %v, want %v", c.name, u.name, got, u.want)
+			}
+			if got := rbacAllows(out, u.identity, create[0], create[1], create[2], create[3], create[4]); got != u.want {
+				t.Errorf("%s: generated RBAC lets %s create a bucket: %v, want %v", c.name, u.name, got, u.want)
+			}
+			if r := reportFor(out, u.name); (len(r.Temporary) == 1) != u.want {
+				t.Errorf("%s: %s's report temporary grants = %v", c.name, u.name, r.Temporary)
+			}
+		}
+		// A granted policy is the policy: PowerUserAccess, even granted, writes no IAM.
+		if can(chk, alice, "create", "iam.openinfra.dev", "users", "open-infra-console", "") {
+			t.Errorf("%s: a granted PowerUserAccess must not create users", c.name)
+		}
+	}
+	if r := reportFor(Compile(Input{World: w, Now: approved, Principals: in.Principals[:1]}), "alice"); len(r.Temporary) != 1 ||
+		r.Temporary[0] != "jit-alice: aws-poweruseraccess until 2026-11-07T14:00:00Z" {
+		t.Errorf("report temporary grants = %v", r.Temporary)
+	}
+}

@@ -2,20 +2,15 @@
 # the group's attached policies (spec.policies) and inline policies (spec.inlinePolicies). A
 # group with no policies grants nothing.
 #
-# DEPRECATED FORM, kept working until the cutover rewrites it: spec.clusterRole, a permission
-# tier the group binds members to. What follows describes that form.
-#
-# A Group compiles to a ClusterRoleBinding whose subject is the Kubernetes group
-# `openinfra:<name>`, bound to a ClusterRole. The console sends that group as an
-# Impersonate-Group header, so KUBERNETES RBAC — not the console — decides what members
-# may do, and every action is attributable in the audit log.
+# A Group binds nothing itself: the one evaluator reads its policies for every member, and the
+# IAM compiler generates whatever RBAC they need underneath. A group is never a permission tier:
+# spec.clusterRole (the old tier form, a ClusterRole the group bound its members to) is refused at
+# admission — attach the managed policy instead (aws-administratoraccess, aws-poweruseraccess,
+# aws-readonlyaccess).
 #
 # Lives in iam.openinfra.dev rather than openinfra.dev: RBAC is purely additive, and the
 # console's readonly role holds openinfra.dev ["*"], so an identity kind in that group
 # would be readable by every reader the moment it existed. See docs/iam.md.
-#
-# The three built-in groups (admins / powerusers / readers) are shipped as static manifests
-# in platform/console/manifests/rbac-roles.yaml; this kind is for defining your own.
 apiVersion: apiextensions.crossplane.io/v1
 kind: CompositeResourceDefinition
 metadata:
@@ -49,6 +44,16 @@ spec:
           properties:
             spec:
               type: object
+              x-kubernetes-validations:
+                # A group is a container of policies, as on AWS: it binds no ClusterRole. The field stays
+                # in the schema only so that a manifest still naming it is refused with this message rather
+                # than having it silently pruned.
+                - rule: "!has(self.clusterRole)"
+                  message: >-
+                    spec.clusterRole is not supported: a Group is a container of policies, as on AWS, and
+                    binds no ClusterRole. Attach a managed policy in spec.policies instead, such as
+                    aws-poweruseraccess (for open-infra-poweruser), aws-readonlyaccess (open-infra-readonly)
+                    or aws-administratoraccess (open-infra-console).
               properties:
                 description:
                   type: string
@@ -93,11 +98,8 @@ spec:
                 clusterRole:
                   type: string
                   description: >-
-                    DEPRECATED — the permission-tier form: the name of a ClusterRole members receive (built-in
-                    open-infra-console, open-infra-poweruser, open-infra-readonly, or your own). Use policies
-                    instead (AdministratorAccess, PowerUserAccess, ReadOnlyAccess are attachable managed
-                    policies); hack/iam-migrate rewrites a tier into its managed policy. Still bound while set,
-                    and admission warns.
+                    Not supported, and refused: a Group binds no ClusterRole. Attach the managed policy in
+                    spec.policies instead (aws-administratoraccess, aws-poweruseraccess, aws-readonlyaccess).
             status:
               type: object
               properties:
@@ -105,4 +107,4 @@ spec:
                   type: boolean
                 boundTo:
                   type: string
-                  description: The Kubernetes group name members are bound as.
+                  description: The Kubernetes group name members are impersonated as (openinfra:<name>).

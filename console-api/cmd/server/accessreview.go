@@ -23,33 +23,12 @@ import (
 // (including "last seen", derived from the same Loki audit streams the Audit view uses) and stamps the
 // clock.
 
-// grantForReview is the subset of a kind: Grant this report needs.
-type grantForReview struct {
-	Metadata struct {
-		Name              string `json:"name"`
-		CreationTimestamp string `json:"creationTimestamp"`
-	} `json:"metadata"`
-	Spec struct {
-		Subject struct {
-			Kind string `json:"kind"`
-			Name string `json:"name"`
-		} `json:"subject"`
-		ClusterRole string `json:"clusterRole"`
-		Duration    string `json:"duration"`
-		Reason      string `json:"reason"`
-	} `json:"spec"`
-	Status struct {
-		Ready   bool   `json:"ready"`
-		Message string `json:"message"`
-	} `json:"status"`
-}
-
 func grantsAbsPath(ns string) string {
 	return "/apis/iam.openinfra.dev/v1/namespaces/" + ns + "/grants"
 }
 
-// listGrantsForReview best-effort lists temporal grants; a missing CRD (feature disabled) → none.
-func (a *authStore) listGrantsForReview(ctx context.Context) []grantForReview {
+// listGrantsForReview best-effort lists temporary grants; a missing CRD (feature disabled) → none.
+func (a *authStore) listGrantsForReview(ctx context.Context) []grantResource {
 	rc := a.rawREST()
 	if rc == nil {
 		return nil
@@ -59,7 +38,7 @@ func (a *authStore) listGrantsForReview(ctx context.Context) []grantForReview {
 		return nil
 	}
 	var list struct {
-		Items []grantForReview `json:"items"`
+		Items []grantResource `json:"items"`
 	}
 	if json.Unmarshal(raw, &list) != nil {
 		return nil
@@ -170,6 +149,7 @@ func handleAccessReview(cs kubernetes.Interface, auth *authStore, logger *slog.L
 		}
 
 		var grants []accessreview.GrantInput
+		now := time.Now()
 		for _, gr := range auth.listGrantsForReview(ctx) {
 			created := time.Time{}
 			if gr.Metadata.CreationTimestamp != "" {
@@ -177,10 +157,12 @@ func handleAccessReview(cs kubernetes.Interface, auth *authStore, logger *slog.L
 					created = t
 				}
 			}
+			// Whether its policies are attached now is decided exactly as the evaluator decides it.
+			phase, until, why := grantPhase(gr, now)
 			grants = append(grants, accessreview.GrantInput{
 				Name: gr.Metadata.Name, SubjectKind: gr.Spec.Subject.Kind, SubjectName: gr.Spec.Subject.Name,
-				ClusterRole: gr.Spec.ClusterRole, Reason: gr.Spec.Reason, Duration: gr.Spec.Duration,
-				CreatedAt: created, Bound: gr.Status.Ready, Message: gr.Status.Message,
+				Policies: gr.Spec.Policies, Reason: gr.Spec.Reason, Duration: gr.Spec.Duration,
+				CreatedAt: created, Bound: phase == grantActive, ExpiresAt: until, Message: why,
 			})
 		}
 

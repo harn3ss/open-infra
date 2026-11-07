@@ -1,13 +1,11 @@
-# A Group of policies (spec.policies) renders no binding: its policies are evaluated for every
-# member. The DEPRECATED permission-tier form (spec.clusterRole) still compiles as before: one
-# Group claim -> one ClusterRoleBinding that binds the Kubernetes group `openinfra:<name>` to the
-# chosen ClusterRole. What follows describes that form.
+# A Group is a container of policies (spec.policies, spec.inlinePolicies), as on AWS, and renders
+# no binding: the one evaluator reads its policies for every member, and the IAM compiler generates
+# whatever RBAC they need underneath (labelled openinfra.dev/generated-by: iam-compiler). A Group
+# never binds a ClusterRole — the XRD refuses spec.clusterRole at admission, and a Group that still
+# carried one from before would render exactly what any other Group renders.
 #
-# This is the whole mechanism. The console authenticates a user, looks up their kind: User,
-# and sends Impersonate-Group: openinfra:<group> with every proxied call. The API server
-# then evaluates THIS binding. So permissions are enforced by Kubernetes RBAC, not by
-# console code, and hold identically whether the action comes from the console, kubectl,
-# Terraform or Argo.
+# The console sends a member's groups as Impersonate-Group: openinfra:<group> with every proxied
+# call; what that identity may do is the IAM compiler's generated RBAC, never a hand-written grant.
 #
 # Synced after the XRD (sync-wave 3).
 apiVersion: apiextensions.crossplane.io/v1
@@ -35,36 +33,6 @@ spec:
             {{- $spec := .observed.composite.resource.spec }}
             {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
-            {{- $role := $spec.clusterRole | default "" }}
-            {{- if $role }}
-            ---
-            # Bind openinfra:<name> to the requested ClusterRole. Note this grants to a
-            # GROUP STRING, not to an object: Kubernetes users/groups are assertions made
-            # by the authenticator (here, the console's impersonation headers), which is
-            # why the console's ability to impersonate is pinned to the openinfra:* groups.
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: group-binding
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: rbac.authorization.k8s.io/v1
-                  kind: ClusterRoleBinding
-                  metadata:
-                    name: openinfra-group-{{ $name }}
-                    labels:
-                      openinfra.dev/iam-group: {{ $name }}
-                  roleRef:
-                    apiGroup: rbac.authorization.k8s.io
-                    kind: ClusterRole
-                    name: {{ $role | toJson }}
-                  subjects:
-                    - kind: Group
-                      name: "openinfra:{{ $name }}"
-                      apiGroup: rbac.authorization.k8s.io
-            {{- else }}
             {{- /* A Group of policies (spec.policies / inlinePolicies, as on AWS) binds no ClusterRole: the
                    one evaluator reads its policies for every member, and the IAM compiler generates any RBAC
                    they need. A spec-mirror ConfigMap is the pipeline's composed resource, so the status lands. */ -}}
@@ -88,7 +56,6 @@ spec:
                   data:
                     name: {{ $name | quote }}
                     policies: {{ $spec.policies | default list | toJson | quote }}
-            {{- end }}
             ---
             {{- $ready := true }}
             apiVersion: iam.openinfra.dev/v1

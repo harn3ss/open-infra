@@ -618,13 +618,24 @@ func handleIAMGroupGet(cs kubernetes.Interface, auth *authStore, logger *slog.Lo
 type groupReq struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	// ClusterRole is the legacy permission tier (deprecated). Optional: a group is a container of
-	// policies, and grants what its policies grant.
+	// ClusterRole is the old permission-tier form, refused: a group is a container of policies, and
+	// grants what its policies grant.
 	ClusterRole string `json:"clusterRole"`
 	// Policies attaches managed or customer policies to the group (applied when present).
 	Policies *[]string `json:"policies"`
 	// InlinePolicies replaces the group's inline policies when present.
 	InlinePolicies *[]inlinePolicy `json:"inlinePolicies"`
+}
+
+// refuseGroupClusterRole refuses the old permission-tier form (a ClusterRole the group bound its members
+// to): a group is a container of policies, as on AWS. It reports whether it wrote the refusal.
+func refuseGroupClusterRole(w http.ResponseWriter, in groupReq) bool {
+	if strings.TrimSpace(in.ClusterRole) == "" {
+		return false
+	}
+	writeJSON(w, http.StatusBadRequest, map[string]string{"errorCode": "ValidationError",
+		"error": "clusterRole is not supported: a group is a container of policies — attach a managed policy instead, such as aws-poweruseraccess or aws-readonlyaccess"})
+	return true
 }
 
 func handleIAMGroupCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
@@ -637,6 +648,9 @@ func handleIAMGroupCreate(cs kubernetes.Interface, auth *authStore, logger *slog
 		in.Name = strings.TrimSpace(in.Name)
 		if !validName(in.Name) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name must be a lowercase DNS label (a-z, 0-9, -)"})
+			return
+		}
+		if refuseGroupClusterRole(w, in) {
 			return
 		}
 		var warnings []string
@@ -652,9 +666,6 @@ func handleIAMGroupCreate(cs kubernetes.Interface, auth *authStore, logger *slog
 			return
 		}
 		spec := map[string]any{"description": in.Description}
-		if cr := strings.TrimSpace(in.ClusterRole); cr != "" {
-			spec["clusterRole"] = cr
-		}
 		change := attachmentChange{kind: "group", name: in.Name}
 		if in.Policies != nil && len(*in.Policies) > 0 {
 			spec["policies"] = cleanGroups(*in.Policies)
@@ -692,6 +703,9 @@ func handleIAMGroupUpdate(cs kubernetes.Interface, auth *authStore, logger *slog
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 			return
 		}
+		if refuseGroupClusterRole(w, in) {
+			return
+		}
 		if !authorize(w, r, cs, auth, logger, "update", "iam.openinfra.dev", "groups", auth.ns, name) {
 			return
 		}
@@ -706,9 +720,6 @@ func handleIAMGroupUpdate(cs kubernetes.Interface, auth *authStore, logger *slog
 		}
 		cur, _ := auth.crdGroupByName(r.Context(), name)
 		spec := map[string]any{"description": in.Description}
-		if cr := strings.TrimSpace(in.ClusterRole); cr != "" {
-			spec["clusterRole"] = cr
-		}
 		change := attachmentChange{kind: "group", name: name}
 		if in.Policies != nil {
 			p := cleanGroups(*in.Policies)

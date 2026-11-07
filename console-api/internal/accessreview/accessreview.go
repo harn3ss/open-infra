@@ -76,12 +76,15 @@ type GrantInput struct {
 	Name        string
 	SubjectKind string // "User" | "Group"
 	SubjectName string
-	ClusterRole string
+	Policies    []string // the policies it attaches
 	Reason      string
-	Duration    string    // Go duration string, e.g. "4h"
+	Duration    string    // e.g. "4h"
 	CreatedAt   time.Time // metadata.creationTimestamp
-	Bound       bool      // status.ready — did it actually confer the binding?
-	Message     string    // status.message when it conferred nothing
+	// Bound is whether its policies are attached now (approved by a second person, its window open).
+	Bound bool
+	// ExpiresAt is when they stop being attached (approval + duration); zero before approval.
+	ExpiresAt time.Time
+	Message   string // why it attaches nothing, when it does not
 }
 
 // Inputs is the whole gathered snapshot handed to Build.
@@ -103,15 +106,15 @@ type Inputs struct {
 
 // ── Outputs (the report) ─────────────────────────────────────────────────────────
 
-// GrantRef is one active temporal grant reaching a principal.
+// GrantRef is one active temporary grant reaching a principal.
 type GrantRef struct {
-	Name        string `json:"name"`
-	ClusterRole string `json:"clusterRole"`
-	Reason      string `json:"reason,omitempty"`
-	Duration    string `json:"duration,omitempty"`
-	ExpiresAt   string `json:"expiresAt,omitempty"` // creation + duration, RFC3339; "" if not computable
-	ViaGroup    string `json:"viaGroup,omitempty"`  // set when the grant reaches the user through a group
-	Bound       bool   `json:"bound"`               // did it actually confer access?
+	Name      string   `json:"name"`
+	Policies  []string `json:"policies"` // the policies it attaches
+	Reason    string   `json:"reason,omitempty"`
+	Duration  string   `json:"duration,omitempty"`
+	ExpiresAt string   `json:"expiresAt,omitempty"` // approval + duration, RFC3339; "" if not computable
+	ViaGroup  string   `json:"viaGroup,omitempty"`  // set when the grant reaches the user through a group
+	Bound     bool     `json:"bound"`               // are its policies attached now?
 }
 
 // Principal is one account's recertification row.
@@ -324,11 +327,10 @@ func resolveGroup(name string, byName map[string]GroupInput) (clusterRole string
 	return "", false // named but not built-in and not a Ready Group → inert
 }
 
-// grantsFor returns the active temporal grants reaching a user: directly (subject User) or via a group
-// the user belongs to (subject Group). Only BOUND grants count as access — since the approval gate, a
-// grant can exist while AwaitingApproval (or NotGrantable), conferring nothing; those are pending
-// requests, not standing access, so the recertification report must not count them. Bound grants that
-// still exist are active — the expiry reconciler deletes them when the window passes.
+// grantsFor returns the active temporary grants reaching a user: directly (subject User) or via a group
+// the user belongs to (subject Group). Only grants whose policies are attached now count as access — a
+// grant awaiting approval, approved by its own requester, or past its window confers nothing; pending
+// requests are not standing access, so the recertification report must not count them.
 func grantsFor(u UserInput, all []GrantInput) []GrantRef {
 	inGroup := map[string]bool{}
 	for _, g := range u.Groups {
@@ -354,13 +356,11 @@ func grantsFor(u UserInput, all []GrantInput) []GrantRef {
 			continue
 		}
 		ref := GrantRef{
-			Name: g.Name, ClusterRole: g.ClusterRole, Reason: g.Reason,
+			Name: g.Name, Policies: append([]string{}, g.Policies...), Reason: g.Reason,
 			Duration: g.Duration, ViaGroup: via, Bound: g.Bound,
 		}
-		if !g.CreatedAt.IsZero() {
-			if d, err := time.ParseDuration(g.Duration); err == nil {
-				ref.ExpiresAt = g.CreatedAt.Add(d).UTC().Format(time.RFC3339)
-			}
+		if !g.ExpiresAt.IsZero() {
+			ref.ExpiresAt = g.ExpiresAt.UTC().Format(time.RFC3339)
 		}
 		out = append(out, ref)
 	}

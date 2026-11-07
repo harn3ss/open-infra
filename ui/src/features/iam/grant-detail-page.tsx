@@ -49,6 +49,7 @@ export function GrantDetailPage() {
 
   const b = phaseBadge(grant.phase);
   const approved = grant.approvedBy !== "";
+  const policies = (grant.policies ?? []).join(", ");
 
   return (
     <DetailShell
@@ -56,7 +57,7 @@ export function GrantDetailPage() {
       backLabel="Grants"
       icon={<Clock className="size-5" />}
       title={grant.name}
-      subtitle={`${grant.subjectKind}/${grant.subjectName} → ${grant.clusterRole}`}
+      subtitle={`${grant.subjectKind}/${grant.subjectName} → ${policies}`}
       actions={<Badge variant={b.variant}>{b.label}</Badge>}
     >
       <Tabs defaultValue="overview">
@@ -77,8 +78,8 @@ export function GrantDetailPage() {
               <DetailRow label="Subject">
                 {grant.subjectKind}/{grant.subjectName}
               </DetailRow>
-              <DetailRow label="ClusterRole">
-                <code className="text-xs">{grant.clusterRole}</code>
+              <DetailRow label="Policies">
+                <code className="text-xs">{policies}</code>
               </DetailRow>
               <DetailRow label="Duration">{grant.duration}</DetailRow>
               <DetailRow label="Reason">{grant.reason || "—"}</DetailRow>
@@ -86,8 +87,12 @@ export function GrantDetailPage() {
               <DetailRow label="Phase">
                 <Badge variant={b.variant}>{b.label}</Badge>
               </DetailRow>
-              <DetailRow label="Bound to">
-                {grant.boundTo ? <code className="text-xs">{grant.boundTo}</code> : "— (no binding)"}
+              <DetailRow label="Attached to">
+                <code className="text-xs">{grant.attachedTo}</code>
+                {grant.active ? null : <span className="text-muted-foreground"> (not attached now)</span>}
+              </DetailRow>
+              <DetailRow label="Expires">
+                {grant.expiresAt ? new Date(grant.expiresAt).toLocaleString() : "— (once approved: approval + duration)"}
               </DetailRow>
               {grant.message ? <DetailRow label="Status">{grant.message}</DetailRow> : null}
             </CardContent>
@@ -119,11 +124,10 @@ export function GrantDetailPage() {
               ) : (
                 <>
                   <p className="text-sm text-muted-foreground">
-                    Approving grants{" "}
+                    Approving attaches <code className="text-xs">{policies}</code> to{" "}
                     <span className="font-medium text-foreground">{grant.subjectKind}/{grant.subjectName}</span>{" "}
-                    the role <code className="text-xs">{grant.clusterRole}</code> for {grant.duration}.
-                    You must be a <strong>different</strong> person from the requester
-                    {grant.requestedBy ? ` (${grant.requestedBy})` : ""} — separation of duties (AC-5).
+                    for {grant.duration} from now. You must be a <strong>different</strong> person from the
+                    requester{grant.requestedBy ? ` (${grant.requestedBy})` : ""} — separation of duties (AC-5).
                   </p>
                   <div className="space-y-1.5">
                     <Label htmlFor="approve-note">Approval note (optional)</Label>
@@ -156,8 +160,8 @@ export function GrantDetailPage() {
             confirmDescription={
               <>
                 Revoke grant <span className="font-medium text-foreground">{grant.name}</span>. This
-                deletes the grant and tears down its ClusterRoleBinding immediately, ending any access
-                it conferred.
+                deletes the grant and detaches its policies from{" "}
+                {grant.subjectKind}/{grant.subjectName}, ending any access it gave.
               </>
             }
           />

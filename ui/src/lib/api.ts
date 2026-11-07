@@ -1138,8 +1138,6 @@ export function listIamGroups(): Promise<IamGroup[]> {
 export function createIamGroup(body: {
   name: string;
   description: string;
-  /** Legacy permission tier (deprecated; optional). */
-  clusterRole?: string;
   policies?: string[];
   inlinePolicies?: InlinePolicy[];
 }): Promise<{ name: string; warnings?: string[]; arn?: string }> {
@@ -1150,7 +1148,6 @@ export function updateIamGroup(
   name: string,
   body: {
     description?: string;
-    clusterRole?: string;
     policies?: string[];
     inlinePolicies?: InlinePolicy[];
   },
@@ -1521,24 +1518,30 @@ export function importAwsPolicy(policyDocument: string): Promise<ImportAwsResult
   });
 }
 
-/* ------------------------------ Temporal grants ------------------------------ */
-// kind: Grant — just-in-time access with a second-party approval workflow. A grant is a REQUEST: it
-// confers nothing until a different admin approves it (AC-2(2)/AC-5). Admin-gated on the BFF.
+/* ------------------------------ Temporary access (grants) ------------------------------ */
+// kind: Grant — just-in-time access with a second-person approval workflow. A grant is a REQUEST to
+// attach IAM policies to a user or group for a while: it attaches nothing until someone other than the
+// requester approves it (AC-2(2)/AC-5), then its policies are attached for its duration (at most 24h).
 
 export interface IamGrant {
   name: string;
   subjectKind: string;
   subjectName: string;
-  clusterRole: string;
+  /** The policies the grant attaches (AWS managed or customer policy names). */
+  policies: string[];
   duration: string;
   reason: string;
   requestedBy: string;
   approvedBy: string;
   approvedAt: string;
   approvalNote?: string;
-  phase: string; // AwaitingApproval | Active | NotGrantable | Unknown
-  ready: boolean;
-  boundTo: string;
+  phase: string; // AwaitingApproval | Active | Expired | NotGrantable | Approved
+  /** Whether its policies are attached right now. */
+  active: boolean;
+  /** The subject's IAM ARN — the user or group the policies are attached to. */
+  attachedTo: string;
+  /** When the policies stop being attached (RFC 3339), once approved. */
+  expiresAt?: string;
   message: string;
   createdAt: string;
 }
@@ -1553,7 +1556,7 @@ export function createIamGrant(body: {
   name: string;
   subjectKind: string;
   subjectName: string;
-  clusterRole: string;
+  policies: string[];
   duration: string;
   reason: string;
 }): Promise<{ name: string; phase: string }> {
@@ -1562,7 +1565,7 @@ export function createIamGrant(body: {
 export function approveIamGrant(
   name: string,
   note: string,
-): Promise<{ name: string; approvedBy: string; phase: string }> {
+): Promise<{ name: string; approvedBy: string; phase: string; expiresAt: string }> {
   return request(`/iam/grants/${encodeURIComponent(name)}/approve`, {
     method: "POST",
     body: JSON.stringify({ note }),
@@ -1819,7 +1822,8 @@ export function getAttestation(): Promise<Attestation> {
 /** Access-recertification report — standing access per principal, mapped to activity + review flags (AC-2/AC-6). */
 export interface AccessGrantRef {
   name: string;
-  clusterRole: string;
+  /** The policies the grant attaches. */
+  policies: string[];
   reason?: string;
   duration?: string;
   expiresAt?: string;

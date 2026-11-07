@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 )
 
 const home = DefaultHomeNamespace
@@ -36,7 +38,7 @@ func loaderOver(t *testing.T, objs ...*unstructured.Unstructured) *Checker {
 		rt[i] = o
 	}
 	dc := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
-		policyGVR: "PolicyList", roleGVR: "RoleList", userGVR: "UserList", groupGVR: "GroupList",
+		policyGVR: "PolicyList", roleGVR: "RoleList", userGVR: "UserList", groupGVR: "GroupList", iamauthz.GrantGVR: "GrantList",
 	}, rt...)
 	return New(K8sLoaderIn(dc, home), time.Minute)
 }

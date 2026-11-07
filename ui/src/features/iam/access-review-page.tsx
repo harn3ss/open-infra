@@ -144,7 +144,7 @@ function toCsv(principals: AccessPrincipal[]): string {
       (p.inertGroups ?? []).join("; "),
       (p.standingRoles ?? []).join("; "),
       (p.grants ?? [])
-        .map((g) => `${g.clusterRole}${g.viaGroup ? ` via ${g.viaGroup}` : ""}${g.expiresAt ? ` (exp ${g.expiresAt})` : ""}`)
+        .map((g) => `${(g.policies ?? []).join(" + ")}${g.viaGroup ? ` via ${g.viaGroup}` : ""}${g.expiresAt ? ` (exp ${g.expiresAt})` : ""}`)
         .join("; "),
       p.lastSeen ?? "",
       (p.flags ?? []).map((f) => FLAG_META[f]?.label ?? f).join("; "),
@@ -220,7 +220,7 @@ function PrincipalDetail({ p }: { p: AccessPrincipal }) {
               <div className="space-y-1">
                 {(p.grants ?? []).map((g) => (
                   <div key={g.name} className="text-xs">
-                    <code className="rounded bg-muted px-1 py-0.5">{g.clusterRole}</code>
+                    <code className="rounded bg-muted px-1 py-0.5">{(g.policies ?? []).join(", ")}</code>
                     {g.viaGroup ? <span className="text-muted-foreground"> via {g.viaGroup}</span> : null}
                     {g.expiresAt ? (
                       <span className="text-muted-foreground"> · expires {new Date(g.expiresAt).toLocaleString()}</span>
@@ -443,7 +443,7 @@ export function AccessReviewPage() {
                             <div className="space-y-1">
                               {(p.grants ?? []).map((g) => (
                                 <div key={g.name} className="whitespace-nowrap">
-                                  <code className="rounded bg-muted px-1 py-0.5">{g.clusterRole}</code>
+                                  <code className="rounded bg-muted px-1 py-0.5">{(g.policies ?? []).join(", ")}</code>
                                   {g.viaGroup ? <span className="text-muted-foreground"> via {g.viaGroup}</span> : null}
                                   {g.expiresAt ? (
                                     <span className="text-muted-foreground"> · exp {new Date(g.expiresAt).toLocaleDateString()}</span>

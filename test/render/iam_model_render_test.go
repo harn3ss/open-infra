@@ -8,10 +8,11 @@ import (
 )
 
 // The IAM model (#360's policy model): kind: Policy gains spec.document (an AWS policy document), Groups
-// become policy containers, and Users and Roles take policies. Shipping it changes nothing for the objects
-// that exist: a Policy without a document, a Group with its clusterRole, and every User and Role render
-// byte for byte as before — the goldens under testdata/iam-legacy were rendered by the compositions as
-// they stood before the change (regenerate only on purpose: UPDATE_IAM_GOLDEN=1).
+// are policy containers, and Users and Roles take policies. Shipping it changes nothing for the objects
+// that exist: a Policy without a document and every User and Role render byte for byte as before — the
+// goldens under testdata/iam-legacy were rendered by the compositions as they stood before the change
+// (regenerate only on purpose: UPDATE_IAM_GOLDEN=1). A Group's permission tier (spec.clusterRole) is no
+// longer a form at all: no Group carries one, the XRD refuses it, and a Group renders no binding.
 
 func iamCtx(name, ns string, spec map[string]any) map[string]any {
 	return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
@@ -42,9 +43,6 @@ func iamLegacyFixtures() []iamFixture {
 			"statements": []any{map[string]any{"effect": "Allow", "actions": []any{"buckets:*"}, "resources": []any{"*"}}},
 			"dataPlane":  map[string]any{"statements": []any{map[string]any{"effect": "Allow", "actions": []any{"s3:*"}, "resources": []any{"*"}}}}})},
 		{"policy-empty", "policy-composition.yaml", iamCtx("empty", "open-infra-console", map[string]any{})},
-		{"group-poweruser", "group-composition.yaml", iamCtx("builders", "open-infra-console", map[string]any{
-			"clusterRole": "open-infra-poweruser", "description": "d"})},
-		{"group-readonly", "group-composition.yaml", iamCtx("readers", "open-infra-console", map[string]any{"clusterRole": "open-infra-readonly"})},
 		{"user-groups", "user-composition.yaml", iamCtx("alice", "open-infra-console", map[string]any{
 			"displayName": "Alice", "groups": []any{"admins"}, "source": "local"})},
 		{"user-disabled", "user-composition.yaml", iamCtx("bob", "open-infra-console", map[string]any{
@@ -103,8 +101,7 @@ func TestIAMModel_DocumentPolicyRendersNoClusterRole(t *testing.T) {
 	}
 }
 
-// A Group that names only policies (a policy container, as on AWS) binds no ClusterRole; one that still
-// names a clusterRole (deprecated) keeps its binding.
+// A Group (a policy container, as on AWS) binds no ClusterRole.
 func TestIAMModel_GroupIsAPolicyContainer(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/group-composition.yaml")
 	out := render(t, tmpl, iamCtx("developers", "open-infra-console", map[string]any{

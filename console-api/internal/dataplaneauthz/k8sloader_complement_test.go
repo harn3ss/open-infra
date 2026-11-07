@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 )
 
 // #7 read-half parity: kind: Policy dataPlane statements that use notActions/notResources must load
@@ -47,10 +49,11 @@ func TestK8sLoader_Complement(t *testing.T) {
 
 	scheme := runtime.NewScheme()
 	lists := map[schema.GroupVersionResource]string{
-		policyGVR: "PolicyList",
-		roleGVR:   "RoleList",
-		userGVR:   "UserList",
-		groupGVR:  "GroupList",
+		policyGVR:         "PolicyList",
+		roleGVR:           "RoleList",
+		userGVR:           "UserList",
+		groupGVR:          "GroupList",
+		iamauthz.GrantGVR: "GrantList",
 	}
 	dc := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, lists, alice, bob, carol)
 	c := New(K8sLoader(dc), time.Minute)

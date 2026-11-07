@@ -136,16 +136,16 @@ func TestBuild_Grants(t *testing.T) {
 		Groups: []GroupInput{{Name: "oncall", ClusterRole: "openinfra-role-oncall", Ready: true}},
 		Grants: []GrantInput{
 			// direct grant to alice
-			{Name: "g-direct", SubjectKind: "User", SubjectName: "alice", ClusterRole: "open-infra-poweruser",
-				Reason: "incident", Duration: "4h", CreatedAt: created, Bound: true},
+			{Name: "g-direct", SubjectKind: "User", SubjectName: "alice", Policies: []string{"aws-poweruseraccess"},
+				Reason: "incident", Duration: "4h", CreatedAt: created, Bound: true, ExpiresAt: created.Add(4 * time.Hour)},
 			// grant to the oncall group alice is in
-			{Name: "g-group", SubjectKind: "Group", SubjectName: "oncall", ClusterRole: "openinfra-role-oncall",
+			{Name: "g-group", SubjectKind: "Group", SubjectName: "oncall", Policies: []string{"aws-readonlyaccess"},
 				Duration: "8h", CreatedAt: created, Bound: true},
 			// grant to a different user — must NOT attach
-			{Name: "g-other", SubjectKind: "User", SubjectName: "zzz", ClusterRole: "open-infra-poweruser",
+			{Name: "g-other", SubjectKind: "User", SubjectName: "zzz", Policies: []string{"aws-poweruseraccess"},
 				Duration: "1h", CreatedAt: created, Bound: true},
 			// direct grant to alice but AWAITING APPROVAL (not bound) — confers nothing, must NOT count
-			{Name: "g-pending", SubjectKind: "User", SubjectName: "alice", ClusterRole: "open-infra-poweruser",
+			{Name: "g-pending", SubjectKind: "User", SubjectName: "alice", Policies: []string{"aws-poweruseraccess"},
 				Duration: "4h", CreatedAt: created, Bound: false},
 		},
 	}
@@ -174,10 +174,10 @@ func TestBuild_Grants(t *testing.T) {
 	if viaGroup == nil || viaGroup.ViaGroup != "oncall" {
 		t.Errorf("g-group should attach via oncall, got %+v", viaGroup)
 	}
-	// expiry = created + 4h.
+	// expiry = the window's end, as the caller computed it (approval + duration).
 	wantExp := created.Add(4 * time.Hour).UTC().Format(time.RFC3339)
-	if direct.ExpiresAt != wantExp {
-		t.Errorf("g-direct expiresAt = %q, want %q", direct.ExpiresAt, wantExp)
+	if direct.ExpiresAt != wantExp || len(direct.Policies) != 1 || direct.Policies[0] != "aws-poweruseraccess" {
+		t.Errorf("g-direct = %+v, want aws-poweruseraccess until %q", direct, wantExp)
 	}
 	if !hasFlag(p.Flags, FlagActiveGrant) {
 		t.Errorf("alice should carry %q, flags = %v", FlagActiveGrant, p.Flags)

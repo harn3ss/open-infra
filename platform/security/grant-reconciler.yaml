@@ -1,7 +1,7 @@
-# Expiry reconciler for kind: Grant (temporal access). A CronJob sweeps every minute and DELETES any
-# Grant whose expiry base + spec.duration has passed (or whose duration exceeds the hard cap) — deleting
-# the Grant makes Crossplane tear down its ClusterRoleBinding, so access ends on its own. This is the
-# "self-destructing privilege" half of temporal access; the grant itself is declarative.
+# Expiry reconciler for kind: Grant (temporary access). A CronJob sweeps every minute and DELETES any
+# Grant whose expiry base + spec.duration has passed (or whose duration exceeds the hard cap). The grant's
+# policies already stop counting at expiry — the evaluator and the IAM compiler check its window
+# themselves — so this sweep is the record keeping: an expired grant does not linger as if it were live.
 #
 # Expiry base = spec.approval.approvedAt when the grant has been approved (access starts at approval, so
 # the window runs from there, not from a creation that may have sat pending), else creationTimestamp — so

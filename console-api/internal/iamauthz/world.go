@@ -41,6 +41,10 @@ type World struct {
 	// Enforce marks the principals (by key) whose object carries the canary label
 	// openinfra.dev/iam-authz: enforce: they are evaluated in enforce mode while the platform runs shadow.
 	Enforce map[string]bool
+	// Temporary maps a principal key ("User::<id>" or "Group::<name>") to the policies approved kind:
+	// Grants attach to it for a window (grant.go). Each counts only while its window is open, checked
+	// whenever the principal's policies are gathered.
+	Temporary map[string][]TemporaryAttachment
 }
 
 // Loader returns the current IAM policy world, e.g. read from the cluster.
@@ -100,11 +104,17 @@ func (w World) ByName() map[string]Policy {
 	return byName
 }
 
-// PoliciesFor returns every policy that applies to a principal — from the inline/direct axis (a Policy
-// whose appliesTo names it, one of its groups, or "*"), the managed axis (its own and its groups'
-// spec.policies) and its inline policies (its own and its groups') — each once. groups are group names,
-// with or without the "openinfra:" impersonation prefix.
+// PoliciesFor returns every policy that applies to a principal now — from the inline/direct axis (a
+// Policy whose appliesTo names it, one of its groups, or "*"), the managed axis (its own and its groups'
+// spec.policies, and the policies an approved, unexpired kind: Grant attaches to it or one of its groups)
+// and its inline policies (its own and its groups') — each once. groups are group names, with or without
+// the "openinfra:" impersonation prefix.
 func (w World) PoliciesFor(ptype, pid string, groups []string) []Policy {
+	return w.PoliciesAt(ptype, pid, groups, time.Now())
+}
+
+// PoliciesAt is PoliciesFor at the time now: a Grant's policies count only while its window is open.
+func (w World) PoliciesAt(ptype, pid string, groups []string, now time.Time) []Policy {
 	byName := w.ByName()
 	var out []Policy
 	seen := map[string]bool{}
@@ -125,6 +135,13 @@ func (w World) PoliciesFor(ptype, pid string, groups []string) []Policy {
 	for _, name := range AttachedPolicyNames(w.Attach, ptype, pid, groups) {
 		if d, ok := byName[name]; ok {
 			add(d)
+		}
+	}
+	for _, a := range w.ActiveTemporary(ptype, pid, groups, now) {
+		for _, name := range a.Policies {
+			if d, ok := byName[name]; ok {
+				add(d)
+			}
 		}
 	}
 	keys := []string{PolicyKey(ptype, pid)}

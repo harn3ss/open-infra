@@ -1,23 +1,24 @@
-# kind: Grant — TEMPORAL access. A time-bounded binding of a subject (a User or a Group) to a
-# ClusterRole, which is automatically REVOKED when it expires. This is open-infra's just-in-time /
-# STS-AssumeRole-with-duration analog: grant someone poweruser for four hours with a recorded reason,
-# and the grant self-destructs — no standing privilege, a full audit trail of who held what, when, why.
+# kind: Grant — temporary access. A request that a User, or every member of a Group, hold more IAM
+# policies for a while: once a second person approves it, its policies (spec.policies — AWS managed
+# policies such as aws-readonlyaccess or aws-poweruseraccess, or customer kind: Policy names) are
+# attached to the subject from the approval until approval + spec.duration (at most 24h), exactly as if
+# they were on the subject's own spec.policies, and then they are not. No standing privilege, and a full
+# record of who held what, when, why, and who approved it.
 #
-# APPROVAL (AC-2(2)/AC-5/AC-6(2)): a grant is a REQUEST, not an entitlement. It confers NOTHING until a
-# second party approves it — the composition renders no binding while spec.approval.approvedBy is empty,
-# and refuses to render one if the approver equals spec.requestedBy (self-service elevation is not
-# separation of duties). Approval is set through the console's SAR-gated approve action, which stamps the
-# approver from the authenticated session and rejects approver == requester. The expiry clock then runs
-# from approvedAt, so a grant that waits for approval does not silently burn its window.
+# APPROVAL (AC-2(2)/AC-5/AC-6(2)): a grant is a REQUEST, not an entitlement. It attaches NOTHING until
+# spec.approval.approvedBy names someone other than spec.requestedBy. The console's approve action
+# stamps the approver from the signed-in session and refuses approving your own request; the evaluator
+# refuses it again (approvedBy == requestedBy attaches nothing). The window runs from approvedAt, so a
+# grant that waits for approval does not burn its time.
 #
-# Mechanism (identical to kind: Group, plus a clock + the approval gate): once approved, the composition
-# renders ONE ClusterRoleBinding binding openinfra:<subject> to the chosen ClusterRole. A reconciler
-# (platform/security/grant-reconciler) deletes the Grant once approvedAt (or, if never approved,
-# creationTimestamp) + spec.duration has passed; Crossplane then removes the composed binding, so access
-# ends WITHOUT anyone having to remember to revoke it. The binding can only reference a ClusterRole within
-# the openinfra.dev permission boundary or one of the fenced console roles — the same hard ceiling every
-# kind: Group is subject to (see provider-setup.yaml). Government control mapping: AC-2(2) temporary
-# accounts + approval, AC-5 separation of duties, AC-6(2)/(5) least privilege + elevation, AU on the grant.
+# Mechanism: the grant renders no binding. The one evaluator (console-api/internal/iamauthz) reads every
+# approved Grant whose window is open as an attachment of its policies to its subject — at every front
+# door, and in the IAM compiler, which generates the subject's RBAC and corpus from its policies on each
+# pass (every 15 seconds). The window is checked on every request, so access ends at expiry whether or
+# not the Grant still exists; the grant reconciler (platform/security/grant-reconciler.yaml) then deletes
+# it within a minute. What a grant can attach is what its approver may attach (iam:AttachUserPolicy /
+# iam:AttachGroupPolicy), as on AWS. Government control mapping: AC-2(2) temporary access + approval,
+# AC-5 separation of duties, AC-6(2)/(5) least privilege + elevation, AU on the grant.
 #
 # Synced after Crossplane's CRDs exist (sync-wave 2).
 apiVersion: apiextensions.crossplane.io/v1
@@ -53,57 +54,88 @@ spec:
           properties:
             spec:
               type: object
+              x-kubernetes-validations:
+                # A grant attaches IAM policies; it binds no ClusterRole. The field stays in the schema only
+                # so that a manifest still naming it is refused with this message rather than pruned.
+                - rule: "!has(self.clusterRole)"
+                  message: >-
+                    spec.clusterRole is not supported: a Grant attaches IAM policies to its subject for its
+                    window, and binds no ClusterRole. Name them in spec.policies instead, such as
+                    aws-readonlyaccess (for open-infra-readonly) or aws-poweruseraccess (open-infra-poweruser).
+                # The duration form the grant reconciler and the evaluator read (anything else they treat as
+                # expired), refused here at admission instead.
+                - rule: >-
+                    !has(self.duration) || (self.duration.matches('^([0-9]+h)?([0-9]+m)?([0-9]+s)?$') &&
+                    self.duration != '' && duration(self.duration) > duration('0s') &&
+                    duration(self.duration) <= duration('24h'))
+                  message: >-
+                    spec.duration must be whole hours, minutes or seconds, such as 30m, 4h or 1h30m, and at
+                    most 24h.
               properties:
                 subject:
                   type: object
-                  description: Who the access is granted to.
+                  description: Who the policies are attached to.
                   properties:
                     kind:
                       type: string
                       enum: [User, Group]
-                      description: "Whether `name` is a kind: User (a person) or a kind: Group."
+                      description: "Whether `name` is a kind: User (a person) or a kind: Group (every member)."
                     name:
                       type: string
-                      description: "The User or Group name; bound as the Kubernetes subject openinfra:<name>."
+                      maxLength: 128
+                      # a name in the grant's own namespace: never "<namespace>/<name>"
+                      pattern: '^[^/]+$'
+                      description: The User or Group name, in the grant's own namespace.
                   required: [kind, name]
+                policies:
+                  type: array
+                  minItems: 1
+                  maxItems: 10
+                  description: >-
+                    The policies the grant attaches to its subject while it lasts (AWS AttachUserPolicy /
+                    AttachGroupPolicy): names of kind: Policy — an AWS managed policy by its object name
+                    (aws-readonlyaccess, aws-poweruseraccess) or a customer policy's name.
+                  items:
+                    type: string
+                    # a Policy name, or "<namespace>/<name>" for one outside the grant's namespace
+                    pattern: '^([a-z0-9]([-a-z0-9]*[a-z0-9])?/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+                    maxLength: 128
                 clusterRole:
                   type: string
                   description: >-
-                    The ClusterRole to grant, e.g. `openinfra-role-<yourRole>` (a kind: Role) or a
-                    built-in console role (`open-infra-readonly` / `open-infra-poweruser`). Bounded by
-                    the same bind fence as kind: Group — only roles within the openinfra.dev boundary or
-                    the fenced console roles can be granted.
+                    Not supported, and refused: a Grant binds no ClusterRole. Name the policies to attach in
+                    spec.policies instead.
                 duration:
                   type: string
+                  maxLength: 32
                   description: >-
-                    How long the grant lasts from creation, as a Go duration (e.g. "30m", "4h", "8h").
-                    The reconciler deletes the Grant — and thus the binding — once creation + duration
-                    has passed. Cap enforced by the reconciler (GRANT_MAX_DURATION, default 24h).
+                    How long the policies stay attached, from the approval: whole hours, minutes and seconds
+                    (e.g. "30m", "4h", "1h30m"), at most 24h. The grant reconciler deletes the Grant once
+                    approval (or, if it is never approved, creation) + duration has passed.
                 reason:
                   type: string
-                  description: Justification for the elevation, recorded for audit (AC-2(2)/AU).
+                  description: Justification for the access, recorded for audit (AC-2(2)/AU).
                 requestedBy:
                   type: string
                   description: >-
-                    Who requested this grant. Stamped by the console from the authenticated requester and
-                    recorded for audit (AC-2(2)/AU); the approver must differ from this identity (AC-5).
+                    Who requested this grant. Stamped by the console from the signed-in requester and recorded
+                    for audit (AC-2(2)/AU); the approver must be someone else (AC-5).
                 approval:
                   type: object
                   description: >-
-                    Second-party authorization (AC-2(2)/AC-5/AC-6(2)). A grant renders NO binding — confers
-                    no access — until approvedBy is set to an identity DIFFERENT from requestedBy. Set
-                    through the console's SAR-gated approve action, never self-service.
+                    Second-person approval (AC-2(2)/AC-5/AC-6(2)). A grant attaches nothing until approvedBy
+                    names someone other than requestedBy. Set through the console's approve action.
                   properties:
                     approvedBy:
                       type: string
-                      description: The approver's identity. Must differ from requestedBy or the grant stays inert.
+                      description: The approver. Must differ from requestedBy, or the grant attaches nothing.
                     approvedAt:
                       type: string
-                      description: RFC3339 time of approval; the expiry clock starts here, not at creation.
+                      description: RFC 3339 time of approval; the window starts here, not at creation.
                     note:
                       type: string
                       description: Optional approver note, recorded for audit.
-              required: [subject, clusterRole, duration]
+              required: [subject, policies, duration]
             status:
               type: object
               properties:
@@ -112,23 +144,19 @@ spec:
                 phase:
                   type: string
                   description: >-
-                    AwaitingApproval (approved by nobody yet — no binding), Active (approved + bound),
-                    or NotGrantable (role outside the ceiling, or approver == requester).
-                boundTo:
-                  type: string
-                  description: The Kubernetes subject the grant bound (openinfra:<name>).
+                    AwaitingApproval (nobody has approved it — it attaches nothing), Active (approved by a
+                    second person: its policies are attached for its window) or NotGrantable (its approver is
+                    its requester — it attaches nothing).
                 message:
                   type: string
-                  description: >-
-                    Set when the grant confers nothing — awaiting approval, an approver equal to the
-                    requester (AC-5), or a clusterRole outside the grantable ceiling.
+                  description: What the grant attaches and until when, or why it attaches nothing.
       additionalPrinterColumns:
         - name: Subject
           type: string
           jsonPath: .spec.subject.name
-        - name: Role
+        - name: Policies
           type: string
-          jsonPath: .spec.clusterRole
+          jsonPath: .spec.policies
         - name: Duration
           type: string
           jsonPath: .spec.duration

@@ -14,6 +14,10 @@ export function phaseBadge(phase: string): { variant: "default" | "secondary" | 
       return { variant: "default", label: "Active" };
     case "AwaitingApproval":
       return { variant: "secondary", label: "Awaiting approval" };
+    case "Approved":
+      return { variant: "secondary", label: "Approved" };
+    case "Expired":
+      return { variant: "outline", label: "Expired" };
     case "NotGrantable":
       return { variant: "destructive", label: "Not grantable" };
     default:
@@ -36,10 +40,10 @@ export function GrantsPage() {
       <PageHeader
         icon={<Clock />}
         title="Grants"
-        description="Just-in-time access, time-bounded and self-revoking. A grant is a request: it confers nothing until a different admin approves it (separation of duties, AC-2(2)/AC-5), then expires on its own."
+        description="Temporary access: policies attached to a user or group for a while, at most 24 hours. A grant is a request: it attaches nothing until someone other than the requester approves it (separation of duties, AC-2(2)/AC-5), and its policies are detached on their own when it ends."
         actions={
           <Button onClick={() => navigate({ to: "/grants/new" })}>
-            <Plus className="size-4" /> Request grant
+            <Plus className="size-4" /> Request access
           </Button>
         }
       />
@@ -58,10 +62,10 @@ export function GrantsPage() {
         <EmptyState
           icon={<Clock />}
           title="No grants"
-          description="Request temporal access; a second admin approves it before it takes effect."
+          description="Request temporary access; someone other than you approves it before its policies are attached."
           action={
             <Button onClick={() => navigate({ to: "/grants/new" })}>
-              <Plus className="size-4" /> Request grant
+              <Plus className="size-4" /> Request access
             </Button>
           }
         />
@@ -73,7 +77,7 @@ export function GrantsPage() {
                 <tr className="border-b text-left text-muted-foreground">
                   <th className="p-3 font-medium">Name</th>
                   <th className="p-3 font-medium">Subject</th>
-                  <th className="p-3 font-medium">Role</th>
+                  <th className="p-3 font-medium">Policies</th>
                   <th className="p-3 font-medium">Duration</th>
                   <th className="p-3 font-medium">Phase</th>
                 </tr>
@@ -92,7 +96,7 @@ export function GrantsPage() {
                         {g.subjectKind}/{g.subjectName}
                       </td>
                       <td className="p-3 text-muted-foreground">
-                        <code className="text-xs">{g.clusterRole}</code>
+                        <code className="text-xs">{(g.policies ?? []).join(", ")}</code>
                       </td>
                       <td className="p-3 tabular-nums text-muted-foreground">{g.duration}</td>
                       <td className="p-3">

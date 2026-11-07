@@ -283,10 +283,10 @@ describe() {
 # generates the RBAC that still enforces (label openinfra.dev/generated-by: iam-compiler). Any other
 # binding — in ANY namespace — whose subject is an openinfra:* User or Group is user authority granted by
 # hand, and a finding, except: the break-glass binding (openinfra-root-break-glass, exactly the management
-# account's root), the legacy tiers (label openinfra.dev/legacy: "true") and the two legacy compositions'
-# bindings (openinfra-group-*, openinfra-grant-*) until the IAM cutover deletes them, and an object
-# acknowledged with openinfra.dev/rbac-unmanaged-reason. The repo-side twin is
-# test/render/rbac_user_authority_test.go.
+# account's root), the legacy tiers (label openinfra.dev/legacy: "true") until the IAM cutover deletes
+# them, and an object acknowledged with openinfra.dev/rbac-unmanaged-reason. No composition renders a user
+# binding (a Group is a container of policies, a Grant attaches policies), so a binding named like one is a
+# finding too. The repo-side twin is test/render/rbac_user_authority_test.go.
 if [ -f "$WORK/ns-all.json" ]; then
   cp "$WORK/ns-all.json" "$WORK/rb-all.json"   # every namespace's Roles and RoleBindings, listed above
 else
@@ -299,7 +299,6 @@ jq -s '[ (.[0].items[] | select(.kind == "ClusterRoleBinding")), .[1].items[] ]
       ((.metadata.labels // {})["openinfra.dev/generated-by"] != "iam-compiler")
       and ((.metadata.labels // {})["openinfra.dev/legacy"] != "true")
       and (((.metadata.annotations // {})["openinfra.dev/rbac-unmanaged-reason"] // "") == "")
-      and ((.metadata.name | test("^openinfra-(group|grant)-")) | not)
       and ((.metadata.name == "openinfra-root-break-glass" and .kind == "ClusterRoleBinding"
             and (.subjects | length) == 1 and .subjects[0].kind == "User"
             and .subjects[0].name == "openinfra:000000000000:root") | not)))

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/awsaction"
 	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
@@ -52,6 +53,9 @@ type Input struct {
 	Homes map[string]bool
 	// ServiceLinkedRoles are the platform services' roles in member accounts (servicelinked.go).
 	ServiceLinkedRoles []ServiceLinkedRole
+	// Now is the time the compile is for: a kind: Grant's policies count only while its window is open.
+	// Zero is the current time.
+	Now time.Time
 }
 
 // managementNamespaces is every namespace that is not a member account's: the management account's own,
@@ -103,6 +107,8 @@ type PrincipalReport struct {
 	Account   string   `json:"account"`
 	Identity  string   `json:"identity,omitempty"`
 	Policies  []string `json:"policies,omitempty"`
+	// Temporary lists the approved kind: Grants whose policies the principal holds now, and until when.
+	Temporary []string `json:"temporary,omitempty"`
 	Allows    int      `json:"allows"` // (kind or resource, verb) pairs the corpus allows
 	Denies    int      `json:"denies"`
 	RBACRules int      `json:"rbacRules"`
@@ -122,6 +128,9 @@ func (r PrincipalReport) Status() string {
 func Compile(in Input) Output {
 	if in.Home == "" {
 		in.Home = iamauthz.DefaultHomeNamespace
+	}
+	if in.Now.IsZero() {
+		in.Now = time.Now()
 	}
 	accts := accountNamespaces(in.NamespaceAccounts)
 	var out Output
@@ -435,11 +444,15 @@ func compilePrincipal(in Input, accts map[string][]string, p Principal) principa
 	if p.Kind != "User" {
 		groups = nil
 	}
-	pols := in.World.PoliciesFor(p.Kind, id, groups)
+	pols := in.World.PoliciesAt(p.Kind, id, groups, in.Now)
 	var stmts []policyengine.Statement
 	for _, pol := range pols {
 		rep.Policies = append(rep.Policies, pol.Name)
 		stmts = append(stmts, pol.Statements...)
+	}
+	for _, a := range in.World.ActiveTemporary(p.Kind, id, groups, in.Now) {
+		rep.Temporary = append(rep.Temporary, fmt.Sprintf("%s: %s until %s", a.Grant, strings.Join(a.Policies, ", "),
+			a.Until.UTC().Format(time.RFC3339)))
 	}
 	hasBoundary, bstmts := in.World.BoundaryFor(p.Kind, id)
 

@@ -14,27 +14,17 @@ import (
 // still enforces underneath (label openinfra.dev/generated-by: iam-compiler), and nothing in the repo may
 // grant a console or shim principal (a User or Group named openinfra:*) authority by hand. This check
 // fails on any RoleBinding or ClusterRoleBinding under platform/ — a manifest, or one a Composition
-// renders — that binds an openinfra:* subject, except:
+// renders — that binds an openinfra:* subject. The one exception is the break-glass binding
+// (openinfra-root-break-glass), which binds exactly the management account's root and is checked below.
+// There is no other allowance: no label and no composition exempts a binding.
 //
-//   - the break-glass binding (openinfra-root-break-glass), which binds exactly the management
-//     account's root and is checked below;
-//   - the legacy tier bindings, which carry openinfra.dev/legacy: "true" until the IAM cutover deletes
-//     them;
-//   - the two legacy compositions listed in legacyCompositionBindings, with their reason.
-//
-// A new grant of user authority belongs in IAM policy, not in a binding.
+// A grant of user authority belongs in IAM policy (a policy attached to a user, group or role, or for a
+// while through a kind: Grant), not in a binding.
 
 const (
 	breakGlassBinding = "openinfra-root-break-glass"
 	breakGlassSubject = "openinfra:000000000000:root"
 )
-
-// legacyCompositionBindings are the composition-rendered bindings to openinfra:* subjects that predate
-// IAM policy as the one plane, by file and binding-name prefix, each deleted at the IAM cutover.
-var legacyCompositionBindings = map[string]string{
-	"platform/abstraction/group-composition.yaml|openinfra-group-": "Group.spec.clusterRole, the legacy permission tier (groups are policy containers after the cutover)",
-	"platform/abstraction/grant-composition.yaml|openinfra-grant-": "kind: Grant, time-boxed ClusterRole elevation (replaced by IAM-shaped temporary access)",
-}
 
 var bindingKind = regexp.MustCompile(`(?m)^\s*kind:\s*(ClusterRoleBinding|RoleBinding)\s*$`)
 
@@ -74,21 +64,8 @@ func TestNoHandWrittenUserAuthority(t *testing.T) {
 				continue
 			}
 			checked++
-			d := docs[0]
-			md, _ := d["metadata"].(map[string]any)
-			name := fmt.Sprint(md["name"])
-			labels, _ := md["labels"].(map[string]any)
-			subjects := userSubjects(d)
-			if len(subjects) == 0 {
-				continue
-			}
-			switch {
-			case name == breakGlassBinding:
+			if checkManifestBinding(t, rel, docs[0]) {
 				breakGlassSeen++
-				checkBreakGlass(t, rel, d)
-			case fmt.Sprint(labels["openinfra.dev/legacy"]) == "true":
-			default:
-				t.Errorf("%s: %s %s binds %v by hand — user authority is written in IAM policy (the iam-compiler generates the RBAC)", rel, d["kind"], name, subjects)
 			}
 		}
 	}
@@ -99,6 +76,24 @@ func TestNoHandWrittenUserAuthority(t *testing.T) {
 		t.Fatalf("checked only %d bindings: the walk is broken", checked)
 	}
 	t.Logf("checked %d bindings", checked)
+}
+
+// checkManifestBinding checks one binding manifest: a binding of an openinfra:* subject fails, unless it
+// is the break-glass binding, which is pinned instead (and reported).
+func checkManifestBinding(t *testing.T, file string, d map[string]any) (breakGlass bool) {
+	t.Helper()
+	md, _ := d["metadata"].(map[string]any)
+	name := fmt.Sprint(md["name"])
+	subjects := userSubjects(d)
+	if len(subjects) == 0 {
+		return false
+	}
+	if name == breakGlassBinding {
+		checkBreakGlass(t, file, d)
+		return true
+	}
+	t.Errorf("%s: %s %s binds %v by hand — user authority is written in IAM policy (the iam-compiler generates the RBAC)", file, d["kind"], name, subjects)
+	return false
 }
 
 // checkBreakGlass pins the break-glass binding: exactly the management account's root, to the console's
@@ -138,7 +133,7 @@ func userSubjects(d map[string]any) []string {
 
 // checkCompositionBindings checks the bindings a Composition's templates render (read from the template
 // text: a templated subject cannot be shown not to be openinfra:*, so any binding a composition renders
-// with a User or Group subject counts as user authority). It returns how many it checked.
+// with a User or Group subject counts as user authority, and fails). It returns how many it checked.
 func checkCompositionBindings(t *testing.T, file, raw string) int {
 	t.Helper()
 	lines := strings.Split(raw, "\n")
@@ -164,17 +159,7 @@ func checkCompositionBindings(t *testing.T, file, raw string) int {
 				}
 			}
 		}
-		if !userSubject {
-			continue
-		}
-		allowed := false
-		for k := range legacyCompositionBindings {
-			f, prefix, _ := strings.Cut(k, "|")
-			if f == file && strings.HasPrefix(name, prefix) {
-				allowed = true
-			}
-		}
-		if !allowed {
+		if userSubject {
 			t.Errorf("%s: a Composition renders binding %q with a user or group subject — user authority is written in IAM policy (the iam-compiler generates the RBAC)", file, name)
 		}
 	}
@@ -195,8 +180,9 @@ func splitDocs(raw string) []string {
 	return append(out, strings.Join(cur, "\n"))
 }
 
-// The check has teeth: an unlabelled binding to an openinfra:* group fails it, a ServiceAccount binding
-// does not, and a composition that renders a new user binding fails it.
+// The check has teeth: a binding to an openinfra:* group fails it (labelled legacy or not), a
+// ServiceAccount binding does not, and a composition that renders a user binding fails it — including the
+// group and grant compositions' old binding names.
 func TestNoHandWrittenUserAuthority_Detects(t *testing.T) {
 	bad := `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -216,8 +202,37 @@ subjects:
 		t.Fatal("a ServiceAccount subject is platform-internal, not user authority")
 	}
 	comp := "kind: Composition\nspec:\n  template: |\n    kind: ClusterRoleBinding\n    metadata:\n      name: openinfra-new-{{ $name }}\n    subjects:\n      - kind: User\n        name: \"openinfra:{{ $name }}\"\n"
-	ft := &testing.T{}
-	if checkCompositionBindings(ft, "platform/abstraction/new-composition.yaml", comp); !ft.Failed() {
-		t.Fatal("a composition rendering a new user binding must fail the check")
+	for _, c := range []struct{ file, name string }{
+		{"platform/abstraction/new-composition.yaml", "openinfra-new-{{ $name }}"},
+		{"platform/abstraction/group-composition.yaml", "openinfra-group-{{ $name }}"},
+		{"platform/abstraction/grant-composition.yaml", "openinfra-grant-{{ $name }}"},
+	} {
+		ft := &testing.T{}
+		if checkCompositionBindings(ft, c.file, strings.Replace(comp, "openinfra-new-{{ $name }}", c.name, 1)); !ft.Failed() {
+			t.Errorf("%s rendering user binding %s must fail the check", c.file, c.name)
+		}
+	}
+	legacy := strings.Replace(bad, "  name: sneaky\n", "  name: sneaky\n  labels: { openinfra.dev/legacy: \"true\" }\n", 1)
+	if !strings.Contains(legacy, "openinfra.dev/legacy") {
+		t.Fatal("fixture: the legacy label was not added")
+	}
+	for _, c := range []struct{ name, doc string }{{"unlabelled", bad}, {"labelled legacy", legacy}} {
+		docs, err := parseYAMLDocs(c.doc)
+		if err != nil || len(docs) != 1 {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		ft := &testing.T{}
+		if checkManifestBinding(ft, "platform/x.yaml", docs[0]); !ft.Failed() {
+			t.Errorf("an %s binding to an openinfra:* group must fail the check", c.name)
+		}
+	}
+	// The break-glass name with any other subject is not the break-glass binding.
+	glass := strings.Replace(strings.Replace(bad, "name: sneaky", "name: "+breakGlassBinding, 1),
+		"name: cluster-admin", "name: open-infra-console", 1)
+	if docs, _ := parseYAMLDocs(glass); len(docs) == 1 {
+		ft := &testing.T{}
+		if checkManifestBinding(ft, "platform/x.yaml", docs[0]); !ft.Failed() {
+			t.Error("the break-glass binding naming a group rather than the management account's root must fail the check")
+		}
 	}
 }

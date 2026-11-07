@@ -29,7 +29,7 @@ var iamAdmin = iam.Claims{Sub: "admin", Groups: []string{"openinfra:admins"}}
 // AdministratorAccess and PowerUserAccess, in the management account (legacy: RBAC allows).
 func iamWorld(t *testing.T) (*iamHandler, *dynamicfake.FakeDynamicClient) {
 	t.Helper()
-	dyn := fakeDynWith(gvrPolicies, gvrRoles, gvrUsers, gvrGroups)
+	dyn := fakeDynWith(gvrPolicies, gvrRoles, gvrUsers, gvrGroups, iamauthz.GrantGVR)
 	for _, p := range []struct{ obj, name, doc string }{
 		{"aws-administratoraccess", "AdministratorAccess", `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}`},
 		{"aws-poweruseraccess", "PowerUserAccess", `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","NotAction":["iam:*","organizations:*","account:*"],"Resource":"*"}]}`},

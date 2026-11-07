@@ -159,7 +159,8 @@ subjects:
 # Read the IAM objects across the cluster for the fine-grained data-plane authorization engine and
 # STS role resolution (#111): kind: Policy (dataPlane blocks), and kind: Role/User/Group so the
 # engine can resolve a principal's attached spec.policies (dual-plane attachment) and sts:AssumeRole
-# can read a Role's spec.trust. Read-only, get/list/watch only — the shim never mutates any of these,
+# can read a Role's spec.trust, and kind: Grant for the policies an approved grant attaches for its
+# window. Read-only, get/list/watch only — the shim never mutates any of these,
 # and it holds no Secret/RBAC grants beyond these. NOTE: the loader fails CLOSED on a list error, so
 # a missing grant here denies all governed traffic rather than silently loosening.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -168,7 +169,7 @@ metadata:
   name: open-infra-aws-shim-policies
 rules:
   - apiGroups: [iam.openinfra.dev]
-    resources: [policies, roles, users, groups]
+    resources: [policies, roles, users, groups, grants]
     verbs: [get, list, watch]
   # VM workload credentials: read the per-VM ServiceAccount's openinfra.dev/instance-role annotation
   # after verifying its token (read-only, cluster-wide — the SAs live in the VMs' own namespaces).

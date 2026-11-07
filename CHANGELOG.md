@@ -6,6 +6,22 @@ the product's public contract.
 
 ## Unreleased
 
+### Changed — temporary access and groups are IAM policy alone (#360)
+- **A grant attaches IAM policies for its window.** `kind: Grant` names the policies it attaches
+  (`spec.policies`: AWS managed policies such as `aws-readonlyaccess` or `aws-poweruseraccess`, or your
+  own) to a user or to every member of a group. Once someone other than the requester approves it, the
+  subject holds those policies at every door — the AWS APIs, the console and Kubernetes — from the
+  approval for its duration (at most 24 hours, refused at admission beyond that), and not a moment
+  longer: each request checks the window. The console's **Grants** pages request, approve and revoke
+  grants with a policy picker. A grant naming `spec.clusterRole` (the old ClusterRole elevation) is
+  refused.
+- **A group is only a container of policies.** A `kind: Group` binds nothing in Kubernetes;
+  `spec.clusterRole` (the old permission tier) is refused at admission and by the console, with the
+  managed policy to attach instead.
+- **No hand-written user authority.** No manifest and no composition binds a user or group by hand any
+  more (the one exception is the management account's break-glass root); a CI check fails on any
+  binding of an `openinfra:*` user or group outside the RBAC the IAM compiler generates.
+
 ### Security — email is sent only as an authenticated, authorized identity (#277)
 - **The SES SMTP interface.** The aws-shim serves SMTP submission the way Amazon SES's
   `email-smtp` endpoint does — STARTTLS on 587, TLS Wrapper on 465 — signed in with **SES SMTP

@@ -28,6 +28,7 @@ func unstr(gvk schema.GroupVersionKind, ns, name string, spec map[string]any, la
 func fakeDynamic(objs ...runtime.Object) *dynfake.FakeDynamicClient {
 	gvrs := map[schema.GroupVersionResource]string{
 		userGVR: "UserList", roleGVR: "RoleList", groupGVR: "GroupList", policyGVR: "PolicyList", crdGVR: "CustomResourceDefinitionList",
+		iamauthz.GrantGVR: "GrantList",
 	}
 	return dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), gvrs, objs...)
 }

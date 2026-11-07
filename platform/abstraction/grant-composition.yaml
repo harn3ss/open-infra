@@ -1,9 +1,9 @@
-# The compiler for kind: Grant — an APPROVED Grant claim becomes one ClusterRoleBinding binding
-# openinfra:<subject> to the requested ClusterRole, carrying the reason + duration + requester/approver
-# as annotations for the audit trail and the expiry reconciler. Same binding mechanism as kind: Group
-# (so the same bind fence applies), with two additions: an approval gate (no binding until a distinct
-# second party approves — AC-2(2)/AC-5) and a reconciler that deletes the Grant when it expires, which
-# tears the binding down with it.
+# The composition for kind: Grant (temporary access). A Grant renders NO binding: an approved grant's
+# policies are attached to its subject by the one evaluator and the IAM compiler, which read every
+# approved, unexpired Grant as an attachment of its policies for its window (grant-xrd.yaml). This
+# composition only reports where the grant stands — awaiting approval, approved by its own requester
+# (attaches nothing), or active — and mirrors what it names into a ConfigMap, which gives the pipeline a
+# composed resource so the status lands.
 #
 # Synced after the XRD (sync-wave 3).
 apiVersion: apiextensions.crossplane.io/v1
@@ -31,101 +31,55 @@ spec:
             {{- $spec := .observed.composite.resource.spec }}
             {{- $labels := .observed.composite.resource.metadata.labels | default dict }}
             {{- $name := (index $labels "crossplane.io/claim-name") | default .observed.composite.resource.metadata.name }}
-            {{- $subject := $spec.subject }}
-            {{- $subjectName := printf "openinfra:%s" $subject.name }}
-            {{- $cr := $spec.clusterRole }}
+            {{- $ns := (index $labels "crossplane.io/claim-namespace") | default "open-infra-console" }}
+            {{- $subject := $spec.subject | default dict }}
+            {{- $policies := $spec.policies | default list }}
             {{/*
-              Ceiling on what a Grant may confer. A Grant may name ONLY a kind: Role
-              (openinfra-role-*, itself bounded by the Policy permission boundary) or one of the two
-              bounded built-in console roles. It may NOT name open-infra-console (full console admin,
-              which carries secrets CRUD) or any provider/setup ClusterRole: the Crossplane provider
-              SA holds broad permissions (secrets, RBAC), so Kubernetes' RBAC "cover" rule would let
-              it create a binding to such a role WITHOUT the fenced `bind` verb — leaking cluster-wide
-              secrets/RBAC through a temporal grant. If the requested role is not on the allowlist we
-              render NO binding (fail-safe: the Grant confers nothing) and say so in status.
-            */}}
-            {{- $allowed := or (hasPrefix "openinfra-role-" $cr) (eq $cr "open-infra-readonly") (eq $cr "open-infra-poweruser") }}
-            {{/*
-              Approval gate (AC-2(2)/AC-5/AC-6(2)). A grant confers access ONLY when a second party has
-              approved it: approvedBy is set AND differs from requestedBy. Self-approval (approvedBy ==
-              requestedBy) is NOT separation of duties, so it renders no binding — the same fail-safe
-              posture as the role ceiling. The ceiling is checked first so a disallowed role is refused
-              regardless of approval.
+              Approval (AC-2(2)/AC-5/AC-6(2)): a grant attaches its policies only once someone other than
+              its requester has approved it. Approving your own request is not a second person's approval:
+              it attaches nothing, here and in the evaluator.
             */}}
             {{- $requestedBy := $spec.requestedBy | default "" }}
             {{- $approval := $spec.approval | default dict }}
             {{- $approvedBy := $approval.approvedBy | default "" }}
             {{- $approvedAt := $approval.approvedAt | default "" }}
-            {{- $approved := and (ne $approvedBy "") (ne $approvedBy $requestedBy) }}
-            {{- if not $allowed }}
             ---
-            # Requested role is outside the grantable ceiling — confer nothing.
-            apiVersion: iam.openinfra.dev/v1
-            kind: XGrant
-            status:
-              ready: false
-              phase: NotGrantable
-              boundTo: ""
-              message: {{ printf "clusterRole '%s' is not grantable; use a kind: Role (openinfra-role-*) or open-infra-readonly / open-infra-poweruser" $cr | toJson }}
-            {{- else if not $approved }}
-            ---
-            # Not yet approved by a distinct second party — confer nothing (AC-2(2)/AC-5).
-            apiVersion: iam.openinfra.dev/v1
-            kind: XGrant
-            status:
-              ready: false
-              {{- if eq $approvedBy $requestedBy }}
-              phase: NotGrantable
-              boundTo: ""
-              message: {{ printf "approver '%s' must differ from the requester (separation of duties, AC-5)" $approvedBy | toJson }}
-              {{- else }}
-              phase: AwaitingApproval
-              boundTo: ""
-              message: "awaiting approval by a second party before access is granted (AC-2(2))"
-              {{- end }}
-            {{- else }}
-            ---
-            # Approved by a distinct second party — bind the subject (a User or a Group, as an
-            # openinfra:* assertion) to the granted ClusterRole. The reason + duration + approver ride as
-            # annotations: the audit log captures the ClusterRoleBinding create/delete, and the reconciler
-            # reads the duration (from approvedAt) to expire it.
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
               annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: grant-binding
+                gotemplating.fn.crossplane.io/composition-resource-name: grant-spec
             spec:
               forProvider:
                 manifest:
-                  apiVersion: rbac.authorization.k8s.io/v1
-                  kind: ClusterRoleBinding
+                  apiVersion: v1
+                  kind: ConfigMap
                   metadata:
                     name: openinfra-grant-{{ $name }}
+                    namespace: {{ $ns }}
                     labels:
                       openinfra.dev/iam-grant: {{ $name }}
-                    annotations:
-                      openinfra.dev/grant-reason: "{{ $spec.reason | default "" }}"
-                      openinfra.dev/grant-duration: "{{ $spec.duration }}"
-                      openinfra.dev/grant-requested-by: "{{ $requestedBy }}"
-                      openinfra.dev/grant-approved-by: "{{ $approvedBy }}"
-                      openinfra.dev/grant-approved-at: "{{ $approvedAt }}"
-                  roleRef:
-                    apiGroup: rbac.authorization.k8s.io
-                    kind: ClusterRole
-                    name: {{ $cr }}
-                  subjects:
-                    - kind: {{ $subject.kind }}
-                      name: "{{ $subjectName }}"
-                      apiGroup: rbac.authorization.k8s.io
+                  data:
+                    name: {{ $name | quote }}
+                    subject: {{ printf "%v/%v" ($subject.kind | default "") ($subject.name | default "") | quote }}
+                    policies: {{ $policies | toJson | quote }}
             ---
             apiVersion: iam.openinfra.dev/v1
             kind: XGrant
             status:
+              {{- if eq $approvedBy "" }}
+              ready: false
+              phase: AwaitingApproval
+              message: "awaiting approval by a second person; the grant attaches nothing until then"
+              {{- else if eq $approvedBy $requestedBy }}
+              ready: false
+              phase: NotGrantable
+              message: {{ printf "%v approved their own request: the approver must be someone other than the requester (separation of duties, AC-5), so the grant attaches nothing" $approvedBy | toJson }}
+              {{- else }}
               ready: true
               phase: Active
-              boundTo: "{{ $subjectName }}"
-              message: {{ if $approvedAt }}{{ printf "approved by %v at %v" $approvedBy $approvedAt | toJson }}{{ else }}{{ printf "approved by %v" $approvedBy | toJson }}{{ end }}
-            {{- end }}
+              message: {{ printf "approved by %v at %v: attaches %v to %v %v for %v" $approvedBy $approvedAt (join ", " $policies) ($subject.kind | default "") ($subject.name | default "") ($spec.duration | default "") | toJson }}
+              {{- end }}
     - step: ready
       functionRef:
         name: crossplane-contrib-function-auto-ready

@@ -175,6 +175,20 @@ aws iam add-user-to-group --group-name developers --user-name alice
 aws iam put-group-policy --group-name developers --policy-name s3-team --policy-document file://s3-team.json
 ```
 
+As a `kind: Group`, the attached policies are `spec.policies` (the managed policies by their object names:
+`aws-administratoraccess`, `aws-poweruseraccess`, `aws-readonlyaccess`, …) and the inline ones
+`spec.inlinePolicies`. A group binds nothing in Kubernetes, and `spec.clusterRole` is refused: attach the
+managed policy instead.
+
+```yaml
+apiVersion: iam.openinfra.dev/v1
+kind: Group
+metadata: { name: developers, namespace: open-infra-console }
+spec:
+  description: Application developers
+  policies: [aws-poweruseraccess]
+```
+
 ## Policies
 
 Policies are AWS IAM policy documents (`Version`, `Statement` with `Effect`, `Action` / `NotAction`,
@@ -418,10 +432,39 @@ cluster administrators. Every IAM user can — and for administrators should —
 
 ## Temporary access: grants
 
-A **grant** gives a user another set of permissions for a bounded time (at most 24 hours) and then
-revokes itself — just-in-time access instead of standing privilege. A grant is a request: it gives
-nothing until a second person approves it, and a requester cannot approve their own (**Security &
-Identity → Grants**). Every grant, approval and revocation is in the audit trail.
+A **grant** attaches policies to a user, or to every member of a group, for a bounded time (at most 24
+hours) and then detaches them on its own — just-in-time access instead of standing privilege. What it
+attaches are ordinary IAM policies: an AWS managed policy (`aws-readonlyaccess`, `aws-poweruseraccess`, …)
+or one of your own. While the grant is active the user holds those policies exactly as if they were
+attached to them, at every door — the AWS APIs, the console and Kubernetes — and no more than the
+policies allow.
+
+A grant is a request: it attaches nothing until someone other than the requester approves it, and a
+requester cannot approve their own. The time starts at the approval, so a request that waits does not
+lose its window; an approval reaches every door within about 45 seconds, as any IAM change does. When
+the time is up its policies stop counting at once (each request checks the window), and the grant is
+deleted within a minute. Revoking a grant ends it early (within the same 45 seconds). Every request,
+approval and revocation is in the audit trail.
+
+In the console: **Security & Identity → Grants → Request access** (pick the user or group, the
+policies, the duration and a reason); a second person opens the grant and approves it. The same as a
+`kind: Grant`:
+
+```yaml
+apiVersion: iam.openinfra.dev/v1
+kind: Grant
+metadata: { name: jit-alice-incident-1234, namespace: open-infra-console }
+spec:
+  subject: { kind: User, name: alice }      # or { kind: Group, name: oncall }
+  policies: [aws-poweruseraccess]
+  duration: 4h                              # whole hours, minutes, seconds; at most 24h
+  reason: incident 1234
+```
+
+The console records the requester (`spec.requestedBy`) and the approver (`spec.approval`). Requesting a
+grant is `iam:AttachUserPolicy` (or `iam:AttachGroupPolicy`) on the subject, approving it
+`iam:AttachUserPolicy`, and revoking it `iam:DetachUserPolicy`, so what a grant can attach is what its
+approver may attach. A grant names policies, never a Kubernetes role: `spec.clusterRole` is refused.
 
 ---
 

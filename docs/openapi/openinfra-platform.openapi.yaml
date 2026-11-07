@@ -6205,58 +6205,78 @@ components:
           $ref: '#/components/schemas/ObjectMeta'
         spec:
           type: object
+          x-kubernetes-validations:
+          - rule: '!has(self.clusterRole)'
+            message: 'spec.clusterRole is not supported: a Grant attaches IAM policies to its subject for its window, and
+              binds no ClusterRole. Name them in spec.policies instead, such as aws-readonlyaccess (for open-infra-readonly)
+              or aws-poweruseraccess (open-infra-poweruser).'
+          - rule: '!has(self.duration) || (self.duration.matches(''^([0-9]+h)?([0-9]+m)?([0-9]+s)?$'') && self.duration !=
+              '''' && duration(self.duration) > duration(''0s'') && duration(self.duration) <= duration(''24h''))'
+            message: spec.duration must be whole hours, minutes or seconds, such as 30m, 4h or 1h30m, and at most 24h.
           properties:
             subject:
               type: object
-              description: Who the access is granted to.
+              description: Who the policies are attached to.
               properties:
                 kind:
                   type: string
                   enum:
                   - User
                   - Group
-                  description: 'Whether `name` is a kind: User (a person) or a kind: Group.'
+                  description: 'Whether `name` is a kind: User (a person) or a kind: Group (every member).'
                 name:
                   type: string
-                  description: The User or Group name; bound as the Kubernetes subject openinfra:<name>.
+                  maxLength: 128
+                  pattern: ^[^/]+$
+                  description: The User or Group name, in the grant's own namespace.
               required:
               - kind
               - name
+            policies:
+              type: array
+              minItems: 1
+              maxItems: 10
+              description: "The policies the grant attaches to its subject while it lasts (AWS AttachUserPolicy / AttachGroupPolicy):\
+                \ names of kind: Policy \u2014 an AWS managed policy by its object name (aws-readonlyaccess, aws-poweruseraccess)\
+                \ or a customer policy's name."
+              items:
+                type: string
+                pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?/)?[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                maxLength: 128
             clusterRole:
               type: string
-              description: "The ClusterRole to grant, e.g. `openinfra-role-<yourRole>` (a kind: Role) or a built-in console\
-                \ role (`open-infra-readonly` / `open-infra-poweruser`). Bounded by the same bind fence as kind: Group \u2014\
-                \ only roles within the openinfra.dev boundary or the fenced console roles can be granted."
+              description: 'Not supported, and refused: a Grant binds no ClusterRole. Name the policies to attach in spec.policies
+                instead.'
             duration:
               type: string
-              description: "How long the grant lasts from creation, as a Go duration (e.g. \"30m\", \"4h\", \"8h\"). The reconciler\
-                \ deletes the Grant \u2014 and thus the binding \u2014 once creation + duration has passed. Cap enforced by\
-                \ the reconciler (GRANT_MAX_DURATION, default 24h)."
+              maxLength: 32
+              description: 'How long the policies stay attached, from the approval: whole hours, minutes and seconds (e.g.
+                "30m", "4h", "1h30m"), at most 24h. The grant reconciler deletes the Grant once approval (or, if it is never
+                approved, creation) + duration has passed.'
             reason:
               type: string
-              description: Justification for the elevation, recorded for audit (AC-2(2)/AU).
+              description: Justification for the access, recorded for audit (AC-2(2)/AU).
             requestedBy:
               type: string
-              description: Who requested this grant. Stamped by the console from the authenticated requester and recorded
-                for audit (AC-2(2)/AU); the approver must differ from this identity (AC-5).
+              description: Who requested this grant. Stamped by the console from the signed-in requester and recorded for
+                audit (AC-2(2)/AU); the approver must be someone else (AC-5).
             approval:
               type: object
-              description: "Second-party authorization (AC-2(2)/AC-5/AC-6(2)). A grant renders NO binding \u2014 confers no\
-                \ access \u2014 until approvedBy is set to an identity DIFFERENT from requestedBy. Set through the console's\
-                \ SAR-gated approve action, never self-service."
+              description: Second-person approval (AC-2(2)/AC-5/AC-6(2)). A grant attaches nothing until approvedBy names
+                someone other than requestedBy. Set through the console's approve action.
               properties:
                 approvedBy:
                   type: string
-                  description: The approver's identity. Must differ from requestedBy or the grant stays inert.
+                  description: The approver. Must differ from requestedBy, or the grant attaches nothing.
                 approvedAt:
                   type: string
-                  description: RFC3339 time of approval; the expiry clock starts here, not at creation.
+                  description: RFC 3339 time of approval; the window starts here, not at creation.
                 note:
                   type: string
                   description: Optional approver note, recorded for audit.
           required:
           - subject
-          - clusterRole
+          - policies
           - duration
         status:
           type: object
@@ -6265,15 +6285,12 @@ components:
               type: boolean
             phase:
               type: string
-              description: "AwaitingApproval (approved by nobody yet \u2014 no binding), Active (approved + bound), or NotGrantable\
-                \ (role outside the ceiling, or approver == requester)."
-            boundTo:
-              type: string
-              description: The Kubernetes subject the grant bound (openinfra:<name>).
+              description: "AwaitingApproval (nobody has approved it \u2014 it attaches nothing), Active (approved by a second\
+                \ person: its policies are attached for its window) or NotGrantable (its approver is its requester \u2014\
+                \ it attaches nothing)."
             message:
               type: string
-              description: "Set when the grant confers nothing \u2014 awaiting approval, an approver equal to the requester\
-                \ (AC-5), or a clusterRole outside the grantable ceiling."
+              description: What the grant attaches and until when, or why it attaches nothing.
     GraphQLApi:
       type: object
       description: 'open-infra kind: GraphQLApi.'
@@ -6602,6 +6619,11 @@ components:
           $ref: '#/components/schemas/ObjectMeta'
         spec:
           type: object
+          x-kubernetes-validations:
+          - rule: '!has(self.clusterRole)'
+            message: 'spec.clusterRole is not supported: a Group is a container of policies, as on AWS, and binds no ClusterRole.
+              Attach a managed policy in spec.policies instead, such as aws-poweruseraccess (for open-infra-poweruser), aws-readonlyaccess
+              (open-infra-readonly) or aws-administratoraccess (open-infra-console).'
           properties:
             description:
               type: string
@@ -6647,10 +6669,8 @@ components:
                           Condition), as AWS accepts.
             clusterRole:
               type: string
-              description: "DEPRECATED \u2014 the permission-tier form: the name of a ClusterRole members receive (built-in\
-                \ open-infra-console, open-infra-poweruser, open-infra-readonly, or your own). Use policies instead (AdministratorAccess,\
-                \ PowerUserAccess, ReadOnlyAccess are attachable managed policies); hack/iam-migrate rewrites a tier into\
-                \ its managed policy. Still bound while set, and admission warns."
+              description: 'Not supported, and refused: a Group binds no ClusterRole. Attach the managed policy in spec.policies
+                instead (aws-administratoraccess, aws-poweruseraccess, aws-readonlyaccess).'
         status:
           type: object
           properties:
@@ -6658,7 +6678,7 @@ components:
               type: boolean
             boundTo:
               type: string
-              description: The Kubernetes group name members are bound as.
+              description: The Kubernetes group name members are impersonated as (openinfra:<name>).
     HttpApi:
       type: object
       description: 'open-infra kind: HttpApi.'
