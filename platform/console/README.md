@@ -70,7 +70,7 @@ kind: ClusterRole
 metadata:
   name: open-infra-console-extended
   labels:
-    rbac.open-infra.dev/extend-console: "true"
+    rbac.openinfra.dev/extend-console: "true"
 rules:
   - apiGroups: [batch]
     resources: [jobs, cronjobs]
