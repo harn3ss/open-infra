@@ -112,7 +112,19 @@ log "seeding an openinfra:admins caller and an openinfra:readers caller"
 mint_key "ecsprobe-admin-$SFX"  "admins"; AAK="$MK_AK"; ASK="$MK_SK"
 mint_key "ecsprobe-reader-$SFX" "readers"; RAK="$MK_AK"; RSK="$MK_SK"
 [ -n "$AAK" ] && [ -n "$RAK" ] || inconclusive "failed to mint caller keys"
-sleep 2
+# A new principal's policies take effect after the IAM compiler's next pass and the authorizers' policy
+# caches (as AWS IAM changes propagate), and a service is provisioned as its caller: wait until the API
+# server's authorizer allows the caller a read in the ECS namespace (a SubjectAccessReview), then the
+# shim's own policy cache.
+log "  waiting for the new callers' policies to propagate"
+for _ in $(seq 1 40); do
+  allowed="$(printf '{"apiVersion":"authorization.k8s.io/v1","kind":"SubjectAccessReview","spec":{"user":"openinfra:%s:%s","resourceAttributes":{"verb":"get","group":"openinfra.dev","resource":"applications","namespace":"%s"}}}' "${MGMT_ACCOUNT_ID:-000000000000}" "ecsprobe-admin-$SFX" "$ECS_NS" \
+    | kubectl create -f - -o jsonpath='{.status.allowed}' 2>/dev/null || true)"
+  [ "$allowed" = true ] && break
+  sleep 5
+done
+[ "$allowed" = true ] || inconclusive "the new caller's policies did not propagate within 200s"
+sleep "${IAM_SETTLE_SECONDS:-35}"
 
 # --- gate: the ECS front door must be enabled -------------------------------------------------------
 # A signed ecs call to a shim that does not front ECS returns an honest 501 (NotImplemented / not fronted).
