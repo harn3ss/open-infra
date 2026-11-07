@@ -380,17 +380,18 @@ func (z *consoleAuthz) proxyHandler(prefix string, next http.Handler) http.Handl
 // proxyIdentity is who a proxied request acts as to the API server: in legacy and shadow the user with
 // its group tiers (iam.Identity); in enforce the principal's account identity with no groups, so the
 // generated RBAC is a second check of the same principal. Root keeps its break-glass identity in every
-// mode — openinfra:root in openinfra:admins, which the authorization webhook's root floor allows whatever
-// its corpus — so no compiler, corpus or ceiling change can take the console from it: not even the
-// implicit openinfra:users group, which the cutover takes out of the impersonation ceilings.
+// mode — the management account's root, openinfra:000000000000:root, with no group — which the
+// authorization webhook's root floor allows whatever its corpus, and which the hand-written break-glass
+// binding (openinfra-root-break-glass) holds through RBAC alone, so no compiler, corpus or ceiling change,
+// nor the removal of the legacy group tiers, can take the console from it.
 func (z *consoleAuthz) proxyIdentity(r *http.Request) (proxy.Identity, bool) {
 	c, ok := claimsFrom(r)
 	if !ok {
 		return proxy.Identity{}, false
 	}
 	if z.principal(c).Type == iamauthz.Root {
-		u, _, ok := iam.Identity(c.Claims)
-		return proxy.Identity{User: u, Groups: iam.RoleMemberGroups("root")}, ok
+		u, ok := iam.AccountIdentity(c.Claims)
+		return proxy.Identity{User: u}, ok
 	}
 	enforce := z.enforced(r) && proxyAccountIdentity()
 	u, g, ok := iam.IdentityFor(c.Claims, enforce)
