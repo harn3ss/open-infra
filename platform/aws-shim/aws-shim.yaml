@@ -1116,7 +1116,7 @@ spec:
             # LAN URL, returned as the proxyEndpoint and repositoryUri base). Unset = in-cluster only.
             - configMapRef: { name: aws-shim-site, optional: true }
             # How far IAM policy decides (IAM_AUTHZ legacy|shadow|enforce), set by the IAM cutover
-            # (hack/iam-cutover.sh) in an optional ConfigMap `openinfra-iam` kept out of git — so ArgoCD's
+            # (scripts/iam-cutover.sh) in an optional ConfigMap `openinfra-iam` kept out of git — so ArgoCD's
             # self-heal never undoes a cutover step, and absent means legacy.
             - configMapRef: { name: openinfra-iam, optional: true }
           # Startup gate: the shim runs ~13 per-service ensureSchema calls against the DynamoDB/documentdb

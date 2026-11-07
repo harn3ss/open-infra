@@ -1,10 +1,10 @@
 // iam-migrate rewrites the cluster's IAM objects into the AWS policy model, additively.
 //
-//	go run ./hack/iam-migrate                 # dry run: print what it would write (default)
-//	go run ./hack/iam-migrate --json          # the same plan as JSON
-//	go run ./hack/iam-migrate --apply         # write it (kubectl patch / apply, as your kubeconfig)
-//	go run ./hack/iam-migrate --drop-legacy   # also remove the old forms it replaced (the cutover's last step)
-//	go run ./hack/iam-migrate --input DIR     # plan from DIR/{policies,groups,users,roles,clusterrolebindings}.json
+//	go run ./scripts/iam-migrate                 # dry run: print what it would write (default)
+//	go run ./scripts/iam-migrate --json          # the same plan as JSON
+//	go run ./scripts/iam-migrate --apply         # write it (kubectl patch / apply, as your kubeconfig)
+//	go run ./scripts/iam-migrate --drop-legacy   # also remove the old forms it replaced (the cutover's last step)
+//	go run ./scripts/iam-migrate --input DIR     # plan from DIR/{policies,groups,users,roles,clusterrolebindings}.json
 //
 // What it writes:
 //   - kind: Policy with native data-plane statements gains spec.document, the same statements as an AWS

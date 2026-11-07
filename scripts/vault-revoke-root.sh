@@ -11,7 +11,7 @@
 # A root token can be generated again from the unseal or recovery keys (`vault operator generate-root`)
 # should one be needed for recovery.
 #
-#   ./hack/vault-revoke-root.sh            # VAULT_IMAGE and VAULT_ADDR may be overridden
+#   ./scripts/vault-revoke-root.sh            # VAULT_IMAGE and VAULT_ADDR may be overridden
 set -euo pipefail
 NS="${VAULT_NS:-vault}"
 IMAGE="${VAULT_IMAGE:-hashicorp/vault:1.17.2}"

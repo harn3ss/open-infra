@@ -7476,7 +7476,7 @@ components:
                 \ the Kubernetes RBAC the IAM compiler generates from it. Explicit Deny wins over Allow; a condition key that\
                 \ cannot be evaluated never widens a grant (an Allow carrying it is dropped and reported, a Deny applies unconditionally).\
                 \ A Policy with a document renders no ClusterRole of its own. The statements, dataPlane and controlPlane blocks\
-                \ below are the earlier forms, read for one more release and rewritten into a document by hack/iam-migrate."
+                \ below are the earlier forms, read for one more release and rewritten into a document by scripts/iam-migrate."
             statements:
               type: array
               description: "Control-plane Allow statements \u2014 compiled to a Kubernetes ClusterRole over the openinfra.dev\

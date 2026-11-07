@@ -2,11 +2,11 @@
 # The IAM cutover: from Kubernetes RBAC tiers to IAM policy as the only authority, one reversible step at
 # a time (docs/iam.md, "Running the cutover").
 #
-#   hack/iam-cutover.sh <step> [--rollback] [--yes]
+#   scripts/iam-cutover.sh <step> [--rollback] [--yes]
 #
 #   0  dark → shadow   the webhook's root floor; console and aws-shim evaluate IAM policy in shadow (log
 #                      both decisions, act on the old one); the compiler reports
-#   1  equivalents     hack/iam-migrate: the tiers' AWS managed policies attached to their groups,
+#   1  equivalents     scripts/iam-migrate: the tiers' AWS managed policies attached to their groups,
 #                      documents written next to the old forms (additive)
 #   2  canary          the IAM probes as canary principals: parity, no policy, managed policies
 #   3  enforce         IAM policy decides for every User and Role; the compiler applies generated RBAC
@@ -14,7 +14,7 @@
 #   4  no users group  check nothing still names the implicit openinfra:users group (the ceilings are
 #                      GitOps-managed: a change there is a commit, which this step names)
 #   5  accounts        the estate mirror's namespace becomes its own member account
-#   6  delete legacy   after 24 h clean: hack/iam-migrate --drop-legacy, and the repo changes to make
+#   6  delete legacy   after 24 h clean: scripts/iam-migrate --drop-legacy, and the repo changes to make
 #
 # Every step first checks the break-glass root (SubjectAccessReviews for the root floor, then a console
 # sign-in as root that writes IAM and creates a resource), prints what it will change, asks (unless
@@ -205,11 +205,11 @@ step0() {
   ok "the aws-shim logged $s iam-shadow line(s) in the last 2 minutes (any differences are what step 1 and 2 settle)"
   verify_root
   done_mark 0
-  echo "  rollback: hack/iam-cutover.sh 0 --rollback"
+  echo "  rollback: scripts/iam-cutover.sh 0 --rollback"
 }
 
 # --- step 1 ---------------------------------------------------------------------------------------------
-migrate() { (cd "$REPO/hack/iam-migrate" && go run . "$@"); }
+migrate() { (cd "$REPO/scripts/iam-migrate" && go run . "$@"); }
 resource_of() { case "$1" in Policy) echo policies.iam.openinfra.dev ;; Group) echo groups.iam.openinfra.dev ;;
   User) echo users.iam.openinfra.dev ;; Role) echo roles.iam.openinfra.dev ;; *) echo "" ;; esac; }
 step1() {
@@ -238,8 +238,8 @@ PY
     ok "step 1 rolled back"; rm -f "$STATE/step-1.done"; return
   fi
   verify_root
-  say "step 1: the AWS policy model next to the old forms (hack/iam-migrate, additive)"
-  migrate --json > "$TMP/plan.json" || die "hack/iam-migrate could not plan"
+  say "step 1: the AWS policy model next to the old forms (scripts/iam-migrate, additive)"
+  migrate --json > "$TMP/plan.json" || die "scripts/iam-migrate could not plan"
   migrate | tail -40
   local n; n="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("changes") or []))' "$TMP/plan.json")"
   if [ "$n" = 0 ]; then ok "nothing left to migrate"; done_mark 1; return; fi
@@ -253,14 +253,14 @@ for c in json.load(open(sys.argv[1]))["changes"]:
   while read -r kind ns name; do
     kubectl -n "$ns" get "$(resource_of "$kind")" "$name" -o json > "$STATE/step1-before/$kind-$ns-$name.json" 2>/dev/null
   done
-  migrate --apply || die "hack/iam-migrate --apply failed (roll back with: hack/iam-cutover.sh 1 --rollback)"
+  migrate --apply || die "scripts/iam-migrate --apply failed (roll back with: scripts/iam-cutover.sh 1 --rollback)"
   migrate --json > "$TMP/plan2.json"
   n="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("changes") or []))' "$TMP/plan2.json")"
   [ "$n" = 0 ] || die "$n change(s) still planned after --apply"
   ok "migrated: a re-plan finds nothing left"
   verify_root
   done_mark 1
-  echo "  rollback: hack/iam-cutover.sh 1 --rollback"
+  echo "  rollback: scripts/iam-cutover.sh 1 --rollback"
 }
 
 # --- step 2 ---------------------------------------------------------------------------------------------
@@ -289,7 +289,7 @@ step2() {
   [ "$rc" = 0 ] || die "the canary did not pass (exit $rc): fix before step 3"
   verify_root
   done_mark 2
-  echo "  rollback: hack/iam-cutover.sh 2 --rollback"
+  echo "  rollback: scripts/iam-cutover.sh 2 --rollback"
 }
 
 # --- step 3 ---------------------------------------------------------------------------------------------
@@ -320,8 +320,8 @@ step3() {
     kubectl -n "$AUTHZ_NS" get configmap iam-corpus >/dev/null 2>&1 && [ "$n" -gt 0 ] && break
     sleep 10
   done
-  kubectl -n "$AUTHZ_NS" get configmap iam-corpus >/dev/null 2>&1 || die "the compiler wrote no iam-corpus (roll back: hack/iam-cutover.sh 3 --rollback)"
-  [ "$n" -gt 0 ] || die "the compiler wrote no generated RBAC (roll back: hack/iam-cutover.sh 3 --rollback)"
+  kubectl -n "$AUTHZ_NS" get configmap iam-corpus >/dev/null 2>&1 || die "the compiler wrote no iam-corpus (roll back: scripts/iam-cutover.sh 3 --rollback)"
+  [ "$n" -gt 0 ] || die "the compiler wrote no generated RBAC (roll back: scripts/iam-cutover.sh 3 --rollback)"
   ok "iam-corpus written; $n generated ClusterRole(s)"
   say "enforce: IAM policy decides for every principal at the console and the aws-shim"
   echo "    $CONSOLE_NS/openinfra-iam IAM_AUTHZ=enforce (proxy identity: the account identity); $SHIM_NS/openinfra-iam IAM_AUTHZ=enforce"
@@ -345,9 +345,9 @@ step3() {
     case "$r" in 0) ok "$p passed" ;; *) echo "  ✗ $p exit $r"; rc=1 ;; esac
   done
   kill "$pf_shim" 2>/dev/null
-  [ "$rc" = 0 ] || die "a probe failed under enforce — roll back: hack/iam-cutover.sh 3 --rollback"
+  [ "$rc" = 0 ] || die "a probe failed under enforce — roll back: scripts/iam-cutover.sh 3 --rollback"
   done_mark 3
-  echo "  rollback: hack/iam-cutover.sh 3 --rollback"
+  echo "  rollback: scripts/iam-cutover.sh 3 --rollback"
 }
 
 # --- step 4 ---------------------------------------------------------------------------------------------
@@ -450,18 +450,18 @@ YAML
   ok "account $id is Ready; $ns carries its label"
   if [ -n "${conc:-}" ]; then
     local now; now="$(kubectl get ns "$ns" -o jsonpath='{.metadata.labels.openinfra\.dev/function-concurrency}')"
-    [ "$now" = "$conc" ] || die "$ns's Lambda concurrency cap changed ($conc → $now): roll back with hack/iam-cutover.sh 5 --rollback"
+    [ "$now" = "$conc" ] || die "$ns's Lambda concurrency cap changed ($conc → $now): roll back with scripts/iam-cutover.sh 5 --rollback"
     ok "$ns keeps its Lambda concurrency cap ($conc)"
   fi
   sleep 60
   local after; after="$(ready_counts "$ns")"; echo "    Ready after:  $after"
-  [ "$before" = "$after" ] || die "Ready claims changed in $ns ($before → $after): roll back with hack/iam-cutover.sh 5 --rollback"
+  [ "$before" = "$after" ] || die "Ready claims changed in $ns ($before → $after): roll back with scripts/iam-cutover.sh 5 --rollback"
   ok "the mirror's claims are as Ready as before"
   verify_root
   done_mark 5
   echo "  the engagement users that hold this mirror's shim keys still live in the management account: move them"
   echo "  (a User in the member account's home, keys re-owned) only when their callers can take the new ARNs"
-  echo "  rollback: hack/iam-cutover.sh 5 --rollback"
+  echo "  rollback: scripts/iam-cutover.sh 5 --rollback"
 }
 
 # --- step 6 ---------------------------------------------------------------------------------------------
@@ -474,7 +474,7 @@ step6() {
   say "step 6: drop the forms the migration replaced"
   migrate --drop-legacy | tail -30
   confirm
-  migrate --apply --drop-legacy || die "hack/iam-migrate --drop-legacy failed"
+  migrate --apply --drop-legacy || die "scripts/iam-migrate --drop-legacy failed"
   ok "legacy forms dropped"
   cat <<'TXT'
   Then, in git (GitOps-managed, so a commit, not a live edit):

@@ -6,7 +6,7 @@
 # labelled openinfra.dev/generated-by: iam-compiler and never touches hand-written RBAC.
 #
 # After applying: set IAM_COMPILER_MODE=apply in the ConfigMap open-infra-authz/openinfra-iam and restart
-# deploy/iam-compiler (hack/iam-cutover.sh 3 does both).
+# deploy/iam-compiler (scripts/iam-cutover.sh 3 does both).
 # Rollback: set it back to report (the generated objects stay until deleted:
 # kubectl delete clusterrole,clusterrolebinding,rolebinding -A -l openinfra.dev/generated-by=iam-compiler).
 apiVersion: rbac.authorization.k8s.io/v1

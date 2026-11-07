@@ -293,7 +293,7 @@ class Parses(unittest.TestCase):
                      "aws-shim-organizations.sh", "aws-shim-iam-login-profile.sh", "aws-shim-iam-mfa.sh"]:
             r = subprocess.run(["bash", "-n", os.path.join(HERE, name)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
-        cut = os.path.join(REPO, "hack", "iam-cutover.sh")
+        cut = os.path.join(REPO, "scripts", "iam-cutover.sh")
         if os.path.exists(cut):
             r = subprocess.run(["bash", "-n", cut], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)

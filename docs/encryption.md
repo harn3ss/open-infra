@@ -111,7 +111,7 @@ No standing Vault secret is written anywhere.
 #    automation use a role), so it can't be stolen later. The script revokes every other root token
 #    (found by accessor, so none copied from an earlier bootstrap survives), then the bootstrap token
 #    with itself, and shows a call made with it is refused — inside the cluster, printing counts only:
-./hack/vault-revoke-root.sh
+./scripts/vault-revoke-root.sh
 kubectl -n vault delete secret vault-bootstrap
 ```
 

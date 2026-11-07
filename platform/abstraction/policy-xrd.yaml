@@ -99,7 +99,7 @@ spec:
                     grant (an Allow carrying it is dropped and reported, a Deny applies unconditionally). A
                     Policy with a document renders no ClusterRole of its own. The statements, dataPlane and
                     controlPlane blocks below are the earlier forms, read for one more release and rewritten
-                    into a document by hack/iam-migrate.
+                    into a document by scripts/iam-migrate.
                 statements:
                   type: array
                   description: >-

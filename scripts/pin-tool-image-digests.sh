@@ -11,8 +11,8 @@
 # rebuild pushes a new :latest (e.g. for CVEs), re-run this to repin the manifests to the new digest and
 # commit; until then the cluster keeps running the pinned, known digest (the point of pinning).
 #
-#   ./hack/pin-tool-image-digests.sh            # pin all tool images
-#   IMAGES="open-infra-mc" ./hack/pin-tool-image-digests.sh   # just one
+#   ./scripts/pin-tool-image-digests.sh            # pin all tool images
+#   IMAGES="open-infra-mc" ./scripts/pin-tool-image-digests.sh   # just one
 set -euo pipefail
 
 OWNER="${OWNER:-harn3ss}"

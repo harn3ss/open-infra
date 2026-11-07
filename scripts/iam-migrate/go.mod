@@ -1,4 +1,4 @@
-module github.com/harn3ss/open-infra/hack/iam-migrate
+module github.com/harn3ss/open-infra/scripts/iam-migrate
 
 go 1.26.4
 

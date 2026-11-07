@@ -246,7 +246,7 @@ func TestManagedPolicies_JobFunctionsMeanWhatAWSDocuments(t *testing.T) {
 }
 
 // Every kebab-case built-in (platform/security/managed-policies.yaml) names its AWS equivalent — a policy
-// this library ships — or "none" with a reason; hack/iam-migrate re-points attachments by it.
+// this library ships — or "none" with a reason; scripts/iam-migrate re-points attachments by it.
 func TestManagedPolicies_BuiltInsCoverWhatNoAWSPolicyDoes(t *testing.T) {
 	raw, err := os.ReadFile("../platform/security/managed-policies.yaml")
 	if err != nil {

@@ -62,7 +62,7 @@ spec:
               protocol: TCP
 
           # How far IAM policy decides (IAM_AUTHZ legacy|shadow|enforce) and the proxy's identity
-          # (IAM_PROXY_IDENTITY), set by the IAM cutover (hack/iam-cutover.sh) in an optional ConfigMap
+          # (IAM_PROXY_IDENTITY), set by the IAM cutover (scripts/iam-cutover.sh) in an optional ConfigMap
           # `openinfra-iam` kept out of git — so ArgoCD's self-heal never undoes a cutover step, and absent
           # means legacy.
           envFrom:

@@ -98,7 +98,7 @@ jobs:
           - open-appsync # the VTL engine + $util + the docs-anchored resolver probe
           - policyengine # the Cedar-based fine-grained data-plane authz engine (allow/deny/conditions)
           - lan-expose # the LAN-exposure controller (EIP allocation + policyRoute merge)
-          - hack/iam-migrate # the one-shot IAM migration into the AWS policy model (plan + apply)
+          - scripts/iam-migrate # the one-shot IAM migration into the AWS policy model (plan + apply)
     name: ${{ matrix.module }}
     steps:
       - uses: actions/checkout@v7

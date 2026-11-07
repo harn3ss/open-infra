@@ -358,7 +358,7 @@ func Build(w World, dropLegacy bool) Plan {
 			continue
 		}
 		p.Changes = append(p.Changes, Change{Kind: "Group", Namespace: k.ns, Name: k.name, Create: true,
-			Patch: map[string]any{"description": "Created by hack/iam-migrate: the policies the openinfra:" + k.name + " group grants, as a container of policies", "policies": toAny(add)},
+			Patch: map[string]any{"description": "Created by scripts/iam-migrate: the policies the openinfra:" + k.name + " group grants, as a container of policies", "policies": toAny(add)},
 			Why:   "create the group as a container of " + strings.Join(add, ", ")})
 	}
 	return p
