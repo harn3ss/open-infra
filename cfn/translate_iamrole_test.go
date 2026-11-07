@@ -640,6 +640,12 @@ Resources:
 		if idleCaveat != (id == "Task") {
 			t.Errorf("%s: a caveat that no service assumes it = %v (caveats %v)", id, idleCaveat, m.Caveats)
 		}
+		// ECS assumes a task role for the Application that names it: only events.amazonaws.com is idle.
+		if id == "Task" {
+			if c := strings.Join(m.Caveats, "\n"); !strings.Contains(c, "trusted by events.amazonaws.com:") || strings.Contains(c, "trusted by ecs-tasks") {
+				t.Errorf("Task: only events.amazonaws.com is a service nothing assumes on (caveats %v)", m.Caveats)
+			}
+		}
 	}
 	if _, fs := translateIAMRole("Odd", resolvedProps(t, ctx, "Odd"), ctx); len(fs) == 0 {
 		t.Error("a principal that is no AWS service must refuse")

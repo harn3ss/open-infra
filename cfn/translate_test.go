@@ -528,11 +528,27 @@ Resources:
 		t.Fatalf("TaskRoleArn should map to assumeRole=data-reader, got %#v", m.Spec["assumeRole"])
 	}
 	joined := strings.Join(m.Caveats, "\n")
-	if !strings.Contains(joined, "spec.trust must name") {
-		t.Fatalf("a task-role mapping must caveat the trust requirement: %v", m.Caveats)
+	if !strings.Contains(joined, "trust ecs-tasks.amazonaws.com") || !strings.Contains(joined, "iam:PassRole") {
+		t.Fatalf("a task-role mapping must caveat the trust and PassRole requirements: %v", m.Caveats)
 	}
 	if !strings.Contains(joined, "ExecutionRoleArn") {
 		t.Fatalf("ExecutionRoleArn must stay a caveat: %v", m.Caveats)
+	}
+	// The role ARN names another account than the stack's: the app's task role is its own account's role of
+	// that name, and a caveat says so.
+	if !strings.Contains(joined, "is a role of account 123456789012") || !strings.Contains(joined, "of this stack's account ("+ctx.account()+")") {
+		t.Fatalf("a task role of another account must be caveated: %v", m.Caveats)
+	}
+
+	// A role ARN of the stack's own account maps the same, with no such caveat.
+	own := strings.Replace(tmpl, "arn:aws:iam::123456789012:role/data-reader", "arn:aws:iam::"+ctx.account()+":role/Data-Reader", 1)
+	octx := ecsCtx(t, own)
+	om, ofs := translateECSService("Svc", ecsResolvedService(t, octx, "Svc"), octx)
+	if len(ofs) != 0 || om.Spec["assumeRole"] != "data-reader" {
+		t.Fatalf("a task role of the stack's account: %#v %s", om.Spec["assumeRole"], findingsText(ofs))
+	}
+	if strings.Contains(strings.Join(om.Caveats, "\n"), "is a role of account") {
+		t.Errorf("a task role of the stack's account is not another account's: %v", om.Caveats)
 	}
 }
 

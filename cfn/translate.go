@@ -2414,9 +2414,10 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 	// A service role's trust: each service principal is recorded as IAM's CreateRole records it — EC2's as
 	// the instance principal "vm", any other as "Service::<service>" — so the role trusts what its template
 	// says, and GetRole shows it. A service assumes the role only where its open-infra service does so: a
-	// function that names it (lambda.amazonaws.com), a state machine that names it (states.amazonaws.com), an
-	// instance that names it (ec2). Nothing else assumes on a service's trust, so another service's entry
-	// grants nothing — the role exists with its policies, as on AWS, and a caveat says no service assumes it.
+	// function that names it (lambda.amazonaws.com), an application that names it as its task role
+	// (ecs-tasks.amazonaws.com), a state machine that names it (states.amazonaws.com), an instance that names
+	// it (ec2). Nothing else assumes on a service's trust, so another service's entry grants nothing — the
+	// role exists with its policies, as on AWS, and a caveat says no service assumes it.
 	svcs, ok := trustServices(props["AssumeRolePolicyDocument"])
 	trust := []any{}
 	appsyncTrust := false
@@ -2427,7 +2428,7 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 			trust = append(trust, "vm")
 		case "appsync.amazonaws.com":
 			appsyncTrust = true
-		case "lambda.amazonaws.com", "states.amazonaws.com":
+		case "lambda.amazonaws.com", "states.amazonaws.com", "ecs-tasks.amazonaws.com":
 			trust = append(trust, "Service::"+s)
 		default:
 			if !awsServicePrincipalRe.MatchString(s) {
@@ -2450,7 +2451,7 @@ func translateIAMRole(id string, props map[string]any, ctx *stackCtx) (*Manifest
 	if len(idle) > 0 {
 		m.Caveats = append(m.Caveats, "trusted by "+strings.Join(idle, ", ")+": the role exists with its policies and its trust, but no open-infra service assumes a role for "+
 			map[bool]string{true: "that service", false: "those services"}[len(idle) == 1]+
-			" — only a Function (lambda.amazonaws.com), a StateMachine (states.amazonaws.com) and a VirtualMachine (ec2.amazonaws.com) that name a role assume it; for an ECS task role, add the application's ServiceAccount (system:serviceaccount:<namespace>:<application>) to its trust")
+			" — only a Function (lambda.amazonaws.com), an Application (ecs-tasks.amazonaws.com, its task role), a StateMachine (states.amazonaws.com) and a VirtualMachine (ec2.amazonaws.com) that name a role assume it")
 	}
 	if appsyncTrust {
 		// AppSync assumes a service role to reach a data source, and the role's policy bounds what the
@@ -3486,7 +3487,7 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 			}
 		}
 	}
-	spec, caveats, tdFindings := ecsTaskToApp(tdID, td, primaryName)
+	spec, caveats, tdFindings := ecsTaskToApp(tdID, td, primaryName, ctx.account())
 	f = append(f, tdFindings...)
 
 	// DesiredCount -> a fixed replica count (ECS Service autoscaling is a separate resource).
@@ -3582,7 +3583,7 @@ func ecsFirstSubnet(id string, avc map[string]any, ctx *stackCtx) (string, strin
 
 // ecsTaskToApp translates the TaskDefinition half: exactly one container -> image/port/env,
 // returning the partial Application spec, the declared caveats, and any blocking findings.
-func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[string]any, []string, []Finding) {
+func ecsTaskToApp(tdID string, td map[string]any, primaryName, acct string) (map[string]any, []string, []Finding) {
 	known := map[string]bool{
 		"ContainerDefinitions": true, "Cpu": true, "Memory": true, "NetworkMode": true,
 		"TaskRoleArn": true, "ExecutionRoleArn": true, "RequiresCompatibilities": true,
@@ -3635,14 +3636,20 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName string) (map[strin
 			caveats = append(caveats, "TaskDefinition "+p+" dropped — task-level sizing is via per-container resources/quotas; ExecutionRoleArn (the ECS agent's image-pull/log role) has no equivalent (the platform pulls images), and launch-compat/network-mode don't map")
 		}
 	}
-	// TaskRoleArn -> workload identity (#117 §3): the task's application runs AS this role via the
-	// Application's assumeRole (sts:AssumeRoleWithWebIdentity). Now possible because roles are
-	// first-class assumable identities (#111). The named kind: Role must exist and its spec.trust
-	// must name the app's ServiceAccount.
+	// TaskRoleArn -> the Application's task role (#117 §3, spec.assumeRole): the task's application runs AS
+	// this role — its SDK assumes it on the aws-shim (sts:AssumeRoleWithWebIdentity) with no keys, as ECS
+	// hands a task its task role's credentials. The named kind: Role is a role of the app's own account; it
+	// must exist and trust ecs-tasks.amazonaws.com (or the app's ServiceAccount), and naming it takes
+	// iam:PassRole on it, as on ECS.
 	if tra, ok := concrete(td["TaskRoleArn"]); ok && tra != "" {
 		role := k8sName(iamRoleNameFromArn(tra))
 		spec0["assumeRole"] = role
-		caveats = append(caveats, "TaskRoleArn -> the app assumes kind: Role "+role+" via workload identity (sts:AssumeRoleWithWebIdentity); that Role must exist and its spec.trust must name this app's ServiceAccount")
+		caveats = append(caveats, "TaskRoleArn -> the app's task role is kind: Role "+role+" of its own account (its SDK assumes it on the aws-shim, no keys); that Role must exist and trust ecs-tasks.amazonaws.com (or this app's ServiceAccount), and naming it takes iam:PassRole on it")
+		// A task role is always a role of the app's own account: a role ARN of another account names the
+		// role of that name in this stack's account instead. Say so rather than re-home it silently.
+		if a := awsidentity.AccountOfARN(tra); a != "" && a != acct {
+			caveats = append(caveats, "TaskRoleArn "+tra+" is a role of account "+a+"; an application's task role is a role of its own account, so the app assumes kind: Role "+role+" of this stack's account ("+acct+")")
+		}
 	} else if _, present := td["TaskRoleArn"]; present {
 		caveats = append(caveats, "TaskRoleArn could not be resolved (an unresolvable intrinsic) — set the Application's assumeRole natively to the kind: Role name")
 	}
