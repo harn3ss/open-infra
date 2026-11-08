@@ -237,6 +237,11 @@ func TestAliases(t *testing.T) {
 	if vs := versionsOf(fn); len(vs) != 1 || vs[0].Version != "1" || len(aliasesOf(fn)) != 0 {
 		t.Fatalf("after the deletes: %+v %+v", vs, aliasesOf(fn))
 	}
+	// The last alias deleted leaves an empty list, not a removed field (Crossplane's claim sync would bring a
+	// removed one back).
+	if l, found, _ := unstructured.NestedSlice(fn.Object, "spec", "aliases"); !found || len(l) != 0 {
+		t.Fatalf("spec.aliases after the last alias is deleted: found=%v %v", found, l)
+	}
 	// The next version is numbered after the highest ever kept, never reusing one still published.
 	if n := nextVersion(versionsOf(fn)); n != "2" {
 		t.Fatalf("next version = %s", n)

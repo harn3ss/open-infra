@@ -747,11 +747,9 @@ func applyLambdaSettings(spec, body map[string]any) *lambdaErr {
 		if len(reserved) > 0 {
 			return invalidParam("Lambda was unable to configure your environment variables because the environment variables you have provided contains reserved keys that are currently not supported for modification. Reserved keys used in this request: %s", strings.Join(reserved, ", "))
 		}
-		if len(env) > 0 {
-			spec["env"] = env
-		} else {
-			delete(spec, "env")
-		}
+		// No variables is an empty list, never a removed field: Crossplane copies a claim's spec to its
+		// composite by merging, which cannot remove a field, and then back, so a removed list returns.
+		spec["env"] = env
 	}
 	return nil
 }

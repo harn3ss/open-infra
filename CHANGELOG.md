@@ -6,6 +6,12 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — clearing a function's variables, and deleting its last alias, last
+- **Before:** `update-function-configuration` with no variables, like deleting a function's last alias or
+  version, answered success and the old values came back: Crossplane copies a claim's spec to its composite
+  by merging, which cannot remove a field, and then copies it back.
+- **Now:** an empty list is written, which both keep.
+
 ### Added — `aws lambda invoke --log-type Tail` (#407)
 - **A synchronous invoke with `LogType: Tail`** answers the invocation's log in `X-Amz-Log-Result`, which
   the CLI prints as `LogResult`: the last 4 KB of Lambda's `START`, what the handler printed during that

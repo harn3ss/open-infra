@@ -90,14 +90,16 @@ func aliasesOf(obj *unstructured.Unstructured) []fnAlias {
 	return out
 }
 
-// setSpecList writes v (a list of fnVersion or fnAlias) to spec.<field>, removing the field when empty.
+// setSpecList writes v (a list of fnVersion or fnAlias) to spec.<field>. An empty list is written as one,
+// never as a removed field: Crossplane copies a claim's spec to its composite by merging, which cannot
+// remove a field, and then back to the claim, so a removed list returns (the last alias deleted would be
+// back).
 func setSpecList(obj *unstructured.Unstructured, field string, v any) {
-	var l []any
+	l := []any{}
 	b, _ := json.Marshal(v)
 	_ = json.Unmarshal(b, &l)
-	if len(l) == 0 {
-		unstructured.RemoveNestedField(obj.Object, "spec", field)
-		return
+	if l == nil {
+		l = []any{}
 	}
 	_ = unstructured.SetNestedSlice(obj.Object, l, "spec", field)
 }
