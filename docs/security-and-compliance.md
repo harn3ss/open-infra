@@ -95,8 +95,8 @@ tracked) · **Operator** (the deployment supplies/configures it) · **Roadmap** 
 The government control machinery has been exercised end-to-end on the reference cluster — see
 [`govt-track-verification-2026-08.md`](compliance/govt-track-verification-2026-08.md)
 for exactly what was verified (audit off-siting integrity, Grant self-revoke, DataClassification,
-attestation store) and what stays gated (customer-key encryption and crypto-erase are Vault-gated and
-remain **not-live-verified**).
+attestation store) and what stays gated (customer-key encryption and crypto-erase are gated on the key
+service, now OpenBao, and remain **not-live-verified**).
 
 ### AC — Access Control
 
@@ -138,9 +138,9 @@ remain **not-live-verified**).
 |---------|----------------|--------|
 | SC-7 Boundary Protection | kube-ovn CNI enforcing NetworkPolicy + `kind: SecurityGroup`. Every pod a composition runs in a tenant namespace admits ingress only from its own namespace and the platform callers its kind needs, named one by one (the ingress controller, the console, Prometheus, the database operators, Knative's data path). That covers Application app and database pods (every engine), DatabaseProxy, Directory, FileShare, UserPool, Model, FeatureGroup, HttpApi validators, StaticSite, Stream, DataFlow, Migration, Replication, the ML jobs, ScheduledJob, Functions (one shared policy per namespace) and VMs or VM groups with no security group (a VM with one is governed by its group's policies, as on AWS). A render test fails when a composition that runs pods has no such policy. In-cluster Service calls keep the caller's pod IP (kube-ovn load-balances ClusterIPs in OVN), so another namespace is denied whether it calls by Service name, ClusterIP or pod IP. Every LAN LoadBalancer a composition renders keeps the client's address (`externalTrafficPolicy: Local`), so a pod that dials a node port or the LAN address still arrives as itself and is judged by its namespace; Directory, FileShare and Model allocate no node ports and admit LAN clients (any address outside the pod network and the join subnet) on their published ports only. A VM's published ports, like a security group's `0.0.0.0/0` rules, are open to every source, pods included, as on AWS. The kube-ovn join subnet is admitted only as the host network (hostNetwork Traefik dials Ingress backends by ClusterIP: the backend Service's nativelb annotation, `nativeLB` on IngressRoutes). Knative's shared data path is isolated too: the Kourier gateway's internal listener (every Function's in-cluster URL) admits only the platform's invokers (aws-shim Invoke and API Gateway, Step Functions, the console, trigger pumps, GraphQLApi lambda data sources, Traefik), and the activator only the gateway, so no pod reaches another tenant's Function around Invoke's authorization; Functions published with `expose: true` are public on the external listener by design. The lakehouse's unauthenticated Iceberg REST catalog and Trino admit only their platform callers. Service `externalIPs` are refused at admission (CVE-2020-8554). Per-workload egress sandboxes (a Query pod may reach only DNS / MinIO / Trino). | Implemented |
 | SC-8 Transmission Confidentiality/Integrity | TLS on ingress via cert-manager; control-plane and Chaos Mesh use mTLS; managed SQL-Server (Babelfish) enforces `Encrypt=mandatory`. A VM guest's identity token travels only over TLS to the aws-shim's in-cluster port, verified against the platform root CA the VM carries in its own spec (never fetched over the network); the shim refuses VM credentials in clear text. | Implemented |
-| SC-12 / SC-13 Key Management & Crypto Use | cert-manager issues and rotates certificates; the platform root CA (`openinfra-ca`) signs only for platform namespaces, enforced by an admission policy, so a tenant cannot obtain a certificate that clients trusting the root would accept; the root is name-constrained to in-cluster, `sslip.io` and private names, and its key is rotated by a new key generation (`platform/networking/cluster-ca.yaml`), after which the platform re-signs its own certificates and republishes the root to VM guests (`probe/platform-root-ca.sh` checks the result); **Sealed Secrets** keep secrets encrypted at rest in git; **`kind: EncryptionKey`** holds customer-owned keys in a Vault Transit KMS with rotation. | Partial (cert-manager + Sealed Secrets exercised; the customer-key Vault Transit KMS is opt-in and **live-verified** by `probe/encryption-vault.sh` — key provision + byte-identical round-trip + crypto-erase — while remaining operator-gated: the customer initializes/unseals Vault) |
+| SC-12 / SC-13 Key Management & Crypto Use | cert-manager issues and rotates certificates; the platform root CA (`openinfra-ca`) signs only for platform namespaces, enforced by an admission policy, so a tenant cannot obtain a certificate that clients trusting the root would accept; the root is name-constrained to in-cluster, `sslip.io` and private names, and its key is rotated by a new key generation (`platform/networking/cluster-ca.yaml`), after which the platform re-signs its own certificates and republishes the root to VM guests (`probe/platform-root-ca.sh` checks the result); **Sealed Secrets** keep secrets encrypted at rest in git; **`kind: EncryptionKey`** holds customer-owned keys in an OpenBao Transit KMS with rotation. | Partial (cert-manager + Sealed Secrets exercised; the customer-key Transit KMS is opt-in and **live-verified** by `probe/encryption-vault.sh` — key provision + byte-identical round-trip + crypto-erase — on HashiCorp Vault, whose keys moved to OpenBao unchanged ([`openbao.md`](openbao.md#moving-the-keys-from-vault)), while remaining operator-gated: the customer initializes OpenBao and holds the unseal host's keys and OpenBao's recovery keys) |
 | SC-23 Session Authenticity | HMAC-signed session cookie, `HttpOnly` + `Secure` + `SameSite=Lax`, plus a required CSRF header on all mutations. | Implemented |
-| SC-28 / SC-28(1) Protection at Rest (customer keys) | Opt-in `encryption` component: encrypted Longhorn StorageClass (LUKS), and MinIO SSE-KMS / etcd KMS wiring keyed by a customer-owned Vault Transit key — open-infra never holds the key material. See [`encryption.md`](encryption.md). | Partial (opt-in; built and reviewed, **not yet live-verified** — Vault-gated) |
+| SC-28 / SC-28(1) Protection at Rest (customer keys) | Opt-in `encryption` component: encrypted Longhorn StorageClass (LUKS), and MinIO SSE-KMS / etcd KMS wiring keyed by a customer-owned OpenBao Transit key — open-infra never holds the key material. See [`encryption.md`](encryption.md). | Partial (opt-in; built and reviewed, **not yet live-verified** — OpenBao-gated) |
 | SC-5 Denial-of-Service Protection | Cloudflare edge when publicly exposed; dependency DoS CVEs remediated via SI-2. | Partial / Operator |
 
 ### CM — Configuration Management
@@ -186,8 +186,9 @@ remain **not-live-verified**).
   the WORM store. Copies made outside the key (the daily file-level backup, etcd snapshots) are erased
   only when they are deleted or expire; see [`destruction.md`](destruction.md). **Live-verified**
   end-to-end by `probe/encryption-vault.sh` (provision → byte-identical round-trip → crypto-erase to
-  unrecoverable), a re-runnable gate; bringing Vault up remains operator-gated (the customer holds the
-  unseal keys). *(Verified; opt-in + operator-gated)*
+  unrecoverable), a re-runnable gate, on HashiCorp Vault, whose keys moved to OpenBao unchanged; bringing
+  OpenBao up remains operator-gated (the customer holds the unseal host's keys and OpenBao's recovery
+  keys). *(Verified; opt-in + operator-gated)*
 - **RA / PL / PS / IR / AT / CA process controls** — risk assessment, planning, personnel
   security, incident response, and awareness training are **organizational** controls the
   operator supplies; the platform provides evidence sources (audit, monitoring), not the
@@ -237,7 +238,7 @@ Delivered so far:
 - **`kind: DataClassification`** — a data-categorization scheme (RA-2) with a compliance auditor that
   checks tagged workloads against their class's handling requirements. See
   [`data-classification.md`](data-classification.md).
-- **Encryption with customer-owned keys** — `kind: EncryptionKey` on a Vault Transit KMS, an encrypted
+- **Encryption with customer-owned keys** — `kind: EncryptionKey` on an OpenBao Transit KMS, an encrypted
   Longhorn StorageClass, and the MinIO/etcd wiring runbook (SC-12/13/28/28(1)). Opt-in, off by
   default. See [`encryption.md`](encryption.md).
 - **Crypto-erase** — `kind: Destruction` destroys a customer key (NIST SP 800-88), making all data it

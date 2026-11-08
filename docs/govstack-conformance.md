@@ -37,10 +37,10 @@ the Blueprint reconciliation is the open item.
 | Right-to-be-forgotten (GDPR cross-cutting) | `kind: Destruction` crypto-erase (arguably stronger than a typical block) | ✅ |
 | Honest data handling / privacy-first | `kind: DataClassification` (honest-unknown) | ✅ |
 | High availability, proven | control-plane HA profile (console 2 replicas + PDB + node spread + zero-downtime rollout); app-tier + managed-Postgres HA proven by the chaos harness | ✅ profile shipped; availability-under-fault proven by the app-availability + cnpgfailover oracles |
-| CA / PKI building block (issue+revoke, OpenAPI, HA) | `kind: CertificateAuthority` on Vault PKI — per-CA mount, least-privilege provisioner/issuer split, SAR-gated **and** NetworkPolicy-fenced issue/revoke, HA issuer (2 replicas + PDB); OpenAPI-described; `kind: EncryptionKey` alongside | ✅ shipped; live issuance is Vault-operator-gated (needs an initialized + unsealed Vault) |
+| CA / PKI building block (issue+revoke, OpenAPI, HA) | `kind: CertificateAuthority` on OpenBao PKI — per-CA mount, least-privilege provisioner/issuer split, SAR-gated **and** NetworkPolicy-fenced issue/revoke, HA issuer (2 replicas + PDB); OpenAPI-described; `kind: EncryptionKey` alongside | ✅ shipped; live issuance is operator-gated (needs an initialized + unsealed OpenBao) |
 | Interfaces conform to the Architecture Blueprint OpenAPI | platform OpenAPI generated (above) | 🟡 needs the external Blueprint to reconcile |
 | Hardened deployment profile | opt-in `components.hardened`: enforce restricted PSS on the control plane + warn/audit elsewhere; Cilium default-deny + `kind: SecurityGroup` already shipped; console now non-root/RO-rootfs/seccomp/drop-ALL | ✅ profile shipped (opt-in) |
-| Encryption stack live-verified | Vault Transit customer keys; `probe/encryption-vault.sh` proves provision → round-trip → crypto-erase | ✅ live-verified on the reference cluster (KEK wraps/unwraps byte-identical; `kind: Destruction` makes the key unrecoverable). Bringing Vault up remains operator-gated (unseal-key custody is the customer's) |
+| Encryption stack live-verified | OpenBao Transit customer keys; `probe/encryption-vault.sh` proves provision → round-trip → crypto-erase | ✅ live-verified on the reference cluster on HashiCorp Vault (KEK wraps/unwraps byte-identical; `kind: Destruction` makes the key unrecoverable); the keys moved to OpenBao unchanged ([`openbao.md`](openbao.md#moving-the-keys-from-vault)). Bringing OpenBao up remains operator-gated (custody of the unseal host's keys and OpenBao's recovery keys is the customer's) |
 
 ## Reliability evidence (the differentiator)
 
@@ -56,11 +56,11 @@ This speaks directly to the HA / reliability non-functional requirements — ava
 
 ## Open items (the credibility gates for moving past the sandbox)
 
-1. **A** — ✅ `kind: CertificateAuthority` shipped: Vault PKI, least-privilege provisioner/issuer split, SAR-gated + NetworkPolicy-fenced issue/revoke, HA issuer, OpenAPI + Terraform provider + console. Live *issuance* proof still needs an operator to initialize + unseal Vault.
+1. **A** — ✅ `kind: CertificateAuthority` shipped: OpenBao PKI, least-privilege provisioner/issuer split, SAR-gated + NetworkPolicy-fenced issue/revoke, HA issuer, OpenAPI + Terraform provider + console. Live *issuance* is not yet proven; it needs an initialized, unsealed OpenBao.
 2. **B** — control-plane HA profile + a prove-red HA oracle.
 3. **C** — reconcile the generated OpenAPI to the GovStack Architecture Blueprint *(needs the Blueprint)*.
 4. **D** — ✅ hardened deployment profile shipped (opt-in `components.hardened`): restricted PSS enforced on the console namespace, Cilium default-deny + `kind: SecurityGroup`, console non-root/RO-rootfs/seccomp/drop-ALL. Remaining rung: a control-plane-HA prove-red oracle (item B).
-5. **E** — live-verify the encryption stack, then drop the EXPERIMENTAL flag *(needs a Vault operator to init + unseal)*.
+5. **E** — live-verify the encryption stack, then drop the EXPERIMENTAL flag *(needs an operator to initialize OpenBao)*.
 
 The GovStack Sandbox is explicitly **not** production-ready — step one is conformance + credibility
 (stand open-infra up under a Sandbox and run a use-case demo), not a live national deployment.

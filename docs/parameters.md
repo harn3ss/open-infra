@@ -1,11 +1,12 @@
 # Parameters (`kind: Parameter`)
 
 `kind: Parameter` is a hierarchical, optionally-encrypted parameter store — the AWS SSM Parameter
-Store equivalent. Each parameter's value is held in Vault's KV-v2 `params` mount under its path and
+Store equivalent. Each parameter's value is held in OpenBao's KV-v2 `params` mount under its path and
 materialized (with every other parameter in the namespace) into a per-namespace
 `openinfra-parameters` Secret that applications read at boot.
 
-It rides the opt-in **`encryption`** component (Vault). Enable it with `components.encryption: true`.
+It rides the opt-in **`encryption`** component, whose key service is [OpenBao](openbao.md). Enable it
+with `components.openbao: true` and `components.encryption: true`.
 
 ```yaml
 apiVersion: openinfra.dev/v1
@@ -20,7 +21,7 @@ spec:
 ## Value by reference (populate out-of-band)
 
 `value` is **optional**. Omit it to declare a parameter — its `path`, `type`, and other metadata —
-*without* putting the value in the manifest, and populate the value out-of-band into the same Vault
+*without* putting the value in the manifest, and populate the value out-of-band into the same OpenBao
 path instead (`params/<namespace><path>`, key `value`). The reconciler materializes it into the
 namespace Secret once present; until then the parameter is simply absent from the Secret (eventually
 consistent, never an empty env var). This is the AWS SSM model — the value lives only where
@@ -32,7 +33,7 @@ kind: Parameter
 metadata: { name: db-password, namespace: shop }
 spec:
   path: /app/db/password
-  type: SecureString        # value omitted — put it in Vault at params/shop/app/db/password (key: value)
+  type: SecureString        # value omitted — put it in OpenBao at params/shop/app/db/password (key: value)
 ```
 
 An inline `value` and value-by-reference can be mixed freely within a namespace.
@@ -54,25 +55,25 @@ spec:
 
 ## Hierarchy, types, and tiers
 
-- **Hierarchy** is the path convention. In Vault the tree lives at `params/<namespace>/<path>`, so an
+- **Hierarchy** is the path convention. In OpenBao the tree lives at `params/<namespace>/<path>`, so an
   SSM `GetParametersByPath`-style read is a KV list under a prefix.
-- **`type`** is `String` or `SecureString`. Both are stored in Vault (encrypted at rest) and
+- **`type`** is `String` or `SecureString`. Both are stored in OpenBao (encrypted at rest) and
   materialized into a Kubernetes Secret; the type is advisory metadata surfaced in the console.
 - **`tier`** (`Standard` / `Advanced`) mirrors SSM's tiers as metadata.
 
 ## Reconciliation
 
-A CronJob (`parameter-reconciler`, every 5 minutes) logs in to Vault with its own ServiceAccount
+A CronJob (`parameter-reconciler`, every 5 minutes) logs in to OpenBao with its own ServiceAccount
 (no stored credential), writes each value to the KV tree, and rebuilds the namespace Secret.
 Changing a value takes effect on the next reconcile; a rolling restart of the consuming workload
-picks up the new environment. Its Vault policy is scoped to the `params/*` mount only.
+picks up the new environment. Its OpenBao policy is scoped to the `params/*` mount only.
 
 **Status:** the CR, composition, and reconciler are verified live (the reconciler runs and attempts a
-Vault login); the Vault-backed write + Secret materialization are verified on a **fresh** install,
-where the Vault setup provisions the `params` mount and the reconciler's auth role as part of the
-`encryption` component. **On an already-initialized Vault**, the setup Job short-circuits (it only
-configures on first init, and the root token is discarded after), so adding this feature to an
-existing cluster needs an operator to provision the `params` KV-v2 mount, the `parameter-reconciler`
-policy, and its Kubernetes-auth role once, with a Vault admin token (the commands are in
+login to the key service); the KV write + Secret materialization were verified on a **fresh** install
+(when the key service was still HashiCorp Vault), where the setup Job provisions the `params` mount and
+the reconciler's auth role as part of the `encryption` component. The setup Job provisions them on an
+existing install too: after its first run it logs in as `vault-config`, its configuration identity, on
+every sync ([encryption.md](encryption.md#bringing-the-key-service-up-operator-one-time)); an install
+whose setup Job has no `vault-config` identity yet needs the bootstrap token once (the commands are in
 `platform/security/vault.yaml`). Values are set inline on the CR (`spec.value`) today; a `valueFrom`
 secret reference is a planned follow-on.

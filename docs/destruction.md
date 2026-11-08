@@ -5,7 +5,7 @@ never quite certain. **Cryptographic erase** (NIST SP 800-88, MP-6) is the fast,
 alternative: if the data was only ever stored encrypted, destroying the key makes every copy —
 primary, replica, backup, snapshot — permanently unrecoverable in one irreversible act.
 
-open-infra builds this on [customer-owned keys](encryption.md): a `kind: EncryptionKey` is a Vault
+open-infra builds this on [customer-owned keys](encryption.md): a `kind: EncryptionKey` is an OpenBao
 Transit key, and `kind: Destruction` destroys it.
 
 ```yaml
@@ -44,7 +44,7 @@ see [`encryption.md`](encryption.md)) picks up the request and:
    `open-infra-console/openinfra-destruction-config` (`data.immediate: "<namespace>/<name>,…"`), which
    tenants cannot write; the encryption verification probe does this for its throwaway key.
 3. **Crypto-erases** — records what it observes (the key's version count) as `InProgress` *before*
-   deleting, then sets `deletion_allowed` and deletes the Vault Transit key. Every DEK/volume/object
+   deleting, then sets `deletion_allowed` and deletes the OpenBao Transit key. Every DEK/volume/object
    wrapped by it is now undecryptable, and the key is never re-created for that EncryptionKey (a new
    EncryptionKey of the same name, created later, gets a new key). If the key is **absent and no destruction was in progress**
    (e.g. a typo'd or never-existent key name), it does **not** proceed — it records `Error` and issues
@@ -75,7 +75,7 @@ see [`encryption.md`](encryption.md)) picks up the request and:
    write back onto the `Destruction` CR, so the CR's own `status.phase` stays `Pending` even after a
    successful erase. Read completion from the **console** or the **WORM destruction certificate** (the
    authoritative evidence), not from `kubectl get destruction`. (The async destroyer runs with least
-   privilege — Vault + the state ConfigMap + the WORM store — and deliberately has no write access to the
+   privilege — OpenBao + the state ConfigMap + the WORM store — and deliberately has no write access to the
    CR's status.)
 
 The `Destruction` object's own create/complete lifecycle is captured in the API-server audit log,
@@ -96,14 +96,14 @@ Destroying a key is irreversible, so the power is fenced hard:
   `kms:ScheduleKeyDeletion` on its own account's keys. As with KMS, the erase waits out a waiting
   period (7-30 days, default 30), during which deleting the Destruction cancels it.
 - **Typo-guard** — the `confirm` field must repeat the key name.
-- **Separated privilege** — only the destroyer's Vault role can delete a key; day-to-day key
+- **Separated privilege** — only the destroyer's OpenBao role can delete a key; day-to-day key
   management (the reconciler) cannot. The destroyer can delete keys but cannot read/export their
   material — it can destroy, not exfiltrate.
 
 ## Requirements & honesty
 
-- Requires the **encryption** component (Vault) and **audit off-siting** (the certificate's WORM
-  sink) to be enabled.
+- Requires the **encryption** component (on [OpenBao](openbao.md), `components.openbao`) and **audit
+  off-siting** (the certificate's WORM sink) to be enabled.
 - Crypto-erase only sanitizes data that was **encrypted with that key**. Plaintext copies, or data
   encrypted under a different/again-wrapped key, are out of scope — classify and encrypt data (see
   [`data-classification.md`](data-classification.md), [`encryption.md`](encryption.md)) for the
@@ -115,9 +115,11 @@ Destroying a key is irreversible, so the power is fenced hard:
   let the etcd snapshots taken while it existed age out, or wait out their retention.
 - **Live-verified** end-to-end by [`probe/encryption-vault.sh`](../probe/encryption-vault.sh) — a
   re-runnable gate: provision a real Transit key → byte-identical round-trip → crypto-erase to
-  unrecoverable + destruction certificate. Remains **opt-in + operator-gated** (the customer holds the
-  Vault unseal keys). The at-rest *storage wiring* it protects (etcd KMS / MinIO SSE / Longhorn LUKS)
-  is a separate operator runbook, not part of this verification — see [`encryption.md`](encryption.md).
+  unrecoverable + destruction certificate. That run was against HashiCorp Vault, the key service before
+  OpenBao; the keys moved to OpenBao unchanged ([`openbao.md`](openbao.md#moving-the-keys-from-vault)),
+  and the probe now targets OpenBao's active member. Remains **opt-in + operator-gated** (the
+  customer holds the unseal host's keys and OpenBao's recovery keys). The at-rest *storage wiring* it
+  protects (etcd KMS / MinIO SSE / Longhorn LUKS) is a separate operator runbook, not part of this verification — see [`encryption.md`](encryption.md).
 
 ## Control mapping
 

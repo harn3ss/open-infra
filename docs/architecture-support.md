@@ -27,7 +27,7 @@ Verified on a native Apple Silicon (aarch64) node (evidence: [`docs/arm64/`](arm
   Cilium (kube-proxy replacement), KubeVirt/CDI, Argo CD, and the app-of-apps are all arm64-clean.
   So an arm64 cluster **boots and self-manages**.
 - **Upstream-backed / orchestration kinds** — the kinds whose data plane is upstream software
-  (crossplane compositions, cert-manager, CNPG, Longhorn, Vault, Samba, Knative, chaos-mesh, …),
+  (crossplane compositions, cert-manager, CNPG, Longhorn, OpenBao, Samba, Knative, chaos-mesh, …),
   which publish arm64. These are marked `untested` below only because the survey's runtime pass did
   not exercise them end-to-end (an environment limitation, not an arm64 one); their images are
   arm64-available.

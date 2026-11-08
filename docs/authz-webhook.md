@@ -158,7 +158,7 @@ moment RBAC leaves. Measured on the live cluster (read-only), the surface is con
   `system:masters` (break-glass), the `kube-apiserver` user (`system:kubelet-api-admin`),
   `velero/velero-server`, `longhorn-system/longhorn-support-bundle`, `kube-system/helm-traefik(-crd)`,
   `knative-serving/controller`, and the `crossplane:masters` group — plus the platform's own
-  controllers (kubevirt, cdi, cert-manager, cnpg, mariadb-operator, metallb, nats, vault, minio) and
+  controllers (kubevirt, cdi, cert-manager, cnpg, mariadb-operator, metallb, nats, openbao, minio) and
   the 14 Crossplane provider SAs.
 
 This list is the true gate on removing RBAC from the chain (Phase 2 step 6): until each holder has an

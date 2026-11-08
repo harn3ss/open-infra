@@ -1,16 +1,17 @@
 # Private certificate authority — `kind: CertificateAuthority`
 
-A managed **private CA** — the ACM-Private-CA-shaped primitive. A `CertificateAuthority` is a Vault
+A managed **private CA** — the ACM-Private-CA-shaped primitive. A `CertificateAuthority` is an OpenBao
 PKI secrets mount: it holds a CA certificate and issues short-lived leaf certificates for names under
 the domains you allow (NIST SP 800-53 **SC-12**, **SC-13**, **SC-17**). You can stand up a self-signed
 **root**, or an **intermediate** signed by a root you already run, and then issue and revoke leaf certs
 against it from the console.
 
 > **Opt-in, off by default, experimental.** This is the `pki` component. It **requires the
-> [`encryption`](encryption.md) component** because it reuses that stack's Vault and its Kubernetes-auth
-> wiring. Enable both with `components.encryption: true` and `components.pki: true`, then re-run
-> `install.sh`. It is shipped built + reviewed but **not** live-verified in this repo's reference
-> environment; treat the PKI-init steps below as an **operator runbook**.
+> [`encryption`](encryption.md) component** because it reuses that stack's key service,
+> [OpenBao](openbao.md), and its Kubernetes-auth wiring. Enable them with `components.openbao: true`,
+> `components.encryption: true` and `components.pki: true`, then re-run `install.sh`. It is shipped
+> built + reviewed but **not** live-verified in this repo's reference environment; treat the PKI-init
+> steps below as an **operator runbook**.
 
 ## `kind: CertificateAuthority`
 
@@ -60,8 +61,8 @@ The reconciler reports readiness on the resource:
 
 | Field | Meaning |
 |---|---|
-| `ready` | The Vault PKI mount is provisioned and the CA cert exists. |
-| `pkiMount` | The Vault mount path, `pki-<name>`. |
+| `ready` | The OpenBao PKI mount is provisioned and the CA cert exists. |
+| `pkiMount` | The OpenBao mount path, `pki-<name>`. |
 | `caCertPem` | The CA certificate, PEM. Distribute this to trust stores. |
 | `serial` | The CA certificate's serial number. |
 | `notAfter` | The CA certificate's expiry. |
@@ -71,19 +72,19 @@ The reconciler reports readiness on the resource:
 ```
 CertificateAuthority (claim)
    └─ composition renders  ConfigMap openinfra-ca-<name>        (spec mirror, read by the BFF)
-   ca-reconciler ──────────▶ Vault: enable pki-<name>, generate root/intermediate CA,
+   ca-reconciler ──────────▶ OpenBao: enable pki-<name>, generate root/intermediate CA,
                               write the `issuer` role + config/urls
                             ConfigMap openinfra-ca-state-<name> (ready / caCertPem / serial / notAfter)
-   ca-issuer (Deployment) ─▶ Vault: pki-<name>/issue/issuer, pki-<name>/revoke  (leaf certs only)
+   ca-issuer (Deployment) ─▶ OpenBao: pki-<name>/issue/issuer, pki-<name>/revoke  (leaf certs only)
    console BFF /api/ca ────▶ reads the two ConfigMaps; proxies issue/revoke to ca-issuer (SAR-gated)
 ```
 
-Each CA gets its **own Vault PKI mount**, `pki-<name>`, and a single Vault PKI **role named `issuer`**
+Each CA gets its **own OpenBao PKI mount**, `pki-<name>`, and a single OpenBao PKI **role named `issuer`**
 whose `allowed_domains` come from `spec.allowedDomains` with `allow_subdomains=true`. Leaf certificates
-are always issued through that role, so the allow-list is enforced by Vault, not by the caller.
+are always issued through that role, so the allow-list is enforced by OpenBao, not by the caller.
 
 Two ConfigMaps in `open-infra-console` carry the CA's state to the console (the console SA never talks
-to Vault):
+to OpenBao):
 
 - **`openinfra-ca-<name>`** — the spec mirror the composition renders (`commonName`, `hierarchy`,
   `parent`, `keyType`, `maxTtl`, `allowedDomains` comma-joined, `pkiMount`), labelled
@@ -91,12 +92,12 @@ to Vault):
 - **`openinfra-ca-state-<name>`** — written by `ca-reconciler` (`ready`, `pkiMount`, `caCertPem`,
   `serial`, `notAfter`).
 
-## The two Vault identities (the security crux)
+## The two OpenBao identities (the security crux)
 
 Provisioning a CA and issuing leaf certificates are **different privileges**, so they run as **two
-ServiceAccounts** in `crossplane-system`, each bound to a least-privilege Vault policy via Kubernetes
-auth — the same pattern as the encryption stack's reconciler/destroyer. Neither identity stores a Vault
-credential: both log in with their own SA token.
+ServiceAccounts** in `crossplane-system`, each bound to a least-privilege OpenBao policy via Kubernetes
+auth — the same pattern as the encryption stack's reconciler/destroyer. Neither identity stores an
+OpenBao credential: both log in with their own SA token.
 
 As in the Transit policies, **`+` matches exactly one path segment**. That is the whole trick: a grant
 on `pki-+/issue/issuer` reaches every CA's issue endpoint but can never widen to `pki-+/root/generate`,
@@ -145,12 +146,12 @@ Each policy is bound to its SA by a Kubernetes-auth role (mirroring the `encrypt
 `encryptionkey-destroyer` roles in `platform/security/vault.yaml`):
 
 ```sh
-vault write auth/kubernetes/role/ca-provisioner \
+bao write auth/kubernetes/role/ca-provisioner \
   bound_service_account_names=ca-provisioner \
   bound_service_account_namespaces=crossplane-system \
   token_policies=ca-provisioner token_ttl=20m
 
-vault write auth/kubernetes/role/ca-issuer \
+bao write auth/kubernetes/role/ca-issuer \
   bound_service_account_names=ca-issuer \
   bound_service_account_namespaces=crossplane-system \
   token_policies=ca-issuer token_ttl=10m
@@ -158,9 +159,10 @@ vault write auth/kubernetes/role/ca-issuer \
 
 ## Bringing PKI up (operator, one-time)
 
-PKI rides on the encryption stack's Vault, so bring Vault up first
-([docs/encryption.md → Bringing Vault up](encryption.md#bringing-vault-up-operator-one-time)):
-initialize + unseal Vault and give the setup Job its short-lived `vault-bootstrap` token. With
+PKI rides on the encryption stack's key service, OpenBao, so bring it up first
+([docs/encryption.md → Bringing the key service up](encryption.md#bringing-the-key-service-up-operator-one-time)):
+turn OpenBao on and initialize it ([docs/openbao.md → Turning it on](openbao.md#turning-it-on)) and give
+the setup Job its short-lived `vault-bootstrap` token. With
 `components.pki: true`, the setup step also enables a PKI mount per CA and writes the two policies and
 their Kubernetes-auth roles above. As with Transit, **revoke and delete `vault-bootstrap`** once setup
 succeeds — it is a root/admin token needed only for bootstrap.
@@ -171,57 +173,58 @@ CA must be `ready` first.
 
 ## Issuing and revoking certificates
 
-Issue and revoke happen **synchronously** through the console, never by the console touching Vault:
+Issue and revoke happen **synchronously** through the console, never by the console touching OpenBao:
 
 1. The console calls the BFF: `POST /api/ca/{namespace}/{name}/issue` (or `/revoke`).
 2. The BFF runs a **SubjectAccessReview** for the caller, then reverse-proxies the request to the
    `ca-issuer` Service (`ca-issuer:8080` in `crossplane-system`).
-3. `ca-issuer` logs into Vault as the `ca-issuer` SA and calls `pki-<ca>/issue/issuer` (or
+3. `ca-issuer` logs into OpenBao as the `ca-issuer` SA and calls `pki-<ca>/issue/issuer` (or
    `pki-<ca>/revoke`).
 
 `POST /issue` takes `{ ca, commonName, ttl, altNames[] }` and returns
 `{ certificate, issuingCa, caChain[], privateKey, serialNumber }`. The private key is generated by
-Vault, streamed to the caller once, and **never logged or persisted** by `ca-issuer` — if you don't
+OpenBao, streamed to the caller once, and **never logged or persisted** by `ca-issuer` — if you don't
 capture it on that response you must re-issue. `POST /revoke` takes `{ ca, serialNumber }`.
 
 `GET /api/ca` lists CAs by reading the `openinfra-ca-*` and `openinfra-ca-state-*` ConfigMaps — it does
-not call Vault at all.
+not call OpenBao at all.
 
 ## High availability
 
 `ca-issuer` is a **shared control-plane component** — one issuer serves every CA — so it runs HA by
 default: **two replicas** (`ca-issuer.yaml`), spread across nodes, with a PodDisruptionBudget keeping
-one available through a drain/upgrade. Issue/revoke is stateless — every replica logs into Vault with
-the same SA and reads CA state from Vault — so the replicas need no coordination and there is no leader.
+one available through a drain/upgrade. Issue/revoke is stateless — every replica logs into OpenBao with
+the same SA and reads CA state from OpenBao — so the replicas need no coordination and there is no leader.
 (There is deliberately no per-CA replica knob: one CA's setting could not sensibly scale a Deployment
 shared by all of them.)
 
-The CA certificate itself is generated **once** by `ca-reconciler` and then lives in Vault; its
-durability is Vault's, not the issuer Deployment's. Issuer HA does not replicate the CA — it keeps the
-issue endpoint reachable while a node is down.
+The CA certificate itself is generated **once** by `ca-reconciler` and then lives in OpenBao; its
+durability is OpenBao's (three members on integrated Raft storage), not the issuer Deployment's.
+Issuer HA does not replicate the CA — it keeps the issue endpoint reachable while a node is down.
 
 ## Honesty status
 
 - **Shipped + reviewed, not live-verified here.** The composition, reconciler, `ca-issuer`, BFF routes
-  and console pages are built and wired; the reference environment does not have Vault initialized, so
-  the end-to-end issue/revoke path has not been exercised in this repo.
-- **Requires Vault (the `encryption` component).** Without an initialized, unsealed Vault there is no
-  KMS to hold the CA, and applying a `CertificateAuthority` will sit `ready: false`.
+  and console pages are built and wired; the end-to-end issue/revoke path has not been exercised in
+  this repo.
+- **Requires OpenBao and the `encryption` component.** Without an initialized, unsealed OpenBao there is
+  no KMS to hold the CA, and applying a `CertificateAuthority` will sit `ready: false`.
 - **Trust distribution is yours.** open-infra issues certificates; getting `caCertPem` into the trust
   stores of the machines that must trust it is an operator step (like any private CA).
-- **Root key storage is Vault's default.** Keys live in the PKI mount; open-infra does not add an HSM
+- **Root key storage is OpenBao's default.** Keys live in the PKI mount; open-infra does not add an HSM
   or offline-root ceremony. For a high-assurance root, generate it offline and bring up only an
   `intermediate` here.
 
 ## Control mapping
 
-- **SC-12 / SC-13** cryptographic key establishment & management — per-CA Vault PKI mount.
-- **SC-17** public key infrastructure certificates — issue/revoke against a private CA with a
-  Vault-enforced domain allow-list.
+- **SC-12 / SC-13** cryptographic key establishment & management — per-CA OpenBao PKI mount.
+- **SC-17** public key infrastructure certificates — issue/revoke against a private CA with an
+  OpenBao-enforced domain allow-list.
 - **AC-6 / least privilege** — split `ca-provisioner` (mint CAs) and `ca-issuer` (mint leaves) so
-  neither identity holds both privileges; see [the two Vault identities](#the-two-vault-identities-the-security-crux).
+  neither identity holds both privileges; see [the two OpenBao identities](#the-two-openbao-identities-the-security-crux).
 
 ## See also
 
-- [Encryption with customer-owned keys](encryption.md) — the Vault stack this reuses.
+- [Encryption with customer-owned keys](encryption.md) — the stack this reuses, on
+  [OpenBao](openbao.md).
 - [Security & compliance](security-and-compliance.md) — how the control mappings fit together.

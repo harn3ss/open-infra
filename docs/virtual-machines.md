@@ -499,7 +499,7 @@ RWX block so they live-migrate with the VM, else local-path) and is retained acr
 stop/start. The guest partitions/formats/mounts them.
 
 **Encryption at rest.** Set `encrypted: true` + `encryptionKey: <kind: EncryptionKey name>` to put a
-data disk on LUKS (Longhorn `longhorn-encrypted`), keyed by a Vault Transit data key wrapped by that
+data disk on LUKS (Longhorn `longhorn-encrypted`), keyed by an OpenBao Transit data key wrapped by that
 `EncryptionKey` — destroying the key crypto-erases the disk (the EC2 `Ebs.Encrypted` analog; `cfn` maps
 an encrypted `BlockDeviceMapping` whose `KmsKeyId` references an in-stack `AWS::KMS::Key`). Requires the
 opt-in encryption component. An encrypted disk is **RWO** (there is no encrypted+migratable class), so on

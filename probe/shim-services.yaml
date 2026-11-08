@@ -55,12 +55,12 @@ services:
     sigv4: [iam]
     probes: [iam, iam-timecond, iam-username-like, iam-login-profile, iam-mfa]
   - name: KMS
-    cell: "→ Vault Transit"
+    cell: "→ OpenBao Transit"
     tier: proven
     sigv4: [kms]
     probes: [kms, kms-keypolicy]
   - name: Secrets Manager
-    cell: "→ Vault-Transit-encrypted, versioned"
+    cell: "→ OpenBao-Transit-encrypted, versioned"
     tier: proven
     sigv4: [secretsmanager]
     probes: [secretsmanager]
