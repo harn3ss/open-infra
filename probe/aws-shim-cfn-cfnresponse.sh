@@ -148,11 +148,28 @@ Outputs:
   NodeId: { Value: !Ref NodeGreeting }
 YAML
 
+# wait_stack <stack>: its status once no operation is in progress.
+wait_stack() {
+  local st=""
+  for _ in $(seq 1 120); do
+    st="$("${A[@]}" cloudformation describe-stacks --stack-name "$1" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
+    case "$st" in *_IN_PROGRESS|"") sleep 5 ;; *) break ;; esac
+  done
+  printf '%s' "$st"
+}
+
 log "1. inline cfn-response and cfnresponse handlers"
+# create-stack, as AWS's custom-resource examples deploy: a custom resource's Data is known once it has run,
+# so a change set's plan cannot resolve a GetAtt on it ahead of time.
 for i in $(seq 1 5); do # a freshly minted deployer's authority reaches every check within a minute or so
-  "${A[@]}" cloudformation deploy --template-file "$W/ok.yaml" --stack-name "$STACK" --capabilities CAPABILITY_IAM >"$W/d" 2>&1 && break
-  [ "$i" = 5 ] && fail "the stack did not deploy: $(tail -c 600 "$W/d") $("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatusReason' --output text 2>/dev/null)"
-  "${A[@]}" cloudformation delete-stack --stack-name "$STACK" >/dev/null 2>&1; sleep 25
+  if "${A[@]}" cloudformation create-stack --stack-name "$STACK" --template-body "file://$W/ok.yaml" --capabilities CAPABILITY_IAM >"$W/d" 2>&1; then
+    st="$(wait_stack "$STACK")"
+    [ "$st" = CREATE_COMPLETE ] && break
+  fi
+  [ "$i" = 5 ] && fail "the stack did not deploy: $(tail -c 600 "$W/d") ${st:-} $("${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatusReason' --output text 2>/dev/null)"
+  "${A[@]}" cloudformation delete-stack --stack-name "$STACK" >/dev/null 2>&1
+  for _ in $(seq 1 60); do "${A[@]}" cloudformation describe-stacks --stack-name "$STACK" >/dev/null 2>&1 || break; sleep 3; done
+  sleep 20
 done
 out() { "${A[@]}" cloudformation describe-stacks --stack-name "$1" --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue" --output text; }
 CONSUMER="$(out "$STACK" Consumer)"; NODEID="$(out "$STACK" NodeId)"
