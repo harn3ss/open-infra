@@ -638,7 +638,7 @@ authorized against its creator's authority when it is created — so `GetPolicy`
   versions.
 - **What the shim reads:** the function's Knative Service (its status) and the revision's metadata (when it
   was created), each by name, with `get` on `services` and `revisions` in `serving.knative.dev`.
-- **Tested:** `probe/aws-shim-lambda-versions.sh` (pending: not yet run live).
+- **Tested:** `probe/aws-shim-lambda-versions.sh`.
 
 ### AppSync (GraphQL; over open-appsync — slice 1 runs live, experimental)
 

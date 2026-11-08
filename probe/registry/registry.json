@@ -1031,7 +1031,8 @@
         "lambda",
         "lambda-execution-role",
         "lambda-timeout",
-        "lambda-api"
+        "lambda-api",
+        "lambda-versions"
       ],
       "refused": [],
       "service": "Lambda",

@@ -273,7 +273,7 @@ ok "publish-version and create-alias refused with AccessDeniedException; list-ve
 
 log "7. delete-alias and a version"
 "${A[@]}" lambda delete-alias --function-name "$FN" --name live 2>"$W/da.err" || fail "delete-alias failed: $(tail -c 300 "$W/da.err")"
-"${A[@]}" lambda delete-function --function-name "$FN" --qualifier 2 2>"$W/dv.err" || fail "deleting version 2 failed: $(tail -c 300 "$W/dv.err")"
+"${A[@]}" lambda delete-function --function-name "$FN" --qualifier 2 >/dev/null 2>"$W/dv.err" || fail "deleting version 2 failed: $(tail -c 300 "$W/dv.err")"
 [ "$("${A[@]}" lambda list-versions-by-function --function-name "$FN" --query 'join(`,`, Versions[].Version)' --output text)" = '$LATEST,1' ] \
   || fail "after deleting version 2 the versions are not \$LATEST,1"
 if "${A[@]}" lambda get-function --function-name "$FN" --qualifier 2 >/dev/null 2>"$W/g2.err"; then fail "version 2 is still there"; fi
