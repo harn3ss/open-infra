@@ -5,7 +5,7 @@
 #
 #   scripts/openbao-pki.sh prepare       create the openbao-pki pod and its permissions
 #   scripts/openbao-pki.sh run           the intermediates in OpenBao, the ACM CA imported, throwaway checks
-#   scripts/openbao-pki.sh rotate NAME   a new intermediate for platform or aws-endpoints
+#   scripts/openbao-pki.sh rotate NAME [ROOT_SECRET]   a new intermediate for platform or aws-endpoints
 #   scripts/openbao-pki.sh status        what was done (public data only)
 #   scripts/openbao-pki.sh cleanup       delete the pod and its permissions
 #
@@ -112,7 +112,7 @@ status() {
 case "${1:-}" in
   prepare) prepare ;;
   run) $KUBECTL -n "$NS" exec openbao-pki -c pki -- python3 /cfg/pki.py setup ;;
-  rotate) $KUBECTL -n "$NS" exec openbao-pki -c pki -- python3 /cfg/pki.py rotate "${2:?platform or aws-endpoints}" ;;
+  rotate) $KUBECTL -n "$NS" exec openbao-pki -c pki -- python3 /cfg/pki.py rotate "${2:?platform or aws-endpoints}" ${3:+"$3"} ;;
   status) status ;;
   cleanup)
     $KUBECTL -n "$NS" delete pod openbao-pki --ignore-not-found --wait=true >/dev/null

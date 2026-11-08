@@ -9,8 +9,10 @@
                never shown; its signing role gets the CA's own permitted domains. Each mount then signs a
                throwaway certificate, checked to chain to the same root. Idempotent: a mount with an issuer
                is left as it is.
-  rotate NAME  A new intermediate for openinfra/pki-NAME (platform or aws-endpoints), signed the same way, made
-               the mount's default issuer; the previous one keeps verifying what it signed.
+  rotate NAME [ROOT_SECRET]
+               A new intermediate for openinfra/pki-NAME (platform or aws-endpoints), signed the same way by the
+               root in ROOT_SECRET (in cert-manager; restored from the offline copy once the roots are offline),
+               made the mount's default issuer; the previous one keeps verifying what it signed.
 
 Needs a root token (BAO_TOKEN, from Secret openbao-bootstrap) and kubectl with: CertificateRequests and Issuers
 in cert-manager, the ClusterIssuers, EnvironmentConfig openinfra-platform-ca (the published roots), the ACM
@@ -81,13 +83,15 @@ def issuers(mount):
 PUBLISHED = {"openinfra-ca": "platformRootCA", "openinfra-aws-endpoints": "awsEndpointsCA"}
 
 
-def root_of(issuer):
+def root_of(issuer, secret=None):
     """(the root's Secret name, its certificate). The certificate is read where the platform publishes it
-    (EnvironmentConfig openinfra-platform-ca, public), so no Secret holding a root key is ever read here."""
-    ci = kget("clusterissuer", issuer)
-    secret = ci["spec"].get("ca", {}).get("secretName")
+    (EnvironmentConfig openinfra-platform-ca, public), so no Secret holding a root key is ever read here. Once
+    the issuer signs through OpenBao it names no Secret: a rotation then names the root's Secret itself (after
+    the roots went offline, one restored for the rotation from the operator's offline copy)."""
     if not secret:
-        raise SystemExit("ClusterIssuer %s is not a CA issuer (already moved?)" % issuer)
+        secret = kget("clusterissuer", issuer)["spec"].get("ca", {}).get("secretName")
+    if not secret:
+        raise SystemExit("ClusterIssuer %s signs through OpenBao: name the root's Secret (rotate NAME ROOT_SECRET)" % issuer)
     pem = kget("environmentconfig", "openinfra-platform-ca").get("data", {}).get(PUBLISHED[issuer], "")
     if "BEGIN CERTIFICATE" not in pem:
         raise SystemExit("the root of %s is not published (EnvironmentConfig openinfra-platform-ca)" % issuer)
@@ -123,9 +127,9 @@ def sign_intermediate(name, csr_pem, root_secret):
         kubectl("-n", CM_NS, "delete", "issuer", issuer, "--ignore-not-found", check=False)
 
 
-def new_intermediate(name, key_name):
+def new_intermediate(name, key_name, root_secret=None):
     mount, role, issuer, cn = CAS[name]
-    root_secret, root_pem = root_of(issuer)
+    root_secret, root_pem = root_of(issuer, root_secret)
     csr = bao("POST", mount + "/intermediate/generate/internal",
               {"common_name": cn, "key_type": "ec", "key_bits": 256, "key_name": key_name})["data"]["csr"]
     cert, ca = sign_intermediate(name, csr, root_secret)
@@ -187,40 +191,43 @@ def setup():
         roots[name] = root
         note("%s: intermediate generated in OpenBao, signed by its root, default issuer of %s" % (name, mount),
              mount=mount, issuer_id=iid)
-    # ACM: the existing intermediate, imported as it is.
+    # ACM: the existing intermediate, imported as it is. Resumable: an import already done is completed.
     mount = "openinfra/pki-acm"
     acm = kget("clusterissuer", "openinfra-acm") if kubectl("get", "clusterissuer", "openinfra-acm", "--ignore-not-found", "-o", "name").strip() else None
-    if acm and not issuers(mount):
+    if acm:
         secret = acm["spec"].get("ca", {}).get("secretName")
-        if not secret:
-            raise SystemExit("ClusterIssuer openinfra-acm is not a CA issuer (already moved?)")
-        data = kget("-n", CM_NS, "secret", secret)["data"]
-        bundle = (base64.b64decode(data["tls.key"]).decode().strip() + "\n" + base64.b64decode(data["tls.crt"]).decode().strip()
-                  + "\n" + base64.b64decode(data.get("ca.crt", "")).decode().strip() + "\n")
-        res = bao("POST", mount + "/issuers/import/bundle", {"pem_bundle": bundle})["data"]
-        del bundle, data
-        keyed = [i for i in (res.get("imported_issuers") or []) if bao("GET", "%s/issuer/%s" % (mount, i))["data"].get("key_id")]
+        keyed = [i for i in issuers(mount) if bao("GET", "%s/issuer/%s" % (mount, i))["data"].get("key_id")]
+        if not keyed:
+            if not secret:
+                raise SystemExit("ClusterIssuer openinfra-acm is not a CA issuer, and openinfra/pki-acm holds no CA")
+            data = kget("-n", CM_NS, "secret", secret)["data"]
+            bundle = (base64.b64decode(data["tls.key"]).decode().strip() + "\n" + base64.b64decode(data["tls.crt"]).decode().strip()
+                      + "\n" + base64.b64decode(data.get("ca.crt", "")).decode().strip() + "\n")
+            res = bao("POST", mount + "/issuers/import/bundle", {"pem_bundle": bundle})["data"]
+            del bundle, data
+            keyed = [i for i in (res.get("imported_issuers") or []) if bao("GET", "%s/issuer/%s" % (mount, i))["data"].get("key_id")]
         if len(keyed) != 1:
-            raise SystemExit("the ACM import produced no issuer with its key")
-        imported = bao("GET", "%s/issuer/%s" % (mount, keyed[0]))["data"]["certificate"]
-        current = base64.b64decode(kget("-n", CM_NS, "secret", secret)["data"]["tls.crt"]).decode()
-        if pem_first(imported).strip() != pem_first(current).strip():
-            raise SystemExit("the imported ACM certificate differs from the one in use")
-        bao("POST", mount + "/issuer/" + keyed[0], {"issuer_name": "acm"})
+            raise SystemExit("openinfra/pki-acm has %d issuers with a key, not one" % len(keyed))
+        if secret:
+            imported = bao("GET", "%s/issuer/%s" % (mount, keyed[0]))["data"]["certificate"]
+            current = base64.b64decode(kget("-n", CM_NS, "secret", secret)["data"]["tls.crt"]).decode()
+            if pem_first(imported).strip() != pem_first(current).strip():
+                raise SystemExit("the ACM certificate in OpenBao differs from the one in use")
+        # Its certificate signs certificates only (no CRLSign key usage), so it is not a CRL signer here.
+        bao("POST", mount + "/issuer/" + keyed[0], {"issuer_name": "acm", "usage": "read-only,issuing-certificates"})
         bao("POST", mount + "/config/issuers", {"default": keyed[0]})
         domains = []
         for c in kget("-n", CM_NS, "certificates")["items"]:
-            if c["spec"].get("secretName") == secret:
+            if secret and c["spec"].get("secretName") == secret:
                 domains = c["spec"].get("nameConstraints", {}).get("permitted", {}).get("dnsDomains", [])
-        if not domains:
-            raise SystemExit("no validated domains found for the ACM CA")
-        bao("POST", mount + "/roles/acm", {"allowed_domains": ",".join(domains), "allow_subdomains": True, "allow_bare_domains": True,
-                                           "allow_wildcard_certificates": True, "allow_ip_sans": False, "server_flag": True,
-                                           "client_flag": False, "key_type": "any", "max_ttl": "8760h", "require_cn": False})
-        note("acm: the existing intermediate imported as it is (same certificate), default issuer of %s; its role allows %d validated domain(s)"
-             % (mount, len(domains)), mount=mount)
-    elif acm:
-        note("acm: %s already has an issuer, left as it is" % mount)
+        if domains:
+            bao("POST", mount + "/roles/acm", {"allowed_domains": ",".join(domains), "allow_subdomains": True, "allow_bare_domains": True,
+                                               "allow_wildcard_certificates": True, "allow_ip_sans": False, "server_flag": True,
+                                               "client_flag": False, "key_type": "any", "max_ttl": "8760h", "require_cn": False})
+        elif not bao("LIST", mount + "/roles").get("data", {}).get("keys"):
+            raise SystemExit("no validated domains found for the ACM CA, and it has no role yet")
+        note("acm: the existing intermediate is in OpenBao as it was (same certificate), default issuer of %s; its role allows %s validated domain(s)"
+             % (mount, len(domains) or "the recorded"), mount=mount)
     roots_configmap(roots["platform"], roots.get("aws-endpoints"))
     note("the roots' certificates (public) are in configmap %s/openinfra-roots" % CM_NS)
     for name, cn in (("platform", "pki-check.svc.cluster.local"), ("aws-endpoints", "pki-check.amazonaws.com")):
@@ -231,12 +238,12 @@ def setup():
              chained=ok, chain=chain, root=roots[name])
 
 
-def rotate(name):
+def rotate(name, root_secret=None):
     if name not in CAS:
         raise SystemExit("rotate: platform or aws-endpoints")
     mount = CAS[name][0]
     before = bao("GET", mount + "/issuer/default")["data"]
-    iid, cert, root = new_intermediate(name, "%s-%s" % (name, datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M")))
+    iid, cert, root = new_intermediate(name, "%s-%s" % (name, datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M")), root_secret)
     note("%s: rotated: new intermediate %s is the default issuer; the previous one (%s) keeps verifying"
          % (name, iid, before.get("issuer_id")), new=iid, previous=before.get("issuer_id"))
 
@@ -245,4 +252,4 @@ if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("BAO_TOKEN (a root token) is required")
     cmd = sys.argv[1:] or ["setup"]
-    {"setup": lambda: setup(), "rotate": lambda: rotate(cmd[1] if len(cmd) > 1 else "")}[cmd[0]]()
+    {"setup": lambda: setup(), "rotate": lambda: rotate(cmd[1] if len(cmd) > 1 else "", cmd[2] if len(cmd) > 2 else None)}[cmd[0]]()
