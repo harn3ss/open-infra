@@ -134,6 +134,12 @@ OpenBao fails closed. It never falls back to a static key, a dev mode or an unse
   (`kubectl -n openbao delete pvc data-openbao-<n>`) and its pod: it starts on the new node, joins and
   unseals.
 - **The PC restarts.** Unseal it: `bao operator unseal`, twice, one key each time.
+- **A root token, once.** OpenBao keeps no root token. When configuration needs one (the first run of the
+  configuration Job, the platform CAs' one-time setup), `scripts/openbao-root-token.sh mint` makes one from
+  two recovery keys typed at hidden prompts and puts it straight into Secret `openbao/openbao-bootstrap`;
+  `scripts/openbao-root-token.sh revoke` revokes it with itself and deletes the Secret. Recovery keys reach
+  OpenBao only through each member's loopback recovery listener (`127.0.0.1:8202`, through
+  `kubectl port-forward`): OpenBao refuses root-token generation and rekeying on its API listener.
 - **A new cluster token.** On the PC, `-Action NewClusterToken` revokes the current token and prints a new
   one with the commands that replace the Secret. Run them, then restart the members one at a time
   (`kubectl -n openbao rollout restart statefulset openbao`), since a member reads the token when it

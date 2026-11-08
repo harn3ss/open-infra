@@ -98,11 +98,12 @@ OpenBao outside the cluster, and its recovery keys are the operator's.
 # 2. Initialize OpenBao once, in your own terminal (docs/openbao.md): it prints the recovery keys and an
 #    initial root token. Keep both off the cluster.
 
-# 3. Give the setup Job that root token ONCE, so it can enable Transit and Kubernetes auth:
-kubectl -n vault create secret generic vault-bootstrap --from-literal=token=<the initial root token>
+# 3. Give the configuration Job that root token ONCE, so it can enable Transit and Kubernetes auth (it
+#    goes from your terminal into the Secret; or mint one from recovery keys: scripts/openbao-root-token.sh mint):
+read -rsp "initial root token: " t; echo; printf %s "$t" | kubectl -n openbao create secret generic openbao-bootstrap --from-file=token=/dev/stdin; unset t
 ```
 
-The `vault-transit-setup` Job (in namespace `vault`; it talks to OpenBao) then enables the Transit engine
+The `openbao-setup` Job (namespace `openbao`, a hook of every sync) then enables the Transit engine
 and Kubernetes auth, creates each component's role (bound to its ServiceAccount), and writes
 `vault-config`: the key service's configuration administrator, a Kubernetes-auth role bound to the setup
 Job's own ServiceAccount with short-lived tokens. Every later run of the Job (each sync) logs in as
@@ -112,13 +113,9 @@ sensitive fields HMAC'd, to the members' logs.
 
 ```sh
 # 4. The bootstrap token is a root token and was ONLY needed for the first run: revoke it with itself and
-#    delete the Secret once the setup Job has completed (as AWS has an account's root credentials put
-#    away and its automation use a role). The token goes from the Secret to the active member by pipe,
-#    never onto a command line:
-kubectl -n vault get secret vault-bootstrap -o jsonpath='{.data.token}' | base64 -d \
-  | kubectl -n openbao exec -i "$(kubectl -n openbao get pods -l openbao-active=true -o jsonpath='{.items[0].metadata.name}')" \
-      -c openbao -- sh -c 'BAO_TOKEN="$(cat)" bao token revoke -self'
-kubectl -n vault delete secret vault-bootstrap
+#    delete the Secret once the Job has completed (as AWS has an account's root credentials put away and
+#    its automation use a role). A throwaway pod reads it from the Secret, so it is never on your machine:
+scripts/openbao-root-token.sh revoke
 ```
 
 A root token can be generated again from the recovery keys should recovery need one

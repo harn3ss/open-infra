@@ -74,6 +74,6 @@ login to the key service); the KV write + Secret materialization were verified o
 the reconciler's auth role as part of the `encryption` component. The setup Job provisions them on an
 existing install too: after its first run it logs in as `vault-config`, its configuration identity, on
 every sync ([encryption.md](encryption.md#bringing-the-key-service-up-operator-one-time)); an install
-whose setup Job has no `vault-config` identity yet needs the bootstrap token once (the commands are in
-`platform/security/vault.yaml`). Values are set inline on the CR (`spec.value`) today; a `valueFrom`
+whose configuration Job has no `vault-config` identity yet needs the bootstrap token once
+(`scripts/openbao-root-token.sh`; the Job is `openbao-setup` in `platform/security/openbao.yaml`). Values are set inline on the CR (`spec.value`) today; a `valueFrom`
 secret reference is a planned follow-on.

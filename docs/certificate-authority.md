@@ -162,10 +162,10 @@ bao write auth/kubernetes/role/ca-issuer \
 PKI rides on the encryption stack's key service, OpenBao, so bring it up first
 ([docs/encryption.md → Bringing the key service up](encryption.md#bringing-the-key-service-up-operator-one-time)):
 turn OpenBao on and initialize it ([docs/openbao.md → Turning it on](openbao.md#turning-it-on)) and give
-the setup Job its short-lived `vault-bootstrap` token. With
-`components.pki: true`, the setup step also enables a PKI mount per CA and writes the two policies and
-their Kubernetes-auth roles above. As with Transit, **revoke and delete `vault-bootstrap`** once setup
-succeeds — it is a root/admin token needed only for bootstrap.
+the configuration Job (`openbao-setup`) its one-time `openbao-bootstrap` token. The Job writes the two
+policies and their Kubernetes-auth roles above (each CA's own PKI mount is enabled by the ca-provisioner).
+As with Transit, **revoke and delete `openbao-bootstrap`** once the Job succeeds
+(`scripts/openbao-root-token.sh revoke`): it is a root token needed only for bootstrap.
 
 After that, apply `CertificateAuthority` resources. Roots are self-signed in one step; an intermediate
 is generated as a CSR, signed by its `parent`'s mount, and imported with `set-signed` — so the parent
