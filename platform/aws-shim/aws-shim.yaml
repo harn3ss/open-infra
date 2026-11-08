@@ -198,6 +198,13 @@ rules:
   - apiGroups: [apps]
     resources: [replicasets, deployments]
     verbs: [get]
+  # Lambda PublishVersion (lambda_versions.go): a version is published from the revision the function's
+  # latest change runs, so the shim reads the function's Knative Service (its status: the latest ready and
+  # created revisions) and that revision's metadata (when it was created). get only, each by name. The
+  # Service's spec carries what the kind: Function's does, which the shim already reads.
+  - apiGroups: [serving.knative.dev]
+    resources: [services, revisions]
+    verbs: [get]
   # EC2 RebootInstances: restart a VM in place through KubeVirt's restart subresource. Only once the caller
   # has proven it may change the instance (ec2:RebootInstances on it, and the reboot recorded on its claim
   # with the CALLER's own authority); stopping, starting and terminating change the claim as the caller.

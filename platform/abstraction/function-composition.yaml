@@ -118,12 +118,11 @@ spec:
             {{-     $roleArn = printf "arn:aws:iam::%s:role/%s" $fnAcct $role }}
             {{-   end }}
             {{- end }}
-            {{- /* Weighted aliases (Knative traffic) must sum to 100, as Knative requires. */}}
-            {{- if $spec.aliases }}
-            {{-   $sum := 0 }}
-            {{-   range $a := $spec.aliases }}{{- $sum = add $sum (int $a.weight) }}{{- end }}
-            {{-   if ne $sum 100 }}{{- fail (printf "kind: Function spec.aliases weights must sum to 100 (got %d)" $sum) }}{{- end }}
-            {{- end }}
+            {{- /* Published versions (Lambda versions) whose revision is known: each is kept and addressable
+                   as a Knative traffic tag at 0% (v<version>-<function>), so the function's own traffic stays
+                   100% on its latest revision ($LATEST), as on Lambda. Aliases are resolved by the aws-shim. */}}
+            {{- $pinned := list }}
+            {{- range $v := ($spec.versions | default list) }}{{ if $v.revision }}{{ $pinned = append $pinned $v }}{{ end }}{{ end }}
             {{- /* Unsupported (BYO) runtime: fail closed into an isolated posture — cluster-local (expose
                    off), min-scale 0 and non-production label on the Service below, and egress-denied here. */}}
             {{- if $unsupported }}{{- $expose = false }}{{- end }}
@@ -385,18 +384,16 @@ spec:
                                     path: token
                         {{- end }}
                         {{- end }}
-                    {{- if $spec.aliases }}
-                    # Weighted traffic targets (the Lambda alias/version analog): each alias is a
-                    # Knative traffic tag routing its percent to a pinned revision or the latest.
+                    {{- if $pinned }}
+                    # Published versions: all traffic on the latest revision ($LATEST), each version kept
+                    # and addressable at its tag v<version>.
                     traffic:
-                      {{- range $a := $spec.aliases }}
-                      - tag: {{ $a.name }}
-                        percent: {{ $a.weight }}
-                        {{- if eq ($a.revision | default "latest") "latest" }}
-                        latestRevision: true
-                        {{- else }}
-                        revisionName: {{ $a.revision }}
-                        {{- end }}
+                      - latestRevision: true
+                        percent: 100
+                      {{- range $v := $pinned }}
+                      - tag: {{ printf "v%s" $v.version | toJson }}
+                        revisionName: {{ $v.revision | toJson }}
+                        percent: 0
                       {{- end }}
                     {{- end }}
             {{- if $ident }}

@@ -52,22 +52,23 @@ var dynamicResourceTypes = map[string][]string{
 
 // dynamicServices are the services of checks whose action is a variable, per file.
 var dynamicServices = map[string][]string{
-	"acm.go":            {"acm"},
-	"athena.go":         {"glue"},       // the per-table checks: glue:GetTable / glue:UpdateTable
-	"cloudwatch.go":     {"cloudwatch"}, // decideAlarm: an alarm op on one named alarm
-	"ecr_token.go":      {"ecr"},
-	"dynamo.go":         {"dynamodb"},
-	"kms.go":            {"kms"},
-	"lambda_read.go":    {"lambda"},
-	"lambda_manage.go":  {"lambda"}, // lambda:<Operation> on the function the operation names
-	"organizations.go":  {"organizations"},
-	"rds.go":            {"rds"},
-	"s3.go":             {"s3"},
-	"ses.go":            {"ses"},
-	"sesv2.go":          {"ses"},
-	"ssm_runcommand.go": {"ssm"},
-	"vmcommands.go":     {"ssm", "ec2messages"},
-	"cfn_services.go":   {"sqs", "sns", "ssm", "kms", "ec2", "ecr", "events", "logs", "secretsmanager", "cloudwatch", "lambda"},
+	"acm.go":             {"acm"},
+	"athena.go":          {"glue"},       // the per-table checks: glue:GetTable / glue:UpdateTable
+	"cloudwatch.go":      {"cloudwatch"}, // decideAlarm: an alarm op on one named alarm
+	"ecr_token.go":       {"ecr"},
+	"dynamo.go":          {"dynamodb"},
+	"kms.go":             {"kms"},
+	"lambda_read.go":     {"lambda"},
+	"lambda_manage.go":   {"lambda"}, // lambda:<Operation> on the function the operation names
+	"lambda_versions.go": {"lambda"}, // lambda:<Operation> on the function whose versions or aliases it changes
+	"organizations.go":   {"organizations"},
+	"rds.go":             {"rds"},
+	"s3.go":              {"s3"},
+	"ses.go":             {"ses"},
+	"sesv2.go":           {"ses"},
+	"ssm_runcommand.go":  {"ssm"},
+	"vmcommands.go":      {"ssm", "ec2messages"},
+	"cfn_services.go":    {"sqs", "sns", "ssm", "kms", "ec2", "ecr", "events", "logs", "secretsmanager", "cloudwatch", "lambda"},
 	// a stack delete's pre-flight, through each front-door kind's deleteCheck
 	"cfn_services_doors.go": {"secretsmanager", "logs", "events", "ecr", "cloudwatch"},
 }

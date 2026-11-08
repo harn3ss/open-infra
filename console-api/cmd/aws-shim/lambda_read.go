@@ -92,8 +92,9 @@ func parseLambdaReadPath(r *http.Request) (op, name, qualifier string, ok, bad b
 
 // parseFunctionRef reads a FunctionName as a request carries it — a name, an ARN or partial ARN
 // (arn:aws:lambda:<region>:<acct>:function:<name>[:<qualifier>], <acct>:function:<name>), optionally
-// with :<qualifier> — plus a ?Qualifier=, which must agree with the name's. The name and a non-$LATEST
-// qualifier must be RFC-1123 labels whose joined <qualifier>-<name> fits a DNS label, as Invoke's do.
+// with :<qualifier> — plus a ?Qualifier=, which must agree with the name's. The name must be an RFC-1123
+// label (it is part of the function's cluster address); a qualifier is $LATEST, a version number or an
+// alias name, as Lambda's are (a version is invoked at its own address, v<version>-<name>: lambda_versions.go).
 func parseFunctionRef(fn, queryQualifier string) (name, qualifier string, ok bool) {
 	if i := strings.Index(fn, ":function:"); i >= 0 {
 		fn = fn[i+len(":function:"):]
@@ -109,7 +110,7 @@ func parseFunctionRef(fn, queryQualifier string) (name, qualifier string, ok boo
 		return "", "", false
 	}
 	if qualifier != "" && qualifier != "$LATEST" {
-		if !fnNameRE.MatchString(qualifier) || len(qualifier)+1+len(name) > 63 {
+		if len(qualifier) > 128 || !(versionNumberRe.MatchString(qualifier) || aliasNameRe.MatchString(qualifier)) {
 			return "", "", false
 		}
 	}
@@ -172,17 +173,21 @@ func (h *lambdaHandler) serveRead(w http.ResponseWriter, r *http.Request, claims
 		writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID, "could not read the function")
 		return
 	}
-	if qualifier != "" && qualifier != "$LATEST" && !hasAlias(obj, qualifier) {
+	// A qualified read answers with the version's own configuration (an alias's: its version's,
+	// lambda_versions.go); one the function does not have is not found.
+	h.fillPendingVersions(ctx, ns, obj)
+	cfg, code, found := h.qualifiedFunction(ctx, obj, qualifier)
+	if !found {
 		writeLambdaError(w, http.StatusNotFound, "ResourceNotFoundException", requestID,
 			"Function not found: "+h.functionARNIn(ctx, name)+":"+qualifier)
 		return
 	}
 	switch op {
 	case "GetFunctionConfiguration":
-		writeLambdaJSON(w, requestID, h.functionConfiguration(ctx, obj, qualifier))
+		writeLambdaJSON(w, requestID, cfg)
 	case "GetFunction":
-		out := map[string]any{"Configuration": h.functionConfiguration(ctx, obj, qualifier)}
-		if code := functionCode(obj); code != nil {
+		out := map[string]any{"Configuration": cfg}
+		if code != nil {
 			out["Code"] = code
 		}
 		if n, found, _ := unstructured.NestedInt64(obj.Object, "spec", "reservedConcurrency"); found {
@@ -499,16 +504,6 @@ func fnLastModified(obj *unstructured.Unstructured) time.Time {
 // lambdaTime is Lambda's LastModified form: 2026-11-03T10:15:30.000+0000.
 func lambdaTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000-0700")
-}
-
-func hasAlias(obj *unstructured.Unstructured, alias string) bool {
-	al, _, _ := unstructured.NestedSlice(obj.Object, "spec", "aliases")
-	for _, a := range al {
-		if m, ok := a.(map[string]any); ok && fnStr(m["name"]) == alias {
-			return true
-		}
-	}
-	return false
 }
 
 func writeLambdaJSON(w http.ResponseWriter, requestID string, body any) {

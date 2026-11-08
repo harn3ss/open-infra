@@ -1191,6 +1191,8 @@
     },
     "Function.aliases": {
       "actions": [
+        "lambda:CreateAlias",
+        "lambda:DeleteAlias",
         "lambda:UpdateAlias"
       ],
       "class": "aws",
@@ -1349,6 +1351,16 @@
       "class": "aws",
       "field": "trigger",
       "how": "update",
+      "kind": "Function"
+    },
+    "Function.versions": {
+      "actions": [
+        "lambda:DeleteFunction",
+        "lambda:PublishVersion"
+      ],
+      "class": "aws",
+      "field": "versions",
+      "how": "field",
       "kind": "Function"
     },
     "Grant.approval": {
@@ -6794,9 +6806,9 @@
       "tier": "proven"
     },
     "lambda": {
-      "actions": 10,
+      "actions": 17,
       "class": "aws",
-      "operations": 8,
+      "operations": 15,
       "service": "Lambda",
       "tier": "proven"
     },
@@ -6894,11 +6906,11 @@
   },
   "summary": {
     "fields": {
-      "aws": 364,
+      "aws": 365,
       "extra": 25,
       "operator": 0,
       "removed": 0,
-      "total": 389
+      "total": 390
     },
     "kinds": {
       "aws": 54,

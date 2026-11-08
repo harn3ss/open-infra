@@ -276,7 +276,7 @@ the sections below; the one-line summary:
 |---|---|---|---|
 | **[S3](#s3-faithful-proven)** | MinIO | REST/XML | path-style, and virtual-hosted on the install's S3 hostnames |
 | **[STS](#sts-faithful)** | identity / sealed tokens | query/XML | `AssumeRole` opt-in (OpenBao-custodied sealing key) |
-| **[Lambda](#lambda-knative-function-invoke)** | Knative `Function` | Lambda REST | qualifiers/versions not resolved |
+| **[Lambda](#lambda-knative-function-invoke)** | Knative `Function` | Lambda REST | layers, VPC configuration and tags refused |
 | **[AppSync](#appsync-graphql-over-open-appsync--slice-1-runs-live-experimental)** | open-appsync engine | GraphQL | **experimental**; needs `components.openAppsync` |
 | **[DynamoDB](#dynamodb-ferretdb--documentdb-postgres-transactions)** | FerretDB + documentdb Postgres | JSON 1.0 | `ProjectionExpression` `501`; Streams via the `dynamodbstreams` API |
 | **[SQS](#sqs-postgres-backed-probe-proven)** | Postgres | JSON | standard and FIFO queues; `ReceiveRequestAttemptId` refused |
@@ -337,7 +337,7 @@ create on its own API's front door):
 | IAM | `iam` | 77: AddUserToGroup, AttachGroupPolicy, AttachRolePolicy, AttachUserPolicy, ChangePassword, CreateAccessKey, CreateGroup, CreateLoginProfile, CreatePolicy, CreatePolicyVersion, CreateRole, CreateUser, CreateVirtualMFADevice, DeactivateMFADevice, DeleteAccessKey, DeleteAccountPasswordPolicy, DeleteGroup, DeleteGroupPolicy, DeleteLoginProfile, DeletePolicy, DeletePolicyVersion, DeleteRole, DeleteRolePermissionsBoundary, DeleteRolePolicy, DeleteUser, DeleteUserPermissionsBoundary, DeleteUserPolicy, DeleteVirtualMFADevice, DetachGroupPolicy, DetachRolePolicy, DetachUserPolicy, EnableMFADevice, GetAccountAuthorizationDetails, GetAccountPasswordPolicy, GetGroup, GetGroupPolicy, GetInstanceProfile, GetLoginProfile, GetPolicy, GetPolicyVersion, GetRole, GetRolePolicy, GetUser, GetUserPolicy, ListAccessKeys, ListAttachedGroupPolicies, ListAttachedRolePolicies, ListAttachedUserPolicies, ListGroupPolicies, ListGroups, ListGroupsForUser, ListInstanceProfiles, ListInstanceProfilesForRole, ListMFADeviceTags, ListMFADevices, ListPolicies, ListPolicyVersions, ListRolePolicies, ListRoles, ListUserPolicies, ListUsers, ListVirtualMFADevices, PutGroupPolicy, PutRolePermissionsBoundary, PutRolePolicy, PutUserPermissionsBoundary, PutUserPolicy, RemoveUserFromGroup, ResyncMFADevice, SetDefaultPolicyVersion, SimulatePrincipalPolicy, TagMFADevice, TagUser, UntagMFADevice, UpdateAccessKey, UpdateAccountPasswordPolicy, UpdateLoginProfile; authorizes `iam:PassRole` | 5 |
 | Kinesis Data Streams | `kinesis` | 12: CreateStream, DecreaseStreamRetentionPeriod, DeleteStream, DescribeStream, DescribeStreamSummary, GetRecords, GetShardIterator, IncreaseStreamRetentionPeriod, ListShards, ListStreams, PutRecord, PutRecords | 0 |
 | KMS | `kms` | 23: CancelKeyDeletion, CreateAlias, CreateKey, Decrypt, DeleteAlias, DescribeKey, DisableKey, DisableKeyRotation, EnableKey, EnableKeyRotation, Encrypt, GenerateDataKey, GenerateDataKeyWithoutPlaintext, GenerateRandom, GetKeyPolicy, GetKeyRotationStatus, ListAliases, ListKeyPolicies, ListKeys, PutKeyPolicy, ReEncrypt, ScheduleKeyDeletion, UpdateAlias; authorizes `kms:ReEncryptFrom`, `kms:ReEncryptTo` | 2 |
-| Lambda | `lambda` | 8: CreateFunction, DeleteFunction, GetFunction, GetFunctionConfiguration, GetPolicy, ListFunctions, UpdateFunctionCode, UpdateFunctionConfiguration; authorizes `lambda:InvokeFunction` | 2 |
+| Lambda | `lambda` | 15: CreateAlias, CreateFunction, DeleteAlias, DeleteFunction, GetAlias, GetFunction, GetFunctionConfiguration, GetPolicy, ListAliases, ListFunctions, ListVersionsByFunction, PublishVersion, UpdateAlias, UpdateFunctionCode, UpdateFunctionConfiguration; authorizes `lambda:InvokeFunction` | 2 |
 | CloudWatch Logs | `logs` | 12: CreateLogGroup, CreateLogStream, DeleteLogGroup, DeleteLogStream, DeleteRetentionPolicy, DescribeLogGroups, DescribeLogStreams, FilterLogEvents, GetLogEvents, PutLogEvents, PutRetentionPolicy, TagLogGroup; recognized and refused: DescribeQueries, GetQueryResults, StartQuery, StopQuery | 1 |
 | CloudWatch | `monitoring` | 8: DeleteAlarms, DescribeAlarms, GetMetricData, GetMetricStatistics, ListMetrics, PutMetricAlarm, PutMetricData, SetAlarmState | 1 |
 | Organizations | `organizations` | 7: CreateAccount, DescribeAccount, DescribeCreateAccountStatus, DescribeOrganization, ListAccounts, ListAccountsForParent, ListRoots | 0 |
@@ -552,8 +552,8 @@ payload to the Function's cluster-local Knative address (which drives scale-from
 the response, with Lambda's JSON error dialect and `X-Amz-Function-Error` semantics. Authorization
 is the same impersonated `SubjectAccessReview` (invoke → `create` on `functions` — invoking runs code,
 so it is a write, not a read). v1 supports `RequestResponse` (sync), `Event` (async — durably queued via
-JetStream with retries + a per-function DLQ), and `DryRun`; an alias qualifier routes a synchronous invoke
-to the alias's traffic tag. `probe/aws-shim-lambda.sh` proves it live (a real SDK `Invoke` of a deployed
+JetStream with retries + a per-function DLQ), and `DryRun`; a qualifier (a published version or an alias)
+runs that version, synchronously or not (see **Versions and aliases** below). `probe/aws-shim-lambda.sh` proves it live (a real SDK `Invoke` of a deployed
 `kind: Function` round-trips).
 
 **Finding a function.** A function is named by its name, an ARN (`arn:aws:lambda:<region>:<account>:function:<name>[:<qualifier>]`)
@@ -575,7 +575,8 @@ for in `FUNCTIONS_NAMESPACE` only.
 **Reading functions.** `GetFunction`, `GetFunctionConfiguration`, `ListFunctions` and `GetPolicy` answer in
 Lambda's shapes from the `kind: Function` itself. Reading one needs `get` on `functions` where it lives plus
 `lambda:GetFunction` / `lambda:GetFunctionConfiguration` / `lambda:GetPolicy` on `Function::<name>`; a
-qualifier must be `$LATEST` or one of the function's `spec.aliases`. `ListFunctions` lists the two
+qualifier is `$LATEST`, one of the function's published versions (its own configuration, as published) or
+one of its aliases (its version's configuration, with the alias's ARN). `ListFunctions` lists the two
 namespaces above, skipping one where the caller has no `list` on `functions`, and needs
 `lambda:ListFunctions` on `*` (an assumed role needs that grant); it pages with `Marker`/`MaxItems` (at most
 50 a page, as on AWS) through the API server's own list paging, so a page reads at most 50 claims. The
@@ -607,10 +608,34 @@ authorized against its creator's authority when it is created — so `GetPolicy`
   caller, and a trust policy naming `lambda.amazonaws.com` with no conditions.
 - **A .zip package** (`Code.ZipFile`, or `S3Bucket`/`S3Key` read as the caller may read it) is checked and
   stored as a stack's is, and named by its SHA-256 (`CodeSha256`, `CodeSize`).
-- **Refused, naming the parameter:** what a Function cannot carry (layers, VPC configuration, published
-  versions, tags, a non-`x86_64` architecture, and the rest listed in
+- **Refused, naming the parameter:** what a Function cannot carry (layers, VPC configuration, tags, a
+  non-`x86_64` architecture, and the rest listed in
   [serverless.md](serverless.md#creating-and-changing-functions-with-the-lambda-api)).
 - **Tested:** `probe/aws-shim-lambda-api.sh`.
+
+**Versions and aliases.** `PublishVersion`, `ListVersionsByFunction`, `CreateAlias`, `GetAlias`,
+`UpdateAlias`, `DeleteAlias` and `ListAliases` work as on Lambda, and `DeleteFunction` with a version
+`Qualifier` deletes that version.
+- **Authorization:** each is decided as `lambda:<Operation>` on `Function::<name>`; in legacy mode, `get`
+  (the reads) or `update` on `functions` where the function lives.
+- **A version** is an immutable snapshot: the Knative revision that runs the function's code at the time,
+  and the configuration it had. The function's Knative Service keeps each version's revision at 0% of its
+  traffic, under the tag `v<version>`, so all unqualified traffic stays on `$LATEST`.
+- **Publishing** takes the revision the function's latest change runs. While that change is still rolling
+  out (the latest revision is not ready, or was created before the change), `PublishVersion` answers
+  `ResourceConflictException`, as Lambda does for an update in progress. Publishing a function that has not
+  changed since its latest version answers with that version. `Publish: true` on `CreateFunction` or
+  `UpdateFunctionCode` records the version at once; it is `Pending` (and invoking it answers
+  `ResourceConflictException`) until the change has rolled out.
+- **An alias** names `$LATEST` or a version, and may send a share of its invocations to one other version
+  (`RoutingConfig.AdditionalVersionWeights`). The shim picks the version for each invocation, and the
+  answer's `X-Amz-Executed-Version` says which one ran. A version an alias names cannot be deleted.
+- **Limits:** 100 versions and 50 aliases a function. A version is reached at `v<version>-<name>`, which
+  must fit a 63-character DNS label, so a function whose name is longer than 59 characters cannot publish
+  versions.
+- **What the shim reads:** the function's Knative Service (its status) and the revision's metadata (when it
+  was created), each by name, with `get` on `services` and `revisions` in `serving.knative.dev`.
+- **Tested:** `probe/aws-shim-lambda-versions.sh` (pending: not yet run live).
 
 ### AppSync (GraphQL; over open-appsync — slice 1 runs live, experimental)
 

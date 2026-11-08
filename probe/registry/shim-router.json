@@ -631,24 +631,38 @@
     "lambda": {
       "handler": "lambdaHandler",
       "operations": [
+        "CreateAlias",
         "CreateFunction",
+        "DeleteAlias",
         "DeleteFunction",
+        "GetAlias",
         "GetFunction",
         "GetFunctionConfiguration",
         "GetPolicy",
+        "ListAliases",
         "ListFunctions",
+        "ListVersionsByFunction",
+        "PublishVersion",
+        "UpdateAlias",
         "UpdateFunctionCode",
         "UpdateFunctionConfiguration"
       ],
       "actions": [
         "iam:PassRole",
+        "lambda:CreateAlias",
         "lambda:CreateFunction",
+        "lambda:DeleteAlias",
         "lambda:DeleteFunction",
+        "lambda:GetAlias",
         "lambda:GetFunction",
         "lambda:GetFunctionConfiguration",
         "lambda:GetPolicy",
         "lambda:InvokeFunction",
+        "lambda:ListAliases",
         "lambda:ListFunctions",
+        "lambda:ListVersionsByFunction",
+        "lambda:PublishVersion",
+        "lambda:UpdateAlias",
         "lambda:UpdateFunctionCode",
         "lambda:UpdateFunctionConfiguration"
       ]

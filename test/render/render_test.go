@@ -890,9 +890,11 @@ func TestFunction_Code(t *testing.T) {
 	}
 }
 
-// Weighted aliases (the Lambda alias/version analog) render a Knative traffic block: a tag per
-// alias, percent = weight, latest vs a pinned revision. Weights must sum to 100.
-func TestFunction_Aliases(t *testing.T) {
+// Published versions (Lambda versions) render a Knative traffic block: all traffic on the latest revision
+// ($LATEST), each version whose revision is known kept at 0% under its tag v<version>. Aliases render
+// nothing (the aws-shim resolves them per invocation), and a function with no published version has no
+// traffic block at all.
+func TestFunction_Versions(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/function-composition.yaml")
 	ctx := func(spec map[string]any) map[string]any {
 		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
@@ -901,26 +903,34 @@ func TestFunction_Aliases(t *testing.T) {
 				"crossplane.io/claim-name": "fn", "crossplane.io/claim-namespace": "default"}},
 		}}}}
 	}
-	// A canary split: 90% to the latest revision (tag "prod"), 10% to a pinned revision (tag "canary").
 	out := render(t, tmpl, ctx(map[string]any{
 		"image": "ghcr.io/x/fn:latest",
-		"aliases": []any{
-			map[string]any{"name": "prod", "revision": "latest", "weight": int64(90)},
-			map[string]any{"name": "canary", "revision": "fn-00003", "weight": int64(10)},
+		"versions": []any{
+			map[string]any{"version": "1", "revision": "fn-00001"},
+			map[string]any{"version": "2", "revision": "fn-00003"},
+			map[string]any{"version": "3"}, // published, its revision not yet known
 		},
+		"aliases": []any{map[string]any{"name": "live", "functionVersion": "2", "additionalVersionWeights": map[string]any{"1": 0.1}}},
 	}))
-	for _, want := range []string{"traffic:", "tag: prod", "percent: 90", "latestRevision: true",
-		"tag: canary", "percent: 10", "revisionName: fn-00003"} {
+	for _, want := range []string{"traffic:", "latestRevision: true", "percent: 100",
+		`tag: "v1"`, `revisionName: "fn-00001"`, `tag: "v2"`, `revisionName: "fn-00003"`, "percent: 0"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("aliases render missing %q; got:\n%s", want, grepCtx(out, "traffic"))
+			t.Errorf("versions render missing %q; got:\n%s", want, grepCtx(out, "traffic"))
 		}
 	}
-	// Weights that don't sum to 100 must abort the render.
-	if err := renderErr(tmpl, ctx(map[string]any{
-		"image":   "ghcr.io/x/fn:latest",
-		"aliases": []any{map[string]any{"name": "a", "weight": int64(70)}, map[string]any{"name": "b", "weight": int64(20)}},
-	})); err == nil {
-		t.Error("alias weights not summing to 100 should abort the render")
+	for _, unwanted := range []string{`tag: "v3"`, "live"} {
+		if strings.Contains(grepCtx(out, "traffic"), unwanted) {
+			t.Errorf("versions render must not carry %q; got:\n%s", unwanted, grepCtx(out, "traffic"))
+		}
+	}
+	for name, spec := range map[string]map[string]any{
+		"no versions":            {"image": "ghcr.io/x/fn:latest"},
+		"only a pending version": {"image": "ghcr.io/x/fn:latest", "versions": []any{map[string]any{"version": "1"}}},
+		"an alias of $LATEST":    {"image": "ghcr.io/x/fn:latest", "aliases": []any{map[string]any{"name": "live", "functionVersion": "$LATEST"}}},
+	} {
+		if out := render(t, tmpl, ctx(spec)); strings.Contains(out, "traffic:") {
+			t.Errorf("%s: no traffic block expected; got:\n%s", name, grepCtx(out, "traffic"))
+		}
 	}
 }
 

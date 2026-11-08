@@ -28,7 +28,7 @@ func readFn(ns, name string) *unstructured.Unstructured {
 			"memory":  "1Gi",
 			"timeout": int64(600),
 			"env":     []any{map[string]any{"name": "STAGE", "value": "dev"}},
-			"aliases": []any{map[string]any{"name": "live", "revision": "latest", "weight": int64(100)}},
+			"aliases": []any{map[string]any{"name": "live", "functionVersion": "$LATEST"}},
 		},
 		"status": map[string]any{"conditions": []any{
 			map[string]any{"type": "Synced", "status": "True"},

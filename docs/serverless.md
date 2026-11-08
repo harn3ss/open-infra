@@ -246,12 +246,33 @@ aws lambda delete-function --function-name orders
 - **What a function here cannot be is refused, naming the parameter, never dropped:**
   - layers;
   - VPC configuration;
-  - published versions (`--publish`; aliases route traffic instead: `spec.aliases`);
   - tags;
   - an architecture other than `x86_64`;
   - dead-letter, KMS, file-system, image-config, code-signing, SnapStart and logging configuration, unless
     left at Lambda's default.
 - **Names:** a function name here is lowercase letters, digits and hyphens, up to 63 characters.
+
+## Versions and aliases
+
+A function's published versions and aliases work as Lambda's: `aws lambda publish-version`,
+`create-alias`, `update-alias` (with `--routing-config` for a weighted alias), `list-versions-by-function`,
+`list-aliases`, `delete-alias`, and `delete-function --qualifier <version>`; `--publish` on
+`create-function` and `update-function-code`. Invoke `<function>:<version>` or `<function>:<alias>`, and
+the answer's `X-Amz-Executed-Version` names the version that ran.
+
+- **A version** keeps the code and configuration the function had when it was published. Changing the
+  function changes `$LATEST` only; a version runs what it was published with until it is deleted.
+- **Publishing waits for the change to roll out:** right after an update, `publish-version` answers
+  `ResourceConflictException` (an update in progress) until the new code is running, as Lambda does.
+- **An alias** names `$LATEST` or a version and may send a share (0 to 1) of its invocations to one other
+  version, for a canary or a blue/green switch. A version an alias names cannot be deleted.
+- **Limits:** 100 versions and 50 aliases a function; a function name of up to 59 characters, since a
+  version is reached at `v<version>-<name>`.
+- **In the `kind: Function`** they are `spec.versions` and `spec.aliases`, which the Lambda API writes.
+  Each kept version is a Knative revision at 0% of the function's traffic, so unqualified calls always
+  reach `$LATEST`.
+- **CloudFormation:** a stack's `AWS::Lambda::Version` and `AWS::Lambda::Alias` are recognized at plan
+  and refused at deploy for now: publish and alias with the Lambda API.
 
 ## External access
 

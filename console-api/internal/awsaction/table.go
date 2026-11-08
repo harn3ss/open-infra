@@ -134,7 +134,8 @@ func table() []*Entry {
 		"image":               {Actions: []string{"lambda:UpdateFunctionCode"}},
 		"code":                {Actions: []string{"lambda:UpdateFunctionCode"}},
 		"reservedConcurrency": {Actions: []string{"lambda:PutFunctionConcurrency"}},
-		"aliases":             {Actions: []string{"lambda:UpdateAlias"}},
+		"aliases":             {Actions: []string{"lambda:CreateAlias", "lambda:UpdateAlias", "lambda:DeleteAlias"}},
+		"versions":            {Actions: []string{"lambda:PublishVersion", "lambda:DeleteFunction"}},
 	}
 	vm := add(ec2Row("VirtualMachine", "virtualmachines", "instance", "AWS::EC2::Instance",
 		"ec2:DescribeInstances", "ec2:RunInstances", "ec2:ModifyInstanceAttribute", "ec2:TerminateInstances"))

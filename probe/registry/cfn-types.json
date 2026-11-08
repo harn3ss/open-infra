@@ -481,7 +481,7 @@
     },
     "AWS::Lambda::Version": {
       "status": "partial",
-      "kind": "Function(revision)",
+      "kind": "Function(spec.versions)",
       "translator": false,
       "deployable": false
     },

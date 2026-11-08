@@ -24,11 +24,11 @@ by `probe/shimgen.py`), and CI fails when a capability a customer can reach has 
 | Capability | AWS-shaped | Platform extra (own API) | Operator-only | Removed | Total |
 |---|---|---|---|---|---|
 | Resource types (claim kinds) | 54 | 2 | 1 | 0 | 57 |
-| Resource properties (spec fields) | 364 | 25 | 0 | 0 | 389 |
+| Resource properties (spec fields) | 365 | 25 | 0 | 0 | 390 |
 | Console API routes | 110 | 1 | 1 | 0 | 112 |
 | Console screens | 156 | 4 | 3 | 0 | 163 |
 | AWS APIs (signing names) | 33 | 0 | 0 | 0 | 33 |
-| **All** | **717** | **32** | **5** | **0** | **754** |
+| **All** | **718** | **32** | **5** | **0** | **755** |
 
 11 of the console routes need no authorization (sign-in, sign-out, who-am-I, the console's own configuration), as AWS's sign-in and console metadata need none. 2 platform extras and 14 properties in Kubernetes vocabulary await the operator's ruling (below).
 <!-- END shimgen:surface-summary -->
@@ -198,7 +198,7 @@ Changing a property is its own AWS action where AWS has one (a function's code i
 | `FeatureGroup` | 4 | eventTime, features, recordIdentifier, ttlSeconds → `sagemaker:UpdateFeatureGroup` |
 | `FileShare` | 4 | expose, nodeIP, size, storageClass → `elasticfilesystem:UpdateFileSystem` |
 | `FlowLog` | 3 | namespace, nodeSelector, samplingRate → `ec2:CreateFlowLogs` |
-| `Function` | 18 | burstable, env, expose, gpu, memory, memoryRequest, port, queues, role, scaling, secrets, securityGroups, timeout, trigger → `lambda:UpdateFunctionConfiguration`; aliases → `lambda:UpdateAlias`; code → `lambda:UpdateFunctionCode`; image → `lambda:UpdateFunctionCode`; reservedConcurrency → `lambda:PutFunctionConcurrency` |
+| `Function` | 19 | burstable, env, expose, gpu, memory, memoryRequest, port, queues, role, scaling, secrets, securityGroups, timeout, trigger → `lambda:UpdateFunctionConfiguration`; aliases → `lambda:CreateAlias`, `lambda:DeleteAlias`, `lambda:UpdateAlias`; code → `lambda:UpdateFunctionCode`; image → `lambda:UpdateFunctionCode`; reservedConcurrency → `lambda:PutFunctionConcurrency`; versions → `lambda:DeleteFunction`, `lambda:PublishVersion` |
 | `Grant` | 7 | approval, clusterRole, duration, policies, reason, requestedBy, subject → `iam:AttachUserPolicy` |
 | `GraphQLApi` | 10 | apiKeysSecret, image, limits, mongoDB, mongoURI, replicas, subscriptions → `appsync:UpdateGraphqlApi`; dataSources → `appsync:UpdateDataSource`; resolvers → `appsync:UpdateResolver`; schema → `appsync:StartSchemaCreation` |
 | `Group` | 4 | clusterRole, description, inlinePolicies → `iam:UpdateGroup`; policies → `iam:AttachGroupPolicy`, `iam:DetachGroupPolicy` |
@@ -467,7 +467,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | IAM | `iam` | proven | 77 |
 | KMS | `kms` | proven | 23 |
 | Kinesis Data Streams | `kinesis` | proven | 12 |
-| Lambda | `lambda` | proven | 8 |
+| Lambda | `lambda` | proven | 15 |
 | Organizations | `organizations` | proven | 7 |
 | RDS | `rds` | proven | 9 |
 | S3 | `s3` | proven | 33 |

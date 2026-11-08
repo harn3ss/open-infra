@@ -499,6 +499,12 @@ func run(logger *slog.Logger) error {
 	if dyn != nil {
 		timeouts := newFnTimeouts(dyn)
 		lambdaH.timeouts = timeouts
+		// A published version's revision is read as metadata only (lambda_versions.go).
+		if md, merr := metadata.NewForConfig(kc.Config); merr == nil {
+			lambdaH.meta = md
+		} else {
+			logger.Warn("Lambda versions: cannot build the metadata client; a version is published from the latest ready revision unchecked", "err", merr)
+		}
 		if asyncInv != nil {
 			asyncInv.timeoutFor = func(ns, name string) time.Duration {
 				if ns == "" {

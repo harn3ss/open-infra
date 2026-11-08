@@ -329,12 +329,10 @@ Resources:
 	}
 }
 
-// Lambda versions/aliases (#257): a published Version is a Knative revision (assigned at apply) and an
-// Alias is a weighted traffic tag on a kind: Function — both are recognized at plan but neither is
-// create-deployable (Deployable=false), because the alias->revision binding isn't template-derivable.
-// Traffic is declared natively via kind: Function spec.aliases (render-tested + the shim Invoke doorway
-// routes a Qualifier to it). This keeps a migrating stack HONEST: it maps, but deploy refuses rather
-// than fabricating a revision pin.
+// Lambda versions/aliases: a published Version is an entry of the kind: Function's spec.versions and an
+// Alias one of its spec.aliases (the aws-shim's PublishVersion / CreateAlias write them). Both are
+// recognized at plan but neither is create-deployable yet (Deployable=false): a migrating stack maps, and
+// deploy refuses rather than provisioning nothing silently.
 func TestPlan_LambdaVersionAliasPlanOnly(t *testing.T) {
 	data := []byte(`
 Resources:
@@ -360,11 +358,11 @@ Resources:
 		}
 		// ... but neither is create-deployable (no translator).
 		if byID[id].Deployable {
-			t.Errorf("%s has no create translator — want Deployable=false (Knative revisions aren't template-derivable)", id)
+			t.Errorf("%s has no create translator — want Deployable=false", id)
 		}
 	}
 	// They map but have no create translator, so deploy refuses them — plan REJECTS (parity), naming the
-	// structural reason. Traffic is declared natively via kind: Function spec.aliases instead.
+	// structural reason. Versions and aliases are made with the Lambda API instead.
 	if p.Verdict != Rejected {
 		t.Fatalf("verdict = %s, want REJECTED (version/alias map but deploy refuses them); blockers:\n%s", p.Verdict, blockersJoined(p))
 	}

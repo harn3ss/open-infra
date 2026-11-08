@@ -11,7 +11,7 @@ import (
 // all at once. So a change to the composition must leave every Function that does not use the change
 // rendering byte for byte as before. This test holds that line: it renders a representative set of
 // Functions that set no execution role (image and code functions, every managed runtime and the custom
-// runtime escape hatch, burstable and reserved concurrency, GPU, aliases, triggers, env, secrets,
+// runtime escape hatch, burstable and reserved concurrency, GPU, versions, triggers, env, secrets,
 // queues, security groups, the shape the Lambda estate mirror applies) and compares the output with a
 // golden captured from the composition before execution roles existed. A difference fails with the
 // first differing line. A deliberate change to these renders regenerates the golden
@@ -89,10 +89,10 @@ func rolelessFunctionCases() []struct {
 				"unsupportedRuntime": true, "allowEgress": true, "handler": "lambda_function.lambda_handler",
 				"source": map[string]any{"bucket": "mirror-code", "key": "code/9b1c.zip", "secret": "mirror-code-read"}},
 		}},
-		{name: "aliases", ns: "team-a", spec: map[string]any{
+		{name: "versions", ns: "team-a", spec: map[string]any{
 			"image": "ghcr.io/me/hello:3",
-			"aliases": []any{map[string]any{"name": "prod", "weight": float64(90), "revision": "fn-00001"},
-				map[string]any{"name": "canary", "weight": float64(10)}},
+			"versions": []any{map[string]any{"version": "1", "revision": "fn-00001"}, map[string]any{"version": "2"}},
+			"aliases":  []any{map[string]any{"name": "prod", "functionVersion": "1"}},
 		}},
 		{name: "trigger-stream", ns: "team-a", spec: map[string]any{
 			"image": "ghcr.io/me/cdc:1", "trigger": map[string]any{"stream": "orders"},

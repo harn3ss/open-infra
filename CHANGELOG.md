@@ -6,6 +6,24 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — Lambda versions and aliases, as on AWS
+- **Operations:** `PublishVersion`, `ListVersionsByFunction`, `CreateAlias`, `GetAlias`, `UpdateAlias`,
+  `DeleteAlias` and `ListAliases`; `Publish` on `CreateFunction` and `UpdateFunctionCode`; and
+  `DeleteFunction` with a version `Qualifier`. Each is decided as `lambda:<Operation>` on the function.
+- **A version** keeps the code and configuration the function had when it was published; changing the
+  function changes `$LATEST` only. Publishing during an update answers `ResourceConflictException` until the
+  new code runs, as Lambda does.
+- **An alias** names `$LATEST` or a version and may send a share of its invocations to one other version.
+- **Invoking** `<function>:<version>` or `<function>:<alias>` runs that version, synchronously or as an
+  `Event`, and `X-Amz-Executed-Version` names the version that ran. A qualified read answers with the
+  version's own configuration.
+- **`kind: Function`:** `spec.versions` is new. `spec.aliases` now takes Lambda's shape (`name`,
+  `functionVersion`, `additionalVersionWeights`) in place of the earlier weighted traffic tags (`name`,
+  `revision`, `weight`); no function on the platform used those. A function without published versions
+  renders as before.
+- **Not yet:** a CloudFormation stack's `AWS::Lambda::Version` and `AWS::Lambda::Alias` still map at plan
+  and are refused at deploy.
+
 ### Fixed — `aws cloudformation deploy` of a stack whose resources read a custom resource's Data
 - **Before:** the change set behind `aws cloudformation deploy` refused a new stack in which a resource
   reads a custom resource's `Data` (`Fn::GetAtt`). That value is known only once the handler has run, so

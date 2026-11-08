@@ -35,6 +35,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -103,7 +104,6 @@ var lambdaUnsupported = map[string]func(v any) bool{
 	"SnapStart":            func(v any) bool { m, _ := v.(map[string]any); a := str(m["ApplyOn"]); return a == "" || a == "None" },
 	"LoggingConfig":        nil,
 	"Tags":                 func(v any) bool { m, _ := v.(map[string]any); return len(m) == 0 },
-	"Publish":              func(v any) bool { b, _ := v.(bool); return !b },
 	"Architectures": func(v any) bool {
 		l := anySlice(v)
 		return len(l) == 0 || len(l) == 1 && str(l[0]) == "x86_64"
@@ -241,8 +241,8 @@ func (h *lambdaHandler) serveWrite(w http.ResponseWriter, r *http.Request, claim
 		}
 		name = n
 	}
-	if qualifier != "" {
-		invalidParam("%s with a Qualifier is not supported: open-infra's functions have no published versions; name the function without one", op).write(w, requestID)
+	if qualifier != "" && op != "DeleteFunction" {
+		invalidParam("%s takes no Qualifier: it changes the function's unpublished version, $LATEST", op).write(w, requestID)
 		return
 	}
 
@@ -286,7 +286,18 @@ func (h *lambdaHandler) serveWrite(w http.ResponseWriter, r *http.Request, claim
 	case "CreateFunction":
 		h.createFunction(w, r, claims, requestID, ns, name, body)
 	case "DeleteFunction":
-		h.deleteFunction(w, r, requestID, ns, name)
+		// A Qualifier deletes one published version (lambda_versions.go); $LATEST and an alias are not
+		// deleted that way, as on Lambda.
+		switch {
+		case qualifier == "":
+			h.deleteFunction(w, r, requestID, ns, name)
+		case versionNumberRe.MatchString(qualifier):
+			h.deleteVersion(w, r, requestID, ns, name, qualifier)
+		case qualifier == "$LATEST":
+			invalidParam("$LATEST version cannot be deleted without deleting the function.").write(w, requestID)
+		default:
+			invalidParam("Deletion of aliases is not supported by DeleteFunction: use DeleteAlias").write(w, requestID)
+		}
 	case "UpdateFunctionCode", "UpdateFunctionConfiguration":
 		h.updateFunction(w, r, claims, requestID, op, ns, name, body)
 	}
@@ -331,8 +342,6 @@ func unsupportedReason(field string) string {
 	switch field {
 	case "Layers":
 		return "Layers are not supported by open-infra's Lambda yet: bundle what a layer provides into the deployment package"
-	case "Publish":
-		return "Publish is not supported: open-infra's functions have no published versions (an alias routes a share of traffic instead)"
 	case "Architectures":
 		return "Architectures other than x86_64 are not supported"
 	case "Tags":
@@ -419,8 +428,21 @@ func (h *lambdaHandler) createFunction(w http.ResponseWriter, r *http.Request, c
 		"metadata": map[string]any{"name": name, "namespace": ns},
 		"spec":     spec,
 	}}
+	ann := map[string]string{fnUpdatedAtAnnotation: time.Now().UTC().Format(time.RFC3339Nano)}
 	if d := str(body["Description"]); d != "" {
-		obj.SetAnnotations(map[string]string{fnDescriptionAnnotation: d})
+		ann[fnDescriptionAnnotation] = d
+	}
+	obj.SetAnnotations(ann)
+	// Publish: the function's first version, recorded now (its revision once the function has rolled out),
+	// and the answer is that version's, as Lambda gives it.
+	var published *fnVersion
+	if pub, _ := body["Publish"].(bool); pub {
+		v, e := h.appendVersion(ctx, obj, "", "")
+		if e != nil {
+			e.write(w, requestID)
+			return
+		}
+		published = &v
 	}
 	created, err := h.fns.dyn.Resource(functionClaimGVR).Namespace(ns).Create(ctx, obj, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
@@ -432,10 +454,15 @@ func (h *lambdaHandler) createFunction(w http.ResponseWriter, r *http.Request, c
 	}
 	h.fns.forgetFor(ctx, name)
 	h.logger.Info("lambda function created", "user", claims.Sub, "function", name)
+	cfg := h.functionConfiguration(ctx, created, "")
+	if published != nil {
+		go h.followPendingVersions(ns, name)
+		cfg = h.versionConfiguration(ctx, created, *published, "")
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(h.functionConfiguration(ctx, created, ""))
+	_ = json.NewEncoder(w).Encode(cfg)
 }
 
 func (h *lambdaHandler) updateFunction(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID, op, ns, name string, body map[string]any) {
@@ -459,6 +486,7 @@ func (h *lambdaHandler) updateFunction(w http.ResponseWriter, r *http.Request, c
 		spec = map[string]any{}
 		obj.Object["spec"] = spec
 	}
+	before, _ := json.Marshal(spec)
 	image := str(spec["image"]) != ""
 	if op == "UpdateFunctionCode" {
 		if image {
@@ -533,6 +561,27 @@ func (h *lambdaHandler) updateFunction(w http.ResponseWriter, r *http.Request, c
 			obj.SetAnnotations(ann)
 		}
 	}
+	// A change to what the function runs is stamped, so a version is published only from the revision that
+	// runs it (lambda_versions.go).
+	if after, _ := json.Marshal(spec); !bytes.Equal(before, after) {
+		ann := obj.GetAnnotations()
+		if ann == nil {
+			ann = map[string]string{}
+		}
+		ann[fnUpdatedAtAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
+		obj.SetAnnotations(ann)
+	}
+	// Publish (UpdateFunctionCode): a version of the new code, recorded now and given its revision once the
+	// change has rolled out; the answer is that version's, as Lambda gives it.
+	var published *fnVersion
+	if pub, _ := body["Publish"].(bool); pub && op == "UpdateFunctionCode" {
+		v, e := h.appendVersion(ctx, obj, "", "")
+		if e != nil {
+			e.write(w, requestID)
+			return
+		}
+		published = &v
+	}
 	updated, err := h.fns.dyn.Resource(functionClaimGVR).Namespace(ns).Update(ctx, obj, metav1.UpdateOptions{})
 	if apierrors.IsConflict(err) {
 		writeLambdaError(w, http.StatusConflict, "ResourceConflictException", requestID,
@@ -546,6 +595,10 @@ func (h *lambdaHandler) updateFunction(w http.ResponseWriter, r *http.Request, c
 	h.logger.Info("lambda function updated", "user", claims.Sub, "function", name, "op", op)
 	// The update has been accepted, not yet rolled out: AWS's answer says so (LastUpdateStatus InProgress).
 	cfg := h.functionConfiguration(ctx, updated, "")
+	if published != nil {
+		go h.followPendingVersions(ns, name)
+		cfg = h.versionConfiguration(ctx, updated, *published, "")
+	}
 	cfg["LastUpdateStatus"] = "InProgress"
 	delete(cfg, "StateReason")
 	writeLambdaJSON(w, requestID, cfg)

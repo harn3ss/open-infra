@@ -244,26 +244,76 @@ spec:
                     subject:
                       type: string
                       description: "Optional subject filter (default cdc.<stream>.>), e.g. cdc.<stream>.public.orders"
-                aliases:
+                versions:
                   type: array
+                  maxItems: 100
                   description: >-
-                    Weighted traffic targets — the AWS Lambda alias/version analog. Each routes a
-                    percentage of traffic to a specific revision (a pinned "version") or the latest,
-                    and is independently addressable at <name>-<function>. Weights must sum to 100.
-                    Maps to the Knative Service traffic block (canary / blue-green for functions).
+                    The function's published versions (AWS Lambda versions), in the order published. Each is
+                    an immutable snapshot of the function's code and configuration: the Knative revision it
+                    runs (pinned, so it is kept) and the configuration it was published with. A version is
+                    invoked as <function>:<version>. Written by the aws-shim's PublishVersion (or Publish on
+                    CreateFunction / UpdateFunctionCode), not by hand.
                   items:
                     type: object
-                    required: [name, weight]
+                    required: [version]
+                    properties:
+                      version:
+                        type: string
+                        pattern: '^[1-9][0-9]{0,8}$'
+                        description: The version number, from 1.
+                      revision:
+                        type: string
+                        maxLength: 63
+                        description: >-
+                          The Knative revision the version runs; empty while the publish waits for the
+                          function's update to roll out.
+                      description:
+                        type: string
+                        maxLength: 256
+                      published:
+                        type: string
+                        description: When the version was published (RFC 3339).
+                      configuration:
+                        type: string
+                        description: >-
+                          The function's configuration when the version was published, as Lambda's
+                          FunctionConfiguration (JSON): the version's own GetFunctionConfiguration answer.
+                      code:
+                        type: string
+                        description: >-
+                          Where the version's code is, as Lambda's FunctionCodeLocation (JSON): the version's
+                          own GetFunction Code.
+                aliases:
+                  type: array
+                  maxItems: 50
+                  description: >-
+                    The function's aliases (AWS Lambda aliases). Each names a version ($LATEST or a published
+                    version) and may send a share of its invocations to one other version (Lambda's
+                    RoutingConfig). An alias is invoked as <function>:<alias>; the aws-shim resolves it to a
+                    version for each invocation.
+                  items:
+                    type: object
+                    required: [name, functionVersion]
                     properties:
                       name:
                         type: string
-                        description: "Alias name — also a Knative traffic tag, addressable at <name>-<function>.<namespace>."
-                      revision:
+                        maxLength: 128
+                        pattern: '^[a-zA-Z0-9_-]*[a-zA-Z_-][a-zA-Z0-9_-]*$'
+                        description: The alias name (not all digits, as a version is).
+                      functionVersion:
                         type: string
-                        description: "Target: 'latest' (the newest revision = $LATEST, default) or a specific Knative revision name (a pinned version, e.g. myfn-00003)."
-                      weight:
-                        type: integer
-                        description: "Percent of traffic to this target. All aliases' weights must sum to 100."
+                        pattern: '^(\$LATEST|[1-9][0-9]{0,8})$'
+                        description: The version the alias invokes ($LATEST or a version number).
+                      description:
+                        type: string
+                        maxLength: 256
+                      additionalVersionWeights:
+                        type: object
+                        maxProperties: 1
+                        additionalProperties: { type: number, minimum: 0, maximum: 1 }
+                        description: >-
+                          Lambda's RoutingConfig.AdditionalVersionWeights: one other version and the share
+                          (0-1) of the alias's invocations it receives.
             status:
               type: object
               properties:

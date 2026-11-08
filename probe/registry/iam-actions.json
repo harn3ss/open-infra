@@ -421,7 +421,9 @@
    "fieldActions": {
     "aliases": {
      "actions": [
-      "lambda:UpdateAlias"
+      "lambda:CreateAlias",
+      "lambda:UpdateAlias",
+      "lambda:DeleteAlias"
      ]
     },
     "code": {
@@ -437,6 +439,12 @@
     "reservedConcurrency": {
      "actions": [
       "lambda:PutFunctionConcurrency"
+     ]
+    },
+    "versions": {
+     "actions": [
+      "lambda:PublishVersion",
+      "lambda:DeleteFunction"
      ]
     }
    }
@@ -1237,13 +1245,20 @@
   ],
   "lambda": [
    "iam:PassRole",
+   "lambda:CreateAlias",
    "lambda:CreateFunction",
+   "lambda:DeleteAlias",
    "lambda:DeleteFunction",
+   "lambda:GetAlias",
    "lambda:GetFunction",
    "lambda:GetFunctionConfiguration",
    "lambda:GetPolicy",
    "lambda:InvokeFunction",
+   "lambda:ListAliases",
    "lambda:ListFunctions",
+   "lambda:ListVersionsByFunction",
+   "lambda:PublishVersion",
+   "lambda:UpdateAlias",
    "lambda:UpdateFunctionCode",
    "lambda:UpdateFunctionConfiguration"
   ],
@@ -1514,13 +1529,19 @@
   "kms:ScheduleKeyDeletion",
   "kms:UpdateAlias",
   "kms:UpdateKeyDescription",
+  "lambda:CreateAlias",
   "lambda:CreateFunction",
+  "lambda:DeleteAlias",
   "lambda:DeleteFunction",
+  "lambda:GetAlias",
   "lambda:GetFunction",
   "lambda:GetFunctionConfiguration",
   "lambda:GetPolicy",
   "lambda:InvokeFunction",
+  "lambda:ListAliases",
   "lambda:ListFunctions",
+  "lambda:ListVersionsByFunction",
+  "lambda:PublishVersion",
   "lambda:PutFunctionConcurrency",
   "lambda:UpdateAlias",
   "lambda:UpdateFunctionCode",

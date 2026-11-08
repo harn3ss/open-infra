@@ -984,13 +984,20 @@
     },
     "lambda": {
       "actions": [
+        "lambda:CreateAlias",
         "lambda:CreateFunction",
+        "lambda:DeleteAlias",
         "lambda:DeleteFunction",
+        "lambda:GetAlias",
         "lambda:GetFunction",
         "lambda:GetFunctionConfiguration",
         "lambda:GetPolicy",
         "lambda:InvokeFunction",
+        "lambda:ListAliases",
         "lambda:ListFunctions",
+        "lambda:ListVersionsByFunction",
+        "lambda:PublishVersion",
+        "lambda:UpdateAlias",
         "lambda:UpdateFunctionCode",
         "lambda:UpdateFunctionConfiguration"
       ],
@@ -1004,12 +1011,19 @@
         "AWS::Lambda"
       ],
       "operations": [
+        "CreateAlias",
         "CreateFunction",
+        "DeleteAlias",
         "DeleteFunction",
+        "GetAlias",
         "GetFunction",
         "GetFunctionConfiguration",
         "GetPolicy",
+        "ListAliases",
         "ListFunctions",
+        "ListVersionsByFunction",
+        "PublishVersion",
+        "UpdateAlias",
         "UpdateFunctionCode",
         "UpdateFunctionConfiguration"
       ],
@@ -1495,7 +1509,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 582,
+    "operations": 589,
     "planOnly": 11,
     "refused": 11,
     "services": 31,
@@ -3218,7 +3232,10 @@
       ],
       "kind": "Function(spec.aliases)",
       "namespace": "AWS::Lambda",
-      "readCalls": [],
+      "readCalls": [
+        "GetAlias",
+        "ListAliases"
+      ],
       "service": "Lambda",
       "serviceTier": "proven",
       "signingNames": [
@@ -3285,9 +3302,11 @@
       "frontDoor": [
         "lambda"
       ],
-      "kind": "Function(revision)",
+      "kind": "Function(spec.versions)",
       "namespace": "AWS::Lambda",
-      "readCalls": [],
+      "readCalls": [
+        "ListVersionsByFunction"
+      ],
       "service": "Lambda",
       "serviceTier": "proven",
       "signingNames": [

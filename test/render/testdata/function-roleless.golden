@@ -1254,7 +1254,7 @@ spec:
               # Prometheus, scraping metrics
               - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
                 podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
-=== aliases
+=== versions
 
 ---
 # --- Knative Service: the scale-to-zero "Function" ---
@@ -1278,10 +1278,10 @@ spec:
       apiVersion: serving.knative.dev/v1
       kind: Service
       metadata:
-        name: aliases
+        name: versions
         namespace: team-a
         labels:
-          app.kubernetes.io/name: aliases
+          app.kubernetes.io/name: versions
       spec:
         template:
           metadata:
@@ -1294,15 +1294,14 @@ spec:
             containers:
               - image: "ghcr.io/me/hello:3"
                 ports: [ { containerPort: 8080 } ]
-        # Weighted traffic targets (the Lambda alias/version analog): each alias is a
-        # Knative traffic tag routing its percent to a pinned revision or the latest.
+        # Published versions: all traffic on the latest revision ($LATEST), each version kept
+        # and addressable at its tag v<version>.
         traffic:
-          - tag: prod
-            percent: 90
-            revisionName: fn-00001
-          - tag: canary
-            percent: 10
-            latestRevision: true
+          - latestRevision: true
+            percent: 100
+          - tag: "v1"
+            revisionName: "fn-00001"
+            percent: 0
 ---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so

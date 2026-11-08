@@ -220,11 +220,14 @@ kms:EnableKeyRotation
 kms:ListKeys
 kms:ScheduleKeyDeletion
 kms:UpdateKeyDescription
+lambda:CreateAlias
 lambda:CreateFunction
+lambda:DeleteAlias
 lambda:DeleteFunction
 lambda:GetFunction
 lambda:InvokeFunction
 lambda:ListFunctions
+lambda:PublishVersion
 lambda:PutFunctionConcurrency
 lambda:UpdateAlias
 lambda:UpdateFunctionCode

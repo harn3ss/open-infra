@@ -218,7 +218,6 @@ func TestCreateFunction_PassRoleIsTheCallers(t *testing.T) {
 func TestCreateFunction_RefusesWhatItCannotCarry(t *testing.T) {
 	for name, extra := range map[string]map[string]any{
 		"Layers":         {"Layers": []any{"arn:aws:lambda:us-east-1:1:layer:x:1"}},
-		"Publish":        {"Publish": true},
 		"Architectures":  {"Architectures": []any{"arm64"}},
 		"VpcConfig":      {"VpcConfig": map[string]any{"SubnetIds": []any{"subnet-1"}}},
 		"Tags":           {"Tags": map[string]any{"team": "a"}},
@@ -346,12 +345,17 @@ func TestUpdateFunctionCode(t *testing.T) {
 	}
 }
 
-// DeleteFunction removes the function; a missing one is ResourceNotFoundException; a qualifier is refused.
+// DeleteFunction removes the function; a missing one is ResourceNotFoundException; a version it does not
+// have is not found, and $LATEST is not deleted alone (lambda_versions_test.go deletes a version).
 func TestDeleteFunction(t *testing.T) {
 	h, dyn, _ := manageFixture(t, nil, zipFunction("default", "orders"))
 	w := serveWith(h, lambdaReq(http.MethodDelete, "/2015-03-31/functions/orders?Qualifier=1", nil), testUser)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("a delete of a version the function lacks: %d %s", w.Code, w.Body)
+	}
+	w = serveWith(h, lambdaReq(http.MethodDelete, "/2015-03-31/functions/orders?Qualifier=$LATEST", nil), testUser)
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("a qualified delete: %d %s", w.Code, w.Body)
+		t.Fatalf("a delete of $LATEST alone: %d %s", w.Code, w.Body)
 	}
 	w = serveWith(h, lambdaReq(http.MethodDelete, "/2015-03-31/functions/arn:aws:lambda:us-east-1:"+lmAccount+":function:orders", nil), testUser)
 	if w.Code != http.StatusNoContent {

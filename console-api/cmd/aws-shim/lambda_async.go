@@ -122,6 +122,18 @@ func (a *asyncInvoker) publishFor(account, name, ns, contentType string, payload
 	return err
 }
 
+// publishVersionFor is publishFor for one published version of the function (version "" = $LATEST): its
+// delivery goes to that version (lambda_versions.go), as Lambda runs an asynchronous invocation of a
+// qualified function.
+func (a *asyncInvoker) publishVersionFor(account, name, ns, version, contentType string, payload []byte, requestID string) error {
+	msg := asyncMsg(account, name, ns, contentType, payload, requestID)
+	if version != "" {
+		msg.Header.Set("X-Fn-Version", version)
+	}
+	_, err := a.js.PublishMsg(msg)
+	return err
+}
+
 // asyncMsg is the queued invocation of account's function name in ns.
 func asyncMsg(account, name, ns, contentType string, payload []byte, requestID string) *nats.Msg {
 	member := !awsidentity.Current().IsManagement(account)
@@ -239,7 +251,16 @@ func (a *asyncInvoker) deliver(m *nats.Msg) {
 			}
 		}()
 	}
-	req, err := http.NewRequestWithContext(dctx, http.MethodPost, a.urlFor(name, m.Header.Get("X-Fn-Namespace")), bytes.NewReader(m.Data))
+	// A published version is delivered to its own address (v<version>-<name>, lambda_versions.go).
+	host := name
+	if v := m.Header.Get("X-Fn-Version"); v != "" {
+		if !versionNumberRe.MatchString(v) {
+			a.deadLetter(m, name, "the queued invocation names no valid function version")
+			return
+		}
+		host = versionTagHost(v, name)
+	}
+	req, err := http.NewRequestWithContext(dctx, http.MethodPost, a.urlFor(host, m.Header.Get("X-Fn-Namespace")), bytes.NewReader(m.Data))
 	if err != nil {
 		// A malformed name can never build a valid URL — retrying is pointless; dead-letter now rather
 		// than nak-loop forever (there is no consumer-level MaxDeliver backstop).

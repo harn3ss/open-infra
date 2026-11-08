@@ -18,6 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/metadata"
 )
 
 // maxSyncInvokePayload is AWS Lambda's synchronous invocation payload limit (6 MB).
@@ -47,9 +48,8 @@ var fnNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 // Lambda API's namespace or a CloudFormation stack's (fn_locate.go) — the caller's account's: a member
 // account's functions are in its own namespaces, and another account's ARN is refused as AWS refuses a
 // cross-account call no resource-based policy allows; a downstream HTTP error is surfaced
-// as Lambda's X-Amz-Function-Error. Qualifiers are supported for the synchronous path: an alias (or
-// $LATEST) routes to the Knative traffic tag the Function composition publishes at <alias>-<name>.
-// Qualified async delivery is the flagged next step.
+// as Lambda's X-Amz-Function-Error. A qualifier — a published version or an alias — runs that version, at
+// the Knative traffic tag the Function composition keeps for it (lambda_versions.go), synchronously or not.
 type lambdaHandler struct {
 	cs        kubernetes.Interface
 	client    *http.Client
@@ -74,6 +74,9 @@ type lambdaHandler struct {
 	// CloudFormation front door's package store and S3 read check, lambda_packages.go); nil = only image
 	// functions can be created.
 	pkgDoor *cfnDoorway
+	// meta reads a Knative revision's metadata, to publish a version only from a revision created after the
+	// function's last change (lambda_versions.go); nil = the revision's age is not checked.
+	meta metadata.Interface
 }
 
 func newLambdaHandler(cs kubernetes.Interface, fnNS, svcSuffix string, async *asyncInvoker, logger *slog.Logger) *lambdaHandler {
@@ -95,6 +98,21 @@ func (h *lambdaHandler) authFailure(w http.ResponseWriter, _ *http.Request, requ
 }
 
 func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
+	// Versions and aliases (PublishVersion, ListVersionsByFunction, CreateAlias, GetAlias, UpdateAlias,
+	// DeleteAlias, ListAliases): lambda_versions.go.
+	if op, fn, alias, ok, bad := parseLambdaVersionPath(r); ok {
+		if bad {
+			writeLambdaError(w, http.StatusBadRequest, "InvalidParameterValueException", requestID,
+				"FunctionName is not a valid function name or ARN, or the alias name is not valid")
+			return
+		}
+		action, _ := lambdaVersionAction(op)
+		if h.refusedCrossAccount(w, r, claims, requestID, action, fn) {
+			return
+		}
+		h.serveVersions(w, r, claims, requestID, op, fn, alias)
+		return
+	}
 	// The control-plane operations (CreateFunction, UpdateFunctionCode, UpdateFunctionConfiguration,
 	// DeleteFunction): lambda_manage.go.
 	if op, fn, q, write, bad := parseLambdaWritePath(r); write {
@@ -125,16 +143,12 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	name, qualifier, ok := parseInvokePath(r)
 	if !ok {
 		writeLambdaError(w, http.StatusNotImplemented, "InvalidAction", requestID,
-			"only Invoke (POST /2015-03-31/functions/{name}[:{qualifier}]/invocations), CreateFunction, UpdateFunctionCode, UpdateFunctionConfiguration, DeleteFunction, GetFunction, GetFunctionConfiguration, ListFunctions and GetPolicy are implemented")
+			"only Invoke (POST /2015-03-31/functions/{name}[:{qualifier}]/invocations), CreateFunction, UpdateFunctionCode, UpdateFunctionConfiguration, DeleteFunction, GetFunction, GetFunctionConfiguration, ListFunctions, GetPolicy, PublishVersion, ListVersionsByFunction, CreateAlias, GetAlias, UpdateAlias, DeleteAlias and ListAliases are implemented")
 		return
 	}
 	if h.refusedCrossAccount(w, r, claims, requestID, "lambda:InvokeFunction", name) {
 		return
 	}
-	// A non-default qualifier (a Lambda alias) routes to the Knative traffic tag the Function
-	// composition publishes at <alias>-<name>; $LATEST / unset is the default (100%) route.
-	qualified := qualifier != "" && qualifier != "$LATEST"
-
 	// Authorize through the shared impersonated SubjectAccessReview — one policy world. Invoking EXECUTES
 	// the function's code (with side effects — pointedly for async Event invokes), so it maps to `create`
 	// on functions, NOT `get`: read-only principals (openinfra:readers hold only get/list/watch) must not
@@ -164,6 +178,14 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		return
 	}
 
+	// A qualifier names a published version, or an alias resolved to one for this invocation
+	// (lambda_versions.go); $LATEST / unset is the function's own route.
+	target, e := h.resolveInvocation(r.Context(), ns, name, qualifier)
+	if e != nil {
+		e.write(w, requestID)
+		return
+	}
+
 	// Invocation type (X-Amz-Invocation-Type): RequestResponse (default) runs synchronously below;
 	// DryRun validates permissions only; Event queues the payload for durable async delivery and returns
 	// 202 immediately. The authorization check above already ran, so DryRun is complete right here.
@@ -178,13 +200,6 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 				"asynchronous (Event) invocation requires the event bus (set NATS_URL on the shim)")
 			return
 		}
-		if qualified {
-			// Async delivery resolves the function by name at the pump; alias/qualifier routing is a
-			// sync-only capability today. Refuse rather than silently invoke the default route.
-			writeLambdaError(w, http.StatusBadRequest, "InvalidParameterValueException", requestID,
-				"asynchronous (Event) invocation with a qualifier/alias is not supported; invoke the alias synchronously, or invoke the unqualified function asynchronously")
-			return
-		}
 		// Async payloads are read into a durable queue message; cap at AWS's 256 KB async limit.
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 256*1024))
 		if err != nil {
@@ -192,7 +207,11 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 				"async invocation payload exceeds the 256 KB limit")
 			return
 		}
-		if err := h.async.publishFor(callerAccount(r.Context()), name, ns, r.Header.Get("Content-Type"), body, requestID); err != nil {
+		version := ""
+		if target.version != "$LATEST" {
+			version = target.version
+		}
+		if err := h.async.publishVersionFor(callerAccount(r.Context()), name, ns, version, r.Header.Get("Content-Type"), body, requestID); err != nil {
 			h.logger.Warn("lambda async enqueue failed", "function", name, "error", err.Error())
 			writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID,
 				"could not enqueue the asynchronous invocation")
@@ -221,13 +240,9 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	}
 
 	// Resolve to the Function's cluster-local Knative address and forward the payload. Hitting the
-	// cluster-local URL is what drives Knative scale-from-zero. A qualifier routes to the alias's
-	// Knative traffic tag (<alias>-<name>); $LATEST / unset hits the default route.
-	host := name
-	if qualified {
-		host = qualifier + "-" + name
-	}
-	target := "http://" + host + "." + ns + "." + h.svcSuffix + "/"
+	// cluster-local URL is what drives Knative scale-from-zero. A version runs at its Knative traffic tag
+	// (v<version>-<name>); $LATEST at the default route.
+	upstream := "http://" + target.host + "." + ns + "." + h.svcSuffix + "/"
 	// The payload goes to the function whole, with its length: a streamed (chunked) body reaches a runtime
 	// that reads Content-Length as an empty event. A synchronous invocation's payload is at most 6 MB, as on
 	// AWS, which refuses a larger one with RequestEntityTooLargeException.
@@ -238,10 +253,13 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		return
 	}
 	// The invoke waits for the function's own timeout (plus its cold start), as Lambda runs it (#372).
-	fnTimeout := h.timeouts.of(r.Context(), ns, name)
+	fnTimeout := target.timeout
+	if fnTimeout == 0 {
+		fnTimeout = h.timeouts.of(r.Context(), ns, name)
+	}
 	ictx, cancel := context.WithTimeout(r.Context(), fnTimeout+h.coldStart)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ictx, http.MethodPost, target, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ictx, http.MethodPost, upstream, bytes.NewReader(payload))
 	if err != nil {
 		writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID, "could not build upstream request")
 		return
@@ -262,7 +280,7 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	}
 	if err != nil {
 		// Unreachable / no such function → Lambda's ResourceNotFoundException.
-		h.logger.Warn("lambda upstream unreachable", "function", name, "target", target, "error", err.Error())
+		h.logger.Warn("lambda upstream unreachable", "function", name, "target", upstream, "error", err.Error())
 		writeLambdaError(w, http.StatusNotFound, "ResourceNotFoundException", requestID,
 			"function '"+name+"' could not be reached")
 		return
@@ -287,6 +305,7 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	} else if resp.StatusCode >= http.StatusBadRequest {
 		w.Header().Set("X-Amz-Function-Error", "Unhandled")
 	}
+	w.Header().Set("X-Amz-Executed-Version", target.version) // the version that ran, as Lambda reports it
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, resp.Body)
@@ -315,10 +334,9 @@ func (h *lambdaHandler) concurrencyThrottled(ctx context.Context, ns string) (th
 
 // parseInvokePath matches POST /2015-03-31/functions/{name}/invocations (optionally
 // /2015-03-31/functions/{name}:{qualifier}/invocations) and returns {name} + {qualifier}. The
-// qualifier is a Lambda alias (or $LATEST); it may also come from ?Qualifier=. Both name and a
-// non-$LATEST qualifier are validated as RFC-1123 labels because BOTH feed the constructed
-// cluster-local URL authority (<qualifier>-<name>.<ns>.<suffix>) — the same off-cluster-redirect
-// guard the bare name already has — and their combined DNS label must fit in 63 bytes.
+// qualifier is $LATEST, a version or an alias; it may also come from ?Qualifier=. The name is validated
+// as an RFC-1123 label because it feeds the constructed cluster-local URL authority — the off-cluster-
+// redirect guard; a qualifier never does (a version's address is v<number>-<name>, lambda_versions.go).
 func parseInvokePath(r *http.Request) (name, qualifier string, ok bool) {
 	if r.Method != http.MethodPost {
 		return "", "", false

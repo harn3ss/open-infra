@@ -502,6 +502,56 @@ func roleDoorCases() []roleDoorCase {
 				h.authz = a
 				return serveWith(h, lambdaReq(http.MethodDelete, "/2015-03-31/functions/orders", nil), c)
 			}},
+		// Versions and aliases (lambda_versions.go), each decided on the function they belong to.
+		{door: "lambda", op: "PublishVersion", action: "lambda:PublishVersion", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(zipFunction("default", "orders")), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, lambdaReq(http.MethodPost, "/2015-03-31/functions/orders/versions", `{}`), c)
+			}},
+		{door: "lambda", op: "ListVersionsByFunction", action: "lambda:ListVersionsByFunction", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(zipFunction("default", "orders")), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, lambdaReq(http.MethodGet, "/2015-03-31/functions/orders/versions", nil), c)
+			}},
+		{door: "lambda", op: "CreateAlias", action: "lambda:CreateAlias", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(zipFunction("default", "orders")), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, lambdaReq(http.MethodPost, "/2015-03-31/functions/orders/aliases", `{"Name":"live","FunctionVersion":"$LATEST"}`), c)
+			}},
+		{door: "lambda", op: "GetAlias", action: "lambda:GetAlias", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(zipFunction("default", "orders")), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, lambdaReq(http.MethodGet, "/2015-03-31/functions/orders/aliases/live", nil), c)
+			}},
+		{door: "lambda", op: "UpdateAlias", action: "lambda:UpdateAlias", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(zipFunction("default", "orders")), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, lambdaReq(http.MethodPut, "/2015-03-31/functions/orders/aliases/live", `{"FunctionVersion":"$LATEST"}`), c)
+			}},
+		{door: "lambda", op: "DeleteAlias", action: "lambda:DeleteAlias", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(zipFunction("default", "orders")), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, lambdaReq(http.MethodDelete, "/2015-03-31/functions/orders/aliases/live", nil), c)
+			}},
+		{door: "lambda", op: "ListAliases", action: "lambda:ListAliases", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(zipFunction("default", "orders")), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, lambdaReq(http.MethodGet, "/2015-03-31/functions/orders/aliases", nil), c)
+			}},
 		// --- Organizations (the management account's; an operation that names no account is checked on
 		// Account::* for a User too, so a governed User without the grant is denied it) ---
 		// No cluster client here: an authorized call ends at "not available", after the gate.
