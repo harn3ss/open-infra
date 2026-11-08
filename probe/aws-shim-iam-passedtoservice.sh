@@ -133,14 +133,19 @@ for i in $(seq 1 36); do
   [ "$i" = 36 ] && inconclusive "U's policies did not take effect within 3 minutes"
   sleep 5
 done
+# may_pass <verb>: a SubjectAccessReview for U's compiled identity (an IAM principal cannot run kubectl's
+# discovery, so kubectl auth can-i --as cannot ask for it).
+may_pass() {
+  printf '{"apiVersion":"authorization.k8s.io/v1","kind":"SubjectAccessReview","spec":{"user":"openinfra:%s:%s","resourceAttributes":{"group":"iam.openinfra.dev","resource":"roles","verb":"%s","namespace":"%s","name":"%s"}}}' \
+    "$ACCOUNT" "$U" "$1" "$CFN_NS" "$EXEC" | kubectl create -o jsonpath='{.status.allowed}' -f - 2>/dev/null || true
+}
 for i in $(seq 1 60); do
-  can="$(kubectl auth can-i "passrole:lambda.amazonaws.com" "roles.iam.openinfra.dev/$EXEC" -n "$CFN_NS" --as "openinfra:$ACCOUNT:$U" 2>/dev/null || true)"
-  [ "$can" = yes ] && break
+  [ "$(may_pass passrole:lambda.amazonaws.com)" = true ] && break
   [ "$i" = 60 ] && inconclusive "the IAM compiler did not compile U's passrole:lambda.amazonaws.com within 5 minutes"
   sleep 5
 done
-[ "$(kubectl auth can-i passrole "roles.iam.openinfra.dev/$EXEC" -n "$CFN_NS" --as "openinfra:$ACCOUNT:$U" 2>/dev/null || true)" = yes ] \
-  && fail "a Lambda-only PassRole was compiled into the any-service passrole verb"
+[ "$(may_pass passrole)" = true ] && fail "a Lambda-only PassRole was compiled into the any-service passrole verb"
+[ "$(may_pass passrole:ec2.amazonaws.com)" = true ] && fail "a Lambda-only PassRole was compiled into EC2's verb"
 ok "U's PassRole is compiled as passrole:lambda.amazonaws.com, not passrole"
 
 log "1. U's create-function names the role"
