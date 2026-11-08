@@ -144,7 +144,7 @@ func (h *snsHandler) deliverLambda(sub snsSubscription, msgID, topicArn, subject
 	go func() {
 		backoff := snsLambdaBackoff
 		for attempt := 1; attempt <= snsLambdaAttempts; attempt++ {
-			err := h.invokeOnce(target, event)
+			err := h.invokeOnce(target, sub.Endpoint, event)
 			if err == nil {
 				return
 			}
@@ -162,7 +162,9 @@ type snsDeliveryError string
 
 func (e snsDeliveryError) Error() string { return string(e) }
 
-func (h *snsHandler) invokeOnce(target string, event []byte) error {
+// invokeOnce delivers one event; endpoint is the subscription's, the function ARN the handler's context
+// reports as the ARN it was invoked by.
+func (h *snsHandler) invokeOnce(target, endpoint string, event []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(event))
@@ -172,6 +174,9 @@ func (h *snsHandler) invokeOnce(target string, event []byte) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Openinfra-Invoke", "direct") // the handler gets the SNS event, AWS Invoke semantics
 	req.Header.Set("X-Amz-Invocation-Type", "Event")
+	if strings.HasPrefix(endpoint, "arn:") {
+		setInvocationContext(req.Header, endpoint, "")
+	}
 	resp, err := h.invoker.Do(req)
 	if err != nil {
 		return err

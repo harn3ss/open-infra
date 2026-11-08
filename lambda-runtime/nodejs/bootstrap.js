@@ -429,17 +429,53 @@ async function loadHandler() {
 // LOG_STREAM is this instance's log stream, named as Lambda names one (<date>/[$LATEST]<id>).
 const LOG_STREAM = new Date().toISOString().slice(0, 10).replace(/-/g, "/") + "/[$LATEST]" + randomUUID().replace(/-/g, "");
 
-function lambdaContext() {
+// AWS_EXECUTION_ENV is Lambda's runtime identifier, AWS_Lambda_nodejs<N>.x: the platform stores a Node runtime
+// without its ".x", so it is completed here, before any handler code reads it.
+if (/^AWS_Lambda_nodejs\d+$/.test(process.env.AWS_EXECUTION_ENV || "")) process.env.AWS_EXECUTION_ENV += ".x";
+
+const FN_NAME = process.env.OPENINFRA_FUNCTION_NAME || "function";
+
+// invokedArn is the ARN the function was invoked by, as Lambda's context reports it: the one its caller
+// passes (X-Openinfra-Invoked-Function-Arn), taken only when it names this function; else the function's
+// own ARN, from its region and the account its role is in; "" when neither is known.
+function invokedArn(headers) {
+  const given = String(headers["x-openinfra-invoked-function-arn"] || "");
+  const own = new RegExp("^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\\d{12}:function:" + FN_NAME.replace(/[^A-Za-z0-9-]/g, "") + "(:[A-Za-z0-9$_-]{1,128})?$");
+  if (own.test(given)) return given;
+  const acct = /^arn:aws[a-z-]*:iam::(\d{12}):role\//.exec(process.env.AWS_ROLE_ARN || "");
+  const region = process.env.AWS_REGION || "";
+  return acct && region ? `arn:aws:lambda:${region}:${acct[1]}:function:${FN_NAME}` : "";
+}
+
+// clientContext is the ClientContext the caller passed (X-Amz-Client-Context, base64 JSON), parsed, as
+// Lambda's Node.js runtime gives it; undefined when none was passed.
+function clientContext(headers) {
+  const raw = headers["x-amz-client-context"];
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(Buffer.from(String(raw), "base64").toString("utf8"));
+  } catch (_e) {
+    return undefined;
+  }
+}
+
+function lambdaContext(headers = {}) {
   const deadline = Date.now() + parseInt(process.env.OPENINFRA_TIMEOUT_S || "300", 10) * 1000;
-  const fnName = process.env.OPENINFRA_FUNCTION_NAME || "function";
+  const version = String(headers["x-openinfra-function-version"] || "");
   return {
     awsRequestId: randomUUID(),
-    functionName: fnName,
-    functionVersion: "$LATEST",
+    functionName: FN_NAME,
+    functionVersion: /^(\$LATEST|[1-9][0-9]{0,8})$/.test(version) ? version : "$LATEST",
     memoryLimitInMB: String(parseInt(process.env.OPENINFRA_MEMORY_MB || "0", 10) || 128),
-    invokedFunctionArn: "",
-    logGroupName: "/aws/lambda/" + fnName,
+    invokedFunctionArn: invokedArn(headers),
+    logGroupName: "/aws/lambda/" + FN_NAME,
     logStreamName: LOG_STREAM,
+    clientContext: clientContext(headers),
+    identity: undefined,
+    // Lambda's default. Here the response is sent when the handler's callback is called, whatever its
+    // value, and work the handler leaves running continues (the process is not frozen between
+    // invocations): what Lambda does with false.
+    callbackWaitsForEmptyEventLoop: true,
     getRemainingTimeInMillis: () => Math.max(0, deadline - Date.now()),
   };
 }
@@ -514,7 +550,7 @@ function main() {
         }
         let result;
         try {
-          result = await invoke(handler, event, lambdaContext());
+          result = await invoke(handler, event, lambdaContext(req.headers));
         } catch (e) {
           process.stderr.write("open-infra-runtime: handler raised:\n" + (e && e.stack ? e.stack : String(e)) + "\n");
           const errBody = JSON.stringify({ errorType: (e && e.name) || "Error", errorMessage: (e && e.message) || String(e) });

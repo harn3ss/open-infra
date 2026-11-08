@@ -188,8 +188,9 @@ targets `kind: Function` over its Knative address. All three invocation types ar
 - **`Event`** (asynchronous) — the shim enqueues the payload to a durable JetStream stream and returns
   `202` immediately. A background worker delivers it to the function and waits for the function's
   `timeout` too; while the function runs, the message is kept in progress, so it is never redelivered
-  mid-run. The worker **retries** on failure, a timeout included, and
-  **dead-letters** (to `lambda.dlq.<fn>`) after the delivery cap. It survives a shim restart and
+  mid-run. The handler gets the payload as sent, as Lambda passes it. The worker **retries** on failure
+  (a function error or a timeout included), and **dead-letters** (to `lambda.dlq.<fn>`) after the delivery
+  cap. It survives a shim restart and
   is shared across shim replicas. Requires the shim to have NATS; without it, `Event` is refused (`503`)
   rather than silently dropped.
 - **`DryRun`** — runs the authorization check (the shared SubjectAccessReview) and returns `204` without
@@ -197,6 +198,20 @@ targets `kind: Function` over its Knative address. All three invocation types ar
 
 Every invoke needs `lambda:InvokeFunction` on the function, decided by IAM policy as for every other
 front door.
+
+**The handler's context** carries what Lambda's does on the managed runtimes (Node.js, Python, .NET):
+- **The invoked ARN** (`invokedFunctionArn`, `invoked_function_arn`, `InvokedFunctionArn`): the ARN the
+  caller invoked, with its version or alias qualifier. When the caller is not the aws-shim (Step
+  Functions, AppSync), it is the function's own ARN, from its region and its execution role's account, or
+  empty for a function with no role.
+- **The version that runs** (`functionVersion`): `$LATEST` or the published version's number.
+- **`ClientContext`**, when the caller passed one to a synchronous invoke (at most 3583 bytes of base64
+  JSON): its `client`, `custom` and `env`.
+- **`AWS_EXECUTION_ENV`** is Lambda's identifier, such as `AWS_Lambda_nodejs22.x`.
+- **One difference on Node.js:** `callbackWaitsForEmptyEventLoop` is `true`, Lambda's default, but the
+  response is sent as soon as the handler calls its callback, which is what Lambda does when it is
+  `false`. Work the handler leaves running continues after the response, since the process is not frozen
+  between invocations.
 
 ## Creating and changing functions with the Lambda API
 

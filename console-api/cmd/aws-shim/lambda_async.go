@@ -124,11 +124,15 @@ func (a *asyncInvoker) publishFor(account, name, ns, contentType string, payload
 
 // publishVersionFor is publishFor for one published version of the function (version "" = $LATEST): its
 // delivery goes to that version (lambda_versions.go), as Lambda runs an asynchronous invocation of a
-// qualified function.
-func (a *asyncInvoker) publishVersionFor(account, name, ns, version, contentType string, payload []byte, requestID string) error {
+// qualified function. invokedARN is the ARN the caller invoked it by, which the handler's context
+// reports ("" = none given).
+func (a *asyncInvoker) publishVersionFor(account, name, ns, version, invokedARN, contentType string, payload []byte, requestID string) error {
 	msg := asyncMsg(account, name, ns, contentType, payload, requestID)
 	if version != "" {
 		msg.Header.Set("X-Fn-Version", version)
+	}
+	if invokedARN != "" {
+		msg.Header.Set("X-Fn-Invoked-Arn", invokedARN)
 	}
 	_, err := a.js.PublishMsg(msg)
 	return err
@@ -270,8 +274,16 @@ func (a *asyncInvoker) deliver(m *nats.Msg) {
 	if ct := m.Header.Get("Content-Type"); ct != "" {
 		req.Header.Set("Content-Type", ct)
 	}
+	// Lambda's asynchronous invoke passes the payload to the handler as sent (direct-invoke, not the API
+	// Gateway proxy mapping), and a function error is a failed attempt, retried and then dead-lettered.
+	req.Header.Set("X-Openinfra-Invoke", "direct")
+	version := m.Header.Get("X-Fn-Version")
+	if version == "" {
+		version = "$LATEST"
+	}
+	setInvocationContext(req.Header, m.Header.Get("X-Fn-Invoked-Arn"), version)
 	resp, err := a.client.Do(req)
-	delivered := err == nil && resp.StatusCode < http.StatusBadRequest
+	delivered := err == nil && resp.StatusCode < http.StatusBadRequest && resp.Header.Get("X-Amz-Function-Error") == ""
 	if resp != nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()

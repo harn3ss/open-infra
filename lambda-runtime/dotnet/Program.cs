@@ -322,7 +322,7 @@ static class Bootstrap
         _target = _method.IsStatic ? null : Activator.CreateInstance(type);
     }
 
-    static async Task<object> InvokeAsync(string eventJson)
+    static async Task<object> InvokeAsync(string eventJson, System.Collections.Specialized.NameValueCollection headers)
     {
         var args = new object[_params.Length];
         // Bind by parameter TYPE, not position: AWS's .NET runtime accepts (), (TIn), (TIn, ctx) and
@@ -333,7 +333,7 @@ static class Bootstrap
         for (int i = 0; i < _params.Length; i++)
         {
             var pt = _params[i].ParameterType;
-            args[i] = IsLambdaContextType(pt) ? LambdaContextProxy.Create(pt) : DeserializeEvent(eventJson, pt);
+            args[i] = IsLambdaContextType(pt) ? LambdaContextProxy.Create(pt, headers) : DeserializeEvent(eventJson, pt);
         }
         var result = _method.Invoke(_target, args);
         if (result is Task task)
@@ -389,7 +389,7 @@ static class Bootstrap
             bool direct = string.Equals(req.Headers["X-Openinfra-Invoke"], "direct", StringComparison.Ordinal);
             string eventJson = BuildEvent(body, req, direct);
             object result;
-            try { result = await InvokeAsync(eventJson); }
+            try { result = await InvokeAsync(eventJson, req.Headers); }
             catch (Exception e)
             {
                 var inner = (e as TargetInvocationException)?.InnerException ?? e;

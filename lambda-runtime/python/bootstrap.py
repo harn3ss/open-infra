@@ -33,9 +33,11 @@
 #       * anything else -> 200 with the value JSON-encoded.
 #   - An unhandled handler exception -> 502 {errorType, errorMessage} + stderr log,
 #     never a silent 200.
+import base64
 import importlib
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -59,15 +61,71 @@ _START = time.time()
 _LOG_STREAM = time.strftime("%Y/%m/%d", time.gmtime()) + "/[$LATEST]" + uuid.uuid4().hex
 
 
+_FUNCTION_NAME = os.environ.get("OPENINFRA_FUNCTION_NAME", "function")
+_VERSION_RE = re.compile(r"^(\$LATEST|[1-9][0-9]{0,8})$")
+_ROLE_ACCOUNT_RE = re.compile(r"^arn:aws[a-z-]*:iam::(\d{12}):role/")
+_OWN_ARN_RE = re.compile(
+    r"^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:function:" + re.escape(_FUNCTION_NAME) + r"(:[A-Za-z0-9$_-]{1,128})?$"
+)
+
+
+def _invoked_arn(headers):
+    """The ARN the function was invoked by, as Lambda's context reports it: the one its caller passes
+    (X-Openinfra-Invoked-Function-Arn), taken only when it names this function; else the function's own
+    ARN, from its region and the account its role is in; "" when neither is known."""
+    given = headers.get("X-Openinfra-Invoked-Function-Arn") or ""
+    if _OWN_ARN_RE.match(given):
+        return given
+    acct = _ROLE_ACCOUNT_RE.match(os.environ.get("AWS_ROLE_ARN", ""))
+    region = os.environ.get("AWS_REGION", "")
+    return "arn:aws:lambda:%s:%s:function:%s" % (region, acct.group(1), _FUNCTION_NAME) if acct and region else ""
+
+
+class Client:
+    """The mobile client in a ClientContext, as Lambda's Python runtime gives it."""
+
+    def __init__(self, d):
+        self.installation_id = d.get("installation_id")
+        self.app_title = d.get("app_title")
+        self.app_version_name = d.get("app_version_name")
+        self.app_version_code = d.get("app_version_code")
+        self.app_package_name = d.get("app_package_name")
+
+
+class ClientContext:
+    """The ClientContext a caller passed to Invoke, as Lambda's Python runtime gives it."""
+
+    def __init__(self, d):
+        client = d.get("client")
+        self.client = Client(client) if isinstance(client, dict) else None
+        self.custom = d.get("custom")
+        self.env = d.get("env")
+
+
+def _client_context(headers):
+    raw = headers.get("X-Amz-Client-Context")
+    if not raw:
+        return None
+    try:
+        d = json.loads(base64.b64decode(raw))
+    except Exception:
+        return None
+    return ClientContext(d) if isinstance(d, dict) else None
+
+
 class LambdaContext:
     """A minimal AWS Lambda context object (the fields handlers actually read)."""
 
-    def __init__(self):
+    def __init__(self, headers=None):
+        headers = headers or {}
+        version = headers.get("X-Openinfra-Function-Version") or ""
         self.aws_request_id = str(uuid.uuid4())
-        self.function_name = os.environ.get("OPENINFRA_FUNCTION_NAME", "function")
-        self.function_version = "$LATEST"
+        self.function_name = _FUNCTION_NAME
+        self.function_version = version if _VERSION_RE.match(version) else "$LATEST"
         self.memory_limit_in_mb = int(os.environ.get("OPENINFRA_MEMORY_MB", "0")) or 128
-        self.invoked_function_arn = ""
+        self.invoked_function_arn = _invoked_arn(headers)
+        self.client_context = _client_context(headers)
+        self.identity = None
         self.log_group_name = "/aws/lambda/" + self.function_name
         self.log_stream_name = _LOG_STREAM
         # Knative enforces the real wall-clock timeout; expose a plausible budget.
@@ -381,7 +439,7 @@ class Handler(BaseHTTPRequestHandler):
                 "headers": {k: v for k, v in self.headers.items()},
             }
         try:
-            result = HANDLER(event, LambdaContext())
+            result = HANDLER(event, LambdaContext(self.headers))
         except Exception as e:
             sys.stderr.write("open-infra-runtime: handler raised:\n")
             traceback.print_exc()

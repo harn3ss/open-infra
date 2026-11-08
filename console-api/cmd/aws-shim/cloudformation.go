@@ -274,6 +274,11 @@ func (h *cfnDoorway) postCustomResourceEvent(ctx context.Context, namespace, fun
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Openinfra-Invoke", "direct")
+	// The handler's context reports the ARN it was invoked by: the custom resource's ServiceToken.
+	var tok struct{ ServiceToken string }
+	if json.Unmarshal(event, &tok) == nil && strings.HasPrefix(tok.ServiceToken, "arn:") {
+		setInvocationContext(req.Header, tok.ServiceToken, "")
+	}
 	resp, err := h.invoker.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("invoking custom-resource Function %q at %s: %w", functionName, target, err)

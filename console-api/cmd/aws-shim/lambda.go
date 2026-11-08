@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -211,7 +212,7 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		if target.version != "$LATEST" {
 			version = target.version
 		}
-		if err := h.async.publishVersionFor(callerAccount(r.Context()), name, ns, version, r.Header.Get("Content-Type"), body, requestID); err != nil {
+		if err := h.async.publishVersionFor(callerAccount(r.Context()), name, ns, version, h.invokedARN(r.Context(), name, qualifier), r.Header.Get("Content-Type"), body, requestID); err != nil {
 			h.logger.Warn("lambda async enqueue failed", "function", name, "error", err.Error())
 			writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID,
 				"could not enqueue the asynchronous invocation")
@@ -252,6 +253,14 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 			"Request must be smaller than 6291456 bytes for the InvokeFunction operation")
 		return
 	}
+	// A caller's ClientContext reaches the handler's context, as on Lambda (synchronous invokes only): at
+	// most 3583 bytes of base64-encoded JSON.
+	clientContext := r.Header.Get("X-Amz-Client-Context")
+	if clientContext != "" && !validClientContext(clientContext) {
+		writeLambdaError(w, http.StatusBadRequest, "InvalidRequestContentException", requestID,
+			"Client context must be a valid Base64-encoded JSON object of at most 3583 bytes")
+		return
+	}
 	// The invoke waits for the function's own timeout (plus its cold start), as Lambda runs it (#372).
 	fnTimeout := target.timeout
 	if fnTimeout == 0 {
@@ -271,6 +280,10 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	// error via X-Amz-Function-Error (HTTP stays 200) — AWS Invoke semantics — instead of mapping the
 	// return to an API-Gateway proxy response (which is only for the apigateway doorway).
 	req.Header.Set("X-Openinfra-Invoke", "direct")
+	setInvocationContext(req.Header, h.invokedARN(r.Context(), name, qualifier), target.version)
+	if clientContext != "" {
+		req.Header.Set("X-Amz-Client-Context", clientContext)
+	}
 
 	resp, err := h.client.Do(req)
 	if err != nil && ictx.Err() == context.DeadlineExceeded && r.Context().Err() == nil {
@@ -414,4 +427,40 @@ func writeLambdaError(w http.ResponseWriter, status int, errorType, requestID, m
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"message": message})
+}
+
+// invokedARN is the ARN a caller invoked the function by, as the handler's context reports it
+// (invokedFunctionArn): the function's ARN, qualified by the qualifier the caller named.
+func (h *lambdaHandler) invokedARN(ctx context.Context, name, qualifier string) string {
+	arn := h.functionARNIn(ctx, name)
+	if qualifier != "" {
+		arn += ":" + qualifier
+	}
+	return arn
+}
+
+// setInvocationContext tells the function's runtime what its handler's context reports (#406): the ARN
+// the function was invoked by ("" = unknown: the runtime derives what it can) and the version that runs.
+// The first-party runtimes take the ARN only when it names their own function.
+func setInvocationContext(h http.Header, invokedARN, version string) {
+	if invokedARN != "" {
+		h.Set("X-Openinfra-Invoked-Function-Arn", invokedARN)
+	}
+	if version != "" {
+		h.Set("X-Openinfra-Function-Version", version)
+	}
+}
+
+// validClientContext reports whether a ClientContext is what Lambda takes: base64 of a JSON object, at
+// most 3583 bytes encoded.
+func validClientContext(s string) bool {
+	if len(s) > 3583 {
+		return false
+	}
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return false
+	}
+	var obj map[string]any
+	return json.Unmarshal(b, &obj) == nil
 }

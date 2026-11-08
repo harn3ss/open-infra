@@ -6,6 +6,25 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a Lambda handler's context carries what Lambda's does (#406)
+- **Before:** the invoked function ARN was always empty, the function version was always `$LATEST`, a
+  caller's `ClientContext` was dropped, Node.js's `callbackWaitsForEmptyEventLoop` was missing, and
+  `AWS_EXECUTION_ENV` lacked Lambda's `.x` for Node.js (`AWS_Lambda_nodejs22`).
+- **Now, on the Node.js, Python and .NET runtimes:**
+  - the invoked ARN is the one the caller used, with its version or alias qualifier;
+  - the version is the one that runs;
+  - `ClientContext` reaches the context (`client`, `custom`, `env`);
+  - Node.js has `callbackWaitsForEmptyEventLoop` (`true`, Lambda's default);
+  - `AWS_EXECUTION_ENV` is `AWS_Lambda_nodejs<N>.x`.
+- **Difference:** on Node.js the response is sent as soon as a callback-style handler calls back, as
+  Lambda does when `callbackWaitsForEmptyEventLoop` is `false`.
+
+### Fixed — an asynchronous Lambda invoke delivers the payload as sent
+- **Before:** an `Event` invocation reached the handler as an API Gateway proxy event, with an added
+  `_http` field, and a non-object payload wrapped in `{"body": …}`. A function error counted as delivered.
+- **Now:** the handler gets the payload as sent, as Lambda passes it. A function error is a failed attempt:
+  it is retried, then dead-lettered.
+
 ### Added — Lambda versions and aliases, as on AWS
 - **Operations:** `PublishVersion`, `ListVersionsByFunction`, `CreateAlias`, `GetAlias`, `UpdateAlias`,
   `DeleteAlias` and `ListAliases`; `Publish` on `CreateFunction` and `UpdateFunctionCode`; and
