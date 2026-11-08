@@ -8442,6 +8442,7 @@ components:
           properties:
             ingress:
               type: array
+              maxItems: 128
               description: 'Inbound allow-rules. Defined (even empty), members deny every other inbound connection, as an
                 AWS security group does; omitted, the group does not restrict inbound. A group CloudFormation creates always
                 defines it: an AWS group with no inbound rules denies all inbound.'
@@ -8464,6 +8465,7 @@ components:
                     description: Optional note explaining why this rule exists.
                   ports:
                     type: array
+                    maxItems: 64
                     items:
                       type: integer
                     description: Ports to allow. Empty = all ports.
@@ -8489,6 +8491,7 @@ components:
                           description: all pods in this namespace
             egress:
               type: array
+              maxItems: 128
               description: Outbound allow-rules. If set, members become egress-restricted (DNS auto-allowed).
               items:
                 type: object
@@ -8509,6 +8512,7 @@ components:
                     description: Optional note explaining why this rule exists.
                   ports:
                     type: array
+                    maxItems: 64
                     items:
                       type: integer
                   to:

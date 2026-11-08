@@ -49,6 +49,7 @@ spec:
               properties:
                 ingress:
                   type: array
+                  maxItems: 128
                   description: >-
                     Inbound allow-rules. Defined (even empty), members deny every other inbound connection,
                     as an AWS security group does; omitted, the group does not restrict inbound. A group
@@ -64,6 +65,7 @@ spec:
                       description: { type: string, description: "Optional note explaining why this rule exists." }
                       ports:
                         type: array
+                        maxItems: 64
                         items: { type: integer }
                         description: "Ports to allow. Empty = all ports."
                       from:
@@ -77,6 +79,7 @@ spec:
                             namespace:     { type: string, pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', maxLength: 63, description: "all pods in this namespace" }
                 egress:
                   type: array
+                  maxItems: 128
                   description: "Outbound allow-rules. If set, members become egress-restricted (DNS auto-allowed)."
                   items:
                     type: object
@@ -88,6 +91,7 @@ spec:
                       description: { type: string, description: "Optional note explaining why this rule exists." }
                       ports:
                         type: array
+                        maxItems: 64
                         items: { type: integer }
                       to:
                         type: array
