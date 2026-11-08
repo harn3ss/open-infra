@@ -251,7 +251,8 @@ func TestS3CreateBucket_NamesThatAreTaken(t *testing.T) {
 	}
 }
 
-// A stack's bucket the caller may read is theirs (200); one they may not read is someone else's (409).
+// A stack's bucket of the caller's account is the account's own: CreateBucket answers 200, as AWS answers
+// re-creating your own bucket in us-east-1, whatever the caller's own permissions on the stack.
 func TestS3CreateBucket_ExistingClaim(t *testing.T) {
 	h, f, dyn := createFixture(t)
 	f.buckets["stack-data"] = true
@@ -263,30 +264,40 @@ func TestS3CreateBucket_ExistingClaim(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("CreateBucket of your own stack's bucket = %d %s, want 200", w.Code, w.Body)
 	}
-	other := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
-		map[schema.GroupVersionResource]string{xbucketListGVR: "XBucketList", bucketListGVR: "BucketList"})
-	other.PrependReactor("get", "buckets", func(k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "openinfra.dev", Resource: "buckets"}, "stack-data", nil)
-	})
-	h.callerDyn = func(string, []string) (dynamic.Interface, error) { return other, nil }
-	w = httptest.NewRecorder()
-	h.createBucket(w, createReq("stack-data"), callerClaims(), s3op{kind: "create-bucket", bucket: "stack-data", write: true}, "r")
-	if w.Code != 409 || !strings.Contains(w.Body.String(), "BucketAlreadyExists") {
-		t.Fatalf("CreateBucket of a bucket you may not read = %d %s, want 409 BucketAlreadyExists", w.Code, w.Body)
+	if n := len(listBucketClaims(t, dyn, "open-infra-s3")); n != 0 {
+		t.Fatalf("re-creating the stack's bucket made %d claims", n)
 	}
 }
 
-// RBAC decides: a caller who may not create the claim gets AccessDenied, and nothing is made.
-func TestS3CreateBucket_CallerMayNotCreateTheClaim(t *testing.T) {
+// IAM decides (before the handler); the claim is then the shim's to write (#414). A shim refused by the
+// cluster (its role not granted in the namespace) answers InternalError, never the caller's AccessDenied,
+// and nothing is made.
+func TestS3CreateBucket_TheShimWritesTheClaim(t *testing.T) {
 	h, _, dyn := createFixture(t)
-	dyn.PrependReactor("create", "buckets", func(k8stesting.Action) (bool, runtime.Object, error) {
-		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "openinfra.dev", Resource: "buckets"}, "x", nil)
+	dyn.PrependReactor("create", "buckets", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		if a.GetNamespace() == "open-infra-s3" {
+			return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "openinfra.dev", Resource: "buckets"}, "x", nil)
+		}
+		return false, nil, nil
 	})
 	w := httptest.NewRecorder()
-	h.createBucket(w, createReq("no-rights"), callerClaims(), s3op{kind: "create-bucket", bucket: "no-rights", write: true}, "r")
-	if w.Code != 403 || !strings.Contains(w.Body.String(), "AccessDenied") {
-		t.Fatalf("CreateBucket without the right = %d %s, want 403 AccessDenied", w.Code, w.Body)
+	h.createBucket(w, createReq("no-role"), callerClaims(), s3op{kind: "create-bucket", bucket: "no-role", write: true}, "r")
+	if w.Code != 500 || !strings.Contains(w.Body.String(), "InternalError") {
+		t.Fatalf("CreateBucket with the shim refused = %d %s, want 500 InternalError", w.Code, w.Body)
 	}
+	if n := len(listBucketClaims(t, dyn, "open-infra-s3")); n != 0 {
+		t.Fatalf("a refused CreateBucket made %d claims", n)
+	}
+}
+
+// listBucketClaims is namespace ns's kind: Bucket claims.
+func listBucketClaims(t *testing.T, dyn dynamic.Interface, ns string) []unstructured.Unstructured {
+	t.Helper()
+	l, err := dyn.Resource(bucketListGVR).Namespace(ns).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l.Items
 }
 
 // A setup that has not finished within the wait answers 503 (SDKs retry), not a false 200.

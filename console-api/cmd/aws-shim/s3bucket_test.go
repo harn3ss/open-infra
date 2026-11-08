@@ -330,8 +330,7 @@ func deleteBucketFixture(t *testing.T) (*s3Handler, *fakeS3, dynamic.Interface) 
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{xbucketListGVR: "XBucketList", bucketListGVR: "BucketList"}, xr, claim)
 	f := newFakeS3()
-	h := &s3Handler{mc: fakeMinio(t, f), logger: discardLogger(), dyn: dyn,
-		callerDyn: func(string, []string) (dynamic.Interface, error) { return dyn, nil }}
+	h := &s3Handler{mc: fakeMinio(t, f), logger: discardLogger(), dyn: dyn}
 	return h, f, dyn
 }
 

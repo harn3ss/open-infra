@@ -44,10 +44,10 @@ type s3Handler struct {
 	// "<bucket>.<suffix>", so without this a default client — and every presigned URL it generates —
 	// fails. AWS's own S3 names are recognized without configuration (decode). Empty = path-style only.
 	vhostSuffixes []string
-	// dyn (the shim's own client) finds the kind: Bucket a bucket is; callerDyn impersonates a caller, so
-	// DeleteBucket deletes that claim with the caller's authority. Either nil: DeleteBucket is not served.
-	dyn       dynamic.Interface
-	callerDyn func(user string, groups []string) (dynamic.Interface, error)
+	// dyn (the shim's own client) finds the kind: Bucket a bucket is, and writes it: CreateBucket and
+	// DeleteBucket make and delete the claim as the shim, once IAM has allowed the call (#414), as the
+	// Lambda API writes a function. nil: neither is served.
+	dyn dynamic.Interface
 	// bucketNS is where a bucket made through CreateBucket gets its kind: Bucket claim (S3_BUCKET_NAMESPACE).
 	// createWait/createPoll bound how long CreateBucket waits for the bucket's setup (0 = the defaults).
 	bucketNS               string

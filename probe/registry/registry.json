@@ -1288,7 +1288,8 @@
         "UploadPartCopy"
       ],
       "probes": [
-        "s3"
+        "s3",
+        "s3-account"
       ],
       "refused": [],
       "service": "S3",

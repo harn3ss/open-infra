@@ -43,7 +43,7 @@ services:
     cell: "→ MinIO"
     tier: proven
     sigv4: [s3]
-    probes: [s3]
+    probes: [s3, s3-account]
   - name: STS
     cell: "identity + `AssumeRole` / web-identity"
     tier: proven

@@ -24,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
@@ -138,8 +137,7 @@ func s3AccountsFixture(t *testing.T) (*s3Handler, *datedS3, *dynamicfake.FakeDyn
 		t.Fatal(err)
 	}
 	h := &s3Handler{mc: mc, cs: csWithSAR(true), logger: discardLogger(), dyn: dyn, bucketNS: "open-infra-s3",
-		callerDyn: func(string, []string) (dynamic.Interface, error) { return dyn, nil },
-		authz:     doorAccountsAuthz(t), accounts: s3Directory{members: true},
+		authz: doorAccountsAuthz(t), accounts: s3Directory{members: true},
 		createWait: 3 * time.Second, createPoll: 20 * time.Millisecond}
 	return h, f, dyn
 }
@@ -391,5 +389,44 @@ func TestS3Accounts_CreateBucketIsDecidedInTheCallersAccount(t *testing.T) {
 	}
 	if !h.allowed(s3Req(context.Background(), "PUT", "/brand-new"), s3Alice, create) {
 		t.Fatal("the management account's principal must be allowed to create a bucket")
+	}
+}
+
+// #414: a bucket whose claim came after it, but whose setup succeeded (the platform's owner record names
+// the claim's namespace: an operator recorded the adoption, or an earlier instance of the claim made it), is
+// that account's: its administrator reads it, and the management account does not. Ready claims of two
+// accounts contest it, and a claim that never got ready still makes nothing.
+func TestS3Accounts_ABucketWhoseSetupSucceededIsItsClaimsAccounts(t *testing.T) {
+	h, f, dyn := s3AccountsFixture(t)
+	ctx := context.Background()
+	base := time.Now().Add(-time.Hour)
+	f.add("kept-code", base)
+	f.add("both-ready", base)
+	ready := func(x *unstructured.Unstructured) *unstructured.Unstructured {
+		_ = unstructured.SetNestedField(x.Object, true, "status", "ready")
+		return x
+	}
+	for _, x := range []*unstructured.Unstructured{
+		ready(xbucket("x-kept", memberHome, "kept-code", "kept-code", base.Add(time.Minute))),
+		ready(xbucket("x-both-m", memberHome, "both-ready", "both-ready", base.Add(time.Minute))),
+		ready(xbucket("x-both-o", "open-infra-s3", "both-ready", "both-ready", base.Add(2*time.Minute))),
+	} {
+		if _, err := dyn.Resource(xbucketListGVR).Create(ctx, x, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.owners.forget()
+	mgmt := awsidentity.Current().AccountID
+	for bucket, want := range map[string]string{"kept-code": testMember, "both-ready": bucketContested, "assets": mgmt, "site-x": mgmt} {
+		if got := h.bucketOwner(ctx, bucket); got != want {
+			t.Errorf("owner of %s = %q, want %q", bucket, got, want)
+		}
+	}
+	get := s3op{kind: "get", bucket: "kept-code", key: "k"}
+	if !h.allowed(s3Req(memberCtx(), "GET", "/kept-code/k"), s3Bob, get) {
+		t.Error("the member account's administrator may not read its own kept bucket")
+	}
+	if h.allowed(s3Req(ctx, "GET", "/kept-code/k"), s3Alice, get) {
+		t.Error("the management account reached the member account's kept bucket")
 	}
 }

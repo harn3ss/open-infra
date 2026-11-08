@@ -153,7 +153,7 @@ ARN), `legacy`, `reason` and the `policy` that matched — the list to clear bef
 authorized to perform: <action> on resource: <resource>`. A queue's or topic's own policy (`Policy`
 attribute) joins the decision in `shadow` and `enforce`.
 
-Where a door writes as the caller (CloudFormation's and ECS's applier, S3 `CreateBucket`/`DeleteBucket`), in
+Where a door writes as the caller (CloudFormation's and ECS's applier), in
 `enforce` it acts as the caller's account-qualified identity, `openinfra:<account>:<user>`, whose RBAC the IAM
 compiler generates from its IAM policy. The shim never acts as the account's root user (`openinfra:root` or
 `openinfra:<account>:root`): root has no access keys.
@@ -397,14 +397,15 @@ writes …) is `NotImplemented` rather than being answered as a listing or an ob
 
 **`CreateBucket`.** `aws s3 mb` / `CreateBucket` makes a `kind: Bucket` claim, so a bucket made through the
 API is set up, given the platform's default encryption, reaped and deleted exactly like a stack's. The
-claim lives in one account-wide namespace (`S3_BUCKET_NAMESPACE`, default `open-infra-s3`), named after
-the bucket (shortened with a hash when the name has dots or is long; `spec.bucketName` is the exact
-name), and it is created with the caller's own authority, so their RBAC decides; an assumed role also
-needs `s3:CreateBucket` in its policy. The call answers once the bucket exists and, while the platform
+claim is the account's: the management account's live in one account-wide namespace (`S3_BUCKET_NAMESPACE`,
+default `open-infra-s3`), a member account's in its home. It is named after the bucket (shortened with a hash
+when the name has dots or is long; `spec.bucketName` is the exact name). IAM decides who may make one
+(`s3:CreateBucket`, from the caller's policy), and the shim then writes the claim itself, so an account's
+administrator (`AdministratorAccess`) can make buckets in its own account. The call answers once the bucket exists and, while the platform
 encrypts new buckets, has its default encryption, so an immediate `PutObject` works and is encrypted (the
 claim's own credentials, which only the claim's apps use, may still be on their way); a setup still
 running after about 50 seconds answers `503`, which SDKs retry.
-As in us-east-1, re-creating a bucket that is yours (one whose claim you may read) answers `200`; a name
+As in us-east-1, re-creating a bucket your account owns answers `200`; a name
 that is anyone else's, a platform bucket's, or another resource's own bucket is `BucketAlreadyExists`
 (409), and a bucket being deleted is `OperationAborted`. S3's naming rules apply (`InvalidBucketName`).
 Buckets are `BucketOwnerEnforced` (ACLs disabled), so an ACL other than `private`, a grant header, or
@@ -417,11 +418,21 @@ creation and directory buckets are `NotImplemented` (create a lock-enabled bucke
 a stack).
 
 **`DeleteBucket`.** A bucket here is the bucket of a `kind: Bucket` claim, so deleting the bucket deletes
-that claim, with the caller's own authority (their RBAC decides), and then the bucket. A bucket that
+that claim and then the bucket. IAM decides (`s3:DeleteBucket`), and a bucket is deleted by its own account
+alone. A bucket that
 still holds objects, prior versions or delete markers is `BucketNotEmpty` (409) and nothing is deleted.
 A platform bucket, or a bucket that belongs to another kind (a StaticSite's own bucket, an
 Application's storage) or to nothing the platform manages, is refused with `AccessDenied`: delete the
 resource that owns it. The claim's MinIO user and credentials are removed by the bucket reaper.
+
+**Which account a bucket is.** As on S3, a bucket belongs to the account that made it, and a request on it
+is decided in that account: within it, the caller's identity policy (or the bucket policy) allows it; from
+another account both must. A bucket is an account's when that account's `kind: Bucket` claim made it, or
+when the claim's setup has succeeded, since the setup succeeds only when the platform's owner record names the
+claim's account. The second case covers a bucket the account kept from an earlier claim, or one an
+operator recorded as the account's. So a member account's administrator reads, writes and deletes its own
+buckets, and Lambda `CreateFunction` takes `S3Bucket`/`S3Key` from them. A package of more than 50 MB can
+only be deployed that way.
 
 **Path-style and virtual-hosted-style requests, and pre-signed URLs.** Requests address a bucket either
 in the path (`https://<s3 host>/<bucket>/<key>`) or in the hostname (`https://<bucket>.<s3 host>/<key>`,

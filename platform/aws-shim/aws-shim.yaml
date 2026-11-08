@@ -211,12 +211,16 @@ rules:
   - apiGroups: [subresources.kubevirt.io]
     resources: [virtualmachines/restart]
     verbs: [update]
-  # S3 DeleteBucket and CloudFormation teardown: find the kind: Bucket a bucket is (its composite
-  # reports the bucket in status.bucket). Read-only; the claim itself is deleted with the CALLER's
-  # authority, never the shim's.
+  # S3 CreateBucket, DeleteBucket and CloudFormation teardown: find the kind: Bucket a bucket is (its
+  # composite reports the bucket in status.bucket), and read that claim (whether it is ready, being
+  # deleted). Read-only; the claim is written (aws-shim-buckets, and the service-linked role in a member
+  # account's home) only once IAM has allowed the call.
   - apiGroups: [openinfra.dev]
     resources: [xbuckets]
     verbs: [get, list]
+  - apiGroups: [openinfra.dev]
+    resources: [buckets]
+    verbs: [get]
   # A VM's EC2 instance id: SSM Run Command's agent channel reads the claim of the VM whose token it
   # verified (its status.instanceId), and the composite of one rendered before it carried that (the id is
   # derived from the composite's uid, ec2_ids.go). Read-only, one object by name.
@@ -466,10 +470,10 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
-# The S3 bucket namespace: a bucket made through S3 CreateBucket is a kind: Bucket claim here, created
-# UNDER the caller's impersonated authority (RBAC decides who may), and set up, encrypted, reaped and
-# deleted exactly like a stack's bucket. The shim itself needs nothing here: it reads the claim with the
-# caller's authority and finds bucket claims through their composites (xbuckets, above).
+# The S3 bucket namespace: a bucket the management account makes through S3 CreateBucket is a kind: Bucket
+# claim here, set up, encrypted, reaped and deleted exactly like a stack's bucket. IAM decides who may
+# (s3:CreateBucket, s3:DeleteBucket); the shim then writes the claim itself (aws-shim-buckets, below), as
+# the Lambda API writes a function. A member account's go in its home (the service-linked role).
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -480,6 +484,52 @@ metadata:
     openinfra.dev/account-id: "000000000000"
     openinfra.dev/account-status: ACTIVE
     openinfra.dev/component: aws-shim
+---
+# S3 CreateBucket and DeleteBucket in the management account: the kind: Bucket claims of the buckets it
+# makes (open-infra-s3) and of its stacks' buckets, which DeleteBucket deletes as on AWS (open-infra-cfn).
+# Written only after IAM has allowed the call. No list or update: the claims are found through their
+# composites, and a bucket's configuration is changed through S3, never by rewriting its claim.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-buckets
+  namespace: open-infra-s3
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [buckets]
+    verbs: [get, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-buckets
+  namespace: open-infra-s3
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-buckets }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-buckets
+  namespace: open-infra-cfn
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [buckets]
+    verbs: [delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-buckets
+  namespace: open-infra-cfn
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-buckets }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
 ---
 # A stack's Elastic IP allocations (cfn_addresses.go): each is a holder LoadBalancer Service the shim
 # creates in the stack namespace (named by its AllocationId, labelled openinfra.dev/eip-holder) after
@@ -1444,6 +1494,10 @@ rules:
   - apiGroups: [iam.openinfra.dev]
     resources: [roles]
     verbs: [passrole]
+  # S3's buckets (CreateBucket, DeleteBucket): the kind: Bucket claim each is, written once IAM allowed it.
+  - apiGroups: [openinfra.dev]
+    resources: [buckets]
+    verbs: [get, create, delete]
   # EC2's describes, read as IAM policy allowed.
   - apiGroups: [openinfra.dev]
     resources: [virtualmachines, volumes, securitygroups, vpcs, subnets, vpcendpoints, natgateways]

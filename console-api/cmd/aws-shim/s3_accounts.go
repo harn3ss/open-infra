@@ -5,17 +5,24 @@
 // and a request on a bucket is decided in the bucket's account (within it the caller's identity policy or
 // the bucket policy allows it; from another account both must). Here a bucket made through CreateBucket is
 // a kind: Bucket claim: the management account's in S3_BUCKET_NAMESPACE as before accounts, a member
-// account's in its home (written with the caller's authority, as before). A bucket belongs to the account
+// account's in its home (written by the shim once IAM has allowed the call). A bucket belongs to the account
 // of the namespace of the kind: Bucket claim that made it.
 //
-// "Made it" is decided on facts no claimant can forge: the claim's composite was created no later than the
-// bucket itself (the bucket setup creates the bucket after its claim, and refuses a claim naming a bucket
-// that already exists and is another's). A claim naming an existing bucket it does not own (another
-// account's, a StaticSite's or an Application's own) never makes that bucket its account's. A bucket no
-// claim made — a platform bucket, another kind's, one from before claims — is the management account's,
-// as every bucket was before accounts; so is every bucket while no member account exists (nothing is
-// looked up then). If claims of two accounts both qualify the bucket is no account's: neither reaches it as
-// its own.
+// "Made it" is decided on facts no claimant can forge, in this order:
+//   - A claim whose setup has succeeded (its composite's status.ready): the setup succeeds only when the
+//     platform's owner record for the bucket names that claim's namespace. The record is written by the
+//     setup itself, in a platform namespace. So a bucket an account's claim adopted with an operator's
+//     record, or took over from an earlier instance of the same claim, is that account's, as a bucket a
+//     stack kept stays its account's on AWS.
+//   - Otherwise (a claim whose setup has not finished yet, as when CreateBucket answers), a claim whose
+//     composite was created no later than the bucket itself: the setup creates the bucket after its claim,
+//     and refuses a claim naming a bucket that already exists and is another's.
+//
+// A claim naming an existing bucket it does not own (another account's, a StaticSite's or an Application's
+// own) never makes that bucket its account's. A bucket no claim made — a platform bucket, another kind's,
+// one from before claims — is the management account's, as every bucket was before accounts; so is every
+// bucket while no member account exists (nothing is looked up then). If claims of two accounts both qualify
+// the bucket is no account's: neither reaches it as its own.
 //
 // Requests where accounts meet — a member account's principal, or a member account's bucket — are decided
 // by s3authz.Gate.AllowAccount with the bucket's account and its policy; the management account's
@@ -33,6 +40,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 func init() { accountScopedServices["s3"] = true }
@@ -128,7 +136,16 @@ func (h *s3Handler) buildBucketOwners(ctx context.Context) (map[string]string, e
 	for _, b := range made {
 		created[b.Name] = b.CreationDate
 	}
-	makers := map[string]string{} // bucket → the account of the claims that could have made it
+	// bucket → the account of the claims that could have made it: those whose setup succeeded (recorded),
+	// else those created no later than the bucket (dated).
+	recorded, dated := map[string]string{}, map[string]string{}
+	add := func(m map[string]string, b, acct string) {
+		if prev, seen := m[b]; !seen {
+			m[b] = acct
+		} else if prev != acct {
+			m[b] = bucketContested
+		}
+	}
 	for _, x := range xl.Items {
 		b, _, _ := unstructuredString(x.Object, "status", "bucket")
 		if b == "" {
@@ -136,18 +153,22 @@ func (h *s3Handler) buildBucketOwners(ctx context.Context) (map[string]string, e
 		}
 		ns := x.GetLabels()["crossplane.io/claim-namespace"]
 		bt, exists := created[b]
-		if b == "" || ns == "" || !exists || bt.Year() < 1971 {
-			continue // no bucket, or one with no creation time to tell its maker by: no claim's account's
-		}
-		if x.GetCreationTimestamp().Time.After(bt) {
-			continue // the claim came after the bucket: it did not make it
+		if b == "" || ns == "" || !exists {
+			continue // no bucket: no claim's account's
 		}
 		acct := h.namespaceAccount(ns)
-		if prev, seen := makers[b]; !seen {
-			makers[b] = acct
-		} else if prev != acct {
-			makers[b] = bucketContested
+		if ready, _, _ := unstructured.NestedBool(x.Object, "status", "ready"); ready {
+			add(recorded, b, acct)
+			continue
 		}
+		if bt.Year() < 1971 || x.GetCreationTimestamp().Time.After(bt) {
+			continue // no creation time to tell its maker by, or the claim came after the bucket: it did not make it
+		}
+		add(dated, b, acct)
+	}
+	makers := dated
+	for b, acct := range recorded {
+		makers[b] = acct // the platform's record decides where it exists
 	}
 	mgmt := awsidentity.Current().AccountID
 	for b, acct := range makers {

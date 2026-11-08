@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,35 +15,26 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/tags"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 )
 
-// newS3Handler builds the S3 front door. dyn and cfg may be nil (no Kubernetes dynamic client): the
-// handler then serves everything but CreateBucket and DeleteBucket.
-func newS3Handler(cs kubernetes.Interface, mc *minio.Client, dyn dynamic.Interface, cfg *rest.Config, authzNS string,
+// newS3Handler builds the S3 front door. dyn may be nil (no Kubernetes dynamic client): the handler then
+// serves everything but CreateBucket and DeleteBucket.
+func newS3Handler(cs kubernetes.Interface, mc *minio.Client, dyn dynamic.Interface, authzNS string,
 	authz *dataplaneauthz.Checker, logger *slog.Logger, vhostSuffixes []string) *s3Handler {
 	encEnv := os.Getenv("OBJECT_ENCRYPTION") == "true"
 	encFile := getenv("OBJECT_ENCRYPTION_FILE", "/etc/openinfra/object-encryption/enabled")
-	h := &s3Handler{cs: cs, mc: mc, authzNS: authzNS, authz: authz, logger: logger, vhostSuffixes: vhostSuffixes,
+	return &s3Handler{cs: cs, mc: mc, dyn: dyn, authzNS: authzNS, authz: authz, logger: logger, vhostSuffixes: vhostSuffixes,
 		bucketNS:           getenv("S3_BUCKET_NAMESPACE", defaultBucketNamespace),
 		encryptsNewBuckets: func() bool { return encEnv || fileSaysTrue(encFile) }}
-	if dyn != nil && cfg != nil {
-		h.dyn = dyn
-		h.callerDyn = func(user string, groups []string) (dynamic.Interface, error) {
-			icfg := rest.CopyConfig(cfg)
-			icfg.Impersonate = rest.ImpersonationConfig{UserName: user, Groups: groups}
-			return dynamic.NewForConfig(icfg)
-		}
-	}
-	return h
 }
 
 // Bucket sub-resources and DeleteBucket. S3 addresses a bucket's configuration by a query-string
@@ -517,9 +507,9 @@ func bucketEmpty(ctx context.Context, mc *minio.Client, name string) (bool, erro
 var errBucketNotEmpty = errors.New("BucketNotEmpty")
 
 // deleteBucket is S3 DeleteBucket. A bucket here is the bucket of a kind: Bucket claim — the claim is the
-// resource AWS's bucket is, so deleting the bucket deletes the claim (with the caller's own authority,
-// so RBAC decides whether they may) and then the now-empty MinIO bucket; the bucket reaper removes the
-// claim's MinIO user and credentials. A bucket that is not a kind: Bucket's — a platform bucket, a
+// resource AWS's bucket is, so deleting the bucket deletes the claim (as the shim, once IAM has allowed
+// s3:DeleteBucket) and then the now-empty MinIO bucket; the bucket reaper removes the claim's MinIO user
+// and credentials. A bucket that is not a kind: Bucket's — a platform bucket, a
 // StaticSite's or an Application's own, or one the platform does not manage — is refused: deleting it
 // would break the resource that uses it, and that resource is what to delete.
 func (h *s3Handler) deleteBucket(w http.ResponseWriter, r *http.Request, claims iam.Claims, op s3op, requestID string) {
@@ -537,7 +527,7 @@ func (h *s3Handler) deleteBucket(w http.ResponseWriter, r *http.Request, claims 
 		writeS3Error(w, "NoSuchBucket", requestID, r.URL.Path)
 		return
 	}
-	if h.dyn == nil || h.callerDyn == nil {
+	if h.dyn == nil {
 		writeS3Error(w, "NotImplemented", requestID, r.URL.Path)
 		return
 	}
@@ -566,20 +556,10 @@ func (h *s3Handler) deleteBucket(w http.ResponseWriter, r *http.Request, claims 
 		writeS3Error(w, "BucketNotEmpty", requestID, r.URL.Path)
 		return
 	}
-	user, groups, ok := callerIdentity(ctx, h.authz, claims)
-	if !ok {
-		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
-		return
-	}
-	cdyn, err := h.callerDyn(user, groups)
-	if err != nil {
+	if err := h.dyn.Resource(bucketGVR).Namespace(claim.namespace).Delete(ctx, claim.name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		// IAM allowed it; the shim itself could not (its role is not granted in that namespace).
+		h.logger.Error("s3 DeleteBucket: deleting the claim", "bucket", op.bucket, "claim", claim.namespace+"/"+claim.name, "user", claims.Sub, "err", err)
 		writeS3Error(w, "InternalError", requestID, r.URL.Path)
-		return
-	}
-	if err := cdyn.Resource(bucketGVR).Namespace(claim.namespace).Delete(ctx, claim.name, metav1.DeleteOptions{}); err != nil {
-		h.logger.Warn("s3 DeleteBucket: deleting the claim", "bucket", op.bucket, "claim", claim.namespace+"/"+claim.name, "user", claims.Sub, "err", err)
-		writeS3ErrorFull(w, "AccessDenied", http.StatusForbidden, requestID,
-			fmt.Sprintf("Access Denied: may not delete kind: Bucket %s/%s, which this bucket is.", claim.namespace, claim.name), r.URL.Path)
 		return
 	}
 	if err := removeEmptyBucket(ctx, h.mc, op.bucket); err != nil {

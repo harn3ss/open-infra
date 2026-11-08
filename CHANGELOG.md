@@ -6,6 +6,20 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — S3 in a member account
+- **A member account's administrator owns its buckets:** `CreateBucket` and `DeleteBucket` are decided by
+  IAM (`s3:CreateBucket`, `s3:DeleteBucket`) and the bucket is then made or deleted by the S3 service itself,
+  as the Lambda API makes a function. Before, a member account's `AdministratorAccess` user was refused
+  `CreateBucket`.
+- **A bucket kept by its account is still its own:** a bucket whose claim's setup succeeded is that
+  account's, even when the claim is newer than the bucket (an earlier claim made it, or an operator recorded
+  it). Before, such a bucket fell to the management account, so its own account's administrator was refused
+  `GetObject`, and Lambda `CreateFunction` from it (`S3Bucket`/`S3Key`, the only way to deploy a package over
+  50 MB) failed.
+- **Proven:** `probe/aws-shim-s3-account.sh`. A member account's administrator makes, writes, reads and
+  deletes a bucket and deploys a function from it; the management account and an invoke-only user of the
+  account are refused with `AccessDenied`.
+
 ### Fixed — EC2 `DescribeSecurityGroups` reports a group as it is enforced
 - **Its rules, exactly:** a group that defines a direction answers exactly its rules, and none when it
   has none. Before, a group with no outbound rules was reported with AWS's default allow-all rule, even

@@ -27,8 +27,9 @@ import (
 // default encryption), mints its scoped credentials, and the reaper and owner records treat it like any
 // other claim; DeleteBucket deletes it the same way. The claim lives in one account-wide namespace
 // (S3_BUCKET_NAMESPACE, default open-infra-s3, for the management account; a member account's home for
-// its own: s3_accounts.go), as buckets on AWS belong to the account, not to a stack, and it is created with
-// the CALLER's authority (impersonated), so RBAC decides whether they may make one.
+// its own: s3_accounts.go), as buckets on AWS belong to the account, not to a stack. IAM decides whether
+// the caller may make one (s3:CreateBucket, before this handler runs); the shim then writes the claim
+// itself (#414), as the Lambda API writes a function.
 // CreateBucket is synchronous on AWS — an immediate PutObject works — so the call answers once the
 // bucket's setup has finished, and otherwise a 503 the SDK retries (the retry finds the caller's bucket
 // and waits again).
@@ -162,7 +163,7 @@ func (h *s3Handler) createBucket(w http.ResponseWriter, r *http.Request, claims 
 		writeS3ErrorFull(w, code, status, requestID, msg, r.URL.Path)
 		return
 	}
-	if h.dyn == nil || h.callerDyn == nil || h.bucketNS == "" {
+	if h.dyn == nil || h.bucketNS == "" {
 		writeS3Error(w, "NotImplemented", requestID, r.URL.Path)
 		return
 	}
@@ -171,19 +172,10 @@ func (h *s3Handler) createBucket(w http.ResponseWriter, r *http.Request, claims 
 		writeS3Error(w, "BucketAlreadyExists", requestID, r.URL.Path)
 		return
 	}
-	user, groups, ok := callerIdentity(ctx, h.authz, claims)
-	if !ok {
-		writeS3Error(w, "AccessDenied", requestID, r.URL.Path)
-		return
-	}
-	cdyn, err := h.callerDyn(user, groups)
-	if err != nil {
-		writeS3Error(w, "InternalError", requestID, r.URL.Path)
-		return
-	}
-	// A bucket that is already a claim's: the caller's own (one they may read) is answered as AWS answers
-	// re-creating your own bucket in us-east-1 — 200 — once it is ready; anyone else's name is taken, a
-	// claim of another account's included (bucket names are global, as on AWS: s3_accounts.go).
+	cdyn := h.dyn
+	// A bucket that is already a claim's: the caller's account's own is answered as AWS answers re-creating
+	// your own bucket in us-east-1 — 200 — once it is ready; anyone else's name is taken, a claim of another
+	// account's included (bucket names are global, as on AWS: s3_accounts.go).
 	if claim, found, taken, err := h.accountBucketClaim(ctx, claims, op.bucket); err != nil {
 		h.logger.Error("s3 CreateBucket: listing buckets", "bucket", op.bucket, "err", err)
 		writeS3Error(w, "InternalError", requestID, r.URL.Path)
@@ -229,11 +221,8 @@ func (h *s3Handler) createBucket(w http.ResponseWriter, r *http.Request, claims 
 		switch {
 		case apierrors.IsAlreadyExists(err): // a concurrent CreateBucket of the same name
 			h.createdOrExisting(w, r, cdyn, claims, claim, op, requestID)
-		case apierrors.IsForbidden(err):
-			h.logger.Warn("s3 CreateBucket: creating the claim", "bucket", op.bucket, "user", claims.Sub, "err", err)
-			writeS3ErrorFull(w, "AccessDenied", http.StatusForbidden, requestID,
-				"Access Denied: may not create kind: Bucket "+claim.namespace+"/"+claim.name+", which this bucket would be.", r.URL.Path)
 		default:
+			// IAM allowed it; a refusal here is the shim's own (its role is not granted in that namespace).
 			h.logger.Error("s3 CreateBucket: creating the claim", "bucket", op.bucket, "err", err)
 			writeS3Error(w, "InternalError", requestID, r.URL.Path)
 		}
@@ -243,13 +232,13 @@ func (h *s3Handler) createBucket(w http.ResponseWriter, r *http.Request, claims 
 	h.answerWhenReady(w, r, cdyn, claim, op, requestID)
 }
 
-// createdOrExisting answers CreateBucket for a bucket that already has a claim: the caller's own (they
-// may read the claim, and it names this bucket) is 200 once ready, as AWS answers re-creating your own
-// bucket in us-east-1; one being deleted is OperationAborted; anyone else's is BucketAlreadyExists.
+// createdOrExisting answers CreateBucket for a bucket that already has a claim of the caller's account:
+// the account's own (the claim names this bucket) is 200 once ready, as AWS answers re-creating your own
+// bucket in us-east-1; one being deleted is OperationAborted.
 func (h *s3Handler) createdOrExisting(w http.ResponseWriter, r *http.Request, cdyn dynamic.Interface, claims iam.Claims, claim bucketClaim, op s3op, requestID string) {
 	cur, err := cdyn.Resource(bucketGVR).Namespace(claim.namespace).Get(r.Context(), claim.name, metav1.GetOptions{})
 	if err != nil {
-		// Not readable by the caller (another tenant's) or gone: the name is taken either way, as on AWS.
+		// Gone meanwhile, or unreadable: the name is taken either way, as on AWS.
 		writeS3Error(w, "BucketAlreadyExists", requestID, r.URL.Path)
 		return
 	}

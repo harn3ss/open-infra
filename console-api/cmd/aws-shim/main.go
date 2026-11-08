@@ -658,7 +658,7 @@ func run(logger *slog.Logger) error {
 	appsyncH.account, appsyncH.region = account, ident.Region // an API's ARN in the management reads
 	appsyncH.accounts = acctDir                               // the management plane reaches the caller's account's APIs alone
 	services := map[string]awsService{
-		"s3": newS3Handler(cs, mc, dyn, kc.Config, authzNS, authzChecker, logger,
+		"s3": newS3Handler(cs, mc, dyn, authzNS, authzChecker, logger,
 			splitSuffixes(getenv("S3_INTERNAL_VHOST_SUFFIXES", ""), getenv("S3_VHOST_SUFFIXES", ""))),
 		"sts": &stsHandler{account: account, minter: stsMinter, roles: roleRes, webID: webIDReviewer, oidcWebID: oidcWebID,
 			functions: fnIdentities, applications: appIdentities, accounts: acctDir, authz: authzChecker, logger: logger,
