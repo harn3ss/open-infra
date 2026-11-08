@@ -90,7 +90,7 @@ func rolelessFunctionCases() []struct {
 				"source": map[string]any{"bucket": "mirror-code", "key": "code/9b1c.zip", "secret": "mirror-code-read"}},
 		}},
 		{name: "versions", ns: "team-a", spec: map[string]any{
-			"image": "ghcr.io/me/hello:3",
+			"image":    "ghcr.io/me/hello:3",
 			"versions": []any{map[string]any{"version": "1", "revision": "fn-00001"}, map[string]any{"version": "2"}},
 			"aliases":  []any{map[string]any{"name": "prod", "functionVersion": "1"}},
 		}},
