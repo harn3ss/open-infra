@@ -15,12 +15,15 @@ set -euo pipefail
 NS=sse-kms-probe
 KEY=sse-kms-probe
 kubectl() { command kubectl "$@"; }
+# The key service's active member (a standby can answer from a copy that trails it, docs/openbao.md).
+BAO_POD="$(command kubectl -n openbao get pods -l openbao-active=true -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+bao_() { command kubectl -n openbao exec "$BAO_POD" -c openbao -- "$@"; }
 cleanup() { kubectl delete namespace "$NS" --wait=false >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 echo "== pre-flight: KES up + Vault unsealed =="
 kubectl -n minio get deploy kes >/dev/null 2>&1 || { echo "FAIL: KES not deployed (components.objectEncryption off?)"; exit 1; }
-kubectl -n vault exec vault-0 -- vault status >/dev/null 2>&1 || { echo "FAIL: Vault sealed/unreachable"; exit 1; }
+[ -n "$BAO_POD" ] && bao_ bao status >/dev/null 2>&1 || { echo "FAIL: the key service (OpenBao) is sealed or unreachable"; exit 1; }
 : "${VAULT_TOKEN:?VAULT_TOKEN required (needs delete on kes/* for the crypto-erase step)}"
 
 echo "== stand up a scratch MinIO wired to the live KES (throwaway ns $NS) =="
@@ -70,10 +73,10 @@ echo "== round-trip: enable SSE-KMS, put + read =="
 MC="mc alias set s http://minio-probe.$NS.svc.cluster.local:9000 probe probeprobe123 >/dev/null"
 run_mc() { kubectl -n "$NS" run mc-$RANDOM --rm -i --restart=Never --image=minio/mc:RELEASE.2024-09-16T17-43-14Z --command -- sh -c "$1" 2>/dev/null; }
 run_mc "$MC; mc mb --ignore-existing s/enc >/dev/null; mc encrypt set sse-kms $KEY s/enc >/dev/null; echo secret-payload-\$RANDOM | mc pipe s/enc/o.txt; echo readback=[\$(mc cat s/enc/o.txt)]"
-kubectl -n vault exec vault-0 -- env VAULT_TOKEN="$VAULT_TOKEN" vault read "kes/$KEY" >/dev/null 2>&1 && echo "key present in Vault KV (kes/$KEY): OK"
+bao_ env BAO_TOKEN="$VAULT_TOKEN" bao read "kes/$KEY" >/dev/null 2>&1 && echo "key present in Vault KV (kes/$KEY): OK"
 
 echo "== crypto-erase: destroy the key, restart, confirm unreadable but present =="
-kubectl -n vault exec vault-0 -- env VAULT_TOKEN="$VAULT_TOKEN" vault delete "kes/$KEY" >/dev/null
+bao_ env BAO_TOKEN="$VAULT_TOKEN" bao delete "kes/$KEY" >/dev/null
 # Restart clears KES's key cache + MinIO's in-process DEK cache so the next read must re-unwrap via Vault.
 kubectl -n minio rollout restart deploy/kes >/dev/null; kubectl -n minio rollout status deploy/kes --timeout=60s >/dev/null
 kubectl -n "$NS" rollout restart deploy/minio-probe >/dev/null; kubectl -n "$NS" rollout status deploy/minio-probe --timeout=90s >/dev/null

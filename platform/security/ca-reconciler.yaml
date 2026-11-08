@@ -84,6 +84,8 @@ spec:
       ttlSecondsAfterFinished: 300
       backoffLimit: 1
       template:
+        metadata:
+          labels: { openinfra.dev/openbao-client: "true" }   # admitted to OpenBao (security/openbao.yaml)
         spec:
           serviceAccountName: ca-provisioner
           restartPolicy: Never
@@ -91,6 +93,7 @@ spec:
           volumes:
             - { name: bin, emptyDir: {} }
             - { name: home, emptyDir: {} }
+            - { name: openbao-ca, configMap: { name: openbao-ca } }   # the CA OpenBao's listener is signed by
           initContainers:
             - name: fetch-vault
               image: hashicorp/vault:1.17.2
@@ -107,10 +110,12 @@ spec:
               volumeMounts:
                 - { name: bin, mountPath: /bin-shared }
                 - { name: home, mountPath: /tmp }
+                - { name: openbao-ca, mountPath: /etc/openbao-ca, readOnly: true }
               env:
                 - { name: HOME, value: /tmp }
                 - { name: PATH, value: "/bin-shared:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }
-                - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
+                - { name: VAULT_ADDR, value: "https://openbao-active.openbao.svc:8200" }
+                - { name: VAULT_CACERT, value: /etc/openbao-ca/ca.crt }
                 - { name: CONSOLE_NS, value: "open-infra-console" }
               args:
                 - |

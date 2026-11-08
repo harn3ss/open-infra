@@ -8,15 +8,18 @@
 #
 # HUMAN-GATED PREREQUISITES (this script cannot do them — custody of unseal keys is an operator duty):
 #   - components.encryption: true, and audit off-siting enabled (the destroyer requires it).
-#   - Vault initialized + unsealed:  kubectl -n vault exec vault-0 -- vault operator init ; unseal x3.
+#   - The key service (OpenBao, docs/openbao.md) up and unsealed; ./probe/openbao-ha.sh passes.
 #   - A short-lived token with transit encrypt+decrypt on ek_default_enc-verify (the namespace-qualified
 #     Transit key of EncryptionKey default/enc-verify) + read transit/keys, exported as VAULT_TOKEN
 #     (issue a throwaway policy for the probe, then revoke it).
 # Run:  VAULT_TOKEN=<token> probe/encryption-vault.sh
 set -uo pipefail
 
-NS_VAULT="${VAULT_NS:-vault}"
-POD="${VAULT_POD:-vault-0}"
+NS_VAULT="${VAULT_NS:-openbao}"
+# The active member: a standby can answer from a copy that trails it (docs/openbao.md).
+POD="${VAULT_POD:-$(kubectl -n "$NS_VAULT" get pods -l openbao-active=true -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)}"
+POD="${POD:?no active OpenBao member found}"
+CLI="${VAULT_CLI:-bao}"
 KEY="enc-verify"
 PLAIN="govstack-encryption-roundtrip-OK"
 
@@ -24,10 +27,10 @@ fail() { echo "▸ FAIL — $*" >&2; exit 1; }
 # </dev/null is load-bearing: without it `kubectl exec` (no -i) inherits the script's stdin, and a
 # command-substitution call — ct="$(vault_ write …)" — hangs forever waiting for EOF. Redirecting stdin
 # makes every vault_ call return.
-vault_() { kubectl -n "$NS_VAULT" exec "$POD" -- env VAULT_TOKEN="${VAULT_TOKEN:?export VAULT_TOKEN (see header)}" vault "$@" </dev/null; }
+vault_() { kubectl -n "$NS_VAULT" exec "$POD" -c openbao -- env BAO_TOKEN="${VAULT_TOKEN:?export VAULT_TOKEN (see header)}" "$CLI" "$@" </dev/null; }
 
 echo "▸ pre-flight: Vault reachable + UNSEALED?"
-sealed="$(kubectl -n "$NS_VAULT" exec "$POD" -- vault status -format=json 2>/dev/null | grep -o '"sealed": *[a-z]*' | grep -o '[a-z]*$')"
+sealed="$(kubectl -n "$NS_VAULT" exec "$POD" -c openbao -- "$CLI" status -format=json 2>/dev/null | grep -o '"sealed": *[a-z]*' | grep -o '[a-z]*$')"
 [ "$sealed" = "false" ] || fail "Vault is sealed or unreachable — an operator must init + unseal it first (see header). Not a product failure."
 
 # Reset any state left by a PRIOR run of this probe so it re-exercises the destroyer end-to-end. The

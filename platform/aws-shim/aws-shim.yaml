@@ -923,7 +923,7 @@ spec:
     matchLabels: { app: aws-shim }
   template:
     metadata:
-      labels: { app: aws-shim }
+      labels: { app: aws-shim, openinfra.dev/openbao-client: "true" }   # admitted to OpenBao
     spec:
       serviceAccountName: aws-shim
       # On SIGTERM the shim stops accepting new CloudFormation stack operations (503, which SDKs retry),
@@ -1088,7 +1088,8 @@ spec:
             # that key AND the encryption (Vault) component is on — a missing/unreachable Vault just logs
             # a warning at startup and leaves AssumeRole off. STS_SIGNING_KEY (base64 AES-256, e.g. via a
             # Secret) remains an explicit dev/override fallback when Vault is not in play.
-            - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
+            - { name: VAULT_ADDR, value: "https://openbao-active.openbao.svc:8200" }
+            - { name: VAULT_CACERT, value: /etc/openbao-ca/ca.crt }   # read again when it changes
             - { name: STS_VAULT_ROLE, value: "aws-shim-sts" }
             # KMS front door: a CMK is a Vault Transit key named kms-<keyId>; the shim
             # reaches Transit with its OWN SA token (k8s-auth role aws-shim-kms, policy scoped to kms-*
@@ -1151,6 +1152,7 @@ spec:
             - { name: aws-endpoints-tls, mountPath: /tls-aws, readOnly: true }
             - { name: object-encryption, mountPath: /etc/openinfra/object-encryption, readOnly: true }
             - { name: certificates, mountPath: /etc/openinfra/certificates, readOnly: true }
+            - { name: openbao-ca, mountPath: /etc/openbao-ca, readOnly: true }
           resources:
             # The shared AWS front door fronts ~25 services; 256Mi/64Mi was too small and scheduled it
             # as needing far less than it does. Raised to a realistic floor (GOMEMLIMIT above keeps the
@@ -1173,6 +1175,9 @@ spec:
         # install.sh; read live (CERT_VALIDATED_DOMAINS_FILE). Absent = none validated.
         - name: certificates
           configMap: { name: openinfra-certificates, optional: true }
+        # The CA OpenBao's listener is signed by (security/openbao.yaml, openbao-ca-publisher).
+        - name: openbao-ca
+          configMap: { name: openbao-ca }
 ---
 # Object encryption switch (components.objectEncryption): the minio-kms-enable Job
 # (storage/minio-kms.yaml) writes configmap/openinfra-object-encryption here once MinIO's key works. It

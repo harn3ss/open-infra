@@ -96,9 +96,11 @@ spec:
                   identities: [ "$ID" ]
               keystore:
                 vault:
-                  endpoint: "http://vault.vault.svc.cluster.local:8200"
+                  endpoint: "https://openbao-active.openbao.svc:8200"
                   version: "v1"
                   engine: "kes"
+                  tls:
+                    ca: /etc/openbao-ca/ca.crt
                   kubernetes:
                     role: "minio-kes"
                     jwt: "/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -133,7 +135,7 @@ spec:
   replicas: 1
   selector: { matchLabels: { app: kes } }
   template:
-    metadata: { labels: { app: kes } }
+    metadata: { labels: { app: kes, openinfra.dev/openbao-client: "true" } }   # admitted to OpenBao
     spec:
       serviceAccountName: minio-kes
       securityContext: { runAsNonRoot: true, runAsUser: 1000 }
@@ -146,12 +148,14 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/kes }
             - { name: certs, mountPath: /certs }
+            - { name: openbao-ca, mountPath: /etc/openbao-ca, readOnly: true }
           resources:
             requests: { cpu: 50m, memory: 64Mi }
             limits: { cpu: 300m, memory: 256Mi }
       volumes:
         - { name: config, configMap: { name: kes-config } }
         - { name: certs, secret: { secretName: kes-server-tls } }
+        - { name: openbao-ca, configMap: { name: openbao-ca } }   # the CA OpenBao's listener is signed by
 ---
 apiVersion: v1
 kind: Service

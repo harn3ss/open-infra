@@ -117,15 +117,24 @@ metadata:
 spec:
   backoffLimit: 60   # retry until the operator has unsealed Vault + provided the bootstrap token
   template:
+    metadata:
+      labels: { openinfra.dev/openbao-client: "true" }   # admitted to OpenBao (security/openbao.yaml)
     spec:
       serviceAccountName: vault-transit-setup
+      volumes:
+        - { name: openbao-ca, configMap: { name: openbao-ca } }   # the CA OpenBao's listener is signed by
       restartPolicy: OnFailure
       containers:
         - name: setup
-          image: hashicorp/vault:1.17.2   # only talks to Vault; no k8s writes, so no kubectl/RBAC
+          image: hashicorp/vault:1.17.2   # only talks to the key service; no k8s writes, so no kubectl/RBAC
           command: [/bin/sh, -ceu]
+          volumeMounts:
+            - { name: openbao-ca, mountPath: /etc/openbao-ca, readOnly: true }
           env:
-            - { name: VAULT_ADDR, value: "http://vault.vault.svc.cluster.local:8200" }
+            # The platform's key service is OpenBao (security/openbao.yaml); this Vault keeps the keys'
+            # last copy, sealed, until it is retired.
+            - { name: VAULT_ADDR, value: "https://openbao-active.openbao.svc:8200" }
+            - { name: VAULT_CACERT, value: /etc/openbao-ca/ca.crt }
             # Operator creates this Secret after `vault operator init` + unseal, then REVOKES+DELETES
             # it once this Job succeeds (docs/encryption.md) — it is a root/admin token:
             #   kubectl -n vault create secret generic vault-bootstrap --from-literal=token=<token>

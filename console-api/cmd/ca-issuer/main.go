@@ -48,7 +48,7 @@ type issuer struct {
 
 func main() {
 	s := &issuer{
-		vaultAddr: envOr("VAULT_ADDR", "http://vault.vault.svc.cluster.local:8200"),
+		vaultAddr: envOr("VAULT_ADDR", "https://openbao-active.openbao.svc:8200"),
 		role:      envOr("VAULT_ROLE", "ca-issuer"),
 		tokenPath: envOr("SA_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
 		hc:        vaultclient.HTTPClient(20 * time.Second),
