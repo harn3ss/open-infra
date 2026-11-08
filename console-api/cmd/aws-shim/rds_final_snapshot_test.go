@@ -243,6 +243,9 @@ func TestRDS_ModifyAppliesOrRefuses(t *testing.T) {
 	if err != nil || sec.StringData["password"] != "new-secret-pw" || sec.StringData["username"] != "app" {
 		t.Fatalf("the master credential must change: %v %v", err, sec.StringData)
 	}
+	if clusterOf(t, h, "orders").GetAnnotations()[rdsAnnoPrefix+"master-password-changed-at"] == "" {
+		t.Error("the Cluster is stamped, so CloudNativePG reconciles the role's new password")
+	}
 	for name, kv := range map[string][2]string{
 		"an unknown parameter": {"PreferredMaintenanceWindow", "sun:05:00-sun:06:00"},
 		"an engine upgrade":    {"EngineVersion", "18.1"},
