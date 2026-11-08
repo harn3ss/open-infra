@@ -453,6 +453,7 @@ spec:
               path "sts/metadata/signing-key" { capabilities = ["read"] }
               path "sts/data/signing-key"     { capabilities = ["create"] }
               path "openinfra/+/roles/+"      { capabilities = ["create", "read", "update"] }
+              path "openinfra/transit/keys/instance-identity" { capabilities = ["create", "read", "update"] }
               POLICY
               vault auth enable kubernetes 2>/dev/null || echo "  kubernetes auth already enabled"
               vault write auth/kubernetes/config \
@@ -704,6 +705,32 @@ spec:
                   audience="vault://$issuer" token_policies="cert-manager-$r" token_ttl=5m >/dev/null
               done
               echo "platform CAs ready: cert-manager signs through openinfra/pki-* with its own identity, the CA keys never leave OpenBao."
+
+              # ── The instance identity key (#359): EC2 instance identity documents (CFN_V1) are signed by an
+              # RSA-2048 Transit key OpenBao generated and never exports or backs up in plaintext, as AWS
+              # signs them with a key no instance and no operator holds. Its own mount, openinfra/transit —
+              # two segments, so the tenant-key identities' transit/keys/+ grants (the transit/ mount) never
+              # reach it, and the CA identities deny openinfra/*. Created once; rotating it is
+              # `bao write -f openinfra/transit/keys/instance-identity/rotate` (docs/openbao.md).
+              echo "the instance identity key and the aws-shim's identity for it…"
+              vault secrets enable -path=openinfra/transit transit 2>/dev/null || echo "  openinfra/transit already enabled"
+              if vault read openinfra/transit/keys/instance-identity >/dev/null 2>&1; then
+                echo "  openinfra/transit/keys/instance-identity already present"
+              else
+                vault write -f openinfra/transit/keys/instance-identity type=rsa-2048 \
+                  exportable=false allow_plaintext_backup=false >/dev/null && echo "  created openinfra/transit/keys/instance-identity"
+              fi
+              # The aws-shim signs with that one key (SHA-256, the only hash it uses) and reads its public half
+              # (the certificates it serves); it cannot rotate, configure, export, encrypt or decrypt with it.
+              vault policy write aws-shim-identity - <<'POLICY'
+              path "openinfra/transit/keys/instance-identity"          { capabilities = ["read"] }
+              path "openinfra/transit/sign/instance-identity/sha2-256" { capabilities = ["update"] }
+              POLICY
+              vault write auth/kubernetes/role/aws-shim-identity \
+                bound_service_account_names=aws-shim \
+                bound_service_account_namespaces=open-infra-aws-shim \
+                token_policies=aws-shim-identity token_ttl=20m >/dev/null
+              echo "instance identity ready: the aws-shim signs through openinfra/transit/instance-identity, the key never leaves OpenBao."
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application

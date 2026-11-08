@@ -311,6 +311,22 @@ The validated-domain CA is name-constrained to the list it was made for. `instal
 `certificates.validatedDomains` changes. A certificate for a new domain needs a new CA, signed with the
 offline platform root. That ceremony is not automated yet (see below).
 
+## Instance identity
+
+The key that signs EC2 instance identity documents is Transit key `openinfra/transit/instance-identity`:
+- RSA-2048, never exportable, and never backed up in plaintext;
+- in its own mount, so the tenant-key identities' `transit/keys/+` grants cannot reach it.
+
+The `openbao-setup` Job creates it. The aws-shim signs with it through role `aws-shim-identity`, which may
+only sign with it (SHA-256) and read its public half. The setup Job's own identity can create the key but
+cannot sign with it.
+
+Rotate it with `bao write -f openinfra/transit/keys/instance-identity/rotate`. Nothing else changes:
+documents signed by the previous version verify until they expire.
+
+See [Virtual machines](virtual-machines.md#signed-instance-identity-document) for how guests use the
+documents.
+
 ## What it does not do yet
 
 - **Vault is not retired yet.** The `encryption` component still deploys the old Vault server. On a new
@@ -322,5 +338,3 @@ offline platform root. That ceremony is not automated yet (see below).
 - **A new validated-domain CA** for a changed `certificates.validatedDomains` list is not automated with
   the CAs in OpenBao: it needs a constrained CA signed with the restored platform root, then imported into
   `openinfra/pki-acm`.
-- **Instance-identity signing** (the key behind the instance identity document) is not in OpenBao Transit
-  yet.

@@ -325,15 +325,39 @@ arrives, the agent serves its own unsigned document and no signatures.
 What the document is for is `cfn-init`, `cfn-signal` and `cfn-hup` run with no credentials
 ([CloudFormation](cloudformation.md#resource-signals-and-wait-conditions)).
 
-The key is an RSA-2048 key in the Secret `instance-identity-signing-key`, in the aws-shim's namespace. The
-shim creates it on first use, and only the shim and cluster admins can read it. It is excluded from Velero
-backups: a lost key is replaced and every document is refreshed within the hour.
+**Where the key is.** With `components.openbao`, the key is an RSA-2048 key in OpenBao Transit,
+`openinfra/transit/instance-identity`. OpenBao generated it and never exports it, as AWS signs with a key no
+instance and no operator holds.
+- **The shim's access.** It signs through its own role, `aws-shim-identity`. That role may sign with this
+  key and read its public half, and nothing else: no rotation, export or other key.
+- **Certificates.** Each key version has its own certificate, made from the version itself, so every
+  replica serves the same one.
+- **Fails closed.** If OpenBao cannot be reached, no document is signed. The shim never falls back to a key
+  in a Secret.
 
-To rotate the key:
+To rotate the key, use an administrative OpenBao token
+([OpenBao](openbao.md#operating-it)):
+
+```sh
+bao write -f openinfra/transit/keys/instance-identity/rotate
+```
+
+The new version signs within a minute. The previous one keeps verifying for an hour after the rotation,
+which covers every document it signed, and then its certificate is no longer served. Nothing else is done
+by hand.
+
+Without OpenBao, the key is an RSA-2048 key in the Secret `instance-identity-signing-key`, in the aws-shim's
+namespace. The shim creates it on first use, and only the shim and cluster admins can read it. It is
+excluded from Velero backups: a lost key is replaced and every document is refreshed within the hour.
+
+To rotate that key:
 1. Put a new `key.pem` and `cert.pem` in the Secret.
 2. Append the old `cert.pem` to `retired.pem`. The shim re-reads the Secret every minute and signs with the
    new key at once, and documents signed with the old key still verify.
 3. After an hour, every such document has expired: remove the old certificate from `retired.pem`.
+
+**Moving to OpenBao.** When an install moves to OpenBao, a key left in that Secret keeps verifying the
+documents it signed but never signs again. Delete the Secret an hour after the shim restarts on OpenBao.
 
 The lifetime is `INSTANCE_IDENTITY_TTL` on the shim (default `1h`, from `5m` to `24h`).
 

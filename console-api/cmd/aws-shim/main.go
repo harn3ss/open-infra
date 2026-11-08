@@ -838,7 +838,8 @@ func run(logger *slog.Logger) error {
 		// Instance identity documents (instance_identity.go): every VM guest's metadata agent fetches its
 		// platform-signed document here with its token, and the CloudFormation front door accepts calls signed
 		// with one (CFN_V1: cfn-init / cfn-signal with no credentials) for the instance's own stack. The key
-		// is a Secret in this namespace, made on first use.
+		// is OpenBao Transit's when INSTANCE_IDENTITY_TRANSIT_KEY names one (instance_identity_transit.go;
+		// misconfigured, nothing is signed), else a Secret in this namespace, made on first use.
 		ttl := defaultIdentityTTL
 		if v := getenv("INSTANCE_IDENTITY_TTL", ""); v != "" {
 			if d, derr := time.ParseDuration(v); derr == nil && d >= 5*time.Minute && d <= 24*time.Hour {
@@ -848,12 +849,22 @@ func run(logger *slog.Logger) error {
 			}
 		}
 		signer := newIdentitySigner(cs, keysNS, ttl, logger)
+		identityKey := keysNS + "/" + identityKeySecretName
+		if spec := getenv("INSTANCE_IDENTITY_TRANSIT_KEY", ""); spec != "" {
+			signer.transit, signer.transitErr = newIdentityTransit(spec, getenv("VAULT_ADDR", ""),
+				getenv("INSTANCE_IDENTITY_VAULT_ROLE", "aws-shim-identity"),
+				getenv("STS_SA_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"))
+			if signer.transitErr != nil {
+				logger.Error("instance identity: the Transit key is misconfigured; no document is signed", slog.String("error", signer.transitErr.Error()))
+			}
+			identityKey = "OpenBao Transit " + spec
+		}
 		vmCredsH.identity = &vmIdentityHandler{resolver: vmCredsH.resolver, dyn: dyn, signer: signer,
 			account: account, region: region, logger: logger}
 		if cfnDoor != nil {
 			cfnDoor.identity = signer
 		}
-		logger.Info("instance identity documents enabled", slog.String("key", keysNS+"/"+identityKeySecretName), slog.Duration("ttl", ttl))
+		logger.Info("instance identity documents enabled", slog.String("key", identityKey), slog.Duration("ttl", ttl))
 		vmCredsH.useAccounts(acctDir) // a member account's VM acts, is managed and is documented in its own account
 	}
 	// The platform root CA certificate (public), for VM guests' trust stores: read from a Secret in the

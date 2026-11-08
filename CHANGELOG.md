@@ -31,6 +31,19 @@ the product's public contract.
   - **Checking it.** `probe/platform-root-ca.sh` checks either shape ([`docs/openbao.md`](docs/openbao.md),
     "The platform's CAs").
 
+- **Instance identity documents are signed by OpenBao.** With `components.openbao`, the key is Transit key
+  `openinfra/transit/instance-identity`, which is RSA-2048, never exportable and created by the setup Job.
+  - **The shim's access.** The aws-shim signs through role `aws-shim-identity`, which may only sign with
+    that key and read its public half.
+  - **Certificates.** Each key version's certificate is made from the version itself, so every replica
+    serves the same one.
+  - **Rotation.** Rotation is the key's own rotation: the previous version verifies for an hour, with no
+    second step.
+  - **Failure.** If OpenBao cannot be reached, nothing is signed, and the shim never falls back to a key in
+    a Secret. A key left in the old Secret verifies, never signs, until it is deleted.
+  - **Fix: the shim without OpenBao.** The aws-shim now starts without OpenBao: its OpenBao CA mount is
+    optional.
+
 ### Added — OpenBao, the platform's key and secrets service, ready to turn on (#359)
 - **Three members, unsealed from outside the cluster.** `components.openbao` runs OpenBao 2.7 as three
   members sharing integrated Raft storage, each on a different physical machine the operator names

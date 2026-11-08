@@ -148,7 +148,7 @@ incl pki "abstraction/certificateauthority-xrd.yaml,abstraction/certificateautho
 # OpenBao, the platform's key and secrets service: three members on three physical nodes, auto-unsealed
 # by an OpenBao outside the cluster. OFF unless components.openbao: true; needs the unseal host, its
 # token Secret and an operator to initialize it (docs/openbao.md). Its site values are written below (2a-bao).
-incl openbao "security/openbao.yaml"
+incl openbao "security/openbao.yaml,aws-shim/openbao-instance-identity.yaml"
 # The platform's CAs in OpenBao (openbao.platformCAs: true, once scripts/openbao-pki.sh moved them): the roots
 # are offline, so their cert-manager Certificates and CA-type issuers are excluded and the OpenBao-backed
 # issuers of the same names (security/openbao-issuers.yaml) sign instead. Otherwise the reverse.

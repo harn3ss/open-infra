@@ -1,0 +1,16 @@
+# Where the aws-shim's instance identity key is (#359): OpenBao Transit key openinfra/transit/instance-identity,
+# which the openbao-setup Job creates (RSA-2048, never exported) and the shim signs with through role
+# aws-shim-identity (docs/openbao.md, "Instance identity"). The shim reads it when it starts
+# (INSTANCE_IDENTITY_TRANSIT_KEY); without this ConfigMap it signs with a key in a Secret in its namespace.
+#
+# Only with components.openbao: install.sh excludes this file otherwise. Same sync wave as the shim's
+# Namespace and Deployment, which Argo CD applies in that order (Namespace, ConfigMap, Deployment), so a shim
+# never starts on an OpenBao install without it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openbao-instance-identity
+  namespace: open-infra-aws-shim
+data:
+  transitKey: openinfra/transit/instance-identity
+  vaultRole: aws-shim-identity

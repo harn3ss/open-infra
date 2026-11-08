@@ -1091,6 +1091,14 @@ spec:
             - { name: VAULT_ADDR, value: "https://openbao-active.openbao.svc:8200" }
             - { name: VAULT_CACERT, value: /etc/openbao-ca/ca.crt }   # read again when it changes
             - { name: STS_VAULT_ROLE, value: "aws-shim-sts" }
+            # Instance identity documents (CFN_V1): signed by OpenBao Transit key openinfra/transit/instance-identity,
+            # which OpenBao never exports, through role aws-shim-identity (sign with that key, read its public
+            # half, nothing else). From ConfigMap openbao-instance-identity, there only with components.openbao;
+            # without it the key is a Secret in this namespace (instance_identity.go).
+            - name: INSTANCE_IDENTITY_TRANSIT_KEY
+              valueFrom: { configMapKeyRef: { name: openbao-instance-identity, key: transitKey, optional: true } }
+            - name: INSTANCE_IDENTITY_VAULT_ROLE
+              valueFrom: { configMapKeyRef: { name: openbao-instance-identity, key: vaultRole, optional: true } }
             # KMS front door: a CMK is a Vault Transit key named kms-<keyId>; the shim
             # reaches Transit with its OWN SA token (k8s-auth role aws-shim-kms, policy scoped to kms-*
             # keys only — provisioned by platform/security/vault.yaml). CMK metadata (lifecycle state,
@@ -1175,9 +1183,10 @@ spec:
         # install.sh; read live (CERT_VALIDATED_DOMAINS_FILE). Absent = none validated.
         - name: certificates
           configMap: { name: openinfra-certificates, optional: true }
-        # The CA OpenBao's listener is signed by (security/openbao.yaml, openbao-ca-publisher).
+        # The CA OpenBao's listener is signed by (security/openbao.yaml, openbao-ca-publisher). Optional: without
+        # components.openbao the shim runs with its key-service doors off.
         - name: openbao-ca
-          configMap: { name: openbao-ca }
+          configMap: { name: openbao-ca, optional: true }
 ---
 # Object encryption switch (components.objectEncryption): the minio-kms-enable Job
 # (storage/minio-kms.yaml) writes configmap/openinfra-object-encryption here once MinIO's key works. It

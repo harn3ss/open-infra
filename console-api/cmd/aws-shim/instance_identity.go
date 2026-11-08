@@ -15,13 +15,16 @@
 // accountId is the account the VM's namespace belongs to — a member account's instance's names that
 // account — and a call signed with it acts in that account (identityContext).
 //
-// The signing key is an RSA-2048 key in a Secret in the shim's own namespace (identityKeySecretName),
-// created on first use, readable only by the shim (and cluster admins), never a ConfigMap and never in the
-// guest. The document carries openinfraNotAfter, an expiry EC2's document has no field for: a document is
+// The signing key is an RSA key in OpenBao Transit when INSTANCE_IDENTITY_TRANSIT_KEY names one
+// (instance_identity_transit.go: OpenBao holds it and never exports it, as AWS signs with a key no instance or
+// operator holds). Without it, the key is an RSA-2048 key in a Secret in the shim's own namespace
+// (identityKeySecretName), created on first use, readable only by the shim (and cluster admins), never a
+// ConfigMap and never in the guest. The document carries openinfraNotAfter, an expiry EC2's document has no field for: a document is
 // valid for an hour (INSTANCE_IDENTITY_TTL), so one copied out of a guest stops working; the agent fetches a
-// fresh one at half-life. Rotation: put the new key.pem/cert.pem in the Secret and append the old cert.pem to
-// retired.pem. The shim re-reads the Secret every minute and signs with the new key at once; documents the
-// old key signed still verify until retired.pem drops it, which is safe once they have expired (an hour).
+// fresh one at half-life. Rotation, with the key in a Secret: put the new key.pem/cert.pem in the Secret and
+// append the old cert.pem to retired.pem. The shim re-reads the Secret every minute and signs with the new key
+// at once; documents the old key signed still verify until retired.pem drops it, which is safe once they have
+// expired (an hour). In Transit, rotation is the key's rotation and needs no second step.
 //
 // The `signature` is base64 RSA-SHA256 (PKCS#1 v1.5) over the document's bytes, as EC2's is. `rsa2048` and
 // `pkcs7` are a PKCS#7 (CMS) SignedData holding the document, RSA-SHA256, with the signing certificate.
@@ -76,6 +79,8 @@ const (
 
 	defaultIdentityTTL = time.Hour
 	identityKeyReload  = time.Minute
+	// identityClockSkew is the slack allowed between the shim's clock and a document's expiry.
+	identityClockSkew  = 5 * time.Minute
 	identityDocVersion = "2017-09-30"
 	// identityNotAfterField is the document's expiry (RFC 3339, UTC).
 	identityNotAfterField = "openinfraNotAfter"
@@ -86,7 +91,9 @@ func isVMIdentityPath(p string) bool { return p == vmIdentityPath || p == vmIden
 
 // identityKeys is the loaded key material.
 type identityKeys struct {
-	key     *rsa.PrivateKey
+	// sign is RSA PKCS#1 v1.5 over a SHA-256 digest, with the current key: in memory (the Secret) or in
+	// OpenBao Transit.
+	sign    func(ctx context.Context, digest []byte) ([]byte, error)
 	cert    *x509.Certificate
 	pubs    []*rsa.PublicKey // the current key's first, then the retired ones
 	certPEM []byte           // the current certificate, then the retired ones
@@ -103,6 +110,10 @@ type identitySigner struct {
 	// accounts knows the member accounts (vmIdentityHandler documents a member account's instance in its
 	// account): a document of an active member account verifies too. nil: the management account's alone.
 	accounts vmAccounts
+	// transit is the key in OpenBao Transit (instance_identity_transit.go); nil: the key is in the Secret.
+	// transitErr is a Transit key that is configured but unusable: nothing is signed (never the Secret).
+	transit    *identityTransit
+	transitErr error
 
 	mu      sync.Mutex
 	keys    *identityKeys
@@ -133,6 +144,22 @@ func (s *identitySigner) current(ctx context.Context) (*identityKeys, error) {
 	now := s.clock()
 	if s.keys != nil && now.Sub(s.checked) < identityKeyReload {
 		return s.keys, nil
+	}
+	if s.transitErr != nil {
+		return nil, s.transitErr
+	}
+	if s.transit != nil {
+		k, err := s.loadTransit(ctx)
+		if err != nil {
+			if s.keys != nil {
+				s.logger.Warn("instance identity: cannot re-read the Transit key; keeping the loaded one", "key", s.transit.String(), "error", err.Error())
+				s.checked = now
+				return s.keys, nil
+			}
+			return nil, err
+		}
+		s.keys, s.checked = k, now
+		return k, nil
 	}
 	sec, err := s.cs.CoreV1().Secrets(s.ns).Get(ctx, s.name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -247,7 +274,12 @@ func parseIdentityKeys(data map[string][]byte) (*identityKeys, error) {
 	if !ok || !pub.Equal(&key.PublicKey) {
 		return nil, fmt.Errorf("%s is not the certificate of %s", identityCertFile, identityKeyFile)
 	}
-	k := &identityKeys{key: key, cert: certs[0], pubs: []*rsa.PublicKey{pub}, certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certs[0].Raw})}
+	k := &identityKeys{
+		sign: func(_ context.Context, digest []byte) ([]byte, error) {
+			return rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest)
+		},
+		cert: certs[0], pubs: []*rsa.PublicKey{pub}, certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certs[0].Raw}),
+	}
 	if raw := data[identityRetiredFile]; len(bytes.TrimSpace(raw)) > 0 {
 		retired, err := parseCertsPEM(raw)
 		if err != nil {
@@ -305,11 +337,11 @@ func (s *identitySigner) sign(ctx context.Context, doc []byte) (signature, pkcs7
 		return "", "", err
 	}
 	sum := sha256.Sum256(doc)
-	sig, err := rsa.SignPKCS1v15(rand.Reader, k.key, crypto.SHA256, sum[:])
+	sig, err := k.sign(ctx, sum[:])
 	if err != nil {
 		return "", "", err
 	}
-	p7, err := pkcs7SignedData(doc, k.cert, k.key, s.clock())
+	p7, err := pkcs7SignedData(ctx, doc, k.cert, k.sign, s.clock())
 	if err != nil {
 		return "", "", err
 	}
@@ -628,7 +660,7 @@ func (s *identitySigner) verifyIdentity(ctx context.Context, header, account, re
 	if !now.Before(exp) {
 		return nil, errors.New("the instance identity document has expired")
 	}
-	if exp.Sub(now) > s.ttl+5*time.Minute {
+	if exp.Sub(now) > s.ttl+identityClockSkew {
 		return nil, errors.New("the instance identity document is valid for longer than one is issued for")
 	}
 	if (c.AccountID != account && !s.activeMember(c.AccountID)) || c.Region != region {
@@ -709,9 +741,9 @@ func mustDER(v any) []byte {
 
 func derAlgID(oid asn1.ObjectIdentifier) []byte { return derSeq(mustDER(oid), []byte{0x05, 0x00}) }
 
-// pkcs7SignedData is a DER ContentInfo holding a SignedData of content (attached), signed with key over
+// pkcs7SignedData is a DER ContentInfo holding a SignedData of content (attached), signed by sign over
 // the content type, signing time and message digest attributes, with cert included.
-func pkcs7SignedData(content []byte, cert *x509.Certificate, key *rsa.PrivateKey, at time.Time) ([]byte, error) {
+func pkcs7SignedData(ctx context.Context, content []byte, cert *x509.Certificate, sign func(context.Context, []byte) ([]byte, error), at time.Time) ([]byte, error) {
 	digest := sha256.Sum256(content)
 	signedAttrs := derSetOf(
 		derSeq(mustDER(oidContentType), derSetOf(mustDER(oidData))),
@@ -720,7 +752,7 @@ func pkcs7SignedData(content []byte, cert *x509.Certificate, key *rsa.PrivateKey
 	)
 	// The signature covers the attributes' DER as a SET (RFC 5652 §5.4); they travel [0] IMPLICIT.
 	h := sha256.Sum256(signedAttrs)
-	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, h[:])
+	sig, err := sign(ctx, h[:])
 	if err != nil {
 		return nil, err
 	}
