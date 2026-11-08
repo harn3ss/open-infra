@@ -177,7 +177,9 @@ rds "$WAK" "$WSK" modify-db-instance --db-instance-identifier "$INST1" --master-
   || fail "modify-db-instance (password) failed: $(cat "$PWD/.rds_mp")"
 rotated=""
 for _ in $(seq 1 24); do
-  if pg "${INST1}-rw" "SELECT 'NEWPW';" "$NEWPASS" | grep -q NEWPW; then rotated=1; break; fi
+  # Captured, then matched: under pipefail, grep -q closing the pipe early would fail the pipeline.
+  out="$(pg "${INST1}-rw" "SELECT 'NEWPW';" "$NEWPASS" || true)"
+  if printf '%s' "$out" | grep -q NEWPW; then rotated=1; break; fi
   sleep 5
 done
 if [ -z "$rotated" ]; then
@@ -186,7 +188,8 @@ if [ -z "$rotated" ]; then
   roles="$(kubectl -n "$RDS_NS" get cluster.postgresql.cnpg.io "$INST1" -o jsonpath='{.status.managedRolesStatus.byStatus}' 2>/dev/null)"
   fail "the new master password never worked (psql: $why; managed roles: $roles)"
 fi
-if pg "${INST1}-rw" "SELECT 'OLDPW';" | grep -q OLDPW; then fail "the old master password still works after the change"; fi
+out="$(pg "${INST1}-rw" "SELECT 'OLDPW';" || true)"
+if printf '%s' "$out" | grep -q OLDPW; then fail "the old master password still works after the change"; fi
 log "  ✓ the master password changed: the new one connects, the old one is refused"
 if rds "$WAK" "$WSK" modify-db-instance --db-instance-identifier "$INST1" --preferred-maintenance-window sun:05:00-sun:06:00 >/dev/null 2>"$PWD/.rds_mp"; then
   fail "a ModifyDBInstance parameter that is not applied was accepted"
