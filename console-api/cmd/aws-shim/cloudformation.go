@@ -67,8 +67,11 @@ const cfnAsyncTimeout = 60 * time.Minute
 const cfnWaitTimeout = 10 * time.Minute
 
 type cfnDoorway struct {
-	cfg       *rest.Config      // base in-cluster config; copied + impersonated per caller
-	shimDyn   dynamic.Interface // shim SA client for stack-record / changeset / drift bookkeeping
+	cfg     *rest.Config      // base in-cluster config; copied + impersonated per caller
+	shimDyn dynamic.Interface // shim SA client for stack-record / changeset / drift bookkeeping
+	// packages keeps zip Lambdas' deployment packages (lambda_packages.go); nil = an S3 package refuses and
+	// inline code deploys as a ConfigMap, as on the CLI.
+	packages  *packageStore
 	mapper    meta.RESTMapper
 	account   string
 	region    string
@@ -164,7 +167,9 @@ func (h *cfnDoorway) caps(ctx context.Context) cfn.Capabilities {
 		EC2AddressAPI:    h.shimDyn != nil && h.services != nil && h.services.owners != nil,
 		ValidatedDomains: fileDomains(h.validatedDomainsFile),
 		// A nested stack is a stack of its own, its child template read from this shim's S3 (cfn_nested.go).
-		NestedStacks: h.s3 != nil && h.s3.mc != nil}
+		NestedStacks: h.s3 != nil && h.s3.mc != nil,
+		// A zip Lambda's package in S3 is read as the caller and stored for the function's pods (#402).
+		LambdaPackageStore: h.packages != nil && h.s3 != nil && h.s3.mc != nil}
 	if ecr, ok := h.services.door("ecr").(*ecrHandler); ok && ecr != nil && c.ECRAPI {
 		c.ECRRepositoryHost = stripScheme(ecr.proxyEndpoint)
 	}

@@ -53,8 +53,10 @@ spec:
             {{-     if not ($code.unsupportedRuntime | default false) }}{{- fail "Lambda function: a custom runtime image is unsupported and not for production, so it must be accepted as such (code.unsupportedRuntime: true)" }}{{- end }}
             {{-     $img = $code.runtimeImage }}{{- $unsupported = true }}
             {{-   else if eq $code.runtime "python3.12" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python:latest%s" $arch }}{{- else if eq $code.runtime "python3.13" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-python313:latest%s" $arch }}{{- else if eq $code.runtime "nodejs20" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-nodejs:latest%s" $arch }}{{- else if eq $code.runtime "nodejs22" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-nodejs22:latest%s" $arch }}{{- else if eq $code.runtime "dotnet8" }}{{- $img = printf "ghcr.io/harn3ss/open-infra-lambda-dotnet:latest%s" $arch }}{{- else }}{{- fail (printf "kind: Function spec.code: set runtime (a supported enum value) or runtimeImage (BYO, unsupported); got runtime=%q" ($code.runtime | default "")) }}{{- end }}
-            {{-   if and $csrc.bucket $csrc.configMap }}{{- fail "Lambda function: the deployment package is inline code (ZipFile) or an S3 object (S3Bucket and S3Key), not both (code.source)" }}{{- end }}
-            {{-   if and (not $csrc.bucket) (not $csrc.configMap) }}{{- fail "Lambda function: the deployment package needs inline code (ZipFile) or an S3 object (S3Bucket and S3Key) (code.source)" }}{{- end }}
+            {{-   $nsrc := 0 }}{{- if $csrc.bucket }}{{- $nsrc = add $nsrc 1 }}{{- end }}{{- if $csrc.configMap }}{{- $nsrc = add $nsrc 1 }}{{- end }}{{- if $csrc.package }}{{- $nsrc = add $nsrc 1 }}{{- end }}
+            {{-   if gt (int $nsrc) 1 }}{{- fail "Lambda function: the deployment package is inline code (ZipFile), an S3 object (S3Bucket and S3Key) or a stored package, only one of them (code.source)" }}{{- end }}
+            {{-   if eq (int $nsrc) 0 }}{{- fail "Lambda function: the deployment package needs inline code (ZipFile) or an S3 object (S3Bucket and S3Key) (code.source)" }}{{- end }}
+            {{-   if and $csrc.package $csrc.secret }}{{- fail "Lambda function: a stored deployment package is fetched with the function's own identity, never with keys (code.source.package / code.source.secret)" }}{{- end }}
             {{- /* Layers are .zip artifacts fetched with the handler's S3 creds, so they require a bucket source. */}}
             {{-   if and $code.layers (not (and $csrc.bucket $csrc.secret)) }}{{- fail "Lambda function: layers need the deployment package in S3, with credentials to read it (code.source.bucket and code.source.secret)" }}{{- end }}
             {{- end }}
@@ -84,6 +86,13 @@ spec:
                    openinfra-aws-identity EnvironmentConfig), both read as extra resources. Unset, nothing
                    below renders and the function renders exactly as before. */}}
             {{- $role := $spec.role | default "" }}
+            {{- /* A stored deployment package (code.source.package, Lambda's COPY storage: what CloudFormation's
+                   Code.ZipFile or Code.S3Bucket/S3Key becomes) is fetched at cold start from the aws-shim with
+                   the function's own identity, the same ServiceAccount and token an execution role uses: the
+                   shim hands a pod only its own function's package. So either one gives the function its
+                   identity ($ident). */}}
+            {{- $pkg := $csrc.package | default dict }}
+            {{- $ident := or $role $pkg.sha256 }}
             {{- $fnSA := printf "fn-%s" $name }}
             {{- $roleArn := "" }}
             {{- $fnRegion := "us-east-1" }}
@@ -243,8 +252,9 @@ spec:
                         # scheduling a function never evicts anything else. See function-priorityclass.yaml.
                         priorityClassName: openinfra-function
                         {{- end }}
-                        {{- if $role }}
-                        # Execution role: the function runs as its own identity, whose token assumes the role.
+                        {{- if $ident }}
+                        # The function runs as its own identity: its token assumes the execution role and fetches
+                        # its stored deployment package.
                         serviceAccountName: {{ $fnSA }}
                         {{- end }}
                         containers:
@@ -290,6 +300,14 @@ spec:
                               - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: {{ $csrc.secret }}, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
                               - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: {{ $csrc.secret }}, key: AWS_ENDPOINT_URL, optional: true } } }
                               {{- end }}
+                              {{- if $pkg.sha256 }}
+                              # The stored deployment package: the runtime fetches it from the aws-shim at cold start with
+                              # the function's identity token (the shim serves a pod only its own function's package),
+                              # checks its SHA-256 and unpacks it into /var/task. No keys.
+                              - { name: OPENINFRA_CODE_URL, value: "{{ $shimEndpoint }}/v1/function-code" }
+                              - { name: OPENINFRA_CODE_SHA256, value: {{ $pkg.sha256 | toJson }} }
+                              - { name: OPENINFRA_CODE_TOKEN_FILE, value: "/var/run/secrets/openinfra/token" }
+                              {{- end }}
                             {{- end }}
                             {{- if $role }}
                               # Execution role (Lambda's Role): the AWS SDK's web-identity provider reads these and
@@ -321,12 +339,12 @@ spec:
                               - secretRef: { name: {{ . }}, optional: true }
                             {{- end }}
                             {{- end }}
-                            {{- if or (and $code $csrc.configMap) $role }}
+                            {{- if or (and $code $csrc.configMap) $ident }}
                             volumeMounts:
                             {{- if and $code $csrc.configMap }}
                               - { name: openinfra-code, mountPath: /var/task, readOnly: true }
                             {{- end }}
-                            {{- if $role }}
+                            {{- if $ident }}
                               - { name: openinfra-sts-token, mountPath: /var/run/secrets/openinfra, readOnly: true }
                             {{- end }}
                             {{- end }}
@@ -349,14 +367,15 @@ spec:
                                 nvidia.com/gpu: {{ $gpu }}
                                 {{- end }}
                             {{- end }}
-                        {{- if or (and $code $csrc.configMap) $role }}
+                        {{- if or (and $code $csrc.configMap) $ident }}
                         volumes:
                         {{- if and $code $csrc.configMap }}
                           - name: openinfra-code
                             configMap: { name: {{ $csrc.configMap }} }
                         {{- end }}
-                        {{- if $role }}
-                          # The function identity's token, for the aws-shim's STS (its audience) only.
+                        {{- if $ident }}
+                          # The function identity's token, for the aws-shim (its STS audience) only: the execution
+                          # role's credentials and the stored deployment package.
                           - name: openinfra-sts-token
                             projected:
                               sources:
@@ -380,9 +399,9 @@ spec:
                         {{- end }}
                       {{- end }}
                     {{- end }}
-            {{- if $role }}
+            {{- if $ident }}
             ---
-            # --- Execution identity (spec.role): the ServiceAccount the function's pods run as. The aws-shim
+            # --- Execution identity (spec.role, or a stored package): the ServiceAccount the function's pods run as. The aws-shim
             #     hands the role's credentials only to a pod Knative runs for this function as this
             #     ServiceAccount (it checks the token's pod, its serving.knative.dev/service label and this
             #     ServiceAccount's openinfra.dev/function label). No Kubernetes API token is mounted: the

@@ -384,6 +384,11 @@ type DeployOptions struct {
 	// with its claim. Nil (the CLI): the claim is deleted and the bucket reaper removes an empty bucket.
 	BucketData   func(ctx context.Context, bucket string) (exists, empty bool, err error)
 	RemoveBucket func(ctx context.Context, bucket string) error
+	// Packages stores a zip Lambda's deployment package as Lambda does (its COPY storage), for the
+	// function's own pods to fetch (resolvePackage): the in-cluster aws-shim front door, which reads an S3
+	// package with the caller's authority. Nil (the CLI): inline code becomes a ConfigMap of its source,
+	// and an S3 package refuses (Capabilities.LambdaPackageStore off).
+	Packages PackageStore
 	// TableExists reports whether a DynamoDB table of that name already exists; RemoveTable deletes a
 	// table's items, stream and registry entry. With them a kind: Table is AWS's DynamoDB table: creating
 	// one whose name is already a table's is refused ("Table already exists"), and deleting it — a stack
@@ -439,6 +444,72 @@ type DeprovisionRestAPIFunc func(ctx context.Context, apiID string) error
 // "Data":{...},"Reason":"..."}. The open-infra adaptation of the ResponseURL callback — the handler
 // RETURNS the response rather than PUT-ing it to a pre-signed S3 URL.
 type InvokeFunc func(ctx context.Context, namespace, functionName string, event []byte) (map[string]any, error)
+
+// PackageStore keeps zip Lambdas' deployment packages (DeployOptions.Packages).
+type PackageStore interface {
+	// Store makes pkg a stored package of namespace's functions: an inline package zipped, an S3 one read
+	// as the deploying caller may read it. It returns the stored .zip's SHA-256 and size.
+	Store(ctx context.Context, namespace string, pkg *CodePackage) (StoredPackage, error)
+}
+
+// StoredPackage is a stored deployment package, as spec.code.source.package names it.
+type StoredPackage struct {
+	SHA256 string
+	Size   int64
+}
+
+// packageTimeout bounds reading and storing one deployment package (Lambda's are up to 250 MB unzipped).
+const packageTimeout = 2 * time.Minute
+
+// resolvePackage turns a zip Lambda's deployment package into its Function's spec.code.source: a stored
+// package (opts.Packages), or, on a path without a store, inline code as a companion ConfigMap of its
+// source. An update whose S3 location is unchanged keeps the package stored before, as CloudFormation does
+// not re-read an unchanged object ("change the object key or version to update the code").
+func resolvePackage(m *Manifest, opts DeployOptions) error {
+	p := m.Package
+	code, _ := m.Spec["code"].(map[string]any)
+	if p == nil || code == nil {
+		return nil
+	}
+	if p.Inline == nil {
+		if prev := priorPackage(opts.prior, m.Name); prev != nil && prev["origin"] == p.Origin() {
+			code["source"] = map[string]any{"package": prev}
+			return nil
+		}
+	}
+	if opts.Packages != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), packageTimeout)
+		defer cancel()
+		sp, err := opts.Packages.Store(ctx, opts.Namespace, p)
+		if err != nil {
+			return err
+		}
+		code["source"] = map[string]any{"package": map[string]any{"sha256": sp.SHA256, "size": sp.Size, "origin": p.Origin()}}
+		return nil
+	}
+	if p.Inline != nil {
+		cm := &Manifest{APIVersion: "v1", Kind: "ConfigMap", Name: m.Name + "-code", Data: p.Inline}
+		m.Extra = append(m.Extra, cm)
+		code["source"] = map[string]any{"configMap": cm.Name}
+		return nil
+	}
+	return fmt.Errorf("a deployment package in S3 (Code.S3Bucket) deploys through the aws-shim CloudFormation front door, which copies it with your authority as Lambda does; this deploy path cannot read it")
+}
+
+// priorPackage is the stored package the existing stack's Function name had, or nil.
+func priorPackage(prior []StackResource, name string) map[string]any {
+	for _, r := range prior {
+		if r.Kind != "Function" || r.Name != name {
+			continue
+		}
+		code, _ := r.Spec["code"].(map[string]any)
+		src, _ := code["source"].(map[string]any)
+		if pkg, ok := src["package"].(map[string]any); ok {
+			return pkg
+		}
+	}
+	return nil
+}
 
 // expandManifest renders a translated manifest and any companion manifests it carries (m.Extra — e.g.
 // an IAM Role's inline Policies become companion kind: Policy objects) into builtResources in apply
@@ -531,6 +602,10 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 			continue // a no-op resource (e.g. an ECS Cluster, or a TaskDefinition a Service composes)
 		}
 		m.Caveats = append(m.Caveats, attributeCaveats(res)...) // so a change set lists them too
+		if err := resolvePackage(m, opts); err != nil {
+			findings = append(findings, Finding{"Resource " + id, err.Error()})
+			continue
+		}
 		built, err := expandManifest(id, res, m, opts)
 		if err != nil {
 			return nil, err
@@ -1274,6 +1349,10 @@ func renderManifest(m *Manifest, opts DeployOptions) ([]byte, error) {
 			},
 		},
 		"spec": m.Spec,
+	}
+	if m.APIVersion == "v1" && m.Kind == "ConfigMap" {
+		delete(obj, "spec")
+		obj["data"] = m.Data
 	}
 	if len(m.Annotations) > 0 {
 		ann := map[string]any{}

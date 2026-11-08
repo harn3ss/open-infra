@@ -53,7 +53,9 @@ type serviceRouter struct {
 	services   map[string]awsService // keyed by AWS service name: "s3", "sts", "lambda", "appsync"
 	vmCreds    *vmCredsHandler       // VM workload credentials (container-credentials provider); nil = off
 	caBundle   *caBundleHandler      // the platform root CA certificate (public, unauthenticated); nil = off
-	logger     *slog.Logger
+	// functionCode serves a function's pods their stored deployment package (lambda_packages.go); nil = off.
+	functionCode *functionCodeHandler
+	logger       *slog.Logger
 }
 
 func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -91,6 +93,16 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if p := path.Clean("/" + r.URL.Path); isVMIdentityPath(p) {
 		if rt.vmCreds != nil && rt.vmCreds.identity != nil {
 			rt.vmCreds.identity.serve(w, r, requestID)
+		} else {
+			http.NotFound(w, r)
+		}
+		return
+	}
+	// A function's stored deployment package, fetched by its pods with their own identity token
+	// (lambda_packages.go). No SigV4: the token is the identity. 404 while it is off.
+	if path.Clean("/"+r.URL.Path) == functionCodePath {
+		if rt.functionCode != nil {
+			rt.functionCode.serve(w, r, requestID)
 		} else {
 			http.NotFound(w, r)
 		}

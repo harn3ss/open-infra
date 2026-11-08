@@ -44,6 +44,8 @@ type fakeApplier struct {
 	// and record writes cannot run, leaving exactly what a killed process leaves. Set to 0 to "restart".
 	dieAfter  int
 	mutations int
+	// raw is "Kind/name" -> the last YAML applied for it (every object but the stack record).
+	raw map[string][]byte
 }
 
 // dead reports (and counts toward) the simulated process death; true = this mutation must fail.
@@ -117,6 +119,10 @@ func (f *fakeApplier) Apply(_ context.Context, y []byte) error {
 			f.stored = &rec
 		}
 	} else {
+		if f.raw == nil {
+			f.raw = map[string][]byte{}
+		}
+		f.raw[id] = y
 		// Record the applied spec as the "live" object, for drift tests.
 		var m map[string]any
 		_ = yaml.Unmarshal(y, &m)

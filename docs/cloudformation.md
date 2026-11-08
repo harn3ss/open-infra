@@ -356,6 +356,51 @@ the S3 front door would authorize a `GetObject`. Any other URL is refused. Set `
 just `--endpoint-url`) when using `aws cloudformation deploy --s3-bucket`, so the upload goes to the same
 S3 the front door reads.
 
+### Lambda .zip functions
+
+A Lambda with a `.zip` deployment package, the default `PackageType`, runs its code on a managed
+runtime, as on AWS:
+- **`Runtime`**: `nodejs20.x`, `nodejs22.x`, `python3.12`, `python3.13` or `dotnet8`. Any other runtime is
+  refused at plan, with this list. Older ones and `provided.*` aren't run.
+- **`Handler`**: as Lambda reads it, for example `index.handler`.
+
+There are two ways to give the code:
+- **Inline, `Code.ZipFile`** (Node.js and Python, up to 4 MB). As CloudFormation does, the code goes in a
+  file named `index`, so the handler is `index.<name>`:
+  - Node.js: `index.js`, which Node.js loads as CommonJS;
+  - Python: `index.py`.
+- **In S3, `Code.S3Bucket` + `S3Key`** (and `S3ObjectVersion`), as `aws cloudformation package`, SAM
+  after its transform, and CDK write it:
+  - The object is read when the stack deploys, with the **deploying caller's** permissions (`s3:GetObject`),
+    and only from this front door's own S3, like a [`TemplateURL`](#templates-in-s3-templateurl).
+  - A read the caller isn't allowed fails the stack with Lambda's message ("Your access has been denied by
+    S3, … S3 Error Code: AccessDenied").
+
+Either way the package is **stored as Lambda stores it** (`S3ObjectStorageMode: COPY`, the default):
+- **Where it's kept:** in a platform bucket that no account reaches through the S3 API, under its
+  SHA-256.
+- **How the function gets it:** the function's own pods fetch it from the aws-shim at cold start, with the
+  function's identity, and get that function's package and no other. There are no keys in the function,
+  so an execution role (`Role`) works as on AWS.
+- **Updates:** as on CloudFormation, a stack update re-reads the S3 object only when `S3Bucket`, `S3Key`
+  or `S3ObjectVersion` changes. To deploy new code, change the key or the version.
+- **Limits:** a stored package is at most 64 MB zipped and 250 MB unzipped, and no entry may lead outside
+  the package's root.
+
+Refused:
+- `Layers`: bundle what a layer provides into the package.
+- Both `ZipFile` and `S3Bucket`.
+- `ZipFile` with a runtime other than Node.js or Python.
+- An inline handler that doesn't start with `index.`.
+- Inline code that loads `cfn-response`. open-infra invokes a custom-resource handler synchronously and
+  uses the response it returns (`{Status, Data, PhysicalResourceId}`); the module isn't provided yet.
+
+`S3ObjectStorageMode: REFERENCE` is stored as a copy, with a caveat. `SourceKMSKeyArn` is a caveat: the
+stored package is encrypted at rest with the platform's key.
+
+The `cfn deploy` CLI has no package store. It deploys inline code as a ConfigMap of its source, and
+refuses an S3 package with a pointer to the front door.
+
 ### CloudFront: a static-site subset
 
 A CloudFront distribution in front of a private S3 bucket — the standard single-page-app hosting
@@ -751,7 +796,7 @@ Today's create translators (live-verified on the cluster):
 |---|---|---|
 | `AWS::KMS::Key` | `kind: EncryptionKey` | Description, `EnableKeyRotation`→rotation, `KeySpec`→key type; `KeyPolicy` is a caveat (access is via open-infra IAM). **Through the aws-shim front door**: also a key in the KMS API's store (`KeyPolicy` applied there), under the id its `Ref` resolves to. |
 | `AWS::KMS::Alias` | the KMS API's alias store | `AliasName`, `TargetKeyId` (an in-stack key or a key id/ARN). Through the aws-shim front door only. |
-| `AWS::Lambda::Function` (`PackageType: Image` only) | `kind: Function` | `Code.ImageUri`→image, `Environment`→env, `MemorySize`→memory, `Timeout`→timeout, `Role`→`spec.role`, the [execution role](serverless.md#execution-role) the function's code runs as: an in-stack `AWS::IAM::Role` by `!GetAtt <Role>.Arn`, or a role ARN of the stack's account. Refused, as Lambda refuses them: a `Role` by `!Ref` (a name, not an ARN), an in-stack role whose trust does not name `lambda.amazonaws.com`, a role of another account. A zip/Runtime Lambda has no image and is refused. |
+| `AWS::Lambda::Function` | `kind: Function` | A `.zip` package (the default `PackageType`) runs on a managed runtime ([Lambda .zip functions](#lambda-zip-functions)): `Runtime`→`spec.code.runtime` (`nodejs20.x`, `nodejs22.x`, `python3.12`, `python3.13`, `dotnet8`), `Handler`→`spec.code.handler`, and `Code.ZipFile` or `Code.S3Bucket`/`S3Key` (+ `S3ObjectVersion`) → a stored deployment package. `PackageType: Image`: `Code.ImageUri`→image. Both: `Environment`→env, `MemorySize`→memory, `Timeout`→timeout, `Role`→`spec.role`, the [execution role](serverless.md#execution-role) the function's code runs as: an in-stack `AWS::IAM::Role` by `!GetAtt <Role>.Arn`, or a role ARN of the stack's account. Refused, as Lambda refuses them: a `Role` by `!Ref` (a name, not an ARN), an in-stack role whose trust does not name `lambda.amazonaws.com`, a role of another account. Refused with the supported list: any other `Runtime`. Refused: `Layers`, inline code that uses `cfn-response`. |
 | `AWS::StepFunctions::StateMachine` | `kind: StateMachine` | The ASL `DefinitionString`/`Definition` maps byte-for-byte (open-infra runs the same Amazon States Language). `RoleArn`, `Logging`/`TracingConfiguration` are caveats. **Refused** (not silently broken): a definition whose Task `Resource` fields are AWS ARNs — open-infra Tasks reference a Function as `function:<name>`, so remap them first; also `EXPRESS` type, `DefinitionS3Location`, and `DefinitionSubstitutions`. |
 | `AWS::EC2::Volume` | `kind: Volume` | `Size`→size, `MultiAttachEnabled`→shared (RWX), **`Encrypted`→LUKS at rest keyed by a customer `kind: EncryptionKey`** (a `KmsKeyId` must reference an in-stack `AWS::KMS::Key`; with no `KmsKeyId` the volume is keyed by the stack's default EncryptionKey `<stack>-ebs-default` — the `aws/ebs` analog, created on first use, one per stack so destroying one stack's key crypto-erases only that stack's volumes; a stack created while the namespace shared one `ebs-default` keeps using it). The resource completes once the volume is **bound** — usable, as EBS reports `available`; for an encrypted volume that is after its passphrase is materialized ([`encryption.md`](encryption.md#longhorn-volumes-shipped-sc--just-use-it)). `AvailabilityZone`/`VolumeType`/`Iops`/`Throughput` are caveats (one flat cluster, Longhorn). **Refused**: a `KmsKeyId` that names an out-of-stack or AWS-managed key (no mappable equivalent) and `SnapshotId` (an EBS snapshot id has no open-infra VolumeSnapshot to restore from). |
 | `AWS::Cognito::UserPool` (+ `UserPoolClient`) | `kind: UserPool` | `UserPoolName`→realm — a hosted OIDC pool (Keycloak). An in-stack `UserPoolClient` **collates** into the pool (its `ClientName`→`spec.clientId`; the pool provisions one app client). The realm's own defaults cover password policy / schema / verification, so those are caveats — as is the client's OAuth config (flows/scopes/callback URLs/GenerateSecret). **Refused**: `MfaConfiguration` (ON/OPTIONAL) and `LambdaConfig` triggers (behavior-bearing auth with no faithful mapping); more than one client per pool; a client whose `UserPoolId` isn't in the stack. |

@@ -718,7 +718,12 @@ func run(logger *slog.Logger) error {
 				iamH.cfn = cfnH
 			}
 			cfnDoor = cfnH
-			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS))
+			// Zip Lambdas' deployment packages (lambda_packages.go): stored where only a function's own pods
+			// fetch them, which needs the S3 bridge (the store) and function identities (the fetch).
+			if mc != nil && fnIdentities != nil {
+				cfnH.packages = &packageStore{mc: mc, logger: logger}
+			}
+			logger.Info("CloudFormation front door enabled", slog.String("namespace", cfnNS), slog.Bool("lambdaPackages", cfnH.packages != nil))
 		}
 	}
 	// ECS (ecs.*) — RegisterTaskDefinition/CreateService/… over the owned cfn engine: an ECS service +
@@ -915,7 +920,12 @@ func run(logger *slog.Logger) error {
 		logger.Info("platform CA bundle endpoint enabled", slog.String("path", caBundlePath),
 			slog.String("secret", caNS+"/"+caSecret))
 	}
-	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services, vmCredsH, caBundleH)
+	var fnCodeH *functionCodeHandler
+	if cfnDoor != nil && cfnDoor.packages != nil && dyn != nil {
+		fnCodeH = &functionCodeHandler{identities: fnIdentities, dyn: dyn, store: cfnDoor.packages, logger: logger}
+		logger.Info("function deployment packages served", slog.String("path", functionCodePath))
+	}
+	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services, vmCredsH, caBundleH, fnCodeH)
 	// WaitConditionHandle URLs: a guest PUTs its signal there; the signed URL is the credential, ahead of
 	// SigV4, as AWS's pre-signed handle URL is (cloudformation_api.go).
 	if cfnDoor != nil {
@@ -1126,7 +1136,7 @@ func run(logger *slog.Logger) error {
 	return shutdownErr
 }
 
-func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, lambdaAuth *lambdaAuthorizer, services map[string]awsService, vmCreds *vmCredsHandler, caBundle *caBundleHandler) http.Handler {
+func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, lambdaAuth *lambdaAuthorizer, services map[string]awsService, vmCreds *vmCredsHandler, caBundle *caBundleHandler, functionCode *functionCodeHandler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
@@ -1152,7 +1162,7 @@ func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, 
 		names = append(names, n)
 	}
 	logger.Info("aws services registered", "services", names)
-	r.Handle("/*", &serviceRouter{auth: auth, jwt: jwt, lambdaAuth: lambdaAuth, services: services, vmCreds: vmCreds, caBundle: caBundle, logger: logger})
+	r.Handle("/*", &serviceRouter{auth: auth, jwt: jwt, lambdaAuth: lambdaAuth, services: services, vmCreds: vmCreds, caBundle: caBundle, functionCode: functionCode, logger: logger})
 	return r
 }
 

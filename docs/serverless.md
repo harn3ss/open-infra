@@ -136,7 +136,14 @@ aws iam put-role-policy --role-name orders-writer --policy-name send --policy-do
   reports the role as the function's `Role`.
 - **A role and package keys don't combine**: a function whose package is read from a bucket with static
   keys (`code.source.secret`) can't also have a role — the handler's SDK would act with those keys ahead of
-  the role. Give a function with a role an image or inline code (`code.source.configMap`).
+  the role. Give a function with a role an image, inline code (`code.source.configMap`), or a stored
+  deployment package (`code.source.package`, below).
+- **A stored deployment package** (`code.source.package`) is how a CloudFormation stack's `.zip` Lambda
+  runs ([Lambda .zip functions](cloudformation.md#lambda-zip-functions)):
+  - The platform keeps the package, as Lambda keeps one, and names it by its SHA-256.
+  - The function's pods fetch it from the aws-shim at cold start with the function's own identity, check
+    the hash, and unpack it into `/var/task`. The shim serves a pod only its own function's package.
+  - No keys are involved, so it combines with a role.
 
 Execution roles need the aws-shim with STS enabled (its session sealing key), as `sts:AssumeRole` does.
 A function without `spec.role` has no role and runs exactly as before: it reaches what it needs through

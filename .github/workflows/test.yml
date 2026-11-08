@@ -21,6 +21,7 @@ on:
       - "dynamodb/**"
       - "console-api/**"
       - "test/**"
+      - "lambda-runtime/**" # the runtime bootstraps (test/lambda-runtime runs them as processes)
       - "platform/**" # every manifest: the user-authority check (rbac_user_authority_test.go) walks them all
       - "platform/storage/longhorn*.yaml" # volume_render_test.go pins the Volume's classes to Immediate binding
       - "platform/security/volume-crypto.yaml" # crypto_reconcilers_test.go runs these reconciler scripts
@@ -48,6 +49,7 @@ on:
       - "dynamodb/**"
       - "console-api/**"
       - "test/**"
+      - "lambda-runtime/**" # the runtime bootstraps (test/lambda-runtime runs them as processes)
       - "platform/**" # every manifest: the user-authority check (rbac_user_authority_test.go) walks them all
       - "platform/storage/longhorn*.yaml" # volume_render_test.go pins the Volume's classes to Immediate binding
       - "platform/security/volume-crypto.yaml" # crypto_reconcilers_test.go runs these reconciler scripts
@@ -285,6 +287,17 @@ jobs:
             echo "::error::call mint_key directly (it sets MK_AK/MK_SK), never inside \$(...)"; exit 1
           fi
           for f in probe/*.sh; do bash -n "$f"; done
+
+  lambda-runtime:
+    name: lambda-runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The runtime bootstraps (node, python, dotnet8) run as processes against a stub aws-shim: the stored
+      # deployment package fetch (#402) — bearer token, SHA-256, retries, zip-entry refusals.
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "8.0.x" }
+      - run: python3 test/lambda-runtime/code_package_test.py
 
   vm-creds-cli:
     name: vm-creds-cli

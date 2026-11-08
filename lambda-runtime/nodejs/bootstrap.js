@@ -6,7 +6,8 @@
 //
 // A user ships handler CODE (a Zip/source), not a container. open-infra runs it on THIS
 // prebuilt base image: the handler is unpacked into /var/task (a ConfigMap mount, or this
-// shim fetches+unzips the code bucket object at cold start), and the shim requires the
+// shim fetches+unzips the function's stored deployment package or the code bucket object at
+// cold start), and the shim requires the
 // declared handler and serves it over HTTP — turning the Lambda handler(event, context)
 // model into the request-driven HTTP service Knative expects.
 //
@@ -16,6 +17,10 @@
 //   OPENINFRA_HANDLER = "<module>.<export>"  e.g. "index.handler" -> index.js exports.handler
 //   OPENINFRA_TASK_DIR = handler code root (default /var/task)
 //   OPENINFRA_CODE_BUCKET / OPENINFRA_CODE_KEY = the handler .zip (S3/MinIO) — optional
+//   OPENINFRA_CODE_URL = the function's stored deployment package, served by the aws-shim — optional,
+//     never together with OPENINFRA_CODE_BUCKET. Fetched with the function's own identity token, no keys:
+//     OPENINFRA_CODE_SHA256 = the package's recorded SHA-256 (64 lowercase hex), checked before unpacking
+//     OPENINFRA_CODE_TOKEN_FILE = the projected identity token, sent as "Authorization: Bearer <token>"
 //   OPENINFRA_LAYERS = JSON [{bucket,key}] extracted (merged, in order) into /opt — optional
 //   PORT = listen port (default 8080; Knative sets it)
 //
@@ -152,6 +157,152 @@ async function fetchUnzip(cfg, bucket, key, dest) {
   process.stderr.write(`open-infra-runtime: unpacked s3://${bucket}/${key} (${size} bytes) into ${dest}\n`);
 }
 
+// --- Stored deployment package (OPENINFRA_CODE_URL): Lambda's own model, where the platform keeps the
+// function's .zip and the function fetches it with its OWN identity — no keys in the pod. The aws-shim
+// serves a pod only its own function's package; the shim may be restarting, so a network error, a 5xx or
+// a 429 is retried (5 attempts, 1s/2s/4s/8s apart), while a refusal (400/401/403/404, any other status)
+// fails start at once. The token is re-read on every attempt (kubelet rotates it) and never logged.
+const CODE_MAX_BYTES = 64 * 1024 * 1024;
+const CODE_ATTEMPTS = 5;
+const CODE_IDLE_MS = 30000; // an attempt with no bytes for this long is a network error (retried)
+
+// A start failure whose message says it all: logged alone, without a stack.
+function codeError(msg) { const e = new Error(msg); e.openinfraCode = true; return e; }
+function retryable(msg) { const e = new Error(msg); e.retryable = true; return e; }
+
+function readToken(tokenFile) {
+  let token;
+  try {
+    token = fs.readFileSync(tokenFile, "utf8").trim();
+  } catch (e) {
+    throw codeError(`cannot read OPENINFRA_CODE_TOKEN_FILE: ${e.message}`);
+  }
+  if (!token) throw codeError(`OPENINFRA_CODE_TOKEN_FILE ${tokenFile} is empty: the function's identity token is missing`);
+  return token;
+}
+
+// One GET of the package, streamed into destFile while it is hashed and held to the size cap. Resolves
+// {size, sha256}; rejects retryable() for a network failure, a 5xx or a 429, codeError() otherwise.
+function getPackageOnce(target, token, destFile) {
+  return new Promise(function (resolve, reject) {
+    const mod = target.protocol === "https:" ? https : http;
+    let settled = false;
+    const fail = function (e) { if (!settled) { settled = true; reject(e); } };
+    const req = mod.request({ host: target.hostname, port: target.port, path: target.path, method: "GET",
+      headers: { "Authorization": "Bearer " + token } }, function (res) {
+      res.on("error", function (e) { fail(retryable(`the download broke off: ${e.message}`)); });
+      res.on("aborted", function () { fail(retryable("the download broke off")); });
+      if (res.statusCode !== 200) {
+        const errChunks = [];
+        let errLen = 0;
+        res.on("data", function (c) { if (errLen < 4096) { errChunks.push(c); errLen += c.length; } });
+        res.on("end", function () {
+          const body = Buffer.concat(errChunks).toString("utf8").slice(0, 200);
+          const msg = `GET ${target.href} -> HTTP ${res.statusCode}` + (body ? ": " + body : "");
+          fail(res.statusCode >= 500 || res.statusCode === 429 ? retryable(msg) : codeError(msg));
+        });
+        return;
+      }
+      const declared = res.headers["content-length"] !== undefined ? parseInt(res.headers["content-length"], 10) : -1;
+      if (declared > CODE_MAX_BYTES) {
+        fail(codeError(`the deployment package is ${declared} bytes, over the ${CODE_MAX_BYTES} byte (64 MiB) limit`));
+        req.destroy();
+        return;
+      }
+      const hash = crypto.createHash("sha256");
+      const out = fs.createWriteStream(destFile);
+      let size = 0;
+      out.on("error", function (e) { fail(e); req.destroy(); });
+      res.on("data", function (c) {
+        if (settled) return;
+        size += c.length;
+        if (size > CODE_MAX_BYTES) {
+          fail(codeError(`the deployment package is over the ${CODE_MAX_BYTES} byte (64 MiB) limit`));
+          out.destroy();
+          req.destroy();
+          return;
+        }
+        hash.update(c);
+        if (!out.write(c)) { res.pause(); out.once("drain", function () { res.resume(); }); }
+      });
+      res.on("end", function () {
+        if (settled) return;
+        if (!res.complete || (declared >= 0 && size !== declared)) {
+          out.destroy();
+          return fail(retryable(`the download broke off after ${size} bytes`));
+        }
+        out.on("finish", function () { out.close(function () {
+          if (!settled) { settled = true; resolve({ size: size, sha256: hash.digest("hex") }); }
+        }); });
+        out.end();
+      });
+    });
+    req.setTimeout(CODE_IDLE_MS, function () {
+      fail(retryable(`no data from ${target.host} for ${CODE_IDLE_MS / 1000}s`));
+      req.destroy();
+    });
+    req.on("error", function (e) { fail(retryable(e.message || String(e))); });
+    req.end();
+  });
+}
+
+// Entry names the package would unpack outside the task dir: absolute, or with a ".." segment. The
+// system unzip would rewrite such a name and carry on; the package is refused instead.
+function unsafeEntries(zipFile) {
+  const names = execFileSync("unzip", ["-Z1", zipFile], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  return names.split("\n").filter(function (n) {
+    if (!n) return false;
+    return n[0] === "/" || n[0] === "\\" || n.split(/[\\/]/).indexOf("..") !== -1;
+  });
+}
+
+function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+async function fetchPackage(codeUrl, dest) {
+  const target = url.parse(codeUrl);
+  if ((target.protocol !== "http:" && target.protocol !== "https:") || !target.hostname) {
+    throw codeError(`OPENINFRA_CODE_URL must be an http or https URL, got '${codeUrl}'`);
+  }
+  const want = process.env.OPENINFRA_CODE_SHA256 || "";
+  if (!/^[0-9a-f]{64}$/.test(want)) {
+    throw codeError("OPENINFRA_CODE_URL needs OPENINFRA_CODE_SHA256, the deployment package's recorded SHA-256 as 64 lowercase hex characters" +
+      (want ? `; got '${want}'` : "; it is not set"));
+  }
+  const tokenFile = process.env.OPENINFRA_CODE_TOKEN_FILE || "";
+  if (!tokenFile) throw codeError("OPENINFRA_CODE_URL needs OPENINFRA_CODE_TOKEN_FILE, the path of the function's identity token; it is not set");
+  readToken(tokenFile); // unreadable or empty fails start before any request
+  mkdirp(dest);
+  const tmp = path.join(os.tmpdir(), `oi-${process.pid}-${Date.now()}.zip`);
+  try {
+    let got;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        got = await getPackageOnce(target, readToken(tokenFile), tmp);
+        break;
+      } catch (e) {
+        if (!e.retryable) throw e;
+        if (attempt >= CODE_ATTEMPTS) {
+          throw codeError(`could not fetch the deployment package from ${codeUrl} in ${CODE_ATTEMPTS} attempts: ${e.message}`);
+        }
+        const delay = Math.pow(2, attempt - 1); // 1s, 2s, 4s, 8s
+        process.stderr.write(`open-infra-runtime: fetching the deployment package: ${e.message}; retrying in ${delay}s (attempt ${attempt} of ${CODE_ATTEMPTS})\n`);
+        await sleep(delay * 1000);
+      }
+    }
+    if (got.sha256 !== want) {
+      throw codeError(`the deployment package does not match its recorded SHA-256 (recorded ${want.slice(0, 12)}, fetched ${got.sha256.slice(0, 12)})`);
+    }
+    const unsafe = unsafeEntries(tmp);
+    if (unsafe.length) {
+      throw codeError(`the deployment package has entries that would unpack outside ${dest}, refused: ${unsafe.slice(0, 5).join(", ")}`);
+    }
+    execFileSync("unzip", ["-o", "-q", tmp, "-d", dest]);
+    process.stderr.write(`open-infra-runtime: unpacked the deployment package (${want.slice(0, 12)}, ${got.size} bytes) into ${dest}\n`);
+  } finally {
+    try { fs.unlinkSync(tmp); } catch (_e) { /* never written */ }
+  }
+}
+
 // randomUUID with a fallback for Node < 14.17 (the older escape-hatch runtimes lack crypto.randomUUID).
 function randomUUID() {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -163,13 +314,19 @@ function randomUUID() {
 }
 
 async function fetchCode() {
-  // Fetch+unzip the handler .zip into /var/task and any declared layers into /opt at cold start.
-  // A failure crashes the pod (exit 2) rather than serving a broken handler. No-op when the handler
-  // is ConfigMap-mounted and no layers are declared.
+  // Fetch+unzip the handler .zip (the stored deployment package, or the code bucket object) into
+  // /var/task and any declared layers into /opt at cold start. A failure crashes the pod (exit 2) rather
+  // than serving a broken handler. No-op when the handler is ConfigMap-mounted and no layers are declared.
   const bucket = process.env.OPENINFRA_CODE_BUCKET;
+  const codeUrl = process.env.OPENINFRA_CODE_URL;
   const layersRaw = process.env.OPENINFRA_LAYERS || "";
-  if (!bucket && !layersRaw) return;
+  if (!bucket && !codeUrl && !layersRaw) return;
   try {
+    if (codeUrl && bucket) {
+      throw codeError("OPENINFRA_CODE_URL and OPENINFRA_CODE_BUCKET are both set: a function's deployment package " +
+        "comes from one code source (its stored package or an S3 object), not both");
+    }
+    if (codeUrl) await fetchPackage(codeUrl, TASK_DIR);
     const cfg = s3Config();
     if (bucket) await fetchUnzip(cfg, bucket, process.env.OPENINFRA_CODE_KEY || "", TASK_DIR);
     if (layersRaw) {
@@ -178,6 +335,10 @@ async function fetchCode() {
       }
     }
   } catch (e) {
+    if (e && e.openinfraCode) {
+      process.stderr.write("open-infra-runtime: " + e.message + "\n");
+      process.exit(2);
+    }
     process.stderr.write("open-infra-runtime: failed to fetch/unzip handler or layer code:\n" + (e && e.stack ? e.stack : String(e)) + "\n");
     process.exit(2);
   }

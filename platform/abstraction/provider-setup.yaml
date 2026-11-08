@@ -346,8 +346,9 @@ data:
     # Platform buckets are owned by the platform itself and never handed to a claim. Keep in step with
     # the buckets platform components create: velero (platform/backup), lakehouse + query-data +
     # query-results (platform/query), db-snapshots (managed-DB WAL + DynamoDB PITR), openinfra-audit
-    # (the WORM audit store), ecr-registry (the image registry), and longhorn (Longhorn's volume backups).
-    PLATFORM_BUCKETS="velero lakehouse query-data query-results db-snapshots openinfra-audit ecr-registry longhorn"
+    # (the WORM audit store), ecr-registry (the image registry), longhorn (Longhorn's volume backups), and
+    # lambda-code (Lambda functions' stored deployment packages, kept by the aws-shim).
+    PLATFORM_BUCKETS="velero lakehouse query-data query-results db-snapshots openinfra-audit ecr-registry longhorn lambda-code"
     # Owner records (and the platform-side scoped-credential Secrets) live here, not in the minio
     # namespace, so the setup SA needs no secret access to the minio namespace's own keys.
     OWN_NS="${OWN_NS:-openinfra-bucket-creds}"

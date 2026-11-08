@@ -78,18 +78,6 @@ func TestTranslate_LambdaImage_Faithful(t *testing.T) {
 	}
 }
 
-func TestTranslate_LambdaZip_Refused(t *testing.T) {
-	_, fs := translateLambdaFunction("Zip", map[string]any{
-		"Runtime": "python3.12",
-		"Handler": "index.handler",
-		"Code":    map[string]any{"S3Bucket": "b", "S3Key": "k"},
-	}, nil)
-	txt := findingsText(fs)
-	if !strings.Contains(txt, "PackageType: Image") {
-		t.Fatalf("a zip Lambda must be refused (no image to run), findings: %s", txt)
-	}
-}
-
 // An env var whose value is a cross-resource attribute (no concrete open-infra value) blocks
 // rather than being provisioned with a wrong value.
 func TestTranslate_Lambda_CrossRefEnvBlocks(t *testing.T) {

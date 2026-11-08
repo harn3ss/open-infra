@@ -6,6 +6,32 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — CloudFormation deploys .zip Lambdas (#402)
+- **A Lambda with a .zip package, the default `PackageType`, deploys from CloudFormation** onto `kind:
+  Function` `spec.code`, as AWS runs it.
+  - **`Runtime`:** `nodejs20.x`, `nodejs22.x`, `python3.12`, `python3.13` or `dotnet8`. Any other runtime
+    is refused, with that list.
+  - **`Handler`**, plus the package given one of two ways:
+    - `Code.ZipFile`: inline code, written to `index.js` (CommonJS) or `index.py`, as CloudFormation does;
+    - `Code.S3Bucket`/`S3Key` (+ `S3ObjectVersion`): what `aws cloudformation package`, SAM after its
+      transform, and CDK produce.
+  - A template copied from the AWS docs, or synthesized by CDK, now deploys as written.
+  - [`docs/cloudformation.md`](docs/cloudformation.md#lambda-zip-functions).
+- **Packages are stored as Lambda stores them.** An S3 package is read at deploy with the deploying caller's
+  `s3:GetObject`, and a refusal is Lambda's AccessDenied.
+  - **Where it's kept:** a platform bucket that no account reaches through the S3 API, named on the
+    Function by its SHA-256 (`spec.code.source.package`).
+  - **How the function gets it:** the function's pods fetch it from the aws-shim at cold start with their
+    own identity and get only their own function's package. No keys, so it combines with an execution role.
+  - **Updates:** a stack update re-reads an S3 object only when its location changes, as CloudFormation
+    does.
+- **Refused:** `Layers`, inline code that loads `cfn-response` (a custom-resource handler returns its
+  response here), `ZipFile` for a non-Node.js/Python runtime, and an inline handler not named `index.<name>`.
+  - **The `cfn deploy` CLI** deploys inline code as a ConfigMap and refuses an S3 package, pointing to the
+    front door.
+- **Tested:** `probe/aws-shim-cfn-lambda-zip.sh` runs inline code, a packaged function, an unsupported
+  runtime, and an AccessDenied for a package the deployer may not read.
+
 ### Changed — the platform's keys live in OpenBao (#359)
 - **Every client of the key service uses OpenBao.** KMS, Secrets Manager, Parameter Store secure values,
   `kind: EncryptionKey`, encrypted volumes, the private CAs, KES and the STS sealing key reach OpenBao's

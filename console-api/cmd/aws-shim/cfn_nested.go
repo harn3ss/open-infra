@@ -34,6 +34,10 @@ type nestedDriver struct {
 // their templates as the request's caller.
 func (h *cfnDoorway) withRequest(o cfn.DeployOptions, ap *impersonatingApplier, r *http.Request) cfn.DeployOptions {
 	o.NestedStacks = &nestedDriver{h: h, ap: ap, req: r}
+	// A zip Lambda's deployment package is stored as Lambda stores it, an S3 one read as the caller (#402).
+	if h.packages != nil {
+		o.Packages = &lambdaPackages{h: h, req: r, store: h.packages}
+	}
 	return o
 }
 

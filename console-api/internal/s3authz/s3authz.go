@@ -42,7 +42,7 @@ import (
 // PlatformBuckets are owned by the platform: no claim may take one, the S3 API never deletes one, and
 // only an admin reaches one. Keep in step with PLATFORM_BUCKETS in platform/abstraction/provider-setup.yaml
 // (TestPlatformBucketsMatchOwnership).
-var PlatformBuckets = []string{"velero", "lakehouse", "query-data", "query-results", "db-snapshots", "openinfra-audit", "ecr-registry", "longhorn"}
+var PlatformBuckets = []string{"velero", "lakehouse", "query-data", "query-results", "db-snapshots", "openinfra-audit", "ecr-registry", "longhorn", "lambda-code"}
 
 // IsPlatformBucket reports whether bucket is one of PlatformBuckets.
 func IsPlatformBucket(bucket string) bool { return slices.Contains(PlatformBuckets, bucket) }

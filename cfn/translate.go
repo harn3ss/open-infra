@@ -57,6 +57,31 @@ type Manifest struct {
 	// Annotations are set on the applied object (AWSViewAnnotation: the AWS-side properties the kind does
 	// not model, for the aws-shim's EC2 API). nil = none.
 	Annotations map[string]string
+	// Data is a ConfigMap's data (a manifest of kind ConfigMap renders data, not spec).
+	Data map[string]string
+	// Package is a zip Lambda's deployment package, resolved at deploy (resolvePackage): stored by the
+	// deploy path's PackageStore into spec.code.source.package, or, where there is none, inline code as a
+	// companion ConfigMap. nil for every other resource.
+	Package *CodePackage
+}
+
+// CodePackage is a zip Lambda's deployment package as its template gives it: inline source files
+// (Code.ZipFile, which CloudFormation writes to a file named index and zips), or an S3 object.
+type CodePackage struct {
+	Inline                     map[string]string // file name -> source
+	S3Bucket, S3Key, S3Version string
+}
+
+// Origin is where the package came from, as spec.code.source.package.origin records it.
+func (p *CodePackage) Origin() string {
+	if p.Inline != nil {
+		return "inline"
+	}
+	o := "s3://" + p.S3Bucket + "/" + p.S3Key
+	if p.S3Version != "" {
+		o += "?versionId=" + p.S3Version
+	}
+	return o
 }
 
 // Requirement is an object outside the stack that must exist before a resource is applied.
@@ -349,12 +374,17 @@ func translateKMSKey(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 
 // ---- AWS::Lambda::Function -> kind: Function ----
 //
-// open-infra Functions are CONTAINER images, so only a PackageType: Image Lambda translates
-// faithfully. A zip/Runtime Lambda has no image to run and is refused.
-// Faithful: Code.ImageUri (-> image), Environment.Variables (-> env), MemorySize (-> memory),
-// Timeout (-> timeout), Role (-> spec.role, the execution role the function's code runs as: an in-stack
-// role by !GetAtt <Role>.Arn, or a role ARN of the stack's account). Zip packaging, VpcConfig, Layers,
-// and the rest block.
+// A PackageType: Image Lambda runs its container image (Code.ImageUri -> spec.image). A zip Lambda (the
+// default PackageType) runs its deployment package on a managed runtime (spec.code, #402): Runtime ->
+// spec.code.runtime (nodejs20.x / nodejs22.x / python3.12 / python3.13 / dotnet8; any other refuses with
+// that list), Handler -> spec.code.handler, and the package is Code.ZipFile (CloudFormation writes it to a
+// file named index — index.js, CommonJS, for Node.js; index.py for Python — so the handler is
+// index.<name>) or Code.S3Bucket/S3Key (+ S3ObjectVersion), resolved at deploy (resolvePackage): stored
+// as Lambda stores it, the S3 object read with the caller's authority. Inline code that uses cfn-response
+// refuses (a custom-resource handler returns its response here; the module is not provided).
+// Both: Environment.Variables (-> env), MemorySize (-> memory), Timeout (-> timeout), Role (-> spec.role,
+// the execution role the function's code runs as: an in-stack role by !GetAtt <Role>.Arn, or a role ARN of
+// the stack's account). VpcConfig, Layers and the rest block.
 //
 // The Function is also the ANCHOR of the SNS-subscription collation (#113): it scans the stack for
 // lambda SNS subscriptions (a standalone AWS::SNS::Subscription, or an inline Subscription on a topic)
@@ -366,21 +396,35 @@ func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*M
 	known := map[string]bool{
 		"Code": true, "PackageType": true, "Environment": true, "MemorySize": true,
 		"Timeout": true, "Role": true, "FunctionName": true, "Description": true,
-		"Architectures": true, "Tags": true,
+		"Architectures": true, "Tags": true, "Runtime": true, "Handler": true, "Layers": true,
 	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
-
-	pkg, _ := concrete(props["PackageType"])
-	if pkg != "Image" {
-		f = append(f, Finding{"Resource " + id, "only a PackageType: Image Lambda maps to a Function; a zip/Runtime Lambda has no container image to run"})
+	if _, ok := props["Layers"]; ok {
+		f = append(f, Finding{"Resource " + id, "Layers are not supported for a CloudFormation Lambda yet: bundle what a layer provides into the deployment package"})
 	}
+
 	spec := map[string]any{}
 	code, _ := props["Code"].(map[string]any)
-	if img, ok := concrete(code["ImageUri"]); ok && img != "" {
-		spec["image"] = img
+	var pack *CodePackage
+	var caveats []string
+	if pkg, _ := concrete(props["PackageType"]); pkg == "Image" {
+		if img, ok := concrete(code["ImageUri"]); ok && img != "" {
+			spec["image"] = img
+		} else {
+			f = append(f, Finding{"Resource " + id, "Lambda Code.ImageUri is required and must be a concrete image reference"})
+		}
+		for _, p := range []string{"Runtime", "Handler"} {
+			if _, ok := props[p]; ok {
+				f = append(f, Finding{"Resource " + id, p + " applies to a .zip deployment package, not to a PackageType: Image function (its image sets the runtime and entrypoint)"})
+			}
+		}
+	} else if pkg != "" && pkg != "Zip" {
+		f = append(f, Finding{"Resource " + id, fmt.Sprintf("PackageType %q is not Zip or Image", pkg)})
 	} else {
-		f = append(f, Finding{"Resource " + id, "Lambda Code.ImageUri is required and must be a concrete image reference"})
+		var cf []Finding
+		spec["code"], pack, caveats, cf = lambdaZipCode(id, props, code, ctx)
+		f = append(f, cf...)
 	}
 	if mem, ok := props["MemorySize"]; ok {
 		spec["memory"] = fmt.Sprintf("%dMi", toInt(mem))
@@ -397,7 +441,8 @@ func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*M
 			spec["queues"] = qs
 		}
 	}
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Function", Name: lambdaKindName(id, props, ctx), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "Function", Name: lambdaKindName(id, props, ctx), Spec: spec,
+		Package: pack, Caveats: caveats}
 	if fn, ok := concrete(props["FunctionName"]); ok && fn != "" && fn != m.Name {
 		m.Caveats = append(m.Caveats, fmt.Sprintf("FunctionName %q is not a valid open-infra Function name (lowercase letters, digits and hyphens, at most 63) — the Function is named %q, and Ref / Arn resolve to that name", fn, m.Name))
 	}
@@ -414,6 +459,121 @@ func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*M
 		}
 	}
 	return m, f
+}
+
+// lambdaRuntimes maps the Lambda Runtime identifiers open-infra runs to spec.code.runtime.
+var lambdaRuntimes = map[string]string{
+	"nodejs20.x": "nodejs20", "nodejs22.x": "nodejs22", "python3.12": "python3.12", "python3.13": "python3.13", "dotnet8": "dotnet8",
+}
+
+// lambdaRuntimeList is lambdaRuntimes' keys, for refusals.
+const lambdaRuntimeList = "nodejs20.x, nodejs22.x, python3.12, python3.13 and dotnet8"
+
+// maxInlineCode is CloudFormation's limit for Code.ZipFile (the zip it makes of it).
+const maxInlineCode = 4 << 20
+
+// cfnResponseRe finds inline code that loads CloudFormation's cfn-response module (Node.js and Python).
+var cfnResponseRe = regexp.MustCompile(`require\(\s*['"]cfn-response['"]\s*\)|(?m)^\s*(?:import\s+cfnresponse|from\s+cfnresponse\s+import)\b`)
+
+// lambdaZipCode maps a zip Lambda's Runtime, Handler and Code to spec.code and its deployment package.
+func lambdaZipCode(id string, props, code map[string]any, ctx *stackCtx) (map[string]any, *CodePackage, []string, []Finding) {
+	var f []Finding
+	fin := func(msg string) { f = append(f, Finding{"Resource " + id, msg}) }
+	out := map[string]any{}
+	rt, _ := concrete(props["Runtime"])
+	runtime, ok := lambdaRuntimes[rt]
+	switch {
+	case rt == "":
+		fin("Runtime is required for a .zip deployment package: one of " + lambdaRuntimeList)
+	case !ok:
+		fin(fmt.Sprintf("Runtime %q is not a runtime open-infra runs; the supported runtimes are %s", rt, lambdaRuntimeList))
+	default:
+		out["runtime"] = runtime
+	}
+	handler, _ := concrete(props["Handler"])
+	if handler == "" {
+		fin("Handler is required for a .zip deployment package (e.g. index.handler)")
+	} else {
+		out["handler"] = handler
+	}
+	if ctx != nil {
+		if r := ctx.region(); r != "" {
+			out["region"] = r // AWS_REGION, as Lambda sets it for the function's own region
+		}
+	}
+	if _, ok := code["ImageUri"]; ok {
+		fin("Code.ImageUri needs PackageType: Image")
+	}
+	knownCode := map[string]bool{"ZipFile": true, "S3Bucket": true, "S3Key": true, "S3ObjectVersion": true,
+		"S3ObjectStorageMode": true, "SourceKMSKeyArn": true, "ImageUri": true}
+	for _, k := range sortedKeys(code) {
+		if !knownCode[k] {
+			fin("Code." + k + " is not a property of a Lambda deployment package")
+		}
+	}
+	var caveats []string
+	if _, ok := code["SourceKMSKeyArn"]; ok {
+		caveats = append(caveats, "Code.SourceKMSKeyArn is not honored: the stored package is encrypted at rest with the platform's key")
+	}
+	zip, hasZip := code["ZipFile"]
+	_, hasBucket := code["S3Bucket"]
+	switch {
+	case hasZip && hasBucket:
+		fin("Code has both ZipFile and S3Bucket; a deployment package is one or the other")
+	case hasZip:
+		src, ok := concrete(zip)
+		if !ok {
+			fin("Code.ZipFile must resolve to the function's source code")
+			break
+		}
+		file := ""
+		switch {
+		case strings.HasPrefix(runtime, "nodejs"):
+			file = "index.js" // CloudFormation's: .js, so Node.js loads it as CommonJS
+		case strings.HasPrefix(runtime, "python"):
+			file = "index.py"
+		case runtime != "":
+			fin("Code.ZipFile is for Node.js and Python functions; a " + rt + " function's package is an S3 object (Code.S3Bucket and S3Key)")
+		}
+		if handler != "" && !strings.HasPrefix(handler, "index.") {
+			fin(fmt.Sprintf("Handler %q must start with index. for inline code (Code.ZipFile): CloudFormation writes the code to a file named index", handler))
+		}
+		if len(src) > maxInlineCode {
+			fin("Code.ZipFile exceeds 4 MB, CloudFormation's limit for inline code")
+		}
+		if cfnResponseRe.MatchString(src) {
+			fin("the inline code uses cfn-response, which sends a custom resource's response to its ResponseURL; open-infra invokes a custom-resource handler synchronously and takes the response it returns ({Status, Data, PhysicalResourceId}), and does not provide the cfn-response module yet")
+		}
+		if file != "" {
+			return out, &CodePackage{Inline: map[string]string{file: src}}, caveats, f
+		}
+	case hasBucket:
+		bucket, bok := concrete(code["S3Bucket"])
+		key, kok := concrete(code["S3Key"])
+		if !bok || bucket == "" || !kok || key == "" {
+			fin("Code.S3Bucket and Code.S3Key must resolve to the deployment package's bucket and key")
+			break
+		}
+		ver := ""
+		if v, ok := code["S3ObjectVersion"]; ok {
+			if ver, ok = concrete(v); !ok {
+				fin("Code.S3ObjectVersion must resolve to an object version")
+			}
+		}
+		if mode, ok := concrete(code["S3ObjectStorageMode"]); ok && mode == "REFERENCE" {
+			caveats = append(caveats, "Code.S3ObjectStorageMode REFERENCE: the package is copied at deploy (COPY, the default), not read from S3 at each cold start")
+		} else if ok && mode != "COPY" && mode != "" {
+			fin(fmt.Sprintf("Code.S3ObjectStorageMode %q is not COPY or REFERENCE", mode))
+		}
+		if ctx != nil && !ctx.caps.LambdaPackageStore {
+			fin("a deployment package in S3 (Code.S3Bucket) deploys through the aws-shim CloudFormation front door, which copies it with your authority as Lambda does; this deploy path cannot read it")
+			break
+		}
+		return out, &CodePackage{S3Bucket: bucket, S3Key: key, S3Version: ver}, caveats, f
+	default:
+		fin("Code needs the deployment package: ZipFile (inline Node.js or Python code), S3Bucket and S3Key, or ImageUri with PackageType: Image")
+	}
+	return out, nil, caveats, f
 }
 
 // lambdaExecutionRole maps a Lambda function's Role (its execution role, an IAM role ARN as Lambda

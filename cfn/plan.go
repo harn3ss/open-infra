@@ -130,6 +130,11 @@ type Capabilities struct {
 	// nothing in its stack allocates one, and an EIPAssociation can name one by its AllocationId from
 	// another stack. Off (the CLI), an EIP must be associated with an in-stack instance.
 	EC2AddressAPI bool
+	// LambdaPackageStore: this environment stores a zip Lambda's deployment package as Lambda does (its
+	// COPY storage): a Code.S3Bucket/S3Key object is read at deploy with the caller's authority and kept
+	// where only the function's own pods fetch it (the aws-shim front door, DeployOptions.Packages). Off
+	// (the CLI), an S3 package refuses; inline Code.ZipFile still deploys, as a ConfigMap of its source.
+	LambdaPackageStore bool
 	// ValidatedDomains are the domains this environment has validated ownership of: ACM's domain
 	// validation, done once by the operator (certificates.validatedDomains). A certificate for a name under
 	// one is issued by the platform's ACM-style CA (ClusterIssuer openinfra-acm: signed by the platform root,
