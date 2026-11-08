@@ -31,16 +31,21 @@ the product's public contract.
   - **Checking it.** `probe/platform-root-ca.sh` checks either shape ([`docs/openbao.md`](docs/openbao.md),
     "The platform's CAs").
 
-- **Instance identity documents are signed by OpenBao.** With `components.openbao`, the key is Transit key
-  `openinfra/transit/instance-identity`, which is RSA-2048, never exportable and created by the setup Job.
-  - **The shim's access.** The aws-shim signs through role `aws-shim-identity`, which may only sign with
-    that key and read its public half.
-  - **Certificates.** Each key version's certificate is made from the version itself, so every replica
-    serves the same one.
-  - **Rotation.** Rotation is the key's own rotation: the previous version verifies for an hour, with no
-    second step.
-  - **Failure.** If OpenBao cannot be reached, nothing is signed, and the shim never falls back to a key in
-    a Secret. A key left in the old Secret verifies, never signs, until it is deleted.
+- **The aws-shim's signing keys are in OpenBao.** With `components.openbao`, three Transit keys under
+  `openinfra/transit` sign what the shim issues: `instance-identity` (EC2 instance identity documents),
+  `cognito` (user pools' tokens) and `ecr-token` (ECR credentials and registry tokens). Each is RSA-2048,
+  never exportable, and created by the setup Job.
+  - **The shim's access.** It signs through role `aws-shim-identity`, which may only sign with these keys and
+    read their public halves.
+  - **Certificates and JWKS.** Each version's certificate is made from the version itself, so every replica
+    serves the same one, and the Cognito JWKS uses RFC 7638 thumbprints as kids.
+  - **Rotation.** Rotation is the key's own: a replaced version verifies for as long as what it signed is
+    relied on (1 hour, 30 days, 12 hours).
+  - **The old keys.** The keys kept in Secrets before are retired by the shim: their public halves go into
+    ConfigMaps, and the Secrets are deleted ten minutes later. Earlier tokens keep working; nobody signs in
+    again.
+  - **Failure.** If OpenBao cannot be reached, nothing is signed, and the shim never falls back to a key in a
+    Secret.
   - **Fix: the shim without OpenBao.** The aws-shim now starts without OpenBao: its OpenBao CA mount is
     optional.
 

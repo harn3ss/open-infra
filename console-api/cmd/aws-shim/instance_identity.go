@@ -112,7 +112,7 @@ type identitySigner struct {
 	accounts vmAccounts
 	// transit is the key in OpenBao Transit (instance_identity_transit.go); nil: the key is in the Secret.
 	// transitErr is a Transit key that is configured but unusable: nothing is signed (never the Secret).
-	transit    *identityTransit
+	transit    *transitSigning
 	transitErr error
 
 	mu      sync.Mutex
@@ -141,25 +141,15 @@ func (s *identitySigner) clock() time.Time {
 func (s *identitySigner) current(ctx context.Context) (*identityKeys, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := s.clock()
-	if s.keys != nil && now.Sub(s.checked) < identityKeyReload {
-		return s.keys, nil
-	}
 	if s.transitErr != nil {
 		return nil, s.transitErr
 	}
 	if s.transit != nil {
-		k, err := s.loadTransit(ctx)
-		if err != nil {
-			if s.keys != nil {
-				s.logger.Warn("instance identity: cannot re-read the Transit key; keeping the loaded one", "key", s.transit.String(), "error", err.Error())
-				s.checked = now
-				return s.keys, nil
-			}
-			return nil, err
-		}
-		s.keys, s.checked = k, now
-		return k, nil
+		return s.loadTransit(ctx) // the Transit key caches itself (signing_transit.go)
+	}
+	now := s.clock()
+	if s.keys != nil && now.Sub(s.checked) < identityKeyReload {
+		return s.keys, nil
 	}
 	sec, err := s.cs.CoreV1().Secrets(s.ns).Get(ctx, s.name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {

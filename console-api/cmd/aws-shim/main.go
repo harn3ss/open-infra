@@ -578,7 +578,17 @@ func run(logger *slog.Logger) error {
 	// and apps can verify. nil signer/store → honest 5xx.
 	var cognitoH *cognitoHandler
 	if cognitoSt != nil {
-		signer, serr := loadOrCreateSigner(context.Background(), cs, keysNS)
+		// COGNITO_TRANSIT_KEY: the key is OpenBao Transit's (cognito_jwt.go); misconfigured, Cognito answers 5xx
+		// rather than fall back to a key in a Secret.
+		var signer *cognitoSigner
+		tr, serr := transitSigningFromEnv("COGNITO_TRANSIT_KEY", 0, cs, keysNS, logger)
+		switch {
+		case serr == nil && tr != nil:
+			signer = newTransitCognitoSigner(tr)
+			logger.Info("cognito: tokens are signed by OpenBao Transit", slog.String("key", tr.key.String()))
+		case serr == nil:
+			signer, serr = loadOrCreateSigner(context.Background(), cs, keysNS)
+		}
 		if serr != nil {
 			logger.Warn("cognito signing key unavailable; Cognito will answer 5xx", "error", serr.Error())
 		} else {
@@ -746,14 +756,31 @@ func run(logger *slog.Logger) error {
 		// rootcertbundle (a cert is not secret, and the shim already writes ConfigMaps there). tokenAuth
 		// is gated by ECR_TOKEN_AUTH so GetAuthorizationToken keeps returning the htpasswd cred until the
 		// registry is cut over to token auth (set together).
-		if sgn, serr := loadOrCreateECRTokenSigner(context.Background(), cs, keysNS); serr != nil {
+		// ECR_TRANSIT_KEY: the key is OpenBao Transit's (ecr_token.go); misconfigured, token auth is off rather
+		// than fall back to a key in a Secret.
+		sgn, serr := (*ecrTokenSigner)(nil), error(nil)
+		if tr, terr := transitSigningFromEnv("ECR_TRANSIT_KEY", 0, cs, keysNS, logger); terr != nil {
+			serr = terr
+		} else if tr != nil {
+			sgn = newTransitECRSigner(tr)
+			sgn.publish = func(certPEM []byte) error { return publishCertConfigMap(context.Background(), cs, ecrNS, certPEM) }
+			logger.Info("ECR: tokens are signed by OpenBao Transit", slog.String("key", tr.key.String()))
+		} else {
+			sgn, serr = loadOrCreateECRTokenSigner(context.Background(), cs, keysNS)
+		}
+		if serr != nil {
 			logger.Warn("ECR token signer unavailable; per-repo token auth disabled", "error", serr.Error())
 		} else {
 			ecrH.signer = sgn
 			ecrH.issuer = getenv("ECR_TOKEN_ISSUER", "openinfra-ecr")
 			ecrH.service = getenv("ECR_TOKEN_SERVICE", "ecr-registry")
 			ecrH.tokenAuth = getenv("ECR_TOKEN_AUTH", "") == "true"
-			if perr := publishCertConfigMap(context.Background(), cs, ecrNS, sgn.certPEM); perr != nil {
+			if sgn.transit != nil {
+				// Published on the first use and whenever the certificates change (keys); read it now.
+				if _, kerr := sgn.keys(); kerr != nil {
+					logger.Warn("ECR: the Transit key is not readable yet; token auth fails until it is", "error", kerr.Error())
+				}
+			} else if perr := publishCertConfigMap(context.Background(), cs, ecrNS, sgn.certPEM); perr != nil {
 				logger.Warn("could not publish the ECR token cert to the registry namespace", "error", perr.Error())
 			}
 		}
@@ -850,14 +877,12 @@ func run(logger *slog.Logger) error {
 		}
 		signer := newIdentitySigner(cs, keysNS, ttl, logger)
 		identityKey := keysNS + "/" + identityKeySecretName
-		if spec := getenv("INSTANCE_IDENTITY_TRANSIT_KEY", ""); spec != "" {
-			signer.transit, signer.transitErr = newIdentityTransit(spec, getenv("VAULT_ADDR", ""),
-				getenv("INSTANCE_IDENTITY_VAULT_ROLE", "aws-shim-identity"),
-				getenv("STS_SA_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"))
-			if signer.transitErr != nil {
-				logger.Error("instance identity: the Transit key is misconfigured; no document is signed", slog.String("error", signer.transitErr.Error()))
-			}
-			identityKey = "OpenBao Transit " + spec
+		if tr, terr := transitSigningFromEnv("INSTANCE_IDENTITY_TRANSIT_KEY", ttl, cs, keysNS, logger); terr != nil {
+			signer.transitErr = terr
+			logger.Error("instance identity: the Transit key is misconfigured; no document is signed", slog.String("error", terr.Error()))
+		} else if tr != nil {
+			signer.useTransit(tr)
+			identityKey = "OpenBao Transit " + tr.key.String()
 		}
 		vmCredsH.identity = &vmIdentityHandler{resolver: vmCredsH.resolver, dyn: dyn, signer: signer,
 			account: account, region: region, logger: logger}

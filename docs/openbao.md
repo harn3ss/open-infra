@@ -311,21 +311,43 @@ The validated-domain CA is name-constrained to the list it was made for. `instal
 `certificates.validatedDomains` changes. A certificate for a new domain needs a new CA, signed with the
 offline platform root. That ceremony is not automated yet (see below).
 
-## Instance identity
+## The aws-shim's signing keys
 
-The key that signs EC2 instance identity documents is Transit key `openinfra/transit/instance-identity`:
-- RSA-2048, never exportable, and never backed up in plaintext;
-- in its own mount, so the tenant-key identities' `transit/keys/+` grants cannot reach it.
+Three keys sign what the aws-shim issues. Each is a Transit key under `openinfra/transit`: RSA-2048, never
+exportable, never backed up in plaintext. They sit in their own mount, so the tenant-key identities'
+`transit/keys/+` grants cannot reach them.
 
-The `openbao-setup` Job creates it. The aws-shim signs with it through role `aws-shim-identity`, which may
-only sign with it (SHA-256) and read its public half. The setup Job's own identity can create the key but
-cannot sign with it.
+| Key | Signs | Relied on for |
+|---|---|---|
+| `instance-identity` | EC2 instance identity documents ([Virtual machines](virtual-machines.md#signed-instance-identity-document)) | a document's lifetime, 1 hour |
+| `cognito` | Cognito user pools' ID, access and refresh tokens (each pool's JWKS lists it) | a refresh token's lifetime, 30 days |
+| `ecr-token` | ECR's `GetAuthorizationToken` credentials and registry tokens (the registry trusts its certificate) | a credential's lifetime, 12 hours |
 
-Rotate it with `bao write -f openinfra/transit/keys/instance-identity/rotate`. Nothing else changes:
-documents signed by the previous version verify until they expire.
+**Who can use them.**
+- The `openbao-setup` Job creates the keys. Its own identity can create them but cannot sign with them.
+- The aws-shim signs through role `aws-shim-identity`. That role may sign with these keys (SHA-256) and read
+  their public halves, and nothing else.
+- ConfigMap `open-infra-aws-shim/openbao-signing-keys` tells the shim which keys to use. It exists only with
+  `components.openbao`; without it, each key is kept in a Secret in the shim's namespace.
 
-See [Virtual machines](virtual-machines.md#signed-instance-identity-document) for how guests use the
-documents.
+**Rotating a key.** Run `bao write -f openinfra/transit/keys/<key>/rotate` with an administrative token.
+- The new version signs within a minute.
+- The replaced version keeps verifying for the time in the table, then drops out of the certificates and
+  the JWKS.
+- After rotating `ecr-token`, restart the registries
+  (`kubectl -n open-infra-ecr rollout restart deployment`): a registry reads the certificates it trusts only
+  when it starts.
+
+**Moving keys out of Secrets.** On an install that kept these keys in Secrets, the shim retires each old
+key itself, the first time it runs with OpenBao:
+1. It records the key's public half in a ConfigMap: `instance-identity-retired`, `cognito-retired` or
+   `ecr-token-retired`, all public data.
+2. Ten minutes later, once no replica of the previous version can still read the Secret, it deletes the
+   Secret. A Secret holding a key the record does not is left alone.
+3. What the old key signed keeps verifying from the record for the time in the table. Nobody has to sign in
+   again.
+
+Restart the registries once more after the switch, so they trust the new certificate.
 
 ## What it does not do yet
 

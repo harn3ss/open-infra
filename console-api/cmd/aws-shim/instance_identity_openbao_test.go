@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -80,7 +81,7 @@ func TestIdentityTransit_RealOpenBao(t *testing.T) {
 	}
 
 	shim := tokenFor("aws-shim-identity")
-	tr, err := newIdentityTransit("openinfra/transit/instance-identity", addr, "unused", "/unused")
+	tr, err := newTransitRSAKey("openinfra/transit/instance-identity", addr, "unused", "/unused")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +89,7 @@ func TestIdentityTransit_RealOpenBao(t *testing.T) {
 	now := time.Now()
 	s := newIdentitySigner(fake.NewSimpleClientset(), shimNS, time.Hour, discardLogger())
 	s.now = func() time.Time { return now }
-	s.transit = tr
+	s.useTransit(&transitSigning{key: tr})
 	ctx := context.Background()
 	doc := []byte("{\n  \"instanceId\" : \"i-0123456789abcdef0\"\n}")
 	sig, p7, err := s.sign(ctx, doc)
@@ -114,6 +115,34 @@ func TestIdentityTransit_RealOpenBao(t *testing.T) {
 		}
 	}
 
+	// The Cognito and ECR keys: the setup identity creates them; the shim's identity signs with each and
+	// can do nothing else with them.
+	for _, k := range []string{"cognito", "ecr-token"} {
+		if c, out := call(setup, "POST", "openinfra/transit/keys/"+k, map[string]any{"type": "rsa-2048", "exportable": false, "allow_plaintext_backup": false}); c/100 != 2 {
+			t.Fatalf("the setup identity creates %s: %d %v", k, c, out)
+		}
+		kt, err := newTransitRSAKey("openinfra/transit/"+k, addr, "unused", "/unused")
+		if err != nil {
+			t.Fatal(err)
+		}
+		kt.v.token, kt.v.exp = shim, time.Now().Add(time.Hour)
+		ts := &transitSigning{key: kt, lifetime: time.Hour, logger: discardLogger()}
+		keys, err := ts.keys(ctx)
+		if err != nil {
+			t.Fatalf("%s: %v", k, err)
+		}
+		d := sha256.Sum256([]byte("token"))
+		sig, err := keys.sign(ctx, d[:])
+		if err != nil || !keys.verifies(d[:], sig) {
+			t.Fatalf("%s: the shim's identity signs: %v", k, err)
+		}
+		for _, p := range []string{"openinfra/transit/export/signing-key/" + k, "openinfra/transit/keys/" + k + "/rotate"} {
+			if code, _ := call(shim, "POST", p, nil); code != http.StatusForbidden && code != http.StatusNotFound {
+				t.Errorf("the shim's identity: %s = %d, want refused", p, code)
+			}
+		}
+	}
+
 	// A rotation: the new version signs, the replaced one's document still verifies.
 	if c, out := call(admin, "POST", "openinfra/transit/keys/instance-identity/rotate", nil); c/100 != 2 {
 		t.Fatalf("rotate: %d %v", c, out)
@@ -126,7 +155,7 @@ func TestIdentityTransit_RealOpenBao(t *testing.T) {
 
 	// A key that can be exported is refused.
 	call(admin, "POST", "openinfra/transit/keys/exportable-test", map[string]any{"type": "rsa-2048", "exportable": true})
-	bad, _ := newIdentityTransit("openinfra/transit/exportable-test", addr, "unused", "/unused")
+	bad, _ := newTransitRSAKey("openinfra/transit/exportable-test", addr, "unused", "/unused")
 	bad.v.token, bad.v.exp = admin, time.Now().Add(time.Hour)
 	if _, err := bad.versions(ctx); err == nil || !strings.Contains(err.Error(), "exportable") {
 		t.Fatalf("an exportable key: %v", err)

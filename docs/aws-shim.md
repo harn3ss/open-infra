@@ -1452,8 +1452,10 @@ and `DescribeUserPoolClient` do not read.
 routed to the handler anonymously; the admin ops are refused from that path.
 
 **The token contract is the heart, and it's real.** `InitiateAuth` returns genuine **RS256 JWTs** (id / access
-/ refresh) signed by the shim's RSA key (persisted in a Secret so tokens survive a restart) and **verifiable
-against the pool's JWKS** — the pool's issuer is `<shim>/cognito/<pool-id>` and its JWKS/discovery are served
+/ refresh) signed by the shim's RSA key and **verifiable against the pool's JWKS**. With `components.openbao`
+the key is OpenBao Transit key `openinfra/transit/cognito`, which OpenBao never exports. The JWKS then lists
+each version still relied on, under its RFC 7638 thumbprint ([OpenBao](openbao.md#the-aws-shims-signing-keys)).
+Without OpenBao the key is kept in a Secret, so tokens survive a restart. The pool's issuer is `<shim>/cognito/<pool-id>` and its JWKS/discovery are served
 there, so the API Gateway JWT authorizer (#169) and any app verify these tokens. Passwords are **bcrypt**; the
 configured **password policy is genuinely enforced** at `SignUp`/`AdminSetUserPassword` (a weak password is
 `InvalidPasswordException`, not silently accepted — an IA-5 false green); a wrong password is
@@ -1967,8 +1969,9 @@ repositories. The registry answers an unauthenticated `docker` request with `401
 RBAC, then a data-plane `ecr:` Deny of any action the docker action needs refuses it; an assumed role: its
 policy alone) and mints
 a five-minute registry token whose `access` claim lists only what was granted; the registry verifies that token
-against the shim's signing certificate (published as the `ecr-token-cert` ConfigMap — the private key never
-leaves the shim's namespace) and enforces the scopes on every manifest and layer operation. A scope the caller
+against the shim's signing certificate (published as the `ecr-token-cert` ConfigMap). With `components.openbao`
+the private key is OpenBao Transit key `openinfra/transit/ecr-token`, which OpenBao never exports; without
+OpenBao it is kept in a Secret in the shim's namespace and enforces the scopes on every manifest and layer operation. A scope the caller
 may not have is simply absent from the token, so the registry refuses that operation. "The caller" is whoever
 called `GetAuthorizationToken`:
 

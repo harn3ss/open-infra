@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -18,6 +17,7 @@ import (
 	"errors"
 	"math/big"
 	"strings"
+	"time"
 	"unicode"
 
 	corev1 "k8s.io/api/core/v1"
@@ -31,9 +31,48 @@ const cognitoKID = "cognito-key-1"
 
 // cognitoSigner holds the shim's RSA signing key. One key signs every pool's tokens; each pool's JWKS
 // serves this key, and tokens carry the pool's issuer, so a verifier fetches the pool's JWKS and validates.
+//
+// With COGNITO_TRANSIT_KEY (openinfra/transit/cognito) the key is in OpenBao Transit (signing_transit.go):
+// OpenBao signs, never exporting the key, as AWS signs a user pool's tokens with a key no customer holds.
+// The JWKS then lists every version still relied on (a replaced one for a refresh token's lifetime), each
+// under its RFC 7638 thumbprint, and the key that was in Secret cognito-signing-key is retired to ConfigMap
+// cognito-retired under its old kid, so tokens it issued keep working until they expire. Without it the key
+// is in that Secret, made on first use.
 type cognitoSigner struct {
-	priv *rsa.PrivateKey
-	kid  string
+	priv    *rsa.PrivateKey // the key in the Secret
+	kid     string
+	transit *transitSigning // the key in Transit (priv unused)
+}
+
+// cognitoRetiredConfigMap records the public half of the key that was in cognitoSigningSecret.
+const cognitoRetiredConfigMap = "cognito-retired"
+
+// newTransitCognitoSigner signs with t, retiring the key in the Secret.
+func newTransitCognitoSigner(t *transitSigning) *cognitoSigner {
+	t.lifetime = cognitoRefreshTTL * time.Second
+	t.legacySecret, t.retiredCM = cognitoSigningSecret, cognitoRetiredConfigMap
+	t.legacyPubs = func(data map[string][]byte) []signingPub {
+		if b, _ := pem.Decode(data["private.pem"]); b != nil {
+			if k, err := x509.ParsePKCS1PrivateKey(b.Bytes); err == nil {
+				return []signingPub{{kid: cognitoKID, pub: &k.PublicKey}}
+			}
+		}
+		return nil
+	}
+	return &cognitoSigner{transit: t}
+}
+
+// signingTimeout bounds a call to the key service made where no request context reaches.
+const signingTimeout = 20 * time.Second
+
+// keys is the key now: the Transit key's versions, or the Secret's key.
+func (s *cognitoSigner) keys() (*signingKeys, error) {
+	if s.transit != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), signingTimeout)
+		defer cancel()
+		return s.transit.keys(ctx)
+	}
+	return staticSigningKeys(s.priv, s.kid, nil), nil
 }
 
 // loadOrCreateSigner reads the RSA key from a Secret (so tokens survive a restart), creating it on first
@@ -84,20 +123,32 @@ func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 func sha256Sum(b []byte) [32]byte { return sha256.Sum256(b) }
 
-// rsaVerify checks an RS256 signature against the signer's public key.
+// rsaVerify checks an RS256 signature against the signer's public keys (the current one, and those still
+// relied on).
 func rsaVerify(s *cognitoSigner, h [32]byte, sig []byte) error {
-	pub := s.priv.Public().(*rsa.PublicKey)
-	return rsa.VerifyPKCS1v15(pub, crypto.SHA256, h[:], sig)
+	k, err := s.keys()
+	if err != nil {
+		return err
+	}
+	if !k.verifies(h[:], sig) {
+		return rsa.ErrVerification
+	}
+	return nil
 }
 
-// jwks returns the pool's JSON Web Key Set (the public half of the signing key).
+// jwks returns the pool's JSON Web Key Set: the public halves of the signing key, current first. Empty
+// when the key cannot be read (nothing verifies then).
 func (s *cognitoSigner) jwks() map[string]any {
-	pub := s.priv.Public().(*rsa.PublicKey)
-	n := b64url(pub.N.Bytes())
-	e := b64url(big.NewInt(int64(pub.E)).Bytes())
-	return map[string]any{"keys": []any{map[string]any{
-		"kty": "RSA", "use": "sig", "alg": "RS256", "kid": s.kid, "n": n, "e": e,
-	}}}
+	keys := []any{}
+	if k, err := s.keys(); err == nil {
+		for _, p := range k.verify {
+			keys = append(keys, map[string]any{
+				"kty": "RSA", "use": "sig", "alg": "RS256", "kid": p.kid,
+				"n": b64url(p.pub.N.Bytes()), "e": b64url(big.NewInt(int64(p.pub.E)).Bytes()),
+			})
+		}
+	}
+	return map[string]any{"keys": keys}
 }
 
 // discovery returns the minimal OIDC discovery document for a pool issuer, enough for go-oidc (the API
@@ -114,14 +165,20 @@ func discovery(issuer string) map[string]any {
 	}
 }
 
-// mint builds a signed RS256 JWT from the claims.
+// mint builds a signed RS256 JWT from the claims, under the current key's kid.
 func (s *cognitoSigner) mint(claims map[string]any) (string, error) {
-	header := map[string]any{"alg": "RS256", "typ": "JWT", "kid": s.kid}
+	k, err := s.keys()
+	if err != nil {
+		return "", err
+	}
+	header := map[string]any{"alg": "RS256", "typ": "JWT", "kid": k.current().kid}
 	hb, _ := json.Marshal(header)
 	cb, _ := json.Marshal(claims)
 	signing := b64url(hb) + "." + b64url(cb)
 	h := sha256.Sum256([]byte(signing))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, s.priv, crypto.SHA256, h[:])
+	ctx, cancel := context.WithTimeout(context.Background(), signingTimeout)
+	defer cancel()
+	sig, err := k.sign(ctx, h[:])
 	if err != nil {
 		return "", err
 	}

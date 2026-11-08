@@ -1,0 +1,20 @@
+# Where the aws-shim's signing keys are (#359): OpenBao Transit keys under openinfra/transit, which the
+# openbao-setup Job creates (RSA-2048, never exported) and the shim signs with through role aws-shim-identity
+# (docs/openbao.md, "The aws-shim's signing keys"): EC2 instance identity documents, Cognito user pools'
+# tokens and ECR's registry tokens. The shim reads them when it starts; without this ConfigMap each key is a
+# Secret in its namespace. The keys it kept in Secrets before are retired by the shim: their public halves
+# recorded in ConfigMaps, the Secrets deleted.
+#
+# Only with components.openbao: install.sh excludes this file otherwise. Same sync wave as the shim's
+# Namespace and Deployment, which Argo CD applies in that order (Namespace, ConfigMap, Deployment), so a shim
+# never starts on an OpenBao install without it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openbao-signing-keys
+  namespace: open-infra-aws-shim
+data:
+  instanceIdentity: openinfra/transit/instance-identity
+  cognito: openinfra/transit/cognito
+  ecrToken: openinfra/transit/ecr-token
+  vaultRole: aws-shim-identity

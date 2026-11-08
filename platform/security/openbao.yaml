@@ -454,6 +454,8 @@ spec:
               path "sts/data/signing-key"     { capabilities = ["create"] }
               path "openinfra/+/roles/+"      { capabilities = ["create", "read", "update"] }
               path "openinfra/transit/keys/instance-identity" { capabilities = ["create", "read", "update"] }
+              path "openinfra/transit/keys/cognito"           { capabilities = ["create", "read", "update"] }
+              path "openinfra/transit/keys/ecr-token"         { capabilities = ["create", "read", "update"] }
               POLICY
               vault auth enable kubernetes 2>/dev/null || echo "  kubernetes auth already enabled"
               vault write auth/kubernetes/config \
@@ -706,31 +708,38 @@ spec:
               done
               echo "platform CAs ready: cert-manager signs through openinfra/pki-* with its own identity, the CA keys never leave OpenBao."
 
-              # ── The instance identity key (#359): EC2 instance identity documents (CFN_V1) are signed by an
-              # RSA-2048 Transit key OpenBao generated and never exports or backs up in plaintext, as AWS
-              # signs them with a key no instance and no operator holds. Its own mount, openinfra/transit —
-              # two segments, so the tenant-key identities' transit/keys/+ grants (the transit/ mount) never
-              # reach it, and the CA identities deny openinfra/*. Created once; rotating it is
-              # `bao write -f openinfra/transit/keys/instance-identity/rotate` (docs/openbao.md).
-              echo "the instance identity key and the aws-shim's identity for it…"
+              # ── The aws-shim's signing keys (#359): EC2 instance identity documents (CFN_V1), Cognito user
+              # pools' tokens and ECR's registry tokens are signed by RSA-2048 Transit keys OpenBao generated
+              # and never exports or backs up in plaintext, as AWS signs each with a key no customer and no
+              # operator holds. Their own mount, openinfra/transit — two segments, so the tenant-key
+              # identities' transit/keys/+ grants (the transit/ mount) never reach it, and the CA identities
+              # deny openinfra/*. Created once; rotating one is
+              # `bao write -f openinfra/transit/keys/<key>/rotate` (docs/openbao.md, "The aws-shim's signing keys").
+              echo "the aws-shim's signing keys and its identity for them…"
               vault secrets enable -path=openinfra/transit transit 2>/dev/null || echo "  openinfra/transit already enabled"
-              if vault read openinfra/transit/keys/instance-identity >/dev/null 2>&1; then
-                echo "  openinfra/transit/keys/instance-identity already present"
-              else
-                vault write -f openinfra/transit/keys/instance-identity type=rsa-2048 \
-                  exportable=false allow_plaintext_backup=false >/dev/null && echo "  created openinfra/transit/keys/instance-identity"
-              fi
-              # The aws-shim signs with that one key (SHA-256, the only hash it uses) and reads its public half
-              # (the certificates it serves); it cannot rotate, configure, export, encrypt or decrypt with it.
+              for k in instance-identity cognito ecr-token; do
+                if vault read "openinfra/transit/keys/$k" >/dev/null 2>&1; then
+                  echo "  openinfra/transit/keys/$k already present"
+                else
+                  vault write -f "openinfra/transit/keys/$k" type=rsa-2048 \
+                    exportable=false allow_plaintext_backup=false >/dev/null && echo "  created openinfra/transit/keys/$k"
+                fi
+              done
+              # The aws-shim signs with these keys (SHA-256, the only hash it uses) and reads their public halves
+              # (its certificates and JWKS); it cannot rotate, configure, export, encrypt or decrypt with them.
               vault policy write aws-shim-identity - <<'POLICY'
               path "openinfra/transit/keys/instance-identity"          { capabilities = ["read"] }
               path "openinfra/transit/sign/instance-identity/sha2-256" { capabilities = ["update"] }
+              path "openinfra/transit/keys/cognito"                    { capabilities = ["read"] }
+              path "openinfra/transit/sign/cognito/sha2-256"           { capabilities = ["update"] }
+              path "openinfra/transit/keys/ecr-token"                  { capabilities = ["read"] }
+              path "openinfra/transit/sign/ecr-token/sha2-256"         { capabilities = ["update"] }
               POLICY
               vault write auth/kubernetes/role/aws-shim-identity \
                 bound_service_account_names=aws-shim \
                 bound_service_account_namespaces=open-infra-aws-shim \
                 token_policies=aws-shim-identity token_ttl=20m >/dev/null
-              echo "instance identity ready: the aws-shim signs through openinfra/transit/instance-identity, the key never leaves OpenBao."
+              echo "signing keys ready: the aws-shim signs through openinfra/transit/{instance-identity,cognito,ecr-token}, the keys never leave OpenBao."
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application

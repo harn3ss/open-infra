@@ -28,7 +28,8 @@ import (
 
 // fakeTransit is OpenBao's Transit for one RSA key: login, read the key, sign a prehashed digest.
 type fakeTransit struct {
-	t *testing.T
+	t    *testing.T
+	name string // the key's name under openinfra/transit (default instance-identity)
 	sync.Mutex
 	keys       []*rsa.PrivateKey
 	created    []time.Time
@@ -36,6 +37,32 @@ type fakeTransit struct {
 	down       bool
 	role       string
 	signedWith []int
+}
+
+func (f *fakeTransit) keyName() string {
+	if f.name == "" {
+		return "instance-identity"
+	}
+	return f.name
+}
+
+// fakeTransitKey serves a fake Transit with key name (one version, made at created) and returns it and a
+// transitSigning for it, with the clock now.
+func fakeTransitKey(t *testing.T, name string, created time.Time, cs *fake.Clientset, now *time.Time) (*fakeTransit, *transitSigning) {
+	t.Helper()
+	f := &fakeTransit{t: t, name: name}
+	f.rotate(created)
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	tok := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tok, []byte("sa-jwt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	k, err := newTransitRSAKey("openinfra/transit/"+name, srv.URL, "aws-shim-identity", tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f, &transitSigning{key: k, cs: cs, ns: shimNS, logger: discardLogger(), now: func() time.Time { return *now }}
 }
 
 func (f *fakeTransit) rotate(at time.Time) {
@@ -64,7 +91,7 @@ func (f *fakeTransit) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(map[string]any{"auth": map[string]any{"client_token": "s.identity", "lease_duration": 1200}})
 	case r.Header.Get("X-Vault-Token") != "s.identity":
 		http.Error(w, `{"errors":["permission denied"]}`, http.StatusForbidden)
-	case r.Method == http.MethodGet && r.URL.Path == "/v1/openinfra/transit/keys/instance-identity":
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/openinfra/transit/keys/"+f.keyName():
 		keys := map[string]any{}
 		for i, k := range f.keys {
 			der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
@@ -73,7 +100,7 @@ func (f *fakeTransit) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		reply(map[string]any{"data": map[string]any{"type": "rsa-2048", "exportable": f.exportable, "allow_plaintext_backup": false,
 			"latest_version": len(f.keys), "keys": keys}})
-	case r.Method == http.MethodPost && r.URL.Path == "/v1/openinfra/transit/sign/instance-identity/sha2-256":
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/openinfra/transit/sign/"+f.keyName()+"/sha2-256":
 		v, _ := in["key_version"].(float64)
 		if in["prehashed"] != true || in["signature_algorithm"] != "pkcs1v15" || int(v) < 1 || int(v) > len(f.keys) {
 			http.Error(w, `{"errors":["bad request"]}`, http.StatusBadRequest)
@@ -108,13 +135,13 @@ func transitSignerAt(t *testing.T, cs *fake.Clientset, now *time.Time, addr stri
 	if err := os.WriteFile(tok, []byte("sa-jwt"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tr, err := newIdentityTransit("openinfra/transit/instance-identity", addr, "aws-shim-identity", tok)
+	tr, err := newTransitRSAKey("openinfra/transit/instance-identity", addr, "aws-shim-identity", tok)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := newIdentitySigner(cs, shimNS, time.Hour, discardLogger())
 	s.now = func() time.Time { return *now }
-	s.transit = tr
+	s.useTransit(&transitSigning{key: tr})
 	return s
 }
 
@@ -271,7 +298,7 @@ func TestIdentityTransit_FailsClosed(t *testing.T) {
 		t.Fatal("made a key Secret with OpenBao down")
 	}
 	bad := newIdentitySigner(cs, shimNS, time.Hour, discardLogger())
-	_, bad.transitErr = newIdentityTransit("instance-identity", "https://openbao", "r", "/t")
+	_, bad.transitErr = newTransitRSAKey("instance-identity", "https://openbao", "r", "/t")
 	if bad.transitErr == nil {
 		t.Fatal("a spec without a mount is refused")
 	}
@@ -281,14 +308,15 @@ func TestIdentityTransit_FailsClosed(t *testing.T) {
 	if _, err := cs.CoreV1().Secrets(shimNS).Get(ctx, identityKeySecretName, metav1.GetOptions{}); err == nil {
 		t.Fatal("made a key Secret with a misconfigured Transit key")
 	}
-	if _, err := newIdentityTransit("openinfra/transit/instance-identity", "", "r", "/t"); err == nil {
+	if _, err := newTransitRSAKey("openinfra/transit/instance-identity", "", "r", "/t"); err == nil {
 		t.Fatal("a Transit key without VAULT_ADDR is refused")
 	}
 }
 
-// After the switch, a document the previous key (in the Secret) signed verifies until the Secret is
-// deleted; that key never signs again.
-func TestIdentityTransit_PreviousSecretKeyVerifiesOnly(t *testing.T) {
+// After the switch, the key in the Secret is retired: its public halves are recorded in a ConfigMap (public
+// data only), the Secret is deleted once no replica of the previous version can still read it, documents it
+// signed verify for their lifetime, and it never signs again.
+func TestIdentityTransit_PreviousSecretKeyIsRetired(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	ctx := context.Background()
@@ -303,21 +331,69 @@ func TestIdentityTransit_PreviousSecretKeyVerifiesOnly(t *testing.T) {
 	if !s.verify(ctx, doc, oldSig) {
 		t.Fatal("a document the previous key signed verifies after the switch")
 	}
-	sig, _, err := s.sign(ctx, doc)
+	cm, err := cs.CoreV1().ConfigMaps(shimNS).Get(ctx, identityRetiredConfigMap, metav1.GetOptions{})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("the previous key's public halves are recorded: %v", err)
 	}
-	if sig == oldSig || len(f.signedWith) == 0 {
-		t.Fatal("after the switch, Transit signs, never the Secret's key")
+	if body := cm.Data[retiredKeysFile]; !strings.Contains(body, "PUBLIC KEY") || strings.Contains(body, "PRIVATE") {
+		t.Fatalf("the record holds public halves only: %.80q", body)
 	}
-	if err := cs.CoreV1().Secrets(shimNS).Delete(ctx, identityKeySecretName, metav1.DeleteOptions{}); err != nil {
-		t.Fatal(err)
+	if _, err := cs.CoreV1().Secrets(shimNS).Get(ctx, identityKeySecretName, metav1.GetOptions{}); err != nil {
+		t.Fatal("the Secret stays while a replica of the previous version may still read it")
 	}
-	now = now.Add(2 * time.Minute)
+	sig, _, err := s.sign(ctx, doc)
+	if err != nil || sig == oldSig || len(f.signedWith) == 0 {
+		t.Fatalf("after the switch, Transit signs, never the Secret's key: %v", err)
+	}
+	now = now.Add(retireGrace + time.Minute)
+	if !s.verify(ctx, doc, oldSig) {
+		t.Fatal("within its lifetime, the previous key's document verifies from the record")
+	}
+	if _, err := cs.CoreV1().Secrets(shimNS).Get(ctx, identityKeySecretName, metav1.GetOptions{}); err == nil {
+		t.Fatal("the Secret is deleted once the record is old enough")
+	}
+	k, _ := s.current(ctx)
+	if n := strings.Count(string(k.certPEM), "BEGIN CERTIFICATE"); n != 2 {
+		t.Fatalf("certificates served while the retired key verifies: %d, want 2", n)
+	}
+	now = now.Add(time.Hour + identityClockSkew)
 	if s.verify(ctx, doc, oldSig) {
-		t.Fatal("once the Secret is deleted, the previous key's documents no longer verify")
+		t.Fatal("once its lifetime has passed, the previous key's documents no longer verify")
 	}
 	if !s.verify(ctx, doc, sig) {
 		t.Fatal("the Transit key's documents still verify")
+	}
+}
+
+// A Secret holding a key its record does not is left alone: a replica of the previous version made a new
+// key after the record, and deleting it would lose what that key signed.
+func TestTransitSigning_KeepsASecretTheRecordDoesNotHold(t *testing.T) {
+	cs := fake.NewSimpleClientset()
+	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	ctx := context.Background()
+	before := newIdentitySigner(cs, shimNS, time.Hour, discardLogger())
+	before.now = func() time.Time { return now }
+	if _, _, err := before.sign(ctx, []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := transitIDSigner(t, cs, &now)
+	if _, err := s.current(ctx); err != nil { // records the key
+		t.Fatal(err)
+	}
+	// The previous version replaces the Secret's key after the record was made.
+	if err := cs.CoreV1().Secrets(shimNS).Delete(ctx, identityKeySecretName, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	other := newIdentitySigner(cs, shimNS, time.Hour, discardLogger())
+	other.now = func() time.Time { return now }
+	if _, _, err := other.sign(ctx, []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(retireGrace + time.Minute)
+	if _, err := s.current(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.CoreV1().Secrets(shimNS).Get(ctx, identityKeySecretName, metav1.GetOptions{}); err != nil {
+		t.Fatal("a Secret whose key the record does not hold stays")
 	}
 }

@@ -1091,14 +1091,19 @@ spec:
             - { name: VAULT_ADDR, value: "https://openbao-active.openbao.svc:8200" }
             - { name: VAULT_CACERT, value: /etc/openbao-ca/ca.crt }   # read again when it changes
             - { name: STS_VAULT_ROLE, value: "aws-shim-sts" }
-            # Instance identity documents (CFN_V1): signed by OpenBao Transit key openinfra/transit/instance-identity,
-            # which OpenBao never exports, through role aws-shim-identity (sign with that key, read its public
-            # half, nothing else). From ConfigMap openbao-instance-identity, there only with components.openbao;
-            # without it the key is a Secret in this namespace (instance_identity.go).
+            # The shim's signing keys — instance identity documents (CFN_V1), Cognito tokens, ECR registry tokens —
+            # are OpenBao Transit keys under openinfra/transit, which OpenBao never exports, used through role
+            # aws-shim-identity (sign with them, read their public halves, nothing else; signing_transit.go).
+            # From ConfigMap openbao-signing-keys, there only with components.openbao; without it each key is a
+            # Secret in this namespace.
             - name: INSTANCE_IDENTITY_TRANSIT_KEY
-              valueFrom: { configMapKeyRef: { name: openbao-instance-identity, key: transitKey, optional: true } }
-            - name: INSTANCE_IDENTITY_VAULT_ROLE
-              valueFrom: { configMapKeyRef: { name: openbao-instance-identity, key: vaultRole, optional: true } }
+              valueFrom: { configMapKeyRef: { name: openbao-signing-keys, key: instanceIdentity, optional: true } }
+            - name: COGNITO_TRANSIT_KEY
+              valueFrom: { configMapKeyRef: { name: openbao-signing-keys, key: cognito, optional: true } }
+            - name: ECR_TRANSIT_KEY
+              valueFrom: { configMapKeyRef: { name: openbao-signing-keys, key: ecrToken, optional: true } }
+            - name: SIGNING_VAULT_ROLE
+              valueFrom: { configMapKeyRef: { name: openbao-signing-keys, key: vaultRole, optional: true } }
             # KMS front door: a CMK is a Vault Transit key named kms-<keyId>; the shim
             # reaches Transit with its OWN SA token (k8s-auth role aws-shim-kms, policy scoped to kms-*
             # keys only — provisioned by platform/security/vault.yaml). CMK metadata (lifecycle state,

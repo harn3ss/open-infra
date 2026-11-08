@@ -336,7 +336,7 @@ instance and no operator holds.
   in a Secret.
 
 To rotate the key, use an administrative OpenBao token
-([OpenBao](openbao.md#operating-it)):
+([OpenBao](openbao.md#the-aws-shims-signing-keys)):
 
 ```sh
 bao write -f openinfra/transit/keys/instance-identity/rotate
@@ -356,8 +356,10 @@ To rotate that key:
    new key at once, and documents signed with the old key still verify.
 3. After an hour, every such document has expired: remove the old certificate from `retired.pem`.
 
-**Moving to OpenBao.** When an install moves to OpenBao, a key left in that Secret keeps verifying the
-documents it signed but never signs again. Delete the Secret an hour after the shim restarts on OpenBao.
+**Moving to OpenBao.** When an install moves to OpenBao, the shim retires the key in that Secret itself: it
+records the key's public half in ConfigMap `instance-identity-retired` and deletes the Secret ten minutes
+later. The documents the old key signed keep verifying for their hour, and it never signs again
+([OpenBao](openbao.md#the-aws-shims-signing-keys)).
 
 The lifetime is `INSTANCE_IDENTITY_TTL` on the shim (default `1h`, from `5m` to `24h`).
 

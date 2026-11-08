@@ -25,7 +25,6 @@ package main
 
 import (
 	"context"
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -38,6 +37,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
@@ -53,10 +53,104 @@ const ecrTokenSigningSecret = "ecr-token-signing-key"
 // ecrTokenSigner signs the caller credential + the registry access tokens. One RSA key; its
 // self-signed cert is the registry's rootcertbundle (embedded as x5c in each registry token so the
 // registry can build + trust the chain without a separate kid lookup).
+//
+// With ECR_TRANSIT_KEY (openinfra/transit/ecr-token) the key is in OpenBao Transit (signing_transit.go),
+// which signs and never exports it; each version's certificate is made from the version alone
+// (ecrCertTemplate). The bundle the registry trusts is then every certificate still relied on (a replaced
+// version's for a credential's lifetime), republished when it changes; the registry reads it when it
+// starts, so a change needs the registries restarted. The key that was in Secret ecr-token-signing-key is
+// retired to ConfigMap ecr-token-retired. Without it the key is in that Secret, made on first use.
 type ecrTokenSigner struct {
-	priv    *rsa.PrivateKey
+	priv    *rsa.PrivateKey // the key in the Secret
 	certDER []byte
 	certPEM []byte
+	transit *transitSigning // the key in Transit (priv/certDER/certPEM unused)
+	// publish writes the bundle the registry trusts (Transit: whenever it changes).
+	publish   func(certPEM []byte) error
+	pubMu     sync.Mutex
+	published string
+}
+
+// ecrRetiredConfigMap records the public half of the key that was in ecrTokenSigningSecret.
+const ecrRetiredConfigMap = "ecr-token-retired"
+
+// ecrCredentialLifetime is the longest a token this key signs is relied on (GetAuthorizationToken's 12h).
+const ecrCredentialLifetime = 12 * time.Hour
+
+// newTransitECRSigner signs with t, retiring the key in the Secret.
+func newTransitECRSigner(t *transitSigning) *ecrTokenSigner {
+	t.lifetime = ecrCredentialLifetime
+	t.cert = ecrCertTemplate
+	t.legacySecret, t.retiredCM = ecrTokenSigningSecret, ecrRetiredConfigMap
+	t.legacyPubs = func(data map[string][]byte) []signingPub {
+		if b, _ := pem.Decode(data["cert.pem"]); b != nil {
+			if c, err := x509.ParseCertificate(b.Bytes); err == nil {
+				if pub, ok := c.PublicKey.(*rsa.PublicKey); ok {
+					return []signingPub{{pub: pub, cert: c}}
+				}
+			}
+		}
+		return nil
+	}
+	return &ecrTokenSigner{transit: t}
+}
+
+// ecrCertTemplate is a key version's certificate, the registry's trust anchor: made from the version alone.
+func ecrCertTemplate(pub *rsa.PublicKey, created time.Time) *x509.Certificate {
+	created = created.UTC().Truncate(time.Second)
+	return &x509.Certificate{
+		SerialNumber:          keySerial(pub),
+		Subject:               pkix.Name{CommonName: "open-infra-ecr-token"},
+		NotBefore:             created.Add(-time.Hour),
+		NotAfter:              created.AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+}
+
+// keys is the key now: the Transit key's versions (republishing the registry's bundle when it changed), or
+// the Secret's key.
+func (s *ecrTokenSigner) keys() (*signingKeys, error) {
+	if s.transit == nil {
+		var cert *x509.Certificate
+		if len(s.certDER) > 0 {
+			cert, _ = x509.ParseCertificate(s.certDER)
+		}
+		return staticSigningKeys(s.priv, "", cert), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), signingTimeout)
+	defer cancel()
+	k, err := s.transit.keys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.publish != nil {
+		bundle := k.certsPEM()
+		s.pubMu.Lock()
+		if string(bundle) != s.published {
+			if perr := s.publish(bundle); perr == nil {
+				s.published = string(bundle)
+				s.transit.logger.Warn("ECR: the registry's trusted token certificates changed; restart the registries so they read them (kubectl -n open-infra-ecr rollout restart deployment)")
+			} else {
+				s.transit.logger.Warn("ECR: cannot publish the registry's trusted token certificates", "error", perr.Error())
+			}
+		}
+		s.pubMu.Unlock()
+	}
+	return k, nil
+}
+
+// bundle is the certificates the registry should trust, current first.
+func (s *ecrTokenSigner) bundle() ([]byte, error) {
+	if s.transit == nil {
+		return s.certPEM, nil
+	}
+	k, err := s.keys()
+	if err != nil {
+		return nil, err
+	}
+	return k.certsPEM(), nil
 }
 
 // loadOrCreateECRTokenSigner reads the RSA key + self-signed cert from a Secret (so tokens survive a
@@ -208,11 +302,18 @@ type ecrAccess struct {
 // scopes in its `access` claim, with the signer's cert in x5c so the registry trusts it against its
 // rootcertbundle.
 func (s *ecrTokenSigner) mintRegistry(subject, issuer, service string, access []ecrAccess, ttl time.Duration) (string, error) {
+	k, err := s.keys()
+	if err != nil {
+		return "", err
+	}
+	if k.current().cert == nil {
+		return "", fmt.Errorf("the ECR token key has no certificate")
+	}
 	now := time.Now()
 	jti := make([]byte, 16)
 	_, _ = rand.Read(jti)
-	return s.signJWT(
-		map[string]any{"alg": "RS256", "typ": "JWT", "x5c": []string{base64.StdEncoding.EncodeToString(s.certDER)}},
+	return s.signJWTWith(k,
+		map[string]any{"alg": "RS256", "typ": "JWT", "x5c": []string{base64.StdEncoding.EncodeToString(k.current().cert.Raw)}},
 		map[string]any{
 			"iss": issuer, "sub": subject, "aud": service,
 			"iat": now.Unix(), "nbf": now.Add(-10 * time.Second).Unix(), "exp": now.Add(ttl).Unix(),
@@ -223,11 +324,21 @@ func (s *ecrTokenSigner) mintRegistry(subject, issuer, service string, access []
 
 // signJWT hand-builds an RS256 JWT with the given header + claims (full header control for x5c).
 func (s *ecrTokenSigner) signJWT(header, claims map[string]any) (string, error) {
+	k, err := s.keys()
+	if err != nil {
+		return "", err
+	}
+	return s.signJWTWith(k, header, claims)
+}
+
+func (s *ecrTokenSigner) signJWTWith(k *signingKeys, header, claims map[string]any) (string, error) {
 	hb, _ := json.Marshal(header)
 	cb, _ := json.Marshal(claims)
 	signing := b64url(hb) + "." + b64url(cb)
 	h := sha256.Sum256([]byte(signing))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, s.priv, crypto.SHA256, h[:])
+	ctx, cancel := context.WithTimeout(context.Background(), signingTimeout)
+	defer cancel()
+	sig, err := k.sign(ctx, h[:])
 	if err != nil {
 		return "", err
 	}
@@ -246,7 +357,11 @@ func (s *ecrTokenSigner) verifyJWT(token string, claims any) error {
 		return fmt.Errorf("bad signature encoding")
 	}
 	sum := sha256.Sum256([]byte(h + "." + p))
-	if err := rsa.VerifyPKCS1v15(&s.priv.PublicKey, crypto.SHA256, sum[:], sigBytes); err != nil {
+	k, err := s.keys()
+	if err != nil {
+		return fmt.Errorf("the ECR token key is not available")
+	}
+	if !k.verifies(sum[:], sigBytes) {
 		return fmt.Errorf("signature verification failed")
 	}
 	pb, err := base64.RawURLEncoding.DecodeString(p)

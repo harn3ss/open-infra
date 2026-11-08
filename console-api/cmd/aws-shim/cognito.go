@@ -454,7 +454,12 @@ func (h *cognitoHandler) initiateAuth(ctx context.Context, w http.ResponseWriter
 			return
 		}
 		h.audit(ctx, "InitiateAuth", pool)
-		writeCognitoJSON(w, requestID, map[string]any{"AuthenticationResult": h.tokensFor(pool, clientID, u)})
+		res, terr := h.tokensFor(pool, clientID, u)
+		if terr != nil {
+			h.signingUnavailable(w, requestID, terr)
+			return
+		}
+		writeCognitoJSON(w, requestID, map[string]any{"AuthenticationResult": res})
 	case "REFRESH_TOKEN_AUTH":
 		rt := asString(params["REFRESH_TOKEN"])
 		claims, verr := h.verifyToken(pool, rt, "refresh")
@@ -467,7 +472,11 @@ func (h *cognitoHandler) initiateAuth(ctx context.Context, w http.ResponseWriter
 			writeCognitoError(w, http.StatusBadRequest, "NotAuthorizedException", requestID, "Invalid refresh token.")
 			return
 		}
-		res := h.tokensFor(pool, clientID, u)
+		res, terr := h.tokensFor(pool, clientID, u)
+		if terr != nil {
+			h.signingUnavailable(w, requestID, terr)
+			return
+		}
 		delete(res, "RefreshToken") // refresh flow does not re-issue the refresh token
 		writeCognitoJSON(w, requestID, map[string]any{"AuthenticationResult": res})
 	default:
@@ -537,7 +546,16 @@ func cognitoPoolIssuer(base, poolID string) string {
 	return strings.TrimRight(base, "/") + "/cognito/" + poolID
 }
 
-func (h *cognitoHandler) tokensFor(pool, clientID string, u cognitoUser) map[string]any {
+// signingUnavailable answers a request whose tokens could not be signed (the key service is unreachable):
+// AWS's InternalErrorException, nothing issued.
+func (h *cognitoHandler) signingUnavailable(w http.ResponseWriter, requestID string, err error) {
+	if h.logger != nil {
+		h.logger.Error("cognito: cannot sign tokens", "error", err.Error())
+	}
+	writeCognitoError(w, http.StatusInternalServerError, "InternalErrorException", requestID, "An error occurred on the server side.")
+}
+
+func (h *cognitoHandler) tokensFor(pool, clientID string, u cognitoUser) (map[string]any, error) {
 	iss := cognitoPoolIssuer(h.issuerBase, pool)
 	now := time.Now().Unix()
 	base := func(tokenUse string, ttl int) map[string]any {
@@ -557,13 +575,18 @@ func (h *cognitoHandler) tokensFor(pool, clientID string, u cognitoUser) map[str
 	access["scope"] = "aws.cognito.signin.user.admin"
 	refresh := base("refresh", cognitoRefreshTTL)
 	refresh["client_id"] = clientID
-	idTok, _ := h.signer.mint(id)
-	accessTok, _ := h.signer.mint(access)
-	refreshTok, _ := h.signer.mint(refresh)
-	return map[string]any{
-		"AccessToken": accessTok, "IdToken": idTok, "RefreshToken": refreshTok,
-		"ExpiresIn": cognitoAccessTTL, "TokenType": "Bearer",
+	toks := make([]string, 3)
+	for i, c := range []map[string]any{id, access, refresh} {
+		t, err := h.signer.mint(c)
+		if err != nil {
+			return nil, err
+		}
+		toks[i] = t
 	}
+	return map[string]any{
+		"AccessToken": toks[1], "IdToken": toks[0], "RefreshToken": toks[2],
+		"ExpiresIn": cognitoAccessTTL, "TokenType": "Bearer",
+	}, nil
 }
 
 // verifyToken checks the RS256 signature, expiry, issuer (for the given pool), and token_use.
