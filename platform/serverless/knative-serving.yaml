@@ -88,6 +88,14 @@ spec:
       # tracks requests.memory rejects any in-scope pod with a request-less container). Inert for every
       # revision that carries no such annotation — i.e. every non-burstable function.
       queueproxy.resource-defaults: enabled
+      # Let a revision set spec.dnsPolicy / spec.dnsConfig. A Lambda function in a VPC (kind: Function
+      # spec.vpcConfig, docs/lambda-vpc.md) sends its DNS to the VPC resolver (Route 53 Resolver, 10.43.0.2)
+      # with dnsPolicy None, so the VPC's DNS Firewall and query logging apply to it. Without these flags
+      # Knative's webhook REFUSES such a revision and no function can be in a VPC. Cluster-wide, as every
+      # Knative flag is; only the platform's compositions write Knative Services (tenants have no Kubernetes
+      # access), and only a VPC function's sets either field. Inert for every other revision.
+      kubernetes.podspec-dnspolicy: enabled
+      kubernetes.podspec-dnsconfig: enabled
     gc:
       # Reclaim the Knative Services held by SUPERSEDED (non-active) revisions. Knative's default config-gc
       # keeps up to 20 non-active revisions per route before GC even considers them, so a function updated a

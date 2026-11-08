@@ -214,13 +214,11 @@ services:
   # --- networking ---
   - name: Route 53 Resolver
     cell: "DNS Firewall (domain lists, rule groups and rules, VPC associations, fail open/closed) and query logging to CloudWatch Logs, applied by the VPC resolver to Lambda functions in a VPC"
-    tier: gated
+    tier: proven
     sigv4: [route53resolver]
-    note: "DNS Firewall and query logging for the account's VPCs, applied to the queries of Lambda functions in a VPC by the VPC resolver: a blocked name is answered there (NXDOMAIN, NODATA or an override CNAME) and never resolved upstream. Served with the shim's Postgres; its live probe has not run yet, so it is not counted as proven."
-    probes: []
     # lambda-vpc: a function in a VPC, egress-isolated — VpcConfig, a DNS Firewall walled garden with query
     # logging, REJECT flow logs, on a managed and an unsupported runtime (docs/lambda-vpc.md)
-    pending: [lambda-vpc]
+    probes: [lambda-vpc]
 
   # --- honest 501 (no handler) ---
   - name: Route 53

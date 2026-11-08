@@ -59,6 +59,14 @@ func TestLambdaVPC_SettingsAgree(t *testing.T) {
 		}
 	}
 
+	// Knative refuses a revision that sets dnsPolicy / dnsConfig unless both flags are on.
+	knative := read("../../platform/serverless/knative-serving.yaml")
+	for _, flag := range []string{"kubernetes.podspec-dnspolicy: enabled", "kubernetes.podspec-dnsconfig: enabled"} {
+		if !strings.Contains(knative, flag) {
+			t.Errorf("a VPC function sets its DNS (dnsPolicy None, dnsConfig): knative-serving.yaml must set %s", flag)
+		}
+	}
+
 	svc := find(vpc, `lambdaService: (\S+)`)
 	if want := "http://" + find(vpc, `name: lambda-service\n(?:.*\n)*?  clusterIP: (\S+)`) + ":4568"; svc != want {
 		t.Errorf("the EnvironmentConfig's Lambda service %s is not the lambda-service Service's address %s", svc, want)

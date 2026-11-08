@@ -51,11 +51,26 @@
         "exampleApps": 0,
         "knownTypes": [],
         "namespaces": [
+          "AWS::Route53Resolver"
+        ],
+        "operations": 33,
+        "probes": 1,
+        "rank": 4,
+        "service": "Route 53 Resolver",
+        "signingNames": [
+          "route53resolver"
+        ],
+        "templateUses": 0
+      },
+      {
+        "exampleApps": 0,
+        "knownTypes": [],
+        "namespaces": [
           "AWS::Glue"
         ],
         "operations": 32,
         "probes": 1,
-        "rank": 4,
+        "rank": 5,
         "service": "Glue",
         "signingNames": [
           "glue"
@@ -70,25 +85,10 @@
         ],
         "operations": 28,
         "probes": 1,
-        "rank": 5,
+        "rank": 6,
         "service": "Athena",
         "signingNames": [
           "athena"
-        ],
-        "templateUses": 0
-      },
-      {
-        "exampleApps": 0,
-        "knownTypes": [],
-        "namespaces": [
-          "AWS::Route53Resolver"
-        ],
-        "operations": 33,
-        "probes": 0,
-        "rank": 6,
-        "service": "Route 53 Resolver",
-        "signingNames": [
-          "route53resolver"
         ],
         "templateUses": 0
       }
@@ -1230,13 +1230,15 @@
         "UpdateFirewallRule",
         "UpdateFirewallRuleGroupAssociation"
       ],
-      "probes": [],
+      "probes": [
+        "lambda-vpc"
+      ],
       "refused": [
         "ImportFirewallDomains",
         "ListFirewallRuleTypes"
       ],
       "service": "Route 53 Resolver",
-      "tier": "gated"
+      "tier": "proven"
     },
     "s3": {
       "actions": [],

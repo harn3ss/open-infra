@@ -45,9 +45,9 @@ template that declares one of their resources is refused, although the API serve
 | 1 | Kinesis Data Streams | `kinesis` | 0 | 1 | 1 | 12 | none |
 | 2 | SES | `email`, `ses` | 0 | 0 | 2 | 12 | none |
 | 3 | EKS | `eks` | 0 | 0 | 2 | 4 | none |
-| 4 | Glue | `glue` | 0 | 0 | 1 | 32 | none |
-| 5 | Athena | `athena` | 0 | 0 | 1 | 28 | none |
-| 6 | Route 53 Resolver | `route53resolver` | 0 | 0 | 0 | 33 | none |
+| 4 | Route 53 Resolver | `route53resolver` | 0 | 0 | 1 | 33 | none |
+| 5 | Glue | `glue` | 0 | 0 | 1 | 32 | none |
+| 6 | Athena | `athena` | 0 | 0 | 1 | 28 | none |
 
 The other side of the same demand — types the in-repo templates use that no stack can create here (plan-only or refused), most used first:
 

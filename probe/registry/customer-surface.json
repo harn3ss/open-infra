@@ -6863,7 +6863,7 @@
       "class": "aws",
       "operations": 33,
       "service": "Route 53 Resolver",
-      "tier": "gated"
+      "tier": "proven"
     },
     "s3": {
       "actions": 0,

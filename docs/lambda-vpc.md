@@ -164,5 +164,14 @@ This section is for the platform's operator.
   widens what the function reaches, and an unlogged policy's drop can win over a logged one, so a refusal
   goes unrecorded. Let only the function's security groups select its pods. (DNS stays contained either
   way: the subnet ACL wins over any policy.)
+- **Knative** must allow a revision's `dnsPolicy` and `dnsConfig` (`kubernetes.podspec-dnspolicy` and
+  `kubernetes.podspec-dnsconfig`, `platform/serverless/knative-serving.yaml`); without them no function can be
+  in a VPC.
 - **Proof:** `probe/aws-shim-lambda-vpc.sh` runs the whole posture through the AWS CLI on a managed runtime
-  and on an unsupported runtime image. On a pass it writes an attestation.
+  and on an unsupported runtime image, and on a pass writes an attestation (`checked_at`, `covers`,
+  `outbound_denied`, `dns_contained`, `denials_logged`, `evidence`).
+  - `ATTEST_FUNCTIONS="<function> ..."` attests functions you already run, with their account's credentials.
+  - Nothing of theirs is changed or invoked. The probe reads their shared VPC configuration and that VPC's
+    firewall, query logging and REJECT flow log through the AWS APIs, then runs the same test from a probe
+    function in the identical VPC configuration.
+  - `ALLOWED_URL` asserts a destination their security groups allow.
