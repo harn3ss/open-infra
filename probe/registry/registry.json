@@ -1012,7 +1012,8 @@
       "probes": [
         "lambda",
         "lambda-execution-role",
-        "lambda-timeout"
+        "lambda-timeout",
+        "lambda-api"
       ],
       "refused": [],
       "service": "Lambda",
