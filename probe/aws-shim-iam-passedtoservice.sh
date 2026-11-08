@@ -253,4 +253,4 @@ grep -q "AccessDeniedException" "$W/s.err" && grep -q "iam:PassRole" "$W/s.err" 
   || fail "the refusal is not AccessDeniedException naming iam:PassRole: $(tail -c 300 "$W/s.err")"
 ok "refused: AccessDeniedException naming iam:PassRole"
 
-printf '✓ PASS — a user whose PassRole is AWSLambda_FullAccess'"'"'s (iam:PassedToService lambda.amazonaws.com) gives a function a role through the Lambda API and CloudFormation, and is refused passing a role to an instance and to a state machine\n'
+printf '✓ PASS — a user whose PassRole is AWSLambda_FullAccess'"'"'s (iam:PassedToService lambda.amazonaws.com) gives a function a role through the Lambda API, CloudFormation and the console, and is refused passing a role to an instance and to a state machine\n'

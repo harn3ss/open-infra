@@ -895,7 +895,8 @@
         "iam-timecond",
         "iam-username-like",
         "iam-login-profile",
-        "iam-mfa"
+        "iam-mfa",
+        "iam-passedtoservice"
       ],
       "refused": [],
       "service": "IAM",
