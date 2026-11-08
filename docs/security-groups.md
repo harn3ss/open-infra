@@ -58,7 +58,7 @@ rule is a protocol + ports + a list of peers:
 | Field | Meaning |
 |---|---|
 | `protocol` | `TCP` (default), `UDP`, or `ALL` (every protocol on every port: AWS's `IpProtocol -1`; takes no `ports`) |
-| `ports` | list of ports to allow; **empty = all ports** |
+| `ports` | list of ports to allow; **empty = every port of the rule's protocol** (TCP or UDP only, as an AWS rule is; `ALL` is every protocol) |
 | `from` / `to` | sources (ingress) / destinations (egress), OR'd together |
 
 Each peer in `from`/`to` is exactly one of:

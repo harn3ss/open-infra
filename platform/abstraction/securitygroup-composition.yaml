@@ -8,7 +8,7 @@
 #                                        names (see "Cluster nodes as sources" below)
 #     securityGroup -> podSelector      (members of another SG, same namespace)
 #     namespace     -> namespaceSelector (all pods in a namespace)
-#   protocol/ports  -> NetworkPolicyPort list (empty ports = all ports)
+#   protocol/ports  -> NetworkPolicyPort list (empty ports = every port of the protocol; protocol ALL = every protocol)
 #   any egress rule -> Egress policyType + an auto DNS allow (UDP/TCP 53 to kube-system)
 #
 # Members are produced by the resource compositions: an Application/Function/VM with
@@ -117,6 +117,10 @@ spec:
                 {{- $ports := list }}
                 {{- range $p := $rule.ports }}{{ $ports = append $ports (dict "protocol" ($rule.protocol | default "TCP") "port" $p) }}{{ end }}
                 {{- $r = set $r "ports" $ports }}
+              {{- else if ne ($rule.protocol | default "TCP") "ALL" }}
+                {{- /* No ports: every port OF ITS PROTOCOL, as an AWS rule is (tcp 0-65535 is TCP only).
+                       Only protocol ALL (AWS -1) is every protocol: a rule with no ports at all. */}}
+                {{- $r = set $r "ports" (list (dict "protocol" ($rule.protocol | default "TCP"))) }}
               {{- end }}
               {{- $ingressRules = append $ingressRules $r }}
             {{- end }}
@@ -144,6 +148,8 @@ spec:
                 {{- $ports := list }}
                 {{- range $p := $rule.ports }}{{ $ports = append $ports (dict "protocol" ($rule.protocol | default "TCP") "port" $p) }}{{ end }}
                 {{- $r = set $r "ports" $ports }}
+              {{- else if ne ($rule.protocol | default "TCP") "ALL" }}
+                {{- $r = set $r "ports" (list (dict "protocol" ($rule.protocol | default "TCP"))) }}
               {{- end }}
               {{- $egressRules = append $egressRules $r }}
             {{- end }}

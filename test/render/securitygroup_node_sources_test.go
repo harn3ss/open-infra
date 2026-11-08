@@ -177,3 +177,24 @@ func TestSecurityGroup_EmptyIngressDeniesInbound(t *testing.T) {
 		t.Errorf("the ALL rule's destination must render:\n%s", egress)
 	}
 }
+
+// A rule with no ports is every port of its protocol, as an AWS rule is (tcp 0-65535 is TCP only): it renders
+// a NetworkPolicy port of that protocol and no number. Rendered with no ports at all it would allow every
+// protocol. Only protocol ALL (AWS -1) is every protocol.
+func TestSecurityGroup_PortlessRuleKeepsItsProtocol(t *testing.T) {
+	tmpl := extractInlineTemplate(t, sgCompositionPath)
+	ctx := sgCtx(false)
+	spec := ctx["observed"].(map[string]any)["composite"].(map[string]any)["resource"].(map[string]any)["spec"].(map[string]any)
+	spec["ingress"] = []any{map[string]any{"protocol": "UDP", "from": []any{map[string]any{"cidr": "10.0.0.0/8"}}}}
+	spec["egress"] = []any{map[string]any{"to": []any{map[string]any{"cidr": "10.0.0.0/8"}}}} // protocol defaults to TCP
+	out := render(t, tmpl, ctx)
+	np := out[strings.Index(out, "kind: NetworkPolicy"):]
+	ing := np[strings.Index(np, "ingress:"):strings.Index(np, "egress:")]
+	if !strings.Contains(ing, "protocol: UDP") {
+		t.Errorf("a port-less UDP rule must stay UDP:\n%s", ing)
+	}
+	eg := np[strings.Index(np, "egress:"):]
+	if !strings.Contains(eg, "protocol: TCP") {
+		t.Errorf("a port-less rule with the default protocol must stay TCP:\n%s", eg)
+	}
+}

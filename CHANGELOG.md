@@ -15,6 +15,10 @@ the product's public contract.
     numbers `6` and `17`. An ICMP rule is left out with a caveat (stricter than AWS) rather than refusing
     the whole group.
   - **`kind: SecurityGroup`:** gains protocol `ALL`, for every protocol on every port.
+  - **A port-less rule keeps its protocol.** A rule with no ports means every port of its protocol, as an
+    AWS rule does: `tcp 0-65535` is TCP only. It used to render as every protocol, so a "TCP, all ports"
+    rule also let UDP and ICMP through. None of the six live groups with such a rule has members, so no
+    running workload is affected.
 
 ### Fixed — RDS ModifyDBInstance applies what it accepts (#377)
 - **Before:** `ModifyDBInstance` returned success for a class, storage, password or version change and

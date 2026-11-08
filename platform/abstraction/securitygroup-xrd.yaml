@@ -67,7 +67,7 @@ spec:
                         type: array
                         maxItems: 64
                         items: { type: integer }
-                        description: "Ports to allow. Empty = all ports."
+                        description: "Ports to allow. Empty = every port of the rule's protocol (protocol ALL: every protocol)."
                       from:
                         type: array
                         description: "Sources (OR'd). Each is one of cidr / securityGroup / namespace."
