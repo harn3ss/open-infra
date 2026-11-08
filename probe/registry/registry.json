@@ -331,7 +331,8 @@
         "cfn-lift-and-shift",
         "cfn-data-services",
         "cfn-api",
-        "cfn-lambda-zip"
+        "cfn-lambda-zip",
+        "cfn-cfnresponse"
       ],
       "refused": [],
       "service": "CloudFormation",
