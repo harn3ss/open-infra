@@ -216,13 +216,111 @@ The procedure was rehearsed on synthetic data end to end (both failure paths inc
 stops it before Vault is touched, and a failed copy unseals Vault again at once), and the copy itself was
 rehearsed on a restored backup of real data: every Transit key version round-tripped.
 
+## The platform's CAs
+
+The platform has two root CAs: the platform root, which every platform certificate chains to, and the guest
+AWS-endpoints root, which signs the AWS endpoint names guests reach. Clients trust these roots and nothing
+else, so everything below changes where the signing keys are, never what a client trusts.
+
+With `openbao.platformCAs: true`, the roots are **offline** and OpenBao signs through intermediates:
+
+| ClusterIssuer | signs through | its key |
+|---|---|---|
+| `openinfra-ca` | `openinfra/pki-platform`, role `platform` | an intermediate OpenBao generated, signed by the platform root |
+| `openinfra-aws-endpoints` | `openinfra/pki-aws-endpoints`, role `aws-endpoints` | an intermediate OpenBao generated, signed by the AWS-endpoints root |
+| `openinfra-acm` | `openinfra/pki-acm`, role `acm` | the validated-domain CA, imported as it was (same certificate, name-constrained to `certificates.validatedDomains`) |
+
+OpenBao never exports these keys. The issuers keep their names, so every Certificate that names them keeps
+working.
+- **Login.** Each issuer logs in with a short-lived token of ServiceAccount `cert-manager/openbao-issuer`,
+  and OpenBao's role for it allows only its own signing path.
+- **Published roots.** They come from ConfigMap `cert-manager/openinfra-roots`, written when the CAs moved,
+  and nothing about them changes for clients.
+
+### Moving them (once)
+
+1. Set `openbao.platformCAs: true` in `config.yaml`, and run `scripts/openbao-root-access.sh mint`.
+2. Run `scripts/openbao-pki.sh prepare`, then `run`. This does three things:
+   - It creates each intermediate in OpenBao and has its root sign it through a temporary cert-manager
+     Issuer, so the tool never reads a root key.
+   - It imports the validated-domain CA, with the key moved by pipe.
+   - It checks that each mount signs a throwaway certificate that chains to the same root.
+3. Switch the issuers. A new install gets `security/openbao-issuers.yaml` in place of the CA-type issuers
+   from `install.sh`. On a running install, exclude `networking/cluster-ca-root.yaml` and
+   `aws-shim/guest-aws-endpoints-ca.yaml` from the root application and include
+   `security/openbao-issuers.yaml`.
+4. Renew the leaves (`cmctl renew --all -A`). Check that each one chains to its root.
+5. Finish with `scripts/openbao-pki.sh cleanup` and `scripts/openbao-root-access.sh revoke`.
+
+**Rollback**, while the root keys are still on the cluster: put the CA-type issuers back (undo step 3) and
+renew the leaves. After step 6, restore the roots first.
+
+### Step 6: the roots go offline
+
+```sh
+scripts/openbao-offline-roots.sh export ~/openinfra-roots.gpg
+```
+
+Run it in your own terminal. It asks for a passphrase (at least 16 characters) and writes both root keys
+to the file, encrypted. The file is OpenPGP: AES-256, the passphrase stretched with salted, iterated SHA-512,
+and integrity-protected, so any `gpg` opens it, including Gpg4win on Windows. The passphrase is not cached.
+
+The command then opens the file again and checks that it matches the cluster's keys, showing each root's
+subject and fingerprint. After you type `yes`, it deletes from the cluster:
+- the two root keys;
+- the validated-domain CA's old Secret and Certificate, whose key is now in OpenBao.
+
+Then:
+- Copy the file to two places away from the cluster, such as a USB drive you keep and your PC, and delete
+  the original (`shred -u ~/openinfra-roots.gpg`).
+- Keep the passphrase in a password manager, not with the file.
+- Check a copy whenever you like: `scripts/openbao-offline-roots.sh check FILE` shows the same subjects and
+  fingerprints.
+
+If both the file and the passphrase are lost, the only fix is a new root, and every client has to trust it
+again.
+
+**Backups made earlier still hold the keys:**
+- Velero's daily backups, until they expire (the `daily` schedule's TTL).
+- k3s etcd snapshots. Scheduled ones roll off with `etcd-snapshot-retention`. Ones taken by hand stay until
+  you delete them, locally and in S3: list them with `k3s etcd-snapshot ls` and remove them with
+  `k3s etcd-snapshot delete NAME`.
+
+### Rotating an intermediate
+
+An intermediate is valid until 2031. Rotate it early if its key may have been exposed:
+
+1. `scripts/openbao-offline-roots.sh restore FILE`
+2. `scripts/openbao-root-access.sh mint`, then `scripts/openbao-pki.sh prepare`
+3. Rotate one of the two:
+   - `scripts/openbao-pki.sh rotate platform openinfra-root-ca-2`
+   - `scripts/openbao-pki.sh rotate aws-endpoints openinfra-aws-endpoints-ca-1`
+4. `scripts/openbao-offline-roots.sh unrestore`, `scripts/openbao-pki.sh cleanup`,
+   `scripts/openbao-root-access.sh revoke`
+
+The new intermediate becomes the mount's default issuer. Certificates renew through it on their own
+schedule, or at once with `cmctl renew --all -A`. Those signed by the previous one keep verifying until
+they expire.
+
+**Client impact: none.** Clients trust the root, which does not change. Rehearsed live, a rotation took
+6 seconds; a new leaf chained through the new intermediate, and an old one still verified.
+
+### A change to the validated domains
+
+The validated-domain CA is name-constrained to the list it was made for. `install.sh` warns when
+`certificates.validatedDomains` changes. A certificate for a new domain needs a new CA, signed with the
+offline platform root. That ceremony is not automated yet (see below).
+
 ## What it does not do yet
 
-- **Vault is not retired yet.** The `encryption` component still deploys the old Vault server: unused on a
-  new install, and on an install whose keys moved, a sealed last copy kept as the rollback. Retiring it
-  removes the server and its volume; the setup Job moves to the `openbao` namespace with it.
+- **Vault is not retired yet.** The `encryption` component still deploys the old Vault server. On a new
+  install it is unused; on an install whose keys moved, it is a sealed last copy kept as the rollback.
+  Retiring it removes the server and its volume, and the setup Job moves to the `openbao` namespace with
+  it.
 - **Scheduled Raft snapshots** of the members are not configured yet; Velero's daily backup copies their
   volumes at file level.
-- The PKI intermediates and the cert-manager issuer, instance-identity signing, and encryption of Kubernetes
-  Secrets at rest are the remaining parts of #359, in steps the operator approves one at a time, each
-  announced with a rollback.
+- **A new validated-domain CA** for a changed `certificates.validatedDomains` list is not automated with
+  the CAs in OpenBao: it needs a constrained CA signed with the restored platform root, then imported into
+  `openinfra/pki-acm`.
+- **Instance-identity signing** (the key behind the instance identity document) is not in OpenBao Transit
+  yet.

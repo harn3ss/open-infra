@@ -17,6 +17,19 @@ the product's public contract.
   unavailable for a few minutes, from sealing Vault until the clients switch; Vault keeps a sealed copy as
   the rollback. The move checks every key version before and after, gives the operator new recovery keys
   that only they hold, and leaves OpenBao with no root token.
+- **The platform's CAs sign through OpenBao, and their roots go offline.** This applies with
+  `openbao.platformCAs: true`.
+  - **Issuers.** `openinfra-ca`, `openinfra-aws-endpoints` and `openinfra-acm` keep their names. They sign
+    through intermediates whose keys OpenBao generated and never exports, or, for the validated-domain CA,
+    through the same CA, imported.
+  - **Roots and clients.** Every certificate chains to the same roots as before, so clients trust nothing
+    new.
+  - **Taking the roots offline.** [`scripts/openbao-offline-roots.sh`](scripts/openbao-offline-roots.sh)
+    moves the root keys into a file encrypted with the operator's passphrase and checks the file against the
+    cluster before deleting the keys. It also restores them for the one ceremony that needs them: a new
+    intermediate (`scripts/openbao-pki.sh rotate`, with no client impact).
+  - **Checking it.** `probe/platform-root-ca.sh` checks either shape ([`docs/openbao.md`](docs/openbao.md),
+    "The platform's CAs").
 
 ### Added — OpenBao, the platform's key and secrets service, ready to turn on (#359)
 - **Three members, unsealed from outside the cluster.** `components.openbao` runs OpenBao 2.7 as three
