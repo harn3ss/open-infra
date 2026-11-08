@@ -23,7 +23,7 @@
 #      the resolver's own record that it answered without resolving; the flow log holds REJECT records of the
 #      outside address on ports 80 and 443 and of the unlisted Service, on the network interfaces
 #      describe-network-interfaces names for the two functions;
-#   5. DENIAL: a role allowed only to read Lambda is refused route53resolver:ListFirewallRuleGroups
+#   5. DENIAL: a user allowed only to read Lambda is refused route53resolver:ListFirewallRuleGroups
 #      (AccessDeniedException) and ec2:CreateFlowLogs (UnauthorizedOperation); create-function with a VPC
 #      configuration and an execution role that may not manage network interfaces is refused, as Lambda
 #      refuses it.
@@ -37,7 +37,9 @@
 # through the AWS APIs, puts a probe function in the identical VPC configuration, runs the posture test (3.)
 # and reads the records (4.) from those log groups, then the denials (5.). covers is the attested functions.
 # ALLOWED_URL (optional) is a destination the functions' security groups allow, asserted reachable. Run it
-# with credentials of the functions' account. (KEEP=1 leaves a run's own VPC and functions in place.)
+# with credentials of the functions' account — a user's key, or a role session (AWS_SESSION_TOKEN), allowed to
+# create a role, a function and IAM's PassRole on it, as an account administrator is. (KEEP=1 leaves a run's
+# own VPC and functions in place.)
 #
 # Needs: aws (v2), kubectl (a throwaway admin and the network objects, removed on exit), python3; a deployed
 # shim with the Lambda, IAM, STS, Route 53 Resolver, EC2 and CloudWatch Logs front doors. Exit 0 = pass,
@@ -78,12 +80,11 @@ CREATED_USERS=(); CREATED_KEYS=(); ROLES_MADE=(); FL_ID=""; FLID=""; ASSOC_ID=""
 OWN_NET="" # set once the probe has made its own network; in attest mode it stays empty and nothing of yours is touched
 cleanup() {
   set +e
-  unset AWS_SESSION_TOKEN
   if [ -n "${KEEP:-}" ] && [ -n "$OWN_NET" ]; then # KEEP=1: leave the VPC and its functions (to attest them)
     printf '▸ KEEP: left VPC %s and functions %s %s in place\n' "$VPC" "$FN" "$LEGACY"
     OWN_NET=""; FN_KEEP=1
   fi
-  [ -n "${ADMIN_AK:-}" ] && export AWS_ACCESS_KEY_ID="$ADMIN_AK" AWS_SECRET_ACCESS_KEY="$ADMIN_SK"
+  [ -n "${ADMIN_AK:-}" ] && export AWS_ACCESS_KEY_ID="$ADMIN_AK" AWS_SECRET_ACCESS_KEY="$ADMIN_SK" AWS_SESSION_TOKEN="${ADMIN_ST:-}"
   if [ -n "$OWN_NET" ]; then
   [ -n "$FL_ID" ] && "${A[@]}" ec2 delete-flow-logs --flow-log-ids "$FL_ID" >/dev/null 2>&1
   [ -n "$QASSOC_ID" ] && "${R53[@]}" disassociate-resolver-query-log-config --resolver-query-log-config-id "$QCFG_ID" --resource-id "$VPC" >/dev/null 2>&1
@@ -102,9 +103,14 @@ cleanup() {
   fi
   [ -z "${FN_KEEP:-}" ] && "${A[@]}" lambda delete-function --function-name "$FN" >/dev/null 2>&1 # the probe's own
   "${A[@]}" lambda delete-function --function-name "$NOENI" >/dev/null 2>&1
+  if [ -n "${READER_USER:-}" ]; then
+    [ -n "${READER_KEY:-}" ] && "${A[@]}" iam delete-access-key --user-name "$READER" --access-key-id "$READER_KEY" >/dev/null 2>&1
+    "${A[@]}" iam delete-user-policy --user-name "$READER" --policy-name p >/dev/null 2>&1
+    "${A[@]}" iam delete-user --user-name "$READER" >/dev/null 2>&1
+  fi
   for r in "${ROLES_MADE[@]:-}"; do
     [ -z "$r" ] && continue
-    [ -n "${FN_KEEP:-}" ] && [ "$r" != "$READER" ] && [ "$r" != "$WEAK" ] && continue # kept: its functions and flow log use them
+    [ -n "${FN_KEEP:-}" ] && [ "$r" != "$WEAK" ] && continue # kept: its functions and flow log use them
     "${A[@]}" iam delete-role-policy --role-name "$r" --policy-name p >/dev/null 2>&1
     "${A[@]}" iam delete-role --role-name "$r" >/dev/null 2>&1
   done
@@ -133,7 +139,7 @@ if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
   export AWS_ACCESS_KEY_ID="$MK_AK" AWS_SECRET_ACCESS_KEY="$MK_SK"
   log "minted a throwaway openinfra:admins caller (lvpc-admin-$SFX)"
 fi
-ADMIN_AK="$AWS_ACCESS_KEY_ID"; ADMIN_SK="$AWS_SECRET_ACCESS_KEY"
+ADMIN_AK="$AWS_ACCESS_KEY_ID"; ADMIN_SK="$AWS_SECRET_ACCESS_KEY"; ADMIN_ST="${AWS_SESSION_TOKEN:-}" # a role session's token, kept
 for i in $(seq 1 24); do # a freshly minted caller's authority takes a minute or so to reach every check
   ACCOUNT="$("${A[@]}" sts get-caller-identity --query Account --output text 2>/dev/null)" && break
   [ "$i" = 24 ] && inconclusive "sts get-caller-identity never succeeded"
@@ -452,23 +458,24 @@ ok "the flow log records REJECT for $OUTSIDE_IP:80, $OUTSIDE_IP:443 and the unli
 [ "$(cat "$W/fls")" = SUCCESS ] || fail "describe-flow-logs: DeliverLogsStatus $(cat "$W/fls")"
 
 log "5. DENIAL"
-ME="$("${A[@]}" sts get-caller-identity --query Arn --output text)"
-role "$READER" "{\"AWS\":\"$ME\"}" '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["lambda:GetFunction","lambda:ListFunctions"],"Resource":"*"}]}'
-for i in $(seq 1 12); do
-  creds="$("${A[@]}" sts assume-role --role-arn "arn:aws:iam::$ACCOUNT:role/$READER" --role-session-name lvpc \
-    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text 2>/dev/null)" && break
-  [ "$i" = 12 ] && inconclusive "could not assume the Lambda-read-only role"
-  sleep 5
-done
-read -r RAK RSK RST <<<"$creds"
-export AWS_ACCESS_KEY_ID="$RAK" AWS_SECRET_ACCESS_KEY="$RSK" AWS_SESSION_TOKEN="$RST"
+# A user of the account allowed only to read Lambda (a user, so the denial works whoever runs the probe: a key
+# or a role session).
+"${A[@]}" iam create-user --user-name "$READER" >/dev/null 2>"$W/ru.err" || inconclusive "create-user $READER: $(tail -c 300 "$W/ru.err")"
+READER_USER=1
+"${A[@]}" iam put-user-policy --user-name "$READER" --policy-name p --policy-document \
+  '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["lambda:GetFunction","lambda:ListFunctions"],"Resource":"*"}]}' >/dev/null \
+  || inconclusive "put-user-policy $READER"
+"${A[@]}" iam create-access-key --user-name "$READER" --output json >"$W/rk.json" || inconclusive "create-access-key $READER"
+read -r RAK RSK < <(python3 -c 'import json,sys; k=json.load(open(sys.argv[1]))["AccessKey"]; print(k["AccessKeyId"], k["SecretAccessKey"])' "$W/rk.json")
+READER_KEY="$RAK"
+export AWS_ACCESS_KEY_ID="$RAK" AWS_SECRET_ACCESS_KEY="$RSK" AWS_SESSION_TOKEN=""
+for i in $(seq 1 24); do "${A[@]}" lambda list-functions --max-items 1 >/dev/null 2>&1 && break; sleep 5; done
 "${R53[@]}" list-firewall-rule-groups >/dev/null 2>"$W/deny1" && fail "a reader listed DNS Firewall rule groups"
 grep -q AccessDeniedException "$W/deny1" || fail "route53resolver denial is not AccessDeniedException: $(tail -c 300 "$W/deny1")"
 "${A[@]}" ec2 create-flow-logs --resource-type VPC --resource-ids "$VPC" --traffic-type REJECT --log-destination-type cloud-watch-logs \
   --log-group-name "$FLOG" --deliver-logs-permission-arn "$FLOWROLE_ARN" >/dev/null 2>"$W/deny2" && fail "a reader created a flow log"
 grep -q UnauthorizedOperation "$W/deny2" || fail "ec2 denial is not UnauthorizedOperation: $(tail -c 300 "$W/deny2")"
-unset AWS_SESSION_TOKEN
-export AWS_ACCESS_KEY_ID="$ADMIN_AK" AWS_SECRET_ACCESS_KEY="$ADMIN_SK"
+export AWS_ACCESS_KEY_ID="$ADMIN_AK" AWS_SECRET_ACCESS_KEY="$ADMIN_SK" AWS_SESSION_TOKEN="$ADMIN_ST"
 "${A[@]}" lambda create-function --function-name "$NOENI" --runtime python3.12 --handler index.handler --role "$WEAK_ARN" \
   --zip-file "fileb://$W/fn.zip" --vpc-config "$VPCCFG" >/dev/null 2>"$W/deny3" && fail "a role that may not manage network interfaces put a function in a VPC"
 grep -q "does not have permissions to call CreateNetworkInterface on EC2" "$W/deny3" || fail "the role refusal is not Lambda's: $(tail -c 300 "$W/deny3")"
@@ -483,4 +490,5 @@ json.dump({"checked_at": datetime.datetime.now(datetime.timezone.utc).strftime("
                        % (vpc, ", ".join(probed.split()), flog, qlog)},
           open(out, "w"), indent=2)
 PY
-log "PASS — ${ATTEST:+the VPC configuration of $ATTEST: }a function in a VPC${ATTEST:- (managed and unsupported runtime)} is egress-isolated, its DNS contained, and its refusals logged; attestation in $ATTEST_OUT"
+if [ -n "$ATTEST" ]; then WHAT="the VPC configuration of $ATTEST"; else WHAT="a function in a VPC (managed and unsupported runtime)"; fi
+log "PASS — $WHAT: egress-isolated, DNS contained, refusals logged; attestation in $ATTEST_OUT"
