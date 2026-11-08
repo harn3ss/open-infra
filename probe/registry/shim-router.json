@@ -754,6 +754,51 @@
         "rds:CreateDBSnapshot"
       ]
     },
+    "route53resolver": {
+      "handler": "r53rHandler",
+      "operations": [
+        "AssociateFirewallRuleGroup",
+        "AssociateResolverQueryLogConfig",
+        "CreateFirewallDomainList",
+        "CreateFirewallRule",
+        "CreateFirewallRuleGroup",
+        "CreateResolverQueryLogConfig",
+        "DeleteFirewallDomainList",
+        "DeleteFirewallRule",
+        "DeleteFirewallRuleGroup",
+        "DeleteResolverQueryLogConfig",
+        "DisassociateFirewallRuleGroup",
+        "DisassociateResolverQueryLogConfig",
+        "GetFirewallConfig",
+        "GetFirewallDomainList",
+        "GetFirewallRuleGroup",
+        "GetFirewallRuleGroupAssociation",
+        "GetResolverQueryLogConfig",
+        "GetResolverQueryLogConfigAssociation",
+        "ListFirewallConfigs",
+        "ListFirewallDomainLists",
+        "ListFirewallDomains",
+        "ListFirewallRuleGroupAssociations",
+        "ListFirewallRuleGroups",
+        "ListFirewallRules",
+        "ListResolverQueryLogConfigAssociations",
+        "ListResolverQueryLogConfigs",
+        "ListTagsForResource",
+        "TagResource",
+        "UntagResource",
+        "UpdateFirewallConfig",
+        "UpdateFirewallDomains",
+        "UpdateFirewallRule",
+        "UpdateFirewallRuleGroupAssociation"
+      ],
+      "refused": [
+        "ImportFirewallDomains",
+        "ListFirewallRuleTypes"
+      ],
+      "actions": [
+        "iam:PassRole"
+      ]
+    },
     "s3": {
       "handler": "s3Handler",
       "operations": [

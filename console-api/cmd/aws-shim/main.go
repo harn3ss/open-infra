@@ -182,6 +182,7 @@ func run(logger *slog.Logger) error {
 	var cognitoSt *cognitoStore
 	var cfnSvcOwners *cfnServiceOwners
 	var ec2KeySt *ec2KeyStore
+	var r53rSt *r53rStore
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		// A backing-store outage must NOT take the whole shim down. Build these shared-Postgres stores in
 		// a closure; on ANY failure, log and leave them nil — each service is nil-guarded at registration,
@@ -283,13 +284,19 @@ func run(logger *slog.Logger) error {
 			if serr := ec2KeySt.ensureSchema(context.Background()); serr != nil {
 				return fmt.Errorf("EC2 key-pair schema init failed: %w", serr)
 			}
+			// Route 53 Resolver (route53resolver.go): DNS Firewall and query logging, which the VPC resolver
+			// applies to Lambda functions in a VPC (vpcresolver.go).
+			r53rSt = &r53rStore{db: db}
+			if serr := r53rSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("Route 53 Resolver schema init failed: %w", serr)
+			}
 			logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/Cognito Postgres")
 			return nil
 		}()
 		if initErr != nil {
 			logger.Warn("shared SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/DynamoDBStreams/Cognito Postgres unavailable — those services answer 501 until recovery; the shim + Cedar enforcement stay up", slog.String("err", initErr.Error()))
 			sqsSt, snsSt, kmsSt, secretsSt, ebSt, cwlSt, ssmSt, apigwSt, apigwV1St, cwSt, kinesisSt, ddbStreamSt, cognitoSt = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
-			cfnSvcOwners, ec2KeySt = nil, nil
+			cfnSvcOwners, ec2KeySt, r53rSt = nil, nil, nil
 		}
 	}
 
@@ -596,6 +603,10 @@ func run(logger *slog.Logger) error {
 	// Kinesis Data Streams (ordered, sharded, replayable) — Postgres-backed; SigV4 service name "kinesis".
 	kinesisH := newKinesisHandler(cs, authzNS, account, region, kinesisSt, logger)
 	kinesisH.authz = authzChecker
+	// Route 53 Resolver (route53resolver.*): DNS Firewall and query logging for the account's VPCs — Postgres-
+	// backed; an association names a VPC of the caller's account, read through the EC2 front door (below).
+	r53rH := newR53RHandler(cs, authzNS, account, region, r53rSt, logger)
+	r53rH.authz = authzChecker
 	// IAM management (roles/policies/users/access-keys) — creates the kind: Role/Policy/User CRDs via the
 	// dynamic client and translates AWS policy JSON → Cedar. nil dyn → honest 5xx.
 	var iamH *iamHandler
@@ -654,6 +665,7 @@ func run(logger *slog.Logger) error {
 		"apigateway":      apigwMuxH,
 		"monitoring":      cwmH,
 		"kinesis":         kinesisH,
+		"route53resolver": r53rH,
 	}
 	if s3H, ok := services["s3"].(*s3Handler); ok {
 		s3H.accounts = acctDir // a bucket belongs to the account of the claim that made it (s3_accounts.go)
@@ -738,6 +750,8 @@ func run(logger *slog.Logger) error {
 			}
 			// SSM Run Command targets these instances (ssm_runcommand.go); their agents poll below.
 			ssmH.ec2 = ec2H
+			// Route 53 Resolver's associations and firewall configurations name these VPCs.
+			r53rH.vpcs = ec2VPCLister(ec2H)
 			accountNS = cfnNS
 			// ACM (acm.*): the reads of a stack's certificates — its distribution's site TLS, issued by
 			// cert-manager (acm.go).
@@ -1026,6 +1040,41 @@ func run(logger *slog.Logger) error {
 	if vpcIfaces != nil {
 		go vpcIfaces.Run(ctx) // follows the Lambda VPC subnet's addresses; exits when ctx is cancelled
 	}
+	// The VPC resolver (vpcresolver.go): the DNS server of Lambda functions in a VPC — Route 53 Resolver's DNS
+	// Firewall and query logging, forwarding what it lets through to the platform's resolver. Served while
+	// functions can be in a VPC; VPC_RESOLVER_LISTEN=off turns it off. Without the shim's Postgres no VPC's
+	// firewall can be read, so every VPC function's query fails closed (SERVFAIL).
+	resolverDone := make(chan struct{})
+	close(resolverDone)
+	if addr := getenv("VPC_RESOLVER_LISTEN", defaultVPCResolverListen); vpcIfaces != nil && addr != "off" {
+		upstream := getenv("VPC_RESOLVER_UPSTREAM", "")
+		if upstream == "" {
+			if ns, nerr := systemNameserver("/etc/resolv.conf"); nerr == nil {
+				upstream = ns
+			} else {
+				logger.Warn("vpc resolver: no upstream resolver (set VPC_RESOLVER_UPSTREAM); queries it lets through answer SERVFAIL",
+					slog.String("error", nerr.Error()))
+			}
+		}
+		var sink queryLogSink
+		if cwlSt != nil {
+			sink = cwlSt
+		}
+		if r53rSt == nil {
+			logger.Warn("vpc resolver: the Route 53 Resolver store is not configured; VPC functions' queries fail closed")
+		}
+		res := newVPCResolver(r53rSt, vpcIfaces, upstream, sink, region, logger)
+		if lerr := res.Listen(addr); lerr != nil {
+			logger.Error("vpc resolver: cannot listen; VPC functions have no DNS", slog.String("addr", addr), slog.String("error", lerr.Error()))
+		} else {
+			logger.Info("vpc resolver listening (UDP and TCP)", slog.String("addr", res.Addr()), slog.String("upstream", upstream))
+			resolverDone = make(chan struct{})
+			go func() {
+				defer close(resolverDone)
+				res.Serve(ctx) // stops when ctx is cancelled, after delivering the query logs it holds
+			}()
+		}
+	}
 	if cfnDoor != nil {
 		// Resolve stack operations a previous front door was running when it stopped (interrupted creates
 		// and updates roll back, deletes resume), on startup and periodically. Exits when ctx is cancelled.
@@ -1163,6 +1212,10 @@ func run(logger *slog.Logger) error {
 		_ = tlsSrv.Shutdown(shutdownCtx)
 	}
 	shutdownErr := srv.Shutdown(shutdownCtx)
+	select { // the VPC resolver's last query logs
+	case <-resolverDone:
+	case <-shutdownCtx.Done():
+	}
 	if cfnDoor != nil {
 		// Give in-flight stack operations a bounded chance to finish; any still running is recovered by the
 		// next front door once its lease lapses.

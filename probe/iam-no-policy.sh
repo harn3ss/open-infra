@@ -85,6 +85,7 @@ declare -A CALL=(
   [monitoring]="cloudwatch list-metrics"
   [organizations]="organizations describe-organization"
   [rds]="rds describe-db-instances"
+  [route53resolver]="route53resolver list-firewall-rule-groups"
   [s3]="s3api list-buckets"
   [secretsmanager]="secretsmanager list-secrets"
   [servicequotas]="service-quotas list-services"

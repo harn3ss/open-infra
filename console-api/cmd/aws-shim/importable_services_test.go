@@ -45,6 +45,7 @@ var dynamicResourceTypes = map[string][]string{
 	"athena.go":              {"WorkGroup", "Table"},
 	"ec2.go":                 {"Instance", "Volume", "SecurityGroup", "KeyPair", "ElasticIp"},
 	"eventbridge.go":         {"EventBus", "Rule"},
+	"route53resolver.go":     {"FirewallDomainList", "FirewallRuleGroup", "FirewallRuleGroupAssociation", "FirewallConfig", "ResolverQueryLogConfig"},
 	"rds.go":                 {"DBInstance", "DBSnapshot"},
 	"cfn_services.go":        {"Queue", "Topic", "Parameter", "Key", "ElasticIp", "Repository", "EventBus", "LogGroup", "Secret", "Namespace", "Function"},
 	"cfn_services_doors.go":  {"Secret", "LogGroup", "Rule", "EventBus", "Repository", "Namespace"},
@@ -105,7 +106,12 @@ var exampleArn = map[string]string{
 	"Cluster": "arn:aws:eks:us-east-1:1:cluster/c", "Volume": "arn:aws:ec2:us-east-1:1:volume/v",
 	"SecurityGroup": "arn:aws:ec2:us-east-1:1:security-group/sg", "KeyPair": "arn:aws:ec2:us-east-1:1:key-pair/k",
 	"ElasticIp": "arn:aws:ec2:us-east-1:1:elastic-ip/e", "EventBus": "arn:aws:events:us-east-1:1:event-bus/b",
-	"Rule": "arn:aws:events:us-east-1:1:rule/b/r",
+	"Rule":                         "arn:aws:events:us-east-1:1:rule/b/r",
+	"FirewallDomainList":           "arn:aws:route53resolver:us-east-1:1:firewall-domain-list/rslvr-fdl-1",
+	"FirewallRuleGroup":            "arn:aws:route53resolver:us-east-1:1:firewall-rule-group/rslvr-frg-1",
+	"FirewallRuleGroupAssociation": "arn:aws:route53resolver:us-east-1:1:firewall-rule-group-association/rslvr-frgassoc-1",
+	"FirewallConfig":               "arn:aws:route53resolver:us-east-1:1:firewall-config/rslvr-fc-1",
+	"ResolverQueryLogConfig":       "arn:aws:route53resolver:us-east-1:1:resolver-query-log-config/rqlc-1",
 }
 
 // notImportableTypes are resource types the shim checks that no AWS ARN names, each with why.

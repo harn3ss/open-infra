@@ -215,6 +215,60 @@ func roleDoorCases() []roleDoorCase {
 				h.authz = a
 				return serveWith(h, jsonOp("Kinesis_20131202.CreateStream", `{"StreamName":"events","ShardCount":1}`), c)
 			}},
+		// --- Route 53 Resolver (DNS Firewall, query logging): one case per resource family ---
+		{door: "route53resolver", op: "ListFirewallDomainLists", action: "route53resolver:ListFirewallDomainLists", resType: "FirewallDomainList", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"ListFirewallDomainLists", `{}`), c)
+			}},
+		{door: "route53resolver", op: "UpdateFirewallDomains", action: "route53resolver:UpdateFirewallDomains", resType: "FirewallDomainList", resName: "rslvr-fdl-0123456789abcdef0", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"UpdateFirewallDomains",
+					`{"FirewallDomainListId":"rslvr-fdl-0123456789abcdef0","Operation":"ADD","Domains":["example.com"]}`), c)
+			}},
+		{door: "route53resolver", op: "CreateFirewallRuleGroup", action: "route53resolver:CreateFirewallRuleGroup", resType: "FirewallRuleGroup", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"CreateFirewallRuleGroup", `{"Name":"egress","CreatorRequestId":"r1"}`), c)
+			}},
+		{door: "route53resolver", op: "ListFirewallRules", action: "route53resolver:ListFirewallRules", resType: "FirewallRuleGroup", resName: "rslvr-frg-0123456789abcdef0", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"ListFirewallRules", `{"FirewallRuleGroupId":"rslvr-frg-0123456789abcdef0"}`), c)
+			}},
+		{door: "route53resolver", op: "AssociateFirewallRuleGroup", action: "route53resolver:AssociateFirewallRuleGroup", resType: "FirewallRuleGroup", resName: "rslvr-frg-0123456789abcdef0", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"AssociateFirewallRuleGroup",
+					`{"FirewallRuleGroupId":"rslvr-frg-0123456789abcdef0","VpcId":"vpc-0a1b2c3d","Priority":101,"Name":"egress","CreatorRequestId":"r1"}`), c)
+			}},
+		{door: "route53resolver", op: "ListFirewallRuleGroupAssociations", action: "route53resolver:ListFirewallRuleGroupAssociations", resType: "FirewallRuleGroupAssociation", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"ListFirewallRuleGroupAssociations", `{}`), c)
+			}},
+		{door: "route53resolver", op: "UpdateFirewallConfig", action: "route53resolver:UpdateFirewallConfig", resType: "FirewallConfig", resName: firewallConfigID("", "vpc-0a1b2c3d"), denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"UpdateFirewallConfig", `{"ResourceId":"vpc-0a1b2c3d","FirewallFailOpen":"ENABLED"}`), c)
+			}},
+		{door: "route53resolver", op: "ListFirewallConfigs", action: "route53resolver:ListFirewallConfigs", resType: "FirewallConfig", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"ListFirewallConfigs", `{}`), c)
+			}},
+		{door: "route53resolver", op: "CreateResolverQueryLogConfig", action: "route53resolver:CreateResolverQueryLogConfig", resType: "ResolverQueryLogConfig", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"CreateResolverQueryLogConfig",
+					`{"Name":"dns","CreatorRequestId":"r1","DestinationArn":"arn:aws:logs:us-east-1:open-infra:log-group:dns"}`), c)
+			}},
+		{door: "route53resolver", op: "AssociateResolverQueryLogConfig", action: "route53resolver:AssociateResolverQueryLogConfig", resType: "ResolverQueryLogConfig", resName: "rqlc-0123456789abcdef", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"AssociateResolverQueryLogConfig",
+					`{"ResolverQueryLogConfigId":"rqlc-0123456789abcdef","ResourceId":"vpc-0a1b2c3d"}`), c)
+			}},
+		{door: "route53resolver", op: "ListResolverQueryLogConfigAssociations", action: "route53resolver:ListResolverQueryLogConfigAssociations", resType: "ResolverQueryLogConfig", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"ListResolverQueryLogConfigAssociations", `{}`), c)
+			}},
+		{door: "route53resolver", op: "ListTagsForResource", action: "route53resolver:ListTagsForResource", resType: "FirewallRuleGroup", resName: "rslvr-frg-0123456789abcdef0", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(r53rTestHandler(t, a), jsonOp(r53rTargetPrefix+"ListTagsForResource",
+					`{"ResourceArn":"arn:aws:route53resolver:us-east-1:open-infra:firewall-rule-group/rslvr-frg-0123456789abcdef0"}`), c)
+			}},
 		// --- EventBridge ---
 		{door: "events", op: "ListRules", action: "events:ListRules", resType: "Rule", denyCode: "AccessDeniedException",
 			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {

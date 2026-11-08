@@ -39,6 +39,7 @@ namespaces:
   AWS::Logs: [logs]
   AWS::RDS: [rds]
   AWS::Route53: [route53]
+  AWS::Route53Resolver: [route53resolver]
   AWS::S3: [s3]
   AWS::SecretsManager: [secretsmanager]
   AWS::SES: [ses, email]

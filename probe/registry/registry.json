@@ -76,6 +76,21 @@
           "athena"
         ],
         "templateUses": 0
+      },
+      {
+        "exampleApps": 0,
+        "knownTypes": [],
+        "namespaces": [
+          "AWS::Route53Resolver"
+        ],
+        "operations": 33,
+        "probes": 0,
+        "rank": 6,
+        "service": "Route 53 Resolver",
+        "signingNames": [
+          "route53resolver"
+        ],
+        "templateUses": 0
       }
     ],
     "sources": {
@@ -1166,6 +1181,57 @@
       "service": "RDS",
       "tier": "proven"
     },
+    "route53resolver": {
+      "actions": [],
+      "conditional": false,
+      "deployableTypes": [],
+      "handler": "r53rHandler",
+      "namespaces": [
+        "AWS::Route53Resolver"
+      ],
+      "operations": [
+        "AssociateFirewallRuleGroup",
+        "AssociateResolverQueryLogConfig",
+        "CreateFirewallDomainList",
+        "CreateFirewallRule",
+        "CreateFirewallRuleGroup",
+        "CreateResolverQueryLogConfig",
+        "DeleteFirewallDomainList",
+        "DeleteFirewallRule",
+        "DeleteFirewallRuleGroup",
+        "DeleteResolverQueryLogConfig",
+        "DisassociateFirewallRuleGroup",
+        "DisassociateResolverQueryLogConfig",
+        "GetFirewallConfig",
+        "GetFirewallDomainList",
+        "GetFirewallRuleGroup",
+        "GetFirewallRuleGroupAssociation",
+        "GetResolverQueryLogConfig",
+        "GetResolverQueryLogConfigAssociation",
+        "ListFirewallConfigs",
+        "ListFirewallDomainLists",
+        "ListFirewallDomains",
+        "ListFirewallRuleGroupAssociations",
+        "ListFirewallRuleGroups",
+        "ListFirewallRules",
+        "ListResolverQueryLogConfigAssociations",
+        "ListResolverQueryLogConfigs",
+        "ListTagsForResource",
+        "TagResource",
+        "UntagResource",
+        "UpdateFirewallConfig",
+        "UpdateFirewallDomains",
+        "UpdateFirewallRule",
+        "UpdateFirewallRuleGroupAssociation"
+      ],
+      "probes": [],
+      "refused": [
+        "ImportFirewallDomains",
+        "ListFirewallRuleTypes"
+      ],
+      "service": "Route 53 Resolver",
+      "tier": "gated"
+    },
     "s3": {
       "actions": [],
       "conditional": false,
@@ -1510,11 +1576,11 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 589,
+    "operations": 622,
     "planOnly": 11,
     "refused": 11,
-    "services": 31,
-    "signingNames": 33,
+    "services": 32,
+    "signingNames": 34,
     "violations": 0
   },
   "types": {

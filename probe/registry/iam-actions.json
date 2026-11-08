@@ -1280,6 +1280,9 @@
    "iam:PassRole",
    "rds:CreateDBSnapshot"
   ],
+  "route53resolver": [
+   "iam:PassRole"
+  ],
   "secretsmanager": [
    "iam:PassRole"
   ],
