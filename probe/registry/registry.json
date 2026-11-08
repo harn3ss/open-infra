@@ -3351,7 +3351,7 @@
         "lambda-timeout"
       ],
       "status": "supported",
-      "templateUses": 14,
+      "templateUses": 15,
       "verdict": "ok"
     },
     "AWS::Lambda::Permission": {

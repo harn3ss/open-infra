@@ -307,7 +307,20 @@ spec:
                         # the "concurrent executions" unit the per-tenant concurrency quota counts).
                         containerConcurrency: 1
                         {{- end }}
-                        {{- if $spec.timeout }}
+                        {{- if $code }}
+                        # The function's own Timeout (Lambda's, default 300 here) is enforced by its runtime,
+                        # counted from when the invoke reaches it, as Lambda counts it once init is done
+                        # (OPENINFRA_TIMEOUT_S below). Knative's deadline counts from the request's arrival,
+                        # including the wait for an instance started from zero, so it is the timeout plus the
+                        # start-up allowance (the aws-shim's invokeColdStartAllowance, 90 s): a cold start never
+                        # spends the function's own time (#413). max-revision-timeout-seconds (knative-serving.yaml)
+                        # is the XRD's 900 plus the same allowance. Knative's response-start timeout (time to the
+                        # FIRST byte) defaults to 300 s independently, so it is set to the same deadline.
+                        timeoutSeconds: {{ add (int ($spec.timeout | default 300)) 90 }}
+                        responseStartTimeoutSeconds: {{ add (int ($spec.timeout | default 300)) 90 }}
+                        {{- else if $spec.timeout }}
+                        {{- /* A function that is its own image: no runtime of ours enforces its Timeout from
+                               inside, so Knative's revision timeout is it, from the request's arrival. */}}
                         # Max wall-clock per request (Knative revision timeout) — the AWS Lambda timeout knob.
                         timeoutSeconds: {{ $spec.timeout }}
                         # Max time to the FIRST byte from the handler. Knative defaults this to 300s (its default
@@ -343,6 +356,8 @@ spec:
                             {{- if $code }}
                               - { name: OPENINFRA_HANDLER, value: "{{ $code.handler }}" }
                               - { name: OPENINFRA_FUNCTION_NAME, value: "{{ $name }}" }
+                              # The function's Timeout, which the runtime enforces from each invoke's arrival.
+                              - { name: OPENINFRA_TIMEOUT_S, value: "{{ int ($spec.timeout | default 300) }}" }
                               {{- if $csrc.bucket }}
                               - { name: OPENINFRA_CODE_BUCKET, value: "{{ $csrc.bucket }}" }
                               - { name: OPENINFRA_CODE_KEY, value: "{{ $csrc.key }}" }

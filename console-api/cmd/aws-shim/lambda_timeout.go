@@ -1,12 +1,12 @@
 // A Lambda function's timeout, as an invoke waits for it (#372).
 //
-// AWS runs a function up to its Timeout (1–900 s) and, past it, ends the invocation with a function error:
-// "Task timed out after N.NN seconds". Here a synchronous invoke and an asynchronous delivery wait for the
-// function's own spec.timeout (Knative's 300 s when unset) plus invokeColdStartAllowance, the time Knative
-// may take to start an instance from zero before the function's clock starts. Past the deadline — or when
-// Knative itself ends the request at the revision's timeout (a 504 the function did not answer) — a
-// synchronous invoke answers AWS's timeout error; an asynchronous delivery counts it a failed attempt,
-// retried as AWS retries one.
+// AWS runs a function up to its Timeout (1–900 s), counted once its runtime is initialised, and past it
+// ends the invocation with a function error: "Task timed out after N.NN seconds". Here the function's
+// runtime enforces its spec.timeout (300 s when unset) from the invoke's arrival, and answers a 504 at it
+// (#413). Knative's revision deadline, which counts the wait for an instance started from zero, is the
+// timeout plus invokeColdStartAllowance (function-composition.yaml), and so is the invoke's own wait. Past
+// it, or on either 504 (the runtime's, or Knative's at its deadline), a synchronous invoke answers AWS's
+// timeout error; an asynchronous delivery counts it a failed attempt, retried as AWS retries one.
 package main
 
 import (

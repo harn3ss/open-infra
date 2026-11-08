@@ -25,8 +25,9 @@ public class LogCapture
         }
     }
 
-    // Tail is X-Amz-Log-Result: base64 of the last 4 KB of START, the output, END and REPORT.
-    public string Tail(string requestId, string version, int memoryMb)
+    // Tail is X-Amz-Log-Result: base64 of the last 4 KB of START, the output, END and REPORT (with Lambda's
+    // "Status: <status>" when the invocation did not succeed or fail on its own: "timeout").
+    public string Tail(string requestId, string version, int memoryMb, string status = null)
     {
         var ms = _clock.Elapsed.TotalMilliseconds;
         string output;
@@ -36,7 +37,7 @@ public class LogCapture
         var inv = CultureInfo.InvariantCulture;
         var log = $"START RequestId: {requestId} Version: {version}\n{output}END RequestId: {requestId}\n" +
             $"REPORT RequestId: {requestId}\tDuration: {ms.ToString("F2", inv)} ms\tBilled Duration: {Math.Ceiling(ms).ToString(inv)} ms\t" +
-            $"Memory Size: {memoryMb} MB\tMax Memory Used: {used} MB\t\n";
+            $"Memory Size: {memoryMb} MB\tMax Memory Used: {used} MB\t" + (status != null ? "Status: " + status : "") + "\n";
         var b = Encoding.UTF8.GetBytes(log);
         int from = Math.Max(0, b.Length - TailBytes);
         return Convert.ToBase64String(b, from, b.Length - from);

@@ -6,6 +6,20 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a cold start no longer counts against a Lambda function's timeout
+- **As on Lambda:** a function's `Timeout` counts from when the invoke reaches its runtime, not from when
+  the request arrived. Before, a function called from zero spent its own timeout waiting for an instance:
+  a 3-second echo called cold failed `Task timed out after 3.00 seconds` before its handler ran.
+- **How:**
+  - the Node.js, Python and .NET runtimes enforce the function's timeout themselves and answer Lambda's
+    timeout error at it, with `Status: timeout` in the log tail;
+  - the platform's own deadline is the timeout plus a 90-second start-up allowance. The revision ceiling
+    rises to 990 seconds and the gateway's idle timeout to 1050 seconds.
+- **Unchanged:** a function on its own image (`spec.image`) is still timed from the request's arrival.
+- **A runtime image of your own** (`code.runtimeImage`, built from `lambda-runtime/`) enforces the function's
+  timeout once rebuilt from this version. Until then its invocations end at the platform's deadline: the
+  timeout plus the allowance.
+
 ### Fixed — S3 in a member account
 - **A member account's administrator owns its buckets:** `CreateBucket` and `DeleteBucket` are decided by
   IAM (`s3:CreateBucket`, `s3:DeleteBucket`) and the bucket is then made or deleted by the S3 service itself,

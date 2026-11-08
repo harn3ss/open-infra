@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Probe: a Lambda invoke runs to the function's own Timeout (#372), through the aws-shim with the real AWS CLI.
 #
-# It deploys two functions with CloudFormation (inline Node.js code that sleeps for the event's "sleep"
-# seconds) and asserts:
+# It deploys three functions with CloudFormation (inline Node.js code: two sleep for the event's "sleep"
+# seconds, one echoes its event) and asserts:
+#   0. a function with Lambda's default Timeout of 3 s, invoked from zero instances three times in a row,
+#      returns its event each time: the cold start is not counted against its Timeout (#413);
 #   1. a function with Timeout 150 that runs 120 s returns its result — the shim no longer cuts an invoke
 #      at 60 s;
 #   2. a function with Timeout 5 that runs 30 s ends with Lambda's timeout error: a function error
 #      (Unhandled) whose payload is Sandbox.Timedout "Task timed out after 5.00 seconds" — not
-#      ResourceNotFoundException;
+#      ResourceNotFoundException — and it ends at about 5 s, by the function's own clock;
 #   3. DENIAL: a principal whose policy does not allow lambda:InvokeFunction is refused with
 #      AccessDeniedException.
 #
@@ -108,25 +110,53 @@ Resources:
       Code:
         ZipFile: |
           exports.handler = async (e) => { await new Promise((r) => setTimeout(r, (e.sleep || 0) * 1000)); return { slept: e.sleep || 0 }; };
+  Cold:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Timeout: 3
+      Role: !GetAtt Exec.Arn
+      Code:
+        ZipFile: |
+          exports.handler = async (e) => e;
 Outputs:
   SlowName: { Value: !Ref Slow }
   ShortName: { Value: !Ref Short }
+  ColdName: { Value: !Ref Cold }
 YAML
-log "deploying $STACK (Slow: Timeout 150; Short: Timeout 5)"
+log "deploying $STACK (Slow: Timeout 150; Short: Timeout 5; Cold: Timeout 3)"
 for i in $(seq 1 5); do # a freshly minted deployer's authority reaches every check within a minute or so
   "${A[@]}" cloudformation deploy --template-file "$W/t.yaml" --stack-name "$STACK" --capabilities CAPABILITY_IAM >"$W/d" 2>&1 && break
   [ "$i" = 5 ] && fail "the stack did not deploy: $(tail -c 500 "$W/d")"
   "${A[@]}" cloudformation delete-stack --stack-name "$STACK" >/dev/null 2>&1; sleep 25
 done
 out() { "${A[@]}" cloudformation describe-stacks --stack-name "$STACK" --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
-SLOW="$(out SlowName)"; SHORT="$(out ShortName)"
-ok "deployed ($SLOW, $SHORT)"
+SLOW="$(out SlowName)"; SHORT="$(out ShortName)"; COLD="$(out ColdName)"
+ok "deployed ($SLOW, $SHORT, $COLD)"
 
 invoke() { # <function> <payload> <out> → prints the FunctionError ("" for none)
   "${A[@]}" --cli-read-timeout 400 lambda invoke --function-name "$1" --cli-binary-format raw-in-base64-out --payload "$2" "$3" \
     --query FunctionError --output text 2>"$W/inv.err"
 }
 warm() { for _ in $(seq 1 6); do invoke "$1" '{"sleep":0}' "$W/warm.json" >/dev/null && grep -q '"slept":0' "$W/warm.json" && return 0; sleep 10; done; return 1; }
+log "0. three invokes from zero of a function with Timeout 3"
+COLD_NS="$(kubectl get ksvc -A --field-selector "metadata.name=$COLD" -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null)"
+[ -n "$COLD_NS" ] || inconclusive "no Knative Service for $COLD"
+for i in $(seq 1 60); do # the first instance (Knative starts one to verify the revision) scales away when idle
+  [ "$(kubectl -n "$COLD_NS" get pods -l "serving.knative.dev/service=$COLD" --no-headers 2>/dev/null | grep -c .)" = 0 ] && break
+  [ "$i" = 60 ] && inconclusive "$COLD never scaled to zero instances"
+  sleep 10
+done
+for n in 1 2 3; do
+  start=$(date +%s)
+  fe="$(invoke "$COLD" "{\"cold\":$n}" "$W/cold.json")" || fail "cold invoke $n failed at the API: $(tail -c 400 "$W/inv.err")"
+  took=$(( $(date +%s) - start ))
+  [ "$fe" = "None" ] || [ -z "$fe" ] || fail "cold invoke $n of a function with Timeout 3 ended with a function error ($fe) after ${took}s: $(cat "$W/cold.json")"
+  grep -q "\"cold\":$n" "$W/cold.json" || fail "cold invoke $n returned: $(cat "$W/cold.json")"
+  ok "invoke $n from zero returned its event after ${took}s"
+done
+
 warm "$SLOW" || fail "the Slow function never answered a warm-up: $(tail -c 300 "$W/inv.err")"
 warm "$SHORT" || fail "the Short function never answered a warm-up: $(tail -c 300 "$W/inv.err")"
 
@@ -140,14 +170,17 @@ grep -q '"slept":120' "$W/slow.json" || fail "the 120 s invoke returned: $(cat "
 ok "returned {\"slept\":120} after ${took}s"
 
 log "2. a 30 s invoke of a function with Timeout 5"
+start=$(date +%s)
 fe="$(invoke "$SHORT" '{"sleep":30}' "$W/short.json")" || fail "the timed-out invoke failed at the API: $(tail -c 400 "$W/inv.err")"
+took=$(( $(date +%s) - start ))
 [ "$fe" = "Unhandled" ] || fail "a timed-out invoke must be a function error (Unhandled), got '$fe': $(cat "$W/short.json")"
+[ "$took" -ge 4 ] && [ "$took" -le 20 ] || fail "the timed-out invoke ended after ${took}s, not at the function's own 5 s"
 python3 - "$W/short.json" <<'PY' || fail "the timed-out payload is not Lambda's: $(cat "$W/short.json")"
 import json, sys
 r = json.load(open(sys.argv[1]))
 assert r.get("errorType") == "Sandbox.Timedout" and "Task timed out after 5.00 seconds" in r.get("errorMessage", ""), r
 PY
-ok "Unhandled: $(python3 -c "import json;print(json.load(open('$W/short.json'))['errorMessage'])" | cut -c1-90)"
+ok "Unhandled after ${took}s: $(python3 -c "import json;print(json.load(open('$W/short.json'))['errorMessage'])" | cut -c1-90)"
 
 log "3. DENIAL: a principal whose policy does not allow lambda:InvokeFunction"
 ME="$("${A[@]}" sts get-caller-identity --query Arn --output text)" || inconclusive "sts get-caller-identity failed"
@@ -176,4 +209,4 @@ fi
 grep -q "AccessDeniedException" "$W/deny.err" || fail "the refusal is not AccessDeniedException: $(tail -c 300 "$W/deny.err")"
 ok "refused: AccessDeniedException"
 
-printf '✓ PASS — a Lambda invoke runs to the function'"'"'s own Timeout: 120 s with Timeout 150 returns its result, 30 s with Timeout 5 is Sandbox.Timedout "Task timed out after 5.00 seconds", and lambda:InvokeFunction is enforced\n'
+printf '✓ PASS — a Lambda invoke runs to the function'"'"'s own Timeout: a cold start is not counted (Timeout 3 from zero returns), 120 s with Timeout 150 returns its result, 30 s with Timeout 5 is Sandbox.Timedout "Task timed out after 5.00 seconds" at 5 s, and lambda:InvokeFunction is enforced\n'

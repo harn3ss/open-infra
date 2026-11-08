@@ -316,9 +316,14 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		return
 	}
 	defer resp.Body.Close()
-	// Knative ends a request at the revision's timeout (spec.timeout) with a 504 the function never
-	// answered: the function ran out of time.
+	// The function ran out of time: its runtime answered a 504 at its own timeout, counted from the
+	// invoke's arrival (#413), or Knative ended the request at the revision's deadline. The runtime's
+	// answer carries the invocation's log tail when it was asked for.
 	if resp.StatusCode == http.StatusGatewayTimeout && resp.Header.Get("X-Amz-Function-Error") == "" {
+		if tail := resp.Header.Get("X-Amz-Log-Result"); logType == "Tail" && validLogTail(tail) {
+			w.Header().Set("X-Amz-Log-Result", tail)
+		}
+		w.Header().Set("X-Amz-Executed-Version", target.version)
 		writeTaskTimedOut(w, requestID, fnTimeout)
 		return
 	}

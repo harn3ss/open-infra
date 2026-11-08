@@ -294,13 +294,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # The runtime bootstraps (node, python, dotnet8) run as processes against a stub aws-shim: the stored
-      # deployment package fetch (#402) — bearer token, SHA-256, retries, zip-entry refusals.
+      # deployment package fetch (#402) — bearer token, SHA-256, retries, zip-entry refusals — and the
+      # function's own timeout, enforced from the invoke's arrival (#413).
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: "8.0.x" }
       - run: python3 test/lambda-runtime/code_package_test.py
       - run: python3 test/lambda-runtime/cfn_response_test.py
       - run: python3 test/lambda-runtime/context_test.py
       - run: python3 test/lambda-runtime/log_tail_test.py
+      - run: python3 test/lambda-runtime/timeout_test.py
 
   vm-creds-cli:
     name: vm-creds-cli

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -122,5 +123,35 @@ func TestLambda_KnativesTimeoutIsTaskTimedOut(t *testing.T) {
 	}, 30)
 	if w := invokeFn(h); !strings.Contains(w.Body.String(), "upstream said no") {
 		t.Fatalf("a function's own error passes through: %s", w.Body.String())
+	}
+}
+
+// #413: the runtime answers the function's own timeout itself (a 504, counted from the invoke's arrival, so
+// a cold start never counts). The shim answers Lambda's timeout error, with the invocation's log tail the
+// runtime sent when the caller asked for it.
+func TestLambda_TheRuntimesTimeoutCarriesItsLogTail(t *testing.T) {
+	tail := base64.StdEncoding.EncodeToString([]byte("START RequestId: req-1 Version: $LATEST\n" +
+		"2026-11-08T00:00:03.000Z req-1 Task timed out after 3.00 seconds\nEND RequestId: req-1\n" +
+		"REPORT RequestId: req-1\tDuration: 3000.00 ms\tBilled Duration: 3000 ms\tMemory Size: 128 MB\tMax Memory Used: 40 MB\tStatus: timeout\n"))
+	h := timeoutHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Amz-Log-Type") == "Tail" {
+			w.Header().Set("X-Amz-Log-Result", tail)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusGatewayTimeout)
+		_, _ = w.Write([]byte(`{"errorType":"Sandbox.Timedout","errorMessage":"RequestId: req-1 Error: Task timed out after 3.00 seconds"}`))
+	}, 3)
+	req := httptest.NewRequest("POST", "http://lambda/2015-03-31/functions/fn/invocations", io.NopCloser(strings.NewReader(`{}`)))
+	req.Header.Set("X-Amz-Log-Type", "Tail")
+	w := httptest.NewRecorder()
+	h.serve(w, req, iam.Claims{Sub: "u"}, "req-1")
+	if w.Code != 200 || w.Header().Get("X-Amz-Function-Error") != "Unhandled" || !strings.Contains(w.Body.String(), "Task timed out after 3.00 seconds") {
+		t.Fatalf("the runtime's timeout: %d %v %s", w.Code, w.Header(), w.Body.String())
+	}
+	if got := w.Header().Get("X-Amz-Log-Result"); got != tail {
+		t.Errorf("the runtime's log tail was not passed on: %q", got)
+	}
+	if w = invokeFn(h); w.Header().Get("X-Amz-Log-Result") != "" {
+		t.Errorf("a tail nobody asked for was answered: %q", w.Header().Get("X-Amz-Log-Result"))
 	}
 }

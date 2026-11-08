@@ -624,6 +624,33 @@ func TestFunction_MemoryAndTimeout(t *testing.T) {
 	}
 }
 
+// #413: a function run by the platform's runtime has its own Timeout enforced by the runtime, from the
+// invoke's arrival (OPENINFRA_TIMEOUT_S), and a Knative deadline of that timeout plus the 90 s start-up
+// allowance, so the wait for a cold start never spends the function's own time. Unset, the timeout is 300.
+func TestFunction_RuntimeTimeoutExcludesTheColdStart(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/function-composition.yaml")
+	for _, c := range []struct {
+		timeout      any
+		env, revision string
+	}{{float64(3), "3", "93"}, {float64(900), "900", "990"}, {nil, "300", "390"}} {
+		spec := map[string]any{"code": map[string]any{"runtime": "python3.12", "handler": "index.handler",
+			"source": map[string]any{"configMap": "fn-code"}}}
+		if c.timeout != nil {
+			spec["timeout"] = c.timeout
+		}
+		out := render(t, tmpl, map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": spec, "metadata": map[string]any{"labels": map[string]any{
+				"crossplane.io/claim-name": "fn", "crossplane.io/claim-namespace": "team-a"}},
+		}}}})
+		for _, want := range []string{"timeoutSeconds: " + c.revision, "responseStartTimeoutSeconds: " + c.revision,
+			`{ name: OPENINFRA_TIMEOUT_S, value: "` + c.env + `" }`} {
+			if !strings.Contains(out, want) {
+				t.Errorf("timeout %v: missing %q; got:\n%s", c.timeout, want, grepCtx(out, "imeout"))
+			}
+		}
+	}
+}
+
 // reservedConcurrency (the Lambda reserved-concurrency analog) must be a HARD cap:
 // containerConcurrency 1 + max-scale = N + target 1, overriding scaling.max/target.
 func TestFunction_ReservedConcurrency(t *testing.T) {

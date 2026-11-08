@@ -22,7 +22,26 @@
 //     OPENINFRA_CODE_SHA256 = the package's recorded SHA-256 (64 lowercase hex), checked before unpacking
 //     OPENINFRA_CODE_TOKEN_FILE = the projected identity token, sent as "Authorization: Bearer <token>"
 //   OPENINFRA_LAYERS = JSON [{bucket,key}] extracted (merged, in order) into /opt — optional
+//   OPENINFRA_TIMEOUT_S = the function's Timeout in whole seconds, 1-900; unset, not a whole number or
+//     out of range means 300. Read once at start.
 //   PORT = listen port (default 8080; Knative sets it)
+//
+// The function's Timeout is enforced here, as Lambda's service enforces it: each invocation's clock starts
+// when its request reaches this bootstrap (a cold start, the wait for an instance, is not counted, as
+// Lambda does not count init), and context.getRemainingTimeInMillis() counts down to that deadline. An
+// invocation still running at its deadline is answered at once with 504, Content-Type application/json and
+// no X-Amz-Function-Error (the aws-shim answers that as Lambda's timeout error), the body
+// {"errorType":"Sandbox.Timedout","errorMessage":"RequestId: <id> Error: Task timed out after <T>.00 seconds"};
+// the line "<UTC time> <id> Task timed out after <T>.00 seconds" goes to stdout and, for a LogType Tail
+// invoke, into X-Amz-Log-Result before END and a REPORT ending "Status: timeout". The handler's result or
+// error arriving later is discarded, never sent. The process is never exited for a timeout: the instance
+// may be serving other invocations, and a restart would put the pod into CrashLoopBackOff. Knative's own
+// revision timeout is set longer (the function's timeout plus a start-up allowance) and is only a backstop.
+// The deadline is a timer on the event loop, so a handler that runs synchronously (a CPU loop, a sync
+// call that blocks) holds the loop and cannot be answered while it runs: it is answered with the timeout
+// the moment it gives the loop back, and its result is discarded. One that never gives it back is never
+// answered, and holds every other invocation on the instance too: only Knative's revision timeout ends
+// that request.
 //
 // Invocation model (identical to the python shim):
 //   - POST with a JSON body -> that JSON is the `event`; non-JSON -> event={"body": <raw>}.
@@ -47,6 +66,21 @@ const TASK_DIR = process.env.OPENINFRA_TASK_DIR || "/var/task";
 const OPT_DIR = process.env.OPENINFRA_OPT_DIR || "/opt";
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const START = Date.now();
+
+// TIMEOUT_S is the function's Timeout (OPENINFRA_TIMEOUT_S): whole seconds, 1-900, else 300.
+const TIMEOUT_S = (function () {
+  const raw = String(process.env.OPENINFRA_TIMEOUT_S || "").trim();
+  const n = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+  if (n >= 1 && n <= 900) return n;
+  if (raw) process.stderr.write(`open-infra-runtime: OPENINFRA_TIMEOUT_S '${raw}' is not a whole number of seconds from 1 to 900; the timeout is 300 seconds\n`);
+  return 300;
+})();
+
+// monoMs is a monotonic clock in milliseconds (process.hrtime: every Node version), for invocation deadlines.
+function monoMs() {
+  const t = process.hrtime();
+  return t[0] * 1e3 + t[1] / 1e6;
+}
 
 // --- Code fetch: a built-in SigV4-signed S3/MinIO GET. No AWS SDK, so cold-start code fetch works on
 // every Node version (the SDK's floating `@aws-sdk/client-s3@3` required Node >= 18 and broke the older
@@ -461,8 +495,8 @@ function clientContext(headers) {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function lambdaContext(headers = {}) {
-  const deadline = Date.now() + parseInt(process.env.OPENINFRA_TIMEOUT_S || "300", 10) * 1000;
+// lambdaContext is the invocation's context; deadline (monoMs) is when its Timeout ends.
+function lambdaContext(headers = {}, deadline = monoMs() + TIMEOUT_S * 1000) {
   const version = String(headers["x-openinfra-function-version"] || "");
   const requestId = String(headers["x-openinfra-request-id"] || "");
   return {
@@ -480,7 +514,7 @@ function lambdaContext(headers = {}) {
     // value, and work the handler leaves running continues (the process is not frozen between
     // invocations): what Lambda does with false.
     callbackWaitsForEmptyEventLoop: true,
-    getRemainingTimeInMillis: () => Math.max(0, deadline - Date.now()),
+    getRemainingTimeInMillis: () => Math.max(0, Math.floor(deadline - monoMs())),
   };
 }
 
@@ -510,8 +544,9 @@ class LogCapture {
     this.size += b.length;
     while (this.chunks.length > 1 && this.size - this.chunks[0].length >= TAIL_BYTES) this.size -= this.chunks.shift().length;
   }
-  // tail is X-Amz-Log-Result: base64 of the last 4 KB of START, the output, END and REPORT.
-  tail(context) {
+  // tail is X-Amz-Log-Result: base64 of the last 4 KB of START, the output, END and REPORT (with Lambda's
+  // "Status: <status>" when the invocation did not succeed or fail on its own: "timeout").
+  tail(context, status) {
     const d = process.hrtime(this.start);
     const ms = d[0] * 1e3 + d[1] / 1e6;
     let out = Buffer.concat(this.chunks).toString("utf8");
@@ -520,7 +555,7 @@ class LogCapture {
     const used = Math.ceil(process.memoryUsage().rss / 1048576);
     const log = `START RequestId: ${id} Version: ${context.functionVersion}\n${out}END RequestId: ${id}\n` +
       `REPORT RequestId: ${id}\tDuration: ${ms.toFixed(2)} ms\tBilled Duration: ${Math.ceil(ms)} ms\t` +
-      `Memory Size: ${context.memoryLimitInMB} MB\tMax Memory Used: ${used} MB\t\n`;
+      `Memory Size: ${context.memoryLimitInMB} MB\tMax Memory Used: ${used} MB\t` + (status ? `Status: ${status}` : "") + "\n";
     const b = Buffer.from(log, "utf8");
     return b.slice(Math.max(0, b.length - TAIL_BYTES)).toString("base64");
   }
@@ -578,6 +613,7 @@ function main() {
     );
 
     const server = http.createServer((req, res) => {
+      const received = monoMs(); // the invocation's clock starts when its request reaches the bootstrap
       const send = (status, body, ctype = "application/json") => {
         const b = Buffer.isBuffer(body) ? body : Buffer.from(String(body));
         res.writeHead(status, { "Content-Type": ctype, "Content-Length": b.length });
@@ -611,17 +647,51 @@ function main() {
           event._http = { method: req.method, path: q[0], query: q[1] || "", headers: req.headers };
         }
         let result;
-        const context = lambdaContext(req.headers);
+        const deadline = received + TIMEOUT_S * 1000;
+        const context = lambdaContext(req.headers, deadline);
         const cap = direct && String(req.headers["x-amz-log-type"] || "") === "Tail" ? new LogCapture() : null;
         let raised = null;
+        // The function's Timeout: at the deadline the invocation is answered as Lambda ends one, whatever the
+        // handler is doing; what it settles with afterwards is discarded. Both invocation modes alike.
+        let answered = false;
+        const timedOut = () => {
+          if (answered) return;
+          answered = true;
+          clearTimeout(timer);
+          const msg = `Task timed out after ${TIMEOUT_S.toFixed(2)} seconds`;
+          const line = `${new Date().toISOString()} ${context.awsRequestId} ${msg}\n`;
+          withLogCapture(cap, () => process.stdout.write(line));
+          if (cap && !LOG_CAPTURE) cap.add(line); // no async context to capture by on this Node: add it directly
+          if (cap) res.setHeader("X-Amz-Log-Result", cap.tail(context, "timeout"));
+          send(504, JSON.stringify({ errorType: "Sandbox.Timedout", errorMessage: `RequestId: ${context.awsRequestId} Error: ${msg}` }));
+        };
+        // A timer may fire a little early by the monotonic clock: it is then set again for what is left, so
+        // an invocation is never answered before its deadline.
+        const onTimer = () => {
+          const left = deadline - monoMs();
+          if (left > 0) timer = setTimeout(onTimer, Math.ceil(left));
+          else timedOut();
+        };
+        let timer = setTimeout(onTimer, Math.ceil(Math.max(0, deadline - monoMs())));
+        let settled = 0;
         await withLogCapture(cap, async () => {
           try {
             result = await invoke(handler, event, context);
+            settled = monoMs();
           } catch (e) {
+            settled = monoMs();
             raised = { e };
-            process.stderr.write("open-infra-runtime: handler raised:\n" + (e && e.stack ? e.stack : String(e)) + "\n");
+            if (!answered && settled < deadline) {
+              process.stderr.write("open-infra-runtime: handler raised:\n" + (e && e.stack ? e.stack : String(e)) + "\n");
+            }
           }
         });
+        if (answered) return; // answered with the timeout: the late result or error is discarded
+        // Settled at or past the deadline before the timer could run (a synchronous handler held the event
+        // loop): Lambda would have ended it, so it is answered with the timeout, not with its late result.
+        if (settled >= deadline) return timedOut();
+        answered = true;
+        clearTimeout(timer);
         if (cap) res.setHeader("X-Amz-Log-Result", cap.tail(context));
         if (raised) {
           const e = raised.e;

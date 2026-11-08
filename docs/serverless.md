@@ -29,36 +29,46 @@ spec:
 ```
 
 `memory` (a Kubernetes quantity) is set as both the container request and limit — the analog of
-Lambda's memory dial (open-infra does not couple CPU to it the way AWS does). `timeout` becomes the
-Knative revision timeout — the analog of Lambda's per-invoke timeout.
+Lambda's memory dial (open-infra does not couple CPU to it the way AWS does). `timeout` is Lambda's
+per-invoke timeout.
 
 ### Request timeout (honoured end to end)
 
-`timeout` is bounded to **1–900 seconds** (900 = Lambda's own maximum and the platform's ceiling), and it
-is the **single effective deadline** for your request. That takes aligning *two* separate timeouts that
-each otherwise default to **300s** and would silently cut a long request early — so a declared `timeout`
-of 900 is really honoured to 900, not quietly to 300:
+`timeout` is bounded to **1–900 seconds**, Lambda's own range, and is 300 when unset. As on Lambda, it
+counts from when the invoke reaches the function's runtime, so starting an instance from zero (a cold
+start) never spends it: a 3-second function called cold returns its result.
 
-- **The revision response-start timeout** — the time the request may take to produce its **first byte**.
-  Knative defaults this to 300s *independently* of your `timeout`, so a function that computes quietly for
-  more than 5 minutes before responding (a long report, a batch read, a slow migration step) would be cut
-  at 300s even though `timeout` is 900. The platform sets it **equal to your `timeout`**, so it never
-  fires before your own deadline. This is the one that bites a *working* quiet function.
-- **The shared gateway (Kourier/Envoy) idle timeout** — the time a request may produce **no bytes** at the
-  ingress hop. Its Envoy default is also 300s; the platform sets it **above** the 900s ceiling cluster-wide
-  so the gateway never cuts before the revision does.
+- **The function's own timeout.** The runtime (the Node.js, Python and .NET runtimes the platform builds)
+  ends an invocation that runs past its timeout. The answer is Lambda's timeout error (`Sandbox.Timedout`,
+  `Task timed out after N.NN seconds`), with that line and `Status: timeout` in its log. The context's
+  remaining time (`getRemainingTimeInMillis`) counts down to it.
+- **The start-up allowance.** The platform's own deadline for the request is the timeout plus 90 seconds,
+  the time an instance may take to start from zero. That deadline is the revision timeout, plus the
+  time-to-first-byte timeout, which Knative would otherwise leave at 300s whatever your `timeout`.
+- **The shared gateway (Kourier/Envoy) idle timeout.** This is the time a request may produce **no
+  bytes** at the ingress hop. Its Envoy default is 300s; the platform sets it **above** the largest
+  deadline (1050s) cluster-wide, so the gateway never cuts first.
+- **A function on its own image** (`spec.image`) runs no runtime of the platform's. So its timeout is the
+  revision timeout itself, counted from the request's arrival, a cold start included.
+- **Limits.**
+  - **Node.js:** a handler that blocks the event loop past its timeout is answered with the timeout once
+    the loop is free. Its result is discarded.
+  - **Leftover work:** what a timed-out handler leaves running carries on in the instance until it ends.
+    Lambda resets the instance instead.
+  - **A runtime image of your own** (`code.runtimeImage`): it enforces the timeout if it carries the
+    platform's runtime bootstrap at this version or later. An older image is ended at the platform's
+    deadline instead, which is the timeout plus 90 seconds.
 
 Declaring a timeout above 900 is **rejected at admission** (the XRD maximum), rather than accepted and
-then quietly under-served. (A fast response, or one that streams bytes steadily, never approaches either
-timeout regardless — they only bite a request that is *quiet*, not a slow one that keeps sending data.)
+then quietly under-served.
 
-**Telling a timeout from a failure.** A request that exceeds its deadline returns **HTTP 504** from the
-revision's queue-proxy (the component that enforces both the request budget and the response-start
-timeout) — distinct from a function *error*, which is the function's own status (e.g. a 5xx the handler
-returns, or `X-Amz-Function-Error` on a direct invoke). A 504 at ~`timeout` seconds means the request ran
-out its budget; a non-504 error is the function's own. To attribute a 504 at the *gateway* level (a wedged
-stream reclaimed by the idle backstop) versus the revision, Kourier access logging carries Envoy response
-flags — an operator can enable `enable-service-access-logging` in `config-kourier` to see them.
+**Telling a timeout from a failure.** A request that runs past its timeout gets **HTTP 504**: from the
+runtime, with Lambda's timeout error as the body, or from the revision's queue-proxy at the platform's
+deadline. The aws-shim answers both as Lambda's timeout error. A function *error* is different: it is the
+function's own status (a 5xx the handler returns, or `X-Amz-Function-Error` on a direct invoke). To
+attribute a 504 at the *gateway* level (a wedged stream reclaimed by the idle backstop) versus the
+revision, Kourier access logging carries Envoy response flags. An operator can enable
+`enable-service-access-logging` in `config-kourier` to see them.
 
 `open-infra init function` scaffolds this. It compiles to a Knative Service with
 KPA autoscaling.
@@ -180,8 +190,8 @@ targets `kind: Function` over its Knative address. All three invocation types ar
 
 - **`RequestResponse`** (default) — synchronous: the shim forwards the payload and streams the
   function's response back; a function-side error is signalled with `X-Amz-Function-Error`.
-  - **How long it runs:** the invoke runs for as long as the function's `timeout` allows (Knative's 300 s
-    when unset), plus a cold-start allowance. A long invoke needs a client that waits too: for example,
+  - **How long it runs:** the invoke runs for as long as the function's `timeout` allows (300 s when
+    unset), counted from when the invoke reaches the function, so a cold start does not count. A long invoke needs a client that waits too: for example,
     `aws lambda invoke --cli-read-timeout 0`.
   - **Past the timeout:** the invoke ends as Lambda ends it, with `X-Amz-Function-Error: Unhandled` and
     `{"errorType":"Sandbox.Timedout","errorMessage":"RequestId: … Error: Task timed out after N.NN seconds"}`.

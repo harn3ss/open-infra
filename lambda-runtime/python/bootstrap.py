@@ -20,7 +20,28 @@
 #     OPENINFRA_CODE_SHA256     = the package's recorded SHA-256 (64 lowercase hex), checked before unpacking
 #     OPENINFRA_CODE_TOKEN_FILE = the projected identity token, sent as "Authorization: Bearer <token>"
 #   OPENINFRA_LAYERS  = JSON [{bucket,key}] extracted (merged, in order) into /opt — optional
+#   OPENINFRA_TIMEOUT_S = the function's Timeout in whole seconds, 1-900; unset, not a whole number
+#                       or out of range means 300. Read once at start.
 #   PORT              = listen port (default 8080; Knative sets this)
+#
+# The function's Timeout is enforced here, as Lambda's service enforces it: each invocation's clock
+# starts when its request reaches this bootstrap (a cold start, the wait for an instance, is not
+# counted, as Lambda does not count init), and context.get_remaining_time_in_millis() counts down to
+# that deadline. The handler runs in a worker thread while the request's thread waits for it until the
+# deadline, so a handler that blocks (time.sleep, a socket read, a CPU loop in Python code) never holds
+# up the answer. An invocation still running at its deadline is answered at once with 504, Content-Type
+# application/json and no X-Amz-Function-Error (the aws-shim answers that as Lambda's timeout error),
+# the body {"errorType":"Sandbox.Timedout","errorMessage":"RequestId: <id> Error: Task timed out after
+# <T>.00 seconds"}; the line "<UTC time> <id> Task timed out after <T>.00 seconds" goes to stdout and,
+# for a LogType Tail invoke, into X-Amz-Log-Result before END and a REPORT ending "Status: timeout".
+# The handler's result or error arriving later is discarded, never sent. A Python thread cannot be
+# stopped, so the timed-out handler runs on to its end in its thread (its later output stays in its
+# own invocation's capture); the process is never exited for a timeout: the instance may be serving
+# other invocations, and a restart would put the pod into CrashLoopBackOff. One C call that holds the
+# GIL throughout (a single huge regex match, say) holds every thread, the answering one too, until it
+# returns. Knative's own revision timeout is set longer (the function's timeout plus a start-up
+# allowance) and is only a backstop. Worker threads are reused, so state a handler keeps per thread
+# lasts across invocations as it does on Lambda's single-threaded runtime.
 #
 # Invocation model:
 #   - POST with a JSON body  -> that JSON is the `event` (direct-invoke, like
@@ -37,6 +58,7 @@ import base64
 import importlib
 import json
 import os
+import queue
 import re
 import sys
 import threading
@@ -56,6 +78,24 @@ except ImportError:  # Python 3.6: ThreadingHTTPServer was added in 3.7 — defi
 TASK_DIR = os.environ.get("OPENINFRA_TASK_DIR", "/var/task")
 PORT = int(os.environ.get("PORT", "8080"))
 _START = time.time()
+
+
+def _timeout_s():
+    """The function's Timeout (OPENINFRA_TIMEOUT_S): whole seconds, 1-900, else 300."""
+    raw = os.environ.get("OPENINFRA_TIMEOUT_S", "").strip()
+    try:
+        n = int(raw) if re.match(r"^[0-9]+$", raw) else 0
+    except ValueError:  # more digits than int() takes
+        n = 0
+    if 1 <= n <= 900:
+        return n
+    if raw:
+        sys.stderr.write(f"open-infra-runtime: OPENINFRA_TIMEOUT_S {raw!r} is not a whole number of seconds from 1 "
+                         f"to 900; the timeout is 300 seconds\n")
+    return 300
+
+
+_TIMEOUT_S = _timeout_s()
 
 
 # This instance's log stream, named as Lambda names one (<date>/[$LATEST]<id>).
@@ -118,9 +158,10 @@ _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 
 
 class LambdaContext:
-    """A minimal AWS Lambda context object (the fields handlers actually read)."""
+    """A minimal AWS Lambda context object (the fields handlers actually read). deadline is when the
+    invocation's Timeout ends, on time.monotonic()'s clock."""
 
-    def __init__(self, headers=None):
+    def __init__(self, headers=None, deadline=None):
         headers = headers or {}
         version = headers.get("X-Openinfra-Function-Version") or ""
         request_id = headers.get("X-Openinfra-Request-Id") or ""
@@ -134,17 +175,18 @@ class LambdaContext:
         self.identity = None
         self.log_group_name = "/aws/lambda/" + self.function_name
         self.log_stream_name = _LOG_STREAM
-        # Knative enforces the real wall-clock timeout; expose a plausible budget.
-        self._deadline = time.time() + int(os.environ.get("OPENINFRA_TIMEOUT_S", "300"))
+        # The deadline the bootstrap enforces (see Handler._handle).
+        self._deadline = deadline if deadline is not None else time.monotonic() + _TIMEOUT_S
 
     def get_remaining_time_in_millis(self):
-        return max(0, int((self._deadline - time.time()) * 1000))
+        return max(0, int((self._deadline - time.monotonic()) * 1000))
 
 
 # --- The invocation's log tail (#407): Invoke with LogType Tail answers the last 4 KB of what that
 # invocation printed, between Lambda's START, END and REPORT lines, in X-Amz-Log-Result. Whatever the
 # invocation's thread writes to sys.stdout or sys.stderr is kept for it, so concurrent invocations never
-# share output; everything still reaches the process's own streams.
+# share output; everything still reaches the process's own streams. The invocation's thread is its worker
+# (see _Worker) while the handler runs, and the request's thread while it answers a timeout.
 _TAIL_BYTES = 4096
 _capture = threading.local()
 
@@ -173,17 +215,22 @@ class _LogCapture:
         self.parts = []
         self.size = 0
         self.start = time.time()
+        self.lock = threading.Lock()  # a timed-out handler's thread may still be writing as the tail is taken
 
     def add(self, data):
         b = data if isinstance(data, bytes) else str(data).encode("utf-8", "replace")
-        self.parts.append(b)
-        self.size += len(b)
-        while len(self.parts) > 1 and self.size - len(self.parts[0]) >= _TAIL_BYTES:
-            self.size -= len(self.parts.pop(0))
+        with self.lock:
+            self.parts.append(b)
+            self.size += len(b)
+            while len(self.parts) > 1 and self.size - len(self.parts[0]) >= _TAIL_BYTES:
+                self.size -= len(self.parts.pop(0))
 
-    def tail(self, context):
+    def tail(self, context, status=None):
+        """X-Amz-Log-Result: base64 of the last 4 KB of START, the output, END and REPORT (with Lambda's
+        "Status: <status>" when the invocation did not succeed or fail on its own: "timeout")."""
         ms = (time.time() - self.start) * 1000
-        out = b"".join(self.parts).decode("utf-8", "replace")
+        with self.lock:
+            out = b"".join(self.parts).decode("utf-8", "replace")
         if out and not out.endswith("\n"):
             out += "\n"
         rid = context.aws_request_id
@@ -195,8 +242,9 @@ class _LogCapture:
             used = 0
         log = (
             "START RequestId: %s Version: %s\n%sEND RequestId: %s\n"
-            "REPORT RequestId: %s\tDuration: %.2f ms\tBilled Duration: %d ms\tMemory Size: %d MB\tMax Memory Used: %d MB\t\n"
-            % (rid, context.function_version, out, rid, rid, ms, -(-ms // 1), context.memory_limit_in_mb, used)
+            "REPORT RequestId: %s\tDuration: %.2f ms\tBilled Duration: %d ms\tMemory Size: %d MB\tMax Memory Used: %d MB\t%s\n"
+            % (rid, context.function_version, out, rid, rid, ms, -(-ms // 1), context.memory_limit_in_mb, used,
+               "Status: " + status if status else "")
         ).encode("utf-8")
         return base64.b64encode(log[-_TAIL_BYTES:]).decode("ascii")
 
@@ -447,6 +495,94 @@ def _load_handler():
 HANDLER = None  # resolved in main()
 
 
+class _Worker:
+    """A thread that runs handlers, one invocation at a time, so the request's thread is free to answer
+    the invocation at its deadline. An idle worker is reused (the most recently idle first), so what a
+    handler keeps per thread lasts across invocations; one idle for _WORKER_IDLE_S ends. A worker whose
+    invocation timed out is busy until its handler returns, and is not given another until then."""
+
+    _idle = []
+    _lock = threading.Lock()
+
+    def __init__(self):
+        self._jobs = queue.Queue()
+        threading.Thread(target=self._loop, name="open-infra-invoke", daemon=True).start()
+
+    @classmethod
+    def run(cls, job):
+        """Run job (which never raises) on an idle worker, or a new one."""
+        with cls._lock:
+            w = cls._idle.pop() if cls._idle else None
+        if w is None:
+            w = cls()
+        w._jobs.put(job)
+
+    def _loop(self):
+        while True:
+            try:
+                job = self._jobs.get(timeout=_WORKER_IDLE_S)
+            except queue.Empty:
+                with _Worker._lock:
+                    if self in _Worker._idle:
+                        _Worker._idle.remove(self)
+                        return
+                continue  # taken as it timed out: its job is on the way
+            try:
+                job()
+            except Exception:
+                pass  # the job reports through its own state; the worker lives on
+            with _Worker._lock:
+                _Worker._idle.append(self)
+
+
+_WORKER_IDLE_S = 300
+
+
+class _Invocation:
+    """One invocation's handler call, run on a worker: what it settled with, and when."""
+
+    def __init__(self, event, context, cap, deadline):
+        self.event, self.context, self.cap, self.deadline = event, context, cap, deadline
+        self.done = threading.Event()
+        self.settled = None  # time.monotonic() when the handler returned or raised
+        self.result = None
+        self.error = None  # the Exception the handler raised
+        self.fatal = None  # a BaseException that is not an Exception (SystemExit): re-raised as before
+
+    def __call__(self):
+        _capture.log = self.cap
+        try:
+            self.result = HANDLER(self.event, self.context)
+            self.settled = time.monotonic()
+        except Exception as e:
+            self.settled = time.monotonic()
+            self.error = e
+            if self.settled < self.deadline:  # a late error is discarded, unlogged, like a late result
+                sys.stderr.write("open-infra-runtime: handler raised:\n")
+                traceback.print_exc()
+        except BaseException as e:
+            self.settled = time.monotonic()
+            self.fatal = e
+        finally:
+            _capture.log = None
+            self.done.set()
+
+    def wait(self):
+        """Wait until the handler settles or the deadline passes; True when it settled before the deadline."""
+        while not self.done.is_set():
+            left = self.deadline - time.monotonic()
+            if left <= 0:
+                break
+            self.done.wait(left)
+        return self.done.is_set() and self.settled < self.deadline
+
+
+def _utc_timestamp():
+    """Now as Lambda stamps a log line: ISO 8601 UTC with milliseconds, e.g. 2026-01-02T03:04:05.678Z."""
+    now = time.time()
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)) + ".%03dZ" % int(now % 1 * 1000)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -475,11 +611,28 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(length) if length else b""
 
+    def _timed_out(self, context, cap):
+        """Answer an invocation its handler did not finish by its deadline, as Lambda ends one: the line
+        "Task timed out" to stdout (in the invocation's own capture), and 504 Sandbox.Timedout with no
+        X-Amz-Function-Error, which the aws-shim answers as Lambda's timeout error."""
+        msg = "Task timed out after %.2f seconds" % _TIMEOUT_S
+        _capture.log = cap
+        try:
+            sys.stdout.write("%s %s %s\n" % (_utc_timestamp(), context.aws_request_id, msg))
+            sys.stdout.flush()
+        finally:
+            _capture.log = None
+        body = json.dumps({"errorType": "Sandbox.Timedout", "errorMessage": "RequestId: %s Error: %s" % (context.aws_request_id, msg)},
+                          separators=(",", ":")).encode()
+        self._send(504, body, extra_headers={"X-Amz-Log-Result": cap.tail(context, "timeout")} if cap is not None else None)
+
     def _handle(self):
         # Health probe (never collides with a real invoke).
         if self.command == "GET" and self.path == "/_openinfra_health":
             self._send(200, b'{"ok":true}')
             return
+        # The invocation's clock starts when its request reaches the bootstrap (headers read, body not yet).
+        deadline = time.monotonic() + _TIMEOUT_S
         raw = self._read_body()
         # Direct-invoke mode (AWS `Invoke` semantics) when the caller sets X-Openinfra-Invoke: direct —
         # the shim's Invoke, open-appsync, and Step Functions all do. The handler's RAW return value is
@@ -504,17 +657,22 @@ class Handler(BaseHTTPRequestHandler):
                 "query": q[1] if len(q) > 1 else "",
                 "headers": {k: v for k, v in self.headers.items()},
             }
-        context = LambdaContext(self.headers)
+        context = LambdaContext(self.headers, deadline)
         cap = _LogCapture() if direct and self.headers.get("X-Amz-Log-Type") == "Tail" else None
         tail = {}
-        _capture.log = cap
-        try:
-            result = HANDLER(event, context)
-        except Exception as e:
-            sys.stderr.write("open-infra-runtime: handler raised:\n")
-            traceback.print_exc()
+        # The handler runs on a worker; this thread waits for it until the deadline, and answers the timeout
+        # at the deadline whatever the handler is doing (both invocation modes alike). A handler that settles
+        # later is never answered: its result or error is discarded.
+        inv = _Invocation(event, context, cap, deadline)
+        _Worker.run(inv)
+        if not inv.wait():
+            self._timed_out(context, cap)
+            return
+        if inv.fatal is not None:
+            raise inv.fatal  # sys.exit() in a handler ends the request's thread, unanswered, as before
+        if inv.error is not None:
+            e = inv.error
             err = json.dumps({"errorType": type(e).__name__, "errorMessage": str(e)}).encode()
-            _capture.log = None
             if cap is not None:
                 tail = {"X-Amz-Log-Result": cap.tail(context)}
             if direct:
@@ -522,8 +680,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(502, err)
             return
-        finally:
-            _capture.log = None
+        result = inv.result
         if cap is not None:
             tail = {"X-Amz-Log-Result": cap.tail(context)}
         if direct:

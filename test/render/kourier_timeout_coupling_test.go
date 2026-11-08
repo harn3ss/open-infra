@@ -16,7 +16,10 @@ import (
 //     revision says. Left unset it falls back to Envoy's 300s default and cuts quiet requests at 300s;
 //  2. config-defaults max-revision-timeout-seconds (also knative-serving.yaml) — the per-request budget
 //     the platform admits, and the Knative webhook's hard cap on a revision's spec.timeoutSeconds;
-//  3. the kind: Function XRD `timeout` field maximum — the ceiling a tenant's claim may declare.
+//  3. the kind: Function XRD `timeout` field maximum — the ceiling a tenant's claim may declare — plus the
+//     start-up allowance a runtime function's revision adds to it (function-composition.yaml: Knative
+//     counts the wait for a cold start, the runtime enforces the function's own timeout, #413), which is
+//     also the aws-shim's invokeColdStartAllowance.
 //
 // The failure this guards: the gateway idle (1) was left at its 300s default while (2) and (3) were
 // raised to 900. A claim could declare timeout:900, have it admitted, and still be cut at exactly 300s
@@ -25,8 +28,9 @@ import (
 //
 //   - the gateway stream-idle-timeout MUST be present (absent ⇒ the 300s-default bug), and
 //   - it MUST be >= max-revision-timeout-seconds (so the gateway never undercuts the promised budget), and
-//   - the XRD `timeout` maximum MUST equal max-revision-timeout-seconds (claim ceiling == revision ceiling,
-//     so a claim can never declare more than the revision — and thus the gateway — will honour).
+//   - the XRD `timeout` maximum plus the start-up allowance MUST equal max-revision-timeout-seconds (claim
+//     ceiling + allowance == revision ceiling, so a claim can never declare more than the revision — and
+//     thus the gateway — will honour), and the composition's allowance MUST be the aws-shim's.
 //
 // Bump any one of the three without the others and this goes red, blocking the image builds (needs: test).
 func TestKourierTimeoutCeilingsAgree(t *testing.T) {
@@ -59,10 +63,23 @@ func TestKourierTimeoutCeilingsAgree(t *testing.T) {
 			"cut a quiet request BEFORE its admitted budget, so a claim's declared timeout is silently "+
 			"under-served. Set stream-idle-timeout >= %ds.", streamIdle, maxRev, maxRev)
 	}
-	if xrdMax != maxRev {
-		t.Errorf("XRD timeout maximum (%d) != max-revision-timeout-seconds (%d): a claim could declare a "+
-			"timeout the revision cap rejects at admission, or (if XRD max is lower) the platform silently "+
-			"under-advertises the budget it honours. Keep them equal.", xrdMax, maxRev)
+	// (4) the start-up allowance: the composition's, for timeoutSeconds and responseStartTimeoutSeconds alike,
+	// and the aws-shim's invokeColdStartAllowance.
+	comp := mustRead(t, "../../platform/abstraction/function-composition.yaml")
+	allow := regexp.MustCompile(`(?m)^\s*(?:timeoutSeconds|responseStartTimeoutSeconds): \{\{ add \(int \(\$spec\.timeout \| default 300\)\) ([0-9]+) \}\}`).FindAllStringSubmatch(comp, -1)
+	if len(allow) != 2 || allow[0][1] != allow[1][1] {
+		t.Fatalf("function-composition.yaml must set a runtime function's timeoutSeconds and responseStartTimeoutSeconds to its timeout plus one start-up allowance; found %v", allow)
+	}
+	allowance, _ := strconv.Atoi(allow[0][1])
+	shimAllow, ok := matchInt(mustRead(t, "../../console-api/cmd/aws-shim/lambda_timeout.go"), `invokeColdStartAllowance\s*=\s*([0-9]+)\s*\*\s*time\.Second`)
+	if !ok || shimAllow != allowance {
+		t.Errorf("the composition's start-up allowance (%ds) != the aws-shim's invokeColdStartAllowance (%ds, found %v): "+
+			"an invoke would wait a different deadline than Knative's", allowance, shimAllow, ok)
+	}
+	if xrdMax+allowance != maxRev {
+		t.Errorf("XRD timeout maximum (%d) + start-up allowance (%d) != max-revision-timeout-seconds (%d): a claim could "+
+			"declare a timeout the revision cap rejects at admission, or the platform silently under-advertises the "+
+			"budget it honours. Keep them equal.", xrdMax, allowance, maxRev)
 	}
 }
 

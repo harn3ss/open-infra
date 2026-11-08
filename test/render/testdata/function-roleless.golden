@@ -416,12 +416,24 @@ spec:
               autoscaling.knative.dev/max-scale: "10"
               autoscaling.knative.dev/target: "100"
           spec:
+            # The function's own Timeout (Lambda's, default 300 here) is enforced by its runtime,
+            # counted from when the invoke reaches it, as Lambda counts it once init is done
+            # (OPENINFRA_TIMEOUT_S below). Knative's deadline counts from the request's arrival,
+            # including the wait for an instance started from zero, so it is the timeout plus the
+            # start-up allowance (the aws-shim's invokeColdStartAllowance, 90 s): a cold start never
+            # spends the function's own time (#413). max-revision-timeout-seconds (knative-serving.yaml)
+            # is the XRD's 900 plus the same allowance. Knative's response-start timeout (time to the
+            # FIRST byte) defaults to 300 s independently, so it is set to the same deadline.
+            timeoutSeconds: 390
+            responseStartTimeoutSeconds: 390
             containers:
               - image: "ghcr.io/harn3ss/open-infra-lambda-python:latest"
                 ports: [ { containerPort: 8080 } ]
                 env:
                   - { name: OPENINFRA_HANDLER, value: "app.handler" }
                   - { name: OPENINFRA_FUNCTION_NAME, value: "code-python312-configmap" }
+                  # The function's Timeout, which the runtime enforces from each invoke's arrival.
+                  - { name: OPENINFRA_TIMEOUT_S, value: "300" }
                   # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
                   # handler relies on them (e.g. an SDK client needs a region). They can't be set
                   # as function env because AWS reserves the names, so the runtime must inject them.
@@ -517,22 +529,24 @@ spec:
               autoscaling.knative.dev/max-scale: "10"
               autoscaling.knative.dev/target: "100"
           spec:
-            # Max wall-clock per request (Knative revision timeout) — the AWS Lambda timeout knob.
-            timeoutSeconds: 30
-            # Max time to the FIRST byte from the handler. Knative defaults this to 300s (its default
-            # revision timeout), independently of timeoutSeconds — so a quiet-but-working request (a
-            # long report, a batch read, a slow migration step) is silently cut at 300s even when the
-            # declared timeout is higher. This is a SECOND 300s boundary, separate from the gateway's
-            # idle timeout; raising only the gateway does not move it. Couple it to the declared
-            # timeout so the function has ONE deadline — its own — honoured end to end. The Knative
-            # webhook requires responseStartTimeoutSeconds <= timeoutSeconds, so they are set equal.
-            responseStartTimeoutSeconds: 30
+            # The function's own Timeout (Lambda's, default 300 here) is enforced by its runtime,
+            # counted from when the invoke reaches it, as Lambda counts it once init is done
+            # (OPENINFRA_TIMEOUT_S below). Knative's deadline counts from the request's arrival,
+            # including the wait for an instance started from zero, so it is the timeout plus the
+            # start-up allowance (the aws-shim's invokeColdStartAllowance, 90 s): a cold start never
+            # spends the function's own time (#413). max-revision-timeout-seconds (knative-serving.yaml)
+            # is the XRD's 900 plus the same allowance. Knative's response-start timeout (time to the
+            # FIRST byte) defaults to 300 s independently, so it is set to the same deadline.
+            timeoutSeconds: 120
+            responseStartTimeoutSeconds: 120
             containers:
               - image: "ghcr.io/harn3ss/open-infra-lambda-python313:latest"
                 ports: [ { containerPort: 8080 } ]
                 env:
                   - { name: OPENINFRA_HANDLER, value: "main.handle" }
                   - { name: OPENINFRA_FUNCTION_NAME, value: "code-python313-bucket-layers" }
+                  # The function's Timeout, which the runtime enforces from each invoke's arrival.
+                  - { name: OPENINFRA_TIMEOUT_S, value: "30" }
                   - { name: OPENINFRA_CODE_BUCKET, value: "fn-artifacts" }
                   - { name: OPENINFRA_CODE_KEY, value: "f.zip" }
                   - { name: OPENINFRA_LAYERS, value: "[{\"bucket\":\"fn-artifacts\",\"key\":\"layer1.zip\"},{\"bucket\":\"shared\",\"key\":\"deps.zip\"}]" }
@@ -659,6 +673,16 @@ spec:
             # (hard per-function cap) OR burstable (so a running pod == one in-flight request ==
             # the "concurrent executions" unit the per-tenant concurrency quota counts).
             containerConcurrency: 1
+            # The function's own Timeout (Lambda's, default 300 here) is enforced by its runtime,
+            # counted from when the invoke reaches it, as Lambda counts it once init is done
+            # (OPENINFRA_TIMEOUT_S below). Knative's deadline counts from the request's arrival,
+            # including the wait for an instance started from zero, so it is the timeout plus the
+            # start-up allowance (the aws-shim's invokeColdStartAllowance, 90 s): a cold start never
+            # spends the function's own time (#413). max-revision-timeout-seconds (knative-serving.yaml)
+            # is the XRD's 900 plus the same allowance. Knative's response-start timeout (time to the
+            # FIRST byte) defaults to 300 s independently, so it is set to the same deadline.
+            timeoutSeconds: 390
+            responseStartTimeoutSeconds: 390
             # Burstable function pods are overcommitted, so they must lose first under node memory
             # pressure — not MinIO, databases, or the control plane (which stay Guaranteed and
             # higher-priority). openinfra-function is below default workloads and non-preempting, so
@@ -670,6 +694,8 @@ spec:
                 env:
                   - { name: OPENINFRA_HANDLER, value: "index.handler" }
                   - { name: OPENINFRA_FUNCTION_NAME, value: "code-nodejs20-bucket-burstable" }
+                  # The function's Timeout, which the runtime enforces from each invoke's arrival.
+                  - { name: OPENINFRA_TIMEOUT_S, value: "300" }
                   - { name: OPENINFRA_CODE_BUCKET, value: "fn-artifacts" }
                   - { name: OPENINFRA_CODE_KEY, value: "n.zip" }
                   # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
@@ -779,12 +805,24 @@ spec:
               autoscaling.knative.dev/max-scale: "10"
               autoscaling.knative.dev/target: "100"
           spec:
+            # The function's own Timeout (Lambda's, default 300 here) is enforced by its runtime,
+            # counted from when the invoke reaches it, as Lambda counts it once init is done
+            # (OPENINFRA_TIMEOUT_S below). Knative's deadline counts from the request's arrival,
+            # including the wait for an instance started from zero, so it is the timeout plus the
+            # start-up allowance (the aws-shim's invokeColdStartAllowance, 90 s): a cold start never
+            # spends the function's own time (#413). max-revision-timeout-seconds (knative-serving.yaml)
+            # is the XRD's 900 plus the same allowance. Knative's response-start timeout (time to the
+            # FIRST byte) defaults to 300 s independently, so it is set to the same deadline.
+            timeoutSeconds: 390
+            responseStartTimeoutSeconds: 390
             containers:
               - image: "ghcr.io/harn3ss/open-infra-lambda-nodejs22:latest"
                 ports: [ { containerPort: 8080 } ]
                 env:
                   - { name: OPENINFRA_HANDLER, value: "app.handler" }
                   - { name: OPENINFRA_FUNCTION_NAME, value: "code-nodejs22-configmap" }
+                  # The function's Timeout, which the runtime enforces from each invoke's arrival.
+                  - { name: OPENINFRA_TIMEOUT_S, value: "300" }
                   # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
                   # handler relies on them (e.g. an SDK client needs a region). They can't be set
                   # as function env because AWS reserves the names, so the runtime must inject them.
@@ -888,12 +926,24 @@ spec:
             # (hard per-function cap) OR burstable (so a running pod == one in-flight request ==
             # the "concurrent executions" unit the per-tenant concurrency quota counts).
             containerConcurrency: 1
+            # The function's own Timeout (Lambda's, default 300 here) is enforced by its runtime,
+            # counted from when the invoke reaches it, as Lambda counts it once init is done
+            # (OPENINFRA_TIMEOUT_S below). Knative's deadline counts from the request's arrival,
+            # including the wait for an instance started from zero, so it is the timeout plus the
+            # start-up allowance (the aws-shim's invokeColdStartAllowance, 90 s): a cold start never
+            # spends the function's own time (#413). max-revision-timeout-seconds (knative-serving.yaml)
+            # is the XRD's 900 plus the same allowance. Knative's response-start timeout (time to the
+            # FIRST byte) defaults to 300 s independently, so it is set to the same deadline.
+            timeoutSeconds: 390
+            responseStartTimeoutSeconds: 390
             containers:
               - image: "ghcr.io/harn3ss/open-infra-lambda-dotnet:latest"
                 ports: [ { containerPort: 8080 } ]
                 env:
                   - { name: OPENINFRA_HANDLER, value: "App::App.Fn::Handle" }
                   - { name: OPENINFRA_FUNCTION_NAME, value: "code-dotnet8-bucket" }
+                  # The function's Timeout, which the runtime enforces from each invoke's arrival.
+                  - { name: OPENINFRA_TIMEOUT_S, value: "300" }
                   - { name: OPENINFRA_CODE_BUCKET, value: "fn-artifacts" }
                   - { name: OPENINFRA_CODE_KEY, value: "d.zip" }
                   # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
@@ -1026,22 +1076,24 @@ spec:
               autoscaling.knative.dev/max-scale: "10"
               autoscaling.knative.dev/target: "100"
           spec:
-            # Max wall-clock per request (Knative revision timeout) — the AWS Lambda timeout knob.
-            timeoutSeconds: 30
-            # Max time to the FIRST byte from the handler. Knative defaults this to 300s (its default
-            # revision timeout), independently of timeoutSeconds — so a quiet-but-working request (a
-            # long report, a batch read, a slow migration step) is silently cut at 300s even when the
-            # declared timeout is higher. This is a SECOND 300s boundary, separate from the gateway's
-            # idle timeout; raising only the gateway does not move it. Couple it to the declared
-            # timeout so the function has ONE deadline — its own — honoured end to end. The Knative
-            # webhook requires responseStartTimeoutSeconds <= timeoutSeconds, so they are set equal.
-            responseStartTimeoutSeconds: 30
+            # The function's own Timeout (Lambda's, default 300 here) is enforced by its runtime,
+            # counted from when the invoke reaches it, as Lambda counts it once init is done
+            # (OPENINFRA_TIMEOUT_S below). Knative's deadline counts from the request's arrival,
+            # including the wait for an instance started from zero, so it is the timeout plus the
+            # start-up allowance (the aws-shim's invokeColdStartAllowance, 90 s): a cold start never
+            # spends the function's own time (#413). max-revision-timeout-seconds (knative-serving.yaml)
+            # is the XRD's 900 plus the same allowance. Knative's response-start timeout (time to the
+            # FIRST byte) defaults to 300 s independently, so it is set to the same deadline.
+            timeoutSeconds: 120
+            responseStartTimeoutSeconds: 120
             containers:
               - image: "ecr-registry.open-infra-ecr.svc:5000/runtime/nodejs18:latest"
                 ports: [ { containerPort: 8080 } ]
                 env:
                   - { name: OPENINFRA_HANDLER, value: "index.handler" }
                   - { name: OPENINFRA_FUNCTION_NAME, value: "code-runtimeimage-eol" }
+                  # The function's Timeout, which the runtime enforces from each invoke's arrival.
+                  - { name: OPENINFRA_TIMEOUT_S, value: "30" }
                   - { name: OPENINFRA_CODE_BUCKET, value: "mirror-code" }
                   - { name: OPENINFRA_CODE_KEY, value: "code/0f3a.zip" }
                   # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
@@ -1172,6 +1224,16 @@ spec:
             # (hard per-function cap) OR burstable (so a running pod == one in-flight request ==
             # the "concurrent executions" unit the per-tenant concurrency quota counts).
             containerConcurrency: 1
+            # The function's own Timeout (Lambda's, default 300 here) is enforced by its runtime,
+            # counted from when the invoke reaches it, as Lambda counts it once init is done
+            # (OPENINFRA_TIMEOUT_S below). Knative's deadline counts from the request's arrival,
+            # including the wait for an instance started from zero, so it is the timeout plus the
+            # start-up allowance (the aws-shim's invokeColdStartAllowance, 90 s): a cold start never
+            # spends the function's own time (#413). max-revision-timeout-seconds (knative-serving.yaml)
+            # is the XRD's 900 plus the same allowance. Knative's response-start timeout (time to the
+            # FIRST byte) defaults to 300 s independently, so it is set to the same deadline.
+            timeoutSeconds: 390
+            responseStartTimeoutSeconds: 390
             # Burstable function pods are overcommitted, so they must lose first under node memory
             # pressure — not MinIO, databases, or the control plane (which stay Guaranteed and
             # higher-priority). openinfra-function is below default workloads and non-preempting, so
@@ -1183,6 +1245,8 @@ spec:
                 env:
                   - { name: OPENINFRA_HANDLER, value: "lambda_function.lambda_handler" }
                   - { name: OPENINFRA_FUNCTION_NAME, value: "code-runtimeimage-allowegress" }
+                  # The function's Timeout, which the runtime enforces from each invoke's arrival.
+                  - { name: OPENINFRA_TIMEOUT_S, value: "300" }
                   - { name: OPENINFRA_CODE_BUCKET, value: "mirror-code" }
                   - { name: OPENINFRA_CODE_KEY, value: "code/9b1c.zip" }
                   # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a

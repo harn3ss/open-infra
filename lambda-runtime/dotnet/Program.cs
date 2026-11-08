@@ -20,6 +20,26 @@
 // parameter is supplied via a DispatchProxy of the HANDLER'S OWN ILambdaContext type, so any
 // Amazon.Lambda.Core version works without the shim referencing it. A thrown/faulted handler -> 502
 // {errorType,errorMessage}, never a silent 200. GET /_openinfra_health -> 200.
+//
+// Timeout: OPENINFRA_TIMEOUT_S = the function's Timeout in whole seconds, 1-900; unset, not a whole number
+// or out of range means 300. Read once at start. It is enforced here, as Lambda's service enforces it: each
+// invocation's clock starts when its request reaches this bootstrap (a cold start, the wait for an
+// instance, is not counted, as Lambda does not count init), and ILambdaContext.RemainingTime counts down to
+// that deadline. The handler is started on a thread of its own, so a handler that blocks synchronously
+// (Thread.Sleep, .Result, a CPU loop) holds that thread, never the one that answers. (A handler that blocks
+// a thread-pool thread after an await can delay the answer by the pool's thread injection, as it delays
+// every request the instance serves; it cannot prevent it.) An invocation still running at its deadline is
+// answered at once with 504, Content-Type application/json and no X-Amz-Function-Error (the aws-shim answers
+// that as Lambda's timeout error), the body
+// {"errorType":"Sandbox.Timedout","errorMessage":"RequestId: <id> Error: Task timed out after <T>.00 seconds"};
+// the line "<UTC time> <id> Task timed out after <T>.00 seconds" goes to stdout and, for a LogType Tail
+// invoke, into X-Amz-Log-Result before END and a REPORT ending "Status: timeout". The handler's result or
+// error arriving later is discarded, never sent. A .NET thread cannot be stopped, so the timed-out handler
+// runs on to its end; the process is never exited for a timeout: the instance may be serving other
+// invocations, and a restart would put the pod into CrashLoopBackOff. Knative's own revision timeout is set
+// longer (the function's timeout plus a start-up allowance) and is only a backstop.
+using System.Diagnostics;
+using System.Globalization;
 using System.IO.Compression;
 using System.Net;
 using System.Reflection;
@@ -37,6 +57,20 @@ static class Bootstrap
     static readonly string OptDir = Environment.GetEnvironmentVariable("OPENINFRA_OPT_DIR") ?? "/opt";
     static readonly int Port = int.TryParse(Environment.GetEnvironmentVariable("PORT"), out var p) ? p : 8080;
     static readonly DateTime Start = DateTime.UtcNow;
+    // The function's Timeout (OPENINFRA_TIMEOUT_S): whole seconds, 1-900, else 300.
+    internal static readonly int TimeoutSeconds = ReadTimeoutSeconds();
+
+    static int ReadTimeoutSeconds()
+    {
+        var raw = (Environment.GetEnvironmentVariable("OPENINFRA_TIMEOUT_S") ?? "").Trim();
+        if (int.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n >= 1 && n <= 900) return n;
+        if (raw != "")
+            Console.Error.WriteLine($"open-infra-runtime: OPENINFRA_TIMEOUT_S '{raw}' is not a whole number of seconds from 1 to 900; the timeout is 300 seconds");
+        return 300;
+    }
+
+    // DeadlineFrom is the Stopwatch timestamp at which an invocation received at `received` times out.
+    internal static long DeadlineFrom(long received) => received + TimeoutSeconds * Stopwatch.Frequency;
 
     static MethodInfo _method;
     static object _target;
@@ -325,7 +359,7 @@ static class Bootstrap
         _target = _method.IsStatic ? null : Activator.CreateInstance(type);
     }
 
-    static async Task<object> InvokeAsync(string eventJson, System.Collections.Specialized.NameValueCollection headers, string requestId)
+    static async Task<object> InvokeAsync(string eventJson, System.Collections.Specialized.NameValueCollection headers, string requestId, long deadline)
     {
         var args = new object[_params.Length];
         // Bind by parameter TYPE, not position: AWS's .NET runtime accepts (), (TIn), (TIn, ctx) and
@@ -336,7 +370,7 @@ static class Bootstrap
         for (int i = 0; i < _params.Length; i++)
         {
             var pt = _params[i].ParameterType;
-            args[i] = IsLambdaContextType(pt) ? LambdaContextProxy.Create(pt, headers, requestId) : DeserializeEvent(eventJson, pt);
+            args[i] = IsLambdaContextType(pt) ? LambdaContextProxy.Create(pt, headers, requestId, deadline) : DeserializeEvent(eventJson, pt);
         }
         var result = _method.Invoke(_target, args);
         if (result is Task task)
@@ -393,11 +427,52 @@ static class Bootstrap
         while (true)
         {
             var ctx = listener.GetContext();
-            _ = Task.Run(() => Handle(ctx));
+            var received = Stopwatch.GetTimestamp(); // the invocation's clock starts when its request reaches the bootstrap
+            _ = Task.Run(() => Handle(ctx, received));
         }
     }
 
-    static async Task Handle(HttpListenerContext ctx)
+    // One invocation's handler, started on a thread of its own (TaskCreationOptions.LongRunning, not the
+    // thread pool), so a handler that blocks synchronously holds that thread and never the pool's, which
+    // answers the invocation at its deadline. Settled is the Stopwatch timestamp at which the handler
+    // returned or threw.
+    sealed class HandlerRun
+    {
+        public Task<object> Work;
+        long _settled = long.MaxValue;
+
+        public static HandlerRun Start(Func<Task<object>> invoke)
+        {
+            var run = new HandlerRun();
+            run.Work = Task.Factory.StartNew(async () =>
+            {
+                try { return await invoke().ConfigureAwait(false); }
+                finally { Interlocked.Exchange(ref run._settled, Stopwatch.GetTimestamp()); }
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
+            return run;
+        }
+
+        // SettledBy waits until the handler settles or the deadline passes: true when it settled before it.
+        public async Task<bool> SettledBy(long deadline)
+        {
+            while (!Work.IsCompleted)
+            {
+                var left = deadline - Stopwatch.GetTimestamp();
+                if (left <= 0) break;
+                using var timer = new CancellationTokenSource(); // cancelled once the handler wins: no timer left behind
+                await Task.WhenAny(Work, Task.Delay(TimeSpan.FromMilliseconds(Math.Ceiling(left * 1000.0 / Stopwatch.Frequency)), timer.Token)).ConfigureAwait(false);
+                timer.Cancel();
+            }
+            return Work.IsCompleted && Interlocked.Read(ref _settled) < deadline;
+        }
+
+        // Abandon discards the handler's eventual result: a later fault is observed, never raised.
+        public void Abandon() =>
+            Work.ContinueWith(t => { _ = t.Exception; }, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    static async Task Handle(HttpListenerContext ctx, long received)
     {
         var req = ctx.Request;
         try
@@ -419,14 +494,28 @@ static class Bootstrap
             object result;
             var requestId = LambdaContextProxy.RequestIdFrom(req.Headers);
             var cap = direct && req.Headers["X-Amz-Log-Type"] == "Tail" ? new LogCapture() : null;
-            void AttachTail()
+            void AttachTail(string status = null)
             {
                 LogCapture.Current.Value = null;
                 if (cap != null)
-                    ctx.Response.Headers["X-Amz-Log-Result"] = cap.Tail(requestId, LambdaContextProxy.VersionFrom(req.Headers), LambdaContextProxy.MemoryMb());
+                    ctx.Response.Headers["X-Amz-Log-Result"] = cap.Tail(requestId, LambdaContextProxy.VersionFrom(req.Headers), LambdaContextProxy.MemoryMb(), status);
             }
-            LogCapture.Current.Value = cap;
-            try { result = await InvokeAsync(eventJson, req.Headers, requestId); }
+            LogCapture.Current.Value = cap; // flows into the handler's run, which keeps it after this flow clears it
+            // The function's Timeout: the handler runs on its own thread while this flow waits for it until the
+            // deadline, and answers the timeout at the deadline whatever the handler is doing (both invocation
+            // modes alike). A handler that settles later is never answered: its result or error is discarded.
+            var deadline = DeadlineFrom(received);
+            var run = HandlerRun.Start(() => InvokeAsync(eventJson, req.Headers, requestId, deadline));
+            if (!await run.SettledBy(deadline))
+            {
+                run.Abandon();
+                var msg = $"Task timed out after {TimeoutSeconds.ToString("F2", CultureInfo.InvariantCulture)} seconds";
+                Console.Out.WriteLine($"{DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture)} {requestId} {msg}");
+                AttachTail("timeout");
+                Send(ctx, 504, JsonSerializer.Serialize(new { errorType = "Sandbox.Timedout", errorMessage = $"RequestId: {requestId} Error: {msg}" }));
+                return;
+            }
+            try { result = await run.Work; }
             catch (Exception e)
             {
                 var inner = (e as TargetInvocationException)?.InnerException ?? e;

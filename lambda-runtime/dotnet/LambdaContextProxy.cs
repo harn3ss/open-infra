@@ -3,6 +3,7 @@
 // identity / version-binding hazard). Members are answered by name; anything unhandled returns the
 // member's default.
 using System.Collections.Specialized;
+using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -29,7 +30,7 @@ public class LambdaContextProxy : DispatchProxy
     static readonly Regex OwnArnRe = new Regex(@"^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:function:" + Regex.Escape(FunctionName) + @"(:[A-Za-z0-9$_-]{1,128})?$");
 
     string _reqId;
-    DateTime _deadline;
+    long _deadline; // the Stopwatch timestamp at which the invocation's Timeout ends (the bootstrap enforces it)
     object _logger; // a DispatchProxy of the handler's ILambdaLogger type (or null)
     string _invokedArn, _version;
     JsonElement? _clientContext;
@@ -52,7 +53,8 @@ public class LambdaContextProxy : DispatchProxy
     public static int MemoryMb() =>
         int.TryParse(Environment.GetEnvironmentVariable("OPENINFRA_MEMORY_MB"), out var m) && m > 0 ? m : 128;
 
-    public static object Create(Type ifaceType, NameValueCollection headers = null, string requestId = null)
+    // deadline is the Stopwatch timestamp at which the invocation's Timeout ends; 0 means one Timeout from now.
+    public static object Create(Type ifaceType, NameValueCollection headers = null, string requestId = null, long deadline = 0)
     {
         var proxy = (LambdaContextProxy)ProxyFactory.Make(ifaceType, typeof(LambdaContextProxy));
         proxy._reqId = requestId ?? RequestIdFrom(headers);
@@ -74,8 +76,7 @@ public class LambdaContextProxy : DispatchProxy
             }
             catch (Exception) { /* not base64 JSON: no client context, as when none is passed */ }
         }
-        var secs = int.TryParse(Environment.GetEnvironmentVariable("OPENINFRA_TIMEOUT_S"), out var s) ? s : 300;
-        proxy._deadline = DateTime.UtcNow.AddSeconds(secs);
+        proxy._deadline = deadline != 0 ? deadline : Bootstrap.DeadlineFrom(Stopwatch.GetTimestamp());
         var loggerProp = ifaceType.GetProperty("Logger");
         if (loggerProp != null && loggerProp.PropertyType.IsInterface)
             proxy._logger = LambdaLoggerProxy.Create(loggerProp.PropertyType);
@@ -97,7 +98,8 @@ public class LambdaContextProxy : DispatchProxy
             case "get_LogStreamName": return "";
             case "get_MemoryLimitInMB": return MemoryMb();
             case "get_RemainingTime":
-                var rem = _deadline - DateTime.UtcNow; return rem > TimeSpan.Zero ? rem : TimeSpan.Zero;
+                var left = _deadline - Stopwatch.GetTimestamp();
+                return left > 0 ? TimeSpan.FromTicks((long)(left * ((double)TimeSpan.TicksPerSecond / Stopwatch.Frequency))) : TimeSpan.Zero;
             case "get_Logger": return _logger;
             default: return Default(targetMethod.ReturnType);
         }
