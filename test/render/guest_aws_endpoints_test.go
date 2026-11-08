@@ -13,6 +13,10 @@ import (
 
 const guestAWSPath = "../../platform/aws-shim/guest-aws-endpoints.yaml"
 
+// guestAWSCAPath holds the AWS endpoints CA and its CA-type issuer, apart so that install.sh can exclude them
+// once the platform's CAs are in OpenBao (openbao.platformCAs).
+const guestAWSCAPath = "../../platform/aws-shim/guest-aws-endpoints-ca.yaml"
+
 const (
 	shimTarget     = "aws-shim.open-infra-aws-shim.svc.cluster.local."
 	registryTarget = "ecr-registry-aws.open-infra-ecr.svc.cluster.local."
@@ -64,7 +68,7 @@ type rewriteRule struct {
 
 func guestAWSDocs(t *testing.T) (raw string, byName map[string]map[string]any) {
 	t.Helper()
-	raw = mustRead(t, guestAWSPath)
+	raw = mustRead(t, guestAWSPath) + "\n---\n" + mustRead(t, guestAWSCAPath)
 	docs, err := parseYAMLDocs(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -367,7 +371,7 @@ func TestGuestAWSEndpoints_ShimAndRegistryServeTheNames(t *testing.T) {
 		}
 	}
 	install := mustRead(t, "../../install.sh")
-	for _, want := range []string{`if [ "$(yget networking.guestAwsEndpoints)" = "false" ]; then`, `EXCLUDES="${EXCLUDES},aws-shim/guest-aws-endpoints.yaml"`} {
+	for _, want := range []string{`if [ "$(yget networking.guestAwsEndpoints)" = "false" ]; then`, `EXCLUDES="${EXCLUDES},aws-shim/guest-aws-endpoints.yaml,aws-shim/guest-aws-endpoints-ca.yaml"`} {
 		if !strings.Contains(install, want) {
 			t.Errorf("install.sh must exclude the guest AWS endpoints under networking.guestAwsEndpoints: false (missing %q)", want)
 		}

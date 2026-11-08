@@ -39,7 +39,7 @@ spec:
   ports:
     - { name: https, port: 8200, protocol: TCP }
 ---
-# The members' API listener certificate, from the platform CA (networking/cluster-ca.yaml), whose name
+# The members' API listener certificate, from the platform CA (networking/cluster-ca-root.yaml), whose name
 # constraints admit only in-cluster names: clients use the .svc names below. The key is a leaf key; no
 # CA key lives in this namespace. A renewal is picked up live (the tls-reload container below).
 apiVersion: cert-manager.io/v1
@@ -99,10 +99,20 @@ spec:
             matchLabels: { openinfra.dev/openbao-client: "true" }
       ports:
         - { port: 8200, protocol: TCP }
+    # cert-manager's controller, which signs the platform's certificates through OpenBao once its CAs are
+    # there (security/openbao-issuers.yaml).
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: cert-manager }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: cert-manager, app.kubernetes.io/component: controller }
+      ports:
+        - { port: 8200, protocol: TCP }
 ---
 # The clients trust OpenBao's listener through the CA that signs it, the platform CA. This copies that CA
 # certificate, which is public, from the listener's current CertificateRequest into ConfigMap openbao-ca
-# in each client namespace; the clients mount it and name it in VAULT_CACERT. After a re-key the previous
+# in each client namespace; the clients mount it and name it in VAULT_CACERT. cert-manager, whose Vault
+# issuers read a CA bundle from a Secret only, gets it as Secret cert-manager/openbao-ca. After a re-key the previous
 # CA stays in the bundle beside the new one, so a client trusts the listener on either side of the change.
 #
 # Least privilege: in openbao, get the listener Certificate and list CertificateRequests; ConfigMaps:
@@ -194,6 +204,59 @@ spec:
   policyName: openinfra-openbao-ca
   validationActions: [Deny]
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openbao-ca-publisher
+  namespace: cert-manager
+rules:
+  - { apiGroups: [""], resources: [secrets], verbs: [create] }
+  - { apiGroups: [""], resources: [secrets], resourceNames: [openbao-ca], verbs: [get, patch, update] }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openbao-ca-publisher
+  namespace: cert-manager
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: openbao-ca-publisher }
+subjects:
+  - { kind: ServiceAccount, name: openbao-ca-publisher, namespace: openbao }
+---
+# The same confinement for the one Secret: the publisher writes only secret cert-manager/openbao-ca, and nobody
+# else but system:masters writes that Secret (it is the CA cert-manager trusts OpenBao's listener with).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-openbao-ca-secret
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [secrets]
+  validations:
+    - expression: >-
+        request.userInfo.username != 'system:serviceaccount:openbao:openbao-ca-publisher'
+        || (object.metadata.name == 'openbao-ca' && request.namespace == 'cert-manager')
+      reason: Forbidden
+      message: "the openbao-ca-publisher may write only secret cert-manager/openbao-ca"
+    - expression: >-
+        !(object.metadata.name == 'openbao-ca' && request.namespace == 'cert-manager')
+        || request.userInfo.username == 'system:serviceaccount:openbao:openbao-ca-publisher'
+        || ('system:masters' in request.userInfo.groups)
+      reason: Forbidden
+      message: "secret cert-manager/openbao-ca (the CA cert-manager trusts OpenBao with) is written only by the openbao-ca-publisher"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-openbao-ca-secret
+spec:
+  policyName: openinfra-openbao-ca-secret
+  validationActions: [Deny]
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -263,6 +326,18 @@ spec:
                       echo "could not publish to $ns (absent?)" >&2
                     fi
                   done
+                  # cert-manager's Vault issuers read their CA bundle from a Secret.
+                  kubectl -n cert-manager get secret openbao-ca -o jsonpath='{.data.ca\.crt}' 2>/dev/null | base64 -d > /tmp/old.pem 2>/dev/null || : > /tmp/old.pem
+                  if [ "$(first_cert < /tmp/old.pem | tr -d '\n')" != "$new" ]; then
+                    { first_cert < /tmp/new.pem; first_cert < /tmp/old.pem; } > /tmp/bundle.pem
+                    if kubectl -n cert-manager create secret generic openbao-ca --from-file=ca.crt=/tmp/bundle.pem --dry-run=client -o yaml \
+                         | kubectl label --local -f - app.kubernetes.io/managed-by=openbao-ca-publisher -o yaml \
+                         | kubectl apply --server-side --field-manager=openbao-ca-publisher --force-conflicts -f - >/dev/null; then
+                      echo "published the CA to secret cert-manager/openbao-ca"
+                    else
+                      echo "could not publish secret cert-manager/openbao-ca" >&2
+                    fi
+                  fi
 ---
 # The platform root's publisher (aws-shim/platform-ca-publisher.yaml) renews every platform certificate
 # the root signed after a re-key; this lets it renew the listener certificate here too.

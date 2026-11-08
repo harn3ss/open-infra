@@ -1,0 +1,94 @@
+# The platform's ClusterIssuers once its CAs are in OpenBao (config.yaml openbao.platformCAs: true; docs/openbao.md,
+# "The platform's CAs"). openinfra-ca, openinfra-aws-endpoints and openinfra-acm keep their names, so every
+# Certificate that names them keeps working; each signs through an OpenBao intermediate whose key OpenBao
+# generated (or, for the ACM CA, holds since it was imported) and never exports, and every certificate chains to
+# the same roots as before, which are offline.
+#
+# Each issuer logs in to OpenBao with a short-lived token of ServiceAccount openbao-issuer that cert-manager
+# requests for it (audience vault://<issuer>); OpenBao's role for each allows exactly its own sign path (the
+# openbao-setup Job writes them). The CA bundle is the one that signs OpenBao's listener (Secret
+# cert-manager/openbao-ca, from the openbao-ca-publisher).
+#
+# OFF unless openbao.platformCAs is true (install.sh excludes it, and excludes the CA-type issuers instead).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openbao-issuer
+  namespace: cert-manager
+---
+# cert-manager may request tokens for openbao-issuer, and for no other ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openbao-issuer-token
+  namespace: cert-manager
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    resourceNames: [openbao-issuer]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openbao-issuer-token
+  namespace: cert-manager
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: openbao-issuer-token }
+subjects:
+  - { kind: ServiceAccount, name: cert-manager, namespace: cert-manager }
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: openinfra-ca
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  vault:
+    server: https://openbao-active.openbao.svc:8200
+    path: openinfra/pki-platform/sign/platform
+    caBundleSecretRef: { name: openbao-ca, key: ca.crt }
+    auth:
+      kubernetes:
+        mountPath: /v1/auth/kubernetes
+        role: cert-manager-platform
+        serviceAccountRef: { name: openbao-issuer }
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: openinfra-aws-endpoints
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  vault:
+    server: https://openbao-active.openbao.svc:8200
+    path: openinfra/pki-aws-endpoints/sign/aws-endpoints
+    caBundleSecretRef: { name: openbao-ca, key: ca.crt }
+    auth:
+      kubernetes:
+        mountPath: /v1/auth/kubernetes
+        role: cert-manager-aws-endpoints
+        serviceAccountRef: { name: openbao-issuer }
+---
+# The validated-domain (ACM-style) CA: its role allows only the operator's validated domains, and the CA
+# certificate itself is name-constrained to them.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: openinfra-acm
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  vault:
+    server: https://openbao-active.openbao.svc:8200
+    path: openinfra/pki-acm/sign/acm
+    caBundleSecretRef: { name: openbao-ca, key: ca.crt }
+    auth:
+      kubernetes:
+        mountPath: /v1/auth/kubernetes
+        role: cert-manager-acm
+        serviceAccountRef: { name: openbao-issuer }

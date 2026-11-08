@@ -257,6 +257,9 @@ openbao:
   unsealHost:
     address: ""          # "address, for the cluster", e.g. https://192.0.2.10:8200
     caFingerprint: ""    # "CA SHA-256 fingerprint"; install.sh accepts the host's CA only if it matches
+  # true once scripts/openbao-pki.sh has moved the platform's CAs into OpenBao (docs/openbao.md): the roots are
+  # offline, and the ClusterIssuers sign through OpenBao intermediates. Leave false until then.
+  platformCAs: false
 
 # Mail (issue #23). Only meaningful when components.mail: true.
 mail:

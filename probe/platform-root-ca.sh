@@ -2,7 +2,7 @@
 # Probe: the platform root CA guests and clients trust is the one that signs, and it can vouch only for
 # the names it should.
 #
-# The root (cert-manager Certificate openinfra-root-ca, platform/networking/cluster-ca.yaml) is published
+# The root (cert-manager Certificate openinfra-root-ca, platform/networking/cluster-ca-root.yaml) is published
 # for VM guests in the EnvironmentConfig openinfra-platform-ca by the platform-ca-publisher. Asserted:
 #   - the published root is a self-signed CA certificate carrying a CRITICAL name-constraints extension
 #     whose permitted DNS domains and IP ranges are exactly the root Certificate's spec (cert-manager

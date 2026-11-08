@@ -101,6 +101,11 @@ rules:
   - apiGroups: [cert-manager.io]
     resources: [certificaterequests]
     verbs: [list]
+  # The roots' certificates once the platform's CAs are in OpenBao (public).
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [openinfra-roots]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -244,6 +249,25 @@ spec:
                     printf '%s' "$i_pem"
                   }
                   ready() { printf '%s' "$1" | jq -e 'any(.status.conditions[]?; .type == "Ready" and .status == "True")' >/dev/null; }
+
+                  # Once the platform's CAs live in OpenBao (docs/openbao.md, "The platform's CAs"), the roots
+                  # are offline and their Certificates gone: the roots' certificates are in ConfigMap
+                  # openinfra-roots (public, written when the CAs moved). They are published from there, as
+                  # PEM certificates only, and no leaf is force-renewed: an intermediate rotation needs none.
+                  pem_only() { ! printf '%s\n' "$1" | grep -q -v -x -e '-----BEGIN CERTIFICATE-----' -e '-----END CERTIFICATE-----' -e '[A-Za-z0-9+/=]*' -e ''; }
+                  if ! kubectl -n "$ROOT_NS" get certificate "$ROOT_CERT" -o name >/dev/null 2>&1 \
+                      && roots="$(kubectl -n "$ROOT_NS" get configmap openinfra-roots -o json 2>/dev/null)"; then
+                    pem="$(printf '%s' "$roots" | jq -r '.data.platformRootCA // empty')"
+                    aws="$(printf '%s' "$roots" | jq -r '.data.awsEndpointsCA // empty')"
+                    case "$pem" in *"BEGIN CERTIFICATE"*) ;; *) echo "openinfra-roots holds no platform root" >&2; exit 1 ;; esac
+                    pem_only "$pem" && pem_only "$aws" || { echo "refusing to publish: openinfra-roots is not PEM certificates only" >&2; exit 1; }
+                    jq -n --arg pem "$pem" --arg aws "$aws" '{apiVersion: "apiextensions.crossplane.io/v1alpha1", kind: "EnvironmentConfig",
+                        metadata: {name: "openinfra-platform-ca", labels: {"app.kubernetes.io/managed-by": "platform-ca-publisher"}},
+                        data: ({platformRootCA: (($pem | rtrimstr("\n")) + "\n")} + (if $aws == "" then {} else {awsEndpointsCA: (($aws | rtrimstr("\n")) + "\n")} end))}' \
+                      | kubectl apply --server-side --field-manager=platform-ca-publisher -f -
+                    echo "openinfra-platform-ca holds the platform root CA (offline; its CAs are in OpenBao)"
+                    exit 0
+                  fi
 
                   # The root Certificate, and the Secret the ClusterIssuer signs with.
                   crt="$(kubectl -n "$ROOT_NS" get certificate "$ROOT_CERT" -o json)"

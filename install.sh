@@ -133,7 +133,7 @@ incl awsShim "aws-shim/*"
 # networking.guestAwsEndpoints: false): the guest resolver, the guest-only AWS endpoints CA,
 # and the registry's ECR names. Off => guests use the cluster DNS.
 if [ "$(yget networking.guestAwsEndpoints)" = "false" ]; then
-  EXCLUDES="${EXCLUDES},aws-shim/guest-aws-endpoints.yaml"
+  EXCLUDES="${EXCLUDES},aws-shim/guest-aws-endpoints.yaml,aws-shim/guest-aws-endpoints-ca.yaml"
   LOG "guest AWS endpoints off (networking.guestAwsEndpoints: false)"
 fi
 incl openAppsync "open-appsync/*" # open-appsync engine (backs the shim's AppSync surface)
@@ -149,6 +149,15 @@ incl pki "abstraction/certificateauthority-xrd.yaml,abstraction/certificateautho
 # by an OpenBao outside the cluster. OFF unless components.openbao: true; needs the unseal host, its
 # token Secret and an operator to initialize it (docs/openbao.md). Its site values are written below (2a-bao).
 incl openbao "security/openbao.yaml"
+# The platform's CAs in OpenBao (openbao.platformCAs: true, once scripts/openbao-pki.sh moved them): the roots
+# are offline, so their cert-manager Certificates and CA-type issuers are excluded and the OpenBao-backed
+# issuers of the same names (security/openbao-issuers.yaml) sign instead. Otherwise the reverse.
+if [ "$(yget components.openbao)" = "true" ] && [ "$(yget openbao.platformCAs)" = "true" ]; then
+  EXCLUDES="${EXCLUDES},networking/cluster-ca-root.yaml,aws-shim/guest-aws-endpoints-ca.yaml"
+  LOG "platform CAs: in OpenBao (openbao.platformCAs); the roots are offline"
+else
+  EXCLUDES="${EXCLUDES},security/openbao-issuers.yaml"
+fi
 if [ "$(yget components.encryption)" = "true" ] && [ "$(yget components.openbao)" != "true" ]; then
   WARN "components.encryption is on but components.openbao is not: its key service is OpenBao, so KMS, Secrets Manager and encryption keys fail until components.openbao: true (docs/openbao.md)"
 fi
@@ -986,6 +995,23 @@ if [ -n "$VD_LIST" ]; then
     printf '  + apply Certificate cert-manager/openinfra-acm-ca (CA, constrained to %s), ClusterIssuer openinfra-acm, EnvironmentConfig + ConfigMap openinfra-certificates\n' "$VD_LIST"
   elif ! $KUBECTL get clusterissuer openinfra-ca >/dev/null 2>&1; then
     WARN "certificates.validatedDomains set but the platform root (ClusterIssuer openinfra-ca) is not present yet — skipping. Re-run install.sh once cert-manager has converged."
+  elif [ "$(yget components.openbao)" = "true" ] && [ "$(yget openbao.platformCAs)" = "true" ]; then
+    # The ACM-style CA lives in OpenBao (openinfra/pki-acm, issuer openinfra-acm from security/openbao-issuers.yaml),
+    # name-constrained to the list it was made for; only the list the aws-shim and static sites read is written.
+    prev="$($KUBECTL get environmentconfig openinfra-certificates -o jsonpath='{.data.validatedDomains[*]}' 2>/dev/null | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//')"
+    if [ -n "$prev" ] && [ "$prev" != "$VD_LIST" ]; then
+      WARN "certificates.validatedDomains changed ($prev -> $VD_LIST): the ACM-style CA in OpenBao is constrained to the previous list; a new one, signed with the offline root, is needed for the new domains (docs/openbao.md)"
+    fi
+    cat <<EOF | $KUBECTL apply -f -
+apiVersion: apiextensions.crossplane.io/v1alpha1
+kind: EnvironmentConfig
+metadata: { name: openinfra-certificates }
+data:
+  validatedDomains: [ $VD_JSON ]
+EOF
+    $KUBECTL create namespace open-infra-aws-shim --dry-run=client -o yaml | $KUBECTL apply -f - >/dev/null
+    $KUBECTL -n open-infra-aws-shim create configmap openinfra-certificates \
+      --from-literal=validatedDomains="$(printf '%s\n' $VD_LIST)" --dry-run=client -o yaml | $KUBECTL apply -f -
   else
     # Each domain must be inside the root's own name constraints, or no certificate for it would verify.
     ROOT_DOMAINS="$($KUBECTL -n cert-manager get certificate openinfra-root-ca -o jsonpath='{.spec.nameConstraints.permitted.dnsDomains[*]}' 2>/dev/null || true)"
@@ -993,7 +1019,7 @@ if [ -n "$VD_LIST" ]; then
       for d in $VD_LIST; do
         inside=0
         for r in $ROOT_DOMAINS; do case "$d" in "$r"|*".$r") inside=1 ;; esac; done
-        [ "$inside" = 1 ] || DIE "certificates.validatedDomains: $d is outside the platform root's name constraints ($ROOT_DOMAINS), so no certificate for it would verify; add the domain in platform/networking/cluster-ca.yaml first"
+        [ "$inside" = 1 ] || DIE "certificates.validatedDomains: $d is outside the platform root's name constraints ($ROOT_DOMAINS), so no certificate for it would verify; add the domain in platform/networking/cluster-ca-root.yaml first"
       done
     fi
     cat <<EOF | $KUBECTL apply -f -

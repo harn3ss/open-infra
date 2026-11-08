@@ -30,7 +30,7 @@
 #    beside the platform root (openinfra-platform-ca, awsEndpointsCA) and the guest's agent adds it to the
 #    system trust store. LAN clients, which import the platform root, never trust it, so no workstation
 #    accepts a certificate this platform minted for an AWS name. (The platform root could not sign these
-#    anyway: it is name-constrained to in-cluster and private names, networking/cluster-ca.yaml.)
+#    anyway: it is name-constrained to in-cluster and private names, networking/cluster-ca-root.yaml.)
 # 3. The aws-shim serves the AWS names on its AWS-names TLS listener (Service port 443 -> :8443) with
 #    aws-shim-aws-endpoints-tls. A caller that came by sqs.<region>.amazonaws.com is answered with queue
 #    URLs in that shape, but a queue is always recorded under the shim's own URL, so no other caller is
@@ -48,50 +48,6 @@
 # The resolver's address is a fixed ClusterIP in the statically-assigned band of the Service CIDR
 # (10.43.0.0/24 on k3s and RKE2). On a cluster with another Service CIDR, change it in the Service and in
 # the EnvironmentConfig below (a render test checks the two agree).
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: openinfra-aws-endpoints-ca
-  namespace: cert-manager
-  annotations:
-    argocd.argoproj.io/sync-wave: "1"
-    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
-spec:
-  isCA: true
-  commonName: open-infra AWS endpoints CA (VM guests)
-  subject:
-    organizations: [open-infra]
-  # The number is the key's generation, as for the platform root (cluster-ca.yaml): a renewal re-signs
-  # with the same key; a new key is a new Secret name here and in the ClusterIssuer.
-  secretName: openinfra-aws-endpoints-ca-1
-  duration: 87600h      # 10 years
-  renewBefore: 720h
-  privateKey:
-    algorithm: ECDSA
-    size: 256
-    rotationPolicy: Never
-  # It can vouch for AWS's names only: a client that trusts it is not exposed for any other domain, even
-  # if its key leaked.
-  nameConstraints:
-    critical: true
-    permitted:
-      dnsDomains: [amazonaws.com]
-  issuerRef:
-    name: openinfra-issuer  # self-signed: the root signs itself
-    kind: ClusterIssuer
-    group: cert-manager.io
----
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: openinfra-aws-endpoints
-  annotations:
-    argocd.argoproj.io/sync-wave: "2"
-    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
-spec:
-  ca:
-    secretName: openinfra-aws-endpoints-ca-1
 ---
 # openinfra-aws-endpoints issues only in the aws-shim's and the registry's namespaces: a tenant who can
 # create a Certificate would otherwise get one for an AWS name that every VM guest trusts.

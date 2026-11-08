@@ -432,7 +432,7 @@ those domains, so it can vouch for no other name. Then:
   which a client trusts only if told to. The plan says which applies.
 
 Each validated domain must be inside the platform root's own name constraints (`cluster.local`, `svc`,
-`sslip.io`, or a domain added in `platform/networking/cluster-ca.yaml`). Give sites a domain of their
+`sslip.io`, or a domain added in `platform/networking/cluster-ca-root.yaml`). Give sites a domain of their
 own (for example `sites.<LAN-IP-with-dashes>.sslip.io`) rather than the one platform endpoints use, so
 no stack can name a platform hostname. Offline, `cfn plan -validated-domains d1,d2` plans for such an
 environment.

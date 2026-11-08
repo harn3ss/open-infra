@@ -1,0 +1,63 @@
+# The platform root CA, kept by cert-manager in its namespace, and the CA-type ClusterIssuer openinfra-ca
+# that signs with it (cluster-ca.yaml describes the CA and its admission policy).
+#
+# Once the platform's CAs move into OpenBao (config.yaml openbao.platformCAs: true; docs/openbao.md, "The
+# platform's CAs"), the root goes offline and install.sh excludes this file: openinfra-ca then signs through
+# an OpenBao intermediate the root signed (security/openbao-issuers.yaml), and every certificate still chains
+# to this same root, so no client re-imports it.
+#
+# Applied after cert-manager installs (sync-wave 1); SkipDryRun so it applies before the CRDs register.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openinfra-root-ca
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  isCA: true
+  commonName: open-infra root CA
+  subject:
+    organizations: [open-infra]
+  # The number is the key's generation. A renewal (near expiry, or one an operator triggers) re-signs
+  # the root with the SAME key (rotationPolicy: Never), so clients that trust it keep working. To give the
+  # root a NEW key, bump the number here and in the ClusterIssuer below: cert-manager issues into the new
+  # Secret with a fresh key; once the ClusterIssuer signs with it, the platform-ca-publisher publishes the
+  # new root to VM guests and renews every platform certificate signed by the old one. Then delete the
+  # previous generation's Secret (it still holds the old key), and re-import the root on clients.
+  # Generation 2: the first key was kept through the name-constraints re-sign (#347).
+  secretName: openinfra-root-ca-2
+  duration: 87600h      # 10 years
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never   # a renewal keeps the key; a new key is a new generation (secretName above)
+  # The root can vouch only for in-cluster names, sslip.io LAN names and private addresses. A client
+  # that trusts it is not exposed for any other domain, even if the root's key leaked. A site whose LAN
+  # names use its own domain adds that domain here. cert-manager does NOT re-issue the root when only
+  # this changes: renew it (`cmctl renew -n cert-manager openinfra-root-ca`), which re-signs it with the
+  # same key, so issued certificates and clients that already trust the root keep working; the publisher
+  # then publishes the re-signed root. Re-import the root on clients to get the constraint.
+  # probe/platform-root-ca.sh fails while the issued root and this spec differ.
+  nameConstraints:
+    critical: true
+    permitted:
+      dnsDomains: [cluster.local, svc, sslip.io]
+      ipRanges: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+  issuerRef:
+    name: openinfra-issuer  # self-signed: the root signs itself
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: openinfra-ca
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  ca:
+    secretName: openinfra-root-ca-2   # the root's current key generation (see above)
