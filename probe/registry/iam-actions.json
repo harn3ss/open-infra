@@ -1191,6 +1191,7 @@
    "iam:PassRole"
   ],
   "ec2": [
+   "ec2:DeleteFlowLogs",
    "iam:PassRole"
   ],
   "ecr": [

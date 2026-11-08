@@ -370,6 +370,17 @@ func missingResourceCases() []missingCase {
 			h.door.authz = a
 			return ec2Call(h, c, url.Values{"Action": {"DeleteVolume"}, "VolumeId": {"vol-00000000000000000"}})
 		}},
+		{door: "ec2", op: "DeleteFlowLogs", call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+			h := eniFixture(t)
+			h.flowLogs = &ec2FlowLogStore{db: emptyDB(t)}
+			h.door.authz = a
+			return ec2Call(h, c, url.Values{"Action": {"DeleteFlowLogs"}, "FlowLogId.1": {"fl-00000000000000000"}})
+		}},
+		{door: "ec2", op: "DescribeNetworkInterfaces(id)", call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+			h := eniFixture(t)
+			h.door.authz = a
+			return ec2Call(h, c, url.Values{"Action": {"DescribeNetworkInterfaces"}, "NetworkInterfaceId.1": {"eni-00000000000000000"}})
+		}},
 		{door: "ec2", op: "TerminateInstances", call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
 			h, _ := ec2Fixture(t)
 			h.door.authz = a

@@ -42,7 +42,8 @@ var SupportedActions = map[string]map[string]bool{
 		"DescribeInstances": true, "DescribeVolumes": true, "DescribeSecurityGroups": true, "DescribeVpcs": true, "DescribeSubnets": true,
 		"DescribeImages": true, "DescribeRegions": true, "DescribeAvailabilityZones": true, "DescribeKeyPairs": true,
 		"ImportKeyPair": true, "CreateKeyPair": true, "DeleteKeyPair": true, "DeleteVolume": true,
-		"DescribeInternetGateways": true, "DescribeRouteTables": true, "DescribeNetworkAcls": true, "DescribeVpcEndpoints": true},
+		"DescribeInternetGateways": true, "DescribeRouteTables": true, "DescribeNetworkAcls": true, "DescribeVpcEndpoints": true,
+		"DescribeNetworkInterfaces": true, "CreateFlowLogs": true, "DescribeFlowLogs": true, "DeleteFlowLogs": true},
 	"ec2messages": {"GetMessages": true, "SendReply": true, "AcknowledgeMessage": true, "DeleteMessage": true, "FailMessage": true, "GetEndpoint": true},
 }
 
@@ -570,6 +571,7 @@ func arnToResource(arn string) (string, bool) {
 		for _, m := range []struct{ prefix, typ string }{
 			{"elastic-ip/", "ElasticIp"}, {"instance/", "Instance"}, {"volume/", "Volume"},
 			{"key-pair/", "KeyPair"}, {"security-group/", "SecurityGroup"},
+			{"vpc-flow-log/", "VpcFlowLog"}, {"network-interface/", "NetworkInterface"},
 		} {
 			if r, ok := cut(m.prefix, m.typ); ok {
 				return r, true

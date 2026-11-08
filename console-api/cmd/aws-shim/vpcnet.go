@@ -58,6 +58,7 @@ type vpcInterface struct {
 	VpcID, SubnetID             string
 	SubnetIDs, SecurityGroupIDs []string
 	ENI                         string
+	MAC                         string    // the interface's MAC address (the IP object's spec.macAddress)
 	Attached, Detached          time.Time // Detached is zero while the pod runs
 }
 
@@ -232,6 +233,7 @@ func (v *vpcInterfaces) attach(ctx context.Context, obj *unstructured.Unstructur
 	if !ok {
 		return
 	}
+	in.MAC, _, _ = unstructured.NestedString(obj.Object, "spec", "macAddress")
 	v.mu.Lock()
 	v.byObj[name] = ip
 	v.byIP[ip] = append(v.byIP[ip], in)

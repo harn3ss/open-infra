@@ -43,7 +43,7 @@ var dynamicResourceTypes = map[string][]string{
 	"cloudfront_read.go":     {"CachePolicy", "OriginRequestPolicy", "ResponseHeadersPolicy", "OriginAccessControl", "OriginAccessIdentity"},
 	"glue.go":                {"Database", "Table"},
 	"athena.go":              {"WorkGroup", "Table"},
-	"ec2.go":                 {"Instance", "Volume", "SecurityGroup", "KeyPair", "ElasticIp"},
+	"ec2.go":                 {"Instance", "Volume", "SecurityGroup", "KeyPair", "ElasticIp", "VpcFlowLog"},
 	"eventbridge.go":         {"EventBus", "Rule"},
 	"rds.go":                 {"DBInstance", "DBSnapshot"},
 	"cfn_services.go":        {"Queue", "Topic", "Parameter", "Key", "ElasticIp", "Repository", "EventBus", "LogGroup", "Secret", "Namespace", "Function"},
@@ -105,7 +105,8 @@ var exampleArn = map[string]string{
 	"Cluster": "arn:aws:eks:us-east-1:1:cluster/c", "Volume": "arn:aws:ec2:us-east-1:1:volume/v",
 	"SecurityGroup": "arn:aws:ec2:us-east-1:1:security-group/sg", "KeyPair": "arn:aws:ec2:us-east-1:1:key-pair/k",
 	"ElasticIp": "arn:aws:ec2:us-east-1:1:elastic-ip/e", "EventBus": "arn:aws:events:us-east-1:1:event-bus/b",
-	"Rule": "arn:aws:events:us-east-1:1:rule/b/r",
+	"Rule": "arn:aws:events:us-east-1:1:rule/b/r", "VpcFlowLog": "arn:aws:ec2:us-east-1:1:vpc-flow-log/fl-1",
+	"NetworkInterface": "arn:aws:ec2:us-east-1:1:network-interface/eni-1",
 }
 
 // notImportableTypes are resource types the shim checks that no AWS ARN names, each with why.

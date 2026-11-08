@@ -182,6 +182,8 @@ func run(logger *slog.Logger) error {
 	var cognitoSt *cognitoStore
 	var cfnSvcOwners *cfnServiceOwners
 	var ec2KeySt *ec2KeyStore
+	var ec2FlowSt *ec2FlowLogStore
+	var sharedPG *sql.DB // the shared store's pool (the flow-log delivery worker's advisory lock)
 	if sqsURI := getenv("SQS_PG_URI", getenv("MONGO_PG_URI", "")); sqsURI != "" {
 		// A backing-store outage must NOT take the whole shim down. Build these shared-Postgres stores in
 		// a closure; on ANY failure, log and leave them nil — each service is nil-guarded at registration,
@@ -283,13 +285,19 @@ func run(logger *slog.Logger) error {
 			if serr := ec2KeySt.ensureSchema(context.Background()); serr != nil {
 				return fmt.Errorf("EC2 key-pair schema init failed: %w", serr)
 			}
+			// EC2 VPC Flow Logs (ec2_flowlogs.go), delivered into the CloudWatch Logs store above.
+			ec2FlowSt = &ec2FlowLogStore{db: db}
+			if serr := ec2FlowSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("EC2 flow-log schema init failed: %w", serr)
+			}
+			sharedPG = db
 			logger.Info("connected to the SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/Cognito Postgres")
 			return nil
 		}()
 		if initErr != nil {
 			logger.Warn("shared SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/DynamoDBStreams/Cognito Postgres unavailable — those services answer 501 until recovery; the shim + Cedar enforcement stay up", slog.String("err", initErr.Error()))
 			sqsSt, snsSt, kmsSt, secretsSt, ebSt, cwlSt, ssmSt, apigwSt, apigwV1St, cwSt, kinesisSt, ddbStreamSt, cognitoSt = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
-			cfnSvcOwners, ec2KeySt = nil, nil
+			cfnSvcOwners, ec2KeySt, ec2FlowSt, sharedPG = nil, nil, nil, nil
 		}
 	}
 
@@ -702,6 +710,8 @@ func run(logger *slog.Logger) error {
 	accountNS := ""         // the account's namespace (the stack namespace): Run Command's managed instances
 	cmdBus := &commandBus{}
 	ssmH.bus = cmdBus
+	// EC2 flow logs' delivery (ec2_flowlogs_delivery.go), started below once the signal context exists.
+	var flowLogWorker *flowLogDelivery
 	if dyn != nil {
 		cfnNS := ident.StackNamespace // CFN_NAMESPACE: the StackId and AWS::StackId are both derived from it
 		if cfnH, cerr := newCFNDoorway(kc.Config, dyn, account, region, cfnNS, svcSuffix, logger); cerr != nil {
@@ -732,7 +742,10 @@ func run(logger *slog.Logger) error {
 			// EC2 (ec2.*): the stack namespace's instances, volumes, groups, VPCs and subnets, the catalog,
 			// and the key pairs an instance's KeyName names (ec2.go).
 			ec2H := newEC2Handler(cfnH, ec2KeySt, logger)
+			// Lambda's network interfaces and VPC Flow Logs (ec2_network_interfaces.go, ec2_flowlogs.go).
+			ec2H.flowLogs, ec2H.vpc, ec2H.fns, ec2H.rolesNS = ec2FlowSt, vpcIfaces, fns, rolesNS
 			services["ec2"] = ec2H
+			flowLogWorker = newFlowLogWorker(ec2H, sharedPG, cwlSt, vpcIfaces, dyn, cs, authzChecker, acctDir, rolesNS, logger)
 			if ec2KeySt != nil {
 				cfnH.keyPairs = ec2KeySt.publicKeys
 			}
@@ -1025,6 +1038,9 @@ func run(logger *slog.Logger) error {
 	defer stop()
 	if vpcIfaces != nil {
 		go vpcIfaces.Run(ctx) // follows the Lambda VPC subnet's addresses; exits when ctx is cancelled
+	}
+	if flowLogWorker != nil {
+		go flowLogWorker.Run(ctx) // VPC Flow Logs' delivery, on the replica holding its lock; exits with ctx
 	}
 	if cfnDoor != nil {
 		// Resolve stack operations a previous front door was running when it stopped (interrupted creates

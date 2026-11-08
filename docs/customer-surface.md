@@ -458,7 +458,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | Cognito | `cognito-idp` | proven | 20 |
 | DynamoDB | `dynamodb` | proven | 19 |
 | DynamoDB | `dynamodbstreams` | proven | 4 |
-| EC2 | `ec2` | proven | 22 |
+| EC2 | `ec2` | proven | 26 |
 | ECR | `ecr` | proven | 37 |
 | ECS | `ecs` | proven | 13 |
 | EKS | `eks` | proven | 4 |

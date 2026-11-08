@@ -15,7 +15,7 @@ func TestExportAWS_RoundTripsThroughImport(t *testing.T) {
 		"Secret::db-credentials", "Repository::app", "Service::web", "LogGroup::/aws/lambda/worker", "DBInstance::db1",
 		"DBSnapshot::snap1", "Identity::example.com", "Distribution::E2ABC", "CachePolicy::cp1", "OriginRequestPolicy::orp1",
 		"ResponseHeadersPolicy::rhp1", "OriginAccessControl::oac1", "OriginAccessIdentity::oai1", "ElasticIp::eipalloc-1",
-		"Instance::i-0123", "Volume::vol-1", "KeyPair::deploy", "SecurityGroup::sg-1", "Api::a1b2c3", "Role::app", "User::alice",
+		"Instance::i-0123", "Volume::vol-1", "KeyPair::deploy", "SecurityGroup::sg-1", "VpcFlowLog::fl-1", "NetworkInterface::eni-1", "Api::a1b2c3", "Role::app", "User::alice",
 		"Policy::reader", "StateMachine::orders", "Stack::app", "GraphQLApi::api1", "Certificate::c1", "UserPool::pool1", "Quota::lambda/L-B99A9384",
 		"Database::sales", "WorkGroup::primary", "Cluster::prod", "EventBus::orders", "Rule::orders/new-order", "*"}
 	for _, res := range types {
