@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/harn3ss/open-infra/console-api/internal/vaultclient"
 	"io"
 	"net/http"
 	"os"
@@ -46,7 +47,7 @@ func newVaultTransit() *vaultTransit {
 		addr:      addr,
 		role:      getenv("KMS_VAULT_ROLE", "aws-shim-kms"),
 		tokenPath: getenv("STS_SA_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
-		hc:        &http.Client{Timeout: 15 * time.Second},
+		hc:        vaultclient.HTTPClient(15 * time.Second),
 	}
 }
 

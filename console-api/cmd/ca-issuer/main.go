@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/harn3ss/open-infra/console-api/internal/vaultclient"
 	"io"
 	"log"
 	"net/http"
@@ -50,7 +51,7 @@ func main() {
 		vaultAddr: envOr("VAULT_ADDR", "http://vault.vault.svc.cluster.local:8200"),
 		role:      envOr("VAULT_ROLE", "ca-issuer"),
 		tokenPath: envOr("SA_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
-		hc:        &http.Client{Timeout: 20 * time.Second},
+		hc:        vaultclient.HTTPClient(20 * time.Second),
 		log:       log.New(os.Stdout, "ca-issuer ", log.LstdFlags|log.LUTC),
 	}
 

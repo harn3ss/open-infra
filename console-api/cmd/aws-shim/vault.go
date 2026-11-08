@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/harn3ss/open-infra/console-api/internal/vaultclient"
 	"io"
 	"log/slog"
 	"net/http"
@@ -54,7 +55,7 @@ func newVaultKeyFetcher() *vaultKeyFetcher {
 		kvPath:    getenv("STS_VAULT_KV_PATH", "sts/data/signing-key"),
 		field:     getenv("STS_VAULT_KEY_FIELD", "key"),
 		tokenPath: getenv("STS_SA_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
-		hc:        &http.Client{Timeout: 15 * time.Second},
+		hc:        vaultclient.HTTPClient(15 * time.Second),
 	}
 }
 

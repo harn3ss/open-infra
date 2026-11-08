@@ -71,8 +71,8 @@ spec:
     - openbao-2.openbao-internal.openbao.svc
     - openbao-2.openbao-internal.openbao.svc.cluster.local
 ---
-# Only the members reach one another (Raft and request forwarding); no other pod, in this namespace or
-# any other, reaches them. Each client that moves onto OpenBao is admitted here by name when it moves.
+# The members reach one another (Raft and request forwarding). Besides them, only the key service's
+# clients reach the API: pods labelled openinfra.dev/openbao-client=true in the namespaces they run in.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -89,6 +89,204 @@ spec:
       ports:
         - { port: 8200, protocol: TCP }
         - { port: 8201, protocol: TCP }
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: [crossplane-system, open-infra-aws-shim, minio, vault, openbao]
+          podSelector:
+            matchLabels: { openinfra.dev/openbao-client: "true" }
+      ports:
+        - { port: 8200, protocol: TCP }
+---
+# The clients trust OpenBao's listener through the CA that signs it, the platform CA. This copies that CA
+# certificate, which is public, from the listener's current CertificateRequest into ConfigMap openbao-ca
+# in each client namespace; the clients mount it and name it in VAULT_CACERT. After a re-key the previous
+# CA stays in the bundle beside the new one, so a client trusts the listener on either side of the change.
+#
+# Least privilege: in openbao, get the listener Certificate and list CertificateRequests; ConfigMaps:
+# create, and get/patch/update only openbao-ca. RBAC cannot scope create by name, so the admission policy
+# below confines this identity to openbao-ca in the client namespaces, and lets nobody else but
+# system:masters write that ConfigMap there. It reads no Secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openbao-ca-publisher
+  namespace: openbao
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openbao-ca-publisher
+  namespace: openbao
+rules:
+  - apiGroups: [cert-manager.io]
+    resources: [certificates]
+    resourceNames: [openbao-listener]
+    verbs: [get]
+  - apiGroups: [cert-manager.io]
+    resources: [certificaterequests]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openbao-ca-publisher
+  namespace: openbao
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: openbao-ca-publisher }
+subjects:
+  - { kind: ServiceAccount, name: openbao-ca-publisher, namespace: openbao }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openinfra-openbao-ca-publisher
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [openbao-ca]
+    verbs: [get, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openinfra-openbao-ca-publisher
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: openinfra-openbao-ca-publisher }
+subjects:
+  - { kind: ServiceAccount, name: openbao-ca-publisher, namespace: openbao }
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: openinfra-openbao-ca
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [configmaps]
+  validations:
+    - expression: >-
+        request.userInfo.username != 'system:serviceaccount:openbao:openbao-ca-publisher'
+        || (object.metadata.name == 'openbao-ca'
+            && request.namespace in ['crossplane-system', 'open-infra-aws-shim', 'minio', 'vault', 'openbao'])
+      reason: Forbidden
+      message: "the openbao-ca-publisher may write only ConfigMap openbao-ca, in the key service's client namespaces"
+    - expression: >-
+        object.metadata.name != 'openbao-ca'
+        || !(request.namespace in ['crossplane-system', 'open-infra-aws-shim', 'minio', 'vault', 'openbao'])
+        || request.userInfo.username == 'system:serviceaccount:openbao:openbao-ca-publisher'
+        || ('system:masters' in request.userInfo.groups)
+      reason: Forbidden
+      message: "openbao-ca (the CA the key service's clients trust) is written only by the openbao-ca-publisher"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-openbao-ca
+spec:
+  policyName: openinfra-openbao-ca
+  validationActions: [Deny]
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openbao-ca-publisher
+  namespace: openbao
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 300
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: openbao-ca-publisher
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
+          volumes:
+            - { name: home, emptyDir: {} }
+          containers:
+            - name: publish
+              image: alpine/k8s:1.30.0@sha256:bd01dae02676ce4cab62fc744e43443eee5bf660054e94d3496d23bfc35d384e
+              command: [/bin/sh, -ceu]
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { cpu: 200m, memory: 128Mi }
+              volumeMounts:
+                - { name: home, mountPath: /tmp }
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: CLIENT_NAMESPACES, value: "crossplane-system open-infra-aws-shim minio vault openbao" }
+              args:
+                - |
+                  # The CA of the listener's current revision, from its owned, ready CertificateRequest
+                  # (status cert-manager alone writes). Certificates only: anything else is refused.
+                  rev="$(kubectl -n openbao get certificate openbao-listener -o jsonpath='{.status.revision}')"
+                  [ -n "$rev" ] || { echo "the listener certificate is not issued yet"; exit 0; }
+                  kubectl -n openbao get certificaterequests -o json | jq -r --arg rev "$rev" '
+                    [.items[]
+                     | select(any(.metadata.ownerReferences[]?; .kind == "Certificate" and .name == "openbao-listener"))
+                     | select(.metadata.annotations["cert-manager.io/certificate-revision"] == $rev)
+                     | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+                     | .status.ca // empty] | first // empty' > /tmp/ca.b64
+                  [ -s /tmp/ca.b64 ] || { echo "no ready CertificateRequest for revision $rev"; exit 0; }
+                  base64 -d /tmp/ca.b64 > /tmp/new.pem
+                  if ! grep -q -- '-----BEGIN CERTIFICATE-----' /tmp/new.pem || grep -q -- 'PRIVATE KEY' /tmp/new.pem; then
+                    echo "refusing to publish: the CertificateRequest's CA is not a certificate" >&2; exit 1
+                  fi
+                  first_cert() { awk '/-----BEGIN CERTIFICATE-----/{p=1} p{print} /-----END CERTIFICATE-----/{if(p) exit}'; }
+                  new="$(first_cert < /tmp/new.pem | tr -d '\n')"
+                  for ns in $CLIENT_NAMESPACES; do
+                    kubectl -n "$ns" get configmap openbao-ca -o jsonpath='{.data.ca\.crt}' > /tmp/old.pem 2>/dev/null || : > /tmp/old.pem
+                    [ "$(first_cert < /tmp/old.pem | tr -d '\n')" = "$new" ] && continue   # already current
+                    { first_cert < /tmp/new.pem; first_cert < /tmp/old.pem; } > /tmp/bundle.pem   # new CA, then the previous one
+                    if kubectl -n "$ns" create configmap openbao-ca --from-file=ca.crt=/tmp/bundle.pem --dry-run=client -o yaml \
+                         | kubectl label --local -f - app.kubernetes.io/managed-by=openbao-ca-publisher -o yaml \
+                         | kubectl apply --server-side --field-manager=openbao-ca-publisher --force-conflicts -f - >/dev/null; then
+                      echo "published the CA to $ns"
+                    else
+                      echo "could not publish to $ns (absent?)" >&2
+                    fi
+                  done
+---
+# The platform root's publisher (aws-shim/platform-ca-publisher.yaml) renews every platform certificate
+# the root signed after a re-key; this lets it renew the listener certificate here too.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: platform-ca-publisher
+  namespace: openbao
+rules:
+  - apiGroups: [cert-manager.io]
+    resources: [certificaterequests, certificates]
+    verbs: [list]
+  - apiGroups: [cert-manager.io]
+    resources: [certificates/status]
+    verbs: [get, patch]   # kubectl patch --subresource=status reads the subresource first
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: platform-ca-publisher
+  namespace: openbao
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: platform-ca-publisher }
+subjects:
+  - { kind: ServiceAccount, name: platform-ca-publisher, namespace: open-infra-aws-shim }
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application

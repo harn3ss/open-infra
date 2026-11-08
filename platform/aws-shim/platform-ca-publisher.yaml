@@ -216,7 +216,7 @@ spec:
                 - { name: AWS_CA_CERT, value: openinfra-aws-endpoints-ca }
                 - { name: AWS_CA_ISSUER, value: openinfra-aws-endpoints }
                 # The namespaces openinfra-ca may issue in (cluster-ca.yaml, openinfra-ca-issuance).
-                - { name: PLATFORM_NAMESPACES, value: "open-infra-aws-shim open-infra-ecr" }
+                - { name: PLATFORM_NAMESPACES, value: "open-infra-aws-shim open-infra-ecr openbao" }
                 - { name: RENEW_BACKOFF_SECONDS, value: "1800" }
               args:
                 - |
