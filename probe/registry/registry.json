@@ -482,7 +482,9 @@
       "tier": "proven"
     },
     "ec2": {
-      "actions": [],
+      "actions": [
+        "ec2:DeleteFlowLogs"
+      ],
       "conditional": true,
       "deployableTypes": [
         "AWS::EC2::EIP",
@@ -508,16 +510,20 @@
         "AWS::EC2"
       ],
       "operations": [
+        "CreateFlowLogs",
         "CreateKeyPair",
+        "DeleteFlowLogs",
         "DeleteKeyPair",
         "DeleteVolume",
         "DescribeAddresses",
         "DescribeAvailabilityZones",
+        "DescribeFlowLogs",
         "DescribeImages",
         "DescribeInstances",
         "DescribeInternetGateways",
         "DescribeKeyPairs",
         "DescribeNetworkAcls",
+        "DescribeNetworkInterfaces",
         "DescribeRegions",
         "DescribeRouteTables",
         "DescribeSecurityGroups",
@@ -1510,7 +1516,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 589,
+    "operations": 593,
     "planOnly": 11,
     "refused": 11,
     "services": 31,
@@ -2304,7 +2310,9 @@
       ],
       "kind": "FlowLog",
       "namespace": "AWS::EC2",
-      "readCalls": [],
+      "readCalls": [
+        "DescribeFlowLogs"
+      ],
       "service": "EC2",
       "serviceTier": "proven",
       "signingNames": [

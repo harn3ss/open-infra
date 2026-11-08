@@ -15,6 +15,10 @@
 // name. What a kind does not model (tags, an instance type, a group's description) comes from the AWS
 // view the CloudFormation engine records on it (cfn.AWSViewAnnotation).
 //
+// Lambda functions in a VPC: their network interfaces (DescribeNetworkInterfaces; ec2_network_interfaces.go)
+// and VPC Flow Logs of the traffic their security groups reject (CreateFlowLogs, DescribeFlowLogs,
+// DeleteFlowLogs; ec2_flowlogs.go), delivered to CloudWatch Logs (ec2_flowlogs_delivery.go).
+//
 // Writes: the key pairs (ImportKeyPair, CreateKeyPair, DescribeKeyPairs, DeleteKeyPair; ec2_keypairs.go),
 // which an instance's KeyName carries into its VM's spec.sshKey, and DeleteVolume, for a volume an
 // instance kept (DeleteOnTermination: false), refused with AWS's VolumeInUse while a VM still has it; and
@@ -92,6 +96,10 @@ var ec2Ops = map[string]ec2Op{
 	"StopInstances":             {"Instance", "update"},
 	"RebootInstances":           {"Instance", "update"},
 	"TerminateInstances":        {"Instance", "delete"},
+	"DescribeNetworkInterfaces": {"NetworkInterface", "get"},
+	"CreateFlowLogs":            {"VpcFlowLog", "create"},
+	"DescribeFlowLogs":          {"VpcFlowLog", "get"},
+	"DeleteFlowLogs":            {"VpcFlowLog", "delete"},
 }
 
 type ec2Handler struct {
@@ -100,6 +108,10 @@ type ec2Handler struct {
 	logger *slog.Logger
 	// restartVM restarts a VM in place (RebootInstances); nil: KubeVirt's restart subresource, as the shim.
 	restartVM func(ctx context.Context, namespace, name string) error
+	flowLogs  *ec2FlowLogStore // nil: the flow-log store is not configured (flow log operations answer so)
+	vpc       *vpcInterfaces   // the Lambda VPC subnet's interfaces (nil: no function is in a VPC)
+	fns       *fnLocator       // the namespaces an account keeps its functions in
+	rolesNS   string           // the IAM home, where the management account's roles are (iam:PassRole)
 }
 
 func newEC2Handler(door *cfnDoorway, keys *ec2KeyStore, logger *slog.Logger) *ec2Handler {
@@ -223,6 +235,14 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.deleteKeyPair(ctx, w, r, requestID)
 	case "DeleteVolume":
 		h.deleteVolume(ctx, w, r, claims, requestID)
+	case "DescribeNetworkInterfaces":
+		h.describeNetworkInterfaces(ctx, w, r, claims, requestID)
+	case "CreateFlowLogs":
+		h.createFlowLogs(ctx, w, r, claims, requestID)
+	case "DescribeFlowLogs":
+		h.describeFlowLogs(ctx, w, r, requestID)
+	case "DeleteFlowLogs":
+		h.deleteFlowLogs(ctx, w, r, claims, requestID)
 	}
 }
 
@@ -230,7 +250,8 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 func ec2StoreOp(op string) bool {
 	switch op {
 	case "DescribeKeyPairs", "ImportKeyPair", "CreateKeyPair", "DeleteKeyPair",
-		"DescribeImages", "DescribeRegions", "DescribeAvailabilityZones", "DescribeAddresses":
+		"DescribeImages", "DescribeRegions", "DescribeAvailabilityZones", "DescribeAddresses",
+		"CreateFlowLogs", "DescribeFlowLogs", "DeleteFlowLogs":
 		return true
 	}
 	return false
@@ -249,6 +270,8 @@ func ec2ScopeName(op string, form url.Values) string {
 		return form.Get("KeyPairId")
 	case "DeleteVolume":
 		return form.Get("VolumeId")
+	case "DeleteFlowLogs":
+		return form.Get("FlowLogId.1") // each other one is authorized before anything is deleted (deleteFlowLogs)
 	}
 	return ""
 }

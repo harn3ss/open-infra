@@ -109,6 +109,7 @@ ec2:DescribeFlowLogs
 ec2:DescribeImages
 ec2:DescribeInstances
 ec2:DescribeNatGateways
+ec2:DescribeNetworkInterfaces
 ec2:DescribeSecurityGroups
 ec2:DescribeSnapshots
 ec2:DescribeSubnets

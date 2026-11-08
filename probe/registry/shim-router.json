@@ -262,16 +262,20 @@
     "ec2": {
       "handler": "ec2Handler",
       "operations": [
+        "CreateFlowLogs",
         "CreateKeyPair",
+        "DeleteFlowLogs",
         "DeleteKeyPair",
         "DeleteVolume",
         "DescribeAddresses",
         "DescribeAvailabilityZones",
+        "DescribeFlowLogs",
         "DescribeImages",
         "DescribeInstances",
         "DescribeInternetGateways",
         "DescribeKeyPairs",
         "DescribeNetworkAcls",
+        "DescribeNetworkInterfaces",
         "DescribeRegions",
         "DescribeRouteTables",
         "DescribeSecurityGroups",
@@ -286,6 +290,7 @@
         "TerminateInstances"
       ],
       "actions": [
+        "ec2:DeleteFlowLogs",
         "iam:PassRole"
       ],
       "conditional": true

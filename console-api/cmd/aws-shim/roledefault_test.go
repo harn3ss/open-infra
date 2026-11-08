@@ -326,6 +326,32 @@ func roleDoorCases() []roleDoorCase {
 				h.door.authz = a
 				return ec2Call(h, c, url.Values{"Action": {"DescribeInternetGateways"}})
 			}},
+		// --- EC2: Lambda's network interfaces and VPC Flow Logs (no flow-log store here: an authorized call
+		// ends at "not configured", after the gate) ---
+		{door: "ec2", op: "DescribeNetworkInterfaces", action: "ec2:DescribeNetworkInterfaces", resType: "NetworkInterface", denyCode: "UnauthorizedOperation",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := eniFixture(t)
+				h.door.authz = a
+				return ec2Call(h, c, url.Values{"Action": {"DescribeNetworkInterfaces"}})
+			}},
+		{door: "ec2", op: "CreateFlowLogs", action: "ec2:CreateFlowLogs", resType: "VpcFlowLog", denyCode: "UnauthorizedOperation",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := eniFixture(t)
+				h.door.authz = a
+				return ec2Call(h, c, flCreate(nil))
+			}},
+		{door: "ec2", op: "DescribeFlowLogs", action: "ec2:DescribeFlowLogs", resType: "VpcFlowLog", denyCode: "UnauthorizedOperation",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := eniFixture(t)
+				h.door.authz = a
+				return ec2Call(h, c, url.Values{"Action": {"DescribeFlowLogs"}})
+			}},
+		{door: "ec2", op: "DeleteFlowLogs", action: "ec2:DeleteFlowLogs", resType: "VpcFlowLog", resName: "fl-0123456789abcdef0", denyCode: "UnauthorizedOperation",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := eniFixture(t)
+				h.door.authz = a
+				return ec2Call(h, c, url.Values{"Action": {"DeleteFlowLogs"}, "FlowLogId.1": {"fl-0123456789abcdef0"}})
+			}},
 		// --- SES ---
 		{door: "ses", op: "GetSendQuota", action: "ses:GetSendQuota", resType: "Identity", denyCode: "AccessDenied",
 			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
