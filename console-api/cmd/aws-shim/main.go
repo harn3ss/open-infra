@@ -324,6 +324,13 @@ func run(logger *slog.Logger) error {
 		}()
 	}
 	auth.dir = acctDir
+	// Lambda functions in a VPC: their execution environments' network interfaces on the Lambda VPC subnet
+	// (vpcnet.go), for the VPC resolver's DNS Firewall and query logging and for EC2's flow logs and network
+	// interfaces. LAMBDA_VPC_SUBNET=off turns it off (no function can then be in a VPC).
+	var vpcIfaces *vpcInterfaces
+	if sub := getenv("LAMBDA_VPC_SUBNET", defaultLambdaVPCSubnet); sub != "off" && dyn != nil {
+		vpcIfaces = newVPCInterfaces(dyn, podGetter(cs), acctDir.AccountOf, sub, logger)
+	}
 
 	// sts:AssumeRole (faithful STS temporary credentials). The AES-256 key that seals/opens the
 	// stateless session tokens is Vault-custodied: the shim logs into Vault with its OWN SA token
@@ -1016,6 +1023,9 @@ func run(logger *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	if vpcIfaces != nil {
+		go vpcIfaces.Run(ctx) // follows the Lambda VPC subnet's addresses; exits when ctx is cancelled
+	}
 	if cfnDoor != nil {
 		// Resolve stack operations a previous front door was running when it stopped (interrupted creates
 		// and updates roll back, deletes resume), on startup and periodically. Exits when ctx is cancelled.
