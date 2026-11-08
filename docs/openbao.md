@@ -4,15 +4,16 @@
 > (namespaces, pods, `kubectl`). Customers never see OpenBao: they use KMS, Secrets Manager and the other
 > AWS APIs, which the platform serves on top of it.
 
-OpenBao keeps the platform's keys: the keys behind KMS and Secrets Manager, `kind: EncryptionKey`, and
-the CAs and signing keys being moved out of Kubernetes Secrets (#359). It is the Linux Foundation's
+OpenBao keeps the platform's keys: the keys behind KMS, Secrets Manager, Parameter Store secure values,
+`kind: EncryptionKey`, encrypted volumes and the STS sealing key, with the CAs and signing keys still in
+Kubernetes Secrets to follow (#359). It is the Linux Foundation's
 MPL-2.0 fork of HashiCorp Vault, chosen because Vault 1.15 and later are under the BUSL, which does not
 suit a project that is given away.
 
-**Status: built and rehearsed; opt-in, off by default** (`components.openbao`). The rehearsals below were
-run on a live cluster. Today's keys still live in the single-node HashiCorp Vault
-([`encryption.md`](encryption.md)). Moving them onto OpenBao is a separate step the operator approves, and
-until then OpenBao holds nothing and nothing uses it.
+**Status: live; opt-in, off by default** (`components.openbao`, which the `encryption` component needs).
+Every client of the key service uses it ([`encryption.md`](encryption.md)). On an install that ran the
+single-node HashiCorp Vault before it, the keys moved by storage copy (below): every key, version and
+ciphertext as it was.
 
 ## Shape
 
@@ -139,8 +140,9 @@ OpenBao fails closed. It never falls back to a static key, a dev mode or an unse
   starts.
 - **The members' certificate** renews itself (yearly, three months before expiry) and is picked up live.
   The unseal host's certificate is renewed on the PC (`-Action RenewCertificate`); its CA does not change.
-- **Backups.** The unseal host is backed up from the PC (`-Action Backup`). Scheduled Raft snapshots of the
-  members come with the configuration step, when OpenBao first holds something to back up.
+- **Backups.** The unseal host is backed up from the PC (`-Action Backup`). Velero's daily backup copies
+  the members' volumes (at file level, while they run); a restored copy opens only through the unseal
+  host's key. Scheduled Raft snapshots, which are consistent by construction, are not configured yet.
 
 ## The rehearsals
 
@@ -210,6 +212,11 @@ rehearsed on a restored backup of real data: every Transit key version round-tri
 
 ## What it does not do yet
 
-The PKI intermediates and the cert-manager issuer, instance-identity signing, and encryption of Kubernetes
-Secrets at rest are the remaining parts of #359, in steps the operator approves one at a time, each
-announced with a rollback.
+- **Vault is not retired yet.** The `encryption` component still deploys the old Vault server: unused on a
+  new install, and on an install whose keys moved, a sealed last copy kept as the rollback. Retiring it
+  removes the server and its volume; the setup Job moves to the `openbao` namespace with it.
+- **Scheduled Raft snapshots** of the members are not configured yet; Velero's daily backup copies their
+  volumes at file level.
+- The PKI intermediates and the cert-manager issuer, instance-identity signing, and encryption of Kubernetes
+  Secrets at rest are the remaining parts of #359, in steps the operator approves one at a time, each
+  announced with a rollback.

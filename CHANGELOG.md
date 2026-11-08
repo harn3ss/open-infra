@@ -6,6 +6,18 @@ the product's public contract.
 
 ## Unreleased
 
+### Changed — the platform's keys live in OpenBao (#359)
+- **Every client of the key service uses OpenBao.** KMS, Secrets Manager, Parameter Store secure values,
+  `kind: EncryptionKey`, encrypted volumes, the private CAs, KES and the STS sealing key reach OpenBao's
+  active member over TLS 1.3, trusting the platform CA, which OpenBao's publisher copies into their
+  namespaces (ConfigMap `openbao-ca`, named by `VAULT_CACERT`); OpenBao admits only them. The `encryption`
+  component now needs `components.openbao`, and `install.sh` warns when it is missing.
+- **Moving an install's keys from Vault.** [`scripts/vault-to-openbao.sh`](scripts/vault-to-openbao.sh)
+  copies Vault's storage into OpenBao, so every key, version and ciphertext stays as it was. The keys are
+  unavailable for a few minutes, from sealing Vault until the clients switch; Vault keeps a sealed copy as
+  the rollback. The move checks every key version before and after, gives the operator new recovery keys
+  that only they hold, and leaves OpenBao with no root token.
+
 ### Added — OpenBao, the platform's key and secrets service, ready to turn on (#359)
 - **Three members, unsealed from outside the cluster.** `components.openbao` runs OpenBao 2.7 as three
   members sharing integrated Raft storage, each on a different physical machine the operator names
@@ -21,10 +33,8 @@ the product's public contract.
   renewed without a restart; only the members reach one another until a client is admitted; every request
   and response is audited, with sensitive fields HMAC'd, into Loki. `openbao` is a platform namespace: no
   account can make it its home.
-- **Rehearsed, holding nothing yet.** Losing the active member, losing the unseal host, a rolling change
-  and a certificate renewal were rehearsed on a live cluster ([`docs/openbao.md`](docs/openbao.md),
-  `probe/openbao-ha.sh`). The platform's keys still live in Vault; moving them is a separate step the
-  operator approves.
+- **Rehearsed on a live cluster.** Losing the active member, losing the unseal host, a rolling change and
+  a certificate renewal ([`docs/openbao.md`](docs/openbao.md), `probe/openbao-ha.sh`).
 ### Changed — temporary access and groups are IAM policy alone (#360)
 - **A grant attaches IAM policies for its window.** `kind: Grant` names the policies it attaches
   (`spec.policies`: AWS managed policies such as `aws-readonlyaccess` or `aws-poweruseraccess`, or your

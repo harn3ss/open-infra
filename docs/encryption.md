@@ -10,7 +10,8 @@ crypto-erases everything wrapped by it (the basis for [`crypto-erase`](destructi
 > live-verified** on a running cluster by [`probe/encryption-vault.sh`](../probe/encryption-vault.sh)
 > (a re-runnable gate: `kind: EncryptionKey` provisions a real Transit key, a value round-trips
 > byte-identical through it, and `kind: Destruction` crypto-erases it to unrecoverable). It remains
-> **operator-gated** — the customer holds the Vault unseal keys (open-infra cannot unseal your KMS) —
+> **operator-gated** — the customer holds the key service's recovery keys and runs its unseal host
+> (open-infra cannot unseal your KMS) —
 > and, per design, it does not rewire your live etcd / MinIO / Longhorn for you: the storage-layer
 > wiring below is an **operator runbook**.
 
@@ -18,14 +19,14 @@ crypto-erases everything wrapped by it (the basis for [`crypto-erase`](destructi
 
 | Piece | What it is | State |
 |---|---|---|
-| **Vault (Transit)** | the KMS holding customer keys (`platform/security/vault.yaml`) | shipped, opt-in |
-| **OpenBao** | the key service replacing Vault: three members, unsealed from outside the cluster ([`openbao.md`](openbao.md)) | built, opt-in; holds no keys yet |
-| **`kind: EncryptionKey`** | a customer-owned KEK = a Vault Transit key | shipped, opt-in |
+| **OpenBao (Transit)** | the KMS holding customer keys: three members, unsealed from outside the cluster (`platform/security/openbao.yaml`, [`openbao.md`](openbao.md)); the encryption component needs `components.openbao` | shipped, opt-in |
+| **Vault** | the key service before OpenBao; on an install whose keys moved, a sealed last copy until it is retired ([moving the keys](openbao.md#moving-the-keys-from-vault)) | retiring |
+| **`kind: EncryptionKey`** | a customer-owned KEK = an OpenBao Transit key | shipped, opt-in |
 | **encryptionkey-reconciler** | provisions/rotates the Transit key per EncryptionKey | shipped, opt-in |
 | **`longhorn-encrypted` StorageClass** | LUKS volumes (SC-28); additive, not the default | shipped, opt-in |
 | **volume-crypto reconciler** | keys each encrypted volume's LUKS passphrase from its EncryptionKey | shipped, opt-in |
 | **MinIO object encryption** | every new bucket encrypted by default, with the platform MinIO's own key (`storage/minio-kms.yaml`) | shipped, opt-in |
-| **MinIO KES → Vault** | an optional keystore for customer-held object keys (crypto-erase) | shipped, opt-in, not wired |
+| **MinIO KES → OpenBao** | an optional keystore for customer-held object keys (crypto-erase) | shipped, opt-in, not wired |
 | **etcd KMS provider** | Kubernetes Secrets encrypted at rest with a customer key | runbook below |
 
 ## `kind: EncryptionKey`
@@ -40,16 +41,16 @@ spec:
   rotationDays: 90          # optional: reconciler adds a new key version on this cadence
 ```
 
-The reconciler creates `transit/keys/ek_platform_tenant-a` in Vault and reflects its state
+The reconciler creates `transit/keys/ek_platform_tenant-a` in OpenBao and reflects its state
 (provisioned, version, last rotation) into the console's **Security & Identity → Encryption Keys**
 page. The Transit key's name is **namespace-qualified** — `ek_<namespace>_<name>` — so
 `EncryptionKey tenant-a` in another namespace is a different Transit key, never the same one. The
 path is recorded once on the key (`status.vaultKeyPath`) and never changes; every consumer — the
 reconciler, encrypted volumes, `kind: Destruction` — resolves a key name **only within its own
 namespace**, through that record. (A key created before namespacing keeps `transit/keys/<name>`.) It
-authenticates to Vault with **its own Kubernetes ServiceAccount token** (Vault Kubernetes auth) — no
-Vault credential is ever stored in a k8s Secret, so nothing with cluster-wide secret read can steal
-Vault access. Its policy is scoped to **create / read / rotate** Transit keys only: it cannot
+authenticates to OpenBao with **its own Kubernetes ServiceAccount token** (OpenBao's Kubernetes auth) —
+no OpenBao credential is ever stored in a k8s Secret, so nothing with cluster-wide secret read can steal
+OpenBao access. Its policy is scoped to **create / read / rotate** Transit keys only: it cannot
 `delete`, cannot touch `transit/keys/<name>/config` or `/trim` (where `min_decryption_version` /
 `deletion_allowed` — i.e. crypto-erase of old versions — live), and has no datakey/encrypt/export.
 Destruction is withheld from the reconciler and gated behind `kind: Destruction`, which uses a
@@ -83,44 +84,49 @@ delegates to IAM) is the absence of a key-scoped restriction. The grant is enfor
 AWS key-policy JSON into this shape (`CreateKey`'s `Policy` / `PutKeyPolicy`) is a scoped follow-on
 ; today, author the `kind: Policy` directly.
 
-## Bringing Vault up (operator, one-time)
+## Bringing the key service up (operator, one-time)
 
-The whole point of customer-owned keys is that open-infra can't unseal your KMS for you.
+The whole point of customer-owned keys is that open-infra can't unseal your KMS for you. The key
+service is OpenBao, and its keys never depend on anything open-infra holds: its members are unsealed by an
+OpenBao outside the cluster, and its recovery keys are the operator's.
 
 ```sh
-# 1. Enable + sync the component
-#    (config.yaml) components.encryption: true ; then ./install.sh
+# 1. Enable + sync the key service and the component, after setting up the unseal host
+#    (docs/openbao.md, "Turning it on"):
+#    (config.yaml) components.openbao: true ; components.encryption: true ; then ./install.sh
 
-# 2. Initialize + unseal Vault (keep the unseal keys + root token safe, off-cluster)
-kubectl -n vault exec -it vault-0 -- vault operator init      # → unseal keys + root token
-kubectl -n vault exec -it vault-0 -- vault operator unseal    # x3 with different keys
+# 2. Initialize OpenBao once, in your own terminal (docs/openbao.md): it prints the recovery keys and an
+#    initial root token. Keep both off the cluster.
 
-# 3. Give the setup Job a SHORT-LIVED bootstrap token so it can enable Transit + Kubernetes auth
-kubectl -n vault create secret generic vault-bootstrap --from-literal=token=<root-or-admin-token>
+# 3. Give the setup Job that root token ONCE, so it can enable Transit and Kubernetes auth:
+kubectl -n vault create secret generic vault-bootstrap --from-literal=token=<the initial root token>
 ```
 
-The `vault-transit-setup` Job then enables the Transit engine and Kubernetes auth, creates each
-component's role (bound to its ServiceAccount), turns on Vault's audit device (every request, with
-sensitive fields HMAC'd, to the Vault pod's log), and writes `vault-config`: Vault's configuration
-administrator, a Kubernetes-auth role bound to the setup Job's own ServiceAccount with short-lived tokens.
-Every later run of the Job (each sync) logs in as `vault-config`, so the root token is needed exactly once.
-No standing Vault secret is written anywhere.
+The `vault-transit-setup` Job (in namespace `vault`; it talks to OpenBao) then enables the Transit engine
+and Kubernetes auth, creates each component's role (bound to its ServiceAccount), and writes
+`vault-config`: the key service's configuration administrator, a Kubernetes-auth role bound to the setup
+Job's own ServiceAccount with short-lived tokens. Every later run of the Job (each sync) logs in as
+`vault-config`, so the root token is needed exactly once. No standing secret of the key service is written
+anywhere. OpenBao's audit device is part of its own configuration: every request and response, with
+sensitive fields HMAC'd, to the members' logs.
 
 ```sh
-# 4. The bootstrap token is a root token and was ONLY needed for the first run — REVOKE and DELETE it
-#    once the setup Job has completed (as AWS has an account's root credentials put away and its
-#    automation use a role), so it can't be stolen later. The script revokes every other root token
-#    (found by accessor, so none copied from an earlier bootstrap survives), then the bootstrap token
-#    with itself, and shows a call made with it is refused — inside the cluster, printing counts only:
-./scripts/vault-revoke-root.sh
+# 4. The bootstrap token is a root token and was ONLY needed for the first run: revoke it with itself and
+#    delete the Secret once the setup Job has completed (as AWS has an account's root credentials put
+#    away and its automation use a role). The token goes from the Secret to the active member by pipe,
+#    never onto a command line:
+kubectl -n vault get secret vault-bootstrap -o jsonpath='{.data.token}' | base64 -d \
+  | kubectl -n openbao exec -i "$(kubectl -n openbao get pods -l openbao-active=true -o jsonpath='{.items[0].metadata.name}')" \
+      -c openbao -- sh -c 'BAO_TOKEN="$(cat)" bao token revoke -self'
 kubectl -n vault delete secret vault-bootstrap
 ```
 
-A root token can be generated again from the unseal keys (`vault operator generate-root`) should one be
-needed for recovery.
+A root token can be generated again from the recovery keys should recovery need one
+([`openbao.md`](openbao.md)). An install whose keys moved from Vault needs none of this: the move carried
+the configuration and revoked the root tokens ([moving the keys](openbao.md#moving-the-keys-from-vault)).
 
 After that, create `EncryptionKey`s. Because the reconciler uses Kubernetes auth, there is no
-`encryptionkey-reconciler-vault` Secret to guard — a console compromise cannot reach Vault through it.
+`encryptionkey-reconciler-vault` Secret to guard — a console compromise cannot reach OpenBao through it.
 
 ## Storage-layer wiring (operator runbook)
 
@@ -144,7 +150,7 @@ boot; see [virtual-machines.md](virtual-machines.md)), and an encrypted database
 `longhorn-encrypted` StorageClass and are keyed for you:
 
 - **Keying.** The **volume-crypto reconciler** finds each claim on `longhorn-encrypted` that carries the
-  annotation `openinfra.dev/encryption-key: <EncryptionKey name>`, generates a Vault Transit **data
+  annotation `openinfra.dev/encryption-key: <EncryptionKey name>`, generates an OpenBao Transit **data
   key** under the EncryptionKey of that name **in the claim's own namespace** (a claim cannot be keyed
   under another namespace's key — with no key of that name beside it, it waits), and writes the claim's
   LUKS passphrase Secret `<pvc-name>-crypto` in its namespace: the data key's plaintext is the passphrase, its wrapped form is stored alongside.
@@ -165,7 +171,7 @@ boot; see [virtual-machines.md](virtual-machines.md)), and an encrypted database
   remains of it on disk; a claim already being deleted is never keyed. Passphrase Secrets that predate
   ownership are removed once their claim and any PersistentVolume bound to it are gone. Deleting the
   passphrase does not block deleting the volume — Longhorn needs it to open a volume, not to remove one.
-- **Least privilege.** The reconciler's Vault role can only *generate* data keys — it cannot read,
+- **Least privilege.** The reconciler's OpenBao role can only *generate* data keys — it cannot read,
   rotate, decrypt with, or destroy the EncryptionKey. Its Kubernetes Secret writes are confined by a
   `ValidatingAdmissionPolicy` to creating Opaque, labeled `<pvc-name>-crypto` Secrets and deleting
   Secrets that carry its label — it cannot write any other Secret (e.g. a service-account token).
@@ -183,7 +189,7 @@ new encrypted volume is not supported: the new volume is keyed with its own pass
 Set `components.objectEncryption: true` and re-run `./install.sh` (or sync). This turns on object
 encryption at rest for the platform MinIO with a **static 256-bit key that MinIO holds itself**
 (`MINIO_KMS_SECRET_KEY`, in `secret/minio-kms` in ns `minio`). It has no availability dependency: no
-Vault to unseal, no KES to reach. What it does:
+key service to unseal, no KES to reach. What it does:
 
 - **Every new bucket is encrypted by default** (AES256, i.e. SSE-S3, under that key; what AWS gives every
   new bucket). `kind: Bucket`'s setup Job sets it on a bucket it creates, or one that is still empty.
@@ -219,19 +225,19 @@ kubectl -n minio get secret minio-kms -o yaml > minio-kms.backup.yaml   # store 
 **Turning it off** is not a flag flip: objects written while it was on stay encrypted under the key, so
 keep the key mounted. Removing the Secret makes them, and IAM entries written since, unreadable.
 
-**Customer-held keys (KES → Vault).** `components.objectEncryptionKes: true` ships
-[MinIO KES](https://github.com/minio/kes) with a **Vault KV** keystore (KES stores and wraps its own keys
-there; it uses Vault's **KV** engine, not Transit), its `minio-kes` Kubernetes-auth identity and self-signed
+**Customer-held keys (KES → OpenBao).** `components.objectEncryptionKes: true` ships
+[MinIO KES](https://github.com/minio/kes) with an **OpenBao KV** keystore (KES stores and wraps its own keys
+there; it uses OpenBao's **KV** engine, not Transit), its `minio-kes` Kubernetes-auth identity and self-signed
 KES↔MinIO mTLS. It is not wired to the platform MinIO: switching MinIO's key source to KES is an operator
-step, and it makes object storage depend on Vault being unsealed (Vault needs a person to unseal it after
-every restart). With KES, destroying a key crypto-erases its objects (reads fail `failed to decrypt
+step, and it makes object storage depend on OpenBao being unsealed (a member that restarts while the
+unseal host is down stays sealed until it answers). With KES, destroying a key crypto-erases its objects (reads fail `failed to decrypt
 ciphertext`). `probe/sse-kms.sh` validates that flow (round-trip + crypto-erase) against a throwaway
 MinIO, never the live one. NIST SC-28(1).
 
 ### etcd (Kubernetes Secrets at rest)
 
-Configure the API server's `--encryption-provider-config` with a `kms` v2 provider backed by a Vault
-KMS plugin, then `kubectl get secrets -A -o json | kubectl replace -f -` to re-encrypt existing
+Configure the API server's `--encryption-provider-config` with a `kms` v2 provider backed by a KMS
+plugin on OpenBao Transit, then `kubectl get secrets -A -o json | kubectl replace -f -` to re-encrypt existing
 Secrets. On k3s this is a server flag + a static pod / config change — an operator action on the
 control-plane node, intentionally not automated here.
 
@@ -244,7 +250,7 @@ reports any classified workload not pinned to the required nodes.
 
 ## Control mapping
 
-- **SC-12 / SC-13** cryptographic key establishment & management — Vault Transit; `kind: EncryptionKey`.
+- **SC-12 / SC-13** cryptographic key establishment & management — OpenBao Transit; `kind: EncryptionKey`.
 - **SC-28 / SC-28(1)** protection of information at rest, **with customer-managed keys** — the KEK is
   the customer's; open-infra never holds key material.
 - **MP-6 / crypto-erase** — destroying the key is media sanitization; see [`destruction.md`](destruction.md).

@@ -31,7 +31,7 @@ export AWS_ENDPOINT_URL=http://aws-shim.open-infra-aws-shim.svc.cluster.local:45
 aws s3 cp ./report.pdf s3://reports/                       # real MinIO, behind SigV4 + RBAC
 aws sqs send-message --queue-url .../jobs --message-body '{"id":42}'
 aws rds create-db-instance --engine postgres --db-instance-identifier orders …  # a real Postgres
-aws secretsmanager get-secret-value --secret-id db/creds   # Vault-encrypted, versioned
+aws secretsmanager get-secret-value --secret-id db/creds   # OpenBao-encrypted, versioned
 ```
 
 **2 — Or declare intent** and let GitOps reconcile the whole desired state (hosting, DB, storage,
@@ -126,7 +126,7 @@ CNCF projects — not a reinvention of databases or storage.
 | CloudWatch | metrics/logs | Prometheus + Grafana + Loki |
 | CloudTrail | audit trail | k8s API-server audit log → Loki, with a console **Audit** view (every action attributed to a person) |
 | Cost Explorer | "what AWS would've charged" | console panel pricing live capacity vs AWS list rates |
-| Secrets Manager | secrets | Vault Transit–encrypted, versioned secret store |
+| Secrets Manager | secrets | OpenBao Transit–encrypted, versioned secret store |
 | AWS Backup | backup/DR | Velero |
 | Fault Injection Simulator | chaos engineering (`kind: FaultInjection`) | Chaos Mesh |
 
@@ -264,7 +264,7 @@ unlike LocalStack — fidelity isn't bounded by what a mock chose to implement.
 | | | |
 |---|---|---|
 | **S3** → MinIO | **STS** identity + `AssumeRole` / web-identity | **IAM** roles/policies/users → AWS policy JSON → Cedar |
-| **KMS** → Vault Transit | **Secrets Manager** → Vault-Transit-encrypted, versioned | **Cognito** user pools → real RS256 JWTs (JWKS-verifiable) |
+| **KMS** → OpenBao Transit | **Secrets Manager** → OpenBao-Transit-encrypted, versioned | **Cognito** user pools → real RS256 JWTs (JWKS-verifiable) |
 | **Lambda** → Knative `Function`s | **ECS** service + task def → one `kind: Application` (cfn engine), caller-authority via impersonation | **EKS** `DescribeCluster` → a working `aws eks update-kubeconfig` against the real API server |
 | **Organizations** the install's accounts (`kind: Account`): the management account, member accounts by `CreateAccount`, each its own namespaces | **Service Quotas** each account's quotas (AWS's codes and names), an operator's approved increases (`spec.serviceQuotas`), increase requests; Lambda concurrency capped on burstable functions | **EC2** `Describe*` over the platform's VMs, volumes, groups, VPCs and subnets (the guest's i- ids), and a VPC's internet gateways, route tables, network ACLs and endpoints (a stack's by their Refs); key pairs an instance's `KeyName` carries |
 | **ECR** → a backing OCI registry (Distribution /v2) | **RDS** → real PostgreSQL (CloudNativePG) | **DynamoDB** → FerretDB (+ transactions, Streams) |
@@ -281,7 +281,7 @@ unlike LocalStack — fidelity isn't bounded by what a mock chose to implement.
 export AWS_ENDPOINT_URL=http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566
 aws sts get-caller-identity                            # → your open-infra principal, as an ARN
 aws s3 cp ./x.txt s3://my-bucket/                      # → real MinIO, behind SigV4 + RBAC
-aws kms generate-data-key --key-id alias/app --key-spec AES_256   # → real Vault Transit envelope key
+aws kms generate-data-key --key-id alias/app --key-spec AES_256   # → real OpenBao Transit envelope key
 ```
 
 The access key is verified by **recomputing and constant-time-comparing** the signature — naming a key
@@ -314,7 +314,7 @@ ingests a CloudFormation template directly — [`docs/cloudformation.md`](docs/c
 training). One `install.sh` stands up
 k3s + MetalLB + Argo CD; the app-of-apps reconciles the platform (cert-manager,
 MinIO, CloudNativePG, MariaDB, FerretDB, NATS, Valkey, Longhorn, kube-prometheus-stack
-+ Loki, Sealed Secrets, Knative, Velero, KubeVirt). The validated architecture is
++ Loki, OpenBao, Sealed Secrets, Knative, Velero, KubeVirt). The validated architecture is
 **amd64**; **arm64** is partially supported — the control plane and `install.sh` run
 natively, and the first-party images are now published for arm64 (`-arm64` tags) — but the kinds
 that use them don't run by default yet (the compositions still pin the amd64 `:latest`; babelfish

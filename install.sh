@@ -149,6 +149,9 @@ incl pki "abstraction/certificateauthority-xrd.yaml,abstraction/certificateautho
 # by an OpenBao outside the cluster. OFF unless components.openbao: true; needs the unseal host, its
 # token Secret and an operator to initialize it (docs/openbao.md). Its site values are written below (2a-bao).
 incl openbao "security/openbao.yaml"
+if [ "$(yget components.encryption)" = "true" ] && [ "$(yget components.openbao)" != "true" ]; then
+  WARN "components.encryption is on but components.openbao is not: its key service is OpenBao, so KMS, Secrets Manager and encryption keys fail until components.openbao: true (docs/openbao.md)"
+fi
 # Object encryption at rest: the platform MinIO's own static KMS key (secret/minio-kms), so every NEW
 # bucket is encrypted by default (AES256) and the aws-shim accepts a template's BucketEncryption.
 # OFF unless components.objectEncryption: true. Turning it on restarts all MinIO servers together once
