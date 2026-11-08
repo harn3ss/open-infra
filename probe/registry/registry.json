@@ -22,7 +22,7 @@
         "namespaces": [
           "AWS::SES"
         ],
-        "operations": 14,
+        "operations": 12,
         "probes": 2,
         "rank": 2,
         "service": "SES",
@@ -38,7 +38,7 @@
         "namespaces": [
           "AWS::EKS"
         ],
-        "operations": 5,
+        "operations": 4,
         "probes": 2,
         "rank": 3,
         "service": "EKS",
@@ -320,6 +320,7 @@
         "ListImports",
         "ListStackResources",
         "ListStacks",
+        "SignalResource",
         "UpdateStack",
         "UpdateTerminationProtection",
         "ValidateTemplate"
@@ -522,8 +523,11 @@
         "DescribeVolumes",
         "DescribeVpcEndpoints",
         "DescribeVpcs",
+        "ImportKeyPair",
+        "RebootInstances",
         "StartInstances",
-        "StopInstances"
+        "StopInstances",
+        "TerminateInstances"
       ],
       "probes": [
         "ec2",
@@ -643,7 +647,6 @@
       ],
       "operations": [
         "DescribeCluster",
-        "DescribeIdentityProviderConfig",
         "DescribeNodegroup",
         "ListClusters",
         "ListNodegroups"
@@ -653,10 +656,13 @@
         "eks-tenant-refused"
       ],
       "refused": [
+        "AssociateIdentityProviderConfig",
         "CreateCluster",
         "CreateNodegroup",
         "DeleteCluster",
         "DeleteNodegroup",
+        "DescribeIdentityProviderConfig",
+        "DisassociateIdentityProviderConfig",
         "UpdateAddon",
         "UpdateClusterConfig",
         "UpdateClusterVersion"
@@ -690,15 +696,16 @@
         "ListIdentities",
         "SendBulkEmail",
         "SendEmail",
-        "SendRawEmail",
-        "VerifyDomainIdentity",
-        "VerifyEmailIdentity"
+        "SendRawEmail"
       ],
       "probes": [
         "ses",
         "ses-smtp"
       ],
-      "refused": [],
+      "refused": [
+        "VerifyDomainIdentity",
+        "VerifyEmailIdentity"
+      ],
       "service": "SES",
       "tier": "proven"
     },
@@ -1020,21 +1027,22 @@
         "DeleteRetentionPolicy",
         "DescribeLogGroups",
         "DescribeLogStreams",
-        "DescribeQueries",
         "FilterLogEvents",
         "GetLogEvents",
-        "GetQueryResults",
         "PutLogEvents",
         "PutRetentionPolicy",
-        "StartQuery",
-        "StopQuery",
         "TagLogGroup"
       ],
       "probes": [
         "cloudwatchlogs",
         "logs-lambda"
       ],
-      "refused": [],
+      "refused": [
+        "DescribeQueries",
+        "GetQueryResults",
+        "StartQuery",
+        "StopQuery"
+      ],
       "service": "CloudWatch Logs",
       "tier": "proven"
     },
@@ -1106,23 +1114,25 @@
         "AWS::RDS"
       ],
       "operations": [
-        "AddTagsToResource",
         "CreateDBInstance",
-        "CreateDBInstanceReadReplica",
         "CreateDBSnapshot",
         "DeleteDBInstance",
         "DeleteDBSnapshot",
         "DescribeDBInstances",
         "DescribeDBSnapshots",
-        "ListTagsForResource",
         "ModifyDBInstance",
-        "RestoreDBInstanceFromDBSnapshot",
-        "RestoreDBInstanceToPointInTime"
+        "RestoreDBInstanceFromDBSnapshot"
       ],
       "probes": [
         "rds"
       ],
-      "refused": [],
+      "refused": [
+        "AddTagsToResource",
+        "CreateDBInstanceReadReplica",
+        "ListTagsForResource",
+        "RemoveTagsFromResource",
+        "RestoreDBInstanceToPointInTime"
+      ],
       "service": "RDS",
       "tier": "proven"
     },
@@ -1190,7 +1200,6 @@
         "AWS::SecretsManager"
       ],
       "operations": [
-        "CancelRotateSecret",
         "CreateSecret",
         "DeleteSecret",
         "DescribeSecret",
@@ -1200,7 +1209,6 @@
         "ListSecrets",
         "PutSecretValue",
         "RestoreSecret",
-        "RotateSecret",
         "TagResource",
         "UntagResource",
         "UpdateSecret",
@@ -1209,7 +1217,10 @@
       "probes": [
         "secretsmanager"
       ],
-      "refused": [],
+      "refused": [
+        "CancelRotateSecret",
+        "RotateSecret"
+      ],
       "service": "Secrets Manager",
       "tier": "proven"
     },
@@ -1263,15 +1274,16 @@
         "ListIdentities",
         "SendBulkEmail",
         "SendEmail",
-        "SendRawEmail",
-        "VerifyDomainIdentity",
-        "VerifyEmailIdentity"
+        "SendRawEmail"
       ],
       "probes": [
         "ses",
         "ses-smtp"
       ],
-      "refused": [],
+      "refused": [
+        "VerifyDomainIdentity",
+        "VerifyEmailIdentity"
+      ],
       "service": "SES",
       "tier": "proven"
     },
@@ -1468,7 +1480,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 586,
+    "operations": 577,
     "planOnly": 11,
     "refused": 11,
     "services": 31,

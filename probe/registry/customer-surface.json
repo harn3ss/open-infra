@@ -6691,7 +6691,7 @@
     "cloudformation": {
       "actions": 8,
       "class": "aws",
-      "operations": 23,
+      "operations": 24,
       "service": "CloudFormation",
       "tier": "proven"
     },
@@ -6726,7 +6726,7 @@
     "ec2": {
       "actions": 0,
       "class": "aws",
-      "operations": 19,
+      "operations": 22,
       "service": "EC2",
       "tier": "proven"
     },
@@ -6747,14 +6747,14 @@
     "eks": {
       "actions": 0,
       "class": "aws",
-      "operations": 5,
+      "operations": 4,
       "service": "EKS",
       "tier": "proven"
     },
     "email": {
       "actions": 5,
       "class": "aws",
-      "operations": 14,
+      "operations": 12,
       "service": "SES",
       "tier": "proven"
     },
@@ -6803,7 +6803,7 @@
     "logs": {
       "actions": 0,
       "class": "aws",
-      "operations": 16,
+      "operations": 12,
       "service": "CloudWatch Logs",
       "tier": "proven"
     },
@@ -6824,7 +6824,7 @@
     "rds": {
       "actions": 1,
       "class": "aws",
-      "operations": 12,
+      "operations": 8,
       "service": "RDS",
       "tier": "proven"
     },
@@ -6838,7 +6838,7 @@
     "secretsmanager": {
       "actions": 0,
       "class": "aws",
-      "operations": 15,
+      "operations": 13,
       "service": "Secrets Manager",
       "tier": "proven"
     },
@@ -6852,7 +6852,7 @@
     "ses": {
       "actions": 5,
       "class": "aws",
-      "operations": 14,
+      "operations": 12,
       "service": "SES",
       "tier": "proven"
     },

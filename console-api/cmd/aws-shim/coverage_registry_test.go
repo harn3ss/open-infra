@@ -42,11 +42,18 @@ var (
 	// An AWS operation name is a verb, usually with a noun (CreateQueue, ReEncrypt, Publish). The verb list keeps
 	// out the other CamelCase values a switch or return can carry: comparison operators
 	// (GreaterThanThreshold), states, error codes.
-	opNameRe = regexp.MustCompile(`^(Abort|Add|Admin|Assume|Attach|Batch|Cancel|Change|Complete|Confirm|Copy|` +
-		`Create|Deactivate|Decrease|Delete|Deregister|Describe|Detach|Detect|Disable|Enable|Encrypt|Decrypt|Execute|Filter|` +
-		`Forgot|Generate|Get|Global|Head|Increase|Initiate|Invoke|Label|List|Modify|Publish|Purge|Put|Re|Receive|` +
-		`Query|Register|Remove|Request|Resend|Respond|Restore|Resync|Rotate|Run|Scan|Schedule|Send|Set|Sign|Simulate|Start|Stop|` +
-		`Subscribe|Tag|Test|Transact|Unsubscribe|Untag|Update|Upload|Validate|Verify)([A-Z0-9][A-Za-z0-9]*)?$`)
+	opNameRe = regexp.MustCompile(`^(Abort|Add|Admin|Allocate|Assume|Associate|Attach|Batch|Cancel|Change|Complete|Confirm|Copy|` +
+		`Create|Deactivate|Decrease|Delete|Deregister|Describe|Detach|Detect|Disable|Disassociate|Enable|Encrypt|Decrypt|Execute|Filter|` +
+		`Forgot|Generate|Get|Global|Head|Import|Increase|Initiate|Invoke|Label|List|Modify|Publish|Purge|Put|Re|Reboot|Receive|` +
+		`Query|Register|Release|Remove|Request|Resend|Respond|Restore|Resync|Rotate|Run|Scan|Schedule|Send|Set|Sign|Signal|Simulate|Start|Stop|` +
+		`Subscribe|Tag|Terminate|Test|Transact|Unsubscribe|Untag|Update|Upload|Validate|Verify)([A-Z0-9][A-Za-z0-9]*)?$`)
+	// refuseCallRe names a call that answers an error, and refuseTextRe the words of a refusal: a case whose
+	// body is nothing but such calls (and returns), saying the operation is not supported, recognizes its
+	// operations only to refuse them (case "CreateDBInstanceReadReplica": writeQueryError(…, "read
+	// replicas are not supported…")), so they are refused, not served. An error that is an answer — a
+	// ResourceNotFoundException, a log group that already exists — is not a refusal.
+	refuseCallRe = regexp.MustCompile(`(?i)^write\w*error$|^refuse|unsupported|notimplemented`)
+	refuseTextRe = regexp.MustCompile(`(?i)not (supported|implemented)|unsupported|operator concern|does not fire`)
 	iamActionRe  = regexp.MustCompile(`^[a-z0-9-]+:[A-Z][A-Za-z0-9]+$`) // sqs:SendMessage
 	kebabOpRe    = regexp.MustCompile(`^[a-z]+(-[a-z0-9]+)*$`)          // list-buckets (S3's decoded kind)
 	dispatchTags = map[string]bool{"op": true, "action": true, "operation": true, "verb": true}
@@ -254,6 +261,7 @@ func (s *shimSource) dispatch(typ string) (ops, refused, actions map[string]bool
 					if !ok {
 						continue
 					}
+					refusing := refusalOnly(cc.Body)
 					for _, v := range cc.List {
 						lit, ok := v.(*ast.BasicLit)
 						if !ok || lit.Kind != token.STRING {
@@ -265,9 +273,16 @@ func (s *shimSource) dispatch(typ string) (ops, refused, actions map[string]bool
 						}
 						if kebab {
 							if kebabOpRe.MatchString(name) {
-								ops[kebabToOp(name)] = true
+								name = kebabToOp(name)
+							} else {
+								continue
 							}
-						} else if opNameRe.MatchString(name) {
+						} else if !opNameRe.MatchString(name) {
+							continue
+						}
+						if refusing {
+							refused[name] = true
+						} else {
 							ops[name] = true
 						}
 					}
@@ -319,6 +334,35 @@ func (s *shimSource) dispatch(typ string) (ops, refused, actions map[string]bool
 		})
 	}
 	return ops, refused, actions
+}
+
+// refusalOnly reports whether a case body does nothing but answer a refusal (and return): error calls
+// whose text says the operation is not supported.
+func refusalOnly(body []ast.Stmt) bool {
+	calls := 0
+	refusal := false
+	for _, st := range body {
+		switch st := st.(type) {
+		case *ast.ReturnStmt:
+		case *ast.ExprStmt:
+			call, ok := st.X.(*ast.CallExpr)
+			if !ok || !refuseCallRe.MatchString(identName(call.Fun)) {
+				return false
+			}
+			calls++
+			ast.Inspect(call, func(n ast.Node) bool {
+				if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					if v, err := strconv.Unquote(lit.Value); err == nil && refuseTextRe.MatchString(v) {
+						refusal = true
+					}
+				}
+				return true
+			})
+		default:
+			return false
+		}
+	}
+	return calls > 0 && refusal
 }
 
 func isDispatchTag(e ast.Expr) bool {
@@ -483,5 +527,42 @@ func TestCoverageRegistryShimRouter(t *testing.T) {
 		t.Fatalf("probe/registry/shim-router.json is stale (the shim's services or operations changed): run "+
 			"probe/shimgen.py (or UPDATE_REGISTRY=1 go test ./cmd/aws-shim -run TestCoverageRegistry) and commit "+
 			"the result (read error: %v)", err)
+	}
+}
+
+// The registry tells served operations from refused ones (#401): an operation a handler recognizes only to
+// refuse, explicitly or by its route decoder, is listed as refused and never as served, and an error that is
+// an answer (a function with no policy, a log group that already exists) leaves its operation served.
+func TestCoverageRegistry_ServedIsNotRefused(t *testing.T) {
+	reg := buildShimRegistry(t)
+	has := func(list []string, op string) bool {
+		for _, o := range list {
+			if o == op {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range []struct {
+		svc, op string
+		served  bool
+	}{
+		{"ec2", "RebootInstances", true}, {"ec2", "TerminateInstances", true}, {"ec2", "ImportKeyPair", true},
+		{"cloudformation", "SignalResource", true},
+		{"rds", "AddTagsToResource", false}, {"rds", "ListTagsForResource", false}, {"rds", "CreateDBInstanceReadReplica", false},
+		{"eks", "AssociateIdentityProviderConfig", false}, {"eks", "CreateCluster", false},
+		{"secretsmanager", "RotateSecret", false},
+		{"lambda", "GetPolicy", true}, {"logs", "CreateLogGroup", true}, {"logs", "StartQuery", false},
+	} {
+		svc, ok := reg.Services[c.svc]
+		if !ok {
+			t.Fatalf("no service %s in the registry", c.svc)
+		}
+		if got := has(svc.Operations, c.op); got != c.served {
+			t.Errorf("%s %s: served=%v, want %v", c.svc, c.op, got, c.served)
+		}
+		if got := has(svc.Refused, c.op); got == c.served {
+			t.Errorf("%s %s: refused=%v, want %v", c.svc, c.op, got, !c.served)
+		}
 	}
 }

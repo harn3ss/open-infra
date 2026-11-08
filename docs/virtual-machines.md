@@ -579,7 +579,7 @@ when it is stopped and started (a CloudFormation update does that itself).
 
 Terminate: terminating an instance in the console, or deleting the CloudFormation stack that launched
 it (`aws cloudformation delete-stack`), removes the instance, its root volume and its network address,
-which is released. (`aws ec2 terminate-instances` is not served yet.)
+which is released.
 *(Operators: the console deletes the `virtualmachines.openinfra.dev` claim. The kind name
 `VirtualMachine` exists in **both** `openinfra.dev` (the claim) and `kubevirt.io` (the composed VM), so a
 bare `kubectl delete vm <name>` is ambiguous and may hit the kubevirt.io VM, which Crossplane then

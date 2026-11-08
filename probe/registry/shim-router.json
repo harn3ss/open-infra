@@ -146,6 +146,7 @@
         "ListImports",
         "ListStackResources",
         "ListStacks",
+        "SignalResource",
         "UpdateStack",
         "UpdateTerminationProtection",
         "ValidateTemplate"
@@ -261,8 +262,11 @@
         "DescribeVolumes",
         "DescribeVpcEndpoints",
         "DescribeVpcs",
+        "ImportKeyPair",
+        "RebootInstances",
         "StartInstances",
-        "StopInstances"
+        "StopInstances",
+        "TerminateInstances"
       ],
       "conditional": true
     },
@@ -341,16 +345,18 @@
       "handler": "eksHandler",
       "operations": [
         "DescribeCluster",
-        "DescribeIdentityProviderConfig",
         "DescribeNodegroup",
         "ListClusters",
         "ListNodegroups"
       ],
       "refused": [
+        "AssociateIdentityProviderConfig",
         "CreateCluster",
         "CreateNodegroup",
         "DeleteCluster",
         "DeleteNodegroup",
+        "DescribeIdentityProviderConfig",
+        "DisassociateIdentityProviderConfig",
         "UpdateAddon",
         "UpdateClusterConfig",
         "UpdateClusterVersion"
@@ -370,7 +376,9 @@
         "ListIdentities",
         "SendBulkEmail",
         "SendEmail",
-        "SendRawEmail",
+        "SendRawEmail"
+      ],
+      "refused": [
         "VerifyDomainIdentity",
         "VerifyEmailIdentity"
       ],
@@ -609,15 +617,17 @@
         "DeleteRetentionPolicy",
         "DescribeLogGroups",
         "DescribeLogStreams",
-        "DescribeQueries",
         "FilterLogEvents",
         "GetLogEvents",
-        "GetQueryResults",
         "PutLogEvents",
         "PutRetentionPolicy",
-        "StartQuery",
-        "StopQuery",
         "TagLogGroup"
+      ],
+      "refused": [
+        "DescribeQueries",
+        "GetQueryResults",
+        "StartQuery",
+        "StopQuery"
       ]
     },
     "monitoring": {
@@ -655,17 +665,20 @@
     "rds": {
       "handler": "rdsHandler",
       "operations": [
-        "AddTagsToResource",
         "CreateDBInstance",
-        "CreateDBInstanceReadReplica",
         "CreateDBSnapshot",
         "DeleteDBInstance",
         "DeleteDBSnapshot",
         "DescribeDBInstances",
         "DescribeDBSnapshots",
-        "ListTagsForResource",
         "ModifyDBInstance",
-        "RestoreDBInstanceFromDBSnapshot",
+        "RestoreDBInstanceFromDBSnapshot"
+      ],
+      "refused": [
+        "AddTagsToResource",
+        "CreateDBInstanceReadReplica",
+        "ListTagsForResource",
+        "RemoveTagsFromResource",
         "RestoreDBInstanceToPointInTime"
       ],
       "actions": [
@@ -713,7 +726,6 @@
     "secretsmanager": {
       "handler": "secretsHandler",
       "operations": [
-        "CancelRotateSecret",
         "CreateSecret",
         "DeleteSecret",
         "DescribeSecret",
@@ -723,11 +735,14 @@
         "ListSecrets",
         "PutSecretValue",
         "RestoreSecret",
-        "RotateSecret",
         "TagResource",
         "UntagResource",
         "UpdateSecret",
         "UpdateSecretVersionStage"
+      ],
+      "refused": [
+        "CancelRotateSecret",
+        "RotateSecret"
       ]
     },
     "servicequotas": {
@@ -758,7 +773,9 @@
         "ListIdentities",
         "SendBulkEmail",
         "SendEmail",
-        "SendRawEmail",
+        "SendRawEmail"
+      ],
+      "refused": [
         "VerifyDomainIdentity",
         "VerifyEmailIdentity"
       ],

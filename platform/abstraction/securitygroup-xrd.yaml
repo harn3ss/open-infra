@@ -4,7 +4,7 @@
 # the members (pods labelled openinfra.dev/sg-<name>): default-deny on the directions
 # you define, plus your allows — stateful, like an AWS SG.
 #
-# Enforced by Cilium (the cluster CNI). Sources/destinations are:
+# Enforced by the cluster CNI's NetworkPolicy (kube-ovn). Sources/destinations are:
 #   - cidr          -> real IP/CIDR enforcement for EDGE/LAN traffic (e.g. 192.0.2.0/24)
 #   - securityGroup -> members of another SG (east-west, by identity)
 #   - namespace     -> all pods in a namespace (east-west, by identity)

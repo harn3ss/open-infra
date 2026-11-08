@@ -451,17 +451,17 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | API Gateway | `apigateway` | proven | 40 |
 | AppSync | `appsync` | proven | 14 |
 | Athena | `athena` | proven | 28 |
-| CloudFormation | `cloudformation` | proven | 23 |
+| CloudFormation | `cloudformation` | proven | 24 |
 | CloudFront | `cloudfront` | proven | 11 |
 | CloudWatch | `monitoring` | proven | 8 |
-| CloudWatch Logs | `logs` | proven | 16 |
+| CloudWatch Logs | `logs` | proven | 12 |
 | Cognito | `cognito-idp` | proven | 20 |
 | DynamoDB | `dynamodb` | proven | 19 |
 | DynamoDB | `dynamodbstreams` | proven | 4 |
-| EC2 | `ec2` | proven | 19 |
+| EC2 | `ec2` | proven | 22 |
 | ECR | `ecr` | proven | 37 |
 | ECS | `ecs` | proven | 13 |
-| EKS | `eks` | proven | 5 |
+| EKS | `eks` | proven | 4 |
 | EventBridge | `events` | proven | 14 |
 | Glue | `glue` | proven | 32 |
 | IAM | `iam` | proven | 77 |
@@ -469,15 +469,15 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | Kinesis Data Streams | `kinesis` | proven | 12 |
 | Lambda | `lambda` | proven | 4 |
 | Organizations | `organizations` | proven | 7 |
-| RDS | `rds` | proven | 12 |
+| RDS | `rds` | proven | 8 |
 | S3 | `s3` | proven | 33 |
-| SES | `email` | proven | 14 |
-| SES | `ses` | proven | 14 |
+| SES | `email` | proven | 12 |
+| SES | `ses` | proven | 12 |
 | SNS | `sns` | proven | 27 |
 | SQS | `sqs` | proven | 14 |
 | SSM | `ssm` | proven | 17 |
 | STS | `sts` | proven | 4 |
-| Secrets Manager | `secretsmanager` | proven | 15 |
+| Secrets Manager | `secretsmanager` | proven | 13 |
 | Service Quotas | `servicequotas` | proven | 9 |
 | Step Functions | `states` | proven | 12 |
 <!-- END shimgen:surface-services -->

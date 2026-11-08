@@ -211,7 +211,7 @@ func resolveEKS(r *http.Request) eksRequest {
 			return eksRequest{op: op, cluster: cluster, sub: sub, cat: eksRefused}
 		case "identity-provider-configs":
 			// AWS nests the verb here: .../identity-provider-configs/{associate,describe,disassociate}.
-			return eksRequest{op: idpConfigOp(sub), cluster: cluster, cat: eksRefused}
+			return idpConfigRequest(sub, cluster)
 		}
 	case 5: // /clusters/{name}/<subresource>/{subName}/<action>
 		cluster := segs[1]
@@ -233,18 +233,18 @@ func resolveEKS(r *http.Request) eksRequest {
 	return eksRequest{cat: eksUnknown}
 }
 
-// idpConfigOp names the identity-provider-config verb from the trailing path segment, so the refusal and
-// audit name a sensible op. All of them are refused the same way.
-func idpConfigOp(action string) string {
+// idpConfigRequest is the refused request an identity-provider-config path is, its op named from the
+// trailing path segment so the refusal and audit name a sensible op. All of them are refused the same way.
+func idpConfigRequest(action, cluster string) eksRequest {
 	switch action {
 	case "associate":
-		return "AssociateIdentityProviderConfig"
+		return eksRequest{op: "AssociateIdentityProviderConfig", cluster: cluster, cat: eksRefused}
 	case "disassociate":
-		return "DisassociateIdentityProviderConfig"
+		return eksRequest{op: "DisassociateIdentityProviderConfig", cluster: cluster, cat: eksRefused}
 	case "describe":
-		return "DescribeIdentityProviderConfig"
+		return eksRequest{op: "DescribeIdentityProviderConfig", cluster: cluster, cat: eksRefused}
 	}
-	return "IdentityProviderConfig"
+	return eksRequest{op: "IdentityProviderConfig", cluster: cluster, cat: eksRefused}
 }
 
 // eksRefusalMessage returns the honest reason an op is deliberately NOT fronted. Each message names the op

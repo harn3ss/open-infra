@@ -16,9 +16,9 @@
 // Engine: PostgreSQL only. A non-postgres Engine is refused, never quietly given a Postgres. Honored
 // capability flags: DBInstanceClass (mapped to real resources; unknown classes refused), AllocatedStorage,
 // StorageEncrypted (genuine — Longhorn LUKS storage class), DeletionProtection, SkipFinalSnapshot +
-// FinalDBSnapshotIdentifier, and real snapshots/restore (CNPG volumeSnapshot). Refused honestly, never
-// accept-and-ignore: MultiAZ, read replicas, point-in-time recovery, custom parameter/subnet/security
-// groups. See docs/aws-shim.md.
+// FinalDBSnapshotIdentifier, and real snapshots/restore (CNPG volumeSnapshot). Refused: MultiAZ, read
+// replicas, point-in-time recovery, custom parameter/subnet/security groups, resource tags. ModifyDBInstance
+// applies DeletionProtection only and leaves its other parameters unapplied (#377). See docs/aws-shim.md.
 package main
 
 import (
@@ -183,6 +183,10 @@ func (h *rdsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "RestoreDBInstanceToPointInTime":
 		writeQueryError(w, http.StatusBadRequest, "InvalidParameterCombination", requestID,
 			"point-in-time recovery is not implemented; use CreateDBSnapshot + RestoreDBInstanceFromDBSnapshot. (DescribeDBInstances does not report a LatestRestorableTime that cannot be honored.)", rdsXMLNamespace)
+	case "AddTagsToResource", "ListTagsForResource", "RemoveTagsFromResource":
+		// Recognized, authorized and refused: RDS resource tags are not kept yet (#371).
+		writeQueryError(w, http.StatusBadRequest, "InvalidAction", requestID,
+			"RDS "+op+" is recognized but not implemented by the open-infra shim: resource tags are not kept yet.", rdsXMLNamespace)
 	default:
 		writeQueryError(w, http.StatusBadRequest, "InvalidAction", requestID,
 			"RDS "+op+" is recognized but not implemented by the open-infra shim.", rdsXMLNamespace)
