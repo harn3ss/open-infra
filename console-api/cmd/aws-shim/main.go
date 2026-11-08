@@ -329,7 +329,11 @@ func run(logger *slog.Logger) error {
 	// interfaces. LAMBDA_VPC_SUBNET=off turns it off (no function can then be in a VPC).
 	var vpcIfaces *vpcInterfaces
 	if sub := getenv("LAMBDA_VPC_SUBNET", defaultLambdaVPCSubnet); sub != "off" && dyn != nil {
-		vpcIfaces = newVPCInterfaces(dyn, podGetter(cs), acctDir.AccountOf, sub, logger)
+		if md, merr := metadata.NewForConfig(kc.Config); merr == nil {
+			vpcIfaces = newVPCInterfaces(dyn, podMetadataGetter(md), acctDir.AccountOf, sub, logger)
+		} else {
+			logger.Warn("lambda vpc: no metadata client; no function can be in a VPC", slog.String("error", merr.Error()))
+		}
 	}
 
 	// sts:AssumeRole (faithful STS temporary credentials). The AES-256 key that seals/opens the
@@ -523,8 +527,9 @@ func run(logger *slog.Logger) error {
 			}
 		}
 	}
-	lambdaH.account, lambdaH.region = account, ident.Region // a function's ARN in GetFunction/ListFunctions
-	lambdaH.roles = roleRes                                 // CreateFunction / UpdateFunctionConfiguration check the execution role's trust (lambda_manage.go)
+	lambdaH.account, lambdaH.region = account, ident.Region                                                       // a function's ARN in GetFunction/ListFunctions
+	lambdaH.roles = roleRes                                                                                       // CreateFunction / UpdateFunctionConfiguration check the execution role's trust (lambda_manage.go)
+	lambdaH.rolesHome = getenv("ROLES_NAMESPACE", getenv("USERS_NAMESPACE", dataplaneauthz.DefaultHomeNamespace)) // a VPC function's role (lambda_vpc.go)
 	region := ident.Region
 	// DynamoDB Streams front door (reads the change-record logs the dynamodb write path emits).
 	ddbStreamsH := newDDBStreamsHandler(cs, authzNS, account, region, ddbStreamSt, dynamoH, logger)
@@ -1011,6 +1016,20 @@ func run(logger *slog.Logger) error {
 		}()
 	}
 
+	// The Lambda service port (lambda_service.go): a function's package and its role's credentials, and
+	// nothing else, so a function in a VPC gets both whatever its security groups allow.
+	var lambdaSvcSrv *http.Server
+	if lsAddr := getenv("LAMBDA_SERVICE_LISTEN", ":4568"); lsAddr != "off" {
+		lambdaSvcSrv = &http.Server{Addr: lsAddr, Handler: otelhttp.NewHandler(lambdaServiceOnly(router), "aws-shim-lambda-service"),
+			ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
+		go func() {
+			logger.Info("aws-shim Lambda service port listening", "addr", lsAddr)
+			if lerr := lambdaSvcSrv.ListenAndServe(); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
+				serverErr <- lerr
+			}
+		}()
+	}
+
 	// The SES SMTP interface (ses_smtp.go), served while SES is: SES SMTP credentials (an IAM user's access
 	// key id + its derived SMTP password) over STARTTLS or TLS Wrapper; each message is SendRawEmail as that
 	// user. The platform relay accepts mail from this shim alone (mail/relay.yaml's NetworkPolicy).
@@ -1155,6 +1174,9 @@ func run(logger *slog.Logger) error {
 	defer cancel()
 	if internalTLS != nil {
 		_ = internalTLS.Shutdown(shutdownCtx)
+	}
+	if lambdaSvcSrv != nil {
+		_ = lambdaSvcSrv.Shutdown(shutdownCtx)
 	}
 	if sesSMTPSrv != nil {
 		_ = sesSMTPSrv.Shutdown(shutdownCtx)

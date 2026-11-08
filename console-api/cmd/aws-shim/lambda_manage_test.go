@@ -218,22 +218,22 @@ func TestCreateFunction_PassRoleIsTheCallers(t *testing.T) {
 // What a Function cannot carry refuses, naming the field; Lambda's defaults are accepted.
 func TestCreateFunction_RefusesWhatItCannotCarry(t *testing.T) {
 	for name, extra := range map[string]map[string]any{
-		"Layers":         {"Layers": []any{"arn:aws:lambda:us-east-1:1:layer:x:1"}},
-		"Architectures":  {"Architectures": []any{"arm64"}},
-		"VpcConfig":      {"VpcConfig": map[string]any{"SubnetIds": []any{"subnet-1"}}},
-		"Tags":           {"Tags": map[string]any{"team": "a"}},
-		"unknown member": {"Frobnicate": true},
-		"runtime":        {"Runtime": "ruby3.3"},
-		"timeout":        {"Timeout": 901},
-		"memory":         {"MemorySize": 64},
-		"reserved env":   {"Environment": map[string]any{"Variables": map[string]any{"AWS_ENDPOINT_URL": "http://elsewhere"}}},
-		"platform env":   {"Environment": map[string]any{"Variables": map[string]any{"OPENINFRA_CODE_URL": "http://elsewhere"}}},
-		"quoted value":   {"Environment": map[string]any{"Variables": map[string]any{"XX": `a", valueFrom: {`}}},
-		"env name":       {"Environment": map[string]any{"Variables": map[string]any{"1BAD": "x"}}},
-		"handler":        {"Handler": "index.handler; rm -rf"},
-		"name":           {"FunctionName": "Orders_API"},
-		"not a zip":      {"Code": map[string]any{"ZipFile": base64.StdEncoding.EncodeToString([]byte("not a zip"))}},
-		"two sources":    {"Code": map[string]any{"ZipFile": "UEs=", "S3Bucket": "deploy", "S3Key": "k"}},
+		"Layers":                   {"Layers": []any{"arn:aws:lambda:us-east-1:1:layer:x:1"}},
+		"Architectures":            {"Architectures": []any{"arm64"}},
+		"VpcConfig without groups": {"VpcConfig": map[string]any{"SubnetIds": []any{"subnet-1"}}},
+		"Tags":                     {"Tags": map[string]any{"team": "a"}},
+		"unknown member":           {"Frobnicate": true},
+		"runtime":                  {"Runtime": "ruby3.3"},
+		"timeout":                  {"Timeout": 901},
+		"memory":                   {"MemorySize": 64},
+		"reserved env":             {"Environment": map[string]any{"Variables": map[string]any{"AWS_ENDPOINT_URL": "http://elsewhere"}}},
+		"platform env":             {"Environment": map[string]any{"Variables": map[string]any{"OPENINFRA_CODE_URL": "http://elsewhere"}}},
+		"quoted value":             {"Environment": map[string]any{"Variables": map[string]any{"XX": `a", valueFrom: {`}}},
+		"env name":                 {"Environment": map[string]any{"Variables": map[string]any{"1BAD": "x"}}},
+		"handler":                  {"Handler": "index.handler; rm -rf"},
+		"name":                     {"FunctionName": "Orders_API"},
+		"not a zip":                {"Code": map[string]any{"ZipFile": base64.StdEncoding.EncodeToString([]byte("not a zip"))}},
+		"two sources":              {"Code": map[string]any{"ZipFile": "UEs=", "S3Bucket": "deploy", "S3Key": "k"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h, dyn, _ := manageFixture(t, nil)

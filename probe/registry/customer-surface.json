@@ -1363,6 +1363,15 @@
       "how": "field",
       "kind": "Function"
     },
+    "Function.vpcConfig": {
+      "actions": [
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "class": "aws",
+      "field": "vpcConfig",
+      "how": "field",
+      "kind": "Function"
+    },
     "Grant.approval": {
       "actions": [
         "iam:AttachUserPolicy"
@@ -2597,6 +2606,15 @@
       ],
       "class": "aws",
       "field": "ingress",
+      "how": "field",
+      "kind": "SecurityGroup"
+    },
+    "SecurityGroup.vpc": {
+      "actions": [
+        "ec2:CreateSecurityGroup"
+      ],
+      "class": "aws",
+      "field": "vpc",
       "how": "field",
       "kind": "SecurityGroup"
     },
@@ -6906,11 +6924,11 @@
   },
   "summary": {
     "fields": {
-      "aws": 365,
+      "aws": 367,
       "extra": 25,
       "operator": 0,
       "removed": 0,
-      "total": 390
+      "total": 392
     },
     "kinds": {
       "aws": 54,

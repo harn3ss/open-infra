@@ -394,7 +394,8 @@ func translateKMSKey(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 // Code.ZipFile: it PUTs a custom resource's response to the event's ResponseURL (#404).
 // Both: Environment.Variables (-> env), MemorySize (-> memory), Timeout (-> timeout), Role (-> spec.role,
 // the execution role the function's code runs as: an in-stack role by !GetAtt <Role>.Arn, or a role ARN of
-// the stack's account). VpcConfig, Layers and the rest block.
+// the stack's account), VpcConfig (-> spec.vpcConfig: subnets and security groups of one VPC, the VPC read
+// from the in-stack subnets, translate_lambda_vpc.go). Layers and the rest block.
 //
 // The Function is also the ANCHOR of the SNS-subscription collation (#113): it scans the stack for
 // lambda SNS subscriptions (a standalone AWS::SNS::Subscription, or an inline Subscription on a topic)
@@ -406,7 +407,7 @@ func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*M
 	known := map[string]bool{
 		"Code": true, "PackageType": true, "Environment": true, "MemorySize": true,
 		"Timeout": true, "Role": true, "FunctionName": true, "Description": true,
-		"Architectures": true, "Tags": true, "Runtime": true, "Handler": true, "Layers": true,
+		"Architectures": true, "Tags": true, "Runtime": true, "Handler": true, "Layers": true, "VpcConfig": true,
 	}
 	var f []Finding
 	f = append(f, blockUnknownProps(id, props, known)...)
@@ -444,6 +445,11 @@ func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*M
 	}
 	if env := lambdaEnv(id, code, props, &f); len(env) > 0 {
 		spec["env"] = env
+	}
+	if vc, vf := lambdaVpcConfig(id, props, ctx); len(vf) > 0 {
+		f = append(f, vf...)
+	} else if vc != nil {
+		spec["vpcConfig"] = vc
 	}
 	// #113: fold every lambda SNS subscription targeting this Function into spec.queues.
 	if ctx != nil {
@@ -1969,10 +1975,17 @@ func translateEC2SecurityGroup(id string, props map[string]any, ctx *stackCtx) (
 		spec["egress"] = egress
 	}
 
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "SecurityGroup", Name: ctx.name(id), Spec: spec, Caveats: caveats}
+	// VpcId -> spec.vpc: the group is its VPC's, which a Lambda function in that VPC can use (and the VPC's
+	// flow logs record what the group refuses).
+	// A !Ref to an in-stack AWS::EC2::VPC maps, as a subnet's VpcId does.
 	if _, ok := props["VpcId"]; ok {
-		m.Caveats = append(m.Caveats, "VpcId dropped — a kind: SecurityGroup is enforced cluster-wide by membership label, not scoped to a VPC")
+		if vt, isRef := refTarget(raw["VpcId"]); isRef && ctx != nil && ctx.includedType(vt, "AWS::EC2::VPC") {
+			spec["vpc"] = ctx.name(vt)
+		} else {
+			caveats = append(caveats, "VpcId names no VPC this stack creates, so the group belongs to no VPC: a Lambda function in a VPC cannot use it")
+		}
 	}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "SecurityGroup", Name: ctx.name(id), Spec: spec, Caveats: caveats}
 	m.Caveats = append(m.Caveats, awsViewCaveats(props, "GroupName", "GroupDescription", "Tags")...)
 	return m, f
 }

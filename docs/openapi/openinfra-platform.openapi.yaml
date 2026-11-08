@@ -6183,6 +6183,41 @@ components:
               items:
                 type: string
               description: Names of SecurityGroups (firewall rule sets) to attach to this function's pods.
+            vpcConfig:
+              type: object
+              description: 'Lambda''s VpcConfig: the function''s network interfaces are in these subnets of one VPC, its outbound
+                traffic is governed by these security groups, its DNS goes to the VPC''s resolver (Route 53 Resolver: the
+                VPC''s DNS Firewall and query logging apply), and its network traffic can be recorded by the VPC''s flow logs.
+                See docs/lambda-vpc.md.'
+              x-kubernetes-validations:
+              - rule: (size(self.subnetIds) == 0) == (size(self.securityGroupIds) == 0)
+                message: 'Lambda function: a VPC configuration names both its subnets (SubnetIds) and its security groups
+                  (SecurityGroupIds), or neither (vpcConfig)'
+              - rule: size(self.subnetIds) == 0 || (has(self.vpcId) && self.vpcId != '')
+                message: 'Lambda function: a VPC configuration names the VPC its subnets are in (vpcConfig.vpcId)'
+              required:
+              - subnetIds
+              - securityGroupIds
+              properties:
+                subnetIds:
+                  type: array
+                  maxItems: 16
+                  items:
+                    type: string
+                    maxLength: 63
+                  description: 'Subnet ids (kind: Subnet names) of one VPC. Empty: the function is not in a VPC.'
+                securityGroupIds:
+                  type: array
+                  maxItems: 5
+                  items:
+                    type: string
+                    maxLength: 60
+                  description: 'Security group ids (kind: SecurityGroup names) of the same VPC.'
+                vpcId:
+                  type: string
+                  maxLength: 63
+                  description: 'The VPC (kind: Vpc name) the subnets and security groups belong to. The Lambda API fills it
+                    in.'
             trigger:
               type: object
               description: 'Event-source mapping: subscribe this function to a Stream''s CDC events (kind: Stream). A pump
@@ -8496,6 +8531,14 @@ components:
         spec:
           type: object
           properties:
+            vpc:
+              type: string
+              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+              maxLength: 63
+              description: 'The VPC (kind: Vpc) the group belongs to, AWS''s VpcId: a Lambda function in that VPC (vpcConfig)
+                can use it. Every packet the group refuses is recorded for the VPC''s flow logs, and when it has egress rules
+                its members also reach the VPC''s resolver and the Lambda service (never filtered, as on AWS). Omitted: a
+                group of no VPC, as before.'
             ingress:
               type: array
               maxItems: 128

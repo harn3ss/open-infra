@@ -85,11 +85,7 @@ func lambdaEnvReserved(name string) bool {
 // lambdaUnsupported are request members a Function cannot carry, with what is accepted when it is
 // Lambda's default (nil: never accepted).
 var lambdaUnsupported = map[string]func(v any) bool{
-	"Layers": nil,
-	"VpcConfig": func(v any) bool {
-		m, _ := v.(map[string]any)
-		return len(anySlice(m["SubnetIds"])) == 0 && len(anySlice(m["SecurityGroupIds"])) == 0
-	},
+	"Layers":           nil,
 	"DeadLetterConfig": func(v any) bool { m, _ := v.(map[string]any); return str(m["TargetArn"]) == "" },
 	"KMSKeyArn":        func(v any) bool { return str(v) == "" },
 	"TracingConfig": func(v any) bool {
@@ -259,6 +255,12 @@ func (h *lambdaHandler) serveWrite(w http.ResponseWriter, r *http.Request, claim
 				ns = own[0]
 			}
 		}
+		// A function in a VPC lives beside its account's VPCs, subnets and security groups (lambda_vpc.go).
+		if vc, e := parseVpcConfig(body); e == nil && !vc.empty() && ns != noFnNamespace {
+			if vns := h.vpcNamespace(ctx); vns != "" {
+				ns = vns
+			}
+		}
 	} else {
 		ns = h.fns.namespaceFor(ctx, name, h.fnNS)
 	}
@@ -377,6 +379,13 @@ func (h *lambdaHandler) createFunction(w http.ResponseWriter, r *http.Request, c
 	}
 	spec["role"] = role
 	if e := applyLambdaSettings(spec, body); e != nil {
+		e.write(w, requestID)
+		return
+	}
+	if vc, e := parseVpcConfig(body); e != nil {
+		e.write(w, requestID)
+		return
+	} else if e := h.applyVpcConfig(ctx, spec, vc, ns, role); e != nil {
 		e.write(w, requestID)
 		return
 	}
@@ -545,6 +554,14 @@ func (h *lambdaHandler) updateFunction(w http.ResponseWriter, r *http.Request, c
 			spec["role"] = str(role)
 		}
 		if e := applyLambdaSettings(spec, body); e != nil {
+			e.write(w, requestID)
+			return
+		}
+		// VpcConfig; the role it is checked against is the one the function will run as.
+		if vc, e := parseVpcConfig(body); e != nil {
+			e.write(w, requestID)
+			return
+		} else if e := h.applyVpcConfig(ctx, spec, vc, ns, fnStr(spec["role"])); e != nil {
 			e.write(w, requestID)
 			return
 		}

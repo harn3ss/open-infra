@@ -1,0 +1,36 @@
+# The Lambda VPC subnet: where a Lambda function in a VPC (Lambda's VpcConfig — kind: Function
+# spec.vpcConfig) runs its execution environments. See docs/lambda-vpc.md.
+#
+# A function in a VPC sends its DNS to the VPC resolver (Route 53 Resolver, the vpc-resolver Service at
+# 10.43.0.2, platform/aws-shim/lambda-vpc.yaml), where the VPC's DNS Firewall and query logging apply. This
+# subnet's ACL makes that the only DNS it can reach: every DNS packet (UDP or TCP port 53) to any other
+# address is dropped here, before any security group or NetworkPolicy is consulted (a subnet ACL is
+# evaluated first and wins over a NetworkPolicy's allow), so no policy in the function's account can open
+# a path to another resolver. Those drops are not logged: kube-ovn subnet ACLs cannot log. The function's
+# other traffic is its security groups' (a group in the VPC logs what it admits and refuses).
+#
+# One subnet serves every account's VPC functions; an execution environment's address is from it, not from
+# its function's subnets' CIDRs. It is in the default kube-ovn VPC and not private, so the Knative
+# activator and gateway reach the function as they reach any other.
+#
+# The CIDR must be free on your network and in the cluster (no other subnet, the pod and Service CIDRs, the
+# join subnet, the LAN). Change it here if 10.17.0.0/16 is in use; nothing else names it. The resolver's
+# address in the ACL is the vpc-resolver Service's (test/render checks they agree).
+apiVersion: kubeovn.io/v1
+kind: Subnet
+metadata:
+  name: openinfra-lambda-vpc
+  labels:
+    openinfra.dev/subnet: openinfra-lambda-vpc
+    app.kubernetes.io/part-of: open-infra
+spec:
+  protocol: IPv4
+  cidrBlock: 10.17.0.0/16
+  vpc: ovn-cluster
+  natOutgoing: true
+  private: false
+  acls:
+    - direction: from-lport
+      priority: 3000
+      match: "(udp.dst == 53 || tcp.dst == 53) && ip4.dst != 10.43.0.2"
+      action: drop

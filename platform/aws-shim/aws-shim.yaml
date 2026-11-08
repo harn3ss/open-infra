@@ -223,6 +223,12 @@ rules:
   - apiGroups: [openinfra.dev]
     resources: [virtualmachines, xvirtualmachines]
     verbs: [get]
+  # Lambda in a VPC (vpcnet.go): the Lambda VPC subnet's addresses, so the VPC resolver and the flow logs
+  # know which function's execution environment an address is (each address's pod is then read by name, as
+  # metadata, with the pods get above). The shim lists and watches only that subnet's (a label selector).
+  - apiGroups: [kubeovn.io]
+    resources: [ips]
+    verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -1018,6 +1024,16 @@ spec:
               containerPort: 2587
             - name: smtps
               containerPort: 2465
+            # Lambda in a VPC (lambda-vpc.yaml): the VPC resolver (Route 53 Resolver), and the Lambda
+            # service port (a function's package and its role's credentials, nothing else).
+            - name: dns-udp
+              containerPort: 5353
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: 5353
+              protocol: TCP
+            - name: lambda-service
+              containerPort: 4568
           env:
             - { name: LISTEN_ADDR, value: ":4566" }
             # EC2 instance metadata (IMDS): serve rotating role credentials (/v1/vm-credentials) to the
@@ -1066,6 +1082,11 @@ spec:
             # retries and a dead-letter subject. With the nats component off the connect fails within 5 s
             # and Event invokes are refused (503), as before.
             - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
+            # Lambda in a VPC (lambda-vpc.yaml, docs/lambda-vpc.md): the kube-ovn subnet VPC functions run
+            # on, whose addresses the shim follows; the VPC resolver's listener; the Lambda service port.
+            - { name: LAMBDA_VPC_SUBNET, value: "openinfra-lambda-vpc" }
+            - { name: VPC_RESOLVER_LISTEN, value: ":5353" }
+            - { name: LAMBDA_SERVICE_LISTEN, value: ":4568" }
             # The install's AWS identity (aws-identity.yaml): the account and region every ARN, queue URL
             # and StackId is built in, and the CloudFormation pseudo-parameters resolve to.
             - { name: ACCOUNT_ID, valueFrom: { configMapKeyRef: { name: openinfra-aws-identity, key: ACCOUNT_ID } } }
@@ -1322,6 +1343,10 @@ spec:
     - name: smtps
       port: 465
       targetPort: 2465
+    # The Lambda service port (lambda_service.go): a function's package and its role's credentials.
+    - name: lambda-service
+      port: 4568
+      targetPort: 4568
 ---
 # Step Functions StartSyncExecution endpoint alias. The AWS SDK/CLI resolve StartSyncExecution to a
 # SEPARATE, "sync-"prefixed host (AWS's sync-states.<region>.amazonaws.com), and apply that prefix even

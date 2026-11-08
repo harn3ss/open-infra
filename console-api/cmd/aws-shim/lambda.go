@@ -71,6 +71,8 @@ type lambdaHandler struct {
 	// roles reads an execution role's trust when a function is given one (lambda_manage.go); nil = no role
 	// can be passed, so no function can be created or given a role.
 	roles roleResolver
+	// rolesHome is the IAM home namespace, what a role's principal id is relative to (lambda_vpc.go).
+	rolesHome string
 	// pkgDoor stores a .zip function's deployment package, reading an S3 one as the caller may (the
 	// CloudFormation front door's package store and S3 read check, lambda_packages.go); nil = only image
 	// functions can be created.

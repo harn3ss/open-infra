@@ -14,7 +14,7 @@
 // subnet's CIDR (docs/lambda-vpc.md says so).
 //
 // vpcInterfaces follows the subnet's kube-ovn IP objects (one per pod address, labelled with the subnet):
-// list and watch on ips.kubeovn.io, and get on pods for a new address's pod. It remembers an interface for
+// list and watch on ips.kubeovn.io, and get on pods (metadata only) for a new address's pod. It remembers an interface for
 // a while after its pod is gone, so a flow-log record or a query that arrives late is still attributed to
 // the function that sent it.
 package main
@@ -34,7 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/metadata"
 )
 
 const (
@@ -105,10 +105,15 @@ func interfaceForPod(pod *corev1.Pod, ip, node, account string, at time.Time) (v
 		ENI: lambdaENIID(account, fn, subnet), Attached: at}, true
 }
 
-// podGetter reads one pod (get on pods).
-func podGetter(cs kubernetes.Interface) func(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
+// podMetadataGetter reads one pod's metadata (get on pods, as PartialObjectMetadata): its labels and
+// annotations are all an interface needs, and a pod's spec carries the function's environment.
+func podMetadataGetter(md metadata.Interface) func(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	return func(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
-		return cs.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+		m, err := md.Resource(podsGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return &corev1.Pod{ObjectMeta: m.ObjectMeta}, nil
 	}
 }
 

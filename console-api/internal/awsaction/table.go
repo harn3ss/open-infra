@@ -136,6 +136,7 @@ func table() []*Entry {
 		"reservedConcurrency": {Actions: []string{"lambda:PutFunctionConcurrency"}},
 		"aliases":             {Actions: []string{"lambda:CreateAlias", "lambda:UpdateAlias", "lambda:DeleteAlias"}},
 		"versions":            {Actions: []string{"lambda:PublishVersion", "lambda:DeleteFunction"}},
+		"vpcConfig":           {Actions: []string{"lambda:UpdateFunctionConfiguration"}},
 	}
 	vm := add(ec2Row("VirtualMachine", "virtualmachines", "instance", "AWS::EC2::Instance",
 		"ec2:DescribeInstances", "ec2:RunInstances", "ec2:ModifyInstanceAttribute", "ec2:TerminateInstances"))
@@ -166,6 +167,8 @@ func table() []*Entry {
 	sg.FieldActions = map[string]FieldRule{
 		"ingress": {Actions: []string{"ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress"}},
 		"egress":  {Actions: []string{"ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress"}},
+		// A group's VPC is set when it is created (CreateSecurityGroup's VpcId), as on AWS.
+		"vpc": {Actions: []string{"ec2:CreateSecurityGroup"}},
 	}
 	add(ec2Row("Vpc", "vpcs", "vpc", "AWS::EC2::VPC", "ec2:DescribeVpcs", "ec2:CreateVpc", "ec2:ModifyVpcAttribute", "ec2:DeleteVpc"))
 	add(ec2Row("Subnet", "subnets", "subnet", "AWS::EC2::Subnet", "ec2:DescribeSubnets", "ec2:CreateSubnet", "ec2:ModifySubnetAttribute", "ec2:DeleteSubnet"))

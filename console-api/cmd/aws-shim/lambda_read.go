@@ -407,6 +407,9 @@ func (h *lambdaHandler) functionConfiguration(ctx context.Context, obj *unstruct
 		timeout = t
 	}
 	c["Timeout"] = timeout
+	if vc := vpcConfigOf(spec); vc != nil {
+		c["VpcConfig"] = vc
+	}
 	if env, _ := spec["env"].([]any); len(env) > 0 {
 		vars := map[string]string{}
 		for _, e := range env {

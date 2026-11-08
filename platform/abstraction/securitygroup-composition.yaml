@@ -156,6 +156,14 @@ spec:
             {{- if $defEgress }}
               {{- $dns := dict "to" (list (dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "kube-system")))) "ports" (list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53)) }}
               {{- $egressRules = append $egressRules $dns }}
+              {{- if $spec.vpc }}
+              {{- /* A group in a VPC: its members are the VPC's Lambda functions, whose DNS goes to the VPC
+                     resolver and whose code and credentials come from the Lambda service, both served by
+                     the aws-shim (5353 DNS, 4568 the Lambda service). AWS never filters either with a
+                     security group, so neither is filtered here. */}}
+              {{- $shim := dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "open-infra-aws-shim")) "podSelector" (dict "matchLabels" (dict "app" "aws-shim")) }}
+              {{- $egressRules = append $egressRules (dict "to" (list $shim) "ports" (list (dict "protocol" "UDP" "port" 5353) (dict "protocol" "TCP" "port" 5353) (dict "protocol" "TCP" "port" 4568))) }}
+              {{- end }}
             {{- end }}
             {{- if $wantNodes }}
             ---
@@ -185,6 +193,14 @@ spec:
                     name: sg-{{ $name }}
                     namespace: {{ $ns }}
                     labels: { openinfra.dev/securitygroup: {{ $name }} }
+                    {{- if $spec.vpc }}
+                    # A group in a VPC: OVN logs every packet the group refuses, which the VPC's flow logs
+                    # record (EC2 CreateFlowLogs, TrafficType REJECT). Admitted traffic is not logged: OVN
+                    # would log every packet of it, unmetered.
+                    annotations:
+                      ovn.kubernetes.io/enable_log: "true"
+                      ovn.kubernetes.io/log_acl_actions: "drop"
+                    {{- end }}
                   spec:
                     podSelector:
                       matchLabels:

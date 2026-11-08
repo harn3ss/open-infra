@@ -123,10 +123,65 @@ spec:
                    100% on its latest revision ($LATEST), as on Lambda. Aliases are resolved by the aws-shim. */}}
             {{- $pinned := list }}
             {{- range $v := ($spec.versions | default list) }}{{ if $v.revision }}{{ $pinned = append $pinned $v }}{{ end }}{{ end }}
+            {{- /* Lambda's VpcConfig (spec.vpcConfig): the function's execution environments run on the
+                   Lambda VPC subnet, whose ACL lets DNS reach only the VPC resolver (Route 53 Resolver: the
+                   VPC's DNS Firewall and query logging), its outbound traffic is its security groups' (a
+                   group in the VPC logs what it admits and refuses, for the VPC's flow logs), and its code
+                   and credentials come from the Lambda service port, which no security group filters, as on
+                   AWS. The subnet, the resolver and the port are the openinfra-lambda-vpc EnvironmentConfig's
+                   (platform/aws-shim/aws-shim.yaml), read as an extra resource; until it is read, the
+                   defaults it ships with. Without vpcConfig nothing below renders and the function renders
+                   exactly as before. See docs/lambda-vpc.md. */}}
+            {{- $vpcCfg := $spec.vpcConfig | default dict }}
+            {{- $inVpc := gt (len ($vpcCfg.subnetIds | default list)) 0 }}
+            {{- $lvSubnet := "openinfra-lambda-vpc" }}
+            {{- $lvResolver := "10.43.0.2" }}
+            {{- $lvService := "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4568" }}
+            {{- if $inVpc }}
+            {{-   if $spec.securityGroups }}{{- fail "Lambda function: a function in a VPC takes its security groups from its VPC configuration (vpcConfig.securityGroupIds), not securityGroups" }}{{- end }}
+            {{-   range $i := (((index (.extraResources | default dict) "lambda-vpc") | default dict).items | default list) }}
+            {{-     $d := $i.resource.data | default dict }}
+            {{-     $lvSubnet = (index $d "subnet") | default $lvSubnet }}
+            {{-     $lvResolver = (index $d "resolver") | default $lvResolver }}
+            {{-     $lvService = (index $d "lambdaService") | default $lvService }}
+            {{-   end }}
+            {{- end }}
             {{- /* Unsupported (BYO) runtime: fail closed into an isolated posture — cluster-local (expose
                    off), min-scale 0 and non-production label on the Service below, and egress-denied here. */}}
             {{- if $unsupported }}{{- $expose = false }}{{- end }}
-            {{- if and $unsupported (not ($code.allowEgress | default false)) }}
+            {{- if and $unsupported (not ($code.allowEgress | default false)) $inVpc }}
+            ---
+            # Egress-denied, in a VPC: the function's outbound traffic is exactly what its security groups
+            # allow (with no egress rules in them, nothing but the VPC resolver and the Lambda service). Every
+            # packet refused here is logged, for the VPC's flow logs.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: function-eol-netpol
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: networking.k8s.io/v1
+                  kind: NetworkPolicy
+                  metadata:
+                    name: {{ $name }}-eol-egress
+                    namespace: {{ $ns }}
+                    annotations:
+                      ovn.kubernetes.io/enable_log: "true"
+                      ovn.kubernetes.io/log_acl_actions: "drop"
+                  spec:
+                    podSelector: { matchLabels: { serving.knative.dev/service: {{ $name }} } }
+                    policyTypes: [Egress]
+                    egress:
+                      - to:
+                          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: open-infra-aws-shim } }
+                            podSelector: { matchLabels: { app: aws-shim } }
+                        ports:
+                          - { protocol: UDP, port: 5353 }
+                          - { protocol: TCP, port: 5353 }
+                          - { protocol: TCP, port: 4568 }
+            {{- else if and $unsupported (not ($code.allowEgress | default false)) }}
             ---
             # Egress-denied: an unsupported-runtime fixture may reach in-cluster destinations (its code
             # bucket, DNS, the harness that invokes it) but not the LAN or the internet.
@@ -214,14 +269,38 @@ spec:
                           queue.sidecar.serving.knative.dev/memory-resource-request: "32Mi"
                           queue.sidecar.serving.knative.dev/memory-resource-limit: "64Mi"
                           {{- end }}
+                          {{- if $inVpc }}
+                          # In a VPC: the execution environment's network interface is on the Lambda VPC subnet,
+                          # and the VPC resolver and flow logs know it by its VPC, subnets and security groups.
+                          ovn.kubernetes.io/logical_switch: {{ $lvSubnet | toJson }}
+                          openinfra.dev/vpc-id: {{ $vpcCfg.vpcId | toJson }}
+                          openinfra.dev/subnet-ids: {{ join "," $vpcCfg.subnetIds | toJson }}
+                          openinfra.dev/security-group-ids: {{ join "," $vpcCfg.securityGroupIds | toJson }}
+                          {{- end }}
                         {{- if $spec.securityGroups }}
                         # SecurityGroup membership: attached SGs' NetworkPolicies select these labels.
                         labels:
                           {{- range $sg := $spec.securityGroups }}
                           openinfra.dev/sg-{{ $sg }}: ""
                           {{- end }}
+                        {{- else if $inVpc }}
+                        # In a VPC: a member of its VPC configuration's security groups.
+                        labels:
+                          openinfra.dev/lambda-vpc: "true"
+                          {{- range $sg := $vpcCfg.securityGroupIds }}
+                          openinfra.dev/sg-{{ $sg }}: ""
+                          {{- end }}
                         {{- end }}
                       spec:
+                        {{- if $inVpc }}
+                        # The VPC resolver is the function's only DNS (the Lambda VPC subnet refuses DNS to any
+                        # other address), with the cluster's search path.
+                        dnsPolicy: None
+                        dnsConfig:
+                          nameservers: [ {{ $lvResolver | toJson }} ]
+                          searches: [ {{ printf "%s.svc.cluster.local" $ns | toJson }}, "svc.cluster.local", "cluster.local" ]
+                          options: [ { name: ndots, value: "5" } ]
+                        {{- end }}
                         {{- if or $spec.reservedConcurrency $burst }}
                         # One request per instance (Lambda's 1-per-sandbox model): set by reservedConcurrency
                         # (hard per-function cap) OR burstable (so a running pod == one in-flight request ==
@@ -303,7 +382,7 @@ spec:
                               # The stored deployment package: the runtime fetches it from the aws-shim at cold start with
                               # the function's identity token (the shim serves a pod only its own function's package),
                               # checks its SHA-256 and unpacks it into /var/task. No keys.
-                              - { name: OPENINFRA_CODE_URL, value: "{{ $shimEndpoint }}/v1/function-code" }
+                              - { name: OPENINFRA_CODE_URL, value: "{{ if $inVpc }}{{ $lvService }}{{ else }}{{ $shimEndpoint }}{{ end }}/v1/function-code" }
                               - { name: OPENINFRA_CODE_SHA256, value: {{ $pkg.sha256 | toJson }} }
                               - { name: OPENINFRA_CODE_TOKEN_FILE, value: "/var/run/secrets/openinfra/token" }
                               {{- end }}
@@ -316,7 +395,9 @@ spec:
                               - { name: AWS_ROLE_ARN, value: {{ $roleArn | toJson }} }
                               - { name: AWS_ROLE_SESSION_NAME, value: "{{ $name }}" }
                               - { name: AWS_WEB_IDENTITY_TOKEN_FILE, value: "/var/run/secrets/openinfra/token" }
-                              - { name: AWS_ENDPOINT_URL_STS, value: "{{ $shimEndpoint }}" }
+                              # In a VPC the role's credentials come from the Lambda service port, which no security
+                              # group filters; the handler's own AWS calls (AWS_ENDPOINT_URL) are its security groups'.
+                              - { name: AWS_ENDPOINT_URL_STS, value: "{{ if $inVpc }}{{ $lvService }}{{ else }}{{ $shimEndpoint }}{{ end }}" }
                               - { name: AWS_ENDPOINT_URL, value: "{{ $shimEndpoint }}" }
                               {{- if not $code }}
                               # An image function's SDK needs a region too (a code function's runtime sets it above).
@@ -420,12 +501,16 @@ spec:
                       app.kubernetes.io/name: {{ $name }}
                       openinfra.dev/function: {{ $name }}
                   automountServiceAccountToken: false
+            {{- end }}
+            {{- if or $ident $inVpc }}
             ---
-            # The account the function's namespace belongs to (the kind: Account that lists it, else the
-            # install's own account) and the install's region, for the role's ARN. Read-only.
+            # Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+            # else the install's own account) and the install's region, for the role's ARN; and, in a VPC,
+            # the Lambda VPC settings.
             apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
             kind: ExtraResources
             requirements:
+              {{- if $ident }}
               aws-identity:
                 apiVersion: apiextensions.crossplane.io/v1alpha1
                 kind: EnvironmentConfig
@@ -434,6 +519,13 @@ spec:
                 apiVersion: organizations.openinfra.dev/v1
                 kind: Account
                 matchLabels: {}
+              {{- end }}
+              {{- if $inVpc }}
+              lambda-vpc:
+                apiVersion: apiextensions.crossplane.io/v1alpha1
+                kind: EnvironmentConfig
+                matchName: openinfra-lambda-vpc
+              {{- end }}
             {{- end }}
             {{- if $spec.trigger }}
             {{- $tstream := $spec.trigger.stream }}

@@ -47,6 +47,15 @@ spec:
             spec:
               type: object
               properties:
+                vpc:
+                  type: string
+                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                  maxLength: 63
+                  description: >-
+                    The VPC (kind: Vpc) the group belongs to, AWS's VpcId: a Lambda function in that VPC
+                    (vpcConfig) can use it. Every packet the group refuses is recorded for the VPC's flow logs,
+                    and when it has egress rules its members also reach the VPC's resolver
+                    and the Lambda service (never filtered, as on AWS). Omitted: a group of no VPC, as before.
                 ingress:
                   type: array
                   maxItems: 128

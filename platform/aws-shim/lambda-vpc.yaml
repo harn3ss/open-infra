@@ -1,0 +1,42 @@
+# Lambda functions in a VPC (Lambda's VpcConfig — kind: Function spec.vpcConfig): the VPC resolver and the
+# settings the Function composition reads. See docs/lambda-vpc.md.
+#
+# 1. The VPC resolver (Route 53 Resolver), served by the aws-shim (VPC_RESOLVER_LISTEN :5353, UDP and TCP).
+#    A VPC function's only DNS (its pods' dnsConfig; the Lambda VPC subnet drops DNS to any other address,
+#    platform/networking/kube-ovn/lambda-vpc-subnet.yaml). It answers a VPC function's queries through the
+#    VPC's DNS Firewall (Route 53 Resolver rule groups associated with the VPC) and records them for the
+#    VPC's query logging; it refuses everyone else. Its address is fixed, at the VPC base + 2 AWS gives its
+#    resolver, in the statically-assigned band of the Service CIDR (10.43.0.0/24 on k3s and RKE2). On a
+#    cluster with another Service CIDR, change it here, in the EnvironmentConfig below and in the subnet's
+#    ACL (test/render checks the three agree).
+# 2. The openinfra-lambda-vpc EnvironmentConfig: the subnet a VPC function runs on, the resolver, and the
+#    Lambda service port (the aws-shim's :4568, lambda_service.go: a function's package and its role's
+#    credentials, which no security group filters, as on AWS).
+apiVersion: v1
+kind: Service
+metadata:
+  name: vpc-resolver
+  namespace: open-infra-aws-shim
+  labels: { app: aws-shim }
+spec:
+  type: ClusterIP
+  clusterIP: 10.43.0.2
+  selector: { app: aws-shim }
+  ports:
+    - name: dns-udp
+      protocol: UDP
+      port: 53
+      targetPort: 5353
+    - name: dns-tcp
+      protocol: TCP
+      port: 53
+      targetPort: 5353
+---
+apiVersion: apiextensions.crossplane.io/v1alpha1
+kind: EnvironmentConfig
+metadata:
+  name: openinfra-lambda-vpc
+data:
+  subnet: openinfra-lambda-vpc
+  resolver: 10.43.0.2
+  lambdaService: http://aws-shim.open-infra-aws-shim.svc.cluster.local:4568

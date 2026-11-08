@@ -446,6 +446,11 @@
       "lambda:PublishVersion",
       "lambda:DeleteFunction"
      ]
+    },
+    "vpcConfig": {
+     "actions": [
+      "lambda:UpdateFunctionConfiguration"
+     ]
     }
    }
   },
@@ -829,6 +834,11 @@
      "actions": [
       "ec2:AuthorizeSecurityGroupIngress",
       "ec2:RevokeSecurityGroupIngress"
+     ]
+    },
+    "vpc": {
+     "actions": [
+      "ec2:CreateSecurityGroup"
      ]
     }
    }
