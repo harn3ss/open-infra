@@ -105,6 +105,18 @@ spec:
   securityGroups: [bastion-access]   # restrict who can reach SSH
 ```
 
+## A group in a VPC (`vpc`)
+
+`spec.vpc` names the VPC the group belongs to (AWS's `VpcId`; CloudFormation maps an
+`AWS::EC2::SecurityGroup`'s `VpcId` when it is a `!Ref` to the stack's VPC). A Lambda function in that VPC
+can use the group (`VpcConfig`, [lambda-vpc.md](lambda-vpc.md)).
+
+- **Recorded refusals.** Every packet the group refuses is logged, and the VPC's flow logs record it.
+- **What AWS never filters.** When the group has egress rules, its members can also reach the VPC's resolver
+  and the Lambda service (the function's package and its role's credentials).
+
+A group with no `vpc` behaves exactly as before.
+
 ## Enforcement semantics (read this)
 
 Security Groups compile to Kubernetes **NetworkPolicies** enforced by kube-ovn

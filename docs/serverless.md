@@ -294,12 +294,19 @@ aws lambda delete-function --function-name orders
   - A value with a double quote, a backslash or a line break is refused for now.
 - **What a function here cannot be is refused, naming the parameter, never dropped:**
   - layers;
-  - VPC configuration;
   - tags;
   - an architecture other than `x86_64`;
   - dead-letter, KMS, file-system, image-config, code-signing, SnapStart and logging configuration, unless
     left at Lambda's default.
 - **Names:** a function name here is lowercase letters, digits and hyphens, up to 63 characters.
+
+## In a VPC
+
+A function can be put in subnets and security groups of a VPC (`--vpc-config`, CloudFormation
+`VpcConfig`), as on AWS. Its outbound traffic is then its security groups'. Its DNS goes to the VPC's
+resolver, where the VPC's Route 53 Resolver DNS Firewall and query logging apply, and what its groups refuse
+is recorded by the VPC's flow logs. That is how a function is egress-isolated, with every refusal recorded.
+See [lambda-vpc.md](lambda-vpc.md).
 
 ## Versions and aliases
 

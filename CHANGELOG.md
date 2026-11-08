@@ -6,6 +6,33 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — a Lambda function in a VPC, egress-isolated the AWS way
+- **Lambda `VpcConfig`:** `create-function` / `update-function-configuration --vpc-config` and
+  CloudFormation's `VpcConfig` put a function in subnets and security groups of one VPC, with Lambda's
+  checks:
+  - every subnet and group must exist, all in one VPC;
+  - at most 16 subnets and 5 groups;
+  - an execution role allowed to manage network interfaces.
+  The configuration answers `VpcConfig` with its `VpcId`; an empty one takes the function out.
+- **Outbound is its security groups':**
+  - a group's outbound rules are the function's allow-list;
+  - the VPC's resolver and the Lambda service (its package, its role's credentials) are always reachable,
+    as on AWS.
+  A CloudFormation security group's `VpcId` now maps.
+- **DNS that cannot leak a name:**
+  - the function's only DNS is the VPC resolver; a DNS packet to any other address is dropped by the network;
+  - Route 53 Resolver DNS Firewall (domain lists, rule groups, rules, VPC associations) applies there, and a
+    blocked name is answered without being looked up.
+- **Recorded:**
+  - Route 53 Resolver query logging writes one record per query in AWS's format;
+  - EC2 `create-flow-logs` (`TrafficType REJECT`) writes one record per refused flow, per network interface;
+  - `describe-network-interfaces` lists the function's Lambda interfaces.
+  Both logs go to CloudWatch Logs groups, readable without the function's own logs.
+- **On any runtime:** a function on an unsupported runtime image in a VPC is egress-denied except for the
+  VPC resolver and the Lambda service, so its security groups alone decide what else it reaches.
+- See [docs/lambda-vpc.md](docs/lambda-vpc.md) for exactly what the posture allows, denies and records, and
+  where it differs from AWS.
+
 ### Added — every Node.js and Python runtime AWS Lambda still creates functions on
 - **New runtimes:** `nodejs16.x`, `nodejs18.x`, `python3.8`, `python3.9`, `python3.10`, `python3.11` and
   `python3.14` join the runtimes the Lambda API, CloudFormation and `kind: Function` accept. A stack on
