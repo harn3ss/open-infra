@@ -329,7 +329,8 @@
         "cfn-customresource",
         "cfn-lift-and-shift",
         "cfn-data-services",
-        "cfn-api"
+        "cfn-api",
+        "cfn-lambda-zip"
       ],
       "refused": [],
       "service": "CloudFormation",
@@ -3380,10 +3381,11 @@
       ],
       "stackProbes": [
         "cfn-api",
-        "cfn-cloudfront"
+        "cfn-cloudfront",
+        "cfn-lambda-zip"
       ],
       "status": "partial",
-      "templateUses": 6,
+      "templateUses": 7,
       "verdict": "ok"
     },
     "AWS::S3::BucketPolicy": {

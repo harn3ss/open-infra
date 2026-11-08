@@ -158,7 +158,7 @@ A type that is not listed is refused: the engine does not guess.
 | `AWS::Route53::HostedZone` | unsupported | no | — | — | `cloudformation` |
 | `AWS::Route53::RecordSet` | unsupported | no | — | — | — |
 | `AWS::Route53::RecordSetGroup` | unsupported | no | — | — | — |
-| `AWS::S3::Bucket` | partial | yes | `s3` | `GetBucketEncryption`, `GetBucketLocation`, `GetBucketOwnershipControls`, `GetBucketPolicy`, `GetBucketTagging`, `GetBucketVersioning`, `HeadBucket`, `ListBuckets` | `cfn-api`, `cfn-cloudfront` |
+| `AWS::S3::Bucket` | partial | yes | `s3` | `GetBucketEncryption`, `GetBucketLocation`, `GetBucketOwnershipControls`, `GetBucketPolicy`, `GetBucketTagging`, `GetBucketVersioning`, `HeadBucket`, `ListBuckets` | `cfn-api`, `cfn-cloudfront`, `cfn-lambda-zip` |
 | `AWS::S3::BucketPolicy` | supported | yes | `s3` | `GetBucketPolicy` | `cfn-cloudfront` |
 | `AWS::SNS::Subscription` | partial | yes | `sns` | `GetSubscriptionAttributes`, `ListSubscriptions`, `ListSubscriptionsByTopic` | — |
 | `AWS::SNS::Topic` | partial | yes | `sns` | `GetTopicAttributes`, `ListTopics` | `cfn-data-services` |

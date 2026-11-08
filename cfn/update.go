@@ -239,7 +239,7 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 			waits.add(b)
 			continue
 		}
-		if opts.Wait {
+		if opts.Wait && hasReadiness(b.res) {
 			if err := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); err != nil {
 				event(b.res, verb+"_FAILED", err.Error())
 				return rollback(fmt.Errorf("%s/%s did not become ready: %w", b.res.Kind, b.res.Name, err))

@@ -81,6 +81,12 @@ func (q *waitQueue) ids() []string {
 	return out
 }
 
+// hasReadiness reports whether a resource reports readiness at all: a ConfigMap (a CLI-deployed inline
+// Lambda's source) has no status, so it is complete once applied.
+func hasReadiness(r StackResource) bool {
+	return !(r.APIVersion == "v1" && r.Kind == "ConfigMap")
+}
+
 // resourceWait is what one created resource waits for before it is complete: the cluster reporting it
 // ready, an instance's VM running (waitInstanceRunning), then the signals its CreationPolicy waits for —
 // or, for a WaitCondition (nothing applied), its signals alone. It returns the signals received.
@@ -88,7 +94,7 @@ func resourceWait(ctx context.Context, opts DeployOptions, ap Applier, b builtRe
 	if IsSignalWait(b.res) {
 		return waitForSignals(ctx, opts, *b.signals, b.res.LogicalID)
 	}
-	if opts.Wait {
+	if opts.Wait && hasReadiness(b.res) {
 		if err := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); err != nil {
 			return nil, fmt.Errorf("%s/%s did not become ready: %w", b.res.Kind, b.res.Name, err)
 		}

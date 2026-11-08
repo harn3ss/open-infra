@@ -267,3 +267,12 @@ func TestLambdaZip_StoreFailureAppliesNothing(t *testing.T) {
 		}
 	}
 }
+
+// A ConfigMap reports no readiness: the CLI's inline-code ConfigMap is complete once applied, and the
+// deploy does not wait on it (a live `cfn deploy` timed out on it before this).
+func TestLambdaZip_TheCLIsConfigMapIsNotWaitedOn(t *testing.T) {
+	f := &fakeApplier{notReady: "s-hello-code"}
+	if _, err := Deploy(context.Background(), zipTemplate(inlineNodeFn), deployOpts(), f); err != nil {
+		t.Fatalf("the inline-code ConfigMap must not be waited on: %v", err)
+	}
+}

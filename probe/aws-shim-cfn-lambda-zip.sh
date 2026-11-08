@@ -25,7 +25,7 @@ REGION="${AWS_REGION:-us-east-1}"
 SFX="$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 BUCKET="lzip-probe-$SFX"
 INLINE_STACK="lzip-inline-$SFX"; PKG_STACK="lzip-pkg-$SFX"; BAD_STACK="lzip-bad-$SFX"; DENY_STACK="lzip-deny-$SFX"
-DEPLOYER_ROLE="lzip-deployer-$SFX"
+DEPLOYER_ROLE="lzip-deployer-$SFX"; BUCKET_STACK="lzip-bucket-$SFX"
 
 log()  { printf '▸ %s\n' "$*"; }
 ok()   { printf '▸   ✓ %s\n' "$*"; }
@@ -53,7 +53,8 @@ cleanup() {
   unset AWS_SESSION_TOKEN
   [ -n "${ADMIN_AK:-}" ] && export AWS_ACCESS_KEY_ID="$ADMIN_AK" AWS_SECRET_ACCESS_KEY="$ADMIN_SK"
   for s in "$DENY_STACK" "$BAD_STACK" "$PKG_STACK" "$INLINE_STACK"; do stack_gone "$s"; done
-  "${A[@]}" s3 rb "s3://$BUCKET" --force >/dev/null 2>&1
+  "${A[@]}" s3 rm "s3://$BUCKET" --recursive >/dev/null 2>&1
+  stack_gone "$BUCKET_STACK"
   if [ -n "$ROLE_MADE" ]; then
     "${A[@]}" iam delete-role-policy --role-name "$DEPLOYER_ROLE" --policy-name deploy >/dev/null 2>&1
     "${A[@]}" iam delete-role --role-name "$DEPLOYER_ROLE" >/dev/null 2>&1
@@ -65,26 +66,38 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-  owner="lzip-admin-$SFX"
-  ak="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
-  sk="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
-  printf 'apiVersion: iam.openinfra.dev/v1\nkind: User\nmetadata: { name: "%s", namespace: "%s" }\nspec: { displayName: "%s", groups: ["admins"], source: local }\n' \
-    "$owner" "$USERS_NS" "$owner" | kubectl apply -f - >/dev/null || inconclusive "could not mint a deployer User"
+# mint_key <owner> <group>: a throwaway User and access key, removed on exit; sets MK_AK / MK_SK. Called
+# directly, never inside $(...), so the cleanup list reaches the trap.
+mint_key() {
+  local owner="$1" group="$2" kname
+  MK_AK="OIAK$(head -c 10 /dev/urandom | base32 | tr -d '=' | head -c 16 | tr 'a-z' 'A-Z')"
+  MK_SK="$(head -c 30 /dev/urandom | base64 | tr -d '\n')"
+  printf 'apiVersion: iam.openinfra.dev/v1\nkind: User\nmetadata: { name: "%s", namespace: "%s" }\nspec: { displayName: "%s", groups: ["%s"], source: local }\n' \
+    "$owner" "$USERS_NS" "$owner" "$group" | kubectl apply -f - >/dev/null || inconclusive "could not mint User $owner"
   CREATED_USERS+=("$owner")
-  kname="iam-ak-$(printf '%s' "$ak" | sha256sum | cut -c1-40)"
-  kubectl -n "$SHIM_NS" create secret generic "$kname" --from-literal=accessKeyId="$ak" --from-literal=secretKey="$sk" \
-    --from-literal=owner="$owner" >/dev/null || inconclusive "could not mint a deployer key"
+  kname="iam-ak-$(printf '%s' "$MK_AK" | sha256sum | cut -c1-40)"
+  kubectl -n "$SHIM_NS" create secret generic "$kname" --from-literal=accessKeyId="$MK_AK" --from-literal=secretKey="$MK_SK" \
+    --from-literal=owner="$owner" >/dev/null || inconclusive "could not mint a key for $owner"
   CREATED_KEYS+=("$kname")
-  export AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk"
-  log "minted a throwaway openinfra:admins deployer ($owner)"
-  sleep 20 # the key reaches the shim's key cache
+}
+if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+  mint_key "lzip-admin-$SFX" admins
+  export AWS_ACCESS_KEY_ID="$MK_AK" AWS_SECRET_ACCESS_KEY="$MK_SK"
+  log "minted a throwaway openinfra:admins deployer (lzip-admin-$SFX)"
 fi
 ADMIN_AK="$AWS_ACCESS_KEY_ID"; ADMIN_SK="$AWS_SECRET_ACCESS_KEY"
+sleep 20 # the key reaches the shim's key cache
 # `aws cloudformation package` uploads to S3: send that to the shim too.
 export AWS_ENDPOINT_URL="$ENDPOINT"
 
-"${A[@]}" s3 mb "s3://$BUCKET" >/dev/null || inconclusive "could not create bucket $BUCKET"
+# The package bucket is a stack's of its own, as a deployment-artifacts bucket usually is.
+printf 'Resources:\n  Artifacts:\n    Type: AWS::S3::Bucket\n    Properties: { BucketName: %s }\n' "$BUCKET" > "$W/bucket.yaml"
+# A freshly minted deployer's authority reaches every check within a minute or so: retry until it has.
+for i in $(seq 1 5); do
+  "${A[@]}" cloudformation deploy --template-file "$W/bucket.yaml" --stack-name "$BUCKET_STACK" >"$W/mb" 2>&1 && break
+  [ "$i" = 5 ] && inconclusive "could not create the package bucket $BUCKET: $(tail -c 300 "$W/mb")"
+  stack_gone "$BUCKET_STACK"; sleep 20
+done
 
 ROLE_TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 
@@ -198,8 +211,17 @@ ROLE_MADE=1
   {\"Effect\":\"Allow\",\"Action\":[\"cloudformation:*\",\"lambda:*\"],\"Resource\":\"*\"},
   {\"Effect\":\"Allow\",\"Action\":\"s3:GetObject\",\"Resource\":\"arn:aws:s3:::$BUCKET/allowed/*\"}]}" >/dev/null \
   || inconclusive "iam put-role-policy failed"
-sleep 10
-CREDS="$("${A[@]}" sts assume-role --role-arn "$("${A[@]}" iam get-role --role-name "$DEPLOYER_ROLE" --query Role.Arn --output text)" \
+ROLE_ARN="$("${A[@]}" iam get-role --role-name "$DEPLOYER_ROLE" --query Role.Arn --output text)" || inconclusive "iam get-role failed"
+# The data-plane policy loader picks a new policy up within about half a minute: wait until it decides
+# the role's deploy as its policy says, rather than for a fixed time.
+for i in $(seq 1 24); do
+  dec="$("${A[@]}" iam simulate-principal-policy --policy-source-arn "$ROLE_ARN" --action-names cloudformation:CreateStack \
+          --query 'EvaluationResults[0].EvalDecision' --output text 2>/dev/null || true)"
+  [ "$dec" = allowed ] && break
+  [ "$i" = 24 ] && inconclusive "the deployer role's policy did not take effect within 2 minutes (simulate: $dec)"
+  sleep 5
+done
+CREDS="$("${A[@]}" sts assume-role --role-arn "$ROLE_ARN" \
   --role-session-name lzip-probe --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)" \
   || inconclusive "sts assume-role failed"
 cat > "$W/deny.yaml" <<YAML

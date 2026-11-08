@@ -29,8 +29,10 @@ the product's public contract.
   response here), `ZipFile` for a non-Node.js/Python runtime, and an inline handler not named `index.<name>`.
   - **The `cfn deploy` CLI** deploys inline code as a ConfigMap and refuses an S3 package, pointing to the
     front door.
-- **Tested:** `probe/aws-shim-cfn-lambda-zip.sh` runs inline code, a packaged function, an unsupported
-  runtime, and an AccessDenied for a package the deployer may not read.
+- **Proven live:** `probe/aws-shim-cfn-lambda-zip.sh` passes. Inline Node.js code and an
+  `aws cloudformation package` Python package deploy and answer `aws lambda invoke`; `nodejs18.x` is
+  refused, naming the supported runtimes; and a deployer that may not read the package gets Lambda's
+  AccessDenied.
 
 ### Changed — the platform's keys live in OpenBao (#359)
 - **Every client of the key service uses OpenBao.** KMS, Secrets Manager, Parameter Store secure values,
