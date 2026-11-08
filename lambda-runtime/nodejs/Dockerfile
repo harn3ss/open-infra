@@ -6,7 +6,7 @@
 # Built + pushed by .github/workflows/build-lambda-runtimes.yml as
 # ghcr.io/harn3ss/open-infra-lambda-nodejs. Plain interpreter; NOT FIPS (FIPS is a substrate property,
 # not a first-party image one — see docs).
-# NODE_VERSION selects the base (20 = the default image, 22 = the open-infra-lambda-nodejs22 build) AND
+# NODE_VERSION selects the base (20 = the default image, 22 / 24 = the open-infra-lambda-nodejs22 / -nodejs24 builds) AND
 # the handler-facing AWS SDK it ships (@aws-sdk v3 for >=18, monolithic aws-sdk v2 for <=16 — matching
 # what AWS Lambda's own runtimes bundle). The bootstrap shim itself is version-independent.
 ARG NODE_VERSION=20

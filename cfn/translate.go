@@ -376,7 +376,7 @@ func translateKMSKey(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 //
 // A PackageType: Image Lambda runs its container image (Code.ImageUri -> spec.image). A zip Lambda (the
 // default PackageType) runs its deployment package on a managed runtime (spec.code, #402): Runtime ->
-// spec.code.runtime (nodejs20.x / nodejs22.x / python3.12 / python3.13 / dotnet8; any other refuses with
+// spec.code.runtime (nodejs20.x / nodejs22.x / nodejs24.x / python3.12 / python3.13 / dotnet8; any other refuses with
 // that list), Handler -> spec.code.handler, and the package is Code.ZipFile (CloudFormation writes it to a
 // file named index — index.js, CommonJS, for Node.js; index.py for Python — so the handler is
 // index.<name>) or Code.S3Bucket/S3Key (+ S3ObjectVersion), resolved at deploy (resolvePackage): stored
@@ -464,11 +464,11 @@ func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*M
 
 // lambdaRuntimes maps the Lambda Runtime identifiers open-infra runs to spec.code.runtime.
 var lambdaRuntimes = map[string]string{
-	"nodejs20.x": "nodejs20", "nodejs22.x": "nodejs22", "python3.12": "python3.12", "python3.13": "python3.13", "dotnet8": "dotnet8",
+	"nodejs20.x": "nodejs20", "nodejs22.x": "nodejs22", "nodejs24.x": "nodejs24", "python3.12": "python3.12", "python3.13": "python3.13", "dotnet8": "dotnet8",
 }
 
 // lambdaRuntimeList is lambdaRuntimes' keys, for refusals.
-const lambdaRuntimeList = "nodejs20.x, nodejs22.x, python3.12, python3.13 and dotnet8"
+const lambdaRuntimeList = "nodejs20.x, nodejs22.x, nodejs24.x, python3.12, python3.13 and dotnet8"
 
 // LambdaRuntimeList names the Lambda runtimes open-infra runs, for refusals (the Lambda API's too).
 const LambdaRuntimeList = lambdaRuntimeList

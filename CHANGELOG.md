@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — the `nodejs24.x` Lambda runtime
+- **CloudFormation, the Lambda API and `kind: Function`** (`spec.code.runtime: nodejs24`) accept
+  `nodejs24.x`, Node.js 24, the current Node.js LTS and AWS Lambda's newest Node.js runtime.
+- **Its image,** `open-infra-lambda-nodejs24`, is built, signed and scanned like the others, with the same
+  pinned AWS SDK v3 clients.
+- **`nodejs20.x` is still accepted** for new functions. Node.js 20 reached its upstream end of life on
+  2026-04-30, so when to stop accepting it is an operator decision; existing functions keep running either
+  way.
+
 ### Fixed — a Lambda handler's context carries what Lambda's does (#406)
 - **Before:** the invoked function ARN was always empty, the function version was always `$LATEST`, a
   caller's `ClientContext` was dropped, Node.js's `callbackWaitsForEmptyEventLoop` was missing, and

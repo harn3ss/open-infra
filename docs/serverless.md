@@ -237,7 +237,7 @@ aws lambda delete-function --function-name orders
     `The role defined for the function cannot be assumed by Lambda.`
   - The same checks run when `update-function-configuration` names a role.
 - **The code** is a .zip (`--zip-file`, up to 50 MB) or an S3 object (`--s3-bucket`/`--s3-key`, plus
-  `--s3-object-version`), on one of the managed runtimes: `nodejs20.x`, `nodejs22.x`,
+  `--s3-object-version`), on one of the managed runtimes: `nodejs20.x`, `nodejs22.x`, `nodejs24.x`,
   `python3.12`, `python3.13` or `dotnet8`.
   - **An S3 object is read with your permissions:** you need `s3:GetObject` on it.
   - **The package is stored as Lambda stores one:** a later change to the S3 object does not change the

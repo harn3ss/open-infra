@@ -44,6 +44,7 @@ jobs:
           - { dir: dotnet, image: open-infra-lambda-dotnet,    cat: dotnet,    args: "" }
           - { dir: python, image: open-infra-lambda-python313, cat: python313, args: "PY_VERSION=3.13" }
           - { dir: nodejs, image: open-infra-lambda-nodejs22,  cat: nodejs22,  args: "NODE_VERSION=22" }
+          - { dir: nodejs, image: open-infra-lambda-nodejs24,  cat: nodejs24,  args: "NODE_VERSION=24" }
     steps:
       - uses: actions/checkout@v7
 

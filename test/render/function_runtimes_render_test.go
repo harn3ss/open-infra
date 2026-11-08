@@ -6,7 +6,7 @@ import (
 )
 
 // kind: Function spec.code.runtime maps each managed runtime to its runtime base image. This locks
-// the full set — including nodejs22 and python3.13 — so otf can bring functions on those runtimes.
+// the full set — including nodejs22, nodejs24 and python3.13 — so functions on those runtimes run.
 func TestFunction_RuntimeImages(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/function-composition.yaml")
 	ctx := func(runtime string) map[string]any {
@@ -22,6 +22,7 @@ func TestFunction_RuntimeImages(t *testing.T) {
 		"python3.13": "ghcr.io/harn3ss/open-infra-lambda-python313:latest",
 		"nodejs20":   "ghcr.io/harn3ss/open-infra-lambda-nodejs:latest",
 		"nodejs22":   "ghcr.io/harn3ss/open-infra-lambda-nodejs22:latest",
+		"nodejs24":   "ghcr.io/harn3ss/open-infra-lambda-nodejs24:latest",
 		"dotnet8":    "ghcr.io/harn3ss/open-infra-lambda-dotnet:latest",
 	} {
 		out := render(t, tmpl, ctx(runtime))

@@ -5963,10 +5963,11 @@ components:
                   - python3.13
                   - nodejs20
                   - nodejs22
+                  - nodejs24
                   - dotnet8
                   description: "Managed runtime base image the handler runs on: python3.12 / python3.13 (handler '<module>.<function>'),\
-                    \ nodejs20 / nodejs22 (handler '<file>.<export>', CommonJS or ESM \u2014 a .mjs file, or a .js file with\
-                    \ \"type\":\"module\" in package.json, loads as ESM), or dotnet8 (handler 'Assembly::Namespace.Type::Method',\
+                    \ nodejs20 / nodejs22 / nodejs24 (handler '<file>.<export>', CommonJS or ESM \u2014 a .mjs file, or a\
+                    \ .js file with \"type\":\"module\" in package.json, loads as ESM), or dotnet8 (handler 'Assembly::Namespace.Type::Method',\
                     \ a published .NET build; v1 signatures Method(input) / Method(input, ILambdaContext), sync or Task).\
                     \ This enum is the set open-infra vouches for; for anything else use runtimeImage."
                 runtimeImage:

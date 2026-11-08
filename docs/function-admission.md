@@ -61,6 +61,7 @@ estate (warm RSS per runtime, with headroom), then report the source of each num
 | python3.13 | 128Mi | **not measured** (placeholder) |
 | nodejs20 | 128Mi | **not measured** (placeholder) |
 | nodejs22 | 128Mi | **not measured** (placeholder) |
+| nodejs24 | 128Mi | **not measured** (placeholder) |
 | dotnet8 | 128Mi | **not measured** (placeholder) |
 
 Override per function without a composition edit: `spec.memoryRequest: "192Mi"`.
