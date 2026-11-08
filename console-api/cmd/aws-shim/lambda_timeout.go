@@ -88,6 +88,16 @@ func (t *fnTimeouts) of(ctx context.Context, ns, name string) time.Duration {
 	return d
 }
 
+// forget drops function ns/name's remembered timeout (its configuration just changed).
+func (t *fnTimeouts) forget(ns, name string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	delete(t.cache, ns+"/"+name)
+	t.mu.Unlock()
+}
+
 // writeTaskTimedOut answers a synchronous invoke the function did not finish within its timeout, as
 // Lambda answers one: 200, a function error, and the Sandbox.Timedout payload.
 func writeTaskTimedOut(w http.ResponseWriter, requestID string, timeout time.Duration) {

@@ -80,7 +80,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 10
+      "probe": 11
     },
     "undeployableUses": [
       {
@@ -980,11 +980,15 @@
     },
     "lambda": {
       "actions": [
+        "lambda:CreateFunction",
+        "lambda:DeleteFunction",
         "lambda:GetFunction",
         "lambda:GetFunctionConfiguration",
         "lambda:GetPolicy",
         "lambda:InvokeFunction",
-        "lambda:ListFunctions"
+        "lambda:ListFunctions",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration"
       ],
       "conditional": false,
       "deployableTypes": [
@@ -996,10 +1000,14 @@
         "AWS::Lambda"
       ],
       "operations": [
+        "CreateFunction",
+        "DeleteFunction",
         "GetFunction",
         "GetFunctionConfiguration",
         "GetPolicy",
-        "ListFunctions"
+        "ListFunctions",
+        "UpdateFunctionCode",
+        "UpdateFunctionConfiguration"
       ],
       "probes": [
         "lambda",
@@ -1481,7 +1489,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 577,
+    "operations": 581,
     "planOnly": 11,
     "refused": 11,
     "services": 31,
@@ -3397,10 +3405,11 @@
       "stackProbes": [
         "cfn-api",
         "cfn-cloudfront",
-        "cfn-lambda-zip"
+        "cfn-lambda-zip",
+        "lambda-api"
       ],
       "status": "partial",
-      "templateUses": 7,
+      "templateUses": 8,
       "verdict": "ok"
     },
     "AWS::S3::BucketPolicy": {

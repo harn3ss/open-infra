@@ -521,6 +521,64 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# Lambda's control plane (lambda_manage.go): CreateFunction, UpdateFunctionCode,
+# UpdateFunctionConfiguration and DeleteFunction write the kind: Function with the shim's own identity, as
+# Step Functions writes a state machine, after the caller's IAM action is decided (lambda:CreateFunction …
+# on the function's ARN) and, for a function that names a role, iam:PassRole as the caller. The management
+# account's functions are in FUNCTIONS_NAMESPACE (the Lambda API's) and CFN_NAMESPACE (its stacks'), and
+# the Lambda API reaches both, as AWS's reaches every function of the account; a member account's are in
+# its home, through the service-linked role below. passrole: the admission policy that checks a function's
+# role (security/pass-role.yaml) sees the shim as the requester, so the shim holds the verb there as the
+# platform ServiceAccounts that pass roles on a user's behalf do — the caller's own iam:PassRole was
+# decided first.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: open-infra-aws-shim-functions-write
+  namespace: default
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [functions]
+    verbs: [create, update, patch, delete]
+  - apiGroups: [iam.openinfra.dev]
+    resources: [roles]
+    verbs: [passrole]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-functions-write
+  namespace: default
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: open-infra-aws-shim-functions-write }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: open-infra-aws-shim-functions-write
+  namespace: open-infra-cfn
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [functions]
+    verbs: [create, update, patch, delete]
+  - apiGroups: [iam.openinfra.dev]
+    resources: [roles]
+    verbs: [passrole]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-functions-write
+  namespace: open-infra-cfn
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: open-infra-aws-shim-functions-write }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # CloudWatch Logs (cloudwatchlogs_loki.go): the log groups AWS keeps a service's own logs in —
 # /aws/sagemaker/TrainingJobs and ProcessingJobs, /ecs/<application> (and /aws/lambda/<function>, through
 # the functions grant above) — exist while their resource does. Reading which ones exist: get and list
@@ -1336,6 +1394,15 @@ rules:
   - apiGroups: [iam.openinfra.dev]
     resources: [users, groups, roles, policies]
     verbs: [get, list, create, update, patch, delete]
+  # Lambda's functions (CreateFunction, UpdateFunctionCode, UpdateFunctionConfiguration, DeleteFunction),
+  # and passing a function its execution role once the caller's iam:PassRole was decided (pass-role.yaml
+  # checks the requester).
+  - apiGroups: [openinfra.dev]
+    resources: [functions]
+    verbs: [create, update, patch, delete]
+  - apiGroups: [iam.openinfra.dev]
+    resources: [roles]
+    verbs: [passrole]
   # EC2's describes, read as IAM policy allowed.
   - apiGroups: [openinfra.dev]
     resources: [virtualmachines, volumes, securitygroups, vpcs, subnets, vpcendpoints, natgateways]

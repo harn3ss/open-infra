@@ -6794,9 +6794,9 @@
       "tier": "proven"
     },
     "lambda": {
-      "actions": 5,
+      "actions": 10,
       "class": "aws",
-      "operations": 4,
+      "operations": 8,
       "service": "Lambda",
       "tier": "proven"
     },

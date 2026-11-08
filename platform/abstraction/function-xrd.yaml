@@ -118,11 +118,12 @@ spec:
                           type: object
                           description: >-
                             A deployment package the platform stores, as Lambda stores one (its COPY mode):
-                            a CloudFormation stack's Code.ZipFile, or its Code.S3Bucket/S3Key object read with
-                            the deploying caller's authority. The function's pods fetch it from the aws-shim
-                            with the function's own identity at cold start, check its SHA-256 and unpack it into
-                            /var/task; no keys are involved, so it combines with spec.role. Set by the
-                            CloudFormation front door, not by hand.
+                            a CloudFormation stack's Code.ZipFile, a .zip the Lambda API's CreateFunction or
+                            UpdateFunctionCode uploads, or a Code.S3Bucket/S3Key object read with the caller's
+                            authority. The function's pods fetch it from the aws-shim with the function's own
+                            identity at cold start, check its SHA-256 and unpack it into /var/task; no keys are
+                            involved, so it combines with spec.role. Set by the aws-shim (a stack's deploy, or
+                            the Lambda API), not by hand.
                           required: [sha256]
                           properties:
                             sha256:
@@ -134,7 +135,7 @@ spec:
                               description: "Size of the stored .zip in bytes (Lambda's CodeSize)."
                             origin:
                               type: string
-                              description: "Where the package came from: inline (Code.ZipFile) or s3://<bucket>/<key>[?versionId=<v>]. Informational; a stack update re-reads the object only when this changes, as CloudFormation does."
+                              description: "Where the package came from: inline (a stack's Code.ZipFile), zipfile (a .zip uploaded with the Lambda API) or s3://<bucket>/<key>[?versionId=<v>]. Informational; a stack update re-reads the object only when this changes, as CloudFormation does."
                     layers:
                       type: array
                       description: >-

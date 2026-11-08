@@ -195,9 +195,61 @@ targets `kind: Function` over its Knative address. All three invocation types ar
 - **`DryRun`** — runs the authorization check (the shared SubjectAccessReview) and returns `204` without
   invoking — a permission probe.
 
-Every invoke is authorized through the one policy world (a SAR: `get` on the `functions` resource), the
-same boundary as every other front door. Management APIs (`CreateFunction`, versions/aliases, layers)
-are deliberately not fronted — Functions are managed declaratively as `kind: Function`.
+Every invoke needs `lambda:InvokeFunction` on the function, decided by IAM policy as for every other
+front door.
+
+## Creating and changing functions with the Lambda API
+
+`aws lambda create-function`, `update-function-code`, `update-function-configuration` and
+`delete-function` work through the aws-shim, as do the SDKs' `CreateFunction`, `UpdateFunctionCode`,
+`UpdateFunctionConfiguration` and `DeleteFunction`. Each needs its own IAM action on the function's ARN:
+`lambda:CreateFunction`, `lambda:UpdateFunctionCode`, `lambda:UpdateFunctionConfiguration`,
+`lambda:DeleteFunction`.
+
+```bash
+aws lambda create-function --function-name orders --runtime nodejs22.x --handler index.handler \
+  --role arn:aws:iam::<account>:role/orders-exec --zip-file fileb://function.zip
+aws lambda update-function-code --function-name orders --s3-bucket deploy --s3-key orders/v2.zip
+aws lambda update-function-configuration --function-name orders --timeout 60 \
+  --environment 'Variables={STAGE=prod}'
+aws lambda delete-function --function-name orders
+```
+
+- **The execution role (`--role`) is required**, as on AWS, and is checked as Lambda checks it:
+  - it must be a role of your account (`Cross-account pass role is not allowed.` otherwise);
+  - you need `iam:PassRole` on it;
+  - its trust policy must name `lambda.amazonaws.com`, with no conditions. Otherwise the answer is
+    `The role defined for the function cannot be assumed by Lambda.`
+  - The same checks run when `update-function-configuration` names a role.
+- **The code** is a .zip (`--zip-file`, up to 50 MB) or an S3 object (`--s3-bucket`/`--s3-key`, plus
+  `--s3-object-version`), on one of the managed runtimes: `nodejs20.x`, `nodejs22.x`,
+  `python3.12`, `python3.13` or `dotnet8`.
+  - **An S3 object is read with your permissions:** you need `s3:GetObject` on it.
+  - **The package is stored as Lambda stores one:** a later change to the S3 object does not change the
+    function. `CodeSha256` and `CodeSize` report the stored package.
+  - **An image function** (`--package-type Image --code ImageUri=…`) runs its image instead.
+- **Where the function lives:** a function you create is your account's. Update and delete reach any
+  function of your account, including one a CloudFormation stack made, as on AWS. A name is unique in
+  the account: `ResourceConflictException` if it is taken.
+- **What the answers hold:**
+  - every answer is the function's configuration, as on AWS: `State` starts as `Pending` until the
+    function is ready;
+  - `RevisionId` names its current revision: an update that passes `--revision-id` changes only that
+    revision, or answers `PreconditionFailedException`.
+- **Environment variables** replace the function's variables, as on AWS.
+  - Lambda's reserved names are refused, and so are the ones the platform sets for the function's role,
+    code and endpoints: `AWS_ENDPOINT_URL*`, `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`,
+    `OPENINFRA_*`.
+  - A value with a double quote, a backslash or a line break is refused for now.
+- **What a function here cannot be is refused, naming the parameter, never dropped:**
+  - layers;
+  - VPC configuration;
+  - published versions (`--publish`; aliases route traffic instead: `spec.aliases`);
+  - tags;
+  - an architecture other than `x86_64`;
+  - dead-letter, KMS, file-system, image-config, code-signing, SnapStart and logging configuration, unless
+    left at Lambda's default.
+- **Names:** a function name here is lowercase letters, digits and hyphens, up to 63 characters.
 
 ## External access
 

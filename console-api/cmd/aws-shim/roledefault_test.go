@@ -472,6 +472,36 @@ func roleDoorCases() []roleDoorCase {
 				h.authz = a
 				return serveWith(h, httptest.NewRequest(http.MethodGet, "http://shim/2015-03-31/functions/orders", nil), c)
 			}},
+		// The control plane (lambda_manage.go). CreateFunction names no Role here, so an authorized call ends at
+		// Lambda's validation error, before iam:PassRole (which its own test decides).
+		{door: "lambda", op: "CreateFunction", action: "lambda:CreateFunction", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, lambdaReq(http.MethodPost, "/2015-03-31/functions", `{"FunctionName":"orders","Runtime":"nodejs20.x","Handler":"index.handler"}`), c)
+			}},
+		{door: "lambda", op: "UpdateFunctionCode", action: "lambda:UpdateFunctionCode", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(zipFunction("default", "orders")), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, lambdaReq(http.MethodPut, "/2015-03-31/functions/orders/code", `{"ZipFile":"UEs="}`), c)
+			}},
+		{door: "lambda", op: "UpdateFunctionConfiguration", action: "lambda:UpdateFunctionConfiguration", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(zipFunction("default", "orders")), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, lambdaReq(http.MethodPut, "/2015-03-31/functions/orders/configuration", `{"Timeout":5}`), c)
+			}},
+		{door: "lambda", op: "DeleteFunction", action: "lambda:DeleteFunction", resType: "Function", resName: "orders", denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h := newLambdaHandler(csWithSAR(true), "default", "svc.invalid", nil, discardLogger())
+				h.fns = newFnLocator(fnDyn(zipFunction("default", "orders")), discardLogger(), "default")
+				h.authz = a
+				return serveWith(h, lambdaReq(http.MethodDelete, "/2015-03-31/functions/orders", nil), c)
+			}},
 		// --- Organizations (the management account's; an operation that names no account is checked on
 		// Account::* for a User too, so a governed User without the grant is denied it) ---
 		// No cluster client here: an authorized call ends at "not available", after the gate.

@@ -17,7 +17,9 @@
 #     provider-kubernetes, which holds the verb (the claim it renders was already checked).
 #   - StateMachine (roleArn): by the aws-shim, as the caller, on CreateStateMachine/UpdateStateMachine
 #     (the shim writes the object itself). StartExecution also requires the role's trust to name the caller.
-#   - Function (spec.role, Lambda's execution role): by the admission policy below, as the requester, on
+#   - Function (spec.role, Lambda's execution role): by the aws-shim, as the caller, on the Lambda API's
+#     CreateFunction/UpdateFunctionConfiguration (the shim writes the object itself, holding the verb in the
+#     namespaces it writes functions in); and for every other writer by the admission policy below, as the requester, on
 #     the role's name (a name, or the last segment of a role ARN, lower-cased as its kind: Role object is
 #     named), as AWS's CreateFunction/UpdateFunctionConfiguration needs iam:PassRole on the role. A role
 #     trusting lambda.amazonaws.com is assumable by any function that names it, so naming it is the gate.

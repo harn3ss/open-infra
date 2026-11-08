@@ -469,6 +469,16 @@ var lambdaRuntimes = map[string]string{
 // lambdaRuntimeList is lambdaRuntimes' keys, for refusals.
 const lambdaRuntimeList = "nodejs20.x, nodejs22.x, python3.12, python3.13 and dotnet8"
 
+// LambdaRuntimeList names the Lambda runtimes open-infra runs, for refusals (the Lambda API's too).
+const LambdaRuntimeList = lambdaRuntimeList
+
+// LambdaRuntime maps a Lambda Runtime identifier onto spec.code.runtime; ok is false for one open-infra
+// does not run.
+func LambdaRuntime(rt string) (string, bool) {
+	r, ok := lambdaRuntimes[rt]
+	return r, ok
+}
+
 // maxInlineCode is CloudFormation's limit for Code.ZipFile (the zip it makes of it).
 const maxInlineCode = 4 << 20
 

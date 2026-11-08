@@ -6,6 +6,19 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — the Lambda API creates and changes functions (#364)
+- **`CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration` and `DeleteFunction` work
+  through the aws-shim**, so `aws lambda create-function` and the SDKs' deploy calls run as on AWS.
+  - **Authorization:** each is `lambda:<Operation>` on the function's ARN.
+  - **The execution role** must be your account's, one you may pass (`iam:PassRole`) and one Lambda can
+    assume (it trusts `lambda.amazonaws.com`), with AWS's errors when it is not.
+  - **The code:** a .zip (`--zip-file`) or an S3 object, read with your permissions and stored as Lambda
+    stores it; or an image.
+  - **Refused, naming the parameter:** layers, VPC configuration, published versions and tags, which a
+    function here does not have.
+  - **Answers** report `CodeSha256`, `CodeSize`, `Description` and `RevisionId`, as AWS's do.
+  - [`docs/serverless.md`](docs/serverless.md#creating-and-changing-functions-with-the-lambda-api).
+
 ### Fixed — a Lambda invoke runs to the function's own Timeout (#372)
 - **The fixed 60-second cut is gone.** The aws-shim used to cut every invoke, synchronous or asynchronous,
   at 60 s. A longer-running function answered `ResourceNotFoundException` ("could not be reached"), and an

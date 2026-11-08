@@ -511,6 +511,7 @@ func run(logger *slog.Logger) error {
 		}
 	}
 	lambdaH.account, lambdaH.region = account, ident.Region // a function's ARN in GetFunction/ListFunctions
+	lambdaH.roles = roleRes                                 // CreateFunction / UpdateFunctionConfiguration check the execution role's trust (lambda_manage.go)
 	region := ident.Region
 	// DynamoDB Streams front door (reads the change-record logs the dynamodb write path emits).
 	ddbStreamsH := newDDBStreamsHandler(cs, authzNS, account, region, ddbStreamSt, dynamoH, logger)
@@ -733,6 +734,7 @@ func run(logger *slog.Logger) error {
 				iamH.cfn = cfnH
 			}
 			cfnDoor = cfnH
+			lambdaH.pkgDoor = cfnH // the Lambda API stores a .zip function's package as a stack's is (lambda_manage.go)
 			// Zip Lambdas' deployment packages (lambda_packages.go): stored where only a function's own pods
 			// fetch them, which needs the S3 bridge (the store) and function identities (the fetch).
 			if mc != nil && fnIdentities != nil {

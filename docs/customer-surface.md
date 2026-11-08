@@ -467,7 +467,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | IAM | `iam` | proven | 77 |
 | KMS | `kms` | proven | 23 |
 | Kinesis Data Streams | `kinesis` | proven | 12 |
-| Lambda | `lambda` | proven | 4 |
+| Lambda | `lambda` | proven | 8 |
 | Organizations | `organizations` | proven | 7 |
 | RDS | `rds` | proven | 8 |
 | S3 | `s3` | proven | 33 |

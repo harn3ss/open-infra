@@ -1199,11 +1199,16 @@
    "kms:UpdateAlias"
   ],
   "lambda": [
+   "iam:PassRole",
+   "lambda:CreateFunction",
+   "lambda:DeleteFunction",
    "lambda:GetFunction",
    "lambda:GetFunctionConfiguration",
    "lambda:GetPolicy",
    "lambda:InvokeFunction",
-   "lambda:ListFunctions"
+   "lambda:ListFunctions",
+   "lambda:UpdateFunctionCode",
+   "lambda:UpdateFunctionConfiguration"
   ],
   "monitoring": [
    "cloudwatch:DeleteAlarms",

@@ -337,7 +337,7 @@ create on its own API's front door):
 | IAM | `iam` | 77: AddUserToGroup, AttachGroupPolicy, AttachRolePolicy, AttachUserPolicy, ChangePassword, CreateAccessKey, CreateGroup, CreateLoginProfile, CreatePolicy, CreatePolicyVersion, CreateRole, CreateUser, CreateVirtualMFADevice, DeactivateMFADevice, DeleteAccessKey, DeleteAccountPasswordPolicy, DeleteGroup, DeleteGroupPolicy, DeleteLoginProfile, DeletePolicy, DeletePolicyVersion, DeleteRole, DeleteRolePermissionsBoundary, DeleteRolePolicy, DeleteUser, DeleteUserPermissionsBoundary, DeleteUserPolicy, DeleteVirtualMFADevice, DetachGroupPolicy, DetachRolePolicy, DetachUserPolicy, EnableMFADevice, GetAccountAuthorizationDetails, GetAccountPasswordPolicy, GetGroup, GetGroupPolicy, GetInstanceProfile, GetLoginProfile, GetPolicy, GetPolicyVersion, GetRole, GetRolePolicy, GetUser, GetUserPolicy, ListAccessKeys, ListAttachedGroupPolicies, ListAttachedRolePolicies, ListAttachedUserPolicies, ListGroupPolicies, ListGroups, ListGroupsForUser, ListInstanceProfiles, ListInstanceProfilesForRole, ListMFADeviceTags, ListMFADevices, ListPolicies, ListPolicyVersions, ListRolePolicies, ListRoles, ListUserPolicies, ListUsers, ListVirtualMFADevices, PutGroupPolicy, PutRolePermissionsBoundary, PutRolePolicy, PutUserPermissionsBoundary, PutUserPolicy, RemoveUserFromGroup, ResyncMFADevice, SetDefaultPolicyVersion, SimulatePrincipalPolicy, TagMFADevice, TagUser, UntagMFADevice, UpdateAccessKey, UpdateAccountPasswordPolicy, UpdateLoginProfile | 5 |
 | Kinesis Data Streams | `kinesis` | 12: CreateStream, DecreaseStreamRetentionPeriod, DeleteStream, DescribeStream, DescribeStreamSummary, GetRecords, GetShardIterator, IncreaseStreamRetentionPeriod, ListShards, ListStreams, PutRecord, PutRecords | 0 |
 | KMS | `kms` | 23: CancelKeyDeletion, CreateAlias, CreateKey, Decrypt, DeleteAlias, DescribeKey, DisableKey, DisableKeyRotation, EnableKey, EnableKeyRotation, Encrypt, GenerateDataKey, GenerateDataKeyWithoutPlaintext, GenerateRandom, GetKeyPolicy, GetKeyRotationStatus, ListAliases, ListKeyPolicies, ListKeys, PutKeyPolicy, ReEncrypt, ScheduleKeyDeletion, UpdateAlias; authorizes `kms:ReEncryptFrom`, `kms:ReEncryptTo` | 2 |
-| Lambda | `lambda` | 4: GetFunction, GetFunctionConfiguration, GetPolicy, ListFunctions; authorizes `lambda:InvokeFunction` | 2 |
+| Lambda | `lambda` | 8: CreateFunction, DeleteFunction, GetFunction, GetFunctionConfiguration, GetPolicy, ListFunctions, UpdateFunctionCode, UpdateFunctionConfiguration; authorizes `lambda:InvokeFunction` | 2 |
 | CloudWatch Logs | `logs` | 12: CreateLogGroup, CreateLogStream, DeleteLogGroup, DeleteLogStream, DeleteRetentionPolicy, DescribeLogGroups, DescribeLogStreams, FilterLogEvents, GetLogEvents, PutLogEvents, PutRetentionPolicy, TagLogGroup; recognized and refused: DescribeQueries, GetQueryResults, StartQuery, StopQuery | 1 |
 | CloudWatch | `monitoring` | 8: DeleteAlarms, DescribeAlarms, GetMetricData, GetMetricStatistics, ListMetrics, PutMetricAlarm, PutMetricData, SetAlarmState | 1 |
 | Organizations | `organizations` | 7: CreateAccount, DescribeAccount, DescribeCreateAccountStatus, DescribeOrganization, ListAccounts, ListAccountsForParent, ListRoots | 0 |
@@ -583,13 +583,34 @@ configuration carries the name, ARN, package type (`Image` for `spec.image`, els
 runtime and handler), memory, timeout (300 s when unset — the platform default), environment variables
 (`spec.env`; injected `spec.secrets` are not read), the execution role as `Role` (`spec.role`, its ARN in
 the function's account — see [execution role](serverless.md#execution-role)), and a state from the claim's
-conditions. What a Function has no counterpart for is left out rather than invented: a `Role` for a
-function that names none, a code size or hash, and a download location for a zip's code (`GetFunction`'s `Code` names the image of an
+conditions. A stored deployment package gives `CodeSha256` and `CodeSize`, and the configuration
+carries the `Description` `CreateFunction` kept and a `RevisionId` (the object's version). What a Function has
+no counterpart for is left out rather than invented: a `Role` for a function that names none, a code size or
+hash for code that is not a stored package, and a download location for a zip's code (`GetFunction`'s `Code` names the image of an
 image function, or `RepositoryType: S3` alone). A function has no resource policy — a stack's
 `AWS::Lambda::Permission` provisions nothing, because the integration that invokes the function is
 authorized against its creator's authority when it is created — so `GetPolicy` answers
 `ResourceNotFoundException`, as AWS does for a function with no policy. Listing uses the shim's `list` on
 `functions` in the same two namespaces.
+
+**Creating and changing functions.** `CreateFunction` (`POST /2015-03-31/functions`), `UpdateFunctionCode`
+(`PUT …/{name}/code`), `UpdateFunctionConfiguration` (`PUT …/{name}/configuration`) and `DeleteFunction`
+(`DELETE …/{name}`) write the `kind: Function`.
+- **Authorization:** each operation is decided as `lambda:<Operation>` on `Function::<name>`; in legacy
+  mode, `create`, `update` or `delete` on `functions` where the function lives.
+- **The write** is made with the shim's own identity, as Step Functions writes a state machine. That takes
+  the shim's grant on `functions`, plus `passrole` on roles: `open-infra-aws-shim-functions-write` in
+  `FUNCTIONS_NAMESPACE` and `CFN_NAMESPACE`, and the service-linked role in a member account's home.
+- **A new function** goes into the Lambda API's namespace (a member account's home); an existing one is
+  changed where it lives.
+- **The execution role** is required: a role of the caller's account, `iam:PassRole` on it decided as the
+  caller, and a trust policy naming `lambda.amazonaws.com` with no conditions.
+- **A .zip package** (`Code.ZipFile`, or `S3Bucket`/`S3Key` read as the caller may read it) is checked and
+  stored as a stack's is, and named by its SHA-256 (`CodeSha256`, `CodeSize`).
+- **Refused, naming the parameter:** what a Function cannot carry (layers, VPC configuration, published
+  versions, tags, a non-`x86_64` architecture, and the rest listed in
+  [serverless.md](serverless.md#creating-and-changing-functions-with-the-lambda-api)).
+- **Tested:** `probe/aws-shim-lambda-api.sh`.
 
 ### AppSync (GraphQL; over open-appsync — slice 1 runs live, experimental)
 

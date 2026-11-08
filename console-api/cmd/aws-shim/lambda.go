@@ -67,6 +67,13 @@ type lambdaHandler struct {
 	// the default timeout. coldStart is added to it (invokeColdStartAllowance; tests shorten it).
 	timeouts  *fnTimeouts
 	coldStart time.Duration
+	// roles reads an execution role's trust when a function is given one (lambda_manage.go); nil = no role
+	// can be passed, so no function can be created or given a role.
+	roles roleResolver
+	// pkgDoor stores a .zip function's deployment package, reading an S3 one as the caller may (the
+	// CloudFormation front door's package store and S3 read check, lambda_packages.go); nil = only image
+	// functions can be created.
+	pkgDoor *cfnDoorway
 }
 
 func newLambdaHandler(cs kubernetes.Interface, fnNS, svcSuffix string, async *asyncInvoker, logger *slog.Logger) *lambdaHandler {
@@ -88,6 +95,20 @@ func (h *lambdaHandler) authFailure(w http.ResponseWriter, _ *http.Request, requ
 }
 
 func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
+	// The control-plane operations (CreateFunction, UpdateFunctionCode, UpdateFunctionConfiguration,
+	// DeleteFunction): lambda_manage.go.
+	if op, fn, q, write, bad := parseLambdaWritePath(r); write {
+		if bad {
+			writeLambdaError(w, http.StatusBadRequest, "InvalidParameterValueException", requestID,
+				"FunctionName is not a valid function name or ARN")
+			return
+		}
+		if op != "CreateFunction" && h.refusedCrossAccount(w, r, claims, requestID, "lambda:"+op, fn) {
+			return
+		}
+		h.serveWrite(w, r, claims, requestID, op, fn, q)
+		return
+	}
 	// The read operations (GetFunction, GetFunctionConfiguration, ListFunctions, GetPolicy): lambda_read.go.
 	if op, fn, q, read, bad := parseLambdaReadPath(r); read {
 		if bad {
@@ -104,7 +125,7 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	name, qualifier, ok := parseInvokePath(r)
 	if !ok {
 		writeLambdaError(w, http.StatusNotImplemented, "InvalidAction", requestID,
-			"only Invoke (POST /2015-03-31/functions/{name}[:{qualifier}]/invocations), GetFunction, GetFunctionConfiguration, ListFunctions and GetPolicy are implemented")
+			"only Invoke (POST /2015-03-31/functions/{name}[:{qualifier}]/invocations), CreateFunction, UpdateFunctionCode, UpdateFunctionConfiguration, DeleteFunction, GetFunction, GetFunctionConfiguration, ListFunctions and GetPolicy are implemented")
 		return
 	}
 	if h.refusedCrossAccount(w, r, claims, requestID, "lambda:InvokeFunction", name) {

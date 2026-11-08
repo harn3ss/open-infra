@@ -15,9 +15,12 @@
 // A function belongs to an account: a member account's are found and listed in its own namespaces alone,
 // and named by ARNs carrying its account; the management account's are where they always were.
 //
-// A function's execution role (spec.role) is its Role, the role's ARN in the function's account. What a
-// Function does not have, the answer leaves out rather than invents: no Role when it names none, no code
-// size or hash, and no download location for a zip's code. A function has no resource policy (a stack's
+// A function's execution role (spec.role) is its Role, the role's ARN in the function's account; a stored
+// deployment package (spec.code.source.package) gives CodeSha256 (its SHA-256, base64, as Lambda gives it)
+// and CodeSize; the Description is the one CreateFunction kept; RevisionId is the object's version, which
+// an update may name to change only that revision. What a Function does not have, the answer leaves out
+// rather than invents: no Role when it names none, no code size or hash for code that is not a stored
+// package, and no download location for a zip's code. A function has no resource policy (a stack's
 // AWS::Lambda::Permission provisions nothing: the integration that invokes the function is authorized
 // against its creator's authority when it is created), so GetPolicy answers as AWS does for a function with
 // no policy: ResourceNotFoundException.
@@ -26,6 +29,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -408,6 +412,20 @@ func (h *lambdaHandler) functionConfiguration(ctx context.Context, obj *unstruct
 		if len(vars) > 0 {
 			c["Environment"] = map[string]any{"Variables": vars}
 		}
+	}
+	if sha, _, _ := unstructured.NestedString(obj.Object, "spec", "code", "source", "package", "sha256"); len(sha) == 64 {
+		if raw, err := hex.DecodeString(sha); err == nil {
+			c["CodeSha256"] = base64.StdEncoding.EncodeToString(raw)
+		}
+		if n, found, _ := unstructured.NestedInt64(obj.Object, "spec", "code", "source", "package", "size"); found {
+			c["CodeSize"] = n
+		}
+	}
+	if d := obj.GetAnnotations()[fnDescriptionAnnotation]; d != "" {
+		c["Description"] = d
+	}
+	if rv := obj.GetResourceVersion(); rv != "" {
+		c["RevisionId"] = rv
 	}
 	state, update, reason := functionState(obj)
 	c["State"], c["LastUpdateStatus"] = state, update

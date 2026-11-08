@@ -594,17 +594,26 @@
     "lambda": {
       "handler": "lambdaHandler",
       "operations": [
+        "CreateFunction",
+        "DeleteFunction",
         "GetFunction",
         "GetFunctionConfiguration",
         "GetPolicy",
-        "ListFunctions"
+        "ListFunctions",
+        "UpdateFunctionCode",
+        "UpdateFunctionConfiguration"
       ],
       "actions": [
+        "iam:PassRole",
+        "lambda:CreateFunction",
+        "lambda:DeleteFunction",
         "lambda:GetFunction",
         "lambda:GetFunctionConfiguration",
         "lambda:GetPolicy",
         "lambda:InvokeFunction",
-        "lambda:ListFunctions"
+        "lambda:ListFunctions",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration"
       ]
     },
     "logs": {
