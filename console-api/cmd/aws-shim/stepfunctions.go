@@ -217,7 +217,7 @@ func (h *sfnHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 				writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, "Cross-account pass role is not allowed.")
 				return
 			}
-			if ok, reason := callerMayPassRole(ctx, h.cs, h.authz, claims, h.passRoleNamespace(ctx), role, r); !ok {
+			if ok, reason := callerMayPassRole(ctx, h.cs, h.authz, claims, h.passRoleNamespace(ctx), role, "states.amazonaws.com", r); !ok {
 				writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID, reason)
 				return
 			}

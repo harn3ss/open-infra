@@ -7682,12 +7682,13 @@ components:
                         type: array
                         description: "Conditions on request attributes AWS leaves out of some requests on purpose \u2014 the\
                           \ multi-factor keys the AWS importer emits from aws:MultiFactorAuthPresent (Bool / BoolIfExists)\
-                          \ and aws:MultiFactorAuthAge (Numeric* and their IfExists forms), and Null on either. An absent\
+                          \ and aws:MultiFactorAuthAge (Numeric* and their IfExists forms), iam:PassedToService (String{,Not}Equals\
+                          \ as == / !=, String{,Not}Like as like / !like, and their IfExists forms), and Null on any. An absent\
                           \ attribute is evaluated as AWS does: it does not match a plain operator, matches an IfExists or\
                           \ negated one, and Null true tests for it. key is \"multiFactorAuthPresent\" (present on every temporary\
-                          \ credential, absent for long-term access keys) or \"multiFactorAuthAge\" (the seconds since MFA,\
-                          \ present only with MFA). A malformed entry makes the policy fail to compile (it then grants nothing).\
-                          \ Optional."
+                          \ credential, absent for long-term access keys), \"multiFactorAuthAge\" (the seconds since MFA,\
+                          \ present only with MFA) or \"passedToService\" (the service a role is passed to, present on iam:PassRole\
+                          \ alone). A malformed entry makes the policy fail to compile (it then grants nothing). Optional."
                         items:
                           type: object
                           required:
@@ -7707,12 +7708,16 @@ components:
                               - <=
                               - '>'
                               - '>='
+                              - like
+                              - '!like'
                               - 'null'
-                              description: 'The comparison: "==" (Bool, NumericEquals), "!=" (NumericNotEquals), "<" "<="
-                                ">" ">=" (NumericLessThan[Equals], NumericGreaterThan[Equals]), or "null" (Null).'
+                              description: 'The comparison: "==" (Bool, NumericEquals, StringEquals), "!=" (NumericNotEquals,
+                                StringNotEquals), "<" "<=" ">" ">=" (NumericLessThan[Equals], NumericGreaterThan[Equals]),
+                                "like" / "!like" (StringLike / StringNotLike), or "null" (Null).'
                             value:
                               type: string
-                              description: '"true" or "false" for a boolean (and for null), an integer for a number.'
+                              description: '"true" or "false" for a boolean (and for null), an integer for a number, a service
+                                name or "*" pattern for passedToService.'
                             ifExists:
                               type: boolean
                               default: false

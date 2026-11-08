@@ -32,18 +32,39 @@ func (h *sfnHandler) passRoleNamespace(ctx context.Context) string {
 	return accountNamespace(ctx, ns)
 }
 
-// callerMayPassRole reports whether the caller may pass the Role roleNS/role. A User needs the RBAC verb
-// (iam.CanDo, a SubjectAccessReview as the caller) and is then subject to any data-plane policy that
-// governs iam for it; an assumed role is checked closed: its policies must allow iam:PassRole on the
-// Role (default deny).
+// passRoleVerbFor is the RBAC verb for passing a role to one service (iam:PassedToService): what the IAM
+// compiler compiles a PassRole grant limited to that service into, and what the admission policies accept
+// beside passrole (any service).
+func passRoleVerbFor(service string) string { return passRoleVerb + ":" + service }
+
+// callerMayPassRole reports whether the caller may pass the Role roleNS/role to service (a service
+// principal, AWS's iam:PassedToService: lambda.amazonaws.com, states.amazonaws.com). IAM policy decides it
+// with iam:PassedToService set, so AWSLambda_FullAccess's "PassRole where PassedToService is Lambda" passes
+// a role to Lambda and to nothing else. In legacy a User needs the RBAC verb (iam.CanDo, a
+// SubjectAccessReview as the caller: passrole, or passrole:<service>) and is then subject to any data-plane
+// policy that governs iam for it; an assumed role is checked closed: its policies must allow iam:PassRole
+// on the Role (default deny).
 func callerMayPassRole(ctx context.Context, cs kubernetes.Interface, authz *dataplaneauthz.Checker, claims iam.Claims,
-	roleNS, role string, r *http.Request) (bool, string) {
+	roleNS, role, service string, r *http.Request) (bool, string) {
 	if cs == nil && claims.AssumedRole == "" {
 		return false, "iam:PassRole cannot be checked on this shim"
 	}
-	if ok, reason := decide(ctx, r, authz, claims, "iam:PassRole", "Role", role,
-		coarseThenDataPlane(ctx, r, cs, authz, claims, passRoleVerb, "iam.openinfra.dev", "roles", roleNS, role,
-			"iam:PassRole", "Role", role)); !ok {
+	ctx = withPassedToService(ctx, service)
+	if ok, reason := decide(ctx, r, authz, claims, "iam:PassRole", "Role", role, func() (bool, string) {
+		ok, why := iam.CanDo(ctx, cs, claims, passRoleVerb, "iam.openinfra.dev", "roles", roleNS, role)
+		if !ok {
+			if ok2, _ := iam.CanDo(ctx, cs, claims, passRoleVerbFor(service), "iam.openinfra.dev", "roles", roleNS, role); ok2 {
+				ok, why = true, ""
+			}
+		}
+		if !ok {
+			return false, why
+		}
+		if denied, why := dataPlaneDenied(ctx, authz, claims, "iam:PassRole", "Role", role, r); denied {
+			return false, why
+		}
+		return true, ""
+	}); !ok {
 		return false, "not authorized to perform iam:PassRole on role " + role + ": " + reason
 	}
 	return true, ""

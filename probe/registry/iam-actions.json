@@ -1143,14 +1143,20 @@
   "acm": [
    "acm:DescribeCertificate",
    "acm:GetCertificate",
-   "acm:ListCertificates"
+   "acm:ListCertificates",
+   "iam:PassRole"
   ],
   "apigateway": [
+   "iam:PassRole",
    "lambda:InvokeFunction"
   ],
   "appsync": [
    "appsync:GraphQL",
-   "appsync:ListGraphqlApis"
+   "appsync:ListGraphqlApis",
+   "iam:PassRole"
+  ],
+  "athena": [
+   "iam:PassRole"
   ],
   "cloudformation": [
    "apigateway:CreateRestApi",
@@ -1159,11 +1165,25 @@
    "cloudformation:DescribeStacks",
    "cloudformation:SignalResource",
    "cloudformation:UpdateStack",
+   "iam:PassRole",
    "lambda:InvokeFunction",
    "s3:GetObject"
   ],
   "cloudfront": [
-   "cloudfront:ListDistributions"
+   "cloudfront:ListDistributions",
+   "iam:PassRole"
+  ],
+  "cognito-idp": [
+   "iam:PassRole"
+  ],
+  "dynamodb": [
+   "iam:PassRole"
+  ],
+  "dynamodbstreams": [
+   "iam:PassRole"
+  ],
+  "ec2": [
+   "iam:PassRole"
   ],
   "ecr": [
    "ecr:BatchCheckLayerAvailability",
@@ -1173,9 +1193,17 @@
    "ecr:GetDownloadUrlForLayer",
    "ecr:InitiateLayerUpload",
    "ecr:PutImage",
-   "ecr:UploadLayerPart"
+   "ecr:UploadLayerPart",
+   "iam:PassRole"
+  ],
+  "ecs": [
+   "iam:PassRole"
+  ],
+  "eks": [
+   "iam:PassRole"
   ],
   "email": [
+   "iam:PassRole",
    "ses:CreateEmailIdentity",
    "ses:GetAccount",
    "ses:ListEmailIdentities",
@@ -1183,15 +1211,24 @@
    "ses:SendEmail"
   ],
   "events": [
+   "iam:PassRole",
    "lambda:InvokeFunction",
    "sqs:SendMessage"
+  ],
+  "glue": [
+   "iam:PassRole"
   ],
   "iam": [
    "iam:ChangePassword",
    "iam:GetInstanceProfile",
+   "iam:PassRole",
    "sts:AssumeRole"
   ],
+  "kinesis": [
+   "iam:PassRole"
+  ],
   "kms": [
+   "iam:PassRole",
    "kms:Decrypt",
    "kms:DeleteAlias",
    "kms:ReEncryptFrom",
@@ -1210,17 +1247,32 @@
    "lambda:UpdateFunctionCode",
    "lambda:UpdateFunctionConfiguration"
   ],
+  "logs": [
+   "iam:PassRole"
+  ],
   "monitoring": [
    "cloudwatch:DeleteAlarms",
    "cloudwatch:DescribeAlarms",
    "cloudwatch:GetMetricData",
    "cloudwatch:SetAlarmState",
+   "iam:PassRole",
    "sns:Publish"
   ],
+  "organizations": [
+   "iam:PassRole"
+  ],
   "rds": [
+   "iam:PassRole",
    "rds:CreateDBSnapshot"
   ],
+  "secretsmanager": [
+   "iam:PassRole"
+  ],
+  "servicequotas": [
+   "iam:PassRole"
+  ],
   "ses": [
+   "iam:PassRole",
    "ses:CreateEmailIdentity",
    "ses:GetAccount",
    "ses:ListEmailIdentities",
@@ -1228,13 +1280,16 @@
    "ses:SendEmail"
   ],
   "sns": [
+   "iam:PassRole",
    "lambda:InvokeFunction",
    "sqs:SendMessage"
   ],
   "sqs": [
+   "iam:PassRole",
    "sqs:SendMessage"
   ],
   "ssm": [
+   "iam:PassRole",
    "kms:Decrypt",
    "ssm:DeleteParameters",
    "ssm:DescribeInstanceInformation",
@@ -1248,6 +1303,7 @@
    "iam:PassRole"
   ],
   "sts": [
+   "iam:PassRole",
    "sts:AssumeRole"
   ]
  },

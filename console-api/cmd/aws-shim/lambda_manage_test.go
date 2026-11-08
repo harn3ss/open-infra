@@ -12,6 +12,7 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/policyengine"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -382,5 +383,28 @@ func TestLambdaWrites_DeniedWithoutPolicy(t *testing.T) {
 	obj := getClaim(t, dyn, "default", "orders")
 	if to, _ := jsonInt(obj.Object["spec"].(map[string]any)["timeout"]); to != 10 {
 		t.Fatal("a refused update must change nothing")
+	}
+}
+
+// AWSLambda_FullAccess passes a role to Lambda alone (iam:PassRole where iam:PassedToService is
+// lambda.amazonaws.com): with it and lambda:CreateFunction, CreateFunction may name a role; the same grant
+// does not pass a role to another service.
+func TestCreateFunction_PassedToServiceLambda(t *testing.T) {
+	pass, unsupported, err := policyengine.ImportAWS(`{"Statement":[{"Effect":"Allow","Action":"iam:PassRole","Resource":"*",
+	  "Condition":{"StringEquals":{"iam:PassedToService":"lambda.amazonaws.com"}}}]}`)
+	if err != nil || len(unsupported) > 0 {
+		t.Fatalf("import: %v %v", err, unsupported)
+	}
+	authz := checkerInMode(t, "enforce", userDoc(append(pass, dpAllow([]string{"lambda:CreateFunction"}, "*"))...))
+	h, _, _ := manageFixture(t, authz)
+	if w := serveWith(h, lambdaReq(http.MethodPost, "/2015-03-31/functions", lmCreateBody(t, nil)), testUser); w.Code != http.StatusCreated {
+		t.Fatalf("PassRole to Lambda must allow CreateFunction to name a role: %d %s", w.Code, w.Body)
+	}
+	r := httptest.NewRequest(http.MethodPost, "http://shim/", nil)
+	if ok, _ := callerMayPassRole(r.Context(), csWithSAR(true), authz, testUser, "default", "exec", "states.amazonaws.com", r); ok {
+		t.Fatal("PassRole to Lambda must not pass a role to Step Functions")
+	}
+	if ok, _ := callerMayPassRole(r.Context(), csWithSAR(true), authz, testUser, "default", "exec", lambdaService, r); !ok {
+		t.Fatal("PassRole to Lambda passes a role to Lambda")
 	}
 }

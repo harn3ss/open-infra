@@ -92,6 +92,23 @@ func typedOf(arn string) string {
 // control-plane grants never reach. ok=false: the statement does not apply here at all. conditional=true:
 // some other condition remains (an Allow is then dropped, a Deny applied unconditionally).
 func conditionScope(st policyengine.Statement, account string) (ok, conditional bool) {
+	return conditionScopeFor(st, account, "")
+}
+
+// passRoleServices are the services a role is passed to on this platform, each where its pass is checked:
+// a VirtualMachine's instance role (ec2), an Application's task role (ecs-tasks), a Function's execution
+// role (lambda), a state machine's execution role (states). iam:PassRole is compiled for each of them too
+// (passRoleVerbFor), so a grant limited by iam:PassedToService passes a role to its service alone.
+var passRoleServices = []string{"ec2.amazonaws.com", "ecs-tasks.amazonaws.com", "lambda.amazonaws.com", "states.amazonaws.com"}
+
+// passRoleVerbFor is the RBAC verb for passing a role to service, beside passrole (any service): the
+// admission policies (platform/security/pass-role.yaml) accept either.
+func passRoleVerbFor(service string) string { return "passrole:" + service }
+
+// conditionScopeFor is conditionScope for an iam:PassRole decision that passes the role to service (""
+// for any other decision): there the request carries iam:PassedToService (passedToService), so a condition
+// on it is evaluated, not left conditional.
+func conditionScopeFor(st policyengine.Statement, account, service string) (ok, conditional bool) {
 	for k, v := range st.Condition {
 		if k == "resourceAccount" {
 			if v != account {
@@ -112,8 +129,54 @@ func conditionScope(st policyengine.Statement, account string) (ok, conditional 
 	}
 	// A condition on a key AWS leaves out of some requests (aws:MultiFactorAuth*) is a condition too: the
 	// control plane carries none of these keys, so it drops such an Allow and applies such a Deny always.
-	if len(st.IPConditions) > 0 || len(st.TimeConditions) > 0 || len(st.KeyConditions) > 0 {
+	// iam:PassedToService alone is known, on a PassRole decision for a service.
+	for _, kc := range st.KeyConditions {
+		if kc.Key == "passedToService" && service != "" {
+			if !passedToServiceMatches(kc, service) {
+				return false, false
+			}
+			continue
+		}
+		conditional = true
+	}
+	if len(st.IPConditions) > 0 || len(st.TimeConditions) > 0 {
 		conditional = true
 	}
 	return true, conditional
+}
+
+// passedToServiceMatches evaluates a condition on iam:PassedToService for a request that carries service.
+func passedToServiceMatches(kc policyengine.KeyCondition, service string) bool {
+	switch kc.Op {
+	case policyengine.KeyNull:
+		return kc.Value == "false" // the key is present
+	case "==":
+		return service == kc.Value
+	case "!=":
+		return service != kc.Value
+	case "like":
+		return glob(kc.Value, service)
+	case "!like":
+		return !glob(kc.Value, service)
+	}
+	return false
+}
+
+// onlyPassedToService reports whether a statement's one condition is iam:PassedToService: a PassRole
+// statement compiled per service, not dropped.
+func onlyPassedToService(st policyengine.Statement) bool {
+	if len(st.LikeConditions) > 0 || len(st.IPConditions) > 0 || len(st.TimeConditions) > 0 || len(st.KeyConditions) == 0 {
+		return false
+	}
+	for k := range st.Condition {
+		if k != "resourceAccount" {
+			return false
+		}
+	}
+	for _, kc := range st.KeyConditions {
+		if kc.Key != "passedToService" {
+			return false
+		}
+	}
+	return true
 }

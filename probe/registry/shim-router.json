@@ -11,7 +11,8 @@
       "actions": [
         "acm:DescribeCertificate",
         "acm:GetCertificate",
-        "acm:ListCertificates"
+        "acm:ListCertificates",
+        "iam:PassRole"
       ],
       "conditional": true
     },
@@ -60,6 +61,7 @@
         "PutMethodResponse"
       ],
       "actions": [
+        "iam:PassRole",
         "lambda:InvokeFunction"
       ],
       "delegates": [
@@ -87,7 +89,8 @@
       ],
       "actions": [
         "appsync:GraphQL",
-        "appsync:ListGraphqlApis"
+        "appsync:ListGraphqlApis",
+        "iam:PassRole"
       ]
     },
     "athena": {
@@ -121,6 +124,9 @@
         "StopQueryExecution",
         "UpdateDataCatalog",
         "UpdateWorkGroup"
+      ],
+      "actions": [
+        "iam:PassRole"
       ]
     },
     "cloudformation": {
@@ -158,6 +164,7 @@
         "cloudformation:DescribeStacks",
         "cloudformation:SignalResource",
         "cloudformation:UpdateStack",
+        "iam:PassRole",
         "lambda:InvokeFunction",
         "s3:GetObject"
       ],
@@ -179,7 +186,8 @@
         "ListInvalidations"
       ],
       "actions": [
-        "cloudfront:ListDistributions"
+        "cloudfront:ListDistributions",
+        "iam:PassRole"
       ],
       "conditional": true
     },
@@ -207,6 +215,9 @@
         "RespondToAuthChallenge",
         "SignUp"
       ],
+      "actions": [
+        "iam:PassRole"
+      ],
       "conditional": true
     },
     "dynamodb": {
@@ -231,6 +242,9 @@
         "UpdateContinuousBackups",
         "UpdateItem",
         "UpdateTimeToLive"
+      ],
+      "actions": [
+        "iam:PassRole"
       ]
     },
     "dynamodbstreams": {
@@ -240,6 +254,9 @@
         "GetRecords",
         "GetShardIterator",
         "ListStreams"
+      ],
+      "actions": [
+        "iam:PassRole"
       ]
     },
     "ec2": {
@@ -267,6 +284,9 @@
         "StartInstances",
         "StopInstances",
         "TerminateInstances"
+      ],
+      "actions": [
+        "iam:PassRole"
       ],
       "conditional": true
     },
@@ -319,7 +339,8 @@
         "ecr:GetDownloadUrlForLayer",
         "ecr:InitiateLayerUpload",
         "ecr:PutImage",
-        "ecr:UploadLayerPart"
+        "ecr:UploadLayerPart",
+        "iam:PassRole"
       ]
     },
     "ecs": {
@@ -338,6 +359,9 @@
         "RegisterTaskDefinition",
         "RunTask",
         "UpdateService"
+      ],
+      "actions": [
+        "iam:PassRole"
       ],
       "conditional": true
     },
@@ -360,6 +384,9 @@
         "UpdateAddon",
         "UpdateClusterConfig",
         "UpdateClusterVersion"
+      ],
+      "actions": [
+        "iam:PassRole"
       ]
     },
     "email": {
@@ -383,6 +410,7 @@
         "VerifyEmailIdentity"
       ],
       "actions": [
+        "iam:PassRole",
         "ses:CreateEmailIdentity",
         "ses:GetAccount",
         "ses:ListEmailIdentities",
@@ -410,6 +438,7 @@
         "TestEventPattern"
       ],
       "actions": [
+        "iam:PassRole",
         "lambda:InvokeFunction",
         "sqs:SendMessage"
       ]
@@ -449,6 +478,9 @@
         "UpdateJob",
         "UpdatePartition",
         "UpdateTable"
+      ],
+      "actions": [
+        "iam:PassRole"
       ]
     },
     "iam": {
@@ -535,6 +567,7 @@
       "actions": [
         "iam:ChangePassword",
         "iam:GetInstanceProfile",
+        "iam:PassRole",
         "sts:AssumeRole"
       ],
       "conditional": true
@@ -554,6 +587,9 @@
         "ListStreams",
         "PutRecord",
         "PutRecords"
+      ],
+      "actions": [
+        "iam:PassRole"
       ]
     },
     "kms": {
@@ -584,6 +620,7 @@
         "UpdateAlias"
       ],
       "actions": [
+        "iam:PassRole",
         "kms:Decrypt",
         "kms:DeleteAlias",
         "kms:ReEncryptFrom",
@@ -637,6 +674,9 @@
         "GetQueryResults",
         "StartQuery",
         "StopQuery"
+      ],
+      "actions": [
+        "iam:PassRole"
       ]
     },
     "monitoring": {
@@ -656,6 +696,7 @@
         "cloudwatch:DescribeAlarms",
         "cloudwatch:GetMetricData",
         "cloudwatch:SetAlarmState",
+        "iam:PassRole",
         "sns:Publish"
       ]
     },
@@ -669,6 +710,9 @@
         "ListAccounts",
         "ListAccountsForParent",
         "ListRoots"
+      ],
+      "actions": [
+        "iam:PassRole"
       ]
     },
     "rds": {
@@ -691,6 +735,7 @@
         "RestoreDBInstanceToPointInTime"
       ],
       "actions": [
+        "iam:PassRole",
         "rds:CreateDBSnapshot"
       ]
     },
@@ -752,6 +797,9 @@
       "refused": [
         "CancelRotateSecret",
         "RotateSecret"
+      ],
+      "actions": [
+        "iam:PassRole"
       ]
     },
     "servicequotas": {
@@ -766,6 +814,9 @@
         "ListServiceQuotas",
         "ListServices",
         "RequestServiceQuotaIncrease"
+      ],
+      "actions": [
+        "iam:PassRole"
       ]
     },
     "ses": {
@@ -789,6 +840,7 @@
         "VerifyEmailIdentity"
       ],
       "actions": [
+        "iam:PassRole",
         "ses:CreateEmailIdentity",
         "ses:GetAccount",
         "ses:ListEmailIdentities",
@@ -829,6 +881,7 @@
         "Unsubscribe"
       ],
       "actions": [
+        "iam:PassRole",
         "lambda:InvokeFunction",
         "sqs:SendMessage"
       ]
@@ -852,6 +905,7 @@
         "SetQueueAttributes"
       ],
       "actions": [
+        "iam:PassRole",
         "sqs:SendMessage"
       ]
     },
@@ -877,6 +931,7 @@
         "SendCommand"
       ],
       "actions": [
+        "iam:PassRole",
         "kms:Decrypt",
         "ssm:DeleteParameters",
         "ssm:DescribeInstanceInformation",
@@ -917,6 +972,7 @@
         "GetSessionToken"
       ],
       "actions": [
+        "iam:PassRole",
         "sts:AssumeRole"
       ]
     }

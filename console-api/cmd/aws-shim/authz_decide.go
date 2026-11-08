@@ -43,7 +43,7 @@ func decision(ctx context.Context, r *http.Request, authz *dataplaneauthz.Checke
 	res := typedResource(resType, resID)
 	// One request context for every decision, a request or not (an in-process call has no source IP): the
 	// MFA keys above all must reach every evaluation, or a Deny gated on them would not.
-	reqCtx := requestContext(claims, r)
+	reqCtx := passRoleContext(ctx, action, requestContext(claims, r))
 	var d iamauthz.Decision
 	if memberAccount(claims) {
 		// A door that keeps one account's resources keeps the management account's: a member account's
@@ -316,4 +316,28 @@ func dataPlaneOnly(ctx context.Context, r *http.Request, authz *dataplaneauthz.C
 		}
 		return true, ""
 	}
+}
+
+// passedToServiceKey carries, on an iam:PassRole decision's context, the service the role is passed to.
+type passedToServiceKey struct{}
+
+// withPassedToService marks an iam:PassRole decision as passing the role to service (a service principal:
+// lambda.amazonaws.com, states.amazonaws.com), AWS's iam:PassedToService.
+func withPassedToService(ctx context.Context, service string) context.Context {
+	return context.WithValue(ctx, passedToServiceKey{}, service)
+}
+
+// passRoleContext adds iam:PassedToService (passedToService) to an iam:PassRole decision's request context,
+// as AWS sets it on that request alone.
+func passRoleContext(ctx context.Context, action string, reqCtx map[string]any) map[string]any {
+	if action != "iam:PassRole" {
+		return reqCtx
+	}
+	if s, _ := ctx.Value(passedToServiceKey{}).(string); s != "" {
+		if reqCtx == nil {
+			reqCtx = map[string]any{}
+		}
+		reqCtx["passedToService"] = s
+	}
+	return reqCtx
 }

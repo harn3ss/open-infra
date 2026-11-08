@@ -79,6 +79,21 @@ func TestPassRole_AdmissionChecksTheRequesterOnTheNamedRole(t *testing.T) {
 		"authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)",
 		".name(variables.role).check('passrole').allowed()")
 
+	// A PassRole limited by iam:PassedToService compiles into the service's own verb (passrole:<service>):
+	// each check accepts its own service's verb, and no other's (AWSLambda_FullAccess passes a role to a
+	// Function, never to a VirtualMachine).
+	for _, c := range []struct{ doc, policy, own string }{
+		{vm, "VM", "ec2.amazonaws.com"}, {sa, "ServiceAccount", "ec2.amazonaws.com"},
+		{fn, "Function", "lambda.amazonaws.com"}, {app, "Application", "ecs-tasks.amazonaws.com"},
+	} {
+		mustContain(t, c.policy+" policy", c.doc, ".check('passrole:"+c.own+"').allowed()")
+		for _, other := range []string{"ec2.amazonaws.com", "lambda.amazonaws.com", "ecs-tasks.amazonaws.com", "states.amazonaws.com"} {
+			if other != c.own && strings.Contains(c.doc, "passrole:"+other) {
+				t.Errorf("%s policy accepts another service's verb passrole:%s", c.policy, other)
+			}
+		}
+	}
+
 	for _, p := range []string{"openinfra-pass-role", "openinfra-instance-role-binding", "openinfra-pass-role-function", "openinfra-pass-role-application"} {
 		b := yamlDoc(t, passRoleYAML, "ValidatingAdmissionPolicyBinding", p)
 		mustContain(t, p+" binding", b, "policyName: "+p, "validationActions: [Deny, Audit]")

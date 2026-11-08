@@ -103,6 +103,12 @@ var SupportedConditionKeys = []ConditionKey{
 	// Numeric* operators and their IfExists forms, and Null, with AWS's absent-key semantics.
 	{Attr: "multiFactorAuthPresent", Type: condBool, Optional: true, Aliases: []string{"aws:MultiFactorAuthPresent", "multiFactorAuthPresent"}},
 	{Attr: "multiFactorAuthAge", Type: condNumber, Optional: true, Aliases: []string{"aws:MultiFactorAuthAge", "multiFactorAuthAge"}},
+	// The service a role is passed to, on an iam:PassRole decision alone (AWS sets it on no other request):
+	// the shim sets it where it checks iam:PassRole for a service (a Lambda function's execution role is
+	// passed to lambda.amazonaws.com, a state machine's to states.amazonaws.com), and the IAM compiler
+	// compiles it into per-service passrole verbs for the admission policies. Honors StringEquals,
+	// StringNotEquals, StringLike, StringNotLike (and their IfExists forms) and Null.
+	{Attr: "passedToService", Type: condString, Optional: true, Aliases: []string{"iam:PassedToService", "passedToService"}},
 }
 
 // SupportedConditionAttrs is the set of request-context attributes the importer may reference — the
@@ -361,6 +367,15 @@ func optionalKeyCondition(op, key string, ck ConditionKey, val string) (KeyCondi
 	}
 	base, ifExists := strings.CutSuffix(op, "IfExists")
 	switch ck.Type {
+	case condString:
+		cmp, isString := map[string]string{"StringEquals": "==", "StringNotEquals": "!=", "StringLike": "like", "StringNotLike": "!like"}[base]
+		if !isString {
+			return KeyCondition{}, fmt.Sprintf("%q on the string key %q is not importable (use StringEquals, StringNotEquals, StringLike or StringNotLike)", op, key)
+		}
+		if !keyStringValue.MatchString(val) || (cmp != "like" && cmp != "!like" && strings.Contains(val, "*")) {
+			return KeyCondition{}, fmt.Sprintf("%q value %q on %q is not a service name or pattern", op, val, key)
+		}
+		return KeyCondition{Key: ck.Attr, Op: cmp, Value: val, IfExists: ifExists}, ""
 	case condBool:
 		if base != "Bool" {
 			return KeyCondition{}, fmt.Sprintf("%q on the boolean key %q is not importable (use Bool or BoolIfExists)", op, key)

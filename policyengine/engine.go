@@ -77,24 +77,47 @@ const KeyNull = "null"
 //   - a negated operator (NumericNotEquals, Op "!=") matches an absent key, as AWS's negated operators do;
 //   - Null (Op KeyNull): Value "true" matches an absent key, "false" a present one.
 //
+// iam:PassedToService is such a key too: AWS sets it on an iam:PassRole request alone (the service the role
+// is passed to), so a String* condition on it compares a string — its attribute is a string key in
+// SupportedConditionKeys — with the same absent-key semantics (StringNotEquals / StringNotLike match an
+// absent key, as AWS's negated operators do).
+//
 // Op is "==" or "!=" with a boolean Value ("true"/"false"), one of == != < <= > >= with an integer Value,
-// or KeyNull. The request attribute must be a Cedar boolean or long of the matching kind: a request that
-// carries one of another kind is denied outright (Authorize), so a malformed value can never make a Deny
-// evaporate.
+// "==", "!=", "like" or "!like" with a string Value (on a string key), or KeyNull. The request attribute
+// must be a Cedar boolean, long or string of the matching kind: a request that carries one of another kind
+// is denied outright (Authorize), so a malformed value can never make a Deny evaporate.
 type KeyCondition struct {
 	Key      string // request-context attribute, e.g. "multiFactorAuthPresent"
-	Op       string // "==", "!=", "<", "<=", ">", ">=", or KeyNull
-	Value    string // "true"/"false", or an integer
+	Op       string // "==", "!=", "<", "<=", ">", ">=", "like", "!like", or KeyNull
+	Value    string // "true"/"false", an integer, or a string (on a string key)
 	IfExists bool   // AWS's ...IfExists: an absent key matches
 }
 
 var cedarIdent = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// kind is the Cedar type the condition compares the attribute as ("bool" or "long"), "" for Null.
+// keyStringValue is what a string KeyCondition may compare with: a service principal name or a pattern of
+// one. Nothing that would need escaping in a Cedar string.
+var keyStringValue = regexp.MustCompile(`^[A-Za-z0-9.*_-]{1,128}$`)
+
+// stringKey reports whether a request attribute is a string key (iam:PassedToService's passedToService):
+// what the attribute is, not how a stored condition spells it, decides how it is compared.
+func stringKey(attr string) bool {
+	for _, k := range SupportedConditionKeys {
+		if k.Attr == attr {
+			return k.Type == condString
+		}
+	}
+	return false
+}
+
+// kind is the Cedar type the condition compares the attribute as ("bool", "long" or "string"), "" for
+// Null.
 func (k KeyCondition) kind() string {
 	switch {
 	case k.Op == KeyNull:
 		return ""
+	case stringKey(k.Key):
+		return "string"
 	case k.Value == "true" || k.Value == "false":
 		return "bool"
 	}
@@ -118,6 +141,25 @@ func (k KeyCondition) cedarTerm(idx int) (string, error) {
 	}
 	lit := k.Value
 	switch k.kind() {
+	case "string":
+		if !keyStringValue.MatchString(k.Value) {
+			return "", fmt.Errorf("statement %d: a string condition on %s needs a service name or pattern, got %q", idx, k.Key, k.Value)
+		}
+		var test string
+		switch k.Op {
+		case "==", "!=":
+			test = "context." + k.Key + " " + k.Op + ` "` + k.Value + `"`
+		case "like":
+			test = "context." + k.Key + ` like "` + k.Value + `"`
+		case "!like":
+			test = "!(context." + k.Key + ` like "` + k.Value + `")`
+		default:
+			return "", fmt.Errorf("statement %d: a string condition on %s compares with == != like or !like, not %q", idx, k.Key, k.Op)
+		}
+		if k.IfExists || k.Op == "!=" || k.Op == "!like" {
+			return "(!(" + has + ") || " + test + ")", nil
+		}
+		return "(" + has + " && " + test + ")", nil
 	case "bool":
 		if k.Op != "==" && k.Op != "!=" {
 			return "", fmt.Errorf("statement %d: a boolean condition on %s compares with == or !=, not %q", idx, k.Key, k.Op)
@@ -300,7 +342,8 @@ func (e *Engine) Authorize(r Request) Decision {
 		}
 		_, isBool := v.(types.Boolean)
 		_, isLong := v.(types.Long)
-		if (kind == "bool" && !isBool) || (kind == "long" && !isLong) {
+		_, isStr := v.(types.String)
+		if (kind == "bool" && !isBool) || (kind == "long" && !isLong) || (kind == "string" && !isStr) {
 			return Decision{Allowed: false, Reason: "the request attribute " + k + " is malformed (denied)"}
 		}
 	}

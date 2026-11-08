@@ -80,7 +80,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 12
+      "probe": 13
     },
     "undeployableUses": [
       {
@@ -795,7 +795,8 @@
     "iam": {
       "actions": [
         "iam:ChangePassword",
-        "iam:GetInstanceProfile"
+        "iam:GetInstanceProfile",
+        "iam:PassRole"
       ],
       "conditional": true,
       "deployableTypes": [
@@ -2312,10 +2313,11 @@
         "ec2"
       ],
       "stackProbes": [
+        "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 2,
+      "templateUses": 3,
       "verdict": "ok"
     },
     "AWS::EC2::InternetGateway": {
@@ -3046,10 +3048,11 @@
       ],
       "stackProbes": [
         "cfn-structural-reads",
+        "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 3,
+      "templateUses": 4,
       "verdict": "ok"
     },
     "AWS::IAM::ManagedPolicy": {
@@ -3119,11 +3122,12 @@
         "cfn-cfnresponse",
         "cfn-lambda-zip",
         "cfn-structural-reads",
+        "iam-passedtoservice",
         "lambda-timeout",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 9,
+      "templateUses": 10,
       "verdict": "ok"
     },
     "AWS::IAM::User": {
@@ -3241,10 +3245,11 @@
         "cfn-cfnresponse",
         "cfn-customresource",
         "cfn-lambda-zip",
+        "iam-passedtoservice",
         "lambda-timeout"
       ],
       "status": "supported",
-      "templateUses": 13,
+      "templateUses": 14,
       "verdict": "ok"
     },
     "AWS::Lambda::Permission": {

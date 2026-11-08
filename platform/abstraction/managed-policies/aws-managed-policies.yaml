@@ -1516,6 +1516,16 @@ spec:
         resources:
           - '*'
       - actions:
+          - iam:PassRole
+        effect: Allow
+        keyConditions:
+          - ifExists: false
+            key: passedToService
+            op: ==
+            value: lambda.amazonaws.com
+        resources:
+          - '*'
+      - actions:
           - logs:DescribeLogStreams
           - logs:GetLogEvents
           - logs:FilterLogEvents

@@ -93,6 +93,18 @@ func TestSupportedConditionKeysMatchRequestContext(t *testing.T) {
 	for k := range requestContext(claims, req) {
 		populated[k] = true
 	}
+	// iam:PassedToService is set on an iam:PassRole decision alone, as AWS sets it: present there, absent
+	// from every other action's context, even one whose ctx names a service.
+	passCtx := withPassedToService(context.Background(), "lambda.amazonaws.com")
+	for k, v := range passRoleContext(passCtx, "iam:PassRole", requestContext(claims, req)) {
+		populated[k] = true
+		if k == "passedToService" && v != "lambda.amazonaws.com" {
+			t.Errorf("passedToService = %v", v)
+		}
+	}
+	if _, set := passRoleContext(passCtx, "lambda:CreateFunction", requestContext(claims, req))["passedToService"]; set {
+		t.Error("passedToService must be set on an iam:PassRole decision only")
+	}
 	// A long-term access key (no MFA context) carries every key but the Optional ones — those AWS leaves out
 	// of such a request on purpose (aws:MultiFactorAuth*): a Deny gated on any other key must always see it.
 	longTerm := requestContext(iam.Claims{Sub: "alice"}, req)

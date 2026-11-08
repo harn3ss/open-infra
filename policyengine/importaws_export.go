@@ -237,6 +237,13 @@ func awsKeyOp(c KeyCondition) string {
 		}
 		return "Bool" + suffix
 	}
+	if c.kind() == "string" {
+		op := map[string]string{"==": "StringEquals", "!=": "StringNotEquals", "like": "StringLike", "!like": "StringNotLike"}[c.Op]
+		if op == "" {
+			return ""
+		}
+		return op + suffix
+	}
 	for op, cmp := range numericOps {
 		if cmp == c.Op {
 			return op + suffix

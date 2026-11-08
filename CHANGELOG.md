@@ -6,6 +6,26 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — `iam:PassedToService`, so AWS's service FullAccess policies pass roles to their own service (#403)
+- **A PassRole limited to a service passes roles to that service alone, as on AWS.** For example,
+  `AWSLambda_FullAccess` passes roles to `lambda.amazonaws.com` only.
+  - **Before:** such a statement was dropped. Its holder needed a hand-written PassRole policy to give a
+    function an execution role.
+  - **Now:** it works from the Lambda API, CloudFormation and the console. The same holder still cannot
+    give a role to a VM.
+  - **Each pass names its service:** a function → `lambda.amazonaws.com`, an application →
+    `ecs-tasks.amazonaws.com`, a VM → `ec2.amazonaws.com`, a state machine → `states.amazonaws.com`.
+  - The IAM compiler compiles such a grant into the service's own verb, `passrole:<service>`, which that
+    service's pass-role admission check accepts beside `passrole`.
+- **`iam:AWSServiceName` is recorded as not applicable:** no front door serves `CreateServiceLinkedRole`.
+
+### Fixed — an Allow that needs MFA no longer reaches the control plane without it
+- The IAM compiler now treats an MFA condition as a condition: such an Allow is dropped from the compiled
+  control-plane grants, and such a Deny applies always.
+  - **Before:** it compiled an Allow conditioned on `aws:MultiFactorAuthPresent` into an unconditional
+    grant, so a CloudFormation stack or console write made as the caller could act without MFA.
+  - No policy in use carried such a condition.
+
 ### Added — custom resources respond to their ResponseURL, and inline handlers get cfn-response (#404)
 - **A Lambda-backed custom resource's event carries a `ResponseURL`, as on AWS,** and the deploy takes
   the response the handler PUTs there. The URL is a one-time URL on the aws-shim.

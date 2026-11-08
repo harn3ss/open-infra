@@ -520,6 +520,48 @@ func TestCompile_PassRoleIsThePassroleVerb(t *testing.T) {
 	}
 }
 
+// iam:PassRole limited by iam:PassedToService (AWSLambda_FullAccess's "PassRole where PassedToService is
+// lambda.amazonaws.com") compiles to the service's own verb: it passes a role to Lambda (passrole:lambda…)
+// and to no other service, and is not the any-service passrole. A Deny limited to one service holds on that
+// service, and on passrole too (the any-service verb would otherwise carry the pass past it).
+func TestCompile_PassedToServiceIsAPerServiceVerb(t *testing.T) {
+	lambdaOnly := `{"Statement":[{"Effect":"Allow","Action":"iam:PassRole","Resource":"*","Condition":{"StringEquals":{"iam:PassedToService":"lambda.amazonaws.com"}}}]}`
+	notToEC2 := `{"Statement":[{"Effect":"Allow","Action":"iam:PassRole","Resource":"*"},
+		{"Effect":"Deny","Action":"iam:PassRole","Resource":"*","Condition":{"StringEquals":{"iam:PassedToService":"ec2.amazonaws.com"}}}]}`
+	out := Compile(Input{
+		World: world([]iamauthz.Policy{doc(t, "LambdaOnly", lambdaOnly), doc(t, "NotToEC2", notToEC2)},
+			map[string][]string{"User::lam": {"LambdaOnly"}, "User::noec2": {"NotToEC2"}}),
+		Principals: []Principal{
+			{Kind: "User", Namespace: "open-infra-console", Name: "lam"},
+			{Kind: "User", Namespace: "open-infra-console", Name: "noec2"},
+		},
+	})
+	chk := corpusChecker(t, out)
+	for _, c := range []struct {
+		user, verb string
+		want       bool
+	}{
+		{"lam", "passrole:lambda.amazonaws.com", true},
+		{"lam", "passrole", false},
+		{"lam", "passrole:ec2.amazonaws.com", false},
+		{"lam", "passrole:states.amazonaws.com", false},
+		{"noec2", "passrole:lambda.amazonaws.com", true},
+		{"noec2", "passrole:ecs-tasks.amazonaws.com", true},
+		{"noec2", "passrole:ec2.amazonaws.com", false},
+		{"noec2", "passrole", false},
+	} {
+		if got := can(chk, "openinfra:000000000000:"+c.user, c.verb, "iam.openinfra.dev", "roles", "default", "exec"); got != c.want {
+			t.Errorf("%s %s: %v, want %v", c.user, c.verb, got, c.want)
+		}
+	}
+	if !rbacAllows(out, "openinfra:000000000000:lam", "passrole:lambda.amazonaws.com", "iam.openinfra.dev", "roles", "default", "exec") {
+		t.Error("the per-service verb is in the generated RBAC")
+	}
+	if rbacAllows(out, "openinfra:000000000000:lam", "passrole", "iam.openinfra.dev", "roles", "default", "exec") {
+		t.Error("a Lambda-only PassRole must not be the any-service verb in RBAC")
+	}
+}
+
 // An approved kind: Grant compiles as an attachment of its policies for its window: the corpus and the
 // generated RBAC carry them for the user (or each member of the group) while it is open, the report
 // names the grant, and a pass after the window compiles the principal back to what it holds without it.

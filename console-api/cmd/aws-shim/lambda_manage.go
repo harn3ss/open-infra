@@ -602,7 +602,7 @@ func (h *lambdaHandler) passExecutionRole(r *http.Request, claims iam.Claims, ns
 		return &lambdaErr{http.StatusForbidden, "AccessDeniedException", "Cross-account pass role is not allowed."}
 	}
 	name := roleNameOf(role)
-	if ok, _ := callerMayPassRole(ctx, h.cs, h.authz, claims, ns, name, r); !ok {
+	if ok, _ := callerMayPassRole(ctx, h.cs, h.authz, claims, ns, name, lambdaService, r); !ok {
 		return &lambdaErr{http.StatusForbidden, "AccessDeniedException",
 			notAuthorized(principalOf(ctx, claims), "iam:PassRole", role, "")}
 	}

@@ -195,6 +195,25 @@ type rset struct {
 	globs map[string]bool
 }
 
+// sameRset reports whether two sets cover the same names.
+func sameRset(a, b rset) bool {
+	if a.all || b.all {
+		return a.all == b.all
+	}
+	eq := func(x, y map[string]bool) bool {
+		if len(x) != len(y) {
+			return false
+		}
+		for k := range x {
+			if !y[k] {
+				return false
+			}
+		}
+		return true
+	}
+	return eq(a.names, b.names) && eq(a.globs, b.globs)
+}
+
 func (s *rset) addName(n string) {
 	if s.names == nil {
 		s.names = map[string]bool{}
@@ -487,15 +506,24 @@ func compilePrincipal(in Input, accts map[string][]string, p Principal) principa
 		allow, deny rset
 		rbacOK      bool // RBAC may carry the allow (no Deny, NotResource exception or name glob in the way)
 	}
+	// decideFor decides action for one service a role is passed to (iam:PassedToService; "" for every other
+	// decision, and for a PassRole to no particular service).
+	var decideFor func(kc kindCtx, action string, mode verbMode, label, service string) decision
 	decide := func(kc kindCtx, action string, mode verbMode, label string) decision {
+		return decideFor(kc, action, mode, label, "")
+	}
+	decideFor = func(kc kindCtx, action string, mode verbMode, label, service string) decision {
 		var allow, except, deny rset
 		for _, st := range stmts {
 			if !statementActs(st, action) {
 				continue
 			}
-			ok, conditional := conditionScope(st, account)
+			ok, conditional := conditionScopeFor(st, account, service)
 			if !ok {
 				continue
+			}
+			if conditional && service == "" && action == "iam:PassRole" && st.Effect == policyengine.Allow && onlyPassedToService(st) {
+				continue // an Allow compiled per service below, where its condition is known (a Deny still applies here)
 			}
 			c := kc.coverFor(st, mode)
 			if st.Effect == policyengine.Deny {
@@ -531,7 +559,7 @@ func compilePrincipal(in Input, accts map[string][]string, p Principal) principa
 				if !statementActs(st, action) {
 					continue
 				}
-				ok, conditional := conditionScope(st, account)
+				ok, conditional := conditionScopeFor(st, account, service)
 				if !ok {
 					continue
 				}
@@ -738,6 +766,43 @@ func compilePrincipal(in Input, accts map[string][]string, p Principal) principa
 				rule.ResourceNames = sortedKeys(d.allow.names)
 			}
 			nsRules = append(nsRules, rule)
+		}
+		// A PassRole limited by iam:PassedToService passes a role to that service alone: compiled into the
+		// service's own verb (passrole:<service>), which the service's admission policy accepts beside
+		// passrole. Only where it adds to the grant above; a Deny on the service holds on its verb too.
+		if !d.allow.all || !d.deny.empty() {
+			for _, svc := range passRoleServices {
+				ds := decideFor(kc, "iam:PassRole", modeNamed, "Role", svc)
+				if ds.allow.empty() || (sameRset(ds.allow, d.allow) && sameRset(ds.deny, d.deny)) {
+					continue
+				}
+				verb := []string{passRoleVerbFor(svc)}
+				rep.Allows++
+				if ds.allow.all {
+					addCedar(policyengine.Allow, verb, ids(t, "*")...)
+				} else {
+					for _, n := range append(sortedKeys(ds.allow.names), sortedKeys(ds.allow.globs)...) {
+						addCedar(policyengine.Allow, verb, ids(t, n)...)
+					}
+				}
+				if !ds.deny.empty() {
+					rep.Denies++
+					if ds.deny.all {
+						addCedar(policyengine.Deny, verb, ids(t, "*")...)
+					} else {
+						for _, n := range append(sortedKeys(ds.deny.names), sortedKeys(ds.deny.globs)...) {
+							addCedar(policyengine.Deny, verb, denyIDs(t, n)...)
+						}
+					}
+				}
+				if ds.rbacOK && len(ds.allow.globs) == 0 {
+					rule := rbacv1.PolicyRule{APIGroups: []string{t.group}, Resources: []string{t.resource}, Verbs: verb}
+					if !ds.allow.all {
+						rule.ResourceNames = sortedKeys(ds.allow.names)
+					}
+					nsRules = append(nsRules, rule)
+				}
+			}
 		}
 	}
 	for _, or := range operatorResources {

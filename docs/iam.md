@@ -234,8 +234,9 @@ AWS's evaluation logic:
 
 **Conditions** supported: `aws:SourceIp` (`IpAddress` / `NotIpAddress`), string conditions such as
 `aws:username` (`StringEquals`, `StringLike` and their negations), `aws:CurrentTime` windows
-(`DateGreaterThan` / `DateLessThan`), and MFA: `aws:MultiFactorAuthPresent` (`Bool`, `BoolIfExists`,
-`Null`) and `aws:MultiFactorAuthAge` (the `Numeric` operators and their `IfExists` forms), with AWS's
+(`DateGreaterThan` / `DateLessThan`), MFA: `aws:MultiFactorAuthPresent` (`Bool`, `BoolIfExists`,
+`Null`) and `aws:MultiFactorAuthAge` (the `Numeric` operators and their `IfExists` forms), and
+`iam:PassedToService` on `iam:PassRole` ([Passing a role](#passing-a-role-iampassrole)), with AWS's
 rules for a key a request does not carry (see [Multi-factor authentication](#multi-factor-authentication-mfa)).
 Condition key names are not case-sensitive, as on AWS. A statement whose condition the platform cannot
 evaluate is never read more broadly than written: an `Allow` with it grants nothing, and a `Deny` with
@@ -351,6 +352,25 @@ only once someone grants `iam:PassRole` on that role:
 {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "iam:PassRole",
   "Resource": "arn:aws:iam::<account>:role/deployer"}]}
 ```
+
+**`iam:PassedToService`** limits a pass to the service the role is passed to, as on AWS. Each pass names
+its service:
+
+| Resource | The role is passed to |
+|---|---|
+| a function's execution role | `lambda.amazonaws.com` |
+| an application's task role | `ecs-tasks.amazonaws.com` |
+| a VM's instance role | `ec2.amazonaws.com` |
+| a state machine's role | `states.amazonaws.com` |
+
+So `AWSLambda_FullAccess`, whose PassRole is limited to `lambda.amazonaws.com`, lets its holder give a
+function an execution role from the Lambda API, CloudFormation or the console, and not give a role to
+a VM. `StringEquals`, `StringNotEquals`, `StringLike`, `StringNotLike`, their `IfExists` forms and `Null`
+are honoured; a multi-valued list of services is not yet, so such a statement grants nothing.
+
+`iam:AWSServiceName` (the service a `CreateServiceLinkedRole` is for) is not applicable: service-linked
+roles are the platform's own, and no front door serves `CreateServiceLinkedRole`. A statement conditioned
+on it grants nothing.
 
 ## Accounts and Organizations
 

@@ -22,7 +22,7 @@ func deniedByDataPlane(ctx context.Context, authz *dataplaneauthz.Checker, claim
 		return !ok, reason
 	}
 	allowed, governed, reason := authz.Authorize(ctx, claims.PrincipalType(), claims.PrincipalID(), claims.Groups,
-		action, resType, resID, requestContext(claims, r))
+		action, resType, resID, passRoleContext(ctx, action, requestContext(claims, r)))
 	if governed && !allowed {
 		return true, reason
 	}
@@ -67,14 +67,14 @@ func dataPlaneVerdict(ctx context.Context, authz *dataplaneauthz.Checker, claims
 		// Resource "*", for an explicit Deny only: a Deny of the action on every resource holds, while a
 		// governed User keeps the additive model (a missing grant on "*" denies nothing it did not before).
 		d := authz.Decide(ctx, claims.PrincipalType(), claims.PrincipalID(), claims.Groups,
-			action, resType, anyResource, requestContext(claims, r))
+			action, resType, anyResource, passRoleContext(ctx, action, requestContext(claims, r)))
 		if d.Governed && !d.Allowed && d.ExplicitDeny {
 			return true, true, d.Reason
 		}
 		return false, false, ""
 	}
 	d := authz.Decide(ctx, claims.PrincipalType(), claims.PrincipalID(), claims.Groups,
-		action, resType, resID, requestContext(claims, r))
+		action, resType, resID, passRoleContext(ctx, action, requestContext(claims, r)))
 	if claims.AssumedRole != "" {
 		// Closed, as allowedForAssumedRole.
 		if d.Governed && d.Allowed {
@@ -101,7 +101,7 @@ func dataPlaneVerdict(ctx context.Context, authz *dataplaneauthz.Checker, claims
 func allowedForAssumedRole(ctx context.Context, authz *dataplaneauthz.Checker, claims iam.Claims,
 	action, resType, resID string, r *http.Request) (bool, string) {
 	allowed, governed, reason := authz.Authorize(ctx, "Role", claims.PrincipalID(), claims.Groups,
-		action, resType, resID, requestContext(claims, r))
+		action, resType, resID, passRoleContext(ctx, action, requestContext(claims, r)))
 	if governed && allowed {
 		return true, ""
 	}

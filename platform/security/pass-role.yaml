@@ -6,7 +6,11 @@
 # The permission is IAM policy, as on AWS: iam:PassRole on the role's ARN. AdministratorAccess includes it;
 # PowerUserAccess does not, as AWS's excludes it; any policy may allow it on chosen roles. The IAM compiler
 # compiles it into the custom RBAC verb `passrole` on roles.iam.openinfra.dev for exactly the roles the
-# policy allows, which the admission policies below check. Platform ServiceAccounts that pass roles on a
+# policy allows, which the admission policies below check. A grant limited by iam:PassedToService (as
+# AWSLambda_FullAccess passes roles to lambda.amazonaws.com only) compiles into that service's own verb,
+# `passrole:<service>`, and each check below accepts passrole or its own service's verb: a Function's
+# role is passed to lambda.amazonaws.com, an Application's to ecs-tasks.amazonaws.com, a VirtualMachine's
+# (and the instance-role annotation) to ec2.amazonaws.com. Platform ServiceAccounts that pass roles on a
 # user's behalf hold the verb through ClusterRole openinfra-pass-role.
 #
 # Where it is checked:
@@ -81,7 +85,9 @@ spec:
   validations:
     - expression: >-
         authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
-        .name(object.spec.instanceRole).check('passrole').allowed()
+        .name(object.spec.instanceRole).check('passrole').allowed() ||
+        authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
+        .name(object.spec.instanceRole).check('passrole:ec2.amazonaws.com').allowed()
       reason: Forbidden
       messageExpression: >-
         'iam:PassRole denied: ' + request.userInfo.username + ' may not pass Role ' + request.namespace +
@@ -115,7 +121,9 @@ spec:
   validations:
     - expression: >-
         authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
-        .name(variables.role).check('passrole').allowed()
+        .name(variables.role).check('passrole').allowed() ||
+        authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
+        .name(variables.role).check('passrole:lambda.amazonaws.com').allowed()
       reason: Forbidden
       messageExpression: >-
         'iam:PassRole denied: ' + request.userInfo.username + ' may not pass Role ' + object.spec.role +
@@ -149,7 +157,9 @@ spec:
   validations:
     - expression: >-
         authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
-        .name(variables.role).check('passrole').allowed()
+        .name(variables.role).check('passrole').allowed() ||
+        authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
+        .name(variables.role).check('passrole:ecs-tasks.amazonaws.com').allowed()
       reason: Forbidden
       messageExpression: >-
         'iam:PassRole denied: ' + request.userInfo.username + ' may not pass Role ' + object.spec.assumeRole +
@@ -178,7 +188,9 @@ spec:
   validations:
     - expression: >-
         authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
-        .name(object.metadata.annotations['openinfra.dev/instance-role']).check('passrole').allowed()
+        .name(object.metadata.annotations['openinfra.dev/instance-role']).check('passrole').allowed() ||
+        authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
+        .name(object.metadata.annotations['openinfra.dev/instance-role']).check('passrole:ec2.amazonaws.com').allowed()
       reason: Forbidden
       messageExpression: >-
         'iam:PassRole denied: ' + request.userInfo.username + ' may not bind Role ' + request.namespace + '/' +

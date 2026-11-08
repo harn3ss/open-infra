@@ -99,9 +99,11 @@ an unrecognizable ARN, a statement with no mappable `Resource`, and any `Conditi
 supported set — `aws:SourceIp` (IpAddress/NotIpAddress), `aws:username` (StringEquals, StringLike/NotLike
 `*`-wildcard), `aws:CurrentTime` (Date{Greater,Less}Than[Equals]), the authenticated-principal flag, and
 MFA: `aws:MultiFactorAuthPresent` (Bool, BoolIfExists, Null) and `aws:MultiFactorAuthAge` (Numeric* and
-their IfExists forms, integers). A supported condition is **populated on every request and sanitised** so a
+their IfExists forms, integers), and `iam:PassedToService` (String{,Not}Equals, String{,Not}Like, their
+IfExists forms, Null), set on an `iam:PassRole` decision alone. A supported condition is **populated on every request and sanitised** so a
 key that is absent or malformed makes a gated `Deny` fail *closed* (deny), never silently vanish. The MFA
-keys are the exception AWS makes: a long-term access key carries neither, on purpose, so their conditions
+keys and `iam:PassedToService` are the exception AWS makes: a long-term access key carries no MFA key, and
+only a PassRole request carries the service, on purpose, so their conditions
 (`keyConditions`) evaluate an absent key as AWS does — a plain operator does not match it, an `IfExists`
 or negated one does, `Null` tests it — and a present key of the wrong type denies the request outright.
 An unsupported key or operator, or a multi-valued condition, is refused wholesale rather than guessed (a

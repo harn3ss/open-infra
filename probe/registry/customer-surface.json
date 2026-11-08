@@ -6661,133 +6661,133 @@
   },
   "services": {
     "acm": {
-      "actions": 3,
+      "actions": 4,
       "class": "aws",
       "operations": 3,
       "service": "ACM",
       "tier": "proven"
     },
     "apigateway": {
-      "actions": 1,
+      "actions": 2,
       "class": "aws",
       "operations": 40,
       "service": "API Gateway",
       "tier": "proven"
     },
     "appsync": {
-      "actions": 2,
+      "actions": 3,
       "class": "aws",
       "operations": 14,
       "service": "AppSync",
       "tier": "proven"
     },
     "athena": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 28,
       "service": "Athena",
       "tier": "proven"
     },
     "cloudformation": {
-      "actions": 8,
+      "actions": 9,
       "class": "aws",
       "operations": 24,
       "service": "CloudFormation",
       "tier": "proven"
     },
     "cloudfront": {
-      "actions": 1,
+      "actions": 2,
       "class": "aws",
       "operations": 11,
       "service": "CloudFront",
       "tier": "proven"
     },
     "cognito-idp": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 20,
       "service": "Cognito",
       "tier": "proven"
     },
     "dynamodb": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 19,
       "service": "DynamoDB",
       "tier": "proven"
     },
     "dynamodbstreams": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 4,
       "service": "DynamoDB",
       "tier": "proven"
     },
     "ec2": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 22,
       "service": "EC2",
       "tier": "proven"
     },
     "ecr": {
-      "actions": 8,
+      "actions": 9,
       "class": "aws",
       "operations": 37,
       "service": "ECR",
       "tier": "proven"
     },
     "ecs": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 13,
       "service": "ECS",
       "tier": "proven"
     },
     "eks": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 4,
       "service": "EKS",
       "tier": "proven"
     },
     "email": {
-      "actions": 5,
+      "actions": 6,
       "class": "aws",
       "operations": 12,
       "service": "SES",
       "tier": "proven"
     },
     "events": {
-      "actions": 2,
+      "actions": 3,
       "class": "aws",
       "operations": 14,
       "service": "EventBridge",
       "tier": "proven"
     },
     "glue": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 32,
       "service": "Glue",
       "tier": "proven"
     },
     "iam": {
-      "actions": 3,
+      "actions": 4,
       "class": "aws",
       "operations": 77,
       "service": "IAM",
       "tier": "proven"
     },
     "kinesis": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 12,
       "service": "Kinesis Data Streams",
       "tier": "proven"
     },
     "kms": {
-      "actions": 5,
+      "actions": 6,
       "class": "aws",
       "operations": 23,
       "service": "KMS",
@@ -6801,28 +6801,28 @@
       "tier": "proven"
     },
     "logs": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 12,
       "service": "CloudWatch Logs",
       "tier": "proven"
     },
     "monitoring": {
-      "actions": 5,
+      "actions": 6,
       "class": "aws",
       "operations": 8,
       "service": "CloudWatch",
       "tier": "proven"
     },
     "organizations": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 7,
       "service": "Organizations",
       "tier": "proven"
     },
     "rds": {
-      "actions": 1,
+      "actions": 2,
       "class": "aws",
       "operations": 8,
       "service": "RDS",
@@ -6836,42 +6836,42 @@
       "tier": "proven"
     },
     "secretsmanager": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 13,
       "service": "Secrets Manager",
       "tier": "proven"
     },
     "servicequotas": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 9,
       "service": "Service Quotas",
       "tier": "proven"
     },
     "ses": {
-      "actions": 5,
+      "actions": 6,
       "class": "aws",
       "operations": 12,
       "service": "SES",
       "tier": "proven"
     },
     "sns": {
-      "actions": 2,
+      "actions": 3,
       "class": "aws",
       "operations": 27,
       "service": "SNS",
       "tier": "proven"
     },
     "sqs": {
-      "actions": 1,
+      "actions": 2,
       "class": "aws",
       "operations": 14,
       "service": "SQS",
       "tier": "proven"
     },
     "ssm": {
-      "actions": 8,
+      "actions": 9,
       "class": "aws",
       "operations": 17,
       "service": "SSM",
@@ -6885,7 +6885,7 @@
       "tier": "proven"
     },
     "sts": {
-      "actions": 1,
+      "actions": 2,
       "class": "aws",
       "operations": 4,
       "service": "STS",
