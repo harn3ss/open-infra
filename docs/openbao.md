@@ -162,9 +162,54 @@ cluster whose keys were never displayed.
 | a key created, then used at once, through a standby | reported missing when the calls came back to back; found after 50 ms, and always found through the active member |
 | a wrong CA fingerprint in `config.yaml` | refused by `install.sh`, nothing changed |
 
+## Moving the keys from Vault
+
+An install that ran the `encryption` component has its keys in a single HashiCorp Vault. They move to
+OpenBao once, by copying Vault's storage, so every key, version and ciphertext stays as it is: Vault's
+Transit keys are not exportable, and re-encrypting would put customer data through the move.
+[`scripts/vault-to-openbao.sh`](../scripts/vault-to-openbao.sh) does it from a temporary pod.
+
+**What it needs from the operator:** Vault's root token and three of its unseal keys (piped from wherever
+they are kept, never typed where they show), and the root token OpenBao's initialization printed.
+
+**Expect** the keys to be unavailable for a few minutes: from the moment Vault is sealed until the clients
+use OpenBao, KMS, Secrets Manager, Parameter Store secure values, and creating keys or encrypted volumes
+fail. Existing encrypted volumes and running applications are not affected.
+
+1. **Prepare** (no credentials, changes nothing): `scripts/vault-to-openbao.sh prepare` creates the
+   `openbao-move` pod and checks the tools, Vault, a dry copy of its storage, OpenBao's members, the TLS
+   path and the unseal host.
+2. **Run** the move, in your own terminal, from the directory that holds the credentials file:
+
+   ```sh
+   { grep -E '^(export )?VAULT_(ROOT_TOKEN|UNSEAL_KEY_[123])=' .env
+     read -rsp "OpenBao root token (hidden): " t </dev/tty; echo >&2; printf 'OPENBAO_ROOT_TOKEN=%s\n' "$t"; unset t
+   } | kubectl -n openbao exec -i openbao-move -c move -- python3 /cfg/move.py run
+   ```
+
+   It seals Vault, copies its storage, converts it with Vault's own `vault operator migrate`, opens the copy
+   in a temporary OpenBao, moves its seal to the unseal host's key, replaces the recovery keys with three
+   new ones (proving two of them work), checks every key version round-trips, force-restores the copy into
+   the cluster, restarts the members, checks every key version again, and revokes the root tokens the copy
+   carried. If a step fails before the clients switch, it unseals Vault again: nothing has moved.
+3. **Switch the clients:** merge the change that points them at `openbao-active` (VAULT_ADDR, VAULT_CACERT,
+   the `openbao-client` label), let it sync, then `scripts/vault-to-openbao.sh kes` for KES's config.
+4. **Finish**, in your own terminal:
+   `kubectl -n openbao exec -it openbao-move -c move -- python3 /cfg/move.py finish` shows the new recovery
+   keys once, waits until you confirm they are stored, and revokes the temporary root token. OpenBao then
+   has no root token.
+5. **Clean up:** `scripts/vault-to-openbao.sh cleanup`. Vault stays sealed with the keys' last copy until it
+   is retired; then delete its volume and the credentials it no longer needs.
+
+**Rollback:** before the clients switch, unseal Vault (the run does this itself when it stops). After, revert
+the switch and unseal Vault with its keys; anything created in OpenBao since is not in Vault.
+
+The procedure was rehearsed on synthetic data end to end (both failure paths included: a refused token
+stops it before Vault is touched, and a failed copy unseals Vault again at once), and the copy itself was
+rehearsed on a restored backup of real data: every Transit key version round-tripped.
+
 ## What it does not do yet
 
-It holds no keys. KMS, Secrets Manager, STS, `kind: EncryptionKey` and the private CAs still run on
-Vault. Moving them is the next part of #359, in steps the operator approves one at a time, each announced
-with a rollback: the keys themselves, the PKI intermediates and the cert-manager issuer, instance-identity
-signing, and encryption of Kubernetes Secrets at rest.
+The PKI intermediates and the cert-manager issuer, instance-identity signing, and encryption of Kubernetes
+Secrets at rest are the remaining parts of #359, in steps the operator approves one at a time, each
+announced with a rollback.
