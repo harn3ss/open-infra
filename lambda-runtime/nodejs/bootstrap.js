@@ -459,11 +459,15 @@ function clientContext(headers) {
   }
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function lambdaContext(headers = {}) {
   const deadline = Date.now() + parseInt(process.env.OPENINFRA_TIMEOUT_S || "300", 10) * 1000;
   const version = String(headers["x-openinfra-function-version"] || "");
+  const requestId = String(headers["x-openinfra-request-id"] || "");
   return {
-    awsRequestId: randomUUID(),
+    // The invoke's own request ID (the aws-shim's x-amzn-RequestId), as on Lambda; else a fresh one.
+    awsRequestId: UUID_RE.test(requestId) ? requestId : randomUUID(),
     functionName: FN_NAME,
     functionVersion: /^(\$LATEST|[1-9][0-9]{0,8})$/.test(version) ? version : "$LATEST",
     memoryLimitInMB: String(parseInt(process.env.OPENINFRA_MEMORY_MB || "0", 10) || 128),
@@ -478,6 +482,64 @@ function lambdaContext(headers = {}) {
     callbackWaitsForEmptyEventLoop: true,
     getRemainingTimeInMillis: () => Math.max(0, deadline - Date.now()),
   };
+}
+
+// --- The invocation's log tail (#407): Invoke with LogType Tail answers the last 4 KB of what that
+// invocation printed, between Lambda's START, END and REPORT lines, in X-Amz-Log-Result. Whatever is written
+// to stdout or stderr in the invocation's own async context is kept for it, so concurrent invocations
+// never share output; everything still reaches the process's own streams. AsyncLocalStorage is Node
+// 12.17+: on an older Node the tail has the START, END and REPORT lines only.
+const TAIL_BYTES = 4096;
+const LOG_CAPTURE = (() => {
+  try {
+    return new (require("async_hooks").AsyncLocalStorage)();
+  } catch (_e) {
+    return null;
+  }
+})();
+
+class LogCapture {
+  constructor() {
+    this.chunks = [];
+    this.size = 0;
+    this.start = process.hrtime();
+  }
+  add(chunk, encoding) {
+    const b = Buffer.isBuffer(chunk) ? chunk : typeof chunk === "string" ? Buffer.from(chunk, encoding || "utf8") : Buffer.from(chunk);
+    this.chunks.push(b);
+    this.size += b.length;
+    while (this.chunks.length > 1 && this.size - this.chunks[0].length >= TAIL_BYTES) this.size -= this.chunks.shift().length;
+  }
+  // tail is X-Amz-Log-Result: base64 of the last 4 KB of START, the output, END and REPORT.
+  tail(context) {
+    const d = process.hrtime(this.start);
+    const ms = d[0] * 1e3 + d[1] / 1e6;
+    let out = Buffer.concat(this.chunks).toString("utf8");
+    if (out && !out.endsWith("\n")) out += "\n";
+    const id = context.awsRequestId;
+    const used = Math.ceil(process.memoryUsage().rss / 1048576);
+    const log = `START RequestId: ${id} Version: ${context.functionVersion}\n${out}END RequestId: ${id}\n` +
+      `REPORT RequestId: ${id}\tDuration: ${ms.toFixed(2)} ms\tBilled Duration: ${Math.ceil(ms)} ms\t` +
+      `Memory Size: ${context.memoryLimitInMB} MB\tMax Memory Used: ${used} MB\t\n`;
+    const b = Buffer.from(log, "utf8");
+    return b.slice(Math.max(0, b.length - TAIL_BYTES)).toString("base64");
+  }
+}
+
+if (LOG_CAPTURE) {
+  for (const stream of [process.stdout, process.stderr]) {
+    const write = stream.write.bind(stream);
+    stream.write = function (chunk, encoding, cb) {
+      const cap = LOG_CAPTURE.getStore();
+      if (cap) cap.add(chunk, typeof encoding === "string" ? encoding : "utf8");
+      return write(chunk, encoding, cb);
+    };
+  }
+}
+
+// withLogCapture runs fn in cap's async context (when the invocation asked for its tail).
+function withLogCapture(cap, fn) {
+  return cap && LOG_CAPTURE ? LOG_CAPTURE.run(cap, fn) : fn();
 }
 
 // invoke calls the handler supporting async (Promise-returning) and callback styles, and the legacy
@@ -549,10 +611,20 @@ function main() {
           event._http = { method: req.method, path: q[0], query: q[1] || "", headers: req.headers };
         }
         let result;
-        try {
-          result = await invoke(handler, event, lambdaContext(req.headers));
-        } catch (e) {
-          process.stderr.write("open-infra-runtime: handler raised:\n" + (e && e.stack ? e.stack : String(e)) + "\n");
+        const context = lambdaContext(req.headers);
+        const cap = direct && String(req.headers["x-amz-log-type"] || "") === "Tail" ? new LogCapture() : null;
+        let raised = null;
+        await withLogCapture(cap, async () => {
+          try {
+            result = await invoke(handler, event, context);
+          } catch (e) {
+            raised = { e };
+            process.stderr.write("open-infra-runtime: handler raised:\n" + (e && e.stack ? e.stack : String(e)) + "\n");
+          }
+        });
+        if (cap) res.setHeader("X-Amz-Log-Result", cap.tail(context));
+        if (raised) {
+          const e = raised.e;
           const errBody = JSON.stringify({ errorType: (e && e.name) || "Error", errorMessage: (e && e.message) || String(e) });
           if (direct) {
             const eb = Buffer.from(errBody);

@@ -6,6 +6,14 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — `aws lambda invoke --log-type Tail` (#407)
+- **A synchronous invoke with `LogType: Tail`** answers the invocation's log in `X-Amz-Log-Result`, which
+  the CLI prints as `LogResult`: the last 4 KB of Lambda's `START`, what the handler printed during that
+  invocation, `END` and `REPORT` lines.
+- **On the Node.js, Python and .NET runtimes** each invocation's output is its own, even when invocations
+  run at once. A function on its own image gets the `START`, `END` and `REPORT` lines only.
+- **The request ID** of an invoke is now a UUID, as Lambda's is, and the handler's `awsRequestId` is the same.
+
 ### Added — the `nodejs24.x` Lambda runtime
 - **CloudFormation, the Lambda API and `kind: Function`** (`spec.code.runtime: nodejs24`) accept
   `nodejs24.x`, Node.js 24, the current Node.js LTS and AWS Lambda's newest Node.js runtime.

@@ -44,6 +44,9 @@ static class Bootstrap
 
     static async Task<int> Main()
     {
+        // Every write to the console also reaches the current invocation's log tail, when it asked for one.
+        Console.SetOut(new TeeWriter(Console.Out));
+        Console.SetError(new TeeWriter(Console.Error));
         try
         {
             await FetchCodeAsync();
@@ -322,7 +325,7 @@ static class Bootstrap
         _target = _method.IsStatic ? null : Activator.CreateInstance(type);
     }
 
-    static async Task<object> InvokeAsync(string eventJson, System.Collections.Specialized.NameValueCollection headers)
+    static async Task<object> InvokeAsync(string eventJson, System.Collections.Specialized.NameValueCollection headers, string requestId)
     {
         var args = new object[_params.Length];
         // Bind by parameter TYPE, not position: AWS's .NET runtime accepts (), (TIn), (TIn, ctx) and
@@ -333,7 +336,7 @@ static class Bootstrap
         for (int i = 0; i < _params.Length; i++)
         {
             var pt = _params[i].ParameterType;
-            args[i] = IsLambdaContextType(pt) ? LambdaContextProxy.Create(pt, headers) : DeserializeEvent(eventJson, pt);
+            args[i] = IsLambdaContextType(pt) ? LambdaContextProxy.Create(pt, headers, requestId) : DeserializeEvent(eventJson, pt);
         }
         var result = _method.Invoke(_target, args);
         if (result is Task task)
@@ -389,16 +392,27 @@ static class Bootstrap
             bool direct = string.Equals(req.Headers["X-Openinfra-Invoke"], "direct", StringComparison.Ordinal);
             string eventJson = BuildEvent(body, req, direct);
             object result;
-            try { result = await InvokeAsync(eventJson, req.Headers); }
+            var requestId = LambdaContextProxy.RequestIdFrom(req.Headers);
+            var cap = direct && req.Headers["X-Amz-Log-Type"] == "Tail" ? new LogCapture() : null;
+            void AttachTail()
+            {
+                LogCapture.Current.Value = null;
+                if (cap != null)
+                    ctx.Response.Headers["X-Amz-Log-Result"] = cap.Tail(requestId, LambdaContextProxy.VersionFrom(req.Headers), LambdaContextProxy.MemoryMb());
+            }
+            LogCapture.Current.Value = cap;
+            try { result = await InvokeAsync(eventJson, req.Headers, requestId); }
             catch (Exception e)
             {
                 var inner = (e as TargetInvocationException)?.InnerException ?? e;
                 Console.Error.WriteLine("open-infra-runtime: handler raised:\n" + inner);
+                AttachTail();
                 var errJson = JsonSerializer.Serialize(new { errorType = inner.GetType().Name, errorMessage = inner.Message });
                 if (direct) Send(ctx, 200, errJson, "application/json", "Unhandled");
                 else Send(ctx, 502, errJson);
                 return;
             }
+            AttachTail();
             WriteResult(ctx, result, direct);
         }
         catch (Exception e)

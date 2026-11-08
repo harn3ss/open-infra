@@ -185,6 +185,11 @@ targets `kind: Function` over its Knative address. All three invocation types ar
     `aws lambda invoke --cli-read-timeout 0`.
   - **Past the timeout:** the invoke ends as Lambda ends it, with `X-Amz-Function-Error: Unhandled` and
     `{"errorType":"Sandbox.Timedout","errorMessage":"RequestId: … Error: Task timed out after N.NN seconds"}`.
+  - **`--log-type Tail`** answers the invocation's log in `LogResult`: the last 4 KB of Lambda's `START`,
+    what the handler printed during that invocation (stdout and stderr), `END` and `REPORT` lines. On the
+    managed runtimes the tail holds that invocation's output only, never another's. A function on its own
+    image (`spec.image`) gets the `START`, `END` and `REPORT` lines alone; its output is in its log group
+    (`aws logs tail /aws/lambda/<function>`). The request ID is a UUID, the handler's `awsRequestId`.
 - **`Event`** (asynchronous) — the shim enqueues the payload to a durable JetStream stream and returns
   `202` immediately. A background worker delivers it to the function and waits for the function's
   `timeout` too; while the function runs, the message is kept in progress, so it is never redelivered

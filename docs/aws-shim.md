@@ -553,7 +553,10 @@ the response, with Lambda's JSON error dialect and `X-Amz-Function-Error` semant
 is the same impersonated `SubjectAccessReview` (invoke → `create` on `functions` — invoking runs code,
 so it is a write, not a read). v1 supports `RequestResponse` (sync), `Event` (async — durably queued via
 JetStream with retries + a per-function DLQ), and `DryRun`; a qualifier (a published version or an alias)
-runs that version, synchronously or not (see **Versions and aliases** below). `probe/aws-shim-lambda.sh` proves it live (a real SDK `Invoke` of a deployed
+runs that version, synchronously or not (see **Versions and aliases** below). A synchronous invoke takes
+`LogType: Tail` (the invocation's log in `X-Amz-Log-Result`) and `ClientContext`, and the handler's context
+reports the request ID, the ARN it was invoked by and the version that runs
+([serverless.md](serverless.md#aws-lambda-invoke-via-the-aws-shim)). `probe/aws-shim-lambda.sh` proves it live (a real SDK `Invoke` of a deployed
 `kind: Function` round-trips).
 
 **Finding a function.** A function is named by its name, an ARN (`arn:aws:lambda:<region>:<account>:function:<name>[:<qualifier>]`)

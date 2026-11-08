@@ -39,6 +39,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import traceback
 import uuid
@@ -113,13 +114,18 @@ def _client_context(headers):
     return ClientContext(d) if isinstance(d, dict) else None
 
 
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
 class LambdaContext:
     """A minimal AWS Lambda context object (the fields handlers actually read)."""
 
     def __init__(self, headers=None):
         headers = headers or {}
         version = headers.get("X-Openinfra-Function-Version") or ""
-        self.aws_request_id = str(uuid.uuid4())
+        request_id = headers.get("X-Openinfra-Request-Id") or ""
+        # The invoke's own request ID (the aws-shim's x-amzn-RequestId), as on Lambda; else a fresh one.
+        self.aws_request_id = request_id if _UUID_RE.match(request_id) else str(uuid.uuid4())
         self.function_name = _FUNCTION_NAME
         self.function_version = version if _VERSION_RE.match(version) else "$LATEST"
         self.memory_limit_in_mb = int(os.environ.get("OPENINFRA_MEMORY_MB", "0")) or 128
@@ -133,6 +139,66 @@ class LambdaContext:
 
     def get_remaining_time_in_millis(self):
         return max(0, int((self._deadline - time.time()) * 1000))
+
+
+# --- The invocation's log tail (#407): Invoke with LogType Tail answers the last 4 KB of what that
+# invocation printed, between Lambda's START, END and REPORT lines, in X-Amz-Log-Result. Whatever the
+# invocation's thread writes to sys.stdout or sys.stderr is kept for it, so concurrent invocations never
+# share output; everything still reaches the process's own streams.
+_TAIL_BYTES = 4096
+_capture = threading.local()
+
+
+class _Tee:
+    """A stream that also keeps what the current thread's invocation writes, when it asked for its tail."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, data):
+        cap = getattr(_capture, "log", None)
+        if cap is not None:
+            cap.add(data)
+        return self._stream.write(data)
+
+    def flush(self):
+        return self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+class _LogCapture:
+    def __init__(self):
+        self.parts = []
+        self.size = 0
+        self.start = time.time()
+
+    def add(self, data):
+        b = data if isinstance(data, bytes) else str(data).encode("utf-8", "replace")
+        self.parts.append(b)
+        self.size += len(b)
+        while len(self.parts) > 1 and self.size - len(self.parts[0]) >= _TAIL_BYTES:
+            self.size -= len(self.parts.pop(0))
+
+    def tail(self, context):
+        ms = (time.time() - self.start) * 1000
+        out = b"".join(self.parts).decode("utf-8", "replace")
+        if out and not out.endswith("\n"):
+            out += "\n"
+        rid = context.aws_request_id
+        try:
+            import resource
+
+            used = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss + 1023) // 1024  # KiB on Linux
+        except Exception:
+            used = 0
+        log = (
+            "START RequestId: %s Version: %s\n%sEND RequestId: %s\n"
+            "REPORT RequestId: %s\tDuration: %.2f ms\tBilled Duration: %d ms\tMemory Size: %d MB\tMax Memory Used: %d MB\t\n"
+            % (rid, context.function_version, out, rid, rid, ms, -(-ms // 1), context.memory_limit_in_mb, used)
+        ).encode("utf-8")
+        return base64.b64encode(log[-_TAIL_BYTES:]).decode("ascii")
 
 
 OPT_DIR = os.environ.get("OPENINFRA_OPT_DIR", "/opt")  # Lambda layer root (AWS extracts layers here)
@@ -438,20 +504,31 @@ class Handler(BaseHTTPRequestHandler):
                 "query": q[1] if len(q) > 1 else "",
                 "headers": {k: v for k, v in self.headers.items()},
             }
+        context = LambdaContext(self.headers)
+        cap = _LogCapture() if direct and self.headers.get("X-Amz-Log-Type") == "Tail" else None
+        tail = {}
+        _capture.log = cap
         try:
-            result = HANDLER(event, LambdaContext(self.headers))
+            result = HANDLER(event, context)
         except Exception as e:
             sys.stderr.write("open-infra-runtime: handler raised:\n")
             traceback.print_exc()
             err = json.dumps({"errorType": type(e).__name__, "errorMessage": str(e)}).encode()
+            _capture.log = None
+            if cap is not None:
+                tail = {"X-Amz-Log-Result": cap.tail(context)}
             if direct:
-                self._send(200, err, extra_headers={"X-Amz-Function-Error": "Unhandled"})
+                self._send(200, err, extra_headers=dict(tail, **{"X-Amz-Function-Error": "Unhandled"}))
             else:
                 self._send(502, err)
             return
+        finally:
+            _capture.log = None
+        if cap is not None:
+            tail = {"X-Amz-Log-Result": cap.tail(context)}
         if direct:
             # The raw return value IS the payload — never an HTTP proxy mapping.
-            self._send(200, json.dumps(result).encode() if result is not None else b"null")
+            self._send(200, json.dumps(result).encode() if result is not None else b"null", extra_headers=tail)
             return
         # API-Gateway proxy shape -> use verbatim; else 200 + JSON.
         if isinstance(result, dict) and "statusCode" in result:
@@ -477,6 +554,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     global HANDLER
+    sys.stdout, sys.stderr = _Tee(sys.stdout), _Tee(sys.stderr)
     _fetch_code()
     _add_layer_paths()  # layer modules importable before the handler loads
     HANDLER = _load_handler()

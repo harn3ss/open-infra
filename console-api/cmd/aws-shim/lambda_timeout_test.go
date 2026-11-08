@@ -98,7 +98,8 @@ func TestLambda_InvokePastTheTimeoutIsTaskTimedOut(t *testing.T) {
 	var body map[string]string
 	_ = json.Unmarshal(w.Body.Bytes(), &body)
 	if w.Code != http.StatusOK || w.Header().Get("X-Amz-Function-Error") != "Unhandled" || body["errorType"] != "Sandbox.Timedout" ||
-		!strings.Contains(body["errorMessage"], "Task timed out after 1.00 seconds") || !strings.Contains(body["errorMessage"], "req-1") {
+		!strings.Contains(body["errorMessage"], "Task timed out after 1.00 seconds") ||
+		!strings.Contains(body["errorMessage"], "RequestId: "+w.Header().Get("x-amzn-RequestId")+" ") {
 		t.Fatalf("a timed-out invoke must be Lambda's timeout error: %d %q %s", w.Code, w.Header().Get("X-Amz-Function-Error"), w.Body.String())
 	}
 }

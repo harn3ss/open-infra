@@ -7,8 +7,11 @@
 #      while the update rolls out, as on Lambda); publishing again with nothing changed answers version 2;
 #   3. each version runs its own code and reports it (ExecutedVersion): <function> and :$LATEST the latest,
 #      :1 version 1, :2 version 2; a configuration change reaches $LATEST only (version 1 keeps its timeout);
-#   4. a weighted alias (version 1, half to version 2) runs both versions; get-alias and list-aliases answer
-#      it; an asynchronous (Event) invoke of the alias is accepted;
+#      the handler's context reports the ARN it was invoked by (with the qualifier) and the version that
+#      runs (#406); --log-type Tail answers the invocation's log (START with its request ID and version, what
+#      the handler printed, END, REPORT) in LogResult (#407);
+#   4. a weighted alias (version 1, half to version 2) runs both versions, each reporting the alias's ARN;
+#      get-alias and list-aliases answer it; an asynchronous (Event) invoke of the alias is accepted;
 #   5. refusals, as Lambda refuses: deleting a version an alias names (ResourceConflictException), an alias of
 #      a version the function lacks (ResourceNotFoundException), a weighted alias of $LATEST
 #      (InvalidParameterValueException);
@@ -97,12 +100,15 @@ role() {
 role "$EXEC" '{"Service":"lambda.amazonaws.com"}'
 EXEC_ARN="$("${A[@]}" iam get-role --role-name "$EXEC" --query Role.Arn --output text)"
 
-# mkzip <file> <version>: a Node.js package whose handler answers its version.
+# mkzip <file> <version>: a Node.js package whose handler prints a marker and answers its code's version and
+# what its context says.
 mkzip() {
   python3 - "$1" "$2" <<'PY'
 import sys, zipfile
+src = ("exports.handler = async (event, context) => { console.log('marker-v%s ' + context.awsRequestId); "
+       "return { v: %s, arn: context.invokedFunctionArn, fv: context.functionVersion }; };\n") % (sys.argv[2], sys.argv[2])
 with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
-    z.writestr("index.js", "exports.handler = async () => ({ v: %s });\n" % sys.argv[2])
+    z.writestr("index.js", src)
 PY
 }
 mkzip "$W/v1.zip" 1; mkzip "$W/v2.zip" 2
@@ -115,7 +121,7 @@ invoke() {
 # runs <qualified-name> <v> <executed>: wait (up to 3 min) until an invoke answers {"v": v}, ExecutedVersion executed.
 runs() {
   for _ in $(seq 1 36); do
-    if invoke "$1" && python3 -c "import json,sys;r=json.load(open('$W/out.json'));m=json.load(open('$W/meta.json'));sys.exit(0 if r=={'v':$2} and m.get('ExecutedVersion')=='$3' else 1)" 2>/dev/null; then
+    if invoke "$1" && python3 -c "import json,sys;r=json.load(open('$W/out.json'));m=json.load(open('$W/meta.json'));sys.exit(0 if r.get('v')==$2 and m.get('ExecutedVersion')=='$3' else 1)" 2>/dev/null; then
       return 0
     fi
     sleep 5
@@ -164,7 +170,25 @@ runs "$FN" 2 '$LATEST' || fail "the function does not run version 2's code as \$
 runs "$FN:\$LATEST" 2 '$LATEST' || fail ":\$LATEST: $(cat "$W/out.json") $(cat "$W/meta.json")"
 runs "$FN:1" 1 1 || fail ":1 does not run version 1: $(cat "$W/out.json") $(cat "$W/meta.json")"
 runs "$FN:2" 2 2 || fail ":2 does not run version 2: $(cat "$W/out.json") $(cat "$W/meta.json")"
-ok "unqualified and \$LATEST run the latest, :1 version 1, :2 version 2, each reported as ExecutedVersion"
+python3 - "$W/out.json" "$FN" <<'PY' || fail "the context of :2 does not report its ARN and version: $(cat "$W/out.json")"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["arn"].startswith("arn:aws:lambda:") and r["arn"].endswith(":function:%s:2" % sys.argv[2]) and r["fv"] == "2", r
+PY
+ok "unqualified and \$LATEST run the latest, :1 version 1, :2 version 2, each reported as ExecutedVersion; :2's context names <arn>:2 and version 2"
+"${A[@]}" lambda invoke --function-name "$FN:2" --log-type Tail --cli-binary-format raw-in-base64-out --payload '{}' \
+  "$W/out.json" >"$W/meta.json" 2>"$W/inv.err" || fail "invoke --log-type Tail failed: $(tail -c 300 "$W/inv.err")"
+python3 - "$W/meta.json" <<'PY' || fail "LogResult is not the invocation's log: $(cat "$W/meta.json")"
+import base64, json, sys
+m = json.load(open(sys.argv[1]))
+log = base64.b64decode(m["LogResult"]).decode()
+lines = log.splitlines()
+rid = lines[0].split("START RequestId: ", 1)[1].split(" ", 1)[0]
+assert lines[0] == "START RequestId: %s Version: 2" % rid, log
+assert any(l.endswith("marker-v2 " + rid) for l in lines), log  # what the handler printed, with its awsRequestId
+assert "END RequestId: " + rid in lines and lines[-1].startswith("REPORT RequestId: %s\tDuration: " % rid), log
+PY
+ok "--log-type Tail: LogResult holds START (request ID, version 2), the handler's marker, END and REPORT"
 "${A[@]}" lambda update-function-configuration --function-name "$FN" --timeout 45 >/dev/null 2>"$W/u3.err" \
   || fail "update-function-configuration failed: $(tail -c 300 "$W/u3.err")"
 [ "$("${A[@]}" lambda get-function-configuration --function-name "$FN" --query Timeout --output text)" = 45 ] || fail "\$LATEST's timeout did not change"
@@ -180,6 +204,8 @@ python3 -c "import json,sys;a=json.load(open('$W/alias.json'));sys.exit(0 if a['
 seen1=0; seen2=0
 for _ in $(seq 1 20); do
   invoke "$FN:live" || fail "invoking the alias failed: $(tail -c 300 "$W/inv.err")"
+  python3 -c "import json,sys;r=json.load(open('$W/out.json'));m=json.load(open('$W/meta.json'));sys.exit(0 if r['arn'].endswith(':live') and r['fv']==m['ExecutedVersion'] else 1)" \
+    || fail "the alias's context must report the alias's ARN and the version that ran: $(cat "$W/out.json") $(cat "$W/meta.json")"
   case "$(python3 -c "import json;print(json.load(open('$W/meta.json')).get('ExecutedVersion'))")" in
     1) seen1=$((seen1 + 1)) ;; 2) seen2=$((seen2 + 1)) ;; *) fail "the alias ran something else: $(cat "$W/meta.json")" ;;
   esac
@@ -234,4 +260,4 @@ if "${A[@]}" lambda get-function --function-name "$FN" --qualifier 2 >/dev/null 
 expect_error ResourceNotFoundException "$W/g2.err" "a deleted version must be ResourceNotFoundException"
 ok "the alias and version 2 deleted; the versions are \$LATEST and 1"
 
-printf '✓ PASS — Lambda versions and aliases: publish (on create and after an update, ResourceConflictException while it rolls out), each version runs its own code and reports it, a configuration change reaches $LATEST only, a weighted alias runs both versions, the refusals are Lambda'"'"'s, and publish-version and create-alias are denied without their permissions\n'
+printf '✓ PASS — Lambda versions and aliases: publish (on create and after an update, ResourceConflictException while it rolls out), each version runs its own code and reports it (ExecutedVersion, and the handler'"'"'s context: the invoked ARN and version), --log-type Tail answers the invocation'"'"'s log, a configuration change reaches $LATEST only, a weighted alias runs both versions, the refusals are Lambda'"'"'s, and publish-version and create-alias are denied without their permissions\n'

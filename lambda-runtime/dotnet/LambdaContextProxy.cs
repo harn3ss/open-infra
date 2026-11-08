@@ -25,6 +25,7 @@ public class LambdaContextProxy : DispatchProxy
     static readonly string FunctionName = Environment.GetEnvironmentVariable("OPENINFRA_FUNCTION_NAME") ?? "function";
     static readonly Regex VersionRe = new Regex(@"^(\$LATEST|[1-9][0-9]{0,8})$");
     static readonly Regex RoleAccountRe = new Regex(@"^arn:aws[a-z-]*:iam::(\d{12}):role/");
+    static readonly Regex UuidRe = new Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
     static readonly Regex OwnArnRe = new Regex(@"^arn:aws[a-z-]*:lambda:[a-z0-9-]+:\d{12}:function:" + Regex.Escape(FunctionName) + @"(:[A-Za-z0-9$_-]{1,128})?$");
 
     string _reqId;
@@ -33,10 +34,28 @@ public class LambdaContextProxy : DispatchProxy
     string _invokedArn, _version;
     JsonElement? _clientContext;
 
-    public static object Create(Type ifaceType, NameValueCollection headers = null)
+    // RequestIdFrom is the invoke's own request ID (the aws-shim's x-amzn-RequestId), as on Lambda; else a
+    // fresh one.
+    public static string RequestIdFrom(NameValueCollection headers)
+    {
+        var id = headers?["X-Openinfra-Request-Id"] ?? "";
+        return UuidRe.IsMatch(id) ? id : Guid.NewGuid().ToString();
+    }
+
+    // VersionFrom is the version that runs: a published version's number, else $LATEST.
+    public static string VersionFrom(NameValueCollection headers)
+    {
+        var version = headers?["X-Openinfra-Function-Version"] ?? "";
+        return VersionRe.IsMatch(version) ? version : "$LATEST";
+    }
+
+    public static int MemoryMb() =>
+        int.TryParse(Environment.GetEnvironmentVariable("OPENINFRA_MEMORY_MB"), out var m) && m > 0 ? m : 128;
+
+    public static object Create(Type ifaceType, NameValueCollection headers = null, string requestId = null)
     {
         var proxy = (LambdaContextProxy)ProxyFactory.Make(ifaceType, typeof(LambdaContextProxy));
-        proxy._reqId = Guid.NewGuid().ToString();
+        proxy._reqId = requestId ?? RequestIdFrom(headers);
         // The ARN the function was invoked by: the one its caller passes, taken only when it names this
         // function; else the function's own ARN, from its region and its role's account; "" when unknown.
         var given = headers?["X-Openinfra-Invoked-Function-Arn"] ?? "";
@@ -44,8 +63,7 @@ public class LambdaContextProxy : DispatchProxy
         var region = Environment.GetEnvironmentVariable("AWS_REGION") ?? "";
         proxy._invokedArn = OwnArnRe.IsMatch(given) ? given
             : acct.Success && region != "" ? $"arn:aws:lambda:{region}:{acct.Groups[1].Value}:function:{FunctionName}" : "";
-        var version = headers?["X-Openinfra-Function-Version"] ?? "";
-        proxy._version = VersionRe.IsMatch(version) ? version : "$LATEST";
+        proxy._version = VersionFrom(headers);
         var cc = headers?["X-Amz-Client-Context"];
         if (!string.IsNullOrEmpty(cc))
         {
@@ -77,8 +95,7 @@ public class LambdaContextProxy : DispatchProxy
                 return _clientContext.HasValue && targetMethod.ReturnType.IsInterface
                     ? ClientContextProxy.Create(targetMethod.ReturnType, _clientContext.Value) : null;
             case "get_LogStreamName": return "";
-            case "get_MemoryLimitInMB":
-                return int.TryParse(Environment.GetEnvironmentVariable("OPENINFRA_MEMORY_MB"), out var m) && m > 0 ? m : 128;
+            case "get_MemoryLimitInMB": return MemoryMb();
             case "get_RemainingTime":
                 var rem = _deadline - DateTime.UtcNow; return rem > TimeSpan.Zero ? rem : TimeSpan.Zero;
             case "get_Logger": return _logger;

@@ -147,6 +147,9 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 			"only Invoke (POST /2015-03-31/functions/{name}[:{qualifier}]/invocations), CreateFunction, UpdateFunctionCode, UpdateFunctionConfiguration, DeleteFunction, GetFunction, GetFunctionConfiguration, ListFunctions, GetPolicy, PublishVersion, ListVersionsByFunction, CreateAlias, GetAlias, UpdateAlias, DeleteAlias and ListAliases are implemented")
 		return
 	}
+	// An invocation's request ID is a UUID, as Lambda's is, and the handler's context reports the same one
+	// (awsRequestId).
+	requestID = uuidLike()
 	if h.refusedCrossAccount(w, r, claims, requestID, "lambda:InvokeFunction", name) {
 		return
 	}
@@ -253,6 +256,13 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 			"Request must be smaller than 6291456 bytes for the InvokeFunction operation")
 		return
 	}
+	// LogType Tail answers the invocation's log tail (X-Amz-Log-Result), as Lambda does (synchronous
+	// invokes only; Lambda's values are None and Tail).
+	logType := r.Header.Get("X-Amz-Log-Type")
+	if logType != "" && logType != "None" && logType != "Tail" {
+		lambdaValidation("logType", logType, "Member must satisfy enum value set: [None, Tail]").write(w, requestID)
+		return
+	}
 	// A caller's ClientContext reaches the handler's context, as on Lambda (synchronous invokes only): at
 	// most 3583 bytes of base64-encoded JSON.
 	clientContext := r.Header.Get("X-Amz-Client-Context")
@@ -284,7 +294,12 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	if clientContext != "" {
 		req.Header.Set("X-Amz-Client-Context", clientContext)
 	}
+	req.Header.Set("X-Openinfra-Request-Id", requestID)
+	if logType == "Tail" {
+		req.Header.Set("X-Amz-Log-Type", "Tail")
+	}
 
+	started := time.Now()
 	resp, err := h.client.Do(req)
 	if err != nil && ictx.Err() == context.DeadlineExceeded && r.Context().Err() == nil {
 		h.logger.Info("lambda invoke timed out", "function", name, "timeout", fnTimeout.String())
@@ -319,6 +334,15 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		w.Header().Set("X-Amz-Function-Error", "Unhandled")
 	}
 	w.Header().Set("X-Amz-Executed-Version", target.version) // the version that ran, as Lambda reports it
+	if logType == "Tail" {
+		// The first-party runtimes answer the invocation's own tail; a function on its own image has only
+		// the lines Lambda writes around its output (lambda_logtail.go).
+		tail := resp.Header.Get("X-Amz-Log-Result")
+		if !validLogTail(tail) {
+			tail = shimLogTail(requestID, target.version, time.Since(started))
+		}
+		w.Header().Set("X-Amz-Log-Result", tail)
+	}
 	w.Header().Set("x-amzn-RequestId", requestID)
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, resp.Body)
