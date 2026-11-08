@@ -462,6 +462,17 @@ func recordHolds(rec *retiredRecord, pubs []signingPub) bool {
 	return true
 }
 
+// refreshSigningKey calls load every signingKeyReload, so a rotation is picked up, the registry's bundle
+// republished and a previous key retired even when nothing signs for a while. Runs for the process's life.
+func refreshSigningKey(logger *slog.Logger, key string, load func() error) {
+	for {
+		if err := load(); err != nil {
+			logger.Warn("signing key: cannot read the Transit key", "key", key, "error", err.Error())
+		}
+		time.Sleep(signingKeyReload)
+	}
+}
+
 // transitSigningFromEnv is the Transit signing key named by env (<mount>/<key>), or nil when it is unset.
 // The role is the shim's signing role. A misconfigured key is an error: the caller signs nothing then.
 func transitSigningFromEnv(env string, lifetime time.Duration, cs kubernetes.Interface, ns string, logger *slog.Logger) (*transitSigning, error) {

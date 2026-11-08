@@ -594,6 +594,9 @@ func run(logger *slog.Logger) error {
 		} else {
 			cognitoIssuerBase := getenv("COGNITO_ISSUER_BASE", apigwInvokeBase)
 			cognitoH = newCognitoHandler(cs, authzNS, account, region, cognitoIssuerBase, cognitoSt, signer, logger)
+			if signer.transit != nil {
+				go refreshSigningKey(logger, signer.transit.key.String(), func() error { _, err := signer.keys(); return err })
+			}
 			cognitoH.authz = authzChecker
 		}
 	}
@@ -772,6 +775,9 @@ func run(logger *slog.Logger) error {
 			logger.Warn("ECR token signer unavailable; per-repo token auth disabled", "error", serr.Error())
 		} else {
 			ecrH.signer = sgn
+			if sgn.transit != nil {
+				go refreshSigningKey(logger, sgn.transit.key.String(), func() error { _, err := sgn.keys(); return err })
+			}
 			ecrH.issuer = getenv("ECR_TOKEN_ISSUER", "openinfra-ecr")
 			ecrH.service = getenv("ECR_TOKEN_SERVICE", "ecr-registry")
 			ecrH.tokenAuth = getenv("ECR_TOKEN_AUTH", "") == "true"
@@ -882,6 +888,12 @@ func run(logger *slog.Logger) error {
 			logger.Error("instance identity: the Transit key is misconfigured; no document is signed", slog.String("error", terr.Error()))
 		} else if tr != nil {
 			signer.useTransit(tr)
+			go refreshSigningKey(logger, tr.key.String(), func() error {
+				ctx, cancel := context.WithTimeout(context.Background(), signingTimeout)
+				defer cancel()
+				_, err := signer.current(ctx)
+				return err
+			})
 			identityKey = "OpenBao Transit " + tr.key.String()
 		}
 		vmCredsH.identity = &vmIdentityHandler{resolver: vmCredsH.resolver, dyn: dyn, signer: signer,

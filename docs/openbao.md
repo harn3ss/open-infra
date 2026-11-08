@@ -349,6 +349,33 @@ key itself, the first time it runs with OpenBao:
 
 Restart the registries once more after the switch, so they trust the new certificate.
 
+## Rotating each key
+
+Every key the platform holds, how it is rotated, and who notices.
+
+| Key | Where it is | Rotate with | Client impact |
+|---|---|---|---|
+| Platform intermediate, AWS-endpoints intermediate | OpenBao PKI, `openinfra/pki-platform`, `openinfra/pki-aws-endpoints` | the ceremony in [Rotating an intermediate](#rotating-an-intermediate) | none: clients trust the roots |
+| Validated-domain CA | OpenBao PKI, `openinfra/pki-acm` | a new constrained CA signed with the restored platform root (not automated yet) | none: it chains to the platform root |
+| Platform root, AWS-endpoints root | offline, in the operator's encrypted file | a new root, and every client trusts it again (below) | every client of that root |
+| OpenBao's listener certificate | cert-manager, through `openinfra-ca` | automatic, three months before expiry; members reload it | none |
+| The aws-shim's signing keys | OpenBao Transit, `openinfra/transit/{instance-identity,cognito,ecr-token}` | `bao write -f openinfra/transit/keys/<key>/rotate` | none; after `ecr-token`, restart the registries |
+| KMS keys, `kind: EncryptionKey` keys | OpenBao Transit, `transit/` | `EnableKeyRotation` / the key's rotation ([Encryption](encryption.md)) | none: earlier ciphertext still decrypts |
+| STS session-sealing key | OpenBao KV, `sts/signing-key` | a new version (the revoke-all lever, [aws-shim](aws-shim.md)) | temporary credentials end after the overlap window |
+| The unseal key and the members' token for it | the unseal host (your PC) | `-Action NewClusterToken`, then restart the members one at a time | none |
+| Recovery keys | the operator, offline | a rekey through a member's recovery listener (operator only) | none |
+| Kubernetes Secrets encryption key | the k3s server's disk | `k3s secrets-encrypt rotate-keys` | none; an etcd snapshot restores only with the k3s server token |
+
+**After a new root, every client trusts it again:**
+- **VM guests** install the root their VM was created with. A VM created after the change gets the new
+  one; recreate older VMs ([Virtual machines](virtual-machines.md)).
+- **Platform pods** get it from the platform root's publisher, which copies the published root into their
+  namespaces.
+- **Workstations and CI** that call the platform import the new root, as the first time:
+  `kubectl get environmentconfig openinfra-platform-ca -o jsonpath='{.data.platformRootCA}'`, into the
+  system trust store. Point `AWS_CA_BUNDLE` (aws-cli v2, boto3) and `NODE_EXTRA_CA_CERTS` (Node.js) at a
+  bundle that holds it, and put it in `/etc/docker/certs.d/<registry>/ca.crt` for Docker.
+
 ## What it does not do yet
 
 - **Vault is not retired yet.** The `encryption` component still deploys the old Vault server. On a new
