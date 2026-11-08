@@ -291,7 +291,7 @@ subjects:
 # The key service's configuration Job: the mounts, the Kubernetes-auth roles and policies of every client,
 # the platform CAs' signing roles, and the STS sealing key. A PostSync hook of every sync.
 #
-# The first run takes a root token, once, from Secret openbao-bootstrap (scripts/openbao-root-token.sh makes
+# The first run takes a root token, once, from Secret openbao-bootstrap (scripts/openbao-root-access.sh makes
 # it from two recovery keys): it writes vault-config, the configuration administrator, a Kubernetes-auth role
 # bound to this Job's own ServiceAccount with 15-minute tokens. Every later run logs in as vault-config, so
 # the root token is revoked after that first run (docs/encryption.md). With neither, it does nothing and exits.

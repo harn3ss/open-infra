@@ -75,5 +75,5 @@ the reconciler's auth role as part of the `encryption` component. The setup Job 
 existing install too: after its first run it logs in as `vault-config`, its configuration identity, on
 every sync ([encryption.md](encryption.md#bringing-the-key-service-up-operator-one-time)); an install
 whose configuration Job has no `vault-config` identity yet needs the bootstrap token once
-(`scripts/openbao-root-token.sh`; the Job is `openbao-setup` in `platform/security/openbao.yaml`). Values are set inline on the CR (`spec.value`) today; a `valueFrom`
+(`scripts/openbao-root-access.sh`; the Job is `openbao-setup` in `platform/security/openbao.yaml`). Values are set inline on the CR (`spec.value`) today; a `valueFrom`
 secret reference is a planned follow-on.

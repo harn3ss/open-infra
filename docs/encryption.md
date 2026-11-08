@@ -99,7 +99,7 @@ OpenBao outside the cluster, and its recovery keys are the operator's.
 #    initial root token. Keep both off the cluster.
 
 # 3. Give the configuration Job that root token ONCE, so it can enable Transit and Kubernetes auth (it
-#    goes from your terminal into the Secret; or mint one from recovery keys: scripts/openbao-root-token.sh mint):
+#    goes from your terminal into the Secret; or mint one from recovery keys: scripts/openbao-root-access.sh mint):
 read -rsp "initial root token: " t; echo; printf %s "$t" | kubectl -n openbao create secret generic openbao-bootstrap --from-file=token=/dev/stdin; unset t
 ```
 
@@ -115,7 +115,7 @@ sensitive fields HMAC'd, to the members' logs.
 # 4. The bootstrap token is a root token and was ONLY needed for the first run: revoke it with itself and
 #    delete the Secret once the Job has completed (as AWS has an account's root credentials put away and
 #    its automation use a role). A throwaway pod reads it from the Secret, so it is never on your machine:
-scripts/openbao-root-token.sh revoke
+scripts/openbao-root-access.sh revoke
 ```
 
 A root token can be generated again from the recovery keys should recovery need one
