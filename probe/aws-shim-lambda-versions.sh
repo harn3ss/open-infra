@@ -11,7 +11,8 @@
 #      runs (#406); --log-type Tail answers the invocation's log (START with its request ID and version, what
 #      the handler printed, END, REPORT) in LogResult (#407);
 #   4. a weighted alias (version 1, half to version 2) runs both versions, each reporting the alias's ARN;
-#      get-alias and list-aliases answer it; an asynchronous (Event) invoke of the alias is accepted;
+#      get-alias and list-aliases answer it; an asynchronous (Event) invoke of the alias runs one of its
+#      versions with the payload as sent (the line the handler prints, read from /aws/lambda/<function>);
 #   5. refusals, as Lambda refuses: deleting a version an alias names (ResourceConflictException), an alias of
 #      a version the function lacks (ResourceNotFoundException), a weighted alias of $LATEST
 #      (InvalidParameterValueException);
@@ -105,7 +106,7 @@ EXEC_ARN="$("${A[@]}" iam get-role --role-name "$EXEC" --query Role.Arn --output
 mkzip() {
   python3 - "$1" "$2" <<'PY'
 import sys, zipfile
-src = ("exports.handler = async (event, context) => { console.log('marker-v%s ' + context.awsRequestId); "
+src = ("exports.handler = async (event, context) => { console.log('marker-v%s ' + context.awsRequestId + ' ' + JSON.stringify(event)); "
        "return { v: %s, arn: context.invokedFunctionArn, fv: context.functionVersion }; };\n") % (sys.argv[2], sys.argv[2])
 with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("index.js", src)
@@ -185,7 +186,7 @@ log = base64.b64decode(m["LogResult"]).decode()
 lines = log.splitlines()
 rid = lines[0].split("START RequestId: ", 1)[1].split(" ", 1)[0]
 assert lines[0] == "START RequestId: %s Version: 2" % rid, log
-assert any(l.endswith("marker-v2 " + rid) for l in lines), log  # what the handler printed, with its awsRequestId
+assert any(("marker-v2 %s " % rid) in l for l in lines), log  # what the handler printed, with its awsRequestId
 assert "END RequestId: " + rid in lines and lines[-1].startswith("REPORT RequestId: %s\tDuration: " % rid), log
 PY
 ok "--log-type Tail: LogResult holds START (request ID, version 2), the handler's marker, END and REPORT"
@@ -198,7 +199,7 @@ ok "a configuration change reaches \$LATEST only (version 1 keeps Timeout 30)"
 
 log "4. a weighted alias"
 "${A[@]}" lambda create-alias --function-name "$FN" --name live --function-version 1 \
-  --routing-config 'AdditionalVersionWeights={"2"=0.5}' >"$W/alias.json" 2>"$W/alias.err" || fail "create-alias failed: $(tail -c 300 "$W/alias.err")"
+  --routing-config '{"AdditionalVersionWeights":{"2":0.5}}' >"$W/alias.json" 2>"$W/alias.err" || fail "create-alias failed: $(tail -c 300 "$W/alias.err")"
 python3 -c "import json,sys;a=json.load(open('$W/alias.json'));sys.exit(0 if a['FunctionVersion']=='1' and a['AliasArn'].endswith(':live') and a['RoutingConfig']['AdditionalVersionWeights']=={'2':0.5} else 1)" \
   || fail "the CreateAlias answer: $(cat "$W/alias.json")"
 seen1=0; seen2=0
@@ -214,10 +215,29 @@ done
 ok "the alias ran version 1 $seen1 and version 2 $seen2 times of 20"
 [ "$("${A[@]}" lambda get-alias --function-name "$FN" --name live --query FunctionVersion --output text)" = 1 ] || fail "get-alias"
 [ "$("${A[@]}" lambda list-aliases --function-name "$FN" --query 'length(Aliases)' --output text)" = 1 ] || fail "list-aliases"
-"${A[@]}" lambda invoke --function-name "$FN:live" --invocation-type Event --cli-binary-format raw-in-base64-out --payload '{}' "$W/ev.json" \
-  --query StatusCode --output text >"$W/ev" 2>"$W/ev.err" || fail "an Event invoke of the alias failed: $(tail -c 300 "$W/ev.err")"
+"${A[@]}" lambda invoke --function-name "$FN:live" --invocation-type Event --cli-binary-format raw-in-base64-out \
+  --payload "{\"async\":\"$SFX\"}" "$W/ev.json" --query StatusCode --output text >"$W/ev" 2>"$W/ev.err" \
+  || fail "an Event invoke of the alias failed: $(tail -c 300 "$W/ev.err")"
 [ "$(cat "$W/ev")" = 202 ] || fail "an Event invoke of the alias must be accepted (202), got $(cat "$W/ev")"
-ok "get-alias and list-aliases answer it; an Event invoke of the alias is accepted"
+# The asynchronous invocation ran one of the alias's versions with the payload as sent (no proxy fields):
+# the handler printed it, and the function's log group has the line.
+found=""
+for _ in $(seq 1 36); do
+  "${A[@]}" logs filter-log-events --log-group-name "/aws/lambda/$FN" --filter-pattern "\"$SFX\"" --output json >"$W/flt.json" 2>/dev/null || true
+  found="$(python3 - "$W/flt.json" "$SFX" <<'PY' 2>/dev/null || true
+import json, sys
+for e in json.load(open(sys.argv[1])).get("events", []):
+    m = e["message"].rstrip("\n")
+    if m.startswith("marker-v") and m.endswith(' {"async":"%s"}' % sys.argv[2]):
+        print(m.split(" ", 1)[0])
+        break
+PY
+)"
+  [ -n "$found" ] && break
+  sleep 5
+done
+[ -n "$found" ] || fail "the Event invoke's payload never reached the handler as sent (no log line {\"async\":\"$SFX\"} in /aws/lambda/$FN)"
+ok "get-alias and list-aliases answer it; an Event invoke of the alias ran $found with the payload as sent"
 
 log "5. refusals, as Lambda refuses"
 if "${A[@]}" lambda delete-function --function-name "$FN" --qualifier 1 >/dev/null 2>"$W/r1.err"; then fail "a version an alias names was deleted"; fi
@@ -225,7 +245,7 @@ expect_error ResourceConflictException "$W/r1.err" "deleting a version an alias 
 if "${A[@]}" lambda create-alias --function-name "$FN" --name beta --function-version 9 >/dev/null 2>"$W/r2.err"; then fail "an alias of a missing version was made"; fi
 expect_error ResourceNotFoundException "$W/r2.err" "an alias of a version the function lacks"
 if "${A[@]}" lambda create-alias --function-name "$FN" --name beta --function-version '$LATEST' \
-     --routing-config 'AdditionalVersionWeights={"1"=0.1}' >/dev/null 2>"$W/r3.err"; then fail "a weighted alias of \$LATEST was made"; fi
+     --routing-config '{"AdditionalVersionWeights":{"1":0.1}}' >/dev/null 2>"$W/r3.err"; then fail "a weighted alias of \$LATEST was made"; fi
 expect_error InvalidParameterValueException "$W/r3.err" "a weighted alias of \$LATEST"
 ok "ResourceConflictException, ResourceNotFoundException, InvalidParameterValueException"
 

@@ -41,6 +41,9 @@ the product's public contract.
   `_http` field, and a non-object payload wrapped in `{"body": …}`. A function error counted as delivered.
 - **Now:** the handler gets the payload as sent, as Lambda passes it. A function error is a failed attempt:
   it is retried, then dead-lettered.
+- **On by default:** the aws-shim now connects to the platform's NATS (the `nats` component, on by default),
+  so `Event` invokes and EventBridge's Lambda targets work on a default install. They were refused (503)
+  because the shim was never given `NATS_URL`.
 
 ### Added — Lambda versions and aliases, as on AWS
 - **Operations:** `PublishVersion`, `ListVersionsByFunction`, `CreateAlias`, `GetAlias`, `UpdateAlias`,

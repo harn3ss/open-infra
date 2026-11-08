@@ -1061,6 +1061,11 @@ spec:
             - { name: AUTHZ_NAMESPACE, value: "default" }
             # Lambda (Invoke over kind: Function / Knative): the namespace Functions live in.
             - { name: FUNCTIONS_NAMESPACE, value: "default" }
+            # Lambda's asynchronous invoke (InvocationType Event, and EventBridge's Lambda targets): queued
+            # durably in the platform's NATS JetStream (the nats component, on by default) and delivered with
+            # retries and a dead-letter subject. With the nats component off the connect fails within 5 s
+            # and Event invokes are refused (503), as before.
+            - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
             # The install's AWS identity (aws-identity.yaml): the account and region every ARN, queue URL
             # and StackId is built in, and the CloudFormation pseudo-parameters resolve to.
             - { name: ACCOUNT_ID, valueFrom: { configMapKeyRef: { name: openinfra-aws-identity, key: ACCOUNT_ID } } }
