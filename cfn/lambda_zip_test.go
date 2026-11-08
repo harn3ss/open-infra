@@ -310,3 +310,44 @@ func TestLambdaZip_TheCLIsConfigMapIsNotWaitedOn(t *testing.T) {
 		t.Fatalf("the inline-code ConfigMap must not be waited on: %v", err)
 	}
 }
+
+// A stack with a custom resource is created resource by resource (deployInterleaved): its zip Lambdas'
+// packages are stored there too, so a custom resource's inline handler (cfn-response) has its code.
+func TestLambdaZip_InterleavedStackStoresThePackage(t *testing.T) {
+	tmpl := zipTemplate(`
+  Handler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt Exec.Arn
+      Code:
+        ZipFile: |
+          var response = require('cfn-response');
+          exports.handler = function (e, c) { response.send(e, c, response.SUCCESS, { A: '1' }); };
+  Setup:
+    Type: Custom::Setup
+    Properties: { ServiceToken: !GetAtt Handler.Arn }
+`)
+	store := &fakePackages{}
+	opts := deployOpts()
+	opts.Caps, opts.Packages = Capabilities{LambdaPackageStore: true}, store
+	opts.Invoke = func(context.Context, string, string, []byte) (map[string]any, error) {
+		return map[string]any{"Status": "SUCCESS", "Data": map[string]any{"A": "1"}}, nil
+	}
+	f := &fakeApplier{}
+	rec, err := Deploy(context.Background(), tmpl, opts, f)
+	if err != nil || rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("deploy: %v %v", err, rec)
+	}
+	if len(store.stored) != 1 || store.stored[0].Inline["cfn-response.js"] == "" {
+		t.Fatalf("the handler's package (with cfn-response) must be stored: %#v", store.stored)
+	}
+	m := appliedSpec(t, f, "Function/s-handler")
+	spec, _ := m["spec"].(map[string]any)
+	code, _ := spec["code"].(map[string]any)
+	src, _ := code["source"].(map[string]any)
+	if pkg, _ := src["package"].(map[string]any); len(fmt.Sprint(pkg["sha256"])) != 64 {
+		t.Fatalf("the handler's spec.code.source must name its stored package: %#v", code)
+	}
+}

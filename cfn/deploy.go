@@ -1190,6 +1190,11 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			waits.add(builtResource{res: sr, signals: spec})
 			continue
 		}
+		// A zip Lambda's deployment package is stored before its Function is built, as in a stack created
+		// all at once (buildStack): a custom resource's handler is usually one.
+		if perr := resolvePackage(m, opts); perr != nil {
+			return rollback(fmt.Errorf("%s: %w", id, perr))
+		}
 		built, berr := expandManifest(id, res, m, opts)
 		if berr != nil {
 			return rollback(berr)
@@ -1211,6 +1216,9 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			resolved, _ = r.resolve(res.Properties).(map[string]any)
 			if m, fs = tr(id, resolved, sctx); len(fs) > 0 {
 				return rollback(fmt.Errorf("translate gate REJECTED:\n  - %s", joinFindings(fs)))
+			}
+			if perr := resolvePackage(m, opts); perr != nil {
+				return rollback(fmt.Errorf("%s: %w", id, perr))
 			}
 			if built, berr = expandManifest(id, res, m, opts); berr != nil {
 				return rollback(berr)
