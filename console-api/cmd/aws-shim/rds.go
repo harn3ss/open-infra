@@ -15,10 +15,13 @@
 //
 // Engine: PostgreSQL only. A non-postgres Engine is refused, never quietly given a Postgres. Honored
 // capability flags: DBInstanceClass (mapped to real resources; unknown classes refused), AllocatedStorage,
-// StorageEncrypted (genuine — Longhorn LUKS storage class), DeletionProtection, SkipFinalSnapshot +
-// FinalDBSnapshotIdentifier, and real snapshots/restore (CNPG volumeSnapshot). Refused: MultiAZ, read
-// replicas, point-in-time recovery, custom parameter/subnet/security groups, resource tags. ModifyDBInstance
-// applies DeletionProtection only and leaves its other parameters unapplied (#377). See docs/aws-shim.md.
+// EngineVersion (an exact image; versions it does not run are refused), DeletionProtection,
+// SkipFinalSnapshot + FinalDBSnapshotIdentifier, and real snapshots/restore (CNPG volumeSnapshot).
+// ModifyDBInstance applies each parameter it takes — class, storage growth, the master password,
+// deletion protection — and refuses any other, never accepting one it does not apply (#377);
+// RebootDBInstance restarts the instance. Refused: StorageEncrypted (no per-volume encryption on this path
+// yet), MultiAZ, read replicas, point-in-time recovery, automated backups (BackupRetentionPeriod), a port
+// other than 5432, ManageMasterUserPassword, custom parameter/subnet/security groups. See docs/aws-shim.md.
 package main
 
 import (
@@ -92,7 +95,7 @@ func verbForRDSOp(op string) (string, bool) {
 	switch op {
 	case "DescribeDBInstances", "DescribeDBSnapshots", "ListTagsForResource":
 		return "get", true
-	case "CreateDBInstance", "ModifyDBInstance", "CreateDBSnapshot", "RestoreDBInstanceFromDBSnapshot",
+	case "CreateDBInstance", "ModifyDBInstance", "RebootDBInstance", "CreateDBSnapshot", "RestoreDBInstanceFromDBSnapshot",
 		"AddTagsToResource", "CreateDBInstanceReadReplica", "RestoreDBInstanceToPointInTime":
 		return "create", true
 	case "DeleteDBInstance", "DeleteDBSnapshot":
@@ -169,6 +172,8 @@ func (h *rdsHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.describeDBInstances(ctx, w, r, requestID)
 	case "ModifyDBInstance":
 		h.modifyDBInstance(ctx, w, r, requestID)
+	case "RebootDBInstance":
+		h.rebootDBInstance(ctx, w, r, requestID)
 	case "DeleteDBInstance":
 		h.deleteDBInstance(ctx, w, r, requestID)
 	case "CreateDBSnapshot":
@@ -244,6 +249,16 @@ func (h *rdsHandler) createDBInstance(ctx context.Context, w http.ResponseWriter
 		h.paramErr(w, requestID, "custom DBParameterGroup is not supported in v1; omit it (a silently-ignored parameter group is a false green).")
 		return
 	}
+	version, ok := rdsEngineVersion(r.PostFormValue("EngineVersion"))
+	if !ok {
+		writeQueryError(w, http.StatusBadRequest, "InvalidParameterCombination", requestID,
+			"Cannot find version "+r.PostFormValue("EngineVersion")+" for postgres (this deployment runs PostgreSQL "+rdsDefaultEngineVersion+").", rdsXMLNamespace)
+		return
+	}
+	if e := rdsUnsupportedSettings(r); e != "" {
+		writeQueryError(w, http.StatusBadRequest, "InvalidParameterCombination", requestID, e, rdsXMLNamespace)
+		return
+	}
 	// Existence check.
 	if v, err := h.cnpg.getInstance(ctx, id); err != nil {
 		h.internal(w, requestID, err)
@@ -258,6 +273,7 @@ func (h *rdsHandler) createDBInstance(ctx context.Context, w http.ResponseWriter
 		storageEncrypted:  false, // refused above; storage is plain longhorn in v1
 		deletionProtected: boolForm(r, "DeletionProtection"),
 		tags:              tagsFromForm(r),
+		engineVersion:     version,
 	}
 	if err := h.cnpg.createInstance(ctx, p); err != nil {
 		if isMemberRequest(ctx) && apierrors.IsAlreadyExists(err) {
@@ -319,8 +335,48 @@ func (h *rdsHandler) describeDBInstances(ctx context.Context, w http.ResponseWri
 	h.writeXML(w, requestID, "DescribeDBInstances", sb.String())
 }
 
+// rdsModifyParams are the ModifyDBInstance parameters this front door applies; any other is refused.
+var rdsModifyParams = map[string]bool{
+	"Action": true, "Version": true, "DBInstanceIdentifier": true, "ApplyImmediately": true,
+	"DeletionProtection": true, "DBInstanceClass": true, "AllocatedStorage": true, "MasterUserPassword": true,
+	"EngineVersion": true, "MultiAZ": true, "BackupRetentionPeriod": true, "DBPortNumber": true,
+	"ManageMasterUserPassword": true,
+}
+
+// rdsUnsupportedSettings refuses a setting this front door does not provide, on create or modify: a port
+// other than PostgreSQL's 5432, automated backups, and a master password kept in Secrets Manager. ""
+// when every one asked for is provided.
+func rdsUnsupportedSettings(r *http.Request) string {
+	for _, k := range []string{"Port", "DBPortNumber"} {
+		if p := r.PostFormValue(k); p != "" && p != "5432" {
+			return k + " " + p + " is not supported: a DB instance listens on 5432."
+		}
+	}
+	if n := r.PostFormValue("BackupRetentionPeriod"); n != "" && n != "0" {
+		return "BackupRetentionPeriod " + n + " is not supported: automated backups are not kept yet; set 0 and use CreateDBSnapshot."
+	}
+	if boolForm(r, "ManageMasterUserPassword") {
+		return "ManageMasterUserPassword is not supported yet: set MasterUserPassword."
+	}
+	return ""
+}
+
+// modifyDBInstance applies each parameter it takes, immediately (as ApplyImmediately does), and refuses any
+// other: nothing is accepted and left unapplied (#377).
 func (h *rdsHandler) modifyDBInstance(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
 	id := r.PostFormValue("DBInstanceIdentifier")
+	for k := range r.PostForm {
+		if !rdsModifyParams[k] && !strings.HasPrefix(k, "Tags.") {
+			writeQueryError(w, http.StatusBadRequest, "InvalidParameterCombination", requestID,
+				"ModifyDBInstance "+k+" is not supported by the open-infra RDS front door.", rdsXMLNamespace)
+			return
+		}
+		if strings.HasPrefix(k, "Tags.") {
+			writeQueryError(w, http.StatusBadRequest, "InvalidParameterCombination", requestID,
+				"ModifyDBInstance takes no tags: use AddTagsToResource.", rdsXMLNamespace)
+			return
+		}
+	}
 	v, err := h.cnpg.getInstance(ctx, id)
 	if err != nil {
 		h.internal(w, requestID, err)
@@ -329,6 +385,67 @@ func (h *rdsHandler) modifyDBInstance(ctx context.Context, w http.ResponseWriter
 	if !v.found {
 		writeQueryError(w, http.StatusNotFound, "DBInstanceNotFound", requestID, "DB instance "+id+" not found.", rdsXMLNamespace)
 		return
+	}
+	if e := rdsUnsupportedSettings(r); e != "" {
+		writeQueryError(w, http.StatusBadRequest, "InvalidParameterCombination", requestID, e, rdsXMLNamespace)
+		return
+	}
+	if boolForm(r, "MultiAZ") {
+		writeQueryError(w, http.StatusBadRequest, "InvalidParameterCombination", requestID,
+			"MultiAZ is not supported on this deployment (a single failure domain cannot provide multi-AZ durability).", rdsXMLNamespace)
+		return
+	}
+	if ev := r.PostFormValue("EngineVersion"); ev != "" {
+		if want, ok := rdsEngineVersion(ev); !ok || want != v.engineVersion {
+			writeQueryError(w, http.StatusBadRequest, "InvalidParameterCombination", requestID,
+				"Upgrading the engine version is not supported yet: DB instance "+id+" runs PostgreSQL "+v.engineVersion+".", rdsXMLNamespace)
+			return
+		}
+	}
+	var change instanceChange
+	if c := r.PostFormValue("DBInstanceClass"); c != "" && c != v.instanceClass {
+		if !knownInstanceClass(c) {
+			h.paramErr(w, requestID, "DBInstanceClass '"+c+"' is not recognized. Known: db.t3.micro/small/medium/large, db.m5.large/xlarge.")
+			return
+		}
+		change.instanceClass = c
+	}
+	if s := r.PostFormValue("AllocatedStorage"); s != "" {
+		n, err := strconv.Atoi(s)
+		switch {
+		case err != nil || n < 1:
+			h.paramErr(w, requestID, "AllocatedStorage must be a number of GiB.")
+			return
+		case n < v.allocatedGB:
+			writeQueryError(w, http.StatusBadRequest, "InvalidParameterCombination", requestID,
+				"Invalid storage size for engine name postgres: "+s+" (storage can only grow; it is "+itoa(v.allocatedGB)+" GiB).", rdsXMLNamespace)
+			return
+		case n > v.allocatedGB:
+			change.allocatedGB = n
+		}
+	}
+	if v.status != "available" && (change.instanceClass != "" || change.allocatedGB > 0 || r.PostFormValue("MasterUserPassword") != "") {
+		writeQueryError(w, http.StatusBadRequest, "InvalidDBInstanceState", requestID, "DB instance "+id+" is not available (status "+v.status+").", rdsXMLNamespace)
+		return
+	}
+	if pass := r.PostFormValue("MasterUserPassword"); pass != "" {
+		if err := h.cnpg.setMasterPassword(ctx, id, v.masterUser, pass); err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+	}
+	if change.instanceClass != "" || change.allocatedGB > 0 {
+		if err := h.cnpg.modifyInstance(ctx, id, change); err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+		if change.instanceClass != "" {
+			v.instanceClass = change.instanceClass
+		}
+		if change.allocatedGB > 0 {
+			v.allocatedGB = change.allocatedGB
+		}
+		v.status = "modifying"
 	}
 	if r.PostFormValue("DeletionProtection") != "" {
 		on := boolForm(r, "DeletionProtection")
@@ -340,6 +457,36 @@ func (h *rdsHandler) modifyDBInstance(ctx context.Context, w http.ResponseWriter
 	}
 	h.audit(ctx, "ModifyDBInstance", id, "allow", "")
 	h.writeInstanceResponse(ctx, w, requestID, "ModifyDBInstance", v)
+}
+
+// rebootDBInstance restarts the instance (RebootDBInstance). There is no standby to fail over to.
+func (h *rdsHandler) rebootDBInstance(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+	id := r.PostFormValue("DBInstanceIdentifier")
+	if boolForm(r, "ForceFailover") {
+		writeQueryError(w, http.StatusBadRequest, "InvalidParameterCombination", requestID,
+			"ForceFailover is not supported: DB instance "+id+" has no standby (MultiAZ is not supported).", rdsXMLNamespace)
+		return
+	}
+	v, err := h.cnpg.getInstance(ctx, id)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	if !v.found {
+		writeQueryError(w, http.StatusNotFound, "DBInstanceNotFound", requestID, "DB instance "+id+" not found.", rdsXMLNamespace)
+		return
+	}
+	if v.status != "available" {
+		writeQueryError(w, http.StatusBadRequest, "InvalidDBInstanceState", requestID, "DB instance "+id+" is not available (status "+v.status+").", rdsXMLNamespace)
+		return
+	}
+	if err := h.cnpg.modifyInstance(ctx, id, instanceChange{reboot: true}); err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	v.status = "rebooting"
+	h.audit(ctx, "RebootDBInstance", id, "allow", "")
+	h.writeInstanceResponse(ctx, w, requestID, "RebootDBInstance", v)
 }
 
 func (h *rdsHandler) deleteDBInstance(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
@@ -589,7 +736,7 @@ func dbInstanceXML(v instanceView, arn string) string {
 	el(&sb, "DBInstanceArn", arn)
 	el(&sb, "DBInstanceStatus", v.status)
 	el(&sb, "Engine", v.engine)
-	el(&sb, "EngineVersion", "16")
+	el(&sb, "EngineVersion", strOrDefault(v.engineVersion, rdsDefaultEngineVersion))
 	el(&sb, "DBInstanceClass", v.instanceClass)
 	el(&sb, "MasterUsername", v.masterUser)
 	el(&sb, "DBName", v.dbName)
@@ -597,6 +744,7 @@ func dbInstanceXML(v instanceView, arn string) string {
 	el(&sb, "StorageEncrypted", boolStr(v.storageEncrypted))
 	el(&sb, "DeletionProtection", boolStr(v.deletionProtected))
 	el(&sb, "MultiAZ", "false")
+	el(&sb, "BackupRetentionPeriod", "0")
 	// Endpoint is populated only once the instance genuinely accepts connections.
 	if v.status == "available" {
 		sb.WriteString("<Endpoint>")

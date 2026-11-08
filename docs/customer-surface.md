@@ -469,7 +469,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | Kinesis Data Streams | `kinesis` | proven | 12 |
 | Lambda | `lambda` | proven | 8 |
 | Organizations | `organizations` | proven | 7 |
-| RDS | `rds` | proven | 8 |
+| RDS | `rds` | proven | 9 |
 | S3 | `s3` | proven | 33 |
 | SES | `email` | proven | 12 |
 | SES | `ses` | proven | 12 |

@@ -163,3 +163,109 @@ func TestRDS_FailedFinalSnapshotKeepsTheInstance(t *testing.T) {
 		t.Fatalf("a duplicate final snapshot identifier: %s", body)
 	}
 }
+
+func clusterOf(t *testing.T, h *rdsHandler, id string) *unstructured.Unstructured {
+	t.Helper()
+	u, err := h.cnpg.dyn.Resource(cnpgClusterGVR).Namespace(rdsTestNS).Get(context.Background(), id, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// CreateDBInstance runs an exact PostgreSQL version (the image named, reported as EngineVersion), makes the
+// master user a managed role of its credential, and refuses a version, port or backup retention it does not
+// provide.
+func TestRDS_CreateRunsWhatItReports(t *testing.T) {
+	h := rdsAccountsHandler(t)
+	mgmt := mgmtDoorCaller()
+	form := createDB("orders")
+	form.Set("EngineVersion", "17")
+	if code, body := rdsCall(t, h, mgmt, form); code != http.StatusOK || !strings.Contains(body, "<EngineVersion>"+rdsDefaultEngineVersion+"</EngineVersion>") {
+		t.Fatalf("create with a major version: %d %s", code, body)
+	}
+	u := clusterOf(t, h, "orders")
+	if img, _, _ := unstructured.NestedString(u.Object, "spec", "imageName"); img != rdsEngineVersions[rdsDefaultEngineVersion] {
+		t.Errorf("imageName: %q", img)
+	}
+	roles, _, _ := unstructured.NestedSlice(u.Object, "spec", "managed", "roles")
+	if len(roles) != 1 || roles[0].(map[string]any)["name"] != "app" {
+		t.Errorf("the master user must be a managed role: %v", roles)
+	}
+	for name, kv := range map[string][2]string{
+		"an engine version it does not run": {"EngineVersion", "15.4"},
+		"another port":                      {"Port", "5433"},
+		"automated backups":                 {"BackupRetentionPeriod", "7"},
+		"a managed master password":         {"ManageMasterUserPassword", "true"},
+	} {
+		f := createDB("other")
+		f.Set(kv[0], kv[1])
+		if code, body := rdsCall(t, h, mgmt, f); code != http.StatusBadRequest || rdsErrCode(body) != "InvalidParameterCombination" {
+			t.Errorf("%s must be refused: %d %s", name, code, body)
+		}
+	}
+}
+
+// ModifyDBInstance applies what it takes — class, storage growth, the master password — and refuses any
+// other parameter, a smaller storage, and an engine version upgrade; RebootDBInstance restarts the instance.
+func TestRDS_ModifyAppliesOrRefuses(t *testing.T) {
+	h := rdsAccountsHandler(t)
+	mgmt := mgmtDoorCaller()
+	if code, body := rdsCall(t, h, mgmt, createDB("orders")); code != http.StatusOK {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	markAvailable(t, h, rdsTestNS, "orders")
+	mod := func(kv ...string) (int, string) {
+		f := url.Values{"Action": {"ModifyDBInstance"}, "DBInstanceIdentifier": {"orders"}, "ApplyImmediately": {"true"}}
+		for i := 0; i+1 < len(kv); i += 2 {
+			f.Set(kv[i], kv[i+1])
+		}
+		return rdsCall(t, h, mgmt, f)
+	}
+	if code, body := mod("DBInstanceClass", "db.t3.medium", "AllocatedStorage", "40"); code != http.StatusOK || !strings.Contains(body, "<DBInstanceStatus>modifying</DBInstanceStatus>") {
+		t.Fatalf("class and storage: %d %s", code, body)
+	}
+	u := clusterOf(t, h, "orders")
+	if mem, _, _ := unstructured.NestedString(u.Object, "spec", "resources", "requests", "memory"); mem != "1Gi" {
+		t.Errorf("the class sets the pod's resources: %q", mem)
+	}
+	if size, _, _ := unstructured.NestedString(u.Object, "spec", "storage", "size"); size != "40Gi" {
+		t.Errorf("the storage grows: %q", size)
+	}
+	markAvailable(t, h, rdsTestNS, "orders")
+	if _, body := mod("AllocatedStorage", "10"); rdsErrCode(body) != "InvalidParameterCombination" {
+		t.Errorf("storage cannot shrink: %s", body)
+	}
+	if code, _ := mod("MasterUserPassword", "new-secret-pw"); code != http.StatusOK {
+		t.Fatalf("password: %d", code)
+	}
+	sec, err := h.cs.CoreV1().Secrets(rdsTestNS).Get(context.Background(), "rds-orders-master", metav1.GetOptions{})
+	if err != nil || sec.StringData["password"] != "new-secret-pw" || sec.StringData["username"] != "app" {
+		t.Fatalf("the master credential must change: %v %v", err, sec.StringData)
+	}
+	for name, kv := range map[string][2]string{
+		"an unknown parameter": {"PreferredMaintenanceWindow", "sun:05:00-sun:06:00"},
+		"an engine upgrade":    {"EngineVersion", "18.1"},
+		"automated backups":    {"BackupRetentionPeriod", "7"},
+		"multi-AZ":             {"MultiAZ", "true"},
+		"a managed password":   {"ManageMasterUserPassword", "true"},
+		"an unknown class":     {"DBInstanceClass", "db.r9.huge"},
+	} {
+		if code, body := mod(kv[0], kv[1]); code != http.StatusBadRequest {
+			t.Errorf("%s must be refused: %d %s", name, code, body)
+		}
+	}
+	if _, body := mod("EngineVersion", rdsDefaultEngineVersion); rdsErrCode(body) != "" {
+		t.Errorf("the running version is no change: %s", body)
+	}
+	if code, body := rdsCall(t, h, mgmt, url.Values{"Action": {"RebootDBInstance"}, "DBInstanceIdentifier": {"orders"}}); code != http.StatusOK ||
+		!strings.Contains(body, "<DBInstanceStatus>rebooting</DBInstanceStatus>") {
+		t.Fatalf("reboot: %d %s", code, body)
+	}
+	if clusterOf(t, h, "orders").GetAnnotations()["kubectl.kubernetes.io/restartedAt"] == "" {
+		t.Error("a reboot restarts the cluster")
+	}
+	if _, body := rdsCall(t, h, mgmt, url.Values{"Action": {"RebootDBInstance"}, "DBInstanceIdentifier": {"orders"}, "ForceFailover": {"true"}}); rdsErrCode(body) != "InvalidParameterCombination" {
+		t.Errorf("a failover has no standby: %s", body)
+	}
+}

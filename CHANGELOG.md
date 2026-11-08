@@ -6,6 +6,21 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — RDS ModifyDBInstance applies what it accepts (#377)
+- **Before:** `ModifyDBInstance` returned success for a class, storage, password or version change and
+  applied none of them. A password rotation looked done while the old password kept working.
+- **Now it applies:**
+  - `DBInstanceClass` → new pod resources;
+  - `AllocatedStorage` → grows the volume;
+  - `MasterUserPassword` → the old password stops working;
+  - `DeletionProtection`.
+- **It refuses every other parameter**, an engine-version upgrade and a storage decrease, rather than
+  accepting them.
+- **`RebootDBInstance`** restarts an instance.
+- **`EngineVersion`** is now the exact PostgreSQL image that runs (17.4), reported by
+  `DescribeDBInstances`, which said "16" before. A version, port, backup retention or managed master
+  password it does not provide is refused at create.
+
 ### Fixed — an RDS final snapshot restores after its instance is gone (#390)
 - **Before:** the RDS front door's final snapshot could not be restored, so deleting an instance with one
   could lose its data:

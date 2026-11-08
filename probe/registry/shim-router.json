@@ -725,6 +725,7 @@
         "DescribeDBInstances",
         "DescribeDBSnapshots",
         "ModifyDBInstance",
+        "RebootDBInstance",
         "RestoreDBInstanceFromDBSnapshot"
       ],
       "refused": [

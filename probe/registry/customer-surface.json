@@ -6824,7 +6824,7 @@
     "rds": {
       "actions": 2,
       "class": "aws",
-      "operations": 8,
+      "operations": 9,
       "service": "RDS",
       "tier": "proven"
     },

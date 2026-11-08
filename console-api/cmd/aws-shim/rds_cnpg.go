@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -58,6 +59,41 @@ var instanceClasses = map[string]struct{ reqCPU, reqMem, limCPU, limMem string }
 }
 
 func knownInstanceClass(c string) bool { _, ok := instanceClasses[c]; return ok }
+
+// rdsEngineVersions are the PostgreSQL versions a DB instance runs, each its CloudNativePG image; the
+// default is rdsDefaultEngineVersion. A version names its image exactly, so EngineVersion is what runs.
+var rdsEngineVersions = map[string]string{
+	"17.4": "ghcr.io/cloudnative-pg/postgresql:17.4",
+}
+
+const rdsDefaultEngineVersion = "17.4"
+
+// rdsEngineVersion resolves a requested EngineVersion ("" = the default; a major version = its newest
+// minor) to one this front door runs.
+func rdsEngineVersion(v string) (string, bool) {
+	if v == "" {
+		return rdsDefaultEngineVersion, true
+	}
+	if _, ok := rdsEngineVersions[v]; ok {
+		return v, true
+	}
+	best := ""
+	for known := range rdsEngineVersions {
+		if strings.HasPrefix(known, v+".") && known > best {
+			best = known
+		}
+	}
+	return best, best != ""
+}
+
+// rdsManagedRoles makes the master user a CloudNativePG managed role whose password is its credential
+// Secret's, so changing the Secret (ModifyDBInstance MasterUserPassword) changes the password.
+func rdsManagedRoles(user, secretName string) map[string]any {
+	return map[string]any{"roles": []any{map[string]any{
+		"name": user, "ensure": "present", "login": true, "inherit": true,
+		"passwordSecret": map[string]any{"name": secretName},
+	}}}
+}
 
 type rdsCNPG struct {
 	dyn dynamic.Interface
@@ -92,6 +128,7 @@ type createInstanceParams struct {
 	storageEncrypted  bool
 	deletionProtected bool
 	tags              map[string]string
+	engineVersion     string
 }
 
 // createInstance provisions a CNPG Cluster (+ its master-credential Secret) for a new DB instance.
@@ -120,10 +157,13 @@ func (r *rdsCNPG) createInstance(ctx context.Context, p createInstanceParams) er
 				"deletion-protection": boolStr(p.deletionProtected),
 				"db-name":             p.dbName,
 				"tags":                encodeTags(p.tags),
+				"engine-version":      p.engineVersion,
 			}),
 		},
 		"spec": map[string]any{
 			"instances": int64(1),
+			"imageName": rdsEngineVersions[p.engineVersion],
+			"managed":   rdsManagedRoles(p.masterUser, secretName),
 			"storage":   map[string]any{"size": fmt.Sprintf("%dGi", p.allocatedGB), "storageClass": "longhorn"},
 			"bootstrap": map[string]any{"initdb": map[string]any{
 				"database": p.dbName,
@@ -160,6 +200,11 @@ func (r *rdsCNPG) createRestoredInstance(ctx context.Context, newID, backupName 
 		dup := secretMasterCred(secretName, ns, string(sec.Data["username"]), string(sec.Data["password"]))
 		_, _ = r.cs.CoreV1().Secrets(ns).Create(ctx, &dup, metav1.CreateOptions{})
 	}
+	// The version the snapshot was taken on: a restore never changes the version under the data.
+	ver, ok := rdsEngineVersion(src.engineVersion)
+	if !ok {
+		ver = rdsDefaultEngineVersion
+	}
 	cl := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "postgresql.cnpg.io/v1",
 		"kind":       "Cluster",
@@ -176,10 +221,13 @@ func (r *rdsCNPG) createRestoredInstance(ctx context.Context, newID, backupName 
 				"deletion-protection": "false",
 				"db-name":             src.dbName,
 				"restored-from":       backupName,
+				"engine-version":      ver,
 			}),
 		},
 		"spec": map[string]any{
 			"instances": int64(1),
+			"imageName": rdsEngineVersions[ver],
+			"managed":   rdsManagedRoles(src.masterUser, secretName),
 			"storage":   map[string]any{"size": fmt.Sprintf("%dGi", src.allocatedGB), "storageClass": "longhorn"},
 			"resources": resourcesFor(src.instanceClass),
 			"backup":    rdsBackupSpec(),
@@ -208,6 +256,8 @@ type instanceView struct {
 	found             bool
 	// awaitingSnapshot is the final snapshot a delete waits for before it removes the instance ("" none).
 	awaitingSnapshot string
+	// engineVersion is the PostgreSQL version that runs: the image's, else the one recorded at create.
+	engineVersion string
 }
 
 func (r *rdsCNPG) getInstance(ctx context.Context, id string) (instanceView, error) {
@@ -248,12 +298,21 @@ func (r *rdsCNPG) viewOf(u *unstructured.Unstructured) instanceView {
 		deletionProtected: ann[rdsAnnoPrefix+"deletion-protection"] == "true",
 		dbName:            ann[rdsAnnoPrefix+"db-name"],
 		awaitingSnapshot:  ann[rdsAnnoPrefix+"delete-after-snapshot"],
+		engineVersion:     ann[rdsAnnoPrefix+"engine-version"],
 		port:              5432,
 		endpoint:          u.GetName() + "-rw." + strOrDefault(u.GetNamespace(), r.ns) + ".svc.cluster.local",
 		found:             true,
 	}
 	// Map CNPG status to the RDS state machine. `available` means readyInstances >= 1 (it truly accepts
 	// connections) AND the cluster is not mid-delete.
+	if img, _, _ := unstructured.NestedString(u.Object, "status", "image"); img != "" {
+		if i := strings.LastIndex(img, ":"); i >= 0 && !strings.Contains(img[i:], "/") {
+			v.engineVersion = img[i+1:]
+		}
+	}
+	if v.engineVersion == "" {
+		v.engineVersion = rdsDefaultEngineVersion
+	}
 	phase, _, _ := unstructured.NestedString(u.Object, "status", "phase")
 	ready, _, _ := unstructured.NestedInt64(u.Object, "status", "readyInstances")
 	switch {
@@ -263,6 +322,10 @@ func (r *rdsCNPG) viewOf(u *unstructured.Unstructured) instanceView {
 		v.status = "available"
 	case strings.Contains(strings.ToLower(phase), "fail"):
 		v.status = "failed"
+	case recent(ann[rdsAnnoPrefix+"rebooted-at"]):
+		v.status = "rebooting"
+	case recent(ann[rdsAnnoPrefix+"modified-at"]):
+		v.status = "modifying"
 	default:
 		v.status = "creating"
 	}
@@ -273,6 +336,73 @@ func (r *rdsCNPG) viewOf(u *unstructured.Unstructured) instanceView {
 func (r *rdsCNPG) setDeletionProtection(ctx context.Context, id string, on bool) error {
 	patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, rdsAnnoPrefix+"deletion-protection", boolStr(on)))
 	_, err := r.dyn.Resource(cnpgClusterGVR).Namespace(r.nsFor(ctx)).Patch(ctx, id, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
+
+// recent reports whether an RFC 3339 time is within the last ten minutes: how long a modification or a
+// reboot explains an instance that is not ready.
+func recent(ts string) bool {
+	t, err := time.Parse(time.RFC3339, ts)
+	return err == nil && time.Since(t) < 10*time.Minute
+}
+
+// instanceChange is what ModifyDBInstance or RebootDBInstance applies to an instance (zero values:
+// unchanged).
+type instanceChange struct {
+	instanceClass string
+	allocatedGB   int
+	reboot        bool
+}
+
+// modifyInstance applies a change to instance id's Cluster: its class (pod resources, which CloudNativePG
+// rolls), its storage (the volume grows in place), or a restart (RebootDBInstance).
+func (r *rdsCNPG) modifyInstance(ctx context.Context, id string, c instanceChange) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	ann := map[string]any{}
+	spec := map[string]any{}
+	if c.instanceClass != "" {
+		spec["resources"] = resourcesFor(c.instanceClass)
+		ann[rdsAnnoPrefix+"instance-class"] = c.instanceClass
+		ann[rdsAnnoPrefix+"modified-at"] = now
+	}
+	if c.allocatedGB > 0 {
+		spec["storage"] = map[string]any{"size": fmt.Sprintf("%dGi", c.allocatedGB)}
+		ann[rdsAnnoPrefix+"allocated-storage"] = fmt.Sprintf("%d", c.allocatedGB)
+		ann[rdsAnnoPrefix+"modified-at"] = now
+	}
+	if c.reboot {
+		// CloudNativePG restarts a cluster's instances when this annotation changes.
+		ann["kubectl.kubernetes.io/restartedAt"] = now
+		ann[rdsAnnoPrefix+"rebooted-at"] = now
+	}
+	obj := map[string]any{"metadata": map[string]any{"annotations": ann}}
+	if len(spec) > 0 {
+		obj["spec"] = spec
+	}
+	patch, err := json.Marshal(obj)
+	if err != nil {
+		return err
+	}
+	_, err = r.dyn.Resource(cnpgClusterGVR).Namespace(r.nsFor(ctx)).Patch(ctx, id, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
+
+// setMasterPassword changes instance id's master password: its credential Secret, which the master user's
+// managed role takes its password from.
+func (r *rdsCNPG) setMasterPassword(ctx context.Context, id, user, pass string) error {
+	ns := r.nsFor(ctx)
+	name := "rds-" + id + "-master"
+	sec, err := r.cs.CoreV1().Secrets(ns).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		s := secretMasterCred(name, ns, user, pass)
+		_, err = r.cs.CoreV1().Secrets(ns).Create(ctx, &s, metav1.CreateOptions{})
+		return err
+	} else if err != nil {
+		return err
+	}
+	sec.Data = nil
+	sec.StringData = map[string]string{"username": user, "password": pass}
+	_, err = r.cs.CoreV1().Secrets(ns).Update(ctx, sec, metav1.UpdateOptions{})
 	return err
 }
 
@@ -311,6 +441,7 @@ func (r *rdsCNPG) createSnapshot(ctx context.Context, snapID string, src instanc
 				"allocated-storage": fmt.Sprintf("%d", src.allocatedGB),
 				"storage-encrypted": boolStr(src.storageEncrypted),
 				"db-name":           src.dbName,
+				"engine-version":    src.engineVersion,
 			}),
 		},
 		"spec": map[string]any{
@@ -385,6 +516,7 @@ func (r *rdsCNPG) snapView(u *unstructured.Unstructured) snapshotView {
 			allocatedGB:      atoiSafe(ann[rdsAnnoPrefix+"allocated-storage"]),
 			storageEncrypted: ann[rdsAnnoPrefix+"storage-encrypted"] == "true",
 			dbName:           ann[rdsAnnoPrefix+"db-name"],
+			engineVersion:    ann[rdsAnnoPrefix+"engine-version"],
 			found:            ann[rdsAnnoPrefix+"instance-class"] != "",
 		},
 	}

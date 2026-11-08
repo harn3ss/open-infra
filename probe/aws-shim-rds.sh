@@ -110,10 +110,10 @@ wait_available() {
 # endpoint (the real endpoint the RDS API returns), printing psql's -tA output. Robust to CNI port-forward
 # flakiness because it connects service-to-service inside the cluster.
 pg() {
-  local svc="$1" sql="$2" host="${1}.${RDS_NS}.svc.cluster.local"
+  local svc="$1" sql="$2" host="${1}.${RDS_NS}.svc.cluster.local" pass="${3:-$PGPASS_M}"
   kubectl -n "$RDS_NS" run "pgp-${SFX}-${RANDOM}" --image="$PGIMAGE" --restart=Never --rm -i \
     --labels="probe=rds-$SFX" --command --timeout=90s -- \
-    psql "postgresql://${PGUSER_M}:${PGPASS_M}@${host}:5432/${PGDB}" -tAc "$sql" 2>/dev/null
+    psql "postgresql://${PGUSER_M}:${pass}@${host}:5432/${PGDB}" -tAc "$sql" 2>/dev/null
 }
 
 # --- 1. seed principal ---
@@ -164,6 +164,31 @@ wait_available "$WAK" "$WSK" "$INST2" || fail "restored instance $INST2 did not 
 ROUT="$(pg "${INST2}-rw" "SELECT 'ROW:'||v FROM probe_t WHERE id=1;")"
 printf '%s' "$ROUT" | grep -q "ROW:hello-$SFX" || fail "the RESTORED database did not contain the row — the backup is not a real backup; got: $(printf '%s' "$ROUT" | tr '\n' ' ')"
 log "  ✓ restored copy contains the row — snapshot/restore is genuine"
+
+# --- 4b. ModifyDBInstance applies what it takes: the master password changes; and the version is reported ---
+ev="$(rds "$WAK" "$WSK" --output text --query 'DBInstances[0].EngineVersion' describe-db-instances --db-instance-identifier "$INST1" 2>/dev/null || true)"
+[ -n "$ev" ] && [ "$ev" != "None" ] || fail "DescribeDBInstances reports no EngineVersion"
+VER="$(pg "${INST1}-rw" "SHOW server_version;" | tr -d '[:space:]')"
+case "$VER" in "$ev"*) ;; *) fail "EngineVersion $ev is not the server's version ($VER)" ;; esac
+log "  ✓ EngineVersion $ev is the running server's version"
+NEWPASS="Rot${SFX}pw2"
+log "modify-db-instance --master-user-password: the old password must stop working, the new one work"
+rds "$WAK" "$WSK" modify-db-instance --db-instance-identifier "$INST1" --master-user-password "$NEWPASS" --apply-immediately >/dev/null 2>"$PWD/.rds_mp" \
+  || fail "modify-db-instance (password) failed: $(cat "$PWD/.rds_mp")"
+rotated=""
+for _ in $(seq 1 24); do
+  if pg "${INST1}-rw" "SELECT 'NEWPW';" "$NEWPASS" | grep -q NEWPW; then rotated=1; break; fi
+  sleep 5
+done
+[ -n "$rotated" ] || fail "the new master password never worked"
+if pg "${INST1}-rw" "SELECT 'OLDPW';" | grep -q OLDPW; then fail "the old master password still works after the change"; fi
+log "  ✓ the master password changed: the new one connects, the old one is refused"
+if rds "$WAK" "$WSK" modify-db-instance --db-instance-identifier "$INST1" --preferred-maintenance-window sun:05:00-sun:06:00 >/dev/null 2>"$PWD/.rds_mp"; then
+  fail "a ModifyDBInstance parameter that is not applied was accepted"
+fi
+grep -q InvalidParameterCombination "$PWD/.rds_mp" || fail "an unapplied parameter is refused with the wrong error: $(cat "$PWD/.rds_mp")"
+rm -f "$PWD/.rds_mp"
+log "  ✓ a parameter it does not apply is refused, not accepted"
 
 # --- 5. DeletionProtection blocks delete ---
 log "enable deletion protection on $INST1 — delete must then be BLOCKED"

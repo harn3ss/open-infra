@@ -341,7 +341,7 @@ create on its own API's front door):
 | CloudWatch Logs | `logs` | 12: CreateLogGroup, CreateLogStream, DeleteLogGroup, DeleteLogStream, DeleteRetentionPolicy, DescribeLogGroups, DescribeLogStreams, FilterLogEvents, GetLogEvents, PutLogEvents, PutRetentionPolicy, TagLogGroup; recognized and refused: DescribeQueries, GetQueryResults, StartQuery, StopQuery | 1 |
 | CloudWatch | `monitoring` | 8: DeleteAlarms, DescribeAlarms, GetMetricData, GetMetricStatistics, ListMetrics, PutMetricAlarm, PutMetricData, SetAlarmState | 1 |
 | Organizations | `organizations` | 7: CreateAccount, DescribeAccount, DescribeCreateAccountStatus, DescribeOrganization, ListAccounts, ListAccountsForParent, ListRoots | 0 |
-| RDS | `rds` | 8: CreateDBInstance, CreateDBSnapshot, DeleteDBInstance, DeleteDBSnapshot, DescribeDBInstances, DescribeDBSnapshots, ModifyDBInstance, RestoreDBInstanceFromDBSnapshot; recognized and refused: AddTagsToResource, CreateDBInstanceReadReplica, ListTagsForResource, RemoveTagsFromResource, RestoreDBInstanceToPointInTime | 1 |
+| RDS | `rds` | 9: CreateDBInstance, CreateDBSnapshot, DeleteDBInstance, DeleteDBSnapshot, DescribeDBInstances, DescribeDBSnapshots, ModifyDBInstance, RebootDBInstance, RestoreDBInstanceFromDBSnapshot; recognized and refused: AddTagsToResource, CreateDBInstanceReadReplica, ListTagsForResource, RemoveTagsFromResource, RestoreDBInstanceToPointInTime | 1 |
 | S3 | `s3` | 33: AbortMultipartUpload, CompleteMultipartUpload, CopyObject, CreateBucket, CreateMultipartUpload, DeleteBucket, DeleteBucketOwnershipControls, DeleteBucketTagging, DeleteObject, DeleteObjectTagging, DeleteObjects, GetBucketEncryption, GetBucketLocation, GetBucketOwnershipControls, GetBucketPolicy, GetBucketTagging, GetBucketVersioning, GetObject, GetObjectTagging, HeadBucket, HeadObject, ListBuckets, ListMultipartUploads, ListObjectVersions, ListObjects, ListParts, PutBucketOwnershipControls, PutBucketTagging, PutBucketVersioning, PutObject, PutObjectTagging, UploadPart, UploadPartCopy | 2 |
 | Secrets Manager | `secretsmanager` | 13: CreateSecret, DeleteSecret, DescribeSecret, GetRandomPassword, GetSecretValue, ListSecretVersionIds, ListSecrets, PutSecretValue, RestoreSecret, TagResource, UntagResource, UpdateSecret, UpdateSecretVersionStage; recognized and refused: CancelRotateSecret, RotateSecret | 1 |
 | Service Quotas | `servicequotas` | 9: GetAWSDefaultServiceQuota, GetRequestedServiceQuotaChange, GetServiceQuota, ListAWSDefaultServiceQuotas, ListRequestedServiceQuotaChangeHistory, ListRequestedServiceQuotaChangeHistoryByQuota, ListServiceQuotas, ListServices, RequestServiceQuotaIncrease | 0 |
@@ -1130,10 +1130,27 @@ in-volume `longhorn-snapshot` class would die with it).
 and `RestoreDBInstanceFromDBSnapshot` are authorized on both the instance and the snapshot, and a
 `DeleteDBInstance` that takes a final snapshot also needs `rds:CreateDBSnapshot` on it.
 
-**Honored capability flags** (mapped to reality, never accept-and-ignore): `DBInstanceClass` → real pod
-requests/limits (an unrecognized class is **refused**, never quietly under-provisioned); `AllocatedStorage`
-→ PVC size; `DeletionProtection` → actually blocks `DeleteDBInstance`; `SkipFinalSnapshot: false` +
-`FinalDBSnapshotIdentifier` → really takes that snapshot, and deletes only once it has completed.
+**Honored capability flags** (mapped to reality, never accept-and-ignore):
+- `DBInstanceClass` → real pod requests/limits (an unrecognized class is **refused**, never quietly
+  under-provisioned).
+- `AllocatedStorage` → PVC size.
+- `EngineVersion` → the exact PostgreSQL image that runs (17.4; a major version selects its newest minor,
+  and a version it does not run is refused). `DescribeDBInstances` reports the running image's version.
+- `DeletionProtection` → actually blocks `DeleteDBInstance`.
+- `SkipFinalSnapshot: false` + `FinalDBSnapshotIdentifier` → really takes that snapshot, and deletes only
+  once it has completed.
+
+**`ModifyDBInstance` applies each parameter it takes, immediately (as `ApplyImmediately` does):**
+- `DBInstanceClass` → new pod resources, which CloudNativePG rolls in.
+- `AllocatedStorage` → grows the volume in place; it cannot shrink.
+- `MasterUserPassword` → changes the password: the master user is a CloudNativePG managed role whose
+  password is its credential's, so the old password stops working.
+- `DeletionProtection`.
+- **Everything else is refused, never accepted unapplied:** another engine version (upgrades are not
+  supported yet), `MultiAZ`, `BackupRetentionPeriod` above 0, a port other than 5432,
+  `ManageMasterUserPassword`, and any other parameter.
+
+`RebootDBInstance` restarts the instance; `ForceFailover` is refused, since there is no standby.
 
 **Refused honestly, never faked:** a non-`postgres` `Engine` (PostgreSQL only in v1); `MultiAZ: true` (a
 single failure domain cannot provide multi-AZ durability — claiming it would be a dangerous false green);
