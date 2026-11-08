@@ -131,6 +131,9 @@ func lambdaFieldSet(names ...string) map[string]bool {
 	return m
 }
 
+// lambdaRuntimeClock is the time Lambda runtime dates are compared with (tests move it).
+var lambdaRuntimeClock = time.Now
+
 // lambdaErr is an error answer of Lambda's.
 type lambdaErr struct {
 	status        int
@@ -409,6 +412,11 @@ func (h *lambdaHandler) createFunction(w http.ResponseWriter, r *http.Request, c
 			e.write(w, requestID)
 			return
 		}
+		// A runtime past AWS's block-create date takes no new function, as on Lambda.
+		if msg := cfn.LambdaRuntimeRefusal(rt, false, lambdaRuntimeClock()); msg != "" {
+			invalidParam("%s", msg).write(w, requestID)
+			return
+		}
 		if region := h.regionIn(ctx); region != "" {
 			fc["region"] = region // AWS_REGION, as Lambda sets it for the function's own region
 		}
@@ -488,6 +496,18 @@ func (h *lambdaHandler) updateFunction(w http.ResponseWriter, r *http.Request, c
 	}
 	before, _ := json.Marshal(spec)
 	image := str(spec["image"]) != ""
+	// A function on a runtime past AWS's block-update date takes no change but a move to a supported
+	// runtime, as on Lambda (the runtime it moves to must be one Lambda still updates functions on).
+	if fc, _ := spec["code"].(map[string]any); !image && fc != nil {
+		rt := lambdaRuntime(fnStr(fc["runtime"]))
+		if next, ok := body["Runtime"]; ok && op == "UpdateFunctionConfiguration" {
+			rt = str(next)
+		}
+		if msg := cfn.LambdaRuntimeRefusal(rt, true, lambdaRuntimeClock()); msg != "" {
+			invalidParam("%s", msg).write(w, requestID)
+			return
+		}
+	}
 	if op == "UpdateFunctionCode" {
 		if image {
 			if hasAny(body, "ZipFile", "S3Bucket", "S3Key", "S3ObjectVersion") || str(body["ImageUri"]) == "" {

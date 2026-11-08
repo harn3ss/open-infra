@@ -1,6 +1,7 @@
 import type { UiSchema } from "@rjsf/utils";
 import type { InstanceTypeGroup } from "@/lib/instance-types";
 import { EC2_INSTANCE_TYPES, LAMBDA_MEMORY_TIERS, SAGEMAKER_INSTANCE_TYPES } from "@/lib/instance-types";
+import { deprecatedRuntimes } from "@/lib/lambda-runtimes";
 
 /**
  * Per-kind create configuration — the data that steers the unified schema-driven create page
@@ -154,7 +155,11 @@ export const FUNCTION_CREATE: CreateKindSpec = {
     fields: ["memory"],
     defaultLabel: "Default (platform default memory)",
   },
-  uiSchema: { image: { "ui:placeholder": "ghcr.io/me/my-fn:latest" } },
+  uiSchema: {
+    image: { "ui:placeholder": "ghcr.io/me/my-fn:latest" },
+    // A runtime AWS has deprecated is offered disabled, as the Lambda console stops offering it.
+    code: { runtime: { "ui:enumDisabled": deprecatedRuntimes() } },
+  },
 };
 
 export const MODEL_CREATE: CreateKindSpec = {

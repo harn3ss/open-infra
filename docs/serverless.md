@@ -248,6 +248,26 @@ aws lambda delete-function --function-name orders
   - **The package is stored as Lambda stores one:** a later change to the S3 object does not change the
     function. `CodeSha256` and `CodeSize` report the stored package.
   - **An image function** (`--package-type Image --code ImageUri=…`) runs its image instead.
+  - **Runtimes follow AWS's deprecation dates:**
+    - **From the deprecation date,** the console offers the runtime disabled, as the Lambda console stops
+      offering it. The CLI, SDKs and CloudFormation still create and update functions on it.
+    - **From the block-create date,** a new function on it is refused, as Lambda refuses it.
+    - **From the block-update date,** a change to a function on it is refused too, unless the change moves
+      it to a supported runtime.
+    - **A function on a deprecated runtime is invoked as before,** indefinitely.
+
+    | Runtime | Deprecated | Block create | Block update |
+    |---|---|---|---|
+    | `nodejs20.x` | 2026-04-30 | 2027-07-29 | 2027-08-31 |
+    | `nodejs22.x` | 2027-04-30 | 2027-07-29 | 2027-08-31 |
+    | `nodejs24.x` | 2028-04-30 | 2028-06-01 | 2028-07-01 |
+    | `python3.12` | 2028-10-31 | 2028-11-30 | 2029-01-10 |
+    | `python3.13` | 2029-06-30 | 2029-07-31 | 2029-08-31 |
+    | `dotnet8` | 2026-11-10 | 2027-07-29 | 2027-08-31 |
+
+    These are AWS's dates, from Lambda's
+    [runtimes page](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html); when AWS moves
+    them, open-infra follows.
 - **Where the function lives:** a function you create is your account's. Update and delete reach any
   function of your account, including one a CloudFormation stack made, as on AWS. A name is unique in
   the account: `ResourceConflictException` if it is taken.

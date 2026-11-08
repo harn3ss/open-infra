@@ -6,6 +6,16 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — Lambda runtimes follow AWS's deprecation dates
+- **Each runtime carries AWS's three dates:** deprecation, block create and block update.
+  - From deprecation, the console offers it disabled.
+  - From block create, the Lambda API and CloudFormation refuse a new function on it, with Lambda's message.
+  - From block update, they also refuse a change to one, unless the change moves it to a supported runtime.
+- **A function on a deprecated runtime is invoked as before.**
+- **Today:** `nodejs20.x` is deprecated, so the console offers it disabled. The API and CloudFormation
+  still take it until 2027-07-29 (create) and 2027-08-31 (update), as AWS does. `dotnet8` is deprecated
+  from 2026-11-10.
+
 ### Fixed — clearing a function's variables, and deleting its last alias, last
 - **Before:** `update-function-configuration` with no variables, like deleting a function's last alias or
   version, answered success and the old values came back: Crossplane copies a claim's spec to its composite

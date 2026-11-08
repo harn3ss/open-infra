@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -410,5 +411,42 @@ func TestCreateFunction_PassedToServiceLambda(t *testing.T) {
 	}
 	if ok, _ := callerMayPassRole(r.Context(), csWithSAR(true), authz, testUser, "default", "exec", lambdaService, r); !ok {
 		t.Fatal("PassRole to Lambda passes a role to Lambda")
+	}
+}
+
+// A runtime past AWS's dates is refused as Lambda refuses it: no new function from its block-create date;
+// from its block-update date no change to a function on it, except a move to a supported runtime.
+func TestLambdaAPI_RuntimePastAWSsDates(t *testing.T) {
+	defer func(c func() time.Time) { lambdaRuntimeClock = c }(lambdaRuntimeClock)
+	at := func(s string) func() time.Time {
+		return func() time.Time { d, _ := time.Parse("2006-01-02", s); return d }
+	}
+
+	lambdaRuntimeClock = at("2026-11-08") // nodejs20.x is deprecated, still created through the API, as on AWS
+	h, _, _ := manageFixture(t, nil)
+	if w := serveWith(h, lambdaReq(http.MethodPost, "/2015-03-31/functions", lmCreateBody(t, map[string]any{"Runtime": "nodejs20.x"})), testUser); w.Code != http.StatusCreated {
+		t.Fatalf("a deprecated runtime before its block-create date: %d %s", w.Code, w.Body)
+	}
+
+	lambdaRuntimeClock = at("2027-07-30")
+	h, _, _ = manageFixture(t, nil)
+	w := serveWith(h, lambdaReq(http.MethodPost, "/2015-03-31/functions", lmCreateBody(t, map[string]any{"Runtime": "nodejs20.x"})), testUser)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "The runtime parameter of nodejs20.x is no longer supported for creating or updating AWS Lambda functions") {
+		t.Fatalf("after its block-create date: %d %s", w.Code, w.Body)
+	}
+
+	lambdaRuntimeClock = at("2027-09-01") // the fixture's function runs nodejs20
+	h, dyn, _ := manageFixture(t, nil, zipFunction("default", "orders"))
+	if w := serveWith(h, lambdaReq(http.MethodPut, "/2015-03-31/functions/orders/configuration", map[string]any{"Timeout": 5}), testUser); w.Code != http.StatusBadRequest {
+		t.Fatalf("a change to a function on a runtime past its block-update date: %d %s", w.Code, w.Body)
+	}
+	if w := serveWith(h, lambdaReq(http.MethodPut, "/2015-03-31/functions/orders/configuration", map[string]any{"Runtime": "nodejs22.x"}), testUser); w.Code != http.StatusBadRequest {
+		t.Fatalf("a move to a runtime itself past its block-update date: %d %s", w.Code, w.Body)
+	}
+	if w := serveWith(h, lambdaReq(http.MethodPut, "/2015-03-31/functions/orders/configuration", map[string]any{"Runtime": "nodejs24.x"}), testUser); w.Code != http.StatusOK {
+		t.Fatalf("a move to a supported runtime: %d %s", w.Code, w.Body)
+	}
+	if rt, _, _ := unstructured.NestedString(getClaim(t, dyn, "default", "orders").Object, "spec", "code", "runtime"); rt != "nodejs24" {
+		t.Fatalf("the function moved to %q", rt)
 	}
 }

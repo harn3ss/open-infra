@@ -371,7 +371,10 @@ S3 the front door reads.
 
 A Lambda with a `.zip` deployment package, the default `PackageType`, runs its code on a managed
 runtime, as on AWS:
-- **`Runtime`**: `nodejs20.x`, `nodejs22.x`, `nodejs24.x`, `python3.12`, `python3.13` or `dotnet8`. Any other runtime is
+- **`Runtime`**: `nodejs20.x`, `nodejs22.x`, `nodejs24.x`, `python3.12`, `python3.13` or `dotnet8`. A runtime
+  past AWS's dates is refused as Lambda refuses it: a new function from its block-create date, a change to
+  a function the stack already has from its block-update date
+  ([the dates](serverless.md#creating-and-changing-functions-with-the-lambda-api)). Any other runtime is
   refused at plan, with this list. Older ones and `provided.*` aren't run.
 - **`Handler`**: as Lambda reads it, for example `index.handler`.
 

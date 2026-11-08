@@ -115,6 +115,15 @@ type stackCtx struct {
 	signalURL func(stackName, handleID string) string
 }
 
+// exists reports whether the stack being updated already has resource id (otherwise the operation creates
+// it).
+func (c *stackCtx) exists(id string) bool {
+	return c != nil && c.namer != nil && c.namer.prior[id] != ""
+}
+
+// lambdaClock is the time Lambda runtime dates are compared with (tests move it).
+var lambdaClock = time.Now
+
 // refTarget returns the logical id a raw property references, if it is a bare `{Ref: X}`.
 func refTarget(rawProp any) (string, bool) {
 	m, ok := rawProp.(map[string]any)
@@ -500,6 +509,11 @@ func lambdaZipCode(id string, props, code map[string]any, ctx *stackCtx) (map[st
 		fin(fmt.Sprintf("Runtime %q is not a runtime open-infra runs; the supported runtimes are %s", rt, lambdaRuntimeList))
 	default:
 		out["runtime"] = runtime
+		// A runtime past AWS's dates is refused as Lambda refuses it: a new function from its block-create
+		// date, a change to one the stack has from its block-update date (lambda_runtimes.go).
+		if msg := LambdaRuntimeRefusal(rt, ctx.exists(id), lambdaClock()); msg != "" {
+			fin(msg)
+		}
 	}
 	handler, _ := concrete(props["Handler"])
 	if handler == "" {
