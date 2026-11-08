@@ -6858,6 +6858,13 @@
       "service": "RDS",
       "tier": "proven"
     },
+    "route53resolver": {
+      "actions": 1,
+      "class": "aws",
+      "operations": 33,
+      "service": "Route 53 Resolver",
+      "tier": "gated"
+    },
     "s3": {
       "actions": 0,
       "class": "aws",
@@ -6955,11 +6962,11 @@
       "total": 163
     },
     "services": {
-      "aws": 33,
+      "aws": 34,
       "extra": 0,
       "operator": 0,
       "removed": 0,
-      "total": 33
+      "total": 34
     }
   }
 }

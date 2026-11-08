@@ -25,7 +25,7 @@ var SupportedServices = map[string]bool{
 	"ses": true, "apigateway": true, "cloudwatch": true, "cloudfront": true,
 	"iam": true, "states": true, "cloudformation": true, "appsync": true, "acm": true,
 	"cognito-idp": true, "glue": true, "athena": true, "eks": true, "events": true,
-	"servicequotas": true,
+	"servicequotas": true, "route53resolver": true,
 	// sts: sts:AssumeRole on a role's ARN, which the caller's own policy must allow when the role's trust
 	// names only the caller's account (its root) or the role is another account's.
 	"sts": true,
@@ -627,6 +627,16 @@ func arnToResource(arn string) (string, bool) {
 	case "eks": // arn:aws:eks:<r>:<acct>:cluster/<name>
 		if r, ok := cut("cluster/", "Cluster"); ok && !strings.Contains(r, "/") {
 			return r, true
+		}
+	case "route53resolver": // arn:aws:route53resolver:<r>:<acct>:<type>/<id> — DNS Firewall and query logging
+		for _, m := range []struct{ prefix, typ string }{
+			{"firewall-domain-list/", "FirewallDomainList"}, {"firewall-rule-group/", "FirewallRuleGroup"},
+			{"firewall-rule-group-association/", "FirewallRuleGroupAssociation"}, {"firewall-config/", "FirewallConfig"},
+			{"resolver-query-log-config/", "ResolverQueryLogConfig"},
+		} {
+			if r, ok := cut(m.prefix, m.typ); ok && !strings.Contains(r, "/") {
+				return r, true
+			}
 		}
 	case "events": // event-bus/<name>; rule/<name> (the default bus) or rule/<bus>/<name> — the shim's Rule::[<bus>/]<name>
 		if r, ok := cut("event-bus/", "EventBus"); ok && !strings.Contains(r, "/") {

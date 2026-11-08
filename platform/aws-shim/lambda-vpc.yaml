@@ -8,10 +8,13 @@
 #    VPC's query logging; it refuses everyone else. Its address is fixed, at the VPC base + 2 AWS gives its
 #    resolver, in the statically-assigned band of the Service CIDR (10.43.0.0/24 on k3s and RKE2). On a
 #    cluster with another Service CIDR, change it here, in the EnvironmentConfig below and in the subnet's
-#    ACL (test/render checks the three agree).
-# 2. The openinfra-lambda-vpc EnvironmentConfig: the subnet a VPC function runs on, the resolver, and the
-#    Lambda service port (the aws-shim's :4568, lambda_service.go: a function's package and its role's
-#    credentials, which no security group filters, as on AWS).
+#    ACL, and the Lambda service's below and in the EnvironmentConfig (test/render checks they agree).
+# 2. The Lambda service (the aws-shim's :4568, lambda_service.go): a function's package and its role's
+#    credentials, which no security group filters, as on AWS. A VPC function reaches it by a fixed address,
+#    never by name, so the VPC's DNS Firewall — which may block every name — never stands between a function
+#    and its own code and credentials (on AWS, Lambda delivers both outside the function's network).
+# 3. The openinfra-lambda-vpc EnvironmentConfig: the subnet a VPC function runs on, the resolver, and the
+#    Lambda service.
 apiVersion: v1
 kind: Service
 metadata:
@@ -32,6 +35,44 @@ spec:
       port: 53
       targetPort: 5353
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lambda-service
+  namespace: open-infra-aws-shim
+  labels: { app: aws-shim }
+spec:
+  type: ClusterIP
+  clusterIP: 10.43.0.3
+  selector: { app: aws-shim }
+  ports:
+    - name: lambda-service
+      port: 4568
+      targetPort: 4568
+---
+# The flow-log delivery worker (ec2_flowlogs_delivery.go) skips the VPC resolver's own traffic, which AWS
+# never records, by the vpc-resolver Service's endpoints: list on EndpointSlices, in this namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-endpointslices
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-endpointslices
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-endpointslices }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 apiVersion: apiextensions.crossplane.io/v1alpha1
 kind: EnvironmentConfig
 metadata:
@@ -39,4 +80,4 @@ metadata:
 data:
   subnet: openinfra-lambda-vpc
   resolver: 10.43.0.2
-  lambdaService: http://aws-shim.open-infra-aws-shim.svc.cluster.local:4568
+  lambdaService: http://10.43.0.3:4568

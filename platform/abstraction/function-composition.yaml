@@ -136,7 +136,7 @@ spec:
             {{- $inVpc := gt (len ($vpcCfg.subnetIds | default list)) 0 }}
             {{- $lvSubnet := "openinfra-lambda-vpc" }}
             {{- $lvResolver := "10.43.0.2" }}
-            {{- $lvService := "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4568" }}
+            {{- $lvService := "http://10.43.0.3:4568" }}
             {{- if $inVpc }}
             {{-   if $spec.securityGroups }}{{- fail "Lambda function: a function in a VPC takes its security groups from its VPC configuration (vpcConfig.securityGroupIds), not securityGroups" }}{{- end }}
             {{-   range $i := (((index (.extraResources | default dict) "lambda-vpc") | default dict).items | default list) }}

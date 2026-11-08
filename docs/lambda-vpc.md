@@ -75,6 +75,17 @@ aws route53resolver associate-firewall-rule-group --creator-request-id f --firew
   --vpc-id <vpc> --priority 101 --name walled-garden
 ```
 
+A walled garden blocks every name it does not allow, the function's own AWS endpoint included: the platform
+gives a function in a VPC its AWS endpoint by its cluster name (`aws-shim.open-infra-aws-shim.svc.cluster.local`,
+which `*.cluster.local` above allows), as on AWS a walled garden must allow the `amazonaws.com` names the
+function calls. The Lambda service is reached by address, never by name, so a firewall cannot stop a function
+from getting its own code and credentials.
+
+Rule groups are evaluated in association priority (101–9899, lowest first; AWS keeps 100 and 9900 for
+Firewall Manager). If the VPC's firewall cannot be read, its queries fail closed (`SERVFAIL`) unless
+`update-firewall-config --firewall-fail-open ENABLED`. An `OVERRIDE` answer is the CNAME to
+`BlockOverrideDomain` with that name's own answer; the blocked name is never looked up.
+
 Domain names match as DNS Firewall matches them, ignoring case and a trailing dot:
 - `example.com` matches only itself;
 - a leading `*` matches any name that ends with the rest, so `*.example.com` matches the subdomains but not
@@ -88,7 +99,7 @@ Domain names match as DNS Firewall matches them, ignoring case and a trailing do
     then `associate-resolver-query-log-config --resource-id <vpc>`.
   - Each query from a function in the VPC is one JSON record in AWS's format: `query_name`, `query_type`,
     `rcode`, the answers, `srcaddr`, and `firewall_rule_action` / `firewall_rule_group_id` /
-    `firewall_domain_list_id` when an `ALERT` or `BLOCK` rule matched.
+    `firewall_domain_list_id` when an `ALERT` or `BLOCK` rule matched. The log stream is the VPC's id.
   - A `BLOCK` record is the resolver's own statement that it answered without resolving the name.
 - **Refused connections:**
   - `aws ec2 create-flow-logs --resource-type VPC|Subnet|NetworkInterface --resource-ids … --traffic-type
@@ -97,8 +108,11 @@ Domain names match as DNS Firewall matches them, ignoring case and a trailing do
     `describe-flow-logs` shows `DeliverLogsStatus FAILED`.
   - Each record is in the default format (version 2): interface, source and destination address and port,
     protocol, packets, start, end, `REJECT`.
-  - One log stream per network interface, published per aggregation window (`--max-aggregation-interval`
-    60 or 600 seconds).
+  - One log stream per network interface (`<eni-id>-all`), published a minute or two after each aggregation
+    window closes (`--max-aggregation-interval` 60 or 600 seconds).
+  - A custom `--log-format` may use the fields the platform can fill truthfully (versions 2–4 and
+    `${flow-direction}`); a field it cannot fill is refused, never written empty.
+  - Creating one takes `iam:PassRole` on the delivery role, passed to `vpc-flow-logs.amazonaws.com`.
 - **Who may read them:** both are ordinary CloudWatch Logs groups. Reading them takes `logs:*` permissions
   on those groups alone, not access to the function's own logs (`/aws/lambda/<function>`), which can carry
   its environment.

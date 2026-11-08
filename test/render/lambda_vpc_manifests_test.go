@@ -60,6 +60,9 @@ func TestLambdaVPC_SettingsAgree(t *testing.T) {
 	}
 
 	svc := find(vpc, `lambdaService: (\S+)`)
+	if want := "http://" + find(vpc, `name: lambda-service\n(?:.*\n)*?  clusterIP: (\S+)`) + ":4568"; svc != want {
+		t.Errorf("the EnvironmentConfig's Lambda service %s is not the lambda-service Service's address %s", svc, want)
+	}
 	if def := find(comp, `\$lvService := "([^"]+)"`); def != svc {
 		t.Errorf("the composition's Lambda service default %s is not the EnvironmentConfig's %s", def, svc)
 	}

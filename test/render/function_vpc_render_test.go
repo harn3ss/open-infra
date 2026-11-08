@@ -38,8 +38,8 @@ func TestFunction_VpcConfig(t *testing.T) {
 		"dnsPolicy: None",
 		`nameservers: [ "10.43.0.2" ]`,
 		`searches: [ "acct.svc.cluster.local", "svc.cluster.local", "cluster.local" ]`,
-		`OPENINFRA_CODE_URL, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4568/v1/function-code"`,
-		`AWS_ENDPOINT_URL_STS, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4568"`,
+		`OPENINFRA_CODE_URL, value: "http://10.43.0.3:4568/v1/function-code"`,
+		`AWS_ENDPOINT_URL_STS, value: "http://10.43.0.3:4568"`,
 		// the handler's own AWS calls stay on the front door, subject to its security groups
 		`AWS_ENDPOINT_URL, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566"`,
 		"matchName: openinfra-lambda-vpc",

@@ -181,6 +181,16 @@ func ResourceARN(res string) (string, bool) {
 		return arn("events", "event-bus/"+id)
 	case "Rule":
 		return arn("events", "rule/"+id)
+	case "FirewallDomainList":
+		return arn("route53resolver", "firewall-domain-list/"+id)
+	case "FirewallRuleGroup":
+		return arn("route53resolver", "firewall-rule-group/"+id)
+	case "FirewallRuleGroupAssociation":
+		return arn("route53resolver", "firewall-rule-group-association/"+id)
+	case "FirewallConfig":
+		return arn("route53resolver", "firewall-config/"+id)
+	case "ResolverQueryLogConfig":
+		return arn("route53resolver", "resolver-query-log-config/"+id)
 	}
 	return "", false
 }
