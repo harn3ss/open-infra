@@ -72,10 +72,8 @@ func TestRDS_SnapshotsOutliveTheVolume(t *testing.T) {
 // DeleteDBInstance with a final snapshot removes the instance only once the snapshot has completed; the
 // snapshot then restores with no source instance, its settings and master credential kept with it.
 func TestRDS_FinalSnapshotThenRestoreWithoutTheSource(t *testing.T) {
-	prevWait := rdsFinalSnapshotWait
-	rdsFinalSnapshotWait = 0 // the background finisher stops at once; Describe finishes the delete
-	defer func() { rdsFinalSnapshotWait = prevWait }()
 	h := rdsAccountsHandler(t)
+	h.finalSnapshotWait = 0 // the background finisher stops at once; Describe finishes the delete
 	mgmt := mgmtDoorCaller()
 	if code, body := rdsCall(t, h, mgmt, createDB("orders")); code != http.StatusOK {
 		t.Fatalf("create: %d %s", code, body)
@@ -142,10 +140,8 @@ func TestRDS_FinalSnapshotThenRestoreWithoutTheSource(t *testing.T) {
 
 // A final snapshot that fails never takes its instance with it: the instance is kept, no longer deleting.
 func TestRDS_FailedFinalSnapshotKeepsTheInstance(t *testing.T) {
-	prevWait := rdsFinalSnapshotWait
-	rdsFinalSnapshotWait = 0
-	defer func() { rdsFinalSnapshotWait = prevWait }()
 	h := rdsAccountsHandler(t)
+	h.finalSnapshotWait = 0
 	mgmt := mgmtDoorCaller()
 	if code, body := rdsCall(t, h, mgmt, createDB("orders")); code != http.StatusOK {
 		t.Fatalf("create: %d %s", code, body)
@@ -278,10 +274,8 @@ func TestRDS_ModifyAppliesOrRefuses(t *testing.T) {
 // stamped again meanwhile (the first stamp can reach it before its copy of the Secret has the change), and
 // the follow-up stops once it is applied.
 func TestRDS_PasswordChangeIsFollowedUntilApplied(t *testing.T) {
-	prevWait, prevPoll := rdsPasswordWait, rdsPasswordPoll
-	rdsPasswordWait, rdsPasswordPoll = 5*time.Second, 20*time.Millisecond
-	defer func() { rdsPasswordWait, rdsPasswordPoll = prevWait, prevPoll }()
 	h := rdsAccountsHandler(t)
+	h.passwordWait, h.passwordPoll = 5*time.Second, 20*time.Millisecond
 	if code, body := rdsCall(t, h, mgmtDoorCaller(), createDB("orders")); code != http.StatusOK {
 		t.Fatalf("create: %d %s", code, body)
 	}

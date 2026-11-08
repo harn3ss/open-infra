@@ -59,6 +59,10 @@ type rdsHandler struct {
 	region  string
 	authz   *dataplaneauthz.Checker
 	logger  *slog.Logger
+	// The background follow-ups' bounds (newRDSHandler sets them; tests shorten them): how long a delete
+	// waits for its final snapshot, and how long a password change is followed until it is applied.
+	finalSnapshotWait, finalSnapshotPoll time.Duration
+	passwordWait, passwordPoll           time.Duration
 }
 
 // arnAccount is the account of the request's ARNs: the install's for the management account, the member
@@ -83,7 +87,9 @@ func newRDSHandler(cs kubernetes.Interface, cnpg *rdsCNPG, authzNS, account, reg
 	if region == "" {
 		region = "us-east-1"
 	}
-	return &rdsHandler{cs: cs, cnpg: cnpg, authzNS: authzNS, account: account, region: region, logger: logger}
+	return &rdsHandler{cs: cs, cnpg: cnpg, authzNS: authzNS, account: account, region: region, logger: logger,
+		finalSnapshotWait: 2 * time.Hour, finalSnapshotPoll: 10 * time.Second,
+		passwordWait: 5 * time.Minute, passwordPoll: 10 * time.Second}
 }
 
 func (h *rdsHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
@@ -461,16 +467,13 @@ func (h *rdsHandler) modifyDBInstance(ctx context.Context, w http.ResponseWriter
 	h.writeInstanceResponse(ctx, w, requestID, "ModifyDBInstance", v)
 }
 
-// rdsPasswordWait bounds how long a password change is followed until CloudNativePG has applied it.
-var rdsPasswordWait, rdsPasswordPoll = 5 * time.Minute, 10 * time.Second
-
 // confirmPasswordLater stamps the Cluster again until CloudNativePG reports the new password applied: the
 // first stamp can reach it before its copy of the Secret has the new password, and it would then not look
 // again.
 func (h *rdsHandler) confirmPasswordLater(ns, id, user, rv string) {
-	ctx, cancel := context.WithTimeout(context.Background(), rdsPasswordWait)
+	ctx, cancel := context.WithTimeout(context.Background(), h.passwordWait)
 	defer cancel()
-	t := time.NewTicker(rdsPasswordPoll)
+	t := time.NewTicker(h.passwordPoll)
 	defer t.Stop()
 	for {
 		select {
@@ -576,15 +579,12 @@ func (h *rdsHandler) deleteDBInstance(ctx context.Context, w http.ResponseWriter
 	h.writeInstanceResponse(ctx, w, requestID, "DeleteDBInstance", v)
 }
 
-// rdsFinalSnapshotWait bounds how long a delete waits for its final snapshot in the background; a delete
-// still waiting then is finished by the next DescribeDBInstances that sees it.
-var rdsFinalSnapshotWait, rdsFinalSnapshotPoll = 2 * time.Hour, 10 * time.Second
-
 // finishDeleteLater removes instance ns/id once its final snapshot has completed (finishDelete).
 func (h *rdsHandler) finishDeleteLater(ns, id string) {
-	ctx, cancel := context.WithTimeout(context.Background(), rdsFinalSnapshotWait)
+	// A delete still waiting after finalSnapshotWait is finished by the next DescribeDBInstances that sees it.
+	ctx, cancel := context.WithTimeout(context.Background(), h.finalSnapshotWait)
 	defer cancel()
-	t := time.NewTicker(rdsFinalSnapshotPoll)
+	t := time.NewTicker(h.finalSnapshotPoll)
 	defer t.Stop()
 	for {
 		waiting, err := h.cnpg.finishDelete(ctx, ns, id)
