@@ -243,7 +243,7 @@ func TestLambdaZip_S3PackageNeedsTheFrontDoor(t *testing.T) {
 // What a zip Lambda refuses, with the reason AWS would give or the supported list.
 func TestLambdaZip_Refusals(t *testing.T) {
 	cases := []struct{ name, from, to, want string }{
-		{"unsupported runtime", "nodejs22.x", "nodejs18.x", "the supported runtimes are nodejs20.x, nodejs22.x, nodejs24.x, python3.12, python3.13 and dotnet8"},
+		{"unsupported runtime", "nodejs22.x", "nodejs14.x", "the supported runtimes are nodejs16.x, nodejs18.x, nodejs20.x, nodejs22.x, nodejs24.x, python3.8, python3.9, python3.10, python3.11, python3.12, python3.13, python3.14 and dotnet8"},
 		{"provided runtime", "nodejs22.x", "provided.al2023", "is not a runtime open-infra runs"},
 		{"no runtime", "      Runtime: nodejs22.x\n", "", "Runtime is required"},
 		{"handler not index", "Handler: index.handler", "Handler: app.handler", "must start with index."},

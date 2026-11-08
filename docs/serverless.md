@@ -242,8 +242,10 @@ aws lambda delete-function --function-name orders
     `The role defined for the function cannot be assumed by Lambda.`
   - The same checks run when `update-function-configuration` names a role.
 - **The code** is a .zip (`--zip-file`, up to 50 MB) or an S3 object (`--s3-bucket`/`--s3-key`, plus
-  `--s3-object-version`), on one of the managed runtimes: `nodejs20.x`, `nodejs22.x`, `nodejs24.x`,
-  `python3.12`, `python3.13` or `dotnet8`.
+  `--s3-object-version`), on one of the managed runtimes: `nodejs16.x` to `nodejs24.x`, `python3.8`
+  to `python3.14`, or `dotnet8`. These are the Node.js, Python and .NET runtimes AWS Lambda still creates
+  functions on, deprecated ones included. A deprecated runtime runs as AWS provides one, as-is: its
+  interpreter gets no more upstream security fixes.
   - **An S3 object is read with your permissions:** you need `s3:GetObject` on it.
   - **The package is stored as Lambda stores one:** a later change to the S3 object does not change the
     function. `CodeSha256` and `CodeSize` report the stored package.
@@ -258,11 +260,18 @@ aws lambda delete-function --function-name orders
 
     | Runtime | Deprecated | Block create | Block update |
     |---|---|---|---|
+    | `nodejs16.x` | 2024-06-12 | 2027-07-29 | 2027-08-31 |
+    | `nodejs18.x` | 2025-09-01 | 2027-07-29 | 2027-08-31 |
     | `nodejs20.x` | 2026-04-30 | 2027-07-29 | 2027-08-31 |
     | `nodejs22.x` | 2027-04-30 | 2027-07-29 | 2027-08-31 |
     | `nodejs24.x` | 2028-04-30 | 2028-06-01 | 2028-07-01 |
+    | `python3.8` | 2024-10-14 | 2027-07-29 | 2027-08-31 |
+    | `python3.9` | 2025-12-15 | 2027-07-29 | 2027-08-31 |
+    | `python3.10` | 2026-10-31 | 2027-07-29 | 2027-08-31 |
+    | `python3.11` | 2027-06-30 | 2027-07-29 | 2027-08-31 |
     | `python3.12` | 2028-10-31 | 2028-11-30 | 2029-01-10 |
     | `python3.13` | 2029-06-30 | 2029-07-31 | 2029-08-31 |
+    | `python3.14` | 2029-06-30 | 2029-07-31 | 2029-08-31 |
     | `dotnet8` | 2026-11-10 | 2027-07-29 | 2027-08-31 |
 
     These are AWS's dates, from Lambda's

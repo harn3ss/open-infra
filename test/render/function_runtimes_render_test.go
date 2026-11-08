@@ -23,6 +23,13 @@ func TestFunction_RuntimeImages(t *testing.T) {
 		"nodejs20":   "ghcr.io/harn3ss/open-infra-lambda-nodejs:latest",
 		"nodejs22":   "ghcr.io/harn3ss/open-infra-lambda-nodejs22:latest",
 		"nodejs24":   "ghcr.io/harn3ss/open-infra-lambda-nodejs24:latest",
+		"nodejs16":   "ghcr.io/harn3ss/open-infra-lambda-nodejs16:latest",
+		"nodejs18":   "ghcr.io/harn3ss/open-infra-lambda-nodejs18:latest",
+		"python3.8":  "ghcr.io/harn3ss/open-infra-lambda-python38:latest",
+		"python3.9":  "ghcr.io/harn3ss/open-infra-lambda-python39:latest",
+		"python3.10": "ghcr.io/harn3ss/open-infra-lambda-python310:latest",
+		"python3.11": "ghcr.io/harn3ss/open-infra-lambda-python311:latest",
+		"python3.14": "ghcr.io/harn3ss/open-infra-lambda-python314:latest",
 		"dotnet8":    "ghcr.io/harn3ss/open-infra-lambda-dotnet:latest",
 	} {
 		out := render(t, tmpl, ctx(runtime))

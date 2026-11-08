@@ -8,7 +8,9 @@
 #      (AWS_Lambda_nodejs24.x) and the ARN it was invoked by (context.invokedFunctionArn);
 #   2. packaged code: a template run through `aws cloudformation package` against the shim's S3 (Code.S3Bucket
 #      + S3Key, Runtime python3.12) deploys, and `aws lambda invoke` returns the handler's result;
-#   3. an unsupported Runtime (nodejs18.x) is refused, naming the supported runtimes;
+#   1c. runtimes AWS has deprecated but still creates functions on deploy and run on their own interpreter
+#      (nodejs18.x, python3.9), seeing Lambda's AWS_EXECUTION_ENV;
+#   3. an unsupported Runtime (nodejs14.x, which AWS no longer creates either) is refused, naming the supported runtimes;
 #   4. DENIAL: a deployer whose policy grants s3:GetObject on another prefix only (an assumed role) cannot
 #      deploy a package it may not read — the stack fails with Lambda's AccessDenied message, as AWS refuses.
 #
@@ -26,7 +28,7 @@ ENDPOINT="${SHIM_ENDPOINT:-http://aws-shim.${SHIM_NS}.svc.cluster.local:4566}"
 REGION="${AWS_REGION:-us-east-1}"
 SFX="$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 BUCKET="lzip-probe-$SFX"
-INLINE_STACK="lzip-inline-$SFX"; N24_STACK="lzip-n24-$SFX"; PKG_STACK="lzip-pkg-$SFX"; BAD_STACK="lzip-bad-$SFX"; DENY_STACK="lzip-deny-$SFX"
+INLINE_STACK="lzip-inline-$SFX"; N24_STACK="lzip-n24-$SFX"; N18_STACK="lzip-n18-$SFX"; P39_STACK="lzip-p39-$SFX"; PKG_STACK="lzip-pkg-$SFX"; BAD_STACK="lzip-bad-$SFX"; DENY_STACK="lzip-deny-$SFX"
 DEPLOYER_ROLE="lzip-deployer-$SFX"; BUCKET_STACK="lzip-bucket-$SFX"
 
 log()  { printf '▸ %s\n' "$*"; }
@@ -54,7 +56,7 @@ cleanup() {
   set +e
   unset AWS_SESSION_TOKEN
   [ -n "${ADMIN_AK:-}" ] && export AWS_ACCESS_KEY_ID="$ADMIN_AK" AWS_SECRET_ACCESS_KEY="$ADMIN_SK"
-  for s in "$DENY_STACK" "$BAD_STACK" "$PKG_STACK" "$N24_STACK" "$INLINE_STACK"; do stack_gone "$s"; done
+  for s in "$DENY_STACK" "$BAD_STACK" "$PKG_STACK" "$P39_STACK" "$N18_STACK" "$N24_STACK" "$INLINE_STACK"; do stack_gone "$s"; done
   "${A[@]}" s3 rm "s3://$BUCKET" --recursive >/dev/null 2>&1
   stack_gone "$BUCKET_STACK"
   if [ -n "$ROLE_MADE" ]; then
@@ -162,6 +164,26 @@ assert r.get("arn", "").startswith("arn:aws:lambda:") and r["arn"].endswith(":fu
 PY
 ok "nodejs24.x runs Node 24; AWS_EXECUTION_ENV=AWS_Lambda_nodejs24.x; invokedFunctionArn is the function's ARN"
 
+log "1c. runtimes AWS has deprecated but still creates functions on: nodejs18.x and python3.9"
+sed -e 's/Runtime: nodejs24.x/Runtime: nodejs18.x/' "$W/n24.yaml" > "$W/n18.yaml"
+sed -e 's/Runtime: nodejs22.x/Runtime: python3.9/' \
+    -e 's|exports.handler = async (event) => .*|import os, sys\n          def handler(event, context):\n              return {"greeting": "hello " + event["name"], "env": os.environ.get("AWS_EXECUTION_ENV"), "python": "%d.%d" % sys.version_info[:2]}|' \
+    "$W/inline.yaml" > "$W/p39.yaml"
+for pair in "n18:$N18_STACK" "p39:$P39_STACK"; do
+  f="${pair%%:*}"; st="${pair#*:}"
+  "${A[@]}" cloudformation deploy --template-file "$W/$f.yaml" --stack-name "$st" --capabilities CAPABILITY_IAM >"$W/d$f" 2>&1 \
+    || fail "the $f stack did not deploy: $(tail -c 600 "$W/d$f")"
+  fn="$("${A[@]}" cloudformation describe-stacks --stack-name "$st" --query "Stacks[0].Outputs[?OutputKey=='FnName'].OutputValue" --output text)"
+  invoke "$fn" '{"name":"probe"}' "$W/out$f.json" || fail "lambda invoke $fn failed: $(tail -c 400 "$W/inv")"
+done
+python3 - "$W/outn18.json" "$W/outp39.json" <<'PY' || fail "the deprecated runtimes' results are wrong: $(cat "$W/outn18.json") $(cat "$W/outp39.json")"
+import json, sys
+n, p = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+assert n.get("greeting") == "hello probe" and n.get("node") == "18" and n.get("env") == "AWS_Lambda_nodejs18.x", n
+assert p.get("greeting") == "hello probe" and p.get("python") == "3.9" and p.get("env") == "AWS_Lambda_python3.9", p
+PY
+ok "nodejs18.x runs Node 18 and python3.9 runs Python 3.9, each with Lambda's AWS_EXECUTION_ENV"
+
 # ── 2. packaged code ───────────────────────────────────────────────────────────────────────────────────
 log "2. packaged code (aws cloudformation package → Code.S3Bucket/S3Key, python3.12)"
 mkdir -p "$W/src"
@@ -203,19 +225,19 @@ PY
 ok "lambda invoke → {\"sum\":5} from the stored package"
 
 # ── 3. an unsupported runtime ──────────────────────────────────────────────────────────────────────────
-log "3. an unsupported Runtime (nodejs18.x) is refused, naming the supported runtimes"
-sed 's/nodejs22.x/nodejs18.x/' "$W/inline.yaml" > "$W/bad.yaml"
+log "3. an unsupported Runtime (nodejs14.x) is refused, naming the supported runtimes"
+sed 's/nodejs22.x/nodejs14.x/' "$W/inline.yaml" > "$W/bad.yaml"
 if "${A[@]}" cloudformation create-stack --stack-name "$BAD_STACK" --template-body "file://$W/bad.yaml" --capabilities CAPABILITY_IAM >"$W/b" 2>&1; then
   for _ in $(seq 1 30); do
     st="$("${A[@]}" cloudformation describe-stacks --stack-name "$BAD_STACK" --query 'Stacks[0].[StackStatus,StackStatusReason]' --output text 2>&1 || true)"
     case "$st" in *_IN_PROGRESS*) sleep 3 ;; *) break ;; esac
   done
   echo "$st" > "$W/b"
-  case "$st" in CREATE_COMPLETE*) fail "a nodejs18.x function was created" ;; esac
+  case "$st" in CREATE_COMPLETE*) fail "a nodejs14.x function was created" ;; esac
 fi
-grep -q "the supported runtimes are nodejs20.x, nodejs22.x, nodejs24.x, python3.12, python3.13 and dotnet8" "$W/b" \
+grep -q "the supported runtimes are nodejs16.x, nodejs18.x, nodejs20.x, nodejs22.x, nodejs24.x, python3.8, python3.9, python3.10, python3.11, python3.12, python3.13, python3.14 and dotnet8" "$W/b" \
   || fail "the refusal does not name the supported runtimes: $(tail -c 600 "$W/b")"
-ok "refused: $(grep -o 'Runtime "nodejs18.x"[^;]*' "$W/b" | head -1 | cut -c1-80)…"
+ok "refused: $(grep -o 'Runtime "nodejs14.x"[^;]*' "$W/b" | head -1 | cut -c1-80)…"
 
 # ── 4. denial: a package the deployer may not read ─────────────────────────────────────────────────────
 log "4. DENIAL: a deployer that may read only $BUCKET/allowed/* deploys a package under denied/"

@@ -66,8 +66,8 @@ spec:
                   properties:
                     runtime:
                       type: string
-                      enum: [python3.12, python3.13, nodejs20, nodejs22, nodejs24, dotnet8]
-                      description: "Managed runtime base image the handler runs on: python3.12 / python3.13 (handler '<module>.<function>'), nodejs20 / nodejs22 / nodejs24 (handler '<file>.<export>', CommonJS or ESM — a .mjs file, or a .js file with \"type\":\"module\" in package.json, loads as ESM), or dotnet8 (handler 'Assembly::Namespace.Type::Method', a published .NET build; v1 signatures Method(input) / Method(input, ILambdaContext), sync or Task). This enum is the set open-infra vouches for; for anything else use runtimeImage."
+                      enum: [python3.8, python3.9, python3.10, python3.11, python3.12, python3.13, python3.14, nodejs16, nodejs18, nodejs20, nodejs22, nodejs24, dotnet8]
+                      description: "Managed runtime base image the handler runs on: python3.8 to python3.14 (handler '<module>.<function>'), nodejs16 to nodejs24 (handler '<file>.<export>', CommonJS or ESM — a .mjs file, or a .js file with \"type\":\"module\" in package.json, loads as ESM), or dotnet8 (handler 'Assembly::Namespace.Type::Method', a published .NET build; v1 signatures Method(input) / Method(input, ILambdaContext), sync or Task). This enum is the set of AWS Lambda runtimes open-infra runs, deprecated ones included while AWS still creates functions on them (each follows AWS's deprecation dates through the Lambda API and CloudFormation); for anything else use runtimeImage."
                     runtimeImage:
                       type: string
                       description: >-

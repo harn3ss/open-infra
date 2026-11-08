@@ -6,7 +6,8 @@
 # Built + pushed by .github/workflows/build-lambda-runtimes.yml as
 # ghcr.io/harn3ss/open-infra-lambda-nodejs. Plain interpreter; NOT FIPS (FIPS is a substrate property,
 # not a first-party image one — see docs).
-# NODE_VERSION selects the base (20 = the default image, 22 / 24 = the open-infra-lambda-nodejs22 / -nodejs24 builds) AND
+# NODE_VERSION selects the base (20 = the default image; 16, 18, 22 and 24 = the open-infra-lambda-nodejs<N>
+# builds; 16 and 18 are past their upstream end of life, as AWS's deprecated runtimes are) AND
 # the handler-facing AWS SDK it ships (@aws-sdk v3 for >=18, monolithic aws-sdk v2 for <=16 — matching
 # what AWS Lambda's own runtimes bundle). The bootstrap shim itself is version-independent.
 ARG NODE_VERSION=20
@@ -24,6 +25,8 @@ ARG NODE_VERSION
 # current SDK no longer depends on fast-xml-parser at all (verified across all 12 clients), so this pin
 # clears those 36 image CVEs by removing the package rather than patching it.
 ARG AWS_SDK_V3=3.1159.0
+# The SDK v3 for Node.js 18: 3.967.0 is its last release that supports Node.js 18 (3.968.0 needs 20).
+ARG AWS_SDK_V3_NODE18=3.967.0
 ARG AWS_SDK_V2=2.1692.0
 
 # unzip: Node has no stdlib zip-archive reader, so the bucket-source .zip is extracted with the system
@@ -40,10 +43,17 @@ ARG AWS_SDK_V2=2.1692.0
 # rm npm/npx: the runtime only runs `node bootstrap.js`; npm is used once at build for the SDK install
 #        then removed — its bundled node_modules (tar, minimatch, glob, sigstore, pacote, …) are
 #        build-tooling CVE surface that nothing here executes.
-RUN apt-get update \
+# Debian buster (the base of node:16) is archived: its packages are on archive.debian.org, without updates.
+RUN . /etc/os-release; if [ "$VERSION_CODENAME" = buster ]; then \
+      sed -i -e 's|deb.debian.org/debian-security|archive.debian.org/debian-security|' -e 's|deb.debian.org/debian|archive.debian.org/debian|' \
+        -e '/buster-updates/d' /etc/apt/sources.list ; \
+      echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive ; \
+    fi \
+ && apt-get update \
  && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends unzip ca-certificates \
  && if [ "${NODE_VERSION%%.*}" -ge 18 ] 2>/dev/null; then \
+      if [ "${NODE_VERSION%%.*}" -lt 20 ]; then AWS_SDK_V3="${AWS_SDK_V3_NODE18}"; fi ; \
       npm install -g \
         @aws-sdk/client-s3@${AWS_SDK_V3} @aws-sdk/client-dynamodb@${AWS_SDK_V3} \
         @aws-sdk/lib-dynamodb@${AWS_SDK_V3} @aws-sdk/client-sns@${AWS_SDK_V3} \

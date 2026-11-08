@@ -45,6 +45,15 @@ jobs:
           - { dir: python, image: open-infra-lambda-python313, cat: python313, args: "PY_VERSION=3.13" }
           - { dir: nodejs, image: open-infra-lambda-nodejs22,  cat: nodejs22,  args: "NODE_VERSION=22" }
           - { dir: nodejs, image: open-infra-lambda-nodejs24,  cat: nodejs24,  args: "NODE_VERSION=24" }
+          # Runtimes AWS has deprecated but still creates functions on until its block dates
+          # (cfn/lambda_runtimes.go), and the newer Pythons AWS runs.
+          - { dir: nodejs, image: open-infra-lambda-nodejs16,  cat: nodejs16,  args: "NODE_VERSION=16" }
+          - { dir: nodejs, image: open-infra-lambda-nodejs18,  cat: nodejs18,  args: "NODE_VERSION=18" }
+          - { dir: python, image: open-infra-lambda-python38,  cat: python38,  args: "PY_VERSION=3.8" }
+          - { dir: python, image: open-infra-lambda-python39,  cat: python39,  args: "PY_VERSION=3.9" }
+          - { dir: python, image: open-infra-lambda-python310, cat: python310, args: "PY_VERSION=3.10" }
+          - { dir: python, image: open-infra-lambda-python311, cat: python311, args: "PY_VERSION=3.11" }
+          - { dir: python, image: open-infra-lambda-python314, cat: python314, args: "PY_VERSION=3.14" }
     steps:
       - uses: actions/checkout@v7
 

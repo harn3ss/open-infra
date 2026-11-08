@@ -7,8 +7,11 @@
 # Built + pushed by .github/workflows/build-lambda-runtimes.yml as
 # ghcr.io/harn3ss/open-infra-lambda-python. Plain CGO-free interpreter; NOT FIPS
 # (FIPS is a substrate property, not a first-party image one — see docs).
-# PY_VERSION selects the base (3.12 = the default image, 3.13 = the open-infra-lambda-python313
-# build). The stdlib-only bootstrap shim is version-independent, so one Dockerfile builds both.
+# PY_VERSION selects the base (3.12 = the default image; 3.8, 3.9, 3.10, 3.11, 3.13 and 3.14 = the
+# open-infra-lambda-python<NN> builds). The stdlib-only bootstrap shim is version-independent, so one
+# Dockerfile builds them all. 3.8 to 3.10 are past their upstream end of life (AWS has deprecated them and
+# still creates functions on them until its block dates, cfn/lambda_runtimes.go): their base images and
+# the newest packages they can install are what they get.
 ARG PY_VERSION=3.12
 FROM python:${PY_VERSION}-slim
 
@@ -26,11 +29,13 @@ RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 # findings on the runtime image — urllib3 (pulled by botocore) CVE-2026-97687 + CVE-2026-97689,
 # setuptools (from the python base image) CVE-2025-47273, msgpack GHSA-6v7p-g79w-8964. botocore
 # allows urllib3 <3 on Python >=3.10, so these floors do not conflict with boto3's own pins.
-RUN pip install --no-cache-dir \
-      "boto3>=1.34,<2" \
-      "urllib3>=2.8.0" \
-      "msgpack>=1.2.1" \
-      "setuptools>=78.1.1" \
+# The floors need Python >= 3.10 (urllib3 2.8, msgpack 1.2) or 3.9 (setuptools 78): an older interpreter
+# gets the newest boto3 and packages that support it, which pip picks by their Requires-Python.
+RUN if python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then \
+      pip install --no-cache-dir "boto3>=1.34,<2" "urllib3>=2.8.0" "msgpack>=1.2.1" "setuptools>=78.1.1" ; \
+    else \
+      pip install --no-cache-dir "boto3>=1.34,<2" "urllib3" "msgpack" "setuptools" ; \
+    fi \
     && python -m pip uninstall -y pip \
     && rm -rf /root/.cache/pip
 # pip is a BUILD-time tool — the runtime only runs bootstrap.py (stdlib) + boto3; a handler brings its

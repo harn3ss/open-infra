@@ -51,6 +51,10 @@ func TestLambdaRuntimeRefusal_FollowsAWSsDates(t *testing.T) {
 	if m := LambdaRuntimeRefusal("dotnet8", false, at("2027-08-01")); !strings.HasSuffix(m, "functions.") || strings.Contains(m, "recommend") {
 		t.Errorf("dotnet8: %q", m)
 	}
+	// Of two runtimes AWS deprecates on one day, the newer version is the one recommended.
+	if m := LambdaRuntimeRefusal("python3.8", false, at("2027-08-01")); !strings.Contains(m, "(python3.14)") {
+		t.Errorf("python3.8: %q", m)
+	}
 	if LambdaRuntimeRefusal("ruby3.4", false, at("2030-01-01")) != "" {
 		t.Error("a runtime open-infra does not run is refused elsewhere, not here")
 	}
@@ -101,5 +105,28 @@ func TestLambdaRuntimes_TheConsoleHasTheSameDates(t *testing.T) {
 	}
 	for spec := range ui {
 		t.Errorf("console lists %s, which is not a runtime open-infra runs", spec)
+	}
+}
+
+// A runtime AWS has deprecated but still creates functions on deploys from a stack, as on AWS (here
+// nodejs18.x and python3.9 on 2026-11-08), on its own runtime image.
+func TestLambdaZip_DeprecatedRuntimesAWSStillCreatesDeploy(t *testing.T) {
+	defer func(c func() time.Time) { lambdaClock = c }(lambdaClock)
+	lambdaClock = func() time.Time { return day("2026-11-08") }
+	for rt, spec := range map[string]string{"nodejs18.x": "nodejs18", "nodejs16.x": "nodejs16", "python3.9": "python3.9", "python3.8": "python3.8"} {
+		fn := strings.Replace(inlineNodeFn, "nodejs22.x", rt, 1)
+		if strings.HasPrefix(rt, "python") {
+			fn = strings.NewReplacer("nodejs22.x", rt, "exports.handler = async (event) => ({ hello: event.name });", "def handler(event, context):\n            return {'hello': event['name']}").Replace(inlineNodeFn)
+		}
+		plan, err := BuildPlanForStack(zipTemplate(fn), nil, nil, "s", "", Capabilities{LambdaPackageStore: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Verdict == Rejected {
+			t.Errorf("%s: a runtime AWS still creates functions on must deploy, got %v", rt, plan.Blockers)
+		}
+		if got, _ := LambdaRuntime(rt); got != spec {
+			t.Errorf("%s runs as %q", rt, got)
+		}
 	}
 }

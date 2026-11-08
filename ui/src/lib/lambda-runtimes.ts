@@ -5,11 +5,18 @@
  * this console; the Lambda API and CloudFormation refuse later, from AWS's block-create date.
  */
 export const LAMBDA_RUNTIME_DEPRECATION: Record<string, string> = {
+  "nodejs16": "2024-06-12",
+  "nodejs18": "2025-09-01",
   "nodejs20": "2026-04-30",
   "nodejs22": "2027-04-30",
   "nodejs24": "2028-04-30",
+  "python3.8": "2024-10-14",
+  "python3.9": "2025-12-15",
+  "python3.10": "2026-10-31",
+  "python3.11": "2027-06-30",
   "python3.12": "2028-10-31",
   "python3.13": "2029-06-30",
+  "python3.14": "2029-06-30",
   "dotnet8": "2026-11-10",
 };
 

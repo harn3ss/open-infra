@@ -6,6 +6,17 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — every Node.js and Python runtime AWS Lambda still creates functions on
+- **New runtimes:** `nodejs16.x`, `nodejs18.x`, `python3.8`, `python3.9`, `python3.10`, `python3.11` and
+  `python3.14` join the runtimes the Lambda API, CloudFormation and `kind: Function` accept. A stack on
+  `nodejs18.x` that real CloudFormation deploys now deploys here too.
+- **AWS's dates apply:** each deprecated runtime is refused from AWS's block-create date (2027-07-29) and
+  block-update date (2027-08-31), as Lambda refuses it, and the console offers it disabled.
+- **The deprecated ones are end of life upstream.** They run as AWS provides a deprecated runtime, as-is,
+  with no more interpreter security fixes. Their images' known vulnerabilities show in the image scan.
+- **Each has its own image.** `nodejs16.x` uses the AWS SDK v2, as AWS's did. `nodejs18.x` uses SDK v3
+  3.967.0, the last release that supports Node.js 18.
+
 ### Fixed — a .NET function no longer dies when a probe connects as it starts
 - **Before:** `HttpListener.Start` throws an `ArgumentNullException` when a connection is already waiting
   as it first accepts, which is a .NET bug. A readiness probe hitting a starting .NET function could kill
