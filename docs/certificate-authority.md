@@ -143,7 +143,7 @@ mint leaf certs only for names the `issuer` role already allows, and can never m
 the allow-list.
 
 Each policy is bound to its SA by a Kubernetes-auth role (mirroring the `encryptionkey-reconciler` /
-`encryptionkey-destroyer` roles in `platform/security/vault.yaml`):
+`encryptionkey-destroyer` roles the `openbao-setup` Job writes, `platform/security/openbao.yaml`):
 
 ```sh
 bao write auth/kubernetes/role/ca-provisioner \

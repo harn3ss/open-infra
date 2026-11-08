@@ -207,7 +207,11 @@ fail. Existing encrypted volumes and running applications are not affected.
    keys once, waits until you confirm they are stored, and revokes the temporary root token. OpenBao then
    has no root token.
 5. **Clean up:** `scripts/vault-to-openbao.sh cleanup`. Vault stays sealed with the keys' last copy until it
-   is retired; then delete its volume and the credentials it no longer needs.
+   is retired. An install still to move sets `openbao.keepVault: true` so it keeps Vault until then.
+6. **Retire Vault** once the move is verified:
+   - Set `openbao.keepVault: false` (on a running install, exclude `security/vault.yaml` from the root
+     application) and delete namespace `vault`, volume included.
+   - Keep Vault's unseal keys only as long as a backup of its volume exists, then destroy them.
 
 **Rollback:** before the clients switch, unseal Vault (the run does this itself when it stops). After, revert
 the switch and unseal Vault with its keys; anything created in OpenBao since is not in Vault.
@@ -378,10 +382,6 @@ Every key the platform holds, how it is rotated, and who notices.
 
 ## What it does not do yet
 
-- **Vault is not retired yet.** The `encryption` component still deploys the old Vault server. On a new
-  install it is unused; on an install whose keys moved, it is a sealed last copy kept as the rollback.
-  Retiring it removes the server and its volume, and the setup Job moves to the `openbao` namespace with
-  it.
 - **Scheduled Raft snapshots** of the members are not configured yet; Velero's daily backup copies their
   volumes at file level.
 - **A new validated-domain CA** for a changed `certificates.validatedDomains` list is not automated with

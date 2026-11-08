@@ -260,6 +260,10 @@ openbao:
   # true once scripts/openbao-pki.sh has moved the platform's CAs into OpenBao (docs/openbao.md): the roots are
   # offline, and the ClusterIssuers sign through OpenBao intermediates. Leave false until then.
   platformCAs: false
+  # true only on an install whose keys are still in the HashiCorp Vault an earlier version ran: it keeps
+  # that Vault (security/vault.yaml) until scripts/vault-to-openbao.sh has moved them (docs/openbao.md).
+  # Every other install runs no Vault.
+  keepVault: false
 
 # Mail (issue #23). Only meaningful when components.mail: true.
 mail:

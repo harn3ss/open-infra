@@ -1,22 +1,10 @@
-# HashiCorp Vault — the KMS behind kind: EncryptionKey (customer-owned keys, NIST SC-12/13/28(1)).
+# HashiCorp Vault, as an earlier version ran the platform's keys (#359). The key service is now OpenBao
+# (security/openbao.yaml); this is kept only for an install whose keys are still in Vault, until
+# scripts/vault-to-openbao.sh has moved them (docs/openbao.md, "Moving the keys from Vault").
 #
-# OPT-IN, OFF BY DEFAULT (the `encryption` component). Vault holds the customer's key-encryption keys
-# in its Transit engine; open-infra never sees key material. Storage layers wrap their data keys with
-# a Transit key, so destroying the key crypto-erases the data (kind: Destruction / SP 800-88).
-#
-# Standalone with persistent file storage — NOT dev mode: dev mode keeps keys in memory, so a restart
-# would lose them and make wrapped data unrecoverable. That means Vault must be INITIALIZED and
-# UNSEALED by an operator (it cannot auto-unseal without an external seal), and the operator must
-# provide a bootstrap token so the setup Job below can enable Transit. This is deliberately a
-# human-in-the-loop step: the whole point of customer-owned keys is that open-infra cannot unseal
-# your KMS for you. See docs/encryption.md for the init/unseal/bootstrap runbook.
-#
-# LIVE-VERIFIED: provision -> round-trip -> crypto-erase proven END-TO-END on the running cluster by
-# probe/encryption-vault.sh (customer KEK wraps/unwraps byte-identical; kind: Destruction makes the key
-# unrecoverable). The probe is re-runnable — it resets its own throwaway enc-verify state and triggers the
-# destroyer, so it is a repeatable gate, not a one-shot. Bringing Vault up is still operator-gated — custody
-# of the unseal keys is the customer's by design (open-infra cannot unseal your KMS); see docs/encryption.md
-# for the init/unseal runbook.
+# OFF unless components.encryption AND openbao.keepVault are true (install.sh). Its volume holds every key's
+# last copy, sealed: retiring it is setting openbao.keepVault false (or excluding this file) and deleting
+# namespace vault, volume included, once the move is verified.
 #
 # The `vault` namespace is created HERE (early sync-wave) rather than left to the Helm chart's
 # CreateNamespace=true: the app-of-apps applies the raw ServiceAccount/Job below into namespace `vault`,

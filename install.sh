@@ -137,10 +137,17 @@ if [ "$(yget networking.guestAwsEndpoints)" = "false" ]; then
   LOG "guest AWS endpoints off (networking.guestAwsEndpoints: false)"
 fi
 incl openAppsync "open-appsync/*" # open-appsync engine (backs the shim's AppSync surface)
-# Customer-owned encryption: Vault (Transit KMS), kind: EncryptionKey + its reconciler, and the
-# encrypted Longhorn StorageClass. OFF unless components.encryption: true (Vault needs an operator to
-# initialize/unseal it — see docs/encryption.md).
-incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-composition.yaml,abstraction/destruction-xrd.yaml,abstraction/destruction-composition.yaml,abstraction/parameter-xrd.yaml,abstraction/parameter-composition.yaml,security/vault.yaml,security/encryptionkey-reconciler.yaml,security/destruction-reconciler.yaml,security/parameter-reconciler.yaml,storage/longhorn-encrypted.yaml,security/volume-crypto.yaml,security/luks-host-prereq.yaml"
+# Customer-owned encryption: OpenBao Transit (KMS), kind: EncryptionKey + its reconciler, and the
+# encrypted Longhorn StorageClass. OFF unless components.encryption: true (its key service is OpenBao,
+# components.openbao — see docs/encryption.md).
+incl encryption "abstraction/encryptionkey-xrd.yaml,abstraction/encryptionkey-composition.yaml,abstraction/destruction-xrd.yaml,abstraction/destruction-composition.yaml,abstraction/parameter-xrd.yaml,abstraction/parameter-composition.yaml,security/encryptionkey-reconciler.yaml,security/destruction-reconciler.yaml,security/parameter-reconciler.yaml,storage/longhorn-encrypted.yaml,security/volume-crypto.yaml,security/luks-host-prereq.yaml"
+# The HashiCorp Vault an earlier version ran the keys in: kept only on an install whose keys are still
+# there (openbao.keepVault: true), until scripts/vault-to-openbao.sh has moved them (docs/openbao.md,
+# "Moving the keys from Vault"). Its volume holds every key's last copy; retiring it is setting this
+# false and deleting namespace vault.
+if [ "$(yget components.encryption)" != "true" ] || [ "$(yget openbao.keepVault)" != "true" ]; then
+  EXCLUDES="${EXCLUDES},security/vault.yaml"
+fi
 # Private certificate authority: kind: CertificateAuthority (its XRD/composition), the Vault-PKI
 # reconciler, and the synchronous ca-issuer. OFF unless components.pki: true; RIDES ON the encryption
 # component (reuses its Vault + Kubernetes-auth wiring — see docs/certificate-authority.md).
