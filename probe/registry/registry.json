@@ -80,7 +80,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 13
+      "probe": 14
     },
     "undeployableUses": [
       {
@@ -2316,11 +2316,12 @@
         "ec2"
       ],
       "stackProbes": [
+        "cfn-securitygroup",
         "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 3,
+      "templateUses": 4,
       "verdict": "ok"
     },
     "AWS::EC2::InternetGateway": {
@@ -2488,10 +2489,11 @@
       ],
       "stackProbes": [
         "cfn-api",
+        "cfn-securitygroup",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 3,
+      "templateUses": 4,
       "verdict": "ok"
     },
     "AWS::EC2::SecurityGroupEgress": {
