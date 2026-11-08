@@ -180,8 +180,15 @@ targets `kind: Function` over its Knative address. All three invocation types ar
 
 - **`RequestResponse`** (default) — synchronous: the shim forwards the payload and streams the
   function's response back; a function-side error is signalled with `X-Amz-Function-Error`.
+  - **How long it runs:** the invoke runs for as long as the function's `timeout` allows (Knative's 300 s
+    when unset), plus a cold-start allowance. A long invoke needs a client that waits too: for example,
+    `aws lambda invoke --cli-read-timeout 0`.
+  - **Past the timeout:** the invoke ends as Lambda ends it, with `X-Amz-Function-Error: Unhandled` and
+    `{"errorType":"Sandbox.Timedout","errorMessage":"RequestId: … Error: Task timed out after N.NN seconds"}`.
 - **`Event`** (asynchronous) — the shim enqueues the payload to a durable JetStream stream and returns
-  `202` immediately; a background worker delivers it to the function, **retries** on failure, and
+  `202` immediately. A background worker delivers it to the function and waits for the function's
+  `timeout` too; while the function runs, the message is kept in progress, so it is never redelivered
+  mid-run. The worker **retries** on failure, a timeout included, and
   **dead-letters** (to `lambda.dlq.<fn>`) after the delivery cap. It survives a shim restart and
   is shared across shim replicas. Requires the shim to have NATS; without it, `Event` is refused (`503`)
   rather than silently dropped.

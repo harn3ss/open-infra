@@ -63,12 +63,18 @@ type lambdaHandler struct {
 	// fns finds which namespace a function lives in (the Lambda API's or a CloudFormation stack's,
 	// fn_locate.go); nil = always fnNS.
 	fns *fnLocator
+	// timeouts reads a function's timeout, which a synchronous invoke waits for (lambda_timeout.go); nil =
+	// the default timeout. coldStart is added to it (invokeColdStartAllowance; tests shorten it).
+	timeouts  *fnTimeouts
+	coldStart time.Duration
 }
 
 func newLambdaHandler(cs kubernetes.Interface, fnNS, svcSuffix string, async *asyncInvoker, logger *slog.Logger) *lambdaHandler {
 	return &lambdaHandler{
-		cs:        cs,
-		client:    &http.Client{Timeout: 60 * time.Second},
+		cs: cs,
+		// No client-wide timeout: each invoke waits for its function's own (lambda_timeout.go).
+		client:    &http.Client{},
+		coldStart: invokeColdStartAllowance,
 		fnNS:      fnNS,
 		svcSuffix: svcSuffix,
 		async:     async,
@@ -210,7 +216,11 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 			"Request must be smaller than 6291456 bytes for the InvokeFunction operation")
 		return
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(payload))
+	// The invoke waits for the function's own timeout (plus its cold start), as Lambda runs it (#372).
+	fnTimeout := h.timeouts.of(r.Context(), ns, name)
+	ictx, cancel := context.WithTimeout(r.Context(), fnTimeout+h.coldStart)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ictx, http.MethodPost, target, bytes.NewReader(payload))
 	if err != nil {
 		writeLambdaError(w, http.StatusInternalServerError, "ServiceException", requestID, "could not build upstream request")
 		return
@@ -224,6 +234,11 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 	req.Header.Set("X-Openinfra-Invoke", "direct")
 
 	resp, err := h.client.Do(req)
+	if err != nil && ictx.Err() == context.DeadlineExceeded && r.Context().Err() == nil {
+		h.logger.Info("lambda invoke timed out", "function", name, "timeout", fnTimeout.String())
+		writeTaskTimedOut(w, requestID, fnTimeout)
+		return
+	}
 	if err != nil {
 		// Unreachable / no such function → Lambda's ResourceNotFoundException.
 		h.logger.Warn("lambda upstream unreachable", "function", name, "target", target, "error", err.Error())
@@ -232,6 +247,12 @@ func (h *lambdaHandler) serve(w http.ResponseWriter, r *http.Request, claims iam
 		return
 	}
 	defer resp.Body.Close()
+	// Knative ends a request at the revision's timeout (spec.timeout) with a 504 the function never
+	// answered: the function ran out of time.
+	if resp.StatusCode == http.StatusGatewayTimeout && resp.Header.Get("X-Amz-Function-Error") == "" {
+		writeTaskTimedOut(w, requestID, fnTimeout)
+		return
+	}
 
 	// Lambda returns 200 for a completed RequestResponse invocation, with the function's payload as
 	// the body; a function-side error is signalled by the X-Amz-Function-Error header, not the HTTP

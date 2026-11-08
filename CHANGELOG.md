@@ -6,6 +6,17 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a Lambda invoke runs to the function's own Timeout (#372)
+- **The fixed 60-second cut is gone.** The aws-shim used to cut every invoke, synchronous or asynchronous,
+  at 60 s. A longer-running function answered `ResourceNotFoundException` ("could not be reached"), and an
+  asynchronous one could run again.
+  - **Now:** an invoke waits for the function's `timeout` (up to 900 s; Knative's 300 s when unset), plus a
+    cold-start allowance.
+  - **Past the timeout:** it ends as Lambda ends it: a function error with `Sandbox.Timedout` "Task timed
+    out after N.NN seconds". Knative's 504 at the revision timeout reads the same way.
+  - **Async deliveries** are kept in progress while the function runs, so one is never redelivered mid-run.
+  - **Tested:** `probe/aws-shim-lambda-timeout.sh`.
+
 ### Added — CloudFormation deploys .zip Lambdas (#402)
 - **A Lambda with a .zip package, the default `PackageType`, deploys from CloudFormation** onto `kind:
   Function` `spec.code`, as AWS runs it.

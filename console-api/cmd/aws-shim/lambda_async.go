@@ -23,12 +23,19 @@ import (
 // Enabled only when the shim has NATS (NATS_URL). Without it, Event invocations are refused honestly
 // rather than silently dropped (there is no durable place to queue them).
 type asyncInvoker struct {
-	nc         *nats.Conn
-	js         nats.JetStreamContext
-	client     *http.Client
-	urlFor     func(name, ns string) string // function URL builder ("" ns = the Lambda API's); injectable for tests
-	maxDeliver int
-	logger     *slog.Logger
+	nc     *nats.Conn
+	js     nats.JetStreamContext
+	client *http.Client
+	urlFor func(name, ns string) string // function URL builder ("" ns = the Lambda API's); injectable for tests
+	// timeoutFor is a function's timeout, which a delivery waits for (lambda_timeout.go); nil = the default.
+	// coldStart is added to it.
+	timeoutFor func(ns, name string) time.Duration
+	coldStart  time.Duration
+	// progressEvery is how often a delivery tells JetStream it is still working (so a long function is never
+	// redelivered mid-run).
+	progressEvery time.Duration
+	maxDeliver    int
+	logger        *slog.Logger
 }
 
 const (
@@ -43,7 +50,10 @@ const (
 	// "lambda.async.*" (that would be re-consumed by the work stream — an infinite dead-letter loop).
 	asyncDLQPre  = "lambda.dlq." // per-function dead-letter subject: lambda.dlq.<name> (a member account's: lambda.dlq.<account>.<name>)
 	asyncDurable = "lambda-async-worker"
-	asyncAckWait = 2 * time.Minute // > the delivery client timeout, so no redelivery mid-POST
+	// asyncAckWait: a delivery in flight signals progress every quarter of it (deliver), so a function
+	// running up to its own timeout is never redelivered mid-run; a shim that dies mid-delivery has its
+	// message redelivered this long after.
+	asyncAckWait = 2 * time.Minute
 )
 
 // newAsyncInvoker connects to NATS, ensures the async work stream + a DLQ stream exist, and returns a
@@ -83,7 +93,8 @@ func newAsyncInvoker(url, fnNS, svcSuffix string, maxDeliver int, logger *slog.L
 		maxDeliver = 3
 	}
 	return &asyncInvoker{
-		nc: nc, js: js, client: &http.Client{Timeout: 60 * time.Second},
+		// No client-wide timeout: each delivery waits for its function's own (lambda_timeout.go).
+		nc: nc, js: js, client: &http.Client{}, coldStart: invokeColdStartAllowance, progressEvery: asyncAckWait / 4,
 		urlFor: func(name, ns string) string {
 			if ns == "" {
 				ns = fnNS
@@ -205,8 +216,29 @@ func (a *asyncInvoker) run(ctx context.Context) {
 // dead-letter is durably stored (see deadLetter), so a failed DLQ write never drops the invocation.
 func (a *asyncInvoker) deliver(m *nats.Msg) {
 	name := m.Header.Get("X-Fn-Name")
-	dctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	timeout := defaultFunctionTimeout
+	if a.timeoutFor != nil {
+		timeout = a.timeoutFor(m.Header.Get("X-Fn-Namespace"), name)
+	}
+	dctx, cancel := context.WithTimeout(context.Background(), timeout+a.coldStart)
 	defer cancel()
+	// Keep the message ours while the function runs: JetStream redelivers one not acked within AckWait.
+	if a.progressEvery > 0 {
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			t := time.NewTicker(a.progressEvery)
+			defer t.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-t.C:
+					_ = m.InProgress()
+				}
+			}
+		}()
+	}
 	req, err := http.NewRequestWithContext(dctx, http.MethodPost, a.urlFor(name, m.Header.Get("X-Fn-Namespace")), bytes.NewReader(m.Data))
 	if err != nil {
 		// A malformed name can never build a valid URL — retrying is pointless; dead-letter now rather

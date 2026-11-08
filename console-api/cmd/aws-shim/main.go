@@ -495,6 +495,21 @@ func run(logger *slog.Logger) error {
 	lambdaH := newLambdaHandler(cs, fnNS, svcSuffix, asyncInv, logger)
 	lambdaH.authz = authzChecker
 	lambdaH.fns = fns
+	// An invoke, sync or async, waits for the function's own timeout (lambda_timeout.go, #372).
+	if dyn != nil {
+		timeouts := newFnTimeouts(dyn)
+		lambdaH.timeouts = timeouts
+		if asyncInv != nil {
+			asyncInv.timeoutFor = func(ns, name string) time.Duration {
+				if ns == "" {
+					ns = fnNS
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				return timeouts.of(ctx, ns, name)
+			}
+		}
+	}
 	lambdaH.account, lambdaH.region = account, ident.Region // a function's ARN in GetFunction/ListFunctions
 	region := ident.Region
 	// DynamoDB Streams front door (reads the change-record logs the dynamodb write path emits).

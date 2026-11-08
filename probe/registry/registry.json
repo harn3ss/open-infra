@@ -80,7 +80,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 9
+      "probe": 10
     },
     "undeployableUses": [
       {
@@ -3096,10 +3096,11 @@
       "stackProbes": [
         "cfn-lambda-zip",
         "cfn-structural-reads",
+        "lambda-timeout",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 6,
+      "templateUses": 7,
       "verdict": "ok"
     },
     "AWS::IAM::User": {
@@ -3215,10 +3216,11 @@
       ],
       "stackProbes": [
         "cfn-customresource",
-        "cfn-lambda-zip"
+        "cfn-lambda-zip",
+        "lambda-timeout"
       ],
       "status": "supported",
-      "templateUses": 7,
+      "templateUses": 9,
       "verdict": "ok"
     },
     "AWS::Lambda::Permission": {
