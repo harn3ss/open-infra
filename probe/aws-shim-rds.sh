@@ -180,7 +180,12 @@ for _ in $(seq 1 24); do
   if pg "${INST1}-rw" "SELECT 'NEWPW';" "$NEWPASS" | grep -q NEWPW; then rotated=1; break; fi
   sleep 5
 done
-[ -n "$rotated" ] || fail "the new master password never worked"
+if [ -z "$rotated" ]; then
+  why="$(kubectl -n "$RDS_NS" run "pgp-${SFX}-${RANDOM}" --image="$PGIMAGE" --restart=Never --rm -i --labels="probe=rds-$SFX" --command --timeout=90s -- \
+    psql "postgresql://${PGUSER_M}:${NEWPASS}@${INST1}-rw.${RDS_NS}.svc.cluster.local:5432/${PGDB}" -tAc "SELECT 1" 2>&1 | grep -io "password authentication failed\|could not\|timeout\|error[^:]*" | head -2 | tr '\n' ' ')"
+  roles="$(kubectl -n "$RDS_NS" get cluster.postgresql.cnpg.io "$INST1" -o jsonpath='{.status.managedRolesStatus.byStatus}' 2>/dev/null)"
+  fail "the new master password never worked (psql: $why; managed roles: $roles)"
+fi
 if pg "${INST1}-rw" "SELECT 'OLDPW';" | grep -q OLDPW; then fail "the old master password still works after the change"; fi
 log "  ✓ the master password changed: the new one connects, the old one is refused"
 if rds "$WAK" "$WSK" modify-db-instance --db-instance-identifier "$INST1" --preferred-maintenance-window sun:05:00-sun:06:00 >/dev/null 2>"$PWD/.rds_mp"; then

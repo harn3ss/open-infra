@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -270,5 +271,40 @@ func TestRDS_ModifyAppliesOrRefuses(t *testing.T) {
 	}
 	if _, body := rdsCall(t, h, mgmt, url.Values{"Action": {"RebootDBInstance"}, "DBInstanceIdentifier": {"orders"}, "ForceFailover": {"true"}}); rdsErrCode(body) != "InvalidParameterCombination" {
 		t.Errorf("a failover has no standby: %s", body)
+	}
+}
+
+// A password change is followed until CloudNativePG reports the Secret's new version applied: the Cluster is
+// stamped again meanwhile (the first stamp can reach it before its copy of the Secret has the change), and
+// the follow-up stops once it is applied.
+func TestRDS_PasswordChangeIsFollowedUntilApplied(t *testing.T) {
+	prevWait, prevPoll := rdsPasswordWait, rdsPasswordPoll
+	rdsPasswordWait, rdsPasswordPoll = 5*time.Second, 20*time.Millisecond
+	defer func() { rdsPasswordWait, rdsPasswordPoll = prevWait, prevPoll }()
+	h := rdsAccountsHandler(t)
+	if code, body := rdsCall(t, h, mgmtDoorCaller(), createDB("orders")); code != http.StatusOK {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	done := make(chan struct{})
+	go func() { h.confirmPasswordLater(rdsTestNS, "orders", "app", "42"); close(done) }()
+	stamp := func() string {
+		return clusterOf(t, h, "orders").GetAnnotations()[rdsAnnoPrefix+"master-password-changed-at"]
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for stamp() == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if stamp() == "" {
+		t.Fatal("an unapplied password must be stamped again")
+	}
+	u := clusterOf(t, h, "orders")
+	_ = unstructured.SetNestedField(u.Object, "42", "status", "managedRolesStatus", "passwordStatus", "app", "resourceVersion")
+	if _, err := h.cnpg.dyn.Resource(cnpgClusterGVR).Namespace(rdsTestNS).Update(context.Background(), u, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the follow-up must stop once the password is applied")
 	}
 }

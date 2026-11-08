@@ -388,28 +388,46 @@ func (r *rdsCNPG) modifyInstance(ctx context.Context, id string, c instanceChang
 }
 
 // setMasterPassword changes instance id's master password: its credential Secret, which the master user's
-// managed role takes its password from. CloudNativePG applies a managed role's new password when it next
-// reconciles the Cluster, and a Secret's change alone does not start one (verified live), so the Cluster is
-// stamped too.
-func (r *rdsCNPG) setMasterPassword(ctx context.Context, id, user, pass string) error {
+// managed role takes its password from. It returns the Secret's new resourceVersion, which CloudNativePG
+// records (status.managedRolesStatus.passwordStatus) once it has applied that password.
+func (r *rdsCNPG) setMasterPassword(ctx context.Context, id, user, pass string) (string, error) {
 	ns := r.nsFor(ctx)
 	name := "rds-" + id + "-master"
 	sec, err := r.cs.CoreV1().Secrets(ns).Get(ctx, name, metav1.GetOptions{})
+	var saved *corev1.Secret
 	if apierrors.IsNotFound(err) {
 		s := secretMasterCred(name, ns, user, pass)
-		_, err = r.cs.CoreV1().Secrets(ns).Create(ctx, &s, metav1.CreateOptions{})
+		saved, err = r.cs.CoreV1().Secrets(ns).Create(ctx, &s, metav1.CreateOptions{})
 	} else if err == nil {
 		sec.Data = nil
 		sec.StringData = map[string]string{"username": user, "password": pass}
-		_, err = r.cs.CoreV1().Secrets(ns).Update(ctx, sec, metav1.UpdateOptions{})
+		saved, err = r.cs.CoreV1().Secrets(ns).Update(ctx, sec, metav1.UpdateOptions{})
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
+	return saved.ResourceVersion, r.stampPasswordChange(ctx, ns, id)
+}
+
+// stampPasswordChange touches the Cluster so CloudNativePG reconciles it: it applies a managed role's new
+// password only when it next reconciles the Cluster, and a Secret's change alone does not start one
+// (verified live).
+func (r *rdsCNPG) stampPasswordChange(ctx context.Context, ns, id string) error {
 	patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, rdsAnnoPrefix+"master-password-changed-at",
 		time.Now().UTC().Format(time.RFC3339Nano)))
-	_, err = r.dyn.Resource(cnpgClusterGVR).Namespace(ns).Patch(ctx, id, types.MergePatchType, patch, metav1.PatchOptions{})
+	_, err := r.dyn.Resource(cnpgClusterGVR).Namespace(ns).Patch(ctx, id, types.MergePatchType, patch, metav1.PatchOptions{})
 	return err
+}
+
+// passwordApplied reports whether CloudNativePG has applied the master user's password from the Secret's
+// resourceVersion rv.
+func (r *rdsCNPG) passwordApplied(ctx context.Context, ns, id, user, rv string) bool {
+	u, err := r.dyn.Resource(cnpgClusterGVR).Namespace(ns).Get(ctx, id, metav1.GetOptions{})
+	if err != nil {
+		return false
+	}
+	got, _, _ := unstructured.NestedString(u.Object, "status", "managedRolesStatus", "passwordStatus", user, "resourceVersion")
+	return got == rv
 }
 
 func (r *rdsCNPG) deleteInstance(ctx context.Context, id string) error {

@@ -429,10 +429,12 @@ func (h *rdsHandler) modifyDBInstance(ctx context.Context, w http.ResponseWriter
 		return
 	}
 	if pass := r.PostFormValue("MasterUserPassword"); pass != "" {
-		if err := h.cnpg.setMasterPassword(ctx, id, v.masterUser, pass); err != nil {
+		rv, err := h.cnpg.setMasterPassword(ctx, id, v.masterUser, pass)
+		if err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
+		go h.confirmPasswordLater(h.cnpg.nsFor(ctx), id, v.masterUser, rv)
 	}
 	if change.instanceClass != "" || change.allocatedGB > 0 {
 		if err := h.cnpg.modifyInstance(ctx, id, change); err != nil {
@@ -457,6 +459,33 @@ func (h *rdsHandler) modifyDBInstance(ctx context.Context, w http.ResponseWriter
 	}
 	h.audit(ctx, "ModifyDBInstance", id, "allow", "")
 	h.writeInstanceResponse(ctx, w, requestID, "ModifyDBInstance", v)
+}
+
+// rdsPasswordWait bounds how long a password change is followed until CloudNativePG has applied it.
+var rdsPasswordWait, rdsPasswordPoll = 5 * time.Minute, 10 * time.Second
+
+// confirmPasswordLater stamps the Cluster again until CloudNativePG reports the new password applied: the
+// first stamp can reach it before its copy of the Secret has the new password, and it would then not look
+// again.
+func (h *rdsHandler) confirmPasswordLater(ns, id, user, rv string) {
+	ctx, cancel := context.WithTimeout(context.Background(), rdsPasswordWait)
+	defer cancel()
+	t := time.NewTicker(rdsPasswordPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			if h.logger != nil {
+				h.logger.Warn("rds: the master password change was not confirmed applied", "instance", id)
+			}
+			return
+		case <-t.C:
+		}
+		if h.cnpg.passwordApplied(ctx, ns, id, user, rv) {
+			return
+		}
+		_ = h.cnpg.stampPasswordChange(ctx, ns, id)
+	}
 }
 
 // rebootDBInstance restarts the instance (RebootDBInstance). There is no standby to fail over to.
