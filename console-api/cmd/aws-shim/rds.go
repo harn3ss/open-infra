@@ -26,7 +26,9 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
@@ -296,6 +298,21 @@ func (h *rdsHandler) describeDBInstances(ctx context.Context, w http.ResponseWri
 	var sb strings.Builder
 	sb.WriteString("<DescribeDBInstancesResult><DBInstances>")
 	for _, v := range views {
+		// A delete waiting for its final snapshot is finished here if the shim restarted meanwhile.
+		if v.awaitingSnapshot != "" {
+			if waiting, err := h.cnpg.finishDelete(ctx, h.cnpg.nsFor(ctx), v.id); err == nil && !waiting {
+				if nv, err := h.cnpg.getInstance(ctx, v.id); err == nil {
+					if !nv.found {
+						if id != "" {
+							writeQueryError(w, http.StatusNotFound, "DBInstanceNotFound", requestID, "DB instance "+id+" not found.", rdsXMLNamespace)
+							return
+						}
+						continue
+					}
+					v = nv
+				}
+			}
+		}
 		sb.WriteString(dbInstanceXML(v, h.instanceArn(ctx, v.id)))
 	}
 	sb.WriteString("</DBInstances></DescribeDBInstancesResult>")
@@ -341,8 +358,13 @@ func (h *rdsHandler) deleteDBInstance(ctx context.Context, w http.ResponseWriter
 			"Cannot delete DB instance "+id+" because deletion protection is enabled. Disable it with ModifyDBInstance first.", rdsXMLNamespace)
 		return
 	}
+	if v.awaitingSnapshot != "" {
+		writeQueryError(w, http.StatusBadRequest, "InvalidDBInstanceState", requestID, "DB instance "+id+" is already being deleted.", rdsXMLNamespace)
+		return
+	}
 	// Final snapshot safeguard: SkipFinalSnapshot defaults to false, which REQUIRES a
-	// FinalDBSnapshotIdentifier and takes that snapshot before deleting.
+	// FinalDBSnapshotIdentifier. The instance is removed only once that snapshot has completed, as RDS
+	// takes the final snapshot before it deletes (#390): it is marked and answers "deleting" meanwhile.
 	skip := boolForm(r, "SkipFinalSnapshot")
 	if !skip {
 		final := r.PostFormValue("FinalDBSnapshotIdentifier")
@@ -351,19 +373,57 @@ func (h *rdsHandler) deleteDBInstance(ctx context.Context, w http.ResponseWriter
 				"FinalDBSnapshotIdentifier is required unless SkipFinalSnapshot is true.", rdsXMLNamespace)
 			return
 		}
-		if err := h.cnpg.createSnapshot(ctx, final, id); err != nil {
+		if !dbIdentifierRE.MatchString(final) {
+			h.paramErr(w, requestID, "FinalDBSnapshotIdentifier must be 1-63 chars, lowercase alnum or hyphens, starting with a letter.")
+			return
+		}
+		if ex, err := h.cnpg.getSnapshot(ctx, final); err == nil && ex.found {
+			writeQueryError(w, http.StatusBadRequest, "DBSnapshotAlreadyExists", requestID, "Cannot create the snapshot because a snapshot with the identifier "+final+" already exists.", rdsXMLNamespace)
+			return
+		}
+		if err := h.cnpg.createSnapshot(ctx, final, v); err != nil {
 			h.internal(w, requestID, err)
 			return
 		}
 		h.audit(ctx, "CreateDBSnapshot", final, "allow", "final snapshot for "+id)
-	}
-	if err := h.cnpg.deleteInstance(ctx, id); err != nil {
+		if err := h.cnpg.markDeleteAfterSnapshot(ctx, id, final); err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+		go h.finishDeleteLater(h.cnpg.nsFor(ctx), id)
+	} else if err := h.cnpg.deleteInstance(ctx, id); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	v.status = "deleting"
 	h.audit(ctx, "DeleteDBInstance", id, "allow", "")
 	h.writeInstanceResponse(ctx, w, requestID, "DeleteDBInstance", v)
+}
+
+// rdsFinalSnapshotWait bounds how long a delete waits for its final snapshot in the background; a delete
+// still waiting then is finished by the next DescribeDBInstances that sees it.
+var rdsFinalSnapshotWait, rdsFinalSnapshotPoll = 2 * time.Hour, 10 * time.Second
+
+// finishDeleteLater removes instance ns/id once its final snapshot has completed (finishDelete).
+func (h *rdsHandler) finishDeleteLater(ns, id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), rdsFinalSnapshotWait)
+	defer cancel()
+	t := time.NewTicker(rdsFinalSnapshotPoll)
+	defer t.Stop()
+	for {
+		waiting, err := h.cnpg.finishDelete(ctx, ns, id)
+		if err != nil && h.logger != nil {
+			h.logger.Warn("rds: finishing a delete after its final snapshot", "instance", id, "error", err.Error())
+		}
+		if !waiting {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 func (h *rdsHandler) restoreFromSnapshot(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
@@ -386,15 +446,27 @@ func (h *rdsHandler) restoreFromSnapshot(ctx context.Context, w http.ResponseWri
 		writeQueryError(w, http.StatusBadRequest, "InvalidDBSnapshotState", requestID, "Snapshot "+snapID+" is not yet available (status "+snap.status+").", rdsXMLNamespace)
 		return
 	}
-	src, err := h.cnpg.getInstance(ctx, snap.instance)
-	if err != nil {
-		h.internal(w, requestID, err)
-		return
-	}
+	// The instance as the snapshot recorded it, so a final snapshot restores after its instance is gone; a
+	// snapshot taken before settings were recorded reads them from its source instance.
+	src := snap.source
 	if !src.found {
-		writeQueryError(w, http.StatusBadRequest, "InvalidDBSnapshotState", requestID,
-			"the source instance for this snapshot no longer exists; v1 restore requires the source instance to remain.", rdsXMLNamespace)
-		return
+		var err error
+		if src, err = h.cnpg.getInstance(ctx, snap.instance); err != nil {
+			h.internal(w, requestID, err)
+			return
+		}
+		if !src.found {
+			writeQueryError(w, http.StatusBadRequest, "InvalidDBSnapshotState", requestID,
+				"DB snapshot "+snapID+" does not record its instance's settings, and its source instance no longer exists.", rdsXMLNamespace)
+			return
+		}
+	}
+	if c := r.PostFormValue("DBInstanceClass"); c != "" {
+		if !knownInstanceClass(c) {
+			h.paramErr(w, requestID, "DBInstanceClass "+c+" is not one this front door provisions.")
+			return
+		}
+		src.instanceClass = c
 	}
 	if ex, _ := h.cnpg.getInstance(ctx, newID); ex.found {
 		writeQueryError(w, http.StatusBadRequest, "DBInstanceAlreadyExists", requestID, "DB instance "+newID+" already exists.", rdsXMLNamespace)
@@ -431,12 +503,16 @@ func (h *rdsHandler) createDBSnapshot(ctx context.Context, w http.ResponseWriter
 		writeQueryError(w, http.StatusBadRequest, "InvalidDBInstanceState", requestID, "DB instance "+instID+" is not available (status "+v.status+").", rdsXMLNamespace)
 		return
 	}
-	if err := h.cnpg.createSnapshot(ctx, snapID, instID); err != nil {
+	if ex, err := h.cnpg.getSnapshot(ctx, snapID); err == nil && ex.found {
+		writeQueryError(w, http.StatusBadRequest, "DBSnapshotAlreadyExists", requestID, "Cannot create the snapshot because a snapshot with the identifier "+snapID+" already exists.", rdsXMLNamespace)
+		return
+	}
+	if err := h.cnpg.createSnapshot(ctx, snapID, v); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
 	h.audit(ctx, "CreateDBSnapshot", snapID, "allow", "of "+instID)
-	h.writeXML(w, requestID, "CreateDBSnapshot", "<CreateDBSnapshotResult>"+dbSnapshotXML(snapshotView{id: snapID, instance: instID, status: "creating", found: true}, h.snapshotArn(ctx, snapID))+"</CreateDBSnapshotResult>")
+	h.writeXML(w, requestID, "CreateDBSnapshot", "<CreateDBSnapshotResult>"+dbSnapshotXML(snapshotView{id: snapID, instance: instID, status: "creating", found: true, source: v}, h.snapshotArn(ctx, snapID))+"</CreateDBSnapshotResult>")
 }
 
 func (h *rdsHandler) describeDBSnapshots(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
@@ -539,7 +615,15 @@ func dbSnapshotXML(s snapshotView, arn string) string {
 	el(&sb, "DBSnapshotArn", arn)
 	el(&sb, "DBInstanceIdentifier", s.instance)
 	el(&sb, "Status", s.status)
-	el(&sb, "Engine", "postgres")
+	el(&sb, "Engine", strOrDefault(s.source.engine, "postgres"))
+	if s.source.allocatedGB > 0 {
+		el(&sb, "AllocatedStorage", strconv.Itoa(s.source.allocatedGB))
+	}
+	if s.source.masterUser != "" {
+		el(&sb, "MasterUsername", s.source.masterUser)
+	}
+	el(&sb, "Port", "5432")
+	el(&sb, "Encrypted", boolStr(s.source.storageEncrypted))
 	el(&sb, "SnapshotType", "manual")
 	sb.WriteString("</DBSnapshot>")
 	return sb.String()

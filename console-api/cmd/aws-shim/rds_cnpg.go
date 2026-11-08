@@ -3,7 +3,13 @@
 // An RDS "DB instance" is a real CloudNativePG (CNPG) Cluster — actual PostgreSQL, so the data path is
 // Postgres by construction, not emulation. This file is the thin control layer: create/get/delete the
 // Cluster and its master-credential Secret, drive snapshots as CNPG Backups (volumeSnapshot method on
-// Longhorn CSI), and restore a Backup into a NEW Cluster. RDS metadata that CNPG does not model (master
+// Longhorn CSI), and restore a Backup into a NEW Cluster.
+//
+// A snapshot outlives its instance, as an RDS snapshot does (#390): its volume snapshots are Longhorn
+// backups (longhorn-backup, uploaded to the backup target, not in-volume snapshots that die with the
+// volume), owned by the Backup so DeleteDBSnapshot removes them; the instance's settings and a copy of its
+// master credential are kept with the snapshot, so a restore needs no source instance; and a delete with a
+// final snapshot removes the instance only once that snapshot has completed. RDS metadata that CNPG does not model (master
 // username, instance class, deletion protection, tags, engine) rides as annotations on the Cluster, so the
 // Cluster CR is the single source of truth and survives a shim restart.
 //
@@ -24,6 +30,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -124,9 +131,9 @@ func (r *rdsCNPG) createInstance(ctx context.Context, p createInstanceParams) er
 				"secret":   map[string]any{"name": secretName},
 			}},
 			"resources": resourcesFor(p.instanceClass),
-			// volumeSnapshot backups on the Longhorn CSI snapshot class — this is what makes
+			// volumeSnapshot backups (rdsBackupSpec) — this is what makes
 			// CreateDBSnapshot/RestoreDBInstanceFromDBSnapshot genuine.
-			"backup": map[string]any{"volumeSnapshot": map[string]any{"className": "longhorn-snapshot"}},
+			"backup": rdsBackupSpec(),
 		},
 	}}
 	if _, err := r.dyn.Resource(cnpgClusterGVR).Namespace(ns).Create(ctx, cl, metav1.CreateOptions{}); err != nil {
@@ -138,12 +145,17 @@ func (r *rdsCNPG) createInstance(ctx context.Context, p createInstanceParams) er
 }
 
 // createRestoredInstance provisions a NEW Cluster whose data is recovered from a Backup's volume snapshot.
+// src is the instance as the snapshot recorded it (snapshotView.source), so the source need not exist.
 func (r *rdsCNPG) createRestoredInstance(ctx context.Context, newID, backupName string, src instanceView) error {
-	// Within the caller's account: the snapshot, its source instance and the new instance are all its own.
+	// Within the caller's account: the snapshot and the new instance are its own.
 	ns := r.nsFor(ctx)
 	secretName := "rds-" + newID + "-master"
-	// The restored instance keeps the source's master credential (AWS restores with the snapshot's users).
-	sec, err := r.cs.CoreV1().Secrets(ns).Get(ctx, "rds-"+src.id+"-master", metav1.GetOptions{})
+	// The restored instance keeps the snapshot's master credential (AWS restores with the snapshot's users):
+	// the copy kept with the snapshot, else (a snapshot taken before copies were kept) the source's.
+	sec, err := r.cs.CoreV1().Secrets(ns).Get(ctx, snapshotSecretName(backupName), metav1.GetOptions{})
+	if err != nil {
+		sec, err = r.cs.CoreV1().Secrets(ns).Get(ctx, "rds-"+src.id+"-master", metav1.GetOptions{})
+	}
 	if err == nil {
 		dup := secretMasterCred(secretName, ns, string(sec.Data["username"]), string(sec.Data["password"]))
 		_, _ = r.cs.CoreV1().Secrets(ns).Create(ctx, &dup, metav1.CreateOptions{})
@@ -170,7 +182,7 @@ func (r *rdsCNPG) createRestoredInstance(ctx context.Context, newID, backupName 
 			"instances": int64(1),
 			"storage":   map[string]any{"size": fmt.Sprintf("%dGi", src.allocatedGB), "storageClass": "longhorn"},
 			"resources": resourcesFor(src.instanceClass),
-			"backup":    map[string]any{"volumeSnapshot": map[string]any{"className": "longhorn-snapshot"}},
+			"backup":    rdsBackupSpec(),
 			// Recover from the volume snapshot(s) the Backup produced.
 			"bootstrap":        map[string]any{"recovery": map[string]any{"backup": map[string]any{"name": backupName}}},
 			"externalClusters": []any{},
@@ -194,6 +206,8 @@ type instanceView struct {
 	deletionProtected bool
 	dbName            string
 	found             bool
+	// awaitingSnapshot is the final snapshot a delete waits for before it removes the instance ("" none).
+	awaitingSnapshot string
 }
 
 func (r *rdsCNPG) getInstance(ctx context.Context, id string) (instanceView, error) {
@@ -233,6 +247,7 @@ func (r *rdsCNPG) viewOf(u *unstructured.Unstructured) instanceView {
 		storageEncrypted:  ann[rdsAnnoPrefix+"storage-encrypted"] == "true",
 		deletionProtected: ann[rdsAnnoPrefix+"deletion-protection"] == "true",
 		dbName:            ann[rdsAnnoPrefix+"db-name"],
+		awaitingSnapshot:  ann[rdsAnnoPrefix+"delete-after-snapshot"],
 		port:              5432,
 		endpoint:          u.GetName() + "-rw." + strOrDefault(u.GetNamespace(), r.ns) + ".svc.cluster.local",
 		found:             true,
@@ -242,7 +257,7 @@ func (r *rdsCNPG) viewOf(u *unstructured.Unstructured) instanceView {
 	phase, _, _ := unstructured.NestedString(u.Object, "status", "phase")
 	ready, _, _ := unstructured.NestedInt64(u.Object, "status", "readyInstances")
 	switch {
-	case u.GetDeletionTimestamp() != nil:
+	case u.GetDeletionTimestamp() != nil, ann[rdsAnnoPrefix+"delete-after-snapshot"] != "":
 		v.status = "deleting"
 	case ready >= 1 && strings.Contains(strings.ToLower(phase), "healthy"):
 		v.status = "available"
@@ -272,28 +287,53 @@ func (r *rdsCNPG) deleteInstance(ctx context.Context, id string) error {
 
 // --- snapshots (CNPG Backups, volumeSnapshot method) ---
 
-func (r *rdsCNPG) createSnapshot(ctx context.Context, snapID, instanceID string) error {
+// createSnapshot takes a snapshot of instance src: a CNPG Backup that records the instance's settings, and
+// a copy of its master credential, so it can be restored once the instance is gone.
+func (r *rdsCNPG) createSnapshot(ctx context.Context, snapID string, src instanceView) error {
 	ns := r.nsFor(ctx)
+	if sec, err := r.cs.CoreV1().Secrets(ns).Get(ctx, "rds-"+src.id+"-master", metav1.GetOptions{}); err == nil {
+		dup := secretMasterCred(snapshotSecretName(snapID), ns, string(sec.Data["username"]), string(sec.Data["password"]))
+		if _, err := r.cs.CoreV1().Secrets(ns).Create(ctx, &dup, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("keep the snapshot's master credential: %w", err)
+		}
+	}
 	b := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "postgresql.cnpg.io/v1",
 		"kind":       "Backup",
 		"metadata": map[string]any{
 			"name": snapID, "namespace": ns,
-			"labels":      map[string]any{"app.kubernetes.io/managed-by": "aws-shim-rds"},
-			"annotations": rdsAnnotations(map[string]string{"instance": instanceID}),
+			"labels": map[string]any{"app.kubernetes.io/managed-by": "aws-shim-rds"},
+			"annotations": rdsAnnotations(map[string]string{
+				"instance":          src.id,
+				"master-username":   src.masterUser,
+				"engine":            strOrDefault(src.engine, "postgres"),
+				"instance-class":    src.instanceClass,
+				"allocated-storage": fmt.Sprintf("%d", src.allocatedGB),
+				"storage-encrypted": boolStr(src.storageEncrypted),
+				"db-name":           src.dbName,
+			}),
 		},
 		"spec": map[string]any{
 			"method":  "volumeSnapshot",
-			"cluster": map[string]any{"name": instanceID},
+			"cluster": map[string]any{"name": src.id},
 		},
 	}}
-	_, err := r.dyn.Resource(cnpgBackupGVR).Namespace(ns).Create(ctx, b, metav1.CreateOptions{})
-	return err
+	if _, err := r.dyn.Resource(cnpgBackupGVR).Namespace(ns).Create(ctx, b, metav1.CreateOptions{}); err != nil {
+		_ = r.cs.CoreV1().Secrets(ns).Delete(ctx, snapshotSecretName(snapID), metav1.DeleteOptions{})
+		return err
+	}
+	return nil
 }
+
+// snapshotSecretName is the copy of an instance's master credential kept with its snapshot.
+func snapshotSecretName(snapID string) string { return "rds-snap-" + snapID + "-master" }
 
 type snapshotView struct {
 	id, instance, status string
 	found                bool
+	// source is the instance as the snapshot recorded it (empty settings for a snapshot taken before
+	// they were recorded).
+	source instanceView
 }
 
 func (r *rdsCNPG) getSnapshot(ctx context.Context, id string) (snapshotView, error) {
@@ -331,19 +371,86 @@ func (r *rdsCNPG) snapView(u *unstructured.Unstructured) snapshotView {
 	case "failed":
 		st = "failed"
 	}
+	ann := u.GetAnnotations()
 	return snapshotView{
 		id:       u.GetName(),
-		instance: u.GetAnnotations()[rdsAnnoPrefix+"instance"],
+		instance: ann[rdsAnnoPrefix+"instance"],
 		status:   st,
 		found:    true,
+		source: instanceView{
+			id:               ann[rdsAnnoPrefix+"instance"],
+			masterUser:       ann[rdsAnnoPrefix+"master-username"],
+			engine:           ann[rdsAnnoPrefix+"engine"],
+			instanceClass:    ann[rdsAnnoPrefix+"instance-class"],
+			allocatedGB:      atoiSafe(ann[rdsAnnoPrefix+"allocated-storage"]),
+			storageEncrypted: ann[rdsAnnoPrefix+"storage-encrypted"] == "true",
+			dbName:           ann[rdsAnnoPrefix+"db-name"],
+			found:            ann[rdsAnnoPrefix+"instance-class"] != "",
+		},
 	}
 }
 
+// deleteSnapshot deletes a snapshot: its Backup (whose volume snapshots, owned by it, go with it) and the
+// master credential kept with it.
 func (r *rdsCNPG) deleteSnapshot(ctx context.Context, id string) error {
-	return r.dyn.Resource(cnpgBackupGVR).Namespace(r.nsFor(ctx)).Delete(ctx, id, metav1.DeleteOptions{})
+	ns := r.nsFor(ctx)
+	if err := r.dyn.Resource(cnpgBackupGVR).Namespace(ns).Delete(ctx, id, metav1.DeleteOptions{}); err != nil {
+		return err
+	}
+	_ = r.cs.CoreV1().Secrets(ns).Delete(ctx, snapshotSecretName(id), metav1.DeleteOptions{})
+	return nil
+}
+
+// markDeleteAfterSnapshot records that instance id is deleted once its final snapshot snapID completes.
+func (r *rdsCNPG) markDeleteAfterSnapshot(ctx context.Context, id, snapID string) error {
+	patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, rdsAnnoPrefix+"delete-after-snapshot", snapID))
+	_, err := r.dyn.Resource(cnpgClusterGVR).Namespace(r.nsFor(ctx)).Patch(ctx, id, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
+
+// finishDelete completes a delete that waits for its final snapshot: once the snapshot has completed the
+// instance is deleted; if it failed, the instance is kept (never deleted without its final snapshot) and
+// the mark is cleared. It reports whether the instance is still waiting.
+func (r *rdsCNPG) finishDelete(ctx context.Context, ns, id string) (waiting bool, err error) {
+	u, err := r.dyn.Resource(cnpgClusterGVR).Namespace(ns).Get(ctx, id, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	} else if err != nil {
+		return true, err
+	}
+	snapID := u.GetAnnotations()[rdsAnnoPrefix+"delete-after-snapshot"]
+	if snapID == "" {
+		return false, nil
+	}
+	b, err := r.dyn.Resource(cnpgBackupGVR).Namespace(ns).Get(ctx, snapID, metav1.GetOptions{})
+	phase := ""
+	if err == nil {
+		phase, _, _ = unstructured.NestedString(b.Object, "status", "phase")
+	}
+	switch {
+	case err == nil && strings.EqualFold(phase, "completed"):
+		if derr := r.dyn.Resource(cnpgClusterGVR).Namespace(ns).Delete(ctx, id, metav1.DeleteOptions{}); derr != nil && !apierrors.IsNotFound(derr) {
+			return true, derr
+		}
+		_ = r.cs.CoreV1().Secrets(ns).Delete(ctx, "rds-"+id+"-master", metav1.DeleteOptions{})
+		return false, nil
+	case apierrors.IsNotFound(err) || strings.EqualFold(phase, "failed"):
+		patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:null,%q:%q}}}`, rdsAnnoPrefix+"delete-after-snapshot",
+			rdsAnnoPrefix+"final-snapshot-failed", snapID))
+		_, perr := r.dyn.Resource(cnpgClusterGVR).Namespace(ns).Patch(ctx, id, types.MergePatchType, patch, metav1.PatchOptions{})
+		return false, perr
+	}
+	return true, err
 }
 
 // --- helpers ---
+
+// rdsBackupSpec is a DB instance's backup configuration: volume snapshots in the longhorn-backup class,
+// which uploads each to the Longhorn backup target so it survives the volume (the in-volume
+// longhorn-snapshot class dies with it), owned by their Backup so deleting the snapshot deletes them.
+func rdsBackupSpec() map[string]any {
+	return map[string]any{"volumeSnapshot": map[string]any{"className": "longhorn-backup", "snapshotOwnerReference": "backup"}}
+}
 
 func resourcesFor(class string) map[string]any {
 	c := instanceClasses[class]

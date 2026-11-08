@@ -1113,9 +1113,19 @@ The `MasterUsername`/`MasterUserPassword` genuinely become the database owner's 
 CNPG basic-auth secret) and are **never** returned by `DescribeDBInstances`.
 
 **Snapshots and restore are real** (the highest-stakes item — a backup that has never been restored is not
-a backup). `CreateDBSnapshot` is a CNPG **volumeSnapshot** Backup on the Longhorn CSI; `RestoreDB
-InstanceFromDBSnapshot` bootstraps a **new** Cluster recovered from that snapshot. The probe proves it by
-restoring and reading a row back from the restored copy. A snapshot is its own resource, `DBSnapshot::<id>`
+a backup). `CreateDBSnapshot` is a CNPG **volumeSnapshot** Backup in the `longhorn-backup` class, which
+uploads each volume snapshot to the Longhorn backup target, so it outlives the instance's volume (the
+in-volume `longhorn-snapshot` class would die with it).
+- **Owned by the snapshot:** the volume snapshots are owned by their Backup, so `DeleteDBSnapshot` removes
+  them too.
+- **Restore needs no source:** a snapshot records its instance's settings (engine, master username,
+  instance class, storage, database) and keeps a copy of its master credential.
+  `RestoreDBInstanceFromDBSnapshot` bootstraps a **new** Cluster from that record, so a final snapshot
+  restores after its instance is gone; `DBInstanceClass` may override the recorded class.
+- **Delete with a final snapshot:** `DeleteDBInstance` answers `deleting` at once, as on AWS, and removes
+  the instance only once the final snapshot has completed. If that snapshot fails, the instance is kept.
+- **Tested:** the probe restores a row from a snapshot of a live instance, and from the final snapshot of a
+  deleted one. A snapshot is its own resource, `DBSnapshot::<id>`
 (an AWS policy's `arn:aws:rds:…:snapshot:<id>`), as an instance is `DBInstance::<id>`: `CreateDBSnapshot`
 and `RestoreDBInstanceFromDBSnapshot` are authorized on both the instance and the snapshot, and a
 `DeleteDBInstance` that takes a final snapshot also needs `rds:CreateDBSnapshot` on it.
@@ -1123,7 +1133,7 @@ and `RestoreDBInstanceFromDBSnapshot` are authorized on both the instance and th
 **Honored capability flags** (mapped to reality, never accept-and-ignore): `DBInstanceClass` → real pod
 requests/limits (an unrecognized class is **refused**, never quietly under-provisioned); `AllocatedStorage`
 → PVC size; `DeletionProtection` → actually blocks `DeleteDBInstance`; `SkipFinalSnapshot: false` +
-`FinalDBSnapshotIdentifier` → really takes that snapshot before deleting.
+`FinalDBSnapshotIdentifier` → really takes that snapshot, and deletes only once it has completed.
 
 **Refused honestly, never faked:** a non-`postgres` `Engine` (PostgreSQL only in v1); `MultiAZ: true` (a
 single failure domain cannot provide multi-AZ durability — claiming it would be a dangerous false green);

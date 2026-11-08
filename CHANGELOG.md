@@ -6,6 +6,22 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — an RDS final snapshot restores after its instance is gone (#390)
+- **Before:** the RDS front door's final snapshot could not be restored, so deleting an instance with one
+  could lose its data:
+  - the snapshot was an in-volume Longhorn snapshot, which dies with the volume;
+  - the instance was deleted without waiting for the snapshot;
+  - restore refused once the source instance was gone.
+- **Now:**
+  - **Snapshots are Longhorn backups**, which outlive the volume. They are owned by their snapshot, so
+    `DeleteDBSnapshot` removes them.
+  - **A delete with a final snapshot** answers `deleting` and removes the instance only once the snapshot
+    has completed. If the snapshot fails, the instance is kept.
+  - **A snapshot records its instance's settings** and keeps a copy of its master credential, so
+    `RestoreDBInstanceFromDBSnapshot` needs no source instance.
+  - A duplicate snapshot identifier is refused with `DBSnapshotAlreadyExists`.
+  - `DescribeDBSnapshots` reports the snapshot's engine, storage and master username.
+
 ### Added — `iam:PassedToService`, so AWS's service FullAccess policies pass roles to their own service (#403)
 - **A PassRole limited to a service passes roles to that service alone, as on AWS.** For example,
   `AWSLambda_FullAccess` passes roles to `lambda.amazonaws.com` only.

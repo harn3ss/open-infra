@@ -47,18 +47,21 @@ curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not r
 
 INST1="rds-probe-$SFX"
 INST2="rds-probe-restored-$SFX"
+INST3="rds-probe-final-$SFX"
 SNAP="rds-probe-snap-$SFX"
+FSNAP="rds-probe-final-snap-$SFX"
 CREATED_KEYS=(); CREATED_USERS=(); CREATED_POLICIES=()
 cleanup() {
   kubectl -n "$RDS_NS" delete pod -l "probe=rds-$SFX" --ignore-not-found >/dev/null 2>&1
   # Use the credentialed rds() helper — bare `aws` calls would be unsigned and silently rejected, leaking
   # the provisioned clusters.
   if [ -n "$WAK" ] && [ -n "$WSK" ]; then
-    for i in "$INST1" "$INST2"; do
+    for i in "$INST1" "$INST2" "$INST3"; do
       rds "$WAK" "$WSK" modify-db-instance --db-instance-identifier "$i" --no-deletion-protection >/dev/null 2>&1
       rds "$WAK" "$WSK" delete-db-instance --db-instance-identifier "$i" --skip-final-snapshot >/dev/null 2>&1
     done
     rds "$WAK" "$WSK" delete-db-snapshot --db-snapshot-identifier "$SNAP" >/dev/null 2>&1
+    rds "$WAK" "$WSK" delete-db-snapshot --db-snapshot-identifier "$FSNAP" >/dev/null 2>&1
   fi
   for s in "${CREATED_KEYS[@]:-}";     do [ -n "$s" ] && kubectl -n "$SHIM_NS" delete secret "$s" --ignore-not-found >/dev/null 2>&1; done
   for u in "${CREATED_USERS[@]:-}";    do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1; done
@@ -171,6 +174,29 @@ fi
 grep -qiE 'deletion protection|InvalidParameterCombination' "$PWD/.rds_dp" || fail "deletion-protection block had the wrong error: $(cat "$PWD/.rds_dp")"
 rm -f "$PWD/.rds_dp"
 log "  ✓ deletion protection blocked the delete"
+
+# --- 5b. Delete with a final snapshot → the instance is gone → restore the final snapshot → the row ---
+log "delete $INST2 with final snapshot $FSNAP, then restore it once $INST2 is gone"
+rds "$WAK" "$WSK" delete-db-instance --db-instance-identifier "$INST2" --final-db-snapshot-identifier "$FSNAP" >/dev/null 2>"$PWD/.rds_fd" \
+  || fail "delete with a final snapshot failed: $(cat "$PWD/.rds_fd")"
+gone=""
+for _ in $(seq 1 120); do # the instance goes once its final snapshot has completed (uploaded)
+  if ! rds "$WAK" "$WSK" describe-db-instances --db-instance-identifier "$INST2" >/dev/null 2>"$PWD/.rds_fd"; then
+    grep -q DBInstanceNotFound "$PWD/.rds_fd" && { gone=1; break; }
+  fi
+  sleep 5
+done
+[ -n "$gone" ] || fail "$INST2 was not deleted within 10 minutes of its final snapshot"
+fst="$(rds "$WAK" "$WSK" --output text --query 'DBSnapshots[0].Status' describe-db-snapshots --db-snapshot-identifier "$FSNAP" 2>/dev/null || true)"
+[ "$fst" = available ] || fail "the final snapshot is not available after its instance was deleted (status=$fst)"
+log "  ✓ $INST2 deleted after its final snapshot completed"
+rds "$WAK" "$WSK" restore-db-instance-from-db-snapshot --db-instance-identifier "$INST3" --db-snapshot-identifier "$FSNAP" >/dev/null 2>"$PWD/.rds_fd" \
+  || fail "restore of the final snapshot failed: $(cat "$PWD/.rds_fd")"
+wait_available "$WAK" "$WSK" "$INST3" || fail "the instance restored from the final snapshot did not become available"
+FOUT="$(pg "${INST3}-rw" "SELECT 'ROW:'||v FROM probe_t WHERE id=1;")"
+printf '%s' "$FOUT" | grep -q "ROW:hello-$SFX" || fail "the final snapshot's restore did not contain the row; got: $(printf '%s' "$FOUT" | tr '\n' ' ')"
+rm -f "$PWD/.rds_fd"
+log "  ✓ the final snapshot of a deleted instance restored with the row"
 
 # --- 6a. negative: wrong secret ---
 log "negative: a wrong secret must be rejected"
