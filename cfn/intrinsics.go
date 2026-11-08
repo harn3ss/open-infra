@@ -39,6 +39,9 @@ type resolver struct {
 	// interleaved deploy AFTER the resource's Function is invoked, so a dependent's Fn::GetAtt resolves
 	// to the real value instead of a placeholder (#269). Empty at plan time (values resolve at deploy).
 	customData map[string]map[string]any
+	// afterApply names the custom resources whose Data a change set cannot know yet (it is known once their
+	// handler has run): their Fn::GetAtt resolves to KnownAfterApply, as AWS's change set shows it.
+	afterApply map[string]bool
 	// cfResolving guards cloudFrontGetAtt against a distribution whose Aliases reference its own DomainName.
 	cfResolving map[string]bool
 	// deployed resolves a post-deploy attribute (attr "" = Ref) from the deployed stack's live status —
@@ -302,6 +305,12 @@ func (r *resolver) getAtt(arg any) any {
 		if len(parts) > 1 {
 			attr = parts[1]
 		}
+	}
+	// A custom resource's Data that a change set cannot know yet: AWS's change set shows it as known after
+	// apply.
+	if r.afterApply[id] {
+		r.refs[id] = true
+		return KnownAfterApply
 	}
 	// A custom resource's Data, once invoked (interleaved deploy), resolves Fn::GetAtt for real.
 	if data, ok := r.customData[id]; ok {
@@ -584,3 +593,7 @@ func toInt(v any) int {
 	}
 	return 0
 }
+
+// KnownAfterApply is a value a change set cannot know before the stack runs (a custom resource's Data), as
+// AWS's change set shows it.
+const KnownAfterApply = "{{changeSet:KNOWN_AFTER_APPLY}}"

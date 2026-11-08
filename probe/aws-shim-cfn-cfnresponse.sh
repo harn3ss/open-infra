@@ -158,11 +158,11 @@ wait_stack() {
   printf '%s' "$st"
 }
 
-log "1. inline cfn-response and cfnresponse handlers"
-# create-stack, as AWS's custom-resource examples deploy: a custom resource's Data is known once it has run,
-# so a change set's plan cannot resolve a GetAtt on it ahead of time.
+log "1. inline cfn-response and cfnresponse handlers, deployed with a change set (aws cloudformation deploy)"
+# A change set shows the custom resources' Data as known after apply, as AWS's does; executing it creates the
+# stack resource by resource.
 for i in $(seq 1 5); do # a freshly minted deployer's authority reaches every check within a minute or so
-  if "${A[@]}" cloudformation create-stack --stack-name "$STACK" --template-body "file://$W/ok.yaml" --capabilities CAPABILITY_IAM >"$W/d" 2>&1; then
+  if "${A[@]}" cloudformation deploy --stack-name "$STACK" --template-file "$W/ok.yaml" --capabilities CAPABILITY_IAM >"$W/d" 2>&1; then
     st="$(wait_stack "$STACK")"
     [ "$st" = CREATE_COMPLETE ] && break
   fi

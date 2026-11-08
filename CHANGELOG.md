@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — `aws cloudformation deploy` of a stack whose resources read a custom resource's Data
+- **Before:** the change set behind `aws cloudformation deploy` refused a new stack in which a resource
+  reads a custom resource's `Data` (`Fn::GetAtt`). That value is known only once the handler has run, so
+  the change set reported it as unresolved.
+- **Now:**
+  - the change set builds it as `{{changeSet:KNOWN_AFTER_APPLY}}`, as AWS shows such values;
+  - it still checks every other property;
+  - executing it creates the stack resource by resource, as `create-stack` does.
+
 ### Fixed — a CloudFormation security group with no inbound rules denies inbound, as on AWS (#374)
 - **Before:** an `AWS::EC2::SecurityGroup` with no `SecurityGroupIngress` was translated with no ingress
   at all, so its members, VMs included, were left open inbound.

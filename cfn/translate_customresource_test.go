@@ -266,3 +266,44 @@ func keysOf(m map[string]map[string]any) []string {
 	}
 	return out
 }
+
+// A change set for a new stack with a custom resource whose Data a later resource reads (the shape `aws
+// cloudformation deploy` sends) lists the stack's resources as Adds, as AWS's change set lists such values as
+// known after apply, instead of refusing them as unresolved; executing it creates the stack resource by
+// resource, as CreateStack does. It is validated as CreateStack validates such a stack, by its plan: a plan
+// that refuses the stack refuses its change set.
+func TestChangeSet_CustomResourceDataIsKnownAfterApply(t *testing.T) {
+	tmpl := `
+Resources:
+  Fn:
+    Type: AWS::Lambda::Function
+    Properties: { PackageType: Image, Code: { ImageUri: ghcr.io/x/handler:latest } }
+  Setup:
+    Type: Custom::Setup
+    Properties: { ServiceToken: !GetAtt Fn.Arn }
+  Consumer:
+    Type: AWS::Lambda::Function
+    Properties:
+      PackageType: Image
+      Code: { ImageUri: ghcr.io/x/consumer:latest }
+      Environment: { Variables: { ENDPOINT: !GetAtt Setup.Endpoint } }
+`
+	cs, _, _, err := BuildChangeSet(context.Background(), []byte(tmpl), deployOpts(), &fakeApplier{})
+	if err != nil {
+		t.Fatalf("a custom-resource stack's change set must not refuse a value known after apply: %v", err)
+	}
+	got := map[string]ChangeAction{}
+	for _, c := range cs.Changes {
+		got[c.LogicalID] = c.Action
+	}
+	for _, id := range []string{"Fn", "Setup", "Consumer"} {
+		if got[id] != Add {
+			t.Errorf("%s: %q, want Add (%v)", id, got[id], cs.Changes)
+		}
+	}
+	// A plan refusal (here an out-of-stack ServiceToken) refuses the change set, as it refuses CreateStack.
+	out := strings.Replace(tmpl, "ServiceToken: !GetAtt Fn.Arn", "ServiceToken: arn:aws:lambda:us-east-1:123456789012:function:elsewhere", 1)
+	if _, _, _, err := BuildChangeSet(context.Background(), []byte(out), deployOpts(), &fakeApplier{}); err == nil {
+		t.Error("a stack its plan refuses must not get a change set")
+	}
+}

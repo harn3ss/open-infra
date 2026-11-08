@@ -72,6 +72,16 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 			opts.status = sr // the addresses of the stack's Elastic IP allocations, for what embeds them
 		}
 	}
+	// A new stack with a Lambda-backed custom resource is created resource by resource (deployInterleaved):
+	// the custom resource's Data, which later resources may read, is known only once its handler has run. The
+	// change set is built with that Data known after apply (KnownAfterApply), as AWS's change set shows it, so
+	// every other property is still checked and refused here; ExecuteChangeSet then creates the stack as
+	// CreateStack does, with the real Data.
+	if !found {
+		if pt, perr := Parse(data); perr == nil && hasCustomResources(pt) {
+			opts.afterApply = true
+		}
+	}
 	// A resource the update adds is named around anything an earlier stack of this name (or an earlier
 	// update that removed a Retain resource) left behind; what the stack recorded keeps its name.
 	desired, err := buildAvoidingLeftovers(ctx, data, opts, ap, owned)

@@ -414,6 +414,9 @@ type DeployOptions struct {
 	// for unnamed buckets are stable across an operation's passes and differ for a later stack of the same
 	// name (physNamer.instance).
 	instance string
+	// afterApply builds a change set of a new stack: its custom resources' Data resolves to
+	// KnownAfterApply (changeset.go), never applied.
+	afterApply bool
 	// Caps are deploy-environment facts translators depend on (e.g. whether MinIO has SSE-KMS on).
 	// Plan and deploy both evaluate with these, so a PROVISIONABLE* plan still means deploy won't
 	// refuse. Zero = fail-closed (the CLI); the in-cluster aws-shim doorway sets them.
@@ -563,6 +566,15 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	r.evalConditions()
 	if opts.nestedData != nil {
 		r.customData = opts.nestedData // an update reads its nested stacks' current Outputs
+	}
+	if opts.afterApply {
+		// A change set of a new stack: its custom resources' Data is known after apply (changeset.go).
+		r.afterApply = map[string]bool{}
+		for id, res := range t.Resources {
+			if isCustomResourceType(res.Type) {
+				r.afterApply[id] = true
+			}
+		}
 	}
 	namer := newPhysNamer(opts.StackName, opts.prior)
 	namer.avoid(opts.leftovers)

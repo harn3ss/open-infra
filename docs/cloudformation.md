@@ -304,6 +304,9 @@ custom-resource event (`RequestType` `Create`/`Delete`, `ResourceProperties`).
   - A handler may instead **return** the response from its invocation.
 - **What it decides:** the response's **`Data`** resolves later resources' `Fn::GetAtt`. A `FAILED`
   status fails the deploy (all-or-nothing rollback).
+- **In a change set** (what `aws cloudformation deploy` creates), that `Data` is not known yet: it shows
+  as `{{changeSet:KNOWN_AFTER_APPLY}}`, as on AWS. Every other property is still checked, and executing
+  the change set creates the stack as `create-stack` does.
 - **On stack teardown** the Function gets a `Delete` event.
 - **A copy of AWS's own module vendored into a package** sends to `https` on port 443, which the
   ResponseURL is not: use the module open-infra provides (load it as `cfn-response`), or return the
