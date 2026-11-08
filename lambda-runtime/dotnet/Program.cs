@@ -360,11 +360,36 @@ static class Bootstrap
         return JsonSerializer.Deserialize(string.IsNullOrWhiteSpace(json) ? "{}" : json, t);
     }
 
+    // StartListener starts the HTTP listener, again when .NET's own start fails: HttpListener.Start throws
+    // ArgumentNullException (HttpEndPointListener.ProcessAccept, a lock on a field its constructor has not
+    // set yet) when a connection is already waiting as it first accepts, which is what a readiness probe
+    // does to a starting function. The half-built listener's socket is unreachable then; collecting it
+    // frees the port for the next try.
+    static HttpListener StartListener()
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            var listener = new HttpListener();
+            listener.Prefixes.Add($"http://+:{Port}/");
+            try
+            {
+                listener.Start();
+                return listener;
+            }
+            catch (ArgumentNullException) when (attempt < 20)
+            {
+                Console.Error.WriteLine($"open-infra-runtime: the listener did not start (a connection arrived as it started); starting it again ({attempt})");
+                try { listener.Abort(); } catch (Exception) { /* nothing started */ }
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                Thread.Sleep(20 * attempt);
+            }
+        }
+    }
+
     static void Serve()
     {
-        var listener = new HttpListener();
-        listener.Prefixes.Add($"http://+:{Port}/");
-        listener.Start();
+        var listener = StartListener();
         while (true)
         {
             var ctx = listener.GetContext();

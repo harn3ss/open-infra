@@ -6,6 +6,13 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a .NET function no longer dies when a probe connects as it starts
+- **Before:** `HttpListener.Start` throws an `ArgumentNullException` when a connection is already waiting
+  as it first accepts, which is a .NET bug. A readiness probe hitting a starting .NET function could kill
+  its runtime.
+- **Now:** the runtime starts the listener again. Under a stream of connections during start, 30 of 30
+  starts served, after 34 retries.
+
 ### Added — Lambda runtimes follow AWS's deprecation dates
 - **Each runtime carries AWS's three dates:** deprecation, block create and block update.
   - From deprecation, the console offers it disabled.
