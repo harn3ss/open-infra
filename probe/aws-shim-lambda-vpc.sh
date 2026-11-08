@@ -234,6 +234,29 @@ for i in $(seq 1 36); do
   sleep 5
 done
 ok "describe-subnets shows $SUB_A and $SUB_B in $VPC"
+# The EC2 API reports the function's group as it is enforced (#415): its VPC, no inbound rule, and its one
+# outbound rule, not AWS's default allow-all; the backend's group, which declares neither direction, as
+# unrestricted both ways.
+"${A[@]}" ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC" --output json >"$W/sgs.json" 2>"$W/sgs.err" \
+  || fail "describe-security-groups --filters vpc-id: $(head -c 300 "$W/sgs.err")"
+python3 -I - "$W/sgs.json" "$VPC" "$SG_FN" "$SG_BACK" <<'PY' || fail "describe-security-groups does not report the VPC's groups as enforced"
+import json, sys
+groups = {g["GroupId"]: g for g in json.load(open(sys.argv[1]))["SecurityGroups"]}
+vpc, fn, back = sys.argv[2:5]
+assert set(groups) == {fn, back}, sorted(groups)
+for g in groups.values():
+    assert g.get("VpcId") == vpc, g.get("VpcId")
+f = groups[fn]
+assert f["IpPermissions"] == [], f["IpPermissions"]
+assert len(f["IpPermissionsEgress"]) == 1, f["IpPermissionsEgress"]
+e = f["IpPermissionsEgress"][0]
+assert e["IpProtocol"] == "tcp" and e["FromPort"] == 8080 and e["ToPort"] == 8080, e
+assert [p["GroupId"] for p in e["UserIdGroupPairs"]] == [back] and not e.get("IpRanges"), e
+for d in ("IpPermissions", "IpPermissionsEgress"):
+    rules = groups[back][d]
+    assert len(rules) == 1 and rules[0]["IpProtocol"] == "-1" and [r["CidrIp"] for r in rules[0]["IpRanges"]] == ["0.0.0.0/0"], (d, rules)
+PY
+ok "describe-security-groups reports $SG_FN as enforced: VpcId $VPC, no inbound rule, one outbound rule to $SG_BACK"
 VPCCFG="SubnetIds=$SUB_A,$SUB_B,SecurityGroupIds=$SG_FN"
 fi
 

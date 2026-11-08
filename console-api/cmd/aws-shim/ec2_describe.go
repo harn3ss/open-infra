@@ -575,6 +575,11 @@ func sgPermissions(rules []any, peerKey string, f map[string][]string, prefix st
 		if proto == "" {
 			proto = "tcp"
 		}
+		// Protocol ALL is every protocol: AWS's -1, which has no port range.
+		allProtocols := proto == "all" || proto == "-1"
+		if allProtocols {
+			proto = "-1"
+		}
 		var ranges [][2]int64
 		if ps, ok := rule["ports"].([]any); ok && len(ps) > 0 {
 			for _, p := range ps {
@@ -606,6 +611,11 @@ func sgPermissions(rules []any, peerKey string, f map[string][]string, prefix st
 				f[prefix+"ip-permission.group-id"] = append(f[prefix+"ip-permission.group-id"], g)
 			}
 		}
+		if allProtocols {
+			f[prefix+"ip-permission.protocol"] = append(f[prefix+"ip-permission.protocol"], proto)
+			out = append(out, xtag("ipProtocol", proto)+xset("groups", groups)+xset("ipRanges", cidrs)+"<ipv6Ranges/><prefixListIds/>")
+			continue
+		}
 		for _, rg := range ranges {
 			f[prefix+"ip-permission.protocol"] = append(f[prefix+"ip-permission.protocol"], proto)
 			f[prefix+"ip-permission.from-port"] = append(f[prefix+"ip-permission.from-port"], strconv.FormatInt(rg[0], 10))
@@ -615,6 +625,25 @@ func sgPermissions(rules []any, peerKey string, f map[string][]string, prefix st
 		}
 	}
 	return out
+}
+
+// sgAllTraffic is the one rule that allows every protocol from or to anywhere, as AWS writes its default
+// outbound rule.
+const sgAllTraffic = "<ipProtocol>-1</ipProtocol><groups/><ipRanges><item><cidrIp>0.0.0.0/0</cidrIp></item></ipRanges><ipv6Ranges/><prefixListIds/>"
+
+// sgDeclaredPermissions is a kind: SecurityGroup's rules in one direction (spec.ingress or spec.egress) as
+// they are enforced. A direction the group declares, even with no rules, is restricted to its rules: none
+// allows nothing, as on AWS. A direction it leaves undeclared is not restricted at all (the group's policy
+// has no such type), which AWS writes as one rule allowing all traffic: its default outbound rule, and
+// inbound, the same rule there. The auto-allows every restricted group carries (DNS, and in a VPC the VPC
+// resolver and the Lambda service) are not rules: AWS never filters that traffic with a security group.
+func sgDeclaredPermissions(u *unstructured.Unstructured, dir, peerKey string, f map[string][]string, prefix string) []string {
+	rules, declared, _ := unstructured.NestedSlice(u.Object, "spec", dir)
+	if !declared {
+		f[prefix+"ip-permission.protocol"], f[prefix+"ip-permission.cidr"] = []string{"-1"}, []string{"0.0.0.0/0"}
+		return []string{sgAllTraffic}
+	}
+	return sgPermissions(rules, peerKey, f, prefix)
 }
 
 func strOf(v any) string { s, _ := v.(string); return s }
@@ -646,21 +675,17 @@ func (h *ec2Handler) describeSecurityGroups(ctx context.Context, w http.Response
 		}
 		found[u.GetName()], found[name] = true, true
 		f := map[string][]string{"group-id": {u.GetName()}, "group-name": {name}, "description": {view.GroupDescription}, "owner-id": {acct}}
-		ingress, _, _ := unstructured.NestedSlice(u.Object, "spec", "ingress")
-		egress, _, _ := unstructured.NestedSlice(u.Object, "spec", "egress")
-		in := sgPermissions(ingress, "from", f, "")
-		out := sgPermissions(egress, "to", f, "egress.")
-		if len(egress) == 0 {
-			// No egress rules: the group restricts no outbound traffic, as AWS's default allow-all rule.
-			out = []string{"<ipProtocol>-1</ipProtocol><groups/><ipRanges><item><cidrIp>0.0.0.0/0</cidrIp></item></ipRanges><ipv6Ranges/><prefixListIds/>"}
-			f["egress.ip-permission.protocol"], f["egress.ip-permission.cidr"] = []string{"-1"}, []string{"0.0.0.0/0"}
+		vpc, _, _ := unstructured.NestedString(u.Object, "spec", "vpc")
+		if vpc != "" {
+			f["vpc-id"] = []string{vpc}
 		}
+		in, out := sgDeclaredPermissions(u, "ingress", "from", f, ""), sgDeclaredPermissions(u, "egress", "to", f, "egress.")
 		rec := ec2Record{fields: f, tags: view.Tags}
 		if !rec.matches(fs) {
 			continue
 		}
 		items = append(items, xtag("ownerId", acct)+xtag("groupId", u.GetName())+xtag("groupName", name)+
-			"<groupDescription>"+xesc(view.GroupDescription)+"</groupDescription>"+xset("ipPermissions", in)+
+			"<groupDescription>"+xesc(view.GroupDescription)+"</groupDescription>"+xtag("vpcId", vpc)+xset("ipPermissions", in)+
 			xset("ipPermissionsEgress", out)+xtags(view.Tags)+xtag("securityGroupArn", "arn:aws:ec2:"+h.region()+":"+acct+":security-group/"+u.GetName()))
 	}
 	for _, id := range ids {

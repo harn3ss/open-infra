@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — EC2 `DescribeSecurityGroups` reports a group as it is enforced
+- **Its rules, exactly:** a group that defines a direction answers exactly its rules, and none when it
+  has none. Before, a group with no outbound rules was reported with AWS's default allow-all rule, even
+  when it allowed nothing: the wrong answer in the unsafe direction.
+- **Its VPC:** a group with `vpc` answers its `VpcId`, and the `vpc-id` filter finds it.
+- **The rest:** an undefined direction (unrestricted) is one allow-all rule, inbound as well as outbound;
+  protocol `ALL` is `-1` with no port range.
+- **Proven:** `probe/aws-shim-lambda-vpc.sh` reads the VPC's groups back through `describe-security-groups`.
+
 ### Documented — where Lambda finds a member account's functions
 - **A member account's functions are its own:** Lambda Invoke (and every path that invokes by name) finds a
   member account's functions in its own namespaces — its home first — whether the Lambda API, a stack or a

@@ -81,6 +81,13 @@ Each peer in `from`/`to` is exactly one of:
     AWS (no ICMP), never more.
 - **Egress + DNS**: if you set *any* egress rule, DNS (UDP/TCP 53 to `kube-system`)
   is **allowed automatically** so the workload can still resolve names.
+- **What the EC2 API reports.** `DescribeSecurityGroups` answers a group as it is enforced:
+  - **A defined direction:** exactly its rules. An empty one has no rules, and allows nothing.
+  - **An omitted direction:** one rule allowing all traffic (`IpProtocol -1`, `0.0.0.0/0`). Outbound, that
+    is AWS's default rule.
+  - **The automatic allows:** DNS, plus the VPC resolver and the Lambda service for a group in a VPC, are
+    not listed. AWS never filters that traffic with a security group.
+  - **VPC:** a group with `vpc` answers its `VpcId`, and the `vpc-id` filter finds it.
 
 ## Attaching to resources
 
@@ -112,7 +119,7 @@ spec:
 can use the group (`VpcConfig`, [lambda-vpc.md](lambda-vpc.md)).
 
 - **Recorded refusals.** Every packet the group refuses is logged, and the VPC's flow logs record it.
-- **What AWS never filters.** When the group has egress rules, its members can also reach the VPC's resolver
+- **What AWS never filters.** When the group defines egress (even none), its members can also reach the VPC's resolver
   and the Lambda service (the function's package and its role's credentials).
 
 A group with no `vpc` behaves exactly as before.

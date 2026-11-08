@@ -257,3 +257,53 @@ func TestServicesPG_EC2KeyPairs(t *testing.T) {
 		t.Errorf("DeleteKeyPair: %d %s", w.Code, w.Body.String())
 	}
 }
+
+// #415: DescribeSecurityGroups answers a group as it is enforced. A direction the group declares is exactly
+// its rules (none allows nothing); an undeclared one is unrestricted, written as AWS's allow-all rule. A
+// group in a VPC answers its VpcId, and the vpc-id filter finds it.
+func TestEC2_DescribeSecurityGroups_AsEnforced(t *testing.T) {
+	h, _ := ec2Fixture(t,
+		ec2Obj("SecurityGroup", "s-closed", map[string]any{"vpc": "s-vpc", "ingress": []any{}, "egress": []any{}}, nil, nil),
+		ec2Obj("SecurityGroup", "s-open", map[string]any{}, nil, nil),
+		ec2Obj("SecurityGroup", "s-web", map[string]any{
+			"ingress": []any{map[string]any{"ports": []any{int64(443)}, "from": []any{map[string]any{"cidr": "10.0.0.0/8"}}}},
+			"egress":  []any{map[string]any{"protocol": "ALL", "to": []any{map[string]any{"cidr": "10.1.0.0/16"}}}},
+		}, nil, nil))
+	item := func(body, id string) string {
+		i := strings.Index(body, "<groupId>"+id+"</groupId>")
+		if i < 0 {
+			t.Fatalf("%s is not in %s", id, body)
+		}
+		rest := body[i:]
+		if j := strings.Index(rest, "</securityGroupArn>"); j >= 0 {
+			rest = rest[:j]
+		}
+		return rest
+	}
+	body := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeSecurityGroups"}}).Body.String()
+
+	closed := item(body, "s-closed")
+	mustHave(t, "a closed group in a VPC", closed, []string{"<vpcId>s-vpc</vpcId>", "<ipPermissions/>", "<ipPermissionsEgress/>"},
+		[]string{"0.0.0.0/0", "<ipProtocol>"})
+	open := item(body, "s-open")
+	if n := strings.Count(open, sgAllTraffic); n != 2 {
+		t.Errorf("an undeclared direction is unrestricted, both ways: %d allow-all rules in %s", n, open)
+	}
+	if strings.Contains(open, "<vpcId>") {
+		t.Errorf("a group in no VPC answers no VpcId: %s", open)
+	}
+	web := item(body, "s-web")
+	mustHave(t, "a group's own rules", web,
+		[]string{"<ipProtocol>tcp</ipProtocol><fromPort>443</fromPort><toPort>443</toPort>", "<cidrIp>10.0.0.0/8</cidrIp>",
+			"<ipPermissionsEgress><item><ipProtocol>-1</ipProtocol><groups/><ipRanges><item><cidrIp>10.1.0.0/16</cidrIp>"},
+		[]string{"0.0.0.0/0", "<ipProtocol>all</ipProtocol>", "<fromPort>0</fromPort>"})
+
+	byVPC := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeSecurityGroups"}, "Filter.1.Name": {"vpc-id"}, "Filter.1.Value.1": {"s-vpc"}}).Body.String()
+	mustHave(t, "the vpc-id filter", byVPC, []string{"<groupId>s-closed</groupId>"}, []string{"s-open", "s-web"})
+	openOut := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeSecurityGroups"},
+		"Filter.1.Name": {"egress.ip-permission.cidr"}, "Filter.1.Value.1": {"0.0.0.0/0"}}).Body.String()
+	mustHave(t, "groups open outbound", openOut, []string{"<groupId>s-open</groupId>"}, []string{"s-closed", "s-web"})
+	allProto := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeSecurityGroups"},
+		"Filter.1.Name": {"egress.ip-permission.protocol"}, "Filter.1.Value.1": {"-1"}}).Body.String()
+	mustHave(t, "the -1 protocol filter", allProto, []string{"<groupId>s-open</groupId>", "<groupId>s-web</groupId>"}, []string{"s-closed"})
+}
