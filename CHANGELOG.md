@@ -6,6 +6,16 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a CloudFormation security group with no inbound rules denies inbound, as on AWS (#374)
+- **Before:** an `AWS::EC2::SecurityGroup` with no `SecurityGroupIngress` was translated with no ingress
+  at all, so its members, VMs included, were left open inbound.
+- **Now:**
+  - **Inbound:** such a group defines an empty ingress and denies all inbound.
+  - **Protocols:** `IpProtocol` takes `-1` (every protocol, so AWS's default egress rule deploys) and the
+    numbers `6` and `17`. An ICMP rule is left out with a caveat (stricter than AWS) rather than refusing
+    the whole group.
+  - **`kind: SecurityGroup`:** gains protocol `ALL`, for every protocol on every port.
+
 ### Fixed — RDS ModifyDBInstance applies what it accepts (#377)
 - **Before:** `ModifyDBInstance` returned success for a class, storage, password or version change and
   applied none of them. A password rotation looked done while the old password kept working.

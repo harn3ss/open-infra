@@ -151,3 +151,29 @@ func TestSecurityGroup_EgressCidrIsNotMapped(t *testing.T) {
 		t.Errorf("egress must render the declared cidr only; got:\n%s", grepCtx(out, "egress:"))
 	}
 }
+
+// A group with an empty ingress — what CloudFormation emits for an AWS group with no inbound rules (#374) —
+// restricts inbound: its NetworkPolicy selects Ingress and allows only the console, never "everything". A
+// rule of protocol ALL (AWS IpProtocol -1) renders with no ports: every protocol, every port.
+func TestSecurityGroup_EmptyIngressDeniesInbound(t *testing.T) {
+	tmpl := extractInlineTemplate(t, sgCompositionPath)
+	ctx := sgCtx(false)
+	spec := ctx["observed"].(map[string]any)["composite"].(map[string]any)["resource"].(map[string]any)["spec"].(map[string]any)
+	spec["ingress"] = []any{}
+	spec["egress"] = []any{map[string]any{"protocol": "ALL", "to": []any{map[string]any{"cidr": "0.0.0.0/0"}}}}
+	out := render(t, tmpl, ctx)
+	if !strings.Contains(out, "- Ingress") {
+		t.Fatalf("an empty ingress must restrict inbound (policyTypes Ingress):\n%s", out)
+	}
+	if !strings.Contains(out, "open-infra-console") {
+		t.Errorf("only the console is admitted:\n%s", out)
+	}
+	np := out[strings.Index(out, "kind: NetworkPolicy"):]
+	egress := np[strings.Index(np, "egress:"):]
+	if strings.Contains(egress, "protocol: ALL") {
+		t.Errorf("protocol ALL must not reach the NetworkPolicy (it is every protocol: no ports):\n%s", egress)
+	}
+	if !strings.Contains(egress, "cidr: 0.0.0.0/0") {
+		t.Errorf("the ALL rule's destination must render:\n%s", egress)
+	}
+}

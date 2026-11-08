@@ -116,8 +116,7 @@ func TestTranslate_EC2SecurityGroup_FailClosed(t *testing.T) {
 		rule string
 		want string
 	}{
-		"protocol -1 (all)":      {`{ IpProtocol: "-1", CidrIp: 0.0.0.0/0 }`, "only TCP or UDP"},
-		"icmp":                   {`{ IpProtocol: icmp, FromPort: -1, ToPort: -1, CidrIp: 0.0.0.0/0 }`, "only TCP or UDP"},
+		"protocol 50 (ESP)":      {`{ IpProtocol: "50", CidrIp: 0.0.0.0/0 }`, "TCP, UDP or every protocol"},
 		"wide port range":        {`{ IpProtocol: tcp, FromPort: 8000, ToPort: 8100, CidrIp: 0.0.0.0/0 }`, "port range"},
 		"17-port range":          {`{ IpProtocol: tcp, FromPort: 9000, ToPort: 9016, CidrIp: 0.0.0.0/0 }`, "port range"},
 		"inverted range":         {`{ IpProtocol: tcp, FromPort: 9010, ToPort: 9000, CidrIp: 0.0.0.0/0 }`, "malformed"},
@@ -314,5 +313,71 @@ func TestTranslate_EC2SecurityGroup_UnknownProp(t *testing.T) {
 	}, nil)
 	if !strings.Contains(findingsText(fs), "SomeBogusProp") {
 		t.Fatalf("unknown prop must be refused: %s", findingsText(fs))
+	}
+}
+
+// An AWS group with no inbound rules denies inbound (#374): its ingress is defined and empty, never omitted
+// (an omitted ingress leaves inbound unrestricted). Without SecurityGroupEgress it allows all outbound, as
+// AWS's default egress rule does.
+func TestTranslate_EC2SecurityGroup_NoIngressDeniesInbound(t *testing.T) {
+	tmpl := `
+Resources:
+  SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties: { GroupDescription: egress only }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateEC2SecurityGroup("SG", ecsResolvedService(t, ctx, "SG"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("translate: %s", findingsText(fs))
+	}
+	ing, has := m.Spec["ingress"]
+	if l, ok := ing.([]any); !has || !ok || len(l) != 0 {
+		t.Fatalf("no inbound rules must be an empty, defined ingress: %#v", m.Spec)
+	}
+	if _, has := m.Spec["egress"]; has {
+		t.Errorf("no SecurityGroupEgress is AWS's allow-all outbound (egress undefined): %#v", m.Spec["egress"])
+	}
+}
+
+// AWS's default egress rule (IpProtocol -1 to 0.0.0.0/0) deploys as every protocol on every port; numeric
+// protocols map (6 = TCP, 17 = UDP); an ICMP rule is left out with a caveat — the group allows less than on
+// AWS, never more.
+func TestTranslate_EC2SecurityGroup_ProtocolsAsAWSWritesThem(t *testing.T) {
+	tmpl := `
+Resources:
+  SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: protocols
+      SecurityGroupIngress:
+        - { IpProtocol: "6", FromPort: 22, ToPort: 22, CidrIp: 10.0.0.0/8 }
+        - { IpProtocol: icmp, FromPort: -1, ToPort: -1, CidrIp: 0.0.0.0/0 }
+      SecurityGroupEgress:
+        - { IpProtocol: "-1", CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: "17", FromPort: 53, ToPort: 53, CidrIp: 10.0.0.2/32 }
+`
+	ctx := ecsCtx(t, tmpl)
+	m, fs := translateEC2SecurityGroup("SG", ecsResolvedService(t, ctx, "SG"), ctx)
+	if len(fs) != 0 {
+		t.Fatalf("translate: %s", findingsText(fs))
+	}
+	ing := m.Spec["ingress"].([]any)
+	if len(ing) != 1 || ing[0].(map[string]any)["protocol"] != "TCP" {
+		t.Fatalf("6 is TCP, and the ICMP rule is left out: %#v", ing)
+	}
+	eg := m.Spec["egress"].([]any)
+	all := eg[0].(map[string]any)
+	if all["protocol"] != "ALL" {
+		t.Fatalf("-1 is every protocol: %#v", all)
+	}
+	if _, has := all["ports"]; has {
+		t.Errorf("every protocol takes no ports: %#v", all)
+	}
+	if eg[1].(map[string]any)["protocol"] != "UDP" {
+		t.Errorf("17 is UDP: %#v", eg[1])
+	}
+	if !strings.Contains(strings.Join(m.Caveats, " "), "not enforced as ICMP") {
+		t.Errorf("the left-out ICMP rule must be a caveat: %v", m.Caveats)
 	}
 }

@@ -57,7 +57,7 @@ rule is a protocol + ports + a list of peers:
 
 | Field | Meaning |
 |---|---|
-| `protocol` | `TCP` (default) or `UDP` |
+| `protocol` | `TCP` (default), `UDP`, or `ALL` (every protocol on every port: AWS's `IpProtocol -1`; takes no `ports`) |
 | `ports` | list of ports to allow; **empty = all ports** |
 | `from` / `to` | sources (ingress) / destinations (egress), OR'd together |
 
@@ -71,6 +71,14 @@ Each peer in `from`/`to` is exactly one of:
 
 - **Omit `ingress`** → the SG doesn't restrict inbound. **Omit `egress`** → it
   doesn't restrict outbound. Define a direction (even empty) to default-deny it.
+- **A group from CloudFormation follows AWS:**
+  - **Inbound:** an `AWS::EC2::SecurityGroup` always defines `ingress`, empty when it has no inbound
+    rules. As on AWS, a group with no inbound rules denies all inbound.
+  - **Outbound:** without `SecurityGroupEgress` the group allows all outbound (AWS's default egress
+    rule).
+  - **Protocols:** `IpProtocol` may be `tcp`/`6`, `udp`/`17`, or `-1` (every protocol). An ICMP rule
+    cannot be expressed: it is left out, with a caveat on the stack, so the group allows less than on
+    AWS (no ICMP), never more.
 - **Egress + DNS**: if you set *any* egress rule, DNS (UDP/TCP 53 to `kube-system`)
   is **allowed automatically** so the workload can still resolve names.
 

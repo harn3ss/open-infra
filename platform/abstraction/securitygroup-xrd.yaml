@@ -49,11 +49,18 @@ spec:
               properties:
                 ingress:
                   type: array
-                  description: "Inbound allow-rules. Omit for none (members stay default-deny inbound once attached)."
+                  description: >-
+                    Inbound allow-rules. Defined (even empty), members deny every other inbound connection,
+                    as an AWS security group does; omitted, the group does not restrict inbound. A group
+                    CloudFormation creates always defines it: an AWS group with no inbound rules denies all
+                    inbound.
                   items:
                     type: object
+                    x-kubernetes-validations:
+                      - rule: "!has(self.protocol) || self.protocol != 'ALL' || !has(self.ports) || size(self.ports) == 0"
+                        message: "protocol ALL (every protocol, AWS IpProtocol -1) covers every port: give it no ports"
                     properties:
-                      protocol: { type: string, enum: [TCP, UDP], default: TCP }
+                      protocol: { type: string, enum: [TCP, UDP, ALL], default: TCP, description: "TCP, UDP, or ALL (every protocol on every port: AWS IpProtocol -1)." }
                       description: { type: string, description: "Optional note explaining why this rule exists." }
                       ports:
                         type: array
@@ -73,8 +80,11 @@ spec:
                   description: "Outbound allow-rules. If set, members become egress-restricted (DNS auto-allowed)."
                   items:
                     type: object
+                    x-kubernetes-validations:
+                      - rule: "!has(self.protocol) || self.protocol != 'ALL' || !has(self.ports) || size(self.ports) == 0"
+                        message: "protocol ALL (every protocol, AWS IpProtocol -1) covers every port: give it no ports"
                     properties:
-                      protocol: { type: string, enum: [TCP, UDP], default: TCP }
+                      protocol: { type: string, enum: [TCP, UDP, ALL], default: TCP, description: "TCP, UDP, or ALL (every protocol on every port: AWS IpProtocol -1)." }
                       description: { type: string, description: "Optional note explaining why this rule exists." }
                       ports:
                         type: array

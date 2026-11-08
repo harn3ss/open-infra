@@ -1918,10 +1918,11 @@ func translateEC2SecurityGroup(id string, props map[string]any, ctx *stackCtx) (
 		}
 	}
 	spec := map[string]any{}
-	ingress, inF := sgRules(id, raw["SecurityGroupIngress"], false, ctx)
-	f = append(f, inF...)
-	egress, egF := sgRules(id, raw["SecurityGroupEgress"], true, ctx)
-	f = append(f, egF...)
+	var caveats []string
+	ingress, inF, inC := sgRules(id, raw["SecurityGroupIngress"], false, ctx)
+	f, caveats = append(f, inF...), append(caveats, inC...)
+	egress, egF, egC := sgRules(id, raw["SecurityGroupEgress"], true, ctx)
+	f, caveats = append(f, egF...), append(caveats, egC...)
 
 	// Collate standalone AWS::EC2::SecurityGroupIngress/Egress resources whose GroupId !Refs this SG —
 	// the common pattern for breaking SG-to-SG circular references. Each is ONE rule; convert it with the
@@ -1929,25 +1930,30 @@ func translateEC2SecurityGroup(id string, props map[string]any, ctx *stackCtx) (
 	if ctx != nil {
 		for _, rid := range ctx.sgStandaloneRules(id, "AWS::EC2::SecurityGroupIngress") {
 			rr, _ := ctx.rawProps(rid)
-			rules, rf := sgRules(rid, []any{rr}, false, ctx)
-			f = append(f, rf...)
+			rules, rf, rc := sgRules(rid, []any{rr}, false, ctx)
+			f, caveats = append(f, rf...), append(caveats, rc...)
 			ingress = append(ingress, rules...)
 		}
 		for _, rid := range ctx.sgStandaloneRules(id, "AWS::EC2::SecurityGroupEgress") {
 			rr, _ := ctx.rawProps(rid)
-			rules, rf := sgRules(rid, []any{rr}, true, ctx)
-			f = append(f, rf...)
+			rules, rf, rc := sgRules(rid, []any{rr}, true, ctx)
+			f, caveats = append(f, rf...), append(caveats, rc...)
 			egress = append(egress, rules...)
 		}
 	}
-	if len(ingress) > 0 {
-		spec["ingress"] = ingress
+	// An AWS security group denies whatever its inbound rules do not allow — none allows nothing — so its
+	// ingress is always defined, empty when it has no rules (#374). Omitted, a kind: SecurityGroup would
+	// leave inbound unrestricted. Outbound is AWS's: a group with no SecurityGroupEgress allows all
+	// outbound (the default rule AWS adds), which an undefined egress is.
+	if ingress == nil {
+		ingress = []any{}
 	}
+	spec["ingress"] = ingress
 	if len(egress) > 0 {
 		spec["egress"] = egress
 	}
 
-	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "SecurityGroup", Name: ctx.name(id), Spec: spec}
+	m := &Manifest{APIVersion: "openinfra.dev/v1", Kind: "SecurityGroup", Name: ctx.name(id), Spec: spec, Caveats: caveats}
 	if _, ok := props["VpcId"]; ok {
 		m.Caveats = append(m.Caveats, "VpcId dropped — a kind: SecurityGroup is enforced cluster-wide by membership label, not scoped to a VPC")
 	}
@@ -1957,9 +1963,12 @@ func translateEC2SecurityGroup(id string, props map[string]any, ctx *stackCtx) (
 
 // sgRules translates a CFN SecurityGroupIngress/Egress rule list into kind: SecurityGroup ingress/egress
 // entries. egress=true selects the Destination* fields. It is FAIL-CLOSED: a rule it cannot map exactly
-// produces a Finding (which blocks the whole resource) rather than a looser emitted rule.
-func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Finding) {
+// produces a Finding (which blocks the whole resource) rather than a looser emitted rule. An ICMP rule,
+// which the platform's policies cannot express, is left out with a caveat: the group then allows less than
+// on AWS (no ICMP), never more.
+func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Finding, []string) {
 	var f []Finding
+	var caveats []string
 	dir := "ingress"
 	peerKey, sgField := "from", "SourceSecurityGroupId"
 	if egress {
@@ -1967,7 +1976,7 @@ func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Findi
 	}
 	items, ok := listEntries(rawList, ctx)
 	if !ok {
-		return nil, []Finding{{"Resource " + id, "the " + dir + " rules do not resolve to a list of rules — refusing rather than dropping them"}}
+		return nil, []Finding{{"Resource " + id, "the " + dir + " rules do not resolve to a list of rules — refusing rather than dropping them"}}, nil
 	}
 	var out []any
 	for i, it := range items {
@@ -1982,27 +1991,38 @@ func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Findi
 		// `!Ref Param` becomes the parameter's value (and an unresolvable intrinsic stays a placeholder
 		// concrete() refuses). The rule is iterated raw ONLY so a SourceSecurityGroupId !Ref below can be
 		// followed to its in-stack logical id — never to emit an intrinsic literally as a value.
+		// IpProtocol by name or number, as AWS takes it: tcp (6), udp (17), -1 (every protocol, any port: AWS's
+		// default egress rule). ICMP (1, 58) has no expression here: left out, with a caveat (stricter).
 		proto, _ := concrete(ctx.resolveVal(r["IpProtocol"]))
+		all := false
 		switch strings.ToLower(strings.TrimSpace(proto)) {
-		case "tcp":
+		case "tcp", "6":
 			rule["protocol"] = "TCP"
-		case "udp":
+		case "udp", "17":
 			rule["protocol"] = "UDP"
+		case "-1", "all":
+			rule["protocol"] = "ALL"
+			all = true
+		case "icmp", "1", "icmpv6", "58":
+			caveats = append(caveats, fmt.Sprintf("Resource %s: %s rule %d (IpProtocol %s) is not enforced as ICMP: the platform's policies cannot express ICMP, so the rule is left out and ICMP is not allowed by it", id, dir, i, proto))
+			continue
 		default:
-			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: IpProtocol %q not expressible — kind: SecurityGroup allows only TCP or UDP (split by protocol or author natively)", dir, i, proto)})
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: IpProtocol %q not expressible — kind: SecurityGroup allows TCP, UDP or every protocol (-1)", dir, i, proto)})
 			continue
 		}
 
 		// Ports — single port, a small range (expanded to its exact list), or all-ports; a wider range
-		// cannot be expressed as a ports LIST faithfully.
-		ports, perr := sgPorts(ctx.resolveVal(r["FromPort"]), ctx.resolveVal(r["ToPort"]))
-		if perr != "" {
-			f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: %s", dir, i, perr)})
-			continue
+		// cannot be expressed as a ports LIST faithfully. Every protocol (-1) is every port, as on AWS.
+		if !all {
+			ports, perr := sgPorts(ctx.resolveVal(r["FromPort"]), ctx.resolveVal(r["ToPort"]))
+			if perr != "" {
+				f = append(f, Finding{"Resource " + id, fmt.Sprintf("%s rule %d: %s", dir, i, perr)})
+				continue
+			}
+			if len(ports) > 0 {
+				rule["ports"] = ports
+			} // empty = all ports (kind: SecurityGroup convention)
 		}
-		if len(ports) > 0 {
-			rule["ports"] = ports
-		} // empty = all ports (kind: SecurityGroup convention)
 
 		// Source/destination — a CidrIp, or a SecurityGroup reference. Exactly one. The SG reference is
 		// resolved exactly like SecurityGroupIds (sgRefName): an in-stack AWS::EC2::SecurityGroup !Ref
@@ -2038,7 +2058,7 @@ func sgRules(id string, rawList any, egress bool, ctx *stackCtx) ([]any, []Findi
 		rule[peerKey] = []any{peer}
 		out = append(out, rule)
 	}
-	return out, f
+	return out, f, caveats
 }
 
 // maxExpandedPortRange is the widest FromPort–ToPort range expanded into an explicit port list (a
