@@ -27,6 +27,7 @@ SHIM_NS="${SHIM_NS:-open-infra-aws-shim}"
 CFN_NS="${CFN_NS:-open-infra-cfn}"             # the namespace the CFN doorway deploys into
 ENDPOINT="${SHIM_ENDPOINT:-http://aws-shim.${SHIM_NS}.svc.cluster.local:4566}"
 REGION="${AWS_REGION:-us-east-1}"
+export AWS_REGION="$REGION" # every call signs for the same region (a profile's default may differ)
 PROBE_IMAGE="${PROBE_IMAGE:-}"
 PROBE_REPO="${PROBE_REPO:-cfn-cr-probe}"
 STACK="cfn-cr-probe-$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
