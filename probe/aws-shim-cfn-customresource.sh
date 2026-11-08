@@ -86,7 +86,21 @@ if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
   CREATED_KEYS+=("$kname")
   export AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk"
   log "minted a throwaway openinfra:admins deployer ($owner)"
-  sleep 20 # the key reaches the shim's key cache
+  # The key reaches the shim's key cache, and the deployer's IAM policy is compiled into its control-plane
+  # grants (the stack writes as it): wait for both, asking a SubjectAccessReview for its identity.
+  acct=""
+  for _ in $(seq 1 24); do
+    acct="$(aws --endpoint-url "$ENDPOINT" --no-cli-pager sts get-caller-identity --query Account --output text 2>/dev/null)" && break
+    sleep 5
+  done
+  [ -n "$acct" ] || inconclusive "the minted deployer's key never reached the shim"
+  for i in $(seq 1 60); do
+    ok_sar="$(printf '{"apiVersion":"authorization.k8s.io/v1","kind":"SubjectAccessReview","spec":{"user":"openinfra:%s:%s","resourceAttributes":{"group":"openinfra.dev","resource":"functions","verb":"create","namespace":"%s"}}}' \
+      "$acct" "$owner" "$CFN_NS" | kubectl create -o jsonpath='{.status.allowed}' -f - 2>/dev/null || true)"
+    [ "$ok_sar" = true ] && break
+    [ "$i" = 60 ] && inconclusive "the deployer's control-plane grants were not compiled within 5 minutes"
+    sleep 5
+  done
 fi
 
 # 1. Publish the handler image where the cluster can pull it: the platform registry, through the shim's
