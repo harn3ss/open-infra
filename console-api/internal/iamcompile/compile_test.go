@@ -292,6 +292,28 @@ func TestCompile_ConditionsNeverWiden(t *testing.T) {
 	}
 }
 
+// A condition on an MFA key is a condition the control plane cannot evaluate either: an Allow that needs MFA
+// is dropped (a stack or console write made as the caller would otherwise act without MFA), and a Deny
+// unless MFA applies always.
+func TestCompile_MFAConditionsNeverWiden(t *testing.T) {
+	d := doc(t, "mfa", `{"Statement":[
+		{"Effect":"Allow","Action":"lambda:*","Resource":"*","Condition":{"Bool":{"aws:MultiFactorAuthPresent":"true"}}},
+		{"Effect":"Allow","Action":"dynamodb:*","Resource":"*"},
+		{"Effect":"Deny","Action":"dynamodb:DeleteTable","Resource":"*","Condition":{"BoolIfExists":{"aws:MultiFactorAuthPresent":"false"}}}]}`)
+	out := Compile(Input{World: world([]iamauthz.Policy{d}, map[string][]string{"User::alice": {"mfa"}}),
+		Principals: []Principal{{Kind: "User", Namespace: "open-infra-console", Name: "alice"}}})
+	c := corpusChecker(t, out)
+	if can(c, alice, "create", "openinfra.dev", "functions", "team-a", "f") || rbacAllows(out, alice, "create", "openinfra.dev", "functions", "team-a", "f") {
+		t.Error("an Allow that needs MFA must be dropped from the control plane")
+	}
+	if !can(c, alice, "get", "openinfra.dev", "tables", "team-a", "t") {
+		t.Error("the unconditional Allow stands")
+	}
+	if can(c, alice, "delete", "openinfra.dev", "tables", "team-a", "t") {
+		t.Error("a Deny unless MFA must apply unconditionally")
+	}
+}
+
 // A permission boundary intersects: the identity's s3:* within a boundary of s3:Get*/List* is reads.
 func TestCompile_BoundaryIntersects(t *testing.T) {
 	w := world([]iamauthz.Policy{

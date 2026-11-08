@@ -110,7 +110,9 @@ func conditionScope(st policyengine.Statement, account string) (ok, conditional 
 		}
 		conditional = true
 	}
-	if len(st.IPConditions) > 0 || len(st.TimeConditions) > 0 {
+	// A condition on a key AWS leaves out of some requests (aws:MultiFactorAuth*) is a condition too: the
+	// control plane carries none of these keys, so it drops such an Allow and applies such a Deny always.
+	if len(st.IPConditions) > 0 || len(st.TimeConditions) > 0 || len(st.KeyConditions) > 0 {
 		conditional = true
 	}
 	return true, conditional
