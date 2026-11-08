@@ -947,6 +947,8 @@ func run(logger *slog.Logger) error {
 	// SigV4, as AWS's pre-signed handle URL is (cloudformation_api.go).
 	if cfnDoor != nil {
 		router = cfnDoor.waitConditionHandler(router)
+		// Custom resources' ResponseURLs: the one-time URL is the credential (cfn_response.go).
+		router = cfnDoor.responseHandler(router)
 	}
 	// VM credentials are served over TLS only (the internal TLS listener below); see internaltls.go.
 	router = plaintextVMCredsGuard(router, getenv("VM_CREDS_ALLOW_PLAINTEXT", "") == "true")

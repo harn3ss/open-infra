@@ -347,10 +347,12 @@ async function fetchCode() {
 function addLayerPaths() {
   // Lambda Node layers carry a `nodejs/node_modules` (and/or nodejs/node<major>/node_modules) tree
   // extracted under /opt, so a handler can require() modules the layer provides. Put them on
-  // NODE_PATH and re-init the module resolver.
+  // NODE_PATH and re-init the module resolver. The task directory goes on it too, as Lambda's NODE_PATH
+  // ends with /var/task: require("cfn-response") finds the cfn-response.js beside inline code.
   const candidates = [
     path.join(OPT_DIR, "nodejs", "node_modules"),
     path.join(OPT_DIR, "nodejs", `node${process.versions.node.split(".")[0]}`, "node_modules"),
+    TASK_DIR,
   ].filter((p) => {
     try { return fs.statSync(p).isDirectory(); } catch (_e) { return false; }
   });
@@ -424,20 +426,27 @@ async function loadHandler() {
   return fn;
 }
 
+// LOG_STREAM is this instance's log stream, named as Lambda names one (<date>/[$LATEST]<id>).
+const LOG_STREAM = new Date().toISOString().slice(0, 10).replace(/-/g, "/") + "/[$LATEST]" + randomUUID().replace(/-/g, "");
+
 function lambdaContext() {
   const deadline = Date.now() + parseInt(process.env.OPENINFRA_TIMEOUT_S || "300", 10) * 1000;
+  const fnName = process.env.OPENINFRA_FUNCTION_NAME || "function";
   return {
     awsRequestId: randomUUID(),
-    functionName: process.env.OPENINFRA_FUNCTION_NAME || "function",
+    functionName: fnName,
     functionVersion: "$LATEST",
     memoryLimitInMB: String(parseInt(process.env.OPENINFRA_MEMORY_MB || "0", 10) || 128),
     invokedFunctionArn: "",
+    logGroupName: "/aws/lambda/" + fnName,
+    logStreamName: LOG_STREAM,
     getRemainingTimeInMillis: () => Math.max(0, deadline - Date.now()),
   };
 }
 
-// invoke calls the handler supporting BOTH async (Promise-returning) and callback styles, exactly as
-// AWS does: whichever settles first wins.
+// invoke calls the handler supporting async (Promise-returning) and callback styles, and the legacy
+// context.done / succeed / fail (which cfn-response calls), exactly as AWS does: whichever settles first
+// wins.
 function invoke(fn, event, context) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -446,6 +455,9 @@ function invoke(fn, event, context) {
       settled = true;
       err ? reject(err) : resolve(res);
     };
+    context.done = (err, res) => done(err, res);
+    context.succeed = (res) => done(null, res);
+    context.fail = (err) => done(err || new Error("handler failed"));
     let ret;
     try {
       ret = fn(event, context, done);

@@ -6,6 +6,20 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — custom resources respond to their ResponseURL, and inline handlers get cfn-response (#404)
+- **A Lambda-backed custom resource's event carries a `ResponseURL`, as on AWS,** and the deploy takes
+  the response the handler PUTs there. The URL is a one-time URL on the aws-shim.
+  - **Inline code that loads `cfn-response` (Node.js) or `cfnresponse` (Python)** gets open-infra's module
+    beside it, as AWS provides its own for `Code.ZipFile`. A custom-resource handler copied from the AWS
+    docs deploys unchanged; its `Data` resolves `Fn::GetAtt`, and a `FAILED` response rolls the stack
+    back. Such code used to be refused.
+  - A handler that returns its response still works.
+  - **Node.js runtime:** handlers get Lambda's `context.done`, `context.succeed`, `context.fail` and
+    `logStreamName`; `/var/task` is on `NODE_PATH`, as on Lambda. The Python context gains
+    `log_stream_name`.
+  - **Invocation:** custom resources are now invoked as Lambda's `Invoke`, so a handler's error is
+    reported as the function's error.
+
 ### Added — the Lambda API creates and changes functions (#364)
 - **`CreateFunction`, `UpdateFunctionCode`, `UpdateFunctionConfiguration` and `DeleteFunction` work
   through the aws-shim**, so `aws lambda create-function` and the SDKs' deploy calls run as on AWS.

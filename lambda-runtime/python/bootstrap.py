@@ -55,6 +55,10 @@ PORT = int(os.environ.get("PORT", "8080"))
 _START = time.time()
 
 
+# This instance's log stream, named as Lambda names one (<date>/[$LATEST]<id>).
+_LOG_STREAM = time.strftime("%Y/%m/%d", time.gmtime()) + "/[$LATEST]" + uuid.uuid4().hex
+
+
 class LambdaContext:
     """A minimal AWS Lambda context object (the fields handlers actually read)."""
 
@@ -64,6 +68,8 @@ class LambdaContext:
         self.function_version = "$LATEST"
         self.memory_limit_in_mb = int(os.environ.get("OPENINFRA_MEMORY_MB", "0")) or 128
         self.invoked_function_arn = ""
+        self.log_group_name = "/aws/lambda/" + self.function_name
+        self.log_stream_name = _LOG_STREAM
         # Knative enforces the real wall-clock timeout; expose a plausible budget.
         self._deadline = time.time() + int(os.environ.get("OPENINFRA_TIMEOUT_S", "300"))
 

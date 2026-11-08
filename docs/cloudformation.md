@@ -292,14 +292,22 @@ part of another kind rather than on its own. The caveat is always printed.
 
 ### Custom resources (`AWS::CloudFormation::CustomResource` / `Custom::*`)
 
-A Lambda-backed custom resource is **supported** (#269): at deploy, the in-stack `kind: Function`
-named by `ServiceToken` is **invoked synchronously** at the resource's point in dependency order with
-the CloudFormation custom-resource event (`RequestType` `Create`/`Delete`, `ResourceProperties`), and
-its returned **`Data`** resolves later resources' `Fn::GetAtt`. This is the faithful AWS behaviour,
-with one open-infra adaptation: the handler **returns** `{"Status":"SUCCESS"|"FAILED","Data":{…}}`
-synchronously rather than PUT-ing it to a pre-signed S3 `ResponseURL` (open-infra has no S3 callback
-surface). A `FAILED` status fails the deploy (all-or-nothing rollback). On stack teardown the Function
-gets a `Delete` event. **Fail-closed:** `ServiceToken` must `!Ref`/`!GetAtt` an **in-stack**
+A Lambda-backed custom resource is **supported** (#269). At deploy, the in-stack `kind: Function` named
+by `ServiceToken` is invoked at the resource's point in dependency order, with the CloudFormation
+custom-resource event (`RequestType` `Create`/`Delete`, `ResourceProperties`).
+- **The response, as on AWS:** the event carries a **`ResponseURL`**, and the handler PUTs its response
+  there: `{"Status":"SUCCESS"|"FAILED","PhysicalResourceId":…,"Data":{…},…}`, at most 4096 bytes.
+  - The URL is a one-time URL on the aws-shim, valid while the deploy waits for that response.
+  - Inline code (`Code.ZipFile`) that loads **`cfn-response`** (Node.js) or **`cfnresponse`** (Python)
+    gets open-infra's module beside it, as AWS provides its own, so a handler written as AWS documents it
+    runs unchanged.
+  - A handler may instead **return** the response from its invocation.
+- **What it decides:** the response's **`Data`** resolves later resources' `Fn::GetAtt`. A `FAILED`
+  status fails the deploy (all-or-nothing rollback).
+- **On stack teardown** the Function gets a `Delete` event.
+- **A copy of AWS's own module vendored into a package** sends to `https` on port 443, which the
+  ResponseURL is not: use the module open-infra provides (load it as `cfn-response`), or return the
+  response. **Fail-closed:** `ServiceToken` must `!Ref`/`!GetAtt` an **in-stack**
 `AWS::Lambda::Function` — an out-of-stack / AWS-ARN ServiceToken has no invoke target and refuses.
 **Carve-outs (v1):** a stack **UPDATE** that touches a custom resource refuses (destroy + recreate —
 a custom resource has no diffable state); custom resources are not drift-tracked (no live object); and
@@ -392,8 +400,6 @@ Refused:
 - Both `ZipFile` and `S3Bucket`.
 - `ZipFile` with a runtime other than Node.js or Python.
 - An inline handler that doesn't start with `index.`.
-- Inline code that loads `cfn-response`. open-infra invokes a custom-resource handler synchronously and
-  uses the response it returns (`{Status, Data, PhysicalResourceId}`); the module isn't provided yet.
 
 `S3ObjectStorageMode: REFERENCE` is stored as a copy, with a caveat. `SourceKMSKeyArn` is a caveat: the
 stored package is encrypted at rest with the platform's key.
@@ -796,7 +802,7 @@ Today's create translators (live-verified on the cluster):
 |---|---|---|
 | `AWS::KMS::Key` | `kind: EncryptionKey` | Description, `EnableKeyRotation`→rotation, `KeySpec`→key type; `KeyPolicy` is a caveat (access is via open-infra IAM). **Through the aws-shim front door**: also a key in the KMS API's store (`KeyPolicy` applied there), under the id its `Ref` resolves to. |
 | `AWS::KMS::Alias` | the KMS API's alias store | `AliasName`, `TargetKeyId` (an in-stack key or a key id/ARN). Through the aws-shim front door only. |
-| `AWS::Lambda::Function` | `kind: Function` | A `.zip` package (the default `PackageType`) runs on a managed runtime ([Lambda .zip functions](#lambda-zip-functions)): `Runtime`→`spec.code.runtime` (`nodejs20.x`, `nodejs22.x`, `python3.12`, `python3.13`, `dotnet8`), `Handler`→`spec.code.handler`, and `Code.ZipFile` or `Code.S3Bucket`/`S3Key` (+ `S3ObjectVersion`) → a stored deployment package. `PackageType: Image`: `Code.ImageUri`→image. Both: `Environment`→env, `MemorySize`→memory, `Timeout`→timeout, `Role`→`spec.role`, the [execution role](serverless.md#execution-role) the function's code runs as: an in-stack `AWS::IAM::Role` by `!GetAtt <Role>.Arn`, or a role ARN of the stack's account. Refused, as Lambda refuses them: a `Role` by `!Ref` (a name, not an ARN), an in-stack role whose trust does not name `lambda.amazonaws.com`, a role of another account. Refused with the supported list: any other `Runtime`. Refused: `Layers`, inline code that uses `cfn-response`. |
+| `AWS::Lambda::Function` | `kind: Function` | A `.zip` package (the default `PackageType`) runs on a managed runtime ([Lambda .zip functions](#lambda-zip-functions)): `Runtime`→`spec.code.runtime` (`nodejs20.x`, `nodejs22.x`, `python3.12`, `python3.13`, `dotnet8`), `Handler`→`spec.code.handler`, and `Code.ZipFile` or `Code.S3Bucket`/`S3Key` (+ `S3ObjectVersion`) → a stored deployment package. `PackageType: Image`: `Code.ImageUri`→image. Both: `Environment`→env, `MemorySize`→memory, `Timeout`→timeout, `Role`→`spec.role`, the [execution role](serverless.md#execution-role) the function's code runs as: an in-stack `AWS::IAM::Role` by `!GetAtt <Role>.Arn`, or a role ARN of the stack's account. Refused, as Lambda refuses them: a `Role` by `!Ref` (a name, not an ARN), an in-stack role whose trust does not name `lambda.amazonaws.com`, a role of another account. Refused with the supported list: any other `Runtime`. Refused: `Layers`. Inline code that loads `cfn-response` / `cfnresponse` gets open-infra's module beside it, as AWS provides its own ([custom resources](#custom-resources-awscloudformationcustomresource--custom)). |
 | `AWS::StepFunctions::StateMachine` | `kind: StateMachine` | The ASL `DefinitionString`/`Definition` maps byte-for-byte (open-infra runs the same Amazon States Language). `RoleArn`, `Logging`/`TracingConfiguration` are caveats. **Refused** (not silently broken): a definition whose Task `Resource` fields are AWS ARNs — open-infra Tasks reference a Function as `function:<name>`, so remap them first; also `EXPRESS` type, `DefinitionS3Location`, and `DefinitionSubstitutions`. |
 | `AWS::EC2::Volume` | `kind: Volume` | `Size`→size, `MultiAttachEnabled`→shared (RWX), **`Encrypted`→LUKS at rest keyed by a customer `kind: EncryptionKey`** (a `KmsKeyId` must reference an in-stack `AWS::KMS::Key`; with no `KmsKeyId` the volume is keyed by the stack's default EncryptionKey `<stack>-ebs-default` — the `aws/ebs` analog, created on first use, one per stack so destroying one stack's key crypto-erases only that stack's volumes; a stack created while the namespace shared one `ebs-default` keeps using it). The resource completes once the volume is **bound** — usable, as EBS reports `available`; for an encrypted volume that is after its passphrase is materialized ([`encryption.md`](encryption.md#longhorn-volumes-shipped-sc--just-use-it)). `AvailabilityZone`/`VolumeType`/`Iops`/`Throughput` are caveats (one flat cluster, Longhorn). **Refused**: a `KmsKeyId` that names an out-of-stack or AWS-managed key (no mappable equivalent) and `SnapshotId` (an EBS snapshot id has no open-infra VolumeSnapshot to restore from). |
 | `AWS::Cognito::UserPool` (+ `UserPoolClient`) | `kind: UserPool` | `UserPoolName`→realm — a hosted OIDC pool (Keycloak). An in-stack `UserPoolClient` **collates** into the pool (its `ClientName`→`spec.clientId`; the pool provisions one app client). The realm's own defaults cover password policy / schema / verification, so those are caveats — as is the client's OAuth config (flows/scopes/callback URLs/GenerateSecret). **Refused**: `MfaConfiguration` (ON/OPTIONAL) and `LambdaConfig` triggers (behavior-bearing auth with no faithful mapping); more than one client per pool; a client whose `UserPoolId` isn't in the stack. |

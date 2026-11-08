@@ -380,8 +380,9 @@ func translateKMSKey(id string, props map[string]any, ctx *stackCtx) (*Manifest,
 // that list), Handler -> spec.code.handler, and the package is Code.ZipFile (CloudFormation writes it to a
 // file named index — index.js, CommonJS, for Node.js; index.py for Python — so the handler is
 // index.<name>) or Code.S3Bucket/S3Key (+ S3ObjectVersion), resolved at deploy (resolvePackage): stored
-// as Lambda stores it, the S3 object read with the caller's authority. Inline code that uses cfn-response
-// refuses (a custom-resource handler returns its response here; the module is not provided).
+// as Lambda stores it, the S3 object read with the caller's authority. Inline code that loads cfn-response
+// (Node.js) or cfnresponse (Python) gets open-infra's module beside it, as AWS provides its own for
+// Code.ZipFile: it PUTs a custom resource's response to the event's ResponseURL (#404).
 // Both: Environment.Variables (-> env), MemorySize (-> memory), Timeout (-> timeout), Role (-> spec.role,
 // the execution role the function's code runs as: an in-stack role by !GetAtt <Role>.Arn, or a role ARN of
 // the stack's account). VpcConfig, Layers and the rest block.
@@ -551,11 +552,17 @@ func lambdaZipCode(id string, props, code map[string]any, ctx *stackCtx) (map[st
 		if len(src) > maxInlineCode {
 			fin("Code.ZipFile exceeds 4 MB, CloudFormation's limit for inline code")
 		}
-		if cfnResponseRe.MatchString(src) {
-			fin("the inline code uses cfn-response, which sends a custom resource's response to its ResponseURL; open-infra invokes a custom-resource handler synchronously and takes the response it returns ({Status, Data, PhysicalResourceId}), and does not provide the cfn-response module yet")
-		}
 		if file != "" {
-			return out, &CodePackage{Inline: map[string]string{file: src}}, caveats, f
+			files := map[string]string{file: src}
+			// CloudFormation's response module, where AWS provides it: beside inline code that loads it.
+			if cfnResponseRe.MatchString(src) {
+				if file == "index.js" {
+					files["cfn-response.js"] = cfnResponseNode
+				} else {
+					files["cfnresponse.py"] = cfnResponsePython
+				}
+			}
+			return out, &CodePackage{Inline: files}, caveats, f
 		}
 	case hasBucket:
 		bucket, bok := concrete(code["S3Bucket"])

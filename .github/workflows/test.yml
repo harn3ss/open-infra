@@ -298,6 +298,7 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: "8.0.x" }
       - run: python3 test/lambda-runtime/code_package_test.py
+      - run: python3 test/lambda-runtime/cfn_response_test.py
 
   vm-creds-cli:
     name: vm-creds-cli

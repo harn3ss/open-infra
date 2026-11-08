@@ -1096,6 +1096,10 @@ spec:
             # stack-record/change-set/drift ConfigMaps live in. Resources are created under the CALLER's
             # impersonated authority; the bookkeeping ConfigMaps are shim-written (RBAC: aws-shim-cfn-records).
             - { name: CFN_NAMESPACE, value: "open-infra-cfn" }
+            # A custom resource's ResponseURL names this pod's own address, since the invocation waiting
+            # for the response runs here (cfn_response.go).
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
             - { name: ECS_NAMESPACE, value: "open-infra-ecs" }
             # S3 CreateBucket: a bucket made through the S3 API is a kind: Bucket claim here (account-wide, as
             # AWS buckets belong to the account), created under the CALLER's impersonated authority.

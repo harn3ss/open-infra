@@ -156,6 +156,41 @@ func TestLambdaZip_InlinePythonIsIndexPy(t *testing.T) {
 	}
 }
 
+// Inline code that loads CloudFormation's response module gets open-infra's beside it, as AWS provides its
+// own for Code.ZipFile: cfn-response.js for Node.js, cfnresponse.py for Python. Code that does not load it
+// is stored exactly as written, so its package does not change.
+func TestLambdaZip_InlineCfnResponseGetsTheModule(t *testing.T) {
+	cases := []struct{ runtime, src, file, mustHave string }{
+		{"nodejs22.x", "const response = require('cfn-response'); exports.handler = (e, c) => response.send(e, c, response.SUCCESS, {});", "cfn-response.js", "exports.send = function (event, context, responseStatus"},
+		{"python3.12", "import cfnresponse\n          def handler(e, c):\n              cfnresponse.send(e, c, cfnresponse.SUCCESS, {})", "cfnresponse.py", "def send(event, context, responseStatus"},
+	}
+	for _, c := range cases {
+		fn := strings.NewReplacer("nodejs22.x", c.runtime, "exports.handler = async (event) => ({ hello: event.name });", c.src).Replace(inlineNodeFn)
+		plan, err := BuildPlanForStack(zipTemplate(fn), nil, nil, "s", "", Capabilities{LambdaPackageStore: true})
+		if err != nil || plan.Verdict == Rejected {
+			t.Fatalf("%s: inline cfn-response code must plan: %v %v", c.runtime, err, plan.Blockers)
+		}
+		store := &fakePackages{}
+		opts := deployOpts()
+		opts.Caps, opts.Packages = Capabilities{LambdaPackageStore: true}, store
+		if _, err := Deploy(context.Background(), zipTemplate(fn), opts, &fakeApplier{}); err != nil {
+			t.Fatalf("%s: deploy: %v", c.runtime, err)
+		}
+		if len(store.stored) != 1 || !strings.Contains(store.stored[0].Inline[c.file], c.mustHave) {
+			t.Fatalf("%s: the package must carry %s: %v", c.runtime, c.file, store.stored)
+		}
+	}
+	store := &fakePackages{}
+	opts := deployOpts()
+	opts.Caps, opts.Packages = Capabilities{LambdaPackageStore: true}, store
+	if _, err := Deploy(context.Background(), zipTemplate(inlineNodeFn), opts, &fakeApplier{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.stored[0].Inline) != 1 {
+		t.Fatalf("code that does not load cfn-response is stored alone: %v", store.stored[0].Inline)
+	}
+}
+
 // Code.S3Bucket/S3Key is read at deploy (the store reads it with the caller's authority) and recorded by
 // its origin; an update with the same location keeps it without reading S3 again, as CloudFormation does,
 // and a new key reads it.
@@ -214,7 +249,6 @@ func TestLambdaZip_Refusals(t *testing.T) {
 		{"handler not index", "Handler: index.handler", "Handler: app.handler", "must start with index."},
 		{"zipfile for dotnet", "nodejs22.x", "dotnet8", "Code.ZipFile is for Node.js and Python functions"},
 		{"zipfile and bucket", "      Code:\n", "      Code:\n        S3Bucket: b\n        S3Key: k\n", "both ZipFile and S3Bucket"},
-		{"cfn-response", "exports.handler = async (event) => ({ hello: event.name });", "const response = require('cfn-response'); exports.handler = (e, c) => response.send(e, c, response.SUCCESS, {});", "cfn-response"},
 		{"layers", "      Runtime: nodejs22.x\n", "      Runtime: nodejs22.x\n      Layers: [arn:aws:lambda:us-east-1:123456789012:layer:x:1]\n", "Layers are not supported"},
 		{"image with runtime", "      Runtime: nodejs22.x\n", "      Runtime: nodejs22.x\n      PackageType: Image\n", "applies to a .zip deployment package"},
 	}

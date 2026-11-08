@@ -71,7 +71,10 @@ type cfnDoorway struct {
 	shimDyn dynamic.Interface // shim SA client for stack-record / changeset / drift bookkeeping
 	// packages keeps zip Lambdas' deployment packages (lambda_packages.go); nil = an S3 package refuses and
 	// inline code deploys as a ConfigMap, as on the CLI.
-	packages  *packageStore
+	packages *packageStore
+	// responses serves custom resources' ResponseURLs (cfn_response.go); nil = a handler must return its
+	// response.
+	responses *cfnResponses
 	mapper    meta.RESTMapper
 	account   string
 	region    string
@@ -239,34 +242,59 @@ func newCFNDoorway(cfg *rest.Config, shimDyn dynamic.Interface, account, region,
 		// The in-cluster TLS address VM guests already reach and trust (their credentials come from it).
 		signalBase: getenv("CFN_SIGNAL_BASE_URL", "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567")}
 	h.signals = &signalStore{h: h}
+	h.responses = newCFNResponses()
 	return h, nil
 }
 
-// invokeCustomResourceFn is the cfn.InvokeFunc for a Lambda-backed custom resource (#269): it POSTs the
-// CloudFormation custom-resource event to the in-stack Function's cluster-local Knative URL and parses the
-// handler's {Status, Data, Reason} response. The open-infra adaptation of the ResponseURL callback — the
-// handler RETURNS its response synchronously rather than PUT-ing it to a pre-signed S3 URL.
+// invokeCustomResourceFn is the cfn.InvokeFunc for a Lambda-backed custom resource (#269): it invokes the
+// in-stack Function at its cluster-local Knative URL with the CloudFormation custom-resource event, as
+// Lambda's Invoke does (X-Openinfra-Invoke: direct), giving the event a ResponseURL (cfn_response.go). The
+// response is the one the handler PUTs there (cfn-response), else the {Status, Data, Reason} it returns.
 func (h *cfnDoorway) invokeCustomResourceFn(ctx context.Context, namespace, functionName string, event []byte) (map[string]any, error) {
+	invoke := func(ctx context.Context, event []byte) (map[string]any, string, error) {
+		return h.postCustomResourceEvent(ctx, namespace, functionName, event)
+	}
+	if h.responses == nil {
+		out, fnErr, err := invoke(ctx, event)
+		if err == nil && fnErr != "" {
+			err = fmt.Errorf("custom-resource Function %q failed: %s", functionName, fnErr)
+		}
+		return out, err
+	}
+	return h.invokeWithResponseURL(ctx, namespace, functionName, event, invoke)
+}
+
+// postCustomResourceEvent invokes the function once and returns what it answered: its JSON result, or (with
+// fnErr set) the error it raised.
+func (h *cfnDoorway) postCustomResourceEvent(ctx context.Context, namespace, functionName string, event []byte) (map[string]any, string, error) {
 	target := "http://" + functionName + "." + namespace + "." + h.svcSuffix + "/"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(event))
 	if err != nil {
-		return nil, fmt.Errorf("building custom-resource invoke request: %w", err)
+		return nil, "", fmt.Errorf("building custom-resource invoke request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Openinfra-Invoke", "direct")
 	resp, err := h.invoker.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("invoking custom-resource Function %q at %s: %w", functionName, target, err)
+		return nil, "", fmt.Errorf("invoking custom-resource Function %q at %s: %w", functionName, target, err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, fmt.Errorf("custom-resource Function %q returned HTTP %d: %s", functionName, resp.StatusCode, string(body))
+		return nil, "", fmt.Errorf("custom-resource Function %q returned HTTP %d: %s", functionName, resp.StatusCode, string(body))
 	}
 	var out map[string]any
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("custom-resource Function %q returned a non-JSON response: %w", functionName, err)
+	if err := json.Unmarshal(body, &out); err != nil && resp.Header.Get("X-Amz-Function-Error") == "" {
+		return nil, "", fmt.Errorf("custom-resource Function %q returned a non-JSON response: %w", functionName, err)
 	}
-	return out, nil
+	if resp.Header.Get("X-Amz-Function-Error") != "" {
+		msg, _ := out["errorMessage"].(string)
+		if msg == "" {
+			msg = strings.TrimSpace(string(body))
+		}
+		return out, msg, nil
+	}
+	return out, "", nil
 }
 
 func (h *cfnDoorway) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {

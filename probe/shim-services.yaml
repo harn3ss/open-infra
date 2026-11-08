@@ -188,6 +188,7 @@ services:
     tier: proven
     sigv4: [cloudformation]
     probes: [cloudformation, cfn-customresource, cfn-lift-and-shift, cfn-data-services, cfn-api, cfn-lambda-zip]
+    pending: [cfn-cfnresponse]
   - name: CloudFront
     cell: "a stack's distribution (`kind: StaticSite`): its invalidations (Completed once the site serves the upload) and reads of it, its policies and origin access"
     tier: proven

@@ -439,10 +439,11 @@ type ProvisionRestAPIFunc func(ctx context.Context, planSpec map[string]any) (ap
 // error), for rollback and teardown.
 type DeprovisionRestAPIFunc func(ctx context.Context, apiID string) error
 
-// InvokeFunc synchronously invokes a custom resource's backing Function with the CloudFormation
-// custom-resource event (JSON) and returns the handler's parsed response: {"Status":"SUCCESS"|"FAILED",
-// "Data":{...},"Reason":"..."}. The open-infra adaptation of the ResponseURL callback — the handler
-// RETURNS the response rather than PUT-ing it to a pre-signed S3 URL.
+// InvokeFunc invokes a custom resource's backing Function with the CloudFormation custom-resource event
+// (JSON) and returns its response: {"Status":"SUCCESS"|"FAILED","Data":{...},"Reason":"...",
+// "PhysicalResourceId":"..."}. The invoker gives the event a ResponseURL, as AWS does, and takes the
+// response the handler PUTs there (cfn-response); a handler that returns the response instead is answered
+// by what it returns.
 type InvokeFunc func(ctx context.Context, namespace, functionName string, event []byte) (map[string]any, error)
 
 // PackageStore keeps zip Lambdas' deployment packages (DeployOptions.Packages).
@@ -1278,7 +1279,7 @@ func invokeCustomResource(ctx context.Context, opts DeployOptions, r *resolver, 
 	props, _ := m.Spec["properties"].(map[string]any)
 	event, _ := json.Marshal(map[string]any{
 		"RequestType":        "Create",
-		"ResponseURL":        "", // open-infra: the handler returns the response synchronously (no S3 callback)
+		"ResponseURL":        "", // the invoker (InvokeFunc) sets the URL the handler's response is PUT to
 		"StackId":            opts.stackID(),
 		"RequestId":          opts.StackName + "/" + id,
 		"ResourceType":       resType,
