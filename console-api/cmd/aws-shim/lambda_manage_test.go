@@ -289,7 +289,7 @@ func TestUpdateFunctionConfiguration(t *testing.T) {
 	h, dyn, _ := manageFixture(t, nil, zipFunction(testCFNNamespace, "orders"))
 	w := serveWith(h, lambdaReq(http.MethodPut, "/2015-03-31/functions/orders/configuration", map[string]any{
 		"Timeout": 120, "Runtime": "python3.12", "Environment": map[string]any{"Variables": map[string]any{"BB": "2"}}}), testUser)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"LastUpdateStatus":"InProgress"`) {
 		t.Fatalf("UpdateFunctionConfiguration: %d %s", w.Code, w.Body)
 	}
 	obj := getClaim(t, dyn, testCFNNamespace, "orders")

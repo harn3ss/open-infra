@@ -544,7 +544,11 @@ func (h *lambdaHandler) updateFunction(w http.ResponseWriter, r *http.Request, c
 	}
 	h.timeouts.forget(ns, name)
 	h.logger.Info("lambda function updated", "user", claims.Sub, "function", name, "op", op)
-	writeLambdaJSON(w, requestID, h.functionConfiguration(ctx, updated, ""))
+	// The update has been accepted, not yet rolled out: AWS's answer says so (LastUpdateStatus InProgress).
+	cfg := h.functionConfiguration(ctx, updated, "")
+	cfg["LastUpdateStatus"] = "InProgress"
+	delete(cfg, "StateReason")
+	writeLambdaJSON(w, requestID, cfg)
 }
 
 func (h *lambdaHandler) deleteFunction(w http.ResponseWriter, r *http.Request, requestID, ns, name string) {

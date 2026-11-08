@@ -233,7 +233,9 @@ aws lambda delete-function --function-name orders
   the account: `ResourceConflictException` if it is taken.
 - **What the answers hold:**
   - every answer is the function's configuration, as on AWS: `State` starts as `Pending` until the
-    function is ready;
+    function is ready, and an update answers `LastUpdateStatus: InProgress`. A later read takes its state
+    from the function's conditions, which do not say when an update has finished rolling out: invoke the
+    function to see the new code;
   - `RevisionId` names its current revision: an update that passes `--revision-id` changes only that
     revision, or answers `PreconditionFailedException`.
 - **Environment variables** replace the function's variables, as on AWS.
