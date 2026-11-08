@@ -561,10 +561,19 @@ reports the request ID, the ARN it was invoked by and the version that runs
 `kind: Function` round-trips).
 
 **Finding a function.** A function is named by its name, an ARN (`arn:aws:lambda:<region>:<account>:function:<name>[:<qualifier>]`)
-or a partial ARN; only the name matters. It is looked for in the Lambda API's namespace
-(`FUNCTIONS_NAMESPACE`, default `default`) and then the namespace CloudFormation stacks deploy into
-(`CFN_NAMESPACE`, default `open-infra-cfn`), so the `FunctionName` or `Arn` a stack's outputs report is
-invocable. Every path that invokes a function by name finds it the same way: `Invoke` (sync and
+or a partial ARN; only the name matters, and it is found in the caller's own account, as on AWS:
+- **a member account's** functions are in its own namespaces: its home first, then the other namespaces its
+  `kind: Account` lists. Every `kind: Function` there counts, whether the Lambda API, a stack or a migration
+  tool wrote it. They are never found in the management account's namespaces, and its are never found in
+  theirs.
+- **the management account's** are in the Lambda API's namespace (`FUNCTIONS_NAMESPACE`, default `default`)
+  and then the namespace CloudFormation stacks deploy into (`CFN_NAMESPACE`, default `open-infra-cfn`), so
+  the `FunctionName` or `Arn` a stack's outputs report is invocable.
+
+To invoke a member account's function, sign with a principal of that account (a user's access key, or a
+session of one of its roles) whose policy allows `lambda:InvokeFunction` on the function's ARN; a function
+the policy does not name is refused `AccessDeniedException`. (`probe/aws-shim-lambda-account-invoke.sh`
+proves it, on a function the Lambda API made and on one written straight into the account's home.) Every path that invokes a function by name finds it the same way: `Invoke` (sync and
 `Event`), SNS lambda subscriptions, EventBridge Lambda targets, API Gateway (HTTP and REST) integrations,
 and a stack's REST API integrations. Only a `kind: Function` counts (a Service of that name is not a
 function), and the caller still needs invoke rights where the function is found: `create` on `functions`
@@ -573,8 +582,8 @@ SNS lambda subscription are delivered to the namespace where that check passed. 
 function whose name a function in the other namespace already has, since a function name is unique in an
 account, as on AWS. A function created outside a stack (with `kubectl` or GitOps) under a stack function's
 name takes precedence, because the Lambda API's namespace is searched first. Lookups use the shim's `get`
-on `functions` in those two namespaces (`open-infra-aws-shim-functions`); without it, a function is looked
-for in `FUNCTIONS_NAMESPACE` only.
+on `functions` in the management account's two namespaces (`open-infra-aws-shim-functions`) and in each
+member account's (its service-linked role); without it, a function is looked for in the first of them.
 
 **Reading functions.** `GetFunction`, `GetFunctionConfiguration`, `ListFunctions` and `GetPolicy` answer in
 Lambda's shapes from the `kind: Function` itself. Reading one needs `get` on `functions` where it lives plus

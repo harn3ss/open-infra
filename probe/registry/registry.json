@@ -1053,7 +1053,8 @@
         "lambda-execution-role",
         "lambda-timeout",
         "lambda-api",
-        "lambda-versions"
+        "lambda-versions",
+        "lambda-account-invoke"
       ],
       "refused": [],
       "service": "Lambda",

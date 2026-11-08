@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Documented — where Lambda finds a member account's functions
+- **A member account's functions are its own:** Lambda Invoke (and every path that invokes by name) finds a
+  member account's functions in its own namespaces — its home first — whether the Lambda API, a stack or a
+  migration tool wrote them, authorized by the caller's `lambda:InvokeFunction` on the function's ARN.
+  `docs/aws-shim.md` said only where the management account's are.
+- **Proven:** `probe/aws-shim-lambda-account-invoke.sh`. A member account's user allowed two named functions
+  invokes both; it is refused a third and `GetFunction` with `AccessDeniedException`; an unsigned or wrongly
+  signed Invoke is refused and never runs.
+
 ### Added — a Lambda function in a VPC, egress-isolated the AWS way
 - **Lambda `VpcConfig`:** `create-function` / `update-function-configuration --vpc-config` and
   CloudFormation's `VpcConfig` put a function in subnets and security groups of one VPC, with Lambda's
