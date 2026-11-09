@@ -6,6 +6,19 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — nodes pull runtime images from the in-cluster registry again
+- **The cause:** a node's pull credential was minted by hand into a Secret. When the ECR token key moved
+  into OpenBao, that credential stopped verifying. Every node was then refused at the token endpoint (401),
+  and a function on a `code.runtimeImage` could fail its next cold start on any node without the image.
+- **A node's own identity now gets it, as on AWS:**
+  - the node agent presents its ServiceAccount token to the shim's `/ecr/node-credential` and gets the node
+    puller's pull-only credential;
+  - it asks again only when that credential stops verifying or nears its end, on a different day per node.
+    So a key rotation mends itself, and a node's runtime restarts only then;
+  - only the node agent may have the credential: another ServiceAccount is refused.
+- **Registries follow a signing-key change:** when the token certificates change, the shim rolls the
+  registries that verify tokens against them, so they trust the new key without a restart by hand.
+
 ### Fixed — a cold start no longer counts against a Lambda function's timeout
 - **As on Lambda:** a function's `Timeout` counts from when the invoke reaches its runtime, not from when
   the request arrived. Before, a function called from zero spent its own timeout waiting for an instance:

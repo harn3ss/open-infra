@@ -10,12 +10,25 @@
 #      HTTP) + the pull-only node-puller credential (Basic AWS:<jwt>, used for the realm bearer dance),
 #   4. restarts the node runtime ONLY when registries.yaml actually changes (never in a loop).
 #
+# The credential comes from the node's own identity, as a node's instance role gets its ECR credential on
+# AWS: the agent presents its ServiceAccount token (projected, audience openinfra-ecr-node-pull) to the
+# shim's /ecr/node-credential and gets the node puller's pull-only credential (ecr_node_pull.go). It asks
+# again only when the credential it holds no longer verifies at /ecr/token (a token key rotated or
+# retired) or nears its end (30 to 49 days before, a different day for each node, so nodes never renew,
+# and restart their runtime, together). A shim it cannot reach changes nothing.
+#
 # GATED: runs only on nodes labelled openinfra.dev/ecr-pull=enabled, so it is armed node-by-node (arming a
 # node restarts its k3s/k3s-agent once). The node-puller credential is pull-only (see ecr-node-pull.yaml);
-# a leaked node credential can only pull existing images, never push or delete.
-#
-# The credential Secret (ecr-node-puller-cred) is provisioned out of band, NOT in git — mint it with the
-# shim's ECR signing key (scratchpad mint_node_puller.py pattern) and rotate before its 1y expiry.
+# a leaked node credential can only pull existing images, never push or delete. Rolled one node at a time,
+# each settled for two minutes before the next, so no two nodes restart their runtime together.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ecr-node-pull-agent
+  namespace: kube-system
+  labels: { openinfra.dev/component: ecr }
+automountServiceAccountToken: false # its only token is the projected one, for the shim alone
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -28,10 +41,13 @@ spec:
   updateStrategy:
     type: RollingUpdate
     rollingUpdate: { maxUnavailable: 1 } # one node at a time — never cycle the fleet at once
+  minReadySeconds: 120 # and the next only once this node's runtime has settled
   template:
     metadata:
       labels: { app: ecr-node-pull-agent, openinfra.dev/component: ecr }
     spec:
+      serviceAccountName: ecr-node-pull-agent
+      automountServiceAccountToken: false
       hostPID: true # to nsenter host PID 1 and restart the runtime unit
       nodeSelector:
         openinfra.dev/ecr-pull: enabled # armed per node
@@ -55,7 +71,29 @@ spec:
           command: [/bin/sh, -ceu]
           args:
             - |
-              CRED_FILE=/cred/password
+              TOKEN_FILE=/var/run/secrets/openinfra/ecr-node-pull/token
+              SHIM_URL="http://$SHIM_HOST:4566"
+              # This node's renewal offset, 0-19 days: nodes renew on different days.
+              OFFSET_DAYS=$(( $(printf '%s' "$NODE_NAME" | cksum | cut -d' ' -f1) % 20 ))
+              # cred_status <credential>: valid | invalid | unknown (the shim could not be asked)
+              cred_status() {
+                out="$(wget -S -O /dev/null -T 15 --header "Authorization: Basic $(printf 'AWS:%s' "$1" | base64 | tr -d '\n')" \
+                  "$SHIM_URL/ecr/token?service=ecr-registry" 2>&1)"
+                if printf '%s' "$out" | grep -q 'HTTP/[0-9.]* 200'; then echo valid
+                elif printf '%s' "$out" | grep -q 'HTTP/[0-9.]* 401'; then echo invalid
+                else echo unknown; fi
+              }
+              # cred_exp <credential>: its expiry (epoch seconds), read from the JWT's claims
+              cred_exp() {
+                p="$(printf '%s' "$1" | cut -d. -f2 | tr '_-' '/+')"
+                case $(( ${#p} % 4 )) in 2) p="$p==" ;; 3) p="$p=" ;; esac
+                printf '%s' "$p" | base64 -d 2>/dev/null | sed -n 's/.*"exp": *\([0-9]*\).*/\1/p'
+              }
+              # fetch_cred: the node pull credential, for this agent's own identity
+              fetch_cred() {
+                wget -q -O - -T 15 --header "Authorization: Bearer $(cat "$TOKEN_FILE")" "$SHIM_URL/ecr/node-credential" 2>/dev/null \
+                  | sed -n 's/.*"password":"\([^"]*\)".*/\1/p'
+              }
               resolve() { # first IPv4 for a name, via the pod resolver (CoreDNS)
                 getent ahostsv4 "$1" 2>/dev/null | awk '{print $1; exit}' \
                   || nslookup "$1" 2>/dev/null | awk '/^Address/{ip=$NF} END{print ip}'
@@ -80,8 +118,25 @@ spec:
                   printf '%s\n' "$BLOCK" >> "$HOSTS"
                   echo "[$NODE_NAME] /etc/hosts updated (reg=$REG_IP shim=$SHIM_IP)"
                 fi
-                # (3) desired registries.yaml (http mirror forces plain HTTP; auth = pull-only node-puller)
-                PW="$(cat "$CRED_FILE")"
+                # (3) desired registries.yaml (http mirror forces plain HTTP; auth = pull-only node-puller).
+                # The credential held is kept while it verifies and is not near its end.
+                CUR="$(sed -n 's/^ *password: "\(.*\)"$/\1/p' "$TARGET" 2>/dev/null | head -n 1)"
+                NEED=""
+                if [ -z "$CUR" ]; then
+                  NEED="no node pull credential yet"
+                elif [ "$(cred_status "$CUR")" = invalid ]; then
+                  NEED="the node pull credential no longer verifies"
+                else
+                  EXP="$(cred_exp "$CUR")"
+                  if [ -n "$EXP" ] && [ "$(date +%s)" -ge $(( EXP - (30 + OFFSET_DAYS) * 86400 )) ]; then NEED="the node pull credential is near its end"; fi
+                fi
+                PW="$CUR"
+                if [ -n "$NEED" ]; then
+                  NEW="$(fetch_cred)"
+                  if [ -n "$NEW" ]; then PW="$NEW"; echo "[$NODE_NAME] $NEED: the shim issued a new one"
+                  else echo "[$NODE_NAME] $NEED, and the shim issued none; retrying"; fi
+                fi
+                if [ -z "$PW" ]; then sleep 30; continue; fi
                 # Images named with the registry's public (LAN) host pull through the same in-cluster
                 # endpoint; containerd keys auth by endpoint host, so the credential below covers both.
                 PUBLIC_MIRROR=""
@@ -115,12 +170,14 @@ spec:
               done
           volumeMounts:
             - { name: host-etc, mountPath: /host/etc }
-            - { name: cred, mountPath: /cred, readOnly: true }
+            - { name: ecr-node-pull-token, mountPath: /var/run/secrets/openinfra/ecr-node-pull, readOnly: true }
           resources:
             requests: { cpu: 10m, memory: 16Mi }
             limits: { cpu: 100m, memory: 64Mi }
       volumes:
         - name: host-etc
           hostPath: { path: /etc, type: Directory }
-        - name: cred
-          secret: { secretName: ecr-node-puller-cred }
+        - name: ecr-node-pull-token
+          projected:
+            sources:
+              - serviceAccountToken: { audience: openinfra-ecr-node-pull, expirationSeconds: 3600, path: token }

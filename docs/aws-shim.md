@@ -2100,6 +2100,18 @@ on `arn:aws:ecr:<region>:<account>:repository/<name>` — see
 `aws ecr get-login-password | docker login …` then `docker pull <repositoryUri>:<tag>` work inside the guest
 for that repository and fail for every other.
 
+**Node pulls.** A function's `code.runtimeImage` in the registry is pulled by the node's container runtime,
+with a credential the node's own identity obtains, as a node's instance role gets its ECR credential on AWS.
+- **How it is issued:** the node agent (on nodes labelled `openinfra.dev/ecr-pull=enabled`) presents its
+  ServiceAccount token to the shim's `/ecr/node-credential`. It gets the node puller's credential, which can
+  only pull: its authority is the `node-pullers` group's `AmazonEC2ContainerRegistryPullOnly`, decided per
+  repository at `/ecr/token`.
+- **When it is renewed:** the agent keeps the credential while it verifies, and asks for a new one when it
+  stops verifying (a signing key rotated or retired) or nears its end, on a different day per node. The node's
+  runtime restarts to read it only then.
+- **Signing-key changes:** when the signing key's certificates change, the shim rolls the registries so they
+  trust the new ones. Nothing is minted or restarted by hand.
+
 **Endpoints.** The internal registry (`ecr-registry`) serves node runtimes and in-cluster clients. For LAN
 workstations and VM guests, the same registry has a **LAN-facing front**, `ecr-registry-public` — same
 storage, same upload secret, same token trust anchor; it differs only in its token realm. Publish it through
