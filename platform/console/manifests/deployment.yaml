@@ -109,6 +109,12 @@ spec:
             # entirely unless a deployment opts in. Set to "true" on a test/non-production cluster.
             - name: CHAOS_UI_ENABLED
               value: "false"
+            # Go's GC does not read the cgroup limit: under the default GOGC the heap grows to ~2x the
+            # live set and is OOMKilled under memory.limits. A dashboard's first load lists pods and events
+            # cluster-wide (megabytes of JSON, decoded to scope them to the caller's account). GOMEMLIMIT,
+            # a soft ceiling ~90% of the limit, keeps the peak heap under it (as the aws-shim's does).
+            - name: GOMEMLIMIT
+              value: "448MiB"
 
           # Lightweight probes on the /healthz endpoint exposed by the Go BFF.
           readinessProbe:
@@ -137,10 +143,12 @@ spec:
             capabilities:
               drop: [ALL]
 
+          # 256Mi was OOMKilled by a dashboard's first load after a restart (pods and events listed
+          # cluster-wide); GOMEMLIMIT above keeps the heap under the 512Mi limit.
           resources:
             requests:
               cpu: 50m
-              memory: 64Mi
+              memory: 128Mi
             limits:
               cpu: 500m
-              memory: 256Mi
+              memory: 512Mi
