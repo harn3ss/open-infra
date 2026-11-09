@@ -458,3 +458,52 @@ func TestConsoleRoutes_CheckCatchesAnUngatedRoute(t *testing.T) {
 		t.Errorf("the allow check reported a route gated right: %s", why)
 	}
 }
+
+// A session switched into another account's role is refused every console IAM page, though its role's
+// policies allow every IAM action: the pages act on the management account's IAM, so the session's
+// decision, asked on its own account's ARNs, would let it create the management account's users and mint
+// their keys (#417). Nothing behind the gate is reached. A session in the management account, a role
+// session of its own included, is not refused by this (the AdministratorAccess test above reaches them).
+func TestConsoleRoutes_IAMPagesRefuseAnotherAccountsRoleSession(t *testing.T) {
+	const member = "900000000002"
+	w := testWorld(t, map[string]string{"AdministratorAccess": adminDoc}, map[string][]string{
+		"Role::member-admin": {"AdministratorAccess"}, "Role::ops": {"AdministratorAccess"}})
+	p := consoleRouteProbe(t, w)
+	sign := func(c iam.Claims) string {
+		tok, err := p.auth.issueClaims(c)
+		if err != nil {
+			t.Fatalf("sign a session: %v", err)
+		}
+		return tok
+	}
+	other := sign(iam.Claims{Sub: "route-admin", Role: "poweruser", AssumedRole: "member-admin", Account: member, MFA: iam.NoMFA()})
+	own := sign(iam.Claims{Sub: "route-admin", Role: "poweruser", AssumedRole: "ops", Account: iam.ManagementAccount, MFA: iam.NoMFA()})
+
+	checked := 0
+	for _, rt := range p.z.reg.Routes() {
+		if !managementIAMPage(rt.Path) {
+			continue
+		}
+		checked++
+		rec, problem := p.call(rt, other)
+		if problem != "" {
+			t.Errorf("%s %s: %s", rt.Method, rt.Path, problem)
+			continue
+		}
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "manage the management account") {
+			t.Errorf("%s %s: another account's role session got %d %s, want the IAM pages' refusal",
+				rt.Method, rt.Path, rec.Code, strings.TrimSpace(rec.Body.String()))
+		}
+	}
+	if checked < 40 {
+		t.Errorf("checked %d IAM page routes (the console has more than 40)", checked)
+	}
+	if n := p.reached(); n != 0 {
+		t.Errorf("another account's role session reached %d call(s) behind an IAM page's gate", n)
+	}
+	// The management account's own role session is decided by its policies, not refused.
+	rt := awsaction.Route{Method: http.MethodGet, Path: "/api/iam/users"}
+	if rec, _ := p.call(rt, own); rec.Code == http.StatusForbidden {
+		t.Errorf("a role session in the management account was refused the IAM pages: %s", rec.Body.String())
+	}
+}

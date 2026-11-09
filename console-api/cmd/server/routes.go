@@ -249,6 +249,7 @@ func (z *consoleAuthz) handleDynamic(rt chi.Router, prefix, method, path string,
 func (z *consoleAuthz) handleDecided(rt chi.Router, prefix, method, path string, timeout time.Duration, describe string,
 	question func(*http.Request) (string, string, func() (bool, string)), hf http.HandlerFunc) {
 	z.reg.Add(awsaction.Route{Method: method, Path: prefix + path, Action: "per-request: " + describe})
+	iamPage := managementIAMPage(prefix + path)
 	mws := []func(http.Handler) http.Handler{}
 	if timeout > 0 {
 		mws = append(mws, middleware.Timeout(timeout))
@@ -259,6 +260,10 @@ func (z *consoleAuthz) handleDecided(rt chi.Router, prefix, method, path string,
 			action, arn, decide := question(r)
 			if bc.refused != "" {
 				writeBodyRefused(w, bc.refused)
+				return
+			}
+			if iamPage && outsideManagementAccount(r) {
+				writeAccessDenied(w, action, arn, iamPageOtherAccount)
 				return
 			}
 			if ok, reason := decide(); !ok {

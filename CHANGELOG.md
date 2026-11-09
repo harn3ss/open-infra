@@ -6,6 +6,17 @@ the product's public contract.
 
 ## Unreleased
 
+### Security — the console's IAM pages refuse a session in another account
+- **The flaw:** the console's IAM pages read and write the management account's IAM, whatever account the
+  session is in. A session switched into a member account's role was asked for IAM actions on that
+  account's resources, which its role's policies may allow, and then acted on the management account's
+  instead. It could create management users, mint keys for them, or reset their passwords.
+- **Now:** a session switched into another account's role is refused every IAM page with AccessDenied. That
+  account's IAM is managed through the IAM API (`aws iam`), which acts in the caller's own account. A user,
+  or a role session in the management account, is unaffected.
+- **Exposure:** the switch into another account's role only worked from the Switch role fix below, so this
+  path was open only in between.
+
 ### Fixed — the console's Switch role reaches another account's role
 - **The cause:** the console's permission check for Switch role never passed the role's trust policy to
   IAM policy evaluation. For another account's role that evaluation needs the role's own policy too, so it

@@ -396,6 +396,11 @@ aws organizations describe-create-account-status --create-account-request-id car
   - a trust naming a user by name means that account's own user. A principal of another account is
     named by its ARN;
   - the root user cannot switch roles, as on AWS.
+- **IAM in a member account's role session:** the console's IAM pages manage the management account's IAM,
+  so a session switched into another account's role is refused them. Manage that account's users, keys,
+  roles and policies through the IAM API (`aws iam`), as a principal of that account: for example, with
+  the credentials `aws sts assume-role` gives for its `OrganizationAccountAccessRole`. The IAM API acts in
+  the caller's own account.
 - **Across accounts**, access works as on AWS: a role's trust policy names the other account (or a
   principal in it), or a resource policy grants it, and the other side's identity policy must allow it
   too.
