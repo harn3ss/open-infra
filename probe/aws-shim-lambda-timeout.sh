@@ -158,7 +158,6 @@ for n in 1 2 3; do
 done
 
 warm "$SLOW" || fail "the Slow function never answered a warm-up: $(tail -c 300 "$W/inv.err")"
-warm "$SHORT" || fail "the Short function never answered a warm-up: $(tail -c 300 "$W/inv.err")"
 
 log "1. a 120 s invoke of a function with Timeout 150"
 start=$(date +%s)
@@ -170,11 +169,13 @@ grep -q '"slept":120' "$W/slow.json" || fail "the 120 s invoke returned: $(cat "
 ok "returned {\"slept\":120} after ${took}s"
 
 log "2. a 30 s invoke of a function with Timeout 5"
+# warmed just before, so the elapsed time is the function's own clock alone (a cold start is not counted)
+warm "$SHORT" || fail "the Short function never answered a warm-up: $(tail -c 300 "$W/inv.err")"
 start=$(date +%s)
 fe="$(invoke "$SHORT" '{"sleep":30}' "$W/short.json")" || fail "the timed-out invoke failed at the API: $(tail -c 400 "$W/inv.err")"
 took=$(( $(date +%s) - start ))
 [ "$fe" = "Unhandled" ] || fail "a timed-out invoke must be a function error (Unhandled), got '$fe': $(cat "$W/short.json")"
-[ "$took" -ge 4 ] && [ "$took" -le 20 ] || fail "the timed-out invoke ended after ${took}s, not at the function's own 5 s"
+[ "$took" -ge 4 ] && [ "$took" -le 12 ] || fail "the timed-out invoke ended after ${took}s, not at the function's own 5 s"
 python3 - "$W/short.json" <<'PY' || fail "the timed-out payload is not Lambda's: $(cat "$W/short.json")"
 import json, sys
 r = json.load(open(sys.argv[1]))
