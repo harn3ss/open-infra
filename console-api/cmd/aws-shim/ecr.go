@@ -70,7 +70,9 @@ type ecrHandler struct {
 	// revoke is the per-role "revoke sessions" cutoff (the same one the SigV4 path applies): an assumed-role
 	// ECR credential minted before its role's cutoff is refused at /ecr/token. nil disables the check.
 	revoke sessionRevoker
-	logger *slog.Logger
+	// nodePull issues the node puller's credential to the node agents (ecr_node_pull.go). nil: not served.
+	nodePull *ecrNodePull
+	logger   *slog.Logger
 }
 
 func newECRHandler(cs kubernetes.Interface, authzNS, account, region, ns, registryURL, proxyEndpoint, authSecret string, logger *slog.Logger) *ecrHandler {

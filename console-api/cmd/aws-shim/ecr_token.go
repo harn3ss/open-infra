@@ -31,8 +31,10 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -45,6 +47,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -131,7 +134,7 @@ func (s *ecrTokenSigner) keys() (*signingKeys, error) {
 		if string(bundle) != s.published {
 			if perr := s.publish(bundle); perr == nil {
 				s.published = string(bundle)
-				s.transit.logger.Warn("ECR: the registry's trusted token certificates changed; restart the registries so they read them (kubectl -n open-infra-ecr rollout restart deployment)")
+				s.transit.logger.Info("ECR: published the registry's trusted token certificates")
 			} else {
 				s.transit.logger.Warn("ECR: cannot publish the registry's trusted token certificates", "error", perr.Error())
 			}
@@ -588,6 +591,30 @@ func (h *ecrHandler) issueRegistryToken(w http.ResponseWriter, r *http.Request, 
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"token": tok, "access_token": tok, "expires_in": 300, "issued_at": time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// ecrTokenCertConsumers are the registries that verify registry tokens against the published bundle
+// (they mount the ecr-token-cert ConfigMap as their rootcertbundle, which they read only at start).
+var ecrTokenCertConsumers = []string{"ecr-registry", "ecr-registry-public", "ecr-registry-aws"}
+
+// ecrTokenCertAnnotation, on a registry's pod template, is the SHA-256 of the bundle its pods read.
+const ecrTokenCertAnnotation = "openinfra.dev/token-cert-sha256"
+
+// rollTokenCertConsumers makes the registries read a bundle that changed (#411): it sets each one's
+// pod-template annotation to the bundle's hash, which rolls the registry as kubectl rollout restart does,
+// and is a no-op while the bundle is the one its pods already read. A token key rotated or moved is then
+// trusted by the registries without an operator. A registry that is not deployed is skipped.
+func rollTokenCertConsumers(ctx context.Context, cs kubernetes.Interface, ns string, names []string, bundle []byte) error {
+	sum := sha256.Sum256(bundle)
+	patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"template": map[string]any{"metadata": map[string]any{
+		"annotations": map[string]string{ecrTokenCertAnnotation: hex.EncodeToString(sum[:])}}}}})
+	var errs []error
+	for _, n := range names {
+		if _, err := cs.AppsV1().Deployments(ns).Patch(ctx, n, types.StrategicMergePatchType, patch, metav1.PatchOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("%s: %w", n, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // publishCertConfigMap writes the signer's PUBLIC cert to a ConfigMap in the registry's namespace,

@@ -820,6 +820,11 @@ func run(logger *slog.Logger) error {
 		ecrH.authz = authzChecker
 		// The per-role session-revoke cutoff also bites an assumed role's ECR credential at /ecr/token.
 		ecrH.revoke = auth.revoke
+		// The node pull credential (ecr_node_pull.go): the node agents named by ECR_NODE_PULL_AGENTS trade their
+		// own ServiceAccount token for the node puller's pull-only credential, as a node's instance role gets
+		// its ECR credential on AWS.
+		ecrH.nodePull = &ecrNodePull{review: (&k8sTokenReviewer{cs: cs, audience: ecrNodePullAudience}).Review,
+			agents: parseNodePullAgents(os.Getenv("ECR_NODE_PULL_AGENTS"))}
 		// Per-repo data-plane auth (the Docker bearer-token protocol). The PRIVATE signing key lives in
 		// the shim's own namespace (keysNS — where it may create Secrets); the PUBLIC cert is published
 		// as a ConfigMap in the registry's namespace for the registry to mount as the token
@@ -833,7 +838,17 @@ func run(logger *slog.Logger) error {
 			serr = terr
 		} else if tr != nil {
 			sgn = newTransitECRSigner(tr)
-			sgn.publish = func(certPEM []byte) error { return publishCertConfigMap(context.Background(), cs, ecrNS, certPEM) }
+			sgn.publish = func(certPEM []byte) error {
+				if err := publishCertConfigMap(context.Background(), cs, ecrNS, certPEM); err != nil {
+					return err
+				}
+				// The registries read the bundle only at start: roll those that have not read this one. Not
+				// fatal: the bundle is published either way, and a registry not rolled says why here.
+				if err := rollTokenCertConsumers(context.Background(), cs, ecrNS, ecrTokenCertConsumers, certPEM); err != nil {
+					logger.Warn("ECR: could not roll the registries onto the new token certificates; restart them (kubectl -n "+ecrNS+" rollout restart deployment)", "err", err)
+				}
+				return nil
+			}
 			logger.Info("ECR: tokens are signed by OpenBao Transit", slog.String("key", tr.key.String()))
 		} else {
 			sgn, serr = loadOrCreateECRTokenSigner(context.Background(), cs, keysNS)
@@ -1277,8 +1292,9 @@ func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, 
 	// here, which authenticates the caller credential (Basic auth) and mints a per-repo-scoped
 	// registry token. Authentication is the credential itself, so it's not behind the SigV4 layer.
 	if ecr, ok := services["ecr"].(*ecrHandler); ok {
-		r.Get("/ecr/token", ecr.serveToken)      // classic token flow (Basic auth + ?scope=)
-		r.Post("/ecr/token", ecr.servePostToken) // OAuth2 token flow (form creds), used by containerd's puller
+		r.Get("/ecr/token", ecr.serveToken)                    // classic token flow (Basic auth + ?scope=)
+		r.Post("/ecr/token", ecr.servePostToken)               // OAuth2 token flow (form creds), used by containerd's puller
+		r.Get("/ecr/node-credential", ecr.serveNodeCredential) // a node agent's identity → the node pull credential
 	}
 
 	// Every other request is an AWS-SDK call; the serviceRouter authenticates once and dispatches

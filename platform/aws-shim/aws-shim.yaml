@@ -1200,6 +1200,9 @@ spec:
             # registry (token auth) authorizes each push/pull via the shim's /ecr/token endpoint
             # against that caller. Set together with the registry's auth:token config (ecr-registry.yaml).
             - { name: ECR_TOKEN_AUTH, value: "true" }
+            # The node agents (platform/aws-shim/ecr-node-pull-agent.yaml) that trade their own ServiceAccount
+            # token for the node pull credential at /ecr/node-credential (#411).
+            - { name: ECR_NODE_PULL_AGENTS, value: "kube-system/ecr-node-pull-agent" }
             # Glue: the Data Catalog doorway fronts the platform's existing Iceberg REST
             # catalog (lakehouse ns) — Glue databases ← Iceberg namespaces, Glue tables ← Iceberg tables.
             # Read + database-lifecycle only; in-cluster, no auth. (Athena, over Trino, is the next slice.)

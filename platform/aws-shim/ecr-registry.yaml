@@ -459,6 +459,13 @@ rules:
   - apiGroups: [""]
     resources: [configmaps]
     verbs: [get, list, create, update, patch, delete]
+  # When the token signing key's certificates change (a Transit key rotated or moved), the shim rolls the
+  # registries that verify tokens against them, so they read the new bundle (#411): a pod-template
+  # annotation carrying the bundle's hash, a no-op while it is unchanged. These three Deployments only.
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [patch]
+    resourceNames: [ecr-registry, ecr-registry-public, ecr-registry-aws]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
