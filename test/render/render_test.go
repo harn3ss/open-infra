@@ -630,7 +630,7 @@ func TestFunction_MemoryAndTimeout(t *testing.T) {
 func TestFunction_RuntimeTimeoutExcludesTheColdStart(t *testing.T) {
 	tmpl := extractInlineTemplate(t, "../../platform/abstraction/function-composition.yaml")
 	for _, c := range []struct {
-		timeout      any
+		timeout       any
 		env, revision string
 	}{{float64(3), "3", "93"}, {float64(900), "900", "990"}, {nil, "300", "390"}} {
 		spec := map[string]any{"code": map[string]any{"runtime": "python3.12", "handler": "index.handler",
