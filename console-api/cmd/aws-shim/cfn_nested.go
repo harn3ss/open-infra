@@ -47,7 +47,7 @@ func (h *cfnDoorway) readTemplateURLAt(ctx context.Context, r *http.Request, raw
 	if !ok {
 		return "", fmt.Errorf("TemplateURL: no caller identity")
 	}
-	return h.readTemplateURL(withCallerClaims(r.Clone(ctx), claims), raw)
+	return h.readTemplateURL(onBehalfOf(ctx, r, claims), raw)
 }
 
 func (d *nestedDriver) CreateNested(ctx context.Context, req cfn.NestedStackRequest) (cfn.NestedStackResult, error) {

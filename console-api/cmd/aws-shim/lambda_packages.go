@@ -178,8 +178,13 @@ func (p *lambdaPackages) readS3(ctx context.Context, pkg *cfn.CodePackage) ([]by
 	if !ok {
 		return nil, errors.New("reading the deployment package: no caller identity")
 	}
-	r := withCallerClaims(p.req.Clone(ctx), claims)
-	if denied, _ := p.h.s3ReadDenied(r, claims, pkg.S3Bucket, pkg.S3Key); denied {
+	r := onBehalfOf(ctx, p.req, claims)
+	if denied, why := p.h.s3ReadDenied(r, claims, pkg.S3Bucket, pkg.S3Key); denied {
+		// Lambda's message to the caller; the reason the read was refused, in the shim's log.
+		if p.h.logger != nil {
+			p.h.logger.Info("lambda: deployment package read refused", "principal", principalOf(r.Context(), claims).ARN(),
+				"bucket", pkg.S3Bucket, "key", pkg.S3Key, "reason", why)
+		}
 		return nil, cfn.Unauthorized(fmt.Sprintf("Your access has been denied by S3, please make sure your request credentials have permission to GetObject for %s/%s. S3 Error Code: AccessDenied. S3 Error Message: Access Denied", pkg.S3Bucket, pkg.S3Key))
 	}
 	obj, err := p.store.mc.GetObject(ctx, pkg.S3Bucket, pkg.S3Key, minio.GetObjectOptions{VersionID: pkg.S3Version})

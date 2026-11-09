@@ -95,7 +95,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 14
+      "probe": 15
     },
     "undeployableUses": [
       {
@@ -3350,10 +3350,11 @@
         "cfn-customresource",
         "cfn-lambda-zip",
         "iam-passedtoservice",
-        "lambda-timeout"
+        "lambda-timeout",
+        "s3-account"
       ],
       "status": "supported",
-      "templateUses": 15,
+      "templateUses": 16,
       "verdict": "ok"
     },
     "AWS::Lambda::Permission": {

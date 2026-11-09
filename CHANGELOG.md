@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a member account's IAM user deploys a stack from its own bucket
+- **The cause:** a CloudFormation deploy reads a Lambda function's packaged code (`Code` `S3Bucket`/`S3Key`)
+  after the request returns, as the caller. That read lost the caller's account. A member account's IAM
+  user was decided there as no principal at all, and its stack failed with S3's AccessDenied on
+  `GetObject`, though the same user could download the object with `aws s3 cp`. A nested stack's
+  `TemplateURL` was read the same way.
+- **Now:** both reads act in the caller's own account, as the S3 API does. The reason for a refused read is
+  in the shim's log.
+
 ### Security — the console's IAM pages manage the account you are in
 - **The flaw:** the console's IAM pages always read and wrote the management account's IAM, whatever account
   the session was in. A session switched into a member account's role was asked for IAM actions on that

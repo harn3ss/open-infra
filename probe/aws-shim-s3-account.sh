@@ -10,6 +10,8 @@
 #   2. in the member account: CreateBucket, PutObject of a deployment package, HeadObject and GetObject of it
 #      (byte for byte), ListBuckets lists the bucket;
 #   3. CreateFunction with --code S3Bucket=<bucket>,S3Key=<key>, and an Invoke returns the handler's result;
+#   3b. the account's own IAM user (AdministratorAccess, its own access key) deploys a CloudFormation stack
+#      whose function's Code is the bucket's package, and the function answers (#419);
 #   4. DENIAL: the management account's administrator is refused GetObject on the member account's bucket
 #      (AccessDenied: no bucket policy lets it in) and does not list the bucket; a user of the member account
 #      whose only policy allows lambda:InvokeFunction is refused GetObject, PutObject and CreateBucket
@@ -144,6 +146,54 @@ r = json.load(open(sys.argv[1]))
 assert r == {"function": sys.argv[2], "echo": {"probe": sys.argv[3]}}, r
 PY
 ok "CreateFunction --code S3Bucket=$BUCKET,S3Key=pkg/fn.zip, and the function answers"
+
+log "3b. a CloudFormation stack deployed from the bucket by the member account's own IAM user (#419)"
+# A user's own access key, not the role session: the deploy reads the package after its request, and must
+# still decide the user as its account's principal.
+B iam create-user --user-name "$NAME-deployer" >/dev/null 2>"$TMP/err" || die "create-user: $(cat "$TMP/err")"
+CLEAN+=("B iam delete-user --user-name $NAME-deployer")
+B iam attach-user-policy --user-name "$NAME-deployer" --policy-arn arn:aws:iam::aws:policy/AdministratorAccess \
+  >/dev/null 2>"$TMP/err" || die "attach-user-policy AdministratorAccess: $(cat "$TMP/err")"
+CLEAN+=("B iam detach-user-policy --user-name $NAME-deployer --policy-arn arn:aws:iam::aws:policy/AdministratorAccess")
+B iam create-access-key --user-name "$NAME-deployer" --output json >"$TMP/dkey.json" 2>"$TMP/err" || die "create-access-key: $(cat "$TMP/err")"
+read -r DAK DSK < <(python3 -c 'import json,sys; k=json.load(open(sys.argv[1]))["AccessKey"]; print(k["AccessKeyId"], k["SecretAccessKey"])' "$TMP/dkey.json")
+: > "$TMP/dkey.json"
+CLEAN+=("B iam delete-access-key --user-name $NAME-deployer --access-key-id $DAK")
+D() { AWS_ACCESS_KEY_ID="$DAK" AWS_SECRET_ACCESS_KEY="$DSK" AWS_SESSION_TOKEN="" AWS_PAGER="" aws --endpoint-url "$ENDPOINT" --region "$REGION" "$@"; }
+sleep "$SETTLE"
+[ "$(D sts get-caller-identity --query Arn --output text 2>/dev/null)" = "arn:aws:iam::$NEW_ACCOUNT:user/$NAME-deployer" ] \
+  || die "the member account's user's key does not act as arn:aws:iam::$NEW_ACCOUNT:user/$NAME-deployer"
+cat >"$TMP/stack.yaml" <<YAML
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  Fn:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: $NAME-cfn
+      Runtime: python3.12
+      Handler: index.handler
+      Role: arn:aws:iam::$NEW_ACCOUNT:role/$NAME-exec
+      Timeout: 30
+      Code:
+        S3Bucket: $BUCKET
+        S3Key: pkg/fn.zip
+YAML
+CLEAN+=("B cloudformation delete-stack --stack-name $NAME-stack")
+D cloudformation deploy --template-file "$TMP/stack.yaml" --stack-name "$NAME-stack" >/dev/null 2>"$TMP/err" || {
+  grep -q 'denied by S3' "$TMP/err" && die "the stack's package read from the account's own bucket was refused (#419): $(tail -c 300 "$TMP/err")"
+  die "cloudformation deploy: $(tail -c 400 "$TMP/err")"
+}
+for _ in $(seq 1 24); do
+  D --cli-read-timeout 120 lambda invoke --function-name "$NAME-cfn" --cli-binary-format raw-in-base64-out \
+    --payload "{\"probe\":\"$SFX\"}" "$TMP/cfn.out" >/dev/null 2>"$TMP/cfn.err" && break
+  sleep 10
+done
+python3 - "$TMP/cfn.out" "$NAME-cfn" "$SFX" <<'PY' || die "$NAME-cfn did not return its handler's result: $(cat "$TMP/cfn.out" 2>/dev/null) $(tail -c 300 "$TMP/cfn.err")"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r == {"function": sys.argv[2], "echo": {"probe": sys.argv[3]}}, r
+PY
+ok "the member account's IAM user deploys a stack whose function's code is the bucket's package, and the function answers"
 
 log "4. DENIAL"
 M s3api get-object --bucket "$BUCKET" --key pkg/fn.zip "$TMP/m.zip" >/dev/null 2>"$TMP/m.err" \

@@ -39,6 +39,17 @@ func callerClaimsOf(r *http.Request) (iam.Claims, bool) {
 	return c, ok
 }
 
+// onBehalfOf is r cloned onto ctx (an operation that outlives r: a deploy's package read, a nested stack's
+// template read) as the caller of r, in the caller's account. A member account's caller is decided as that
+// account's principal, whose id principalOf qualifies by the account's IAM home, read from the context: a
+// bare ctx carries none, and the caller would be decided as no principal at all (#419).
+func onBehalfOf(ctx context.Context, r *http.Request, claims iam.Claims) *http.Request {
+	if home, _ := r.Context().Value(accountHomeKey{}).(string); home != "" && memberAccount(claims) {
+		ctx = inAccount(ctx, claims.Account, home)
+	}
+	return withCallerClaims(r.Clone(ctx), claims)
+}
+
 // awsS3VhostRe / awsS3HostRe are AWS's S3 hostnames (virtual-hosted and path-style): on open-infra the
 // shim's S3 stands in for them.
 var (

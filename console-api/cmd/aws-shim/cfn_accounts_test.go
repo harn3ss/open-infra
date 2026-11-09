@@ -467,3 +467,34 @@ func TestCFNAccounts_TemplateURLIsReadInTheBucketsAccount(t *testing.T) {
 		t.Fatal("the management account read a template from a member account's bucket with no bucket policy")
 	}
 }
+
+// A deploy reads its Lambda packages (and nested stacks' templates) after its request, on a context of its
+// own: the caller is still decided as its account's principal there. A member account's stack reads its
+// package from its own bucket, as the S3 API lets the same caller, and still not another account's (#419).
+func TestCFNAccounts_ADeploysOwnContextKeepsTheCallersAccount(t *testing.T) {
+	s3h, _, _ := s3AccountsFixture(t)
+	h := &cfnDoorway{s3: s3h, authz: doorAccountsAuthz(t)}
+	req := httptest.NewRequest(http.MethodPost, "/", nil).WithContext(inAccountScope(memberCtx()))
+	bare, cancel := context.WithTimeout(context.Background(), time.Minute) // as cfn's resolvePackage makes it
+	defer cancel()
+	r := onBehalfOf(bare, req, s3Bob)
+	if denied, reason := h.s3ReadDenied(r, s3Bob, "team-data", "packages/fn.zip"); denied {
+		t.Fatalf("a member account's deploy reads its package from its own bucket: %s", reason)
+	}
+	if denied, _ := h.s3ReadDenied(r, s3Bob, "mgmt-data", "packages/fn.zip"); !denied {
+		t.Fatal("a member account's deploy read a package from another account's bucket with no bucket policy")
+	}
+	// What the deploy did before: the request cloned onto the bare context loses the caller's account,
+	// and the caller is decided as no principal (the refusal #419 reported).
+	if denied, _ := h.s3ReadDenied(withCallerClaims(req.Clone(bare), s3Bob), s3Bob, "team-data", "packages/fn.zip"); !denied {
+		t.Fatal("the request without its account was allowed: this test no longer shows what onBehalfOf adds")
+	}
+	if p := principalOf(r.Context(), s3Bob); p.ID != memberHome+"/bob" {
+		t.Errorf("the deploy's principal is %q, want the member account's bob", p.ID)
+	}
+	// The management account's caller is unchanged.
+	mgmt := onBehalfOf(bare, httptest.NewRequest(http.MethodPost, "/", nil), s3Alice)
+	if denied, reason := h.s3ReadDenied(mgmt, s3Alice, "mgmt-data", "packages/fn.zip"); denied {
+		t.Fatalf("the management account's deploy reads its own bucket: %s", reason)
+	}
+}
