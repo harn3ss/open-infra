@@ -63,6 +63,11 @@ type authStore struct {
 	sessionKey []byte
 	ldap       ldapConfig
 	logger     *slog.Logger
+
+	// account and home are set only on a copy bound to a member account's IAM (iamAuth, iam_scope.go):
+	// account is that account's id, ns its IAM home, and home the management account's IAM home (the
+	// console's namespace). Both are empty on the console's own store: the management account.
+	account, home string
 }
 
 func authMode() string {

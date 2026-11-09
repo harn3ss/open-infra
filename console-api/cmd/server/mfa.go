@@ -54,7 +54,7 @@ func (a *authStore) mfaStore() mfa.Store {
 // mfaDevices is the devices assigned to the management account's user u. A credential store that does not
 // exist holds none.
 func (a *authStore) mfaDevices(ctx context.Context, u crdUser) ([]mfa.Device, error) {
-	devices, err := a.mfaStore().ForUser(ctx, iam.ManagementAccount, a.ns, u.Metadata.Name, u.Metadata.UID)
+	devices, err := a.mfaStore().ForUser(ctx, a.accountID(), a.ns, u.Metadata.Name, u.Metadata.UID)
 	if apierrors.IsNotFound(err) {
 		return nil, nil
 	}
@@ -138,7 +138,7 @@ func handleLoginMFA(a *authStore) http.HandlerFunc {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "SignInAgain", "error": "sign in again"})
 			return
 		}
-		err = a.mfaStore().VerifyAny(r.Context(), iam.ManagementAccount, a.ns, ch.Sub, u.Metadata.UID, strings.TrimSpace(in.Code))
+		err = a.mfaStore().VerifyAny(r.Context(), a.accountID(), a.ns, ch.Sub, u.Metadata.UID, strings.TrimSpace(in.Code))
 		switch {
 		case errors.Is(err, mfa.ErrLocked):
 			a.logger.Warn("console MFA refused", "user", ch.Sub, "reason", "device locked after repeated wrong codes", "remote", r.RemoteAddr)
@@ -193,8 +193,8 @@ type mfaDeviceView struct {
 	Created      string `json:"created,omitempty"`
 }
 
-func mfaView(d mfa.Device) mfaDeviceView {
-	v := mfaDeviceView{SerialNumber: d.SerialNumber(iam.ManagementAccount), Name: d.Name, Type: "Virtual"}
+func mfaView(account string, d mfa.Device) mfaDeviceView {
+	v := mfaDeviceView{SerialNumber: d.SerialNumber(account), Name: d.Name, Type: "Virtual"}
 	if !d.EnableDate.IsZero() {
 		v.EnableDate = d.EnableDate.UTC().Format(time.RFC3339)
 	}
@@ -258,6 +258,11 @@ func writeMFAErr(w http.ResponseWriter, logger *slog.Logger, err error) {
 // GET /api/iam/users/{name}/mfa-devices — iam:ListMFADevices.
 func handleIAMMFADevicesList(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		u, ok := mfaUserFor(w, r, cs, auth, logger, "get")
 		if !ok {
 			return
@@ -269,7 +274,7 @@ func handleIAMMFADevicesList(cs kubernetes.Interface, auth *authStore, logger *s
 		}
 		out := make([]mfaDeviceView, 0, len(devices))
 		for _, d := range devices {
-			out = append(out, mfaView(d))
+			out = append(out, mfaView(auth.accountID(), d))
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
@@ -279,6 +284,11 @@ func handleIAMMFADevicesList(cs kubernetes.Interface, auth *authStore, logger *s
 // virtual device, answered with its QR code and seed — the only time either is shown.
 func handleIAMMFADeviceCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		var in struct {
 			DeviceName string `json:"deviceName"`
 		}
@@ -291,7 +301,7 @@ func handleIAMMFADeviceCreate(cs kubernetes.Interface, auth *authStore, logger *
 		if !ok {
 			return
 		}
-		_, seed, err := auth.mfaStore().Create(r.Context(), iam.ManagementAccount, in.DeviceName, "/", nil)
+		_, seed, err := auth.mfaStore().Create(r.Context(), auth.accountID(), in.DeviceName, "/", nil)
 		if err != nil {
 			writeMFAErr(w, logger, err)
 			return
@@ -303,7 +313,7 @@ func handleIAMMFADeviceCreate(cs kubernetes.Interface, auth *authStore, logger *
 		uri := mfa.OTPAuthURI(in.DeviceName, acctName, seed)
 		png, err := mfa.QRCodePNG(uri)
 		if err != nil {
-			_ = auth.mfaStore().Delete(context.Background(), iam.ManagementAccount, in.DeviceName)
+			_ = auth.mfaStore().Delete(context.Background(), auth.accountID(), in.DeviceName)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not draw the QR code"})
 			return
 		}
@@ -331,6 +341,11 @@ func mfaDeviceName(w http.ResponseWriter, r *http.Request, serial string) (strin
 // iam:EnableMFADevice: two consecutive codes from the device assign it to the user.
 func handleIAMMFADeviceEnable(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		var in struct {
 			SerialNumber string `json:"serialNumber"`
 			Code1        string `json:"authenticationCode1"`
@@ -348,7 +363,7 @@ func handleIAMMFADeviceEnable(cs kubernetes.Interface, auth *authStore, logger *
 		if !ok {
 			return
 		}
-		if err := auth.mfaStore().Enable(r.Context(), iam.ManagementAccount, name, auth.ns, u.Metadata.Name, u.Metadata.UID, in.Code1, in.Code2); err != nil {
+		if err := auth.mfaStore().Enable(r.Context(), auth.accountID(), name, auth.ns, u.Metadata.Name, u.Metadata.UID, in.Code1, in.Code2); err != nil {
 			if errors.Is(err, mfa.ErrInvalidCode) {
 				logger.Warn("iam: MFA device not enabled", "user", u.Metadata.Name, "device", name, "reason", mfaReason(err), "by", subjectOf(r))
 			}
@@ -364,6 +379,11 @@ func handleIAMMFADeviceEnable(cs kubernetes.Interface, auth *authStore, logger *
 // console's "Remove" does) iam:DeleteVirtualMFADevice when the caller may: the device is gone.
 func handleIAMMFADeviceRemove(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		u, ok := mfaUserFor(w, r, cs, auth, logger, "update")
 		if !ok {
 			return
@@ -378,11 +398,11 @@ func handleIAMMFADeviceRemove(cs kubernetes.Interface, auth *authStore, logger *
 			return
 		}
 		store := auth.mfaStore()
-		if err := store.Deactivate(r.Context(), iam.ManagementAccount, name, auth.ns, u.Metadata.Name); err != nil {
+		if err := store.Deactivate(r.Context(), auth.accountID(), name, auth.ns, u.Metadata.Name); err != nil {
 			writeMFAErr(w, logger, err)
 			return
 		}
-		if err := store.Delete(r.Context(), iam.ManagementAccount, name); err != nil {
+		if err := store.Delete(r.Context(), auth.accountID(), name); err != nil {
 			logger.Warn("iam: MFA device deactivated but not deleted", "user", u.Metadata.Name, "device", name, "error", err.Error())
 		}
 		logger.Info("iam: MFA device removed", "user", u.Metadata.Name, "device", name, "by", subjectOf(r))
@@ -395,6 +415,11 @@ func handleIAMMFADeviceRemove(cs kubernetes.Interface, auth *authStore, logger *
 // refused: it is removed, not cancelled.
 func handleIAMMFADeviceCancel(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		if _, ok := mfaUserFor(w, r, cs, auth, logger, "update"); !ok {
 			return
 		}
@@ -402,7 +427,7 @@ func handleIAMMFADeviceCancel(cs kubernetes.Interface, auth *authStore, logger *
 		if !ok {
 			return
 		}
-		if err := auth.mfaStore().Delete(r.Context(), iam.ManagementAccount, name); err != nil {
+		if err := auth.mfaStore().Delete(r.Context(), auth.accountID(), name); err != nil {
 			if errors.Is(err, mfa.ErrAssigned) {
 				writeJSON(w, http.StatusConflict, map[string]string{"errorCode": "DeleteConflict", "error": "MFA VirtualDevice in use. Must deactivate first."})
 				return
@@ -424,11 +449,11 @@ func (a *authStore) removeUserMFADevices(ctx context.Context, u crdUser) error {
 	}
 	var last error
 	for _, d := range devices {
-		if err := a.mfaStore().Deactivate(ctx, iam.ManagementAccount, d.Name, a.ns, u.Metadata.Name); err != nil {
+		if err := a.mfaStore().Deactivate(ctx, a.accountID(), d.Name, a.ns, u.Metadata.Name); err != nil {
 			last = err
 			continue
 		}
-		if err := a.mfaStore().Delete(ctx, iam.ManagementAccount, d.Name); err != nil {
+		if err := a.mfaStore().Delete(ctx, a.accountID(), d.Name); err != nil {
 			last = err
 		}
 	}

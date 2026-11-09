@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -114,6 +116,11 @@ func keyStore(cs kubernetes.Interface, keysNS string) *awskeys.Store {
 
 func handleIAMAccessKeysList(cs kubernetes.Interface, auth *authStore, keysNS string, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if name == "root" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "root is the break-glass account and has no access keys"})
@@ -133,7 +140,9 @@ func handleIAMAccessKeysList(cs kubernetes.Interface, auth *authStore, keysNS st
 		}
 		out := make([]accessKeyView, 0, len(metas))
 		for _, m := range metas {
-			out = append(out, viewFromMeta(m))
+			if auth.keyInScope(m) { // a same-named user of another account is another user
+				out = append(out, viewFromMeta(m))
+			}
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
@@ -141,6 +150,11 @@ func handleIAMAccessKeysList(cs kubernetes.Interface, auth *authStore, keysNS st
 
 func handleIAMAccessKeyCreate(cs kubernetes.Interface, auth *authStore, keysNS string, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if name == "root" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "root is the break-glass account and cannot hold access keys"})
@@ -165,7 +179,13 @@ func handleIAMAccessKeyCreate(cs kubernetes.Interface, auth *authStore, keysNS s
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the access-key store is not reachable (is the aws-shim deployed?)"})
 			return
 		}
-		if len(existing) >= maxKeysPerUser {
+		mine := 0
+		for _, m := range existing {
+			if auth.keyInScope(m) {
+				mine++
+			}
+		}
+		if mine >= maxKeysPerUser {
 			writeJSON(w, http.StatusConflict, map[string]string{
 				"error": "this user already has the maximum of 2 access keys — delete one before creating another",
 			})
@@ -177,7 +197,7 @@ func handleIAMAccessKeyCreate(cs kubernetes.Interface, auth *authStore, keysNS s
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not generate an access key"})
 			return
 		}
-		if err := store.Put(r.Context(), awskeys.Key{AccessKeyID: id, SecretKey: secret, Owner: name}); err != nil {
+		if err := store.Put(r.Context(), awskeys.Key{AccessKeyID: id, SecretKey: secret, Owner: name, Account: auth.keyAccount()}); err != nil {
 			logger.Error("iam: access-key store", "user", name, "error", err.Error())
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "could not store the access key"})
 			return
@@ -202,6 +222,11 @@ type accessKeyUpdateReq struct {
 
 func handleIAMAccessKeyUpdate(cs kubernetes.Interface, auth *authStore, keysNS string, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		id := chi.URLParam(r, "id")
 		if name == "root" {
@@ -232,7 +257,7 @@ func handleIAMAccessKeyUpdate(cs kubernetes.Interface, auth *authStore, keysNS s
 		// isn't theirs) could toggle another principal's key. Describe returns the key even when
 		// it is already Inactive, so re-activation works.
 		m, ok := store.Describe(r.Context(), id)
-		if !ok || m.Owner != name {
+		if !ok || m.Owner != name || !auth.keyInScope(m) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such access key for this user"})
 			return
 		}
@@ -254,6 +279,11 @@ func handleIAMAccessKeyUpdate(cs kubernetes.Interface, auth *authStore, keysNS s
 
 func handleIAMAccessKeyDelete(cs kubernetes.Interface, auth *authStore, keysNS string, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		id := chi.URLParam(r, "id")
 		if name == "root" {
@@ -265,7 +295,7 @@ func handleIAMAccessKeyDelete(cs kubernetes.Interface, auth *authStore, keysNS s
 		}
 		store := keyStore(cs, keysNS)
 		m, ok := store.Describe(r.Context(), id)
-		if !ok || m.Owner != name {
+		if !ok || m.Owner != name || !auth.keyInScope(m) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such access key for this user"})
 			return
 		}
@@ -277,4 +307,25 @@ func handleIAMAccessKeyDelete(cs kubernetes.Interface, auth *authStore, keysNS s
 		logger.Info("iam: access key deleted", "user", name, "accessKeyId", id, "by", subjectOf(r))
 		writeJSON(w, http.StatusOK, map[string]string{"accessKeyId": id})
 	}
+}
+
+// removeUserAccessKeys deletes every access key of a's account's user name, as the AWS console does when
+// it deletes the user. A store that does not exist holds none.
+func (a *authStore) removeUserAccessKeys(ctx context.Context, store *awskeys.Store, name string) error {
+	metas, err := store.List(ctx, name)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, m := range metas {
+		if !a.keyInScope(m) {
+			continue
+		}
+		if err := store.Delete(ctx, m.AccessKeyID); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }

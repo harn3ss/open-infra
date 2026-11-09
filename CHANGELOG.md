@@ -6,16 +6,24 @@ the product's public contract.
 
 ## Unreleased
 
-### Security — the console's IAM pages refuse a session in another account
-- **The flaw:** the console's IAM pages read and write the management account's IAM, whatever account the
-  session is in. A session switched into a member account's role was asked for IAM actions on that
+### Security — the console's IAM pages manage the account you are in
+- **The flaw:** the console's IAM pages always read and wrote the management account's IAM, whatever account
+  the session was in. A session switched into a member account's role was asked for IAM actions on that
   account's resources, which its role's policies may allow, and then acted on the management account's
-  instead. It could create management users, mint keys for them, or reset their passwords.
-- **Now:** a session switched into another account's role is refused every IAM page with AccessDenied. That
-  account's IAM is managed through the IAM API (`aws iam`), which acts in the caller's own account. A user,
-  or a role session in the management account, is unaffected.
-- **Exposure:** the switch into another account's role only worked from the Switch role fix below, so this
-  path was open only in between.
+  instead. It could create management users, mint keys for them, or reset their passwords. The switch into
+  another account's role only worked from the Switch role fix below, so this path was open only in between.
+- **Now, as in the AWS console:** in a member account's role session the IAM pages manage that account's
+  users, groups, roles, policies, access keys, login profiles and MFA devices, in the account's own IAM, and
+  nothing of the management account's:
+  - its access keys record the account and act in it;
+  - its policies page lists its own policies and the AWS-managed ones;
+  - a user, group or role can attach only those;
+  - a policy is an AWS policy document, as IAM's `CreatePolicy` takes it.
+
+### Fixed — deleting a user deletes its access keys
+- The console's Delete user left the user's access keys in the credential store. A user later created with
+  the same name could then sign requests with them. As the AWS console does, deleting a user now deletes its
+  access keys (and MFA devices) first; if they cannot be removed, the user is not deleted.
 
 ### Fixed — the console's Switch role reaches another account's role
 - **The cause:** the console's permission check for Switch role never passed the role's trust policy to

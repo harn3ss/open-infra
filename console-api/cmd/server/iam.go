@@ -173,7 +173,7 @@ func groupView(r *http.Request, g crdGroup) iamGroupView {
 		ClusterRole:    g.Spec.ClusterRole,
 		BoundTo:        g.Status.BoundTo,
 		Ready:          g.Status.Ready,
-		Impersonable:   isBuiltinGroup(g.Metadata.Name),
+		Impersonable:   isBuiltinGroup(g.Metadata.Name) || callerAccount(r) != iamManagementAccount,
 		Policies:       groupList(g.Spec.Policies),
 		InlinePolicies: inlineViews(g.Spec.InlinePolicies),
 		ARN:            iamEntityARN("group", callerAccount(r), g.Metadata.Name),
@@ -192,7 +192,7 @@ func userView(r *http.Request, u crdUser, hasPw bool) iamUserView {
 		InlinePolicies:     inlineViews(u.Spec.InlinePolicies),
 		ARN:                iamEntityARN("user", callerAccount(r), u.Metadata.Name),
 		HasPassword:        hasPw,
-		UnboundGroups:      unboundGroups(u.Spec.Groups),
+		UnboundGroups:      unboundGroupsIn(r, u.Spec.Groups),
 		Tags:               tagsFromAnnotations(u.Metadata.Annotations),
 	}
 }
@@ -204,6 +204,15 @@ func isBuiltinGroup(name string) bool {
 		}
 	}
 	return name == "users"
+}
+
+// unboundGroupsIn is unboundGroups for the request's account: the legacy tiers are the management
+// account's, so a member account's groups (policy containers only) are never flagged.
+func unboundGroupsIn(r *http.Request, groups []string) []string {
+	if callerAccount(r) != iamManagementAccount {
+		return []string{}
+	}
+	return unboundGroups(groups)
 }
 
 func unboundGroups(groups []string) []string {
@@ -233,10 +242,20 @@ func groupList(groups []string) []string {
 // are guaranteed to take effect, so it can offer them as first-class choices and warn on
 // anything else. No authorization: it is static, non-sensitive metadata.
 func handleIAMConfig(auth *authStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// The session's account (iam_scope.go): a member account has none of the management account's
+		// legacy group tiers.
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
+		builtin := builtinGroups
+		if auth.member() {
+			builtin = []string{}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"namespace":       auth.ns,
-			"builtinGroups":   builtinGroups,
+			"builtinGroups":   builtin,
 			"policyResources": policyResources,
 			"policyVerbs":     []string{"Get", "List", "Watch", "Create", "Update", "Patch", "Delete", "*"},
 		})
@@ -247,6 +266,11 @@ func handleIAMConfig(auth *authStore) http.HandlerFunc {
 
 func handleIAMUsersList(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		if !authorize(w, r, cs, auth, logger, "list", "iam.openinfra.dev", "users", auth.ns, "") {
 			return
 		}
@@ -262,6 +286,11 @@ func handleIAMUsersList(cs kubernetes.Interface, auth *authStore, logger *slog.L
 
 func handleIAMUserGet(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "get", "iam.openinfra.dev", "users", auth.ns, name) {
 			return
@@ -298,6 +327,11 @@ type createUserReq struct {
 
 func handleIAMUserCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		var in createUserReq
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -331,6 +365,9 @@ func handleIAMUserCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 			if !consoleIAM.require(w, r, "iam:CreateLoginProfile", iamEntityARN("user", callerAccount(r), in.Name)) {
 				return
 			}
+		}
+		if !auth.memberPolicyRefsOK(w, r, policies, in.PermissionBoundary) {
+			return
 		}
 		if !requireChange(w, r, attachmentChange{kind: "user", name: in.Name,
 			policiesAdded: len(policies) > 0, groupsAdded: groups,
@@ -408,6 +445,11 @@ type updateUserReq struct {
 
 func handleIAMUserUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		var in updateUserReq
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -465,6 +507,9 @@ func handleIAMUserUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nothing to update"})
 			return
 		}
+		if pol, pb := specPolicyRefs(spec); !auth.memberPolicyRefsOK(w, r, pol, pb) {
+			return
+		}
 		if !requireChange(w, r, change) {
 			return
 		}
@@ -485,6 +530,11 @@ type passwordReq struct {
 
 func handleIAMUserPassword(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		var in passwordReq
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -537,8 +587,13 @@ func handleIAMUserPassword(cs kubernetes.Interface, auth *authStore, logger *slo
 	}
 }
 
-func handleIAMUserDelete(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
+func handleIAMUserDelete(cs kubernetes.Interface, auth *authStore, keysNS string, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if name == "root" {
 			// root is the break-glass account in the console-auth Secret, not a User; there
@@ -560,6 +615,13 @@ func handleIAMUserDelete(cs kubernetes.Interface, auth *authStore, logger *slog.
 		if err := auth.removeUserMFADevices(r.Context(), u); err != nil {
 			logger.Error("iam: delete user — its MFA devices could not be removed", "user", name, "error", err.Error())
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the user's MFA devices could not be removed; the user was not deleted"})
+			return
+		}
+		// So do its access keys (this account's: a same-named user of another account is another user).
+		// A key left behind would authenticate again as a user later created with the same name.
+		if err := auth.removeUserAccessKeys(r.Context(), keyStore(cs, keysNS), name); err != nil {
+			logger.Error("iam: delete user — its access keys could not be removed", "user", name, "error", err.Error())
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the user's access keys could not be removed; the user was not deleted"})
 			return
 		}
 		if err := auth.deleteCR(r.Context(), usersAbsPath(auth.ns)+"/"+name); err != nil {
@@ -585,6 +647,11 @@ func handleIAMUserDelete(cs kubernetes.Interface, auth *authStore, logger *slog.
 
 func handleIAMGroupsList(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		if !authorize(w, r, cs, auth, logger, "list", "iam.openinfra.dev", "groups", auth.ns, "") {
 			return
 		}
@@ -600,6 +667,11 @@ func handleIAMGroupsList(cs kubernetes.Interface, auth *authStore, logger *slog.
 // handleIAMGroupGet is one group with its policies and members (AWS GetGroup).
 func handleIAMGroupGet(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "get", "iam.openinfra.dev", "groups", auth.ns, name) {
 			return
@@ -640,6 +712,11 @@ func refuseGroupClusterRole(w http.ResponseWriter, in groupReq) bool {
 
 func handleIAMGroupCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		var in groupReq
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -675,6 +752,9 @@ func handleIAMGroupCreate(cs kubernetes.Interface, auth *authStore, logger *slog
 			spec["inlinePolicies"] = inlineSpec(*in.InlinePolicies)
 			change.inlinePut = true
 		}
+		if pol, pb := specPolicyRefs(spec); !auth.memberPolicyRefsOK(w, r, pol, pb) {
+			return
+		}
 		if !requireChange(w, r, change) {
 			return
 		}
@@ -697,6 +777,11 @@ func handleIAMGroupCreate(cs kubernetes.Interface, auth *authStore, logger *slog
 
 func handleIAMGroupUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		var in groupReq
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -731,6 +816,9 @@ func handleIAMGroupUpdate(cs kubernetes.Interface, auth *authStore, logger *slog
 			spec["inlinePolicies"] = inlineSpec(*in.InlinePolicies)
 			change.inlinePut, change.inlineDeleted = inlineDiff(cur.Spec.InlinePolicies, *in.InlinePolicies)
 		}
+		if pol, pb := specPolicyRefs(spec); !auth.memberPolicyRefsOK(w, r, pol, pb) {
+			return
+		}
 		if !requireChange(w, r, change) {
 			return
 		}
@@ -746,6 +834,11 @@ func handleIAMGroupUpdate(cs kubernetes.Interface, auth *authStore, logger *slog
 
 func handleIAMGroupDelete(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "delete", "iam.openinfra.dev", "groups", auth.ns, name) {
 			return

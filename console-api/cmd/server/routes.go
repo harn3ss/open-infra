@@ -146,10 +146,10 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 			}
 			return "iam:UpdateLoginProfile", arn
 		}, handleIAMUserPassword(cs, auth, logger))
-	h(del, "/iam/users/{name}", s15, "iam:DeleteUser", iamARN("user"), handleIAMUserDelete(cs, auth, logger))
+	keysNS := getenv("KEYS_NAMESPACE", "open-infra-aws-shim")
+	h(del, "/iam/users/{name}", s15, "iam:DeleteUser", iamARN("user"), handleIAMUserDelete(cs, auth, keysNS, logger))
 	h(put, "/iam/users/{name}/tags", s15, "iam:TagUser", iamARN("user"), handleIAMTagsUpdate(cs, auth, logger, "users", "user", usersAbsPath))
 	// Access keys (the AWS "Security credentials" surface). Keys live in the shim's KEYS_NAMESPACE.
-	keysNS := getenv("KEYS_NAMESPACE", "open-infra-aws-shim")
 	h(get, "/iam/users/{name}/access-keys", s15, "iam:ListAccessKeys", iamARN("user"), handleIAMAccessKeysList(cs, auth, keysNS, logger))
 	h(post, "/iam/users/{name}/access-keys", s15, "iam:CreateAccessKey", iamARN("user"), handleIAMAccessKeyCreate(cs, auth, keysNS, logger))
 	h(patch, "/iam/users/{name}/access-keys/{id}", s15, "iam:UpdateAccessKey", iamARN("user"), handleIAMAccessKeyUpdate(cs, auth, keysNS, logger))
@@ -249,7 +249,6 @@ func (z *consoleAuthz) handleDynamic(rt chi.Router, prefix, method, path string,
 func (z *consoleAuthz) handleDecided(rt chi.Router, prefix, method, path string, timeout time.Duration, describe string,
 	question func(*http.Request) (string, string, func() (bool, string)), hf http.HandlerFunc) {
 	z.reg.Add(awsaction.Route{Method: method, Path: prefix + path, Action: "per-request: " + describe})
-	iamPage := managementIAMPage(prefix + path)
 	mws := []func(http.Handler) http.Handler{}
 	if timeout > 0 {
 		mws = append(mws, middleware.Timeout(timeout))
@@ -260,10 +259,6 @@ func (z *consoleAuthz) handleDecided(rt chi.Router, prefix, method, path string,
 			action, arn, decide := question(r)
 			if bc.refused != "" {
 				writeBodyRefused(w, bc.refused)
-				return
-			}
-			if iamPage && outsideManagementAccount(r) {
-				writeAccessDenied(w, action, arn, iamPageOtherAccount)
 				return
 			}
 			if ok, reason := decide(); !ok {

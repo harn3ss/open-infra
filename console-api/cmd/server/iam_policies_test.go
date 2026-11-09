@@ -221,7 +221,7 @@ func TestPolicyAndRoleViewRoundTrip(t *testing.T) {
 	p.Spec.Description = "read assets"
 	p.Spec.Statements = []policyStatement{{Effect: "Allow", Actions: []string{"buckets:Get"}}}
 	p.Spec.DataPlane = &cedarBlock{AppliesTo: []string{"User::alice"}, Statements: []cedarStatement{{Effect: "Allow", Actions: []string{"s3:GetObject"}}}}
-	pv := policyView(p)
+	pv := policyView(iamManagementAccount, p)
 	if pv.DataPlane == nil || len(pv.DataPlane.Statements) != 1 {
 		t.Errorf("policyView dropped dataPlane: %+v", pv.DataPlane)
 	}
@@ -233,7 +233,7 @@ func TestPolicyAndRoleViewRoundTrip(t *testing.T) {
 	var plain crdPolicy
 	plain.Metadata.Name = "plain"
 	plain.Spec.Statements = []policyStatement{{Actions: []string{"volumes:Get"}}}
-	if b, _ := json.Marshal(policyView(plain)); strings.Contains(string(b), "dataPlane") {
+	if b, _ := json.Marshal(policyView(iamManagementAccount, plain)); strings.Contains(string(b), "dataPlane") {
 		t.Errorf("plain policy view should omit dataPlane: %s", b)
 	}
 
@@ -241,13 +241,13 @@ func TestPolicyAndRoleViewRoundTrip(t *testing.T) {
 	r.Metadata.Name = "dep"
 	r.Spec.Policies = []string{"p1"}
 	r.Spec.Trust = []string{"User::alice", "*"}
-	if rv := roleView(r); len(rv.Trust) != 2 || rv.Trust[0] != "User::alice" {
+	if rv := roleView(iamManagementAccount, r); len(rv.Trust) != 2 || rv.Trust[0] != "User::alice" {
 		t.Errorf("roleView dropped trust: %+v", rv.Trust)
 	}
 	// Trust is always a non-nil array (never JSON null) even when empty.
 	var noTrust crdRole
 	noTrust.Metadata.Name = "x"
-	if b, _ := json.Marshal(roleView(noTrust)); !strings.Contains(string(b), `"trust":[]`) {
+	if b, _ := json.Marshal(roleView(iamManagementAccount, noTrust)); !strings.Contains(string(b), `"trust":[]`) {
 		t.Errorf("empty trust should serialise as [], got %s", b)
 	}
 
@@ -256,10 +256,10 @@ func TestPolicyAndRoleViewRoundTrip(t *testing.T) {
 	var revoked crdRole
 	revoked.Metadata.Name = "rev"
 	revoked.Spec.RevokeSessionsBefore = "2026-09-22T00:00:00Z"
-	if rv := roleView(revoked); rv.RevokeSessionsBefore != "2026-09-22T00:00:00Z" {
+	if rv := roleView(iamManagementAccount, revoked); rv.RevokeSessionsBefore != "2026-09-22T00:00:00Z" {
 		t.Errorf("roleView dropped revokeSessionsBefore: %q", rv.RevokeSessionsBefore)
 	}
-	if b, _ := json.Marshal(roleView(noTrust)); strings.Contains(string(b), "revokeSessionsBefore") {
+	if b, _ := json.Marshal(roleView(iamManagementAccount, noTrust)); strings.Contains(string(b), "revokeSessionsBefore") {
 		t.Errorf("a role with no cutoff should omit revokeSessionsBefore, got %s", b)
 	}
 }
@@ -286,7 +286,7 @@ func TestIsManagedPolicyAndView(t *testing.T) {
 	m.Metadata.Name = "AdministratorAccess"
 	m.Metadata.Labels = map[string]string{managedPolicyLabel: "true", policyCategoryLabel: "job-function"}
 	m.Spec.Statements = []policyStatement{{Actions: []string{"virtualmachines:*"}}}
-	mv := policyView(m)
+	mv := policyView(iamManagementAccount, m)
 	if !mv.Managed {
 		t.Error("policyView did not mark a labelled policy managed")
 	}
@@ -299,7 +299,7 @@ func TestIsManagedPolicyAndView(t *testing.T) {
 	var c crdPolicy
 	c.Metadata.Name = "custom"
 	c.Spec.Statements = []policyStatement{{Actions: []string{"volumes:Get"}}}
-	cv := policyView(c)
+	cv := policyView(iamManagementAccount, c)
 	if cv.Managed {
 		t.Error("a customer policy must not be managed")
 	}

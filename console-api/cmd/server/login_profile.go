@@ -22,7 +22,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/loginprofile"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -45,8 +44,14 @@ func (a *authStore) storePassword(ctx context.Context, user, password string, ke
 			return map[string]any{"name": name, "key": loginprofile.HashKey, "namespace": store.NS},
 				func() { _ = store.Delete(context.Background(), a.ns, user) }, nil
 		}
+		if a.member() {
+			// A member account's home is the account's own namespace: a password hash is never written there.
+			return nil, nil, err
+		}
 		a.logger.Warn("login profile: the credential store refused the password; writing it in the console namespace",
 			"user", user, "store", store.NS, "error", err.Error())
+	} else if a.member() {
+		return nil, nil, errors.New("no credential store for a member account's login profile")
 	}
 	name := iamPasswordSecretName(user)
 	if err := a.writePasswordSecret(ctx, name, user, password); err != nil {
@@ -59,7 +64,7 @@ func (a *authStore) storePassword(ctx context.Context, user, password string, ke
 // checkConsolePassword applies the account password policy to a password the console sets, returning
 // the policy (for PasswordReusePrevention) or a message for the caller.
 func (a *authStore) checkConsolePassword(ctx context.Context, password string) (loginprofile.Policy, string) {
-	p, _, err := a.loginStore().CheckFor(ctx, iam.ManagementAccount, password)
+	p, _, err := a.loginStore().CheckFor(ctx, a.accountID(), password)
 	var v *loginprofile.ViolationError
 	if errors.As(err, &v) {
 		return p, v.Msg
@@ -80,7 +85,7 @@ func (a *authStore) signInGate(ctx context.Context, u crdUser) (mustChange bool,
 	if ann[loginprofile.AnnResetRequired] == "true" {
 		mustChange = true
 	}
-	pol, custom, err := a.loginStore().GetPolicy(ctx, iam.ManagementAccount)
+	pol, custom, err := a.loginStore().GetPolicy(ctx, a.accountID())
 	if err != nil || !custom {
 		return mustChange, ""
 	}

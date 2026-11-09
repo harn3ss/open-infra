@@ -182,6 +182,11 @@ type tagsReq struct {
 // remove). `noun` is the singular used in the 404 message; `absPath` names the CR collection.
 func handleIAMTagsUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger, resource, noun string, absPath func(string) string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if resource == "users" && name == "root" {
 			// root is the break-glass account in a Secret, not a User — nothing to tag.

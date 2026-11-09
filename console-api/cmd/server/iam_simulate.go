@@ -136,6 +136,11 @@ type simPrincipal struct {
 
 func handleIAMSimulate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		// A simulation reads the whole policy/identity set to answer a what-if, so gate it exactly
 		// like listing policies — admins-only, the same SAR the other IAM endpoints use.
 		if !authorize(w, r, cs, auth, logger, "list", "iam.openinfra.dev", "policies", auth.ns, "") {

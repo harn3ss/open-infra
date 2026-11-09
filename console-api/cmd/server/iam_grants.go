@@ -167,6 +167,11 @@ func (a *authStore) getGrant(ctx context.Context, name string) (*grantResource, 
 
 func handleIAMGrantsList(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		if !authorize(w, r, cs, auth, logger, "list", "iam.openinfra.dev", "grants", auth.ns, "") {
 			return
 		}
@@ -192,6 +197,11 @@ func handleIAMGrantsList(cs kubernetes.Interface, auth *authStore, logger *slog.
 
 func handleIAMGrantGet(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "get", "iam.openinfra.dev", "grants", auth.ns, name) {
 			return
@@ -266,6 +276,28 @@ func (a *authStore) missingPolicy(ctx context.Context, names []string) (string, 
 		return "", fmt.Errorf("no REST client")
 	}
 	for _, ref := range names {
+		if a.member() {
+			// A member account's grant names its own policies or the AWS-managed library, as the evaluator
+			// resolves a member principal's references (iamauthz.ResolvePolicyRef); never another account's.
+			ns, name, explicit := a.ns, ref, false
+			if i := strings.IndexByte(ref, '/'); i > 0 {
+				ns, name, explicit = ref[:i], ref[i+1:], true
+			}
+			switch {
+			case ns == a.iamHome(): // "<home>/<name>": the library only
+				if _, ok := a.managedPolicy(ctx, name); ok {
+					continue
+				}
+			case ns == a.ns: // its own (a bare name falls back to the library)
+				if _, ok := a.crdPolicyByName(ctx, name); ok {
+					continue
+				}
+				if _, ok := a.managedPolicy(ctx, name); ok && !explicit {
+					continue
+				}
+			}
+			return ref, nil
+		}
 		ns, name := a.ns, ref
 		if i := strings.IndexByte(ref, '/'); i > 0 {
 			ns, name = ref[:i], ref[i+1:]
@@ -283,6 +315,11 @@ func (a *authStore) missingPolicy(ctx context.Context, names []string) (string, 
 
 func handleIAMGrantCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		var in grantReq
 		if json.NewDecoder(r.Body).Decode(&in) != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -356,6 +393,11 @@ func approvalDecision(approver, requestedBy, existingApprovedBy string) (status 
 
 func handleIAMGrantApprove(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		var in grantApproveReq
 		_ = json.NewDecoder(r.Body).Decode(&in) // body optional (just a note)
@@ -397,6 +439,11 @@ func handleIAMGrantApprove(cs kubernetes.Interface, auth *authStore, logger *slo
 
 func handleIAMGrantDelete(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "delete", "iam.openinfra.dev", "grants", auth.ns, name) {
 			return

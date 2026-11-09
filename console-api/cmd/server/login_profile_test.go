@@ -56,6 +56,13 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		obj, ok := f.objects[path]
+		if !ok && strings.HasPrefix(path, "/apis/") {
+			// A list of custom resources (an IAM collection), when it holds any.
+			if items := f.listLabelled(path+"/", ""); len(items) > 0 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+				return
+			}
+		}
 		if !ok {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)

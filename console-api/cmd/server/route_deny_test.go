@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -296,7 +298,7 @@ func (rt refusingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 // HTTP services (Grafana, Prometheus, Loki, NATS monitoring, the Iceberg catalog, the CA issuer, MinIO:
 // a server answering 404) and NATS (a listener that hangs up). The gate's own namespace lookups go to a
 // fake clientset; anything else asked of it is a handler's.
-func consoleRouteProbe(t *testing.T, world iamauthz.World) routeProbe {
+func consoleRouteProbe(t *testing.T, world iamauthz.World, kubeAPI ...http.RoundTripper) routeProbe {
 	t.Helper()
 	var hits atomic.Int64
 
@@ -326,7 +328,10 @@ func consoleRouteProbe(t *testing.T, world iamauthz.World) routeProbe {
 	}()
 	t.Setenv("NATS_URL", "nats://"+nats.Addr().String())
 
-	kube := refusingTransport{&hits}
+	var kube http.RoundTripper = refusingTransport{&hits}
+	if len(kubeAPI) > 0 {
+		kube = kubeAPI[0] // a test's own answers (TestConsoleRoutes_IAMPagesActInTheSessionsAccount)
+	}
 	// No client-side rate limit: a refused request must answer at once, not queue behind the limiter.
 	cfg := &rest.Config{Host: "http://127.0.0.1:1", Transport: kube, QPS: -1}
 	host, _ := url.Parse(cfg.Host)
@@ -459,16 +464,39 @@ func TestConsoleRoutes_CheckCatchesAnUngatedRoute(t *testing.T) {
 	}
 }
 
-// A session switched into another account's role is refused every console IAM page, though its role's
-// policies allow every IAM action: the pages act on the management account's IAM, so the session's
-// decision, asked on its own account's ARNs, would let it create the management account's users and mint
-// their keys (#417). Nothing behind the gate is reached. A session in the management account, a role
-// session of its own included, is not refused by this (the AdministratorAccess test above reaches them).
-func TestConsoleRoutes_IAMPagesRefuseAnotherAccountsRoleSession(t *testing.T) {
-	const member = "900000000002"
+// recordingTransport is the Kubernetes API for TestConsoleRoutes_IAMPagesActInTheSessionsAccount: it answers
+// the lookup of a member account's IAM home, answers NotFound to everything else, and records every request.
+type recordingTransport struct {
+	mu            sync.Mutex
+	seen          []string
+	account, home string
+}
+
+func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	rt.seen = append(rt.seen, r.Method+" "+r.URL.Path)
+	rt.mu.Unlock()
+	code, body := http.StatusNotFound, `{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}`
+	if r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces" && strings.Contains(r.URL.Query().Get("labelSelector"), rt.account) {
+		code, body = http.StatusOK, `{"kind":"NamespaceList","apiVersion":"v1","items":[{"metadata":{"name":"`+rt.home+
+			`","labels":{"openinfra.dev/account-id":"`+rt.account+`","openinfra.dev/account-home":"true"}}}]}`
+	}
+	return &http.Response{StatusCode: code, Header: http.Header{"Content-Type": {"application/json"}},
+		Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+}
+
+// A session switched into a member account's role manages THAT account's IAM on every console IAM page, as
+// the AWS console does: every page it calls (as the account's administrator role) reads and writes the
+// account's IAM home, and touches nothing of the management account's IAM home but its AWS-managed policy
+// library, read. Before, the pages acted on the management account's IAM whatever the session (#417): a
+// member account's role session could create management users and mint their keys. A management-account
+// session's pages are its own account's, and reach them.
+func TestConsoleRoutes_IAMPagesActInTheSessionsAccount(t *testing.T) {
+	const member, home, mgmtHome = "900000000002", "team-b", "open-infra-console"
 	w := testWorld(t, map[string]string{"AdministratorAccess": adminDoc}, map[string][]string{
 		"Role::member-admin": {"AdministratorAccess"}, "Role::ops": {"AdministratorAccess"}})
-	p := consoleRouteProbe(t, w)
+	kube := &recordingTransport{account: member, home: home}
+	p := consoleRouteProbe(t, w, kube)
 	sign := func(c iam.Claims) string {
 		tok, err := p.auth.issueClaims(c)
 		if err != nil {
@@ -481,29 +509,57 @@ func TestConsoleRoutes_IAMPagesRefuseAnotherAccountsRoleSession(t *testing.T) {
 
 	checked := 0
 	for _, rt := range p.z.reg.Routes() {
-		if !managementIAMPage(rt.Path) {
+		if rt.Path != "/api/iam" && !strings.HasPrefix(rt.Path, "/api/iam/") {
 			continue
 		}
 		checked++
+		kube.mu.Lock()
+		kube.seen = nil
+		kube.mu.Unlock()
 		rec, problem := p.call(rt, other)
 		if problem != "" {
 			t.Errorf("%s %s: %s", rt.Method, rt.Path, problem)
 			continue
 		}
-		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "manage the management account") {
-			t.Errorf("%s %s: another account's role session got %d %s, want the IAM pages' refusal",
-				rt.Method, rt.Path, rec.Code, strings.TrimSpace(rec.Body.String()))
+		if rec.Code == http.StatusForbidden && strings.Contains(rec.Body.String(), "AccessDenied") {
+			t.Errorf("%s %s: the member account's administrator role was refused its own account's IAM page: %s",
+				rt.Method, rt.Path, strings.TrimSpace(rec.Body.String()))
 		}
+		kube.mu.Lock()
+		for _, req := range kube.seen {
+			method, path, _ := strings.Cut(req, " ")
+			if !strings.Contains(path, "/namespaces/"+mgmtHome+"/") && !strings.HasSuffix(path, "/namespaces/"+mgmtHome) {
+				continue
+			}
+			if method == http.MethodGet && strings.Contains(path, "/namespaces/"+mgmtHome+"/policies") {
+				continue // the AWS-managed policy library, read
+			}
+			t.Errorf("%s %s: a member account's role session reached the management account's IAM home: %s",
+				rt.Method, rt.Path, req)
+		}
+		kube.mu.Unlock()
 	}
 	if checked < 40 {
 		t.Errorf("checked %d IAM page routes (the console has more than 40)", checked)
 	}
-	if n := p.reached(); n != 0 {
-		t.Errorf("another account's role session reached %d call(s) behind an IAM page's gate", n)
+	// The pages did act in the member account's home (they did not merely all fail).
+	kube.mu.Lock()
+	kube.seen = nil
+	kube.mu.Unlock()
+	if rec, _ := p.call(awsaction.Route{Method: http.MethodGet, Path: "/api/iam/users/{name}"}, other); rec.Code == http.StatusForbidden {
+		t.Errorf("GetUser in the member account was refused: %s", rec.Body.String())
+	}
+	kube.mu.Lock()
+	inHome := false
+	for _, req := range kube.seen {
+		inHome = inHome || strings.Contains(req, "/namespaces/"+home+"/users/")
+	}
+	kube.mu.Unlock()
+	if !inHome {
+		t.Error("GetUser in the member account's role session did not read the account's IAM home")
 	}
 	// The management account's own role session is decided by its policies, not refused.
-	rt := awsaction.Route{Method: http.MethodGet, Path: "/api/iam/users"}
-	if rec, _ := p.call(rt, own); rec.Code == http.StatusForbidden {
+	if rec, _ := p.call(awsaction.Route{Method: http.MethodGet, Path: "/api/iam/users"}, own); rec.Code == http.StatusForbidden {
 		t.Errorf("a role session in the management account was refused the IAM pages: %s", rec.Body.String())
 	}
 }

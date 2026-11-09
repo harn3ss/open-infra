@@ -283,10 +283,11 @@ type iamRoleView struct {
 	Tags map[string]string `json:"tags"`
 }
 
-func policyView(p crdPolicy) iamPolicyView {
+// policyView is policy p of account (a customer policy's ARN is that account's; a managed one's is AWS's).
+func policyView(account string, p crdPolicy) iamPolicyView {
 	arn := p.Spec.ARN
 	if arn == "" {
-		arn = iamEntityARN("policy", iamManagementAccount, p.Metadata.Name)
+		arn = iamEntityARN("policy", account, p.Metadata.Name)
 	}
 	return iamPolicyView{
 		Name: p.Metadata.Name, Description: p.Spec.Description, Statements: p.Spec.Statements,
@@ -299,11 +300,12 @@ func policyView(p crdPolicy) iamPolicyView {
 	}
 }
 
-func roleView(r crdRole) iamRoleView {
+// roleView is role r of account.
+func roleView(account string, r crdRole) iamRoleView {
 	return iamRoleView{
 		Name: r.Metadata.Name, Description: r.Spec.Description, Policies: r.Spec.Policies,
 		PermissionBoundary: r.Spec.PermissionBoundary, InlinePolicies: inlineViews(r.Spec.InlinePolicies),
-		ARN:         iamEntityARN("role", iamManagementAccount, r.Metadata.Name),
+		ARN:         iamEntityARN("role", account, r.Metadata.Name),
 		Trust:       groupList(r.Spec.Trust),
 		ClusterRole: r.Status.ClusterRole, Ready: r.Status.Ready,
 		RevokeSessionsBefore: r.Spec.RevokeSessionsBefore,
@@ -450,13 +452,27 @@ func normCedar(b *cedarBlock) map[string]any {
 
 func handleIAMPoliciesList(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		if !authorize(w, r, cs, auth, logger, "list", "iam.openinfra.dev", "policies", auth.ns, "") {
 			return
 		}
 		ps := auth.listCRDPolicies(r.Context())
 		out := make([]iamPolicyView, 0, len(ps))
+		own := map[string]bool{}
 		for _, p := range ps {
-			out = append(out, policyView(p))
+			own[p.Metadata.Name] = true
+			out = append(out, policyView(auth.accountID(), p))
+		}
+		// A member account's page lists the AWS-managed library beside its own policies (its own policy
+		// of the same name is the one a bare reference resolves to, so the library's is not shown).
+		for _, p := range auth.managedLibrary(r.Context()) {
+			if !own[p.Metadata.Name] {
+				out = append(out, policyView(auth.accountID(), p))
+			}
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
@@ -464,16 +480,24 @@ func handleIAMPoliciesList(cs kubernetes.Interface, auth *authStore, logger *slo
 
 func handleIAMPolicyGet(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "get", "iam.openinfra.dev", "policies", auth.ns, name) {
 			return
 		}
 		p, ok := auth.crdPolicyByName(r.Context(), name)
 		if !ok {
+			p, ok = auth.managedPolicy(r.Context(), name)
+		}
+		if !ok {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such policy"})
 			return
 		}
-		writeJSON(w, http.StatusOK, policyView(p))
+		writeJSON(w, http.StatusOK, policyView(auth.accountID(), p))
 	}
 }
 
@@ -520,6 +544,11 @@ func validatePolicyReq(in policyReq) string {
 
 func handleIAMPolicyCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		var in policyReq
 		if json.NewDecoder(r.Body).Decode(&in) != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -529,6 +558,12 @@ func handleIAMPolicyCreate(cs kubernetes.Interface, auth *authStore, logger *slo
 		if !validName(in.Name) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name must be a lowercase DNS label (a-z, 0-9, -)"})
 			return
+		}
+		if auth.member() {
+			if msg := memberPolicyShapeErr(in, true); msg != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg, "errorCode": "MalformedPolicyDocument"})
+				return
+			}
 		}
 		if msg := validatePolicyReq(in); msg != "" {
 			writeJSON(w, http.StatusBadRequest, policyErr(msg))
@@ -565,11 +600,22 @@ func handleIAMPolicyCreate(cs kubernetes.Interface, auth *authStore, logger *slo
 
 func handleIAMPolicyUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		var in policyReq
 		if json.NewDecoder(r.Body).Decode(&in) != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 			return
+		}
+		if auth.member() {
+			if msg := memberPolicyShapeErr(in, false); msg != "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg, "errorCode": "MalformedPolicyDocument"})
+				return
+			}
 		}
 		if msg := validatePolicyReq(in); msg != "" {
 			writeJSON(w, http.StatusBadRequest, policyErr(msg))
@@ -614,6 +660,11 @@ func handleIAMPolicyUpdate(cs kubernetes.Interface, auth *authStore, logger *slo
 
 func handleIAMPolicyDelete(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "delete", "iam.openinfra.dev", "policies", auth.ns, name) {
 			return
@@ -644,13 +695,18 @@ func handleIAMPolicyDelete(cs kubernetes.Interface, auth *authStore, logger *slo
 
 func handleIAMRolesList(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		if !authorize(w, r, cs, auth, logger, "list", "iam.openinfra.dev", "roles", auth.ns, "") {
 			return
 		}
 		rs := auth.listCRDRoles(r.Context())
 		out := make([]iamRoleView, 0, len(rs))
 		for _, x := range rs {
-			out = append(out, roleView(x))
+			out = append(out, roleView(auth.accountID(), x))
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
@@ -658,6 +714,11 @@ func handleIAMRolesList(cs kubernetes.Interface, auth *authStore, logger *slog.L
 
 func handleIAMRoleGet(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "get", "iam.openinfra.dev", "roles", auth.ns, name) {
 			return
@@ -667,7 +728,7 @@ func handleIAMRoleGet(cs kubernetes.Interface, auth *authStore, logger *slog.Log
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such role"})
 			return
 		}
-		writeJSON(w, http.StatusOK, roleView(x))
+		writeJSON(w, http.StatusOK, roleView(auth.accountID(), x))
 	}
 }
 
@@ -687,6 +748,11 @@ type roleReq struct {
 
 func handleIAMRoleCreate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		var in roleReq
 		if json.NewDecoder(r.Body).Decode(&in) != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -722,6 +788,9 @@ func handleIAMRoleCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 			spec["inlinePolicies"] = inlineSpec(*in.InlinePolicies)
 			change.inlinePut = true
 		}
+		if pol, pb := specPolicyRefs(spec); !auth.memberPolicyRefsOK(w, r, pol, pb) {
+			return
+		}
 		if !requireChange(w, r, change) {
 			return
 		}
@@ -743,6 +812,11 @@ func handleIAMRoleCreate(cs kubernetes.Interface, auth *authStore, logger *slog.
 
 func handleIAMRoleUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		var in roleReq
 		if json.NewDecoder(r.Body).Decode(&in) != nil {
@@ -785,6 +859,9 @@ func handleIAMRoleUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.
 			spec["inlinePolicies"] = inlineSpec(*in.InlinePolicies)
 			change.inlinePut, change.inlineDeleted = inlineDiff(cur.Spec.InlinePolicies, *in.InlinePolicies)
 		}
+		if pol, pb := specPolicyRefs(spec); !auth.memberPolicyRefsOK(w, r, pol, pb) {
+			return
+		}
 		if !requireChange(w, r, change) {
 			return
 		}
@@ -808,6 +885,11 @@ func handleIAMRoleUpdate(cs kubernetes.Interface, auth *authStore, logger *slog.
 // editing the role.
 func handleIAMRoleRevokeSessions(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "update", "iam.openinfra.dev", "roles", auth.ns, name) {
 			return
@@ -830,6 +912,11 @@ func handleIAMRoleRevokeSessions(cs kubernetes.Interface, auth *authStore, logge
 
 func handleIAMRoleDelete(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "delete", "iam.openinfra.dev", "roles", auth.ns, name) {
 			return

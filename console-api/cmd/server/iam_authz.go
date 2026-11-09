@@ -175,7 +175,6 @@ func withRouteAuthorized(ctx context.Context) context.Context {
 // the handler runs, and a denial answers AWS's AccessDenied without reaching it.
 func (z *consoleAuthz) gate(method, path, action string, arn arnFunc) func(http.Handler) http.Handler {
 	z.reg.Add(awsaction.Route{Method: method, Path: path, Action: action, ARN: arn})
-	iamPage := managementIAMPage(path)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r, bc := withBodyCheck(r)
@@ -185,10 +184,6 @@ func (z *consoleAuthz) gate(method, path, action string, arn arnFunc) func(http.
 			}
 			if bc.refused != "" {
 				writeBodyRefused(w, bc.refused)
-				return
-			}
-			if iamPage && outsideManagementAccount(r) {
-				writeAccessDenied(w, action, res, iamPageOtherAccount)
 				return
 			}
 			ok, reason := z.decide(r, action, res, allowLegacy)
@@ -202,25 +197,6 @@ func (z *consoleAuthz) gate(method, path, action string, arn arnFunc) func(http.
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// The console's IAM pages (/api/iam/…) read and write the management account's IAM home (auth.ns),
-// whatever account the session is in. A session switched into another account's role is asked for IAM
-// actions on that account's ARNs, which its role's policies may allow, so such a session would act on the
-// management account's users, keys and policies with no decision about them. Until the IAM pages manage
-// the session's own account, they refuse a session in another account; that account's IAM is managed
-// through the IAM API (aws iam …, with the role session's credentials), which acts in the caller's account.
-const iamPageOtherAccount = "the console's IAM pages manage the management account's IAM; in another account's role session, use the IAM API (aws iam) for that account, or switch back"
-
-// managementIAMPage reports whether a route (its full path) is one of the console's IAM pages.
-func managementIAMPage(path string) bool {
-	return path == apiPrefix+"/iam" || strings.HasPrefix(path, apiPrefix+"/iam/")
-}
-
-// outsideManagementAccount reports whether the request's session acts in an account other than the
-// management account (a role session switched into a member account).
-func outsideManagementAccount(r *http.Request) bool {
-	return callerAccount(r) != iam.ManagementAccount
 }
 
 // handle registers one route on rt (mounted at prefix) with its timeout (0 = none), IAM action and ARN.

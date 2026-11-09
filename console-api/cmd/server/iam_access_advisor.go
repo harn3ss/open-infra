@@ -154,6 +154,11 @@ func (a *authStore) groupsBindingClusterRole(ctx context.Context, cr string) map
 
 func handleIAMAccessAdvisor(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		// Same admin gate as Access Review / Audit — this exposes everyone's activity.
 		if !authorize(w, r, cs, auth, logger, "list", "iam.openinfra.dev", "users", auth.ns, "") {
 			return

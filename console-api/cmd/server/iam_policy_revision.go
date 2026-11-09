@@ -31,6 +31,11 @@ type policyRevision struct {
 
 func handleIAMPolicyRevision(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this page manages: the session's (iam_scope.go).
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		name := chi.URLParam(r, "name")
 		if !authorize(w, r, cs, auth, logger, "get", "iam.openinfra.dev", "policies", auth.ns, name) {
 			return
@@ -41,6 +46,13 @@ func handleIAMPolicyRevision(cs kubernetes.Interface, auth *authStore, logger *s
 			return
 		}
 		raw, err := rc.Get().AbsPath(policiesAbsPath(auth.ns) + "/" + name).DoRaw(r.Context())
+		if err != nil {
+			// A member account reads an AWS-managed policy's revision from the library (never another of
+			// the management account's policies).
+			if _, managed := auth.managedPolicy(r.Context(), name); managed {
+				raw, err = rc.Get().AbsPath(policiesAbsPath(auth.iamHome()) + "/" + name).DoRaw(r.Context())
+			}
+		}
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such policy"})
 			return

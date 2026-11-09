@@ -7,8 +7,9 @@
 # User, which has no policy, and one in the member account whose trust names that account's OWN user of the
 # administrator's name. Each User signs in to the console, which then switches role as its account menu does:
 #   - the administrator switches into the member account's OrganizationAccountAccessRole (its trust names
-#     the management account) and the session is that role's in that account; that session is refused the
-#     console's IAM pages, which manage the management account's IAM (no management user is made); it
+#     the management account) and the session is that role's in that account; in that session the
+#     console's IAM pages manage the member account: a user and access key made there are its own (the key
+#     acts in the member account; no management user is made), and deleting the user deletes its key; it
 #     switches back;
 #   - the User with no policy is refused that role, with AWS's AccessDenied, since another account's role
 #     needs the caller's own policy too;
@@ -28,7 +29,7 @@ set -uo pipefail
 # shellcheck source=probe/iam-lib.sh
 . "$(dirname "$0")/iam-lib.sh"
 START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-MGMT_ROLE=""; MEMBER_ROLE=""; NEW_ACCOUNT=""; NEW_HOME=""
+MGMT_ROLE=""; MEMBER_ROLE=""; NEW_ACCOUNT=""; NEW_HOME=""; MADE=""
 cleanup() {
   if [ -n "$MEMBER_ROLE" ] && [ -n "${M_AK:-}" ]; then
     AWS_ACCESS_KEY_ID="$M_AK" AWS_SECRET_ACCESS_KEY="$M_SK" AWS_SESSION_TOKEN="$M_TOK" AWS_REGION="$REGION" \
@@ -38,6 +39,7 @@ cleanup() {
     AWS_ACCESS_KEY_ID="$A_AK" AWS_SECRET_ACCESS_KEY="$A_SK" AWS_SESSION_TOKEN="" AWS_REGION="$REGION" \
       aws --endpoint-url "$ENDPOINT" --no-cli-pager iam delete-role --role-name "$MGMT_ROLE" >/dev/null 2>&1
   fi
+  [ -n "${MADE:-}" ] && kubectl -n "$SHIM_NS" delete secret -l openinfra.dev/iam-user="$MADE" --ignore-not-found >/dev/null 2>&1
   [ -n "$NEW_ACCOUNT" ] && kubectl delete accounts.organizations.openinfra.dev "$NEW_ACCOUNT" --ignore-not-found --wait=false >/dev/null 2>&1
   if [ -n "$NEW_HOME" ]; then
     created="$(kubectl get ns "$NEW_HOME" -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null)"
@@ -133,15 +135,42 @@ want="arn:aws:sts::$NEW_ACCOUNT:assumed-role/organizationaccountaccessrole/$ADMI
 read -r acct arn < <(me "$A_JAR.switched")
 [ "$acct" = "$NEW_ACCOUNT" ] && [ "$arn" = "$want" ] || fail "after Switch role the console session is account '$acct' as '$arn', want $NEW_ACCOUNT as $want"
 log "  ✓ the administrator switches into the member account's OrganizationAccountAccessRole: $arn"
-# The console's IAM pages manage the management account's IAM: the member account's role session is
-# refused them, so it cannot create (or mint keys for) a management account user.
-MADE="sr-made-$SFX"; CREATED_USERS+=("$MADE")
-code="$(curl -s -m 15 -b "$A_JAR.switched" -X POST -o "$PROBE_TMP/iam.out" -w '%{http_code}' \
-  -H 'Content-Type: application/json' -H 'X-Openinfra-Console: 1' -d "{\"name\":\"$MADE\",\"groups\":[]}" "$CONSOLE/api/iam/users")"
-[ "$code" = 403 ] && grep -q AccessDeniedException "$PROBE_TMP/iam.out" || fail "the member account's role session was not refused the console's IAM pages: $code $(head -c 300 "$PROBE_TMP/iam.out")"
-sleep 2
+# The console's IAM pages manage the session's account (#417): in the member account's role session a user
+# made there, and its access key, are the member account's. The key acts in the member account (the IAM
+# API answers its identity there), and deleting the user deletes its key.
+iam_page() { # <method> <path> [body]: the console's answer (HTTP code; body in $PROBE_TMP/iam.out), in the role session
+  curl -s -m 15 -b "$A_JAR.switched" -X "$1" -o "$PROBE_TMP/iam.out" -w '%{http_code}' \
+    -H 'Content-Type: application/json' -H 'X-Openinfra-Console: 1' ${3:+-d "$3"} "$CONSOLE$2"
+}
+MADE="sr-made-$SFX"
+code="$(iam_page POST /api/iam/users "{\"name\":\"$MADE\",\"groups\":[]}")"
+[ "$code" = 201 ] || fail "the member account's role session could not create a user of its own account: $code $(head -c 300 "$PROBE_TMP/iam.out")"
+kubectl -n "$NEW_HOME" get users.iam.openinfra.dev "$MADE" >/dev/null 2>&1 || fail "the user was not created in the member account's IAM home"
 kubectl -n "$USERS_NS" get users.iam.openinfra.dev "$MADE" >/dev/null 2>&1 && fail "the member account's role session created a management account user"
-log "  ✓ in the member account's role session the console's IAM pages refuse it: AccessDenied, no management user made"
+code="$(iam_page POST "/api/iam/users/$MADE/access-keys")"
+[ "$code" = 201 ] || fail "the member account's role session could not create its user's access key: $code $(head -c 300 "$PROBE_TMP/iam.out")"
+read -r K_AK K_SK < <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["accessKeyId"], d["secretAccessKey"])' "$PROBE_TMP/iam.out")
+: > "$PROBE_TMP/iam.out"
+who=""
+for _ in $(seq 1 20); do
+  who="$(AWS_ACCESS_KEY_ID="$K_AK" AWS_SECRET_ACCESS_KEY="$K_SK" AWS_SESSION_TOKEN="" AWS_REGION="$REGION" \
+    aws --endpoint-url "$ENDPOINT" --no-cli-pager sts get-caller-identity --query Arn --output text 2>/dev/null)"
+  [ -n "$who" ] && break
+  sleep 3
+done
+[ "$who" = "arn:aws:iam::$NEW_ACCOUNT:user/$MADE" ] || fail "the member account's key acts as '$who', want arn:aws:iam::$NEW_ACCOUNT:user/$MADE"
+log "  ✓ in the member account's role session the console's IAM pages manage that account: its user and key act as $who"
+code="$(iam_page DELETE "/api/iam/users/$MADE")"
+[ "$code" = 200 ] || fail "the member account's role session could not delete its user: $code $(head -c 300 "$PROBE_TMP/iam.out")"
+gone=""
+for _ in $(seq 1 20); do
+  AWS_ACCESS_KEY_ID="$K_AK" AWS_SECRET_ACCESS_KEY="$K_SK" AWS_SESSION_TOKEN="" AWS_REGION="$REGION" \
+    aws --endpoint-url "$ENDPOINT" --no-cli-pager sts get-caller-identity >/dev/null 2>&1 || { gone=1; break; }
+  sleep 3
+done
+[ -n "$gone" ] || fail "the deleted user's access key still authenticates"
+[ -z "$(kubectl -n "$SHIM_NS" get secret -l openinfra.dev/iam-user="$MADE" -o name 2>/dev/null)" ] || fail "the deleted user's access key was left in the credential store"
+log "  ✓ deleting the user deletes its access key: the key no longer authenticates"
 code="$(curl -s -m 15 -b "$A_JAR.switched" -c "$A_JAR.switched" -X POST -o "$PROBE_TMP/sb.out" -w '%{http_code}' \
   -H 'X-Openinfra-Console: 1' "$CONSOLE/api/sts/switch-back")"
 read -r acct arn < <(me "$A_JAR.switched")

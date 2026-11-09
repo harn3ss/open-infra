@@ -90,6 +90,12 @@ func lastSeenByActor(ctx context.Context, since time.Duration, logger *slog.Logg
 
 func handleAccessReview(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// The account whose IAM this report covers: the session's (iam_scope.go), as AWS's credential
+		// report is its own account's.
+		auth, scoped := iamAuth(w, r, auth)
+		if !scoped {
+			return
+		}
 		if !authorize(w, r, cs, auth, logger, "list", "iam.openinfra.dev", "users", auth.ns, "") {
 			return
 		}
