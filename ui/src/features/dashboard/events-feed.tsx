@@ -8,22 +8,18 @@ import { useK8sWatch } from "@/hooks/use-k8s-watch";
 import { corePaths } from "@/lib/k8s-paths";
 import { age, eventTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { newestFirst } from "@/lib/watch-events";
 import type { EventObj } from "@/types/k8s";
 
-/** Recent cluster events, live via watch on /api/v1/events. */
+/**
+ * Recent events, live: the account's own, as every Console Home widget is the account's (a namespace's
+ * when one is given). The newest 100 are shown, each event's time read once per update.
+ */
 export function EventsFeed({ namespace }: { namespace?: string }) {
   const { items, isLoading, isError, error, live, refetch } =
-    useK8sWatch<EventObj>(corePaths.events(namespace));
+    useK8sWatch<EventObj>(corePaths.events(namespace), { accountScope: !namespace });
 
-  const sorted = useMemo(() => {
-    return [...items]
-      .sort((a, b) => {
-        const ta = new Date(eventTime(a) ?? 0).getTime();
-        const tb = new Date(eventTime(b) ?? 0).getTime();
-        return tb - ta;
-      })
-      .slice(0, 100);
-  }, [items]);
+  const sorted = useMemo(() => newestFirst(items, 100, eventTime), [items]);
 
   return (
     <Card className="flex h-full flex-col">

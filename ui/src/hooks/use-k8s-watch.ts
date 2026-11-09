@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-query";
 import { k8sList, watchUrl } from "@/lib/api";
 import { withAccountScope } from "@/lib/account-scope";
+import { applyWatchEvents } from "@/lib/watch-events";
 import type { K8sList, K8sObject, WatchEvent } from "@/types/k8s";
 
 export interface UseK8sWatchResult<T extends K8sObject> {
@@ -18,16 +19,12 @@ export interface UseK8sWatchResult<T extends K8sObject> {
   refetch: () => void;
 }
 
+/** How long live events gather before they are applied together (see the watch effect). */
+const FLUSH_MS = 500;
+
 /** A stable react-query key for a watched list path. */
 export function watchQueryKey(path: string): QueryKey {
   return ["k8s-watch", path];
-}
-
-function uidOf(obj: K8sObject): string {
-  return (
-    obj.metadata.uid ??
-    `${obj.metadata.namespace ?? ""}/${obj.metadata.name}`
-  );
 }
 
 /**
@@ -86,49 +83,22 @@ export function useK8sWatch<T extends K8sObject = K8sObject>(
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempts = 0;
 
+    // Events are applied in batches (lib/watch-events.ts): a busy list changes many times a second, and
+    // applying each event on its own copied the whole list and re-rendered every consumer each time. They
+    // queue and are applied together at most every FLUSH_MS, in arrival order.
+    let queue: WatchEvent<T>[] = [];
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      if (flushTimer) clearTimeout(flushTimer);
+      flushTimer = null;
+      const batch = queue;
+      queue = [];
+      if (batch.length === 0) return;
+      queryClient.setQueryData<K8sList<T>>(key, (prev) => (prev ? applyWatchEvents(prev, batch) : prev));
+    };
     const applyEvent = (evt: WatchEvent<T>) => {
-      queryClient.setQueryData<K8sList<T>>(key, (prev) => {
-        if (!prev) return prev;
-        const incoming = evt.object;
-        const nextRv =
-          incoming.metadata?.resourceVersion ?? prev.metadata.resourceVersion;
-
-        // BOOKMARK events (and any payload without a name/uid) are
-        // resourceVersion checkpoints, not resources. Advance the RV but never
-        // add them to the list — otherwise they render as phantom rows/cards
-        // (e.g. a nameless "NotReady" node, or apps that appear to spawn).
-        if (
-          evt.type === "BOOKMARK" ||
-          (!incoming.metadata?.name && !incoming.metadata?.uid)
-        ) {
-          return {
-            ...prev,
-            metadata: { ...prev.metadata, resourceVersion: nextRv },
-          };
-        }
-
-        const incomingUid = uidOf(incoming);
-        let items = prev.items;
-
-        if (evt.type === "DELETED") {
-          items = items.filter((it) => uidOf(it) !== incomingUid);
-        } else {
-          // ADDED or MODIFIED — upsert by uid.
-          const idx = items.findIndex((it) => uidOf(it) === incomingUid);
-          if (idx === -1) {
-            items = [...items, incoming];
-          } else {
-            items = items.slice();
-            items[idx] = incoming;
-          }
-        }
-
-        return {
-          ...prev,
-          metadata: { ...prev.metadata, resourceVersion: nextRv },
-          items,
-        };
-      });
+      queue.push(evt);
+      if (!flushTimer) flushTimer = setTimeout(flush, FLUSH_MS);
     };
 
     const connect = (rv: string) => {
@@ -145,6 +115,7 @@ export function useK8sWatch<T extends K8sObject = K8sObject>(
       source.addEventListener("expired", () => {
         setLive(false);
         source?.close();
+        queue = []; // the relist supersedes them
         void queryClient
           .refetchQueries({ queryKey: key })
           .then(() => {
@@ -170,6 +141,7 @@ export function useK8sWatch<T extends K8sObject = K8sObject>(
         setLive(false);
         source?.close();
         if (cancelled) return;
+        flush(); // reconnect from the latest resourceVersion received
         // Exponential-ish backoff, capped.
         attempts += 1;
         const delay = Math.min(1000 * 2 ** Math.min(attempts, 4), 15000);
@@ -187,6 +159,7 @@ export function useK8sWatch<T extends K8sObject = K8sObject>(
       cancelled = true;
       setLive(false);
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (flushTimer) clearTimeout(flushTimer);
       source?.close();
     };
   }, [enabled, hasInitialList, path, queryClient, key, accountScope]);
