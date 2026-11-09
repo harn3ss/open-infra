@@ -1572,7 +1572,8 @@
         "sts",
         "vm-credentials",
         "app-assume-role",
-        "sts-deny"
+        "sts-deny",
+        "sts-switch-role"
       ],
       "refused": [],
       "service": "STS",

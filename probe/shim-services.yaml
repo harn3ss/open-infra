@@ -48,7 +48,7 @@ services:
     cell: "identity + `AssumeRole` / web-identity"
     tier: proven
     sigv4: [sts]
-    probes: [sts, vm-credentials, app-assume-role, sts-deny]
+    probes: [sts, vm-credentials, app-assume-role, sts-deny, sts-switch-role]
   - name: IAM
     cell: "roles/policies/users → AWS policy JSON → Cedar"
     tier: proven

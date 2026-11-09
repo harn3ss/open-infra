@@ -212,7 +212,8 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	h(get, "/compliance/attestation", s20, "auditmanager:GetAssessment", nil, handleAttestation(cs, auth, logger))
 
 	// Switch role (the AWS console's): sts:AssumeRole on the role, whose trust must name the caller.
-	z.handleDynamic(api, apiPrefix, post, "/sts/switch-role", s15, "sts:AssumeRole on the role", switchRoleQuestion, handleSwitchRole(cs, auth, logger))
+	roles := accountRoles(cs, auth)
+	z.handleDecided(api, apiPrefix, post, "/sts/switch-role", s15, "sts:AssumeRole on the role", z.switchRoleQuestion(roles), handleSwitchRole(roles, auth, logger))
 	z.public(post, "/api/sts/switch-back", "returns the session to the signed-in user (drops the assumed role)")
 	api.With(middleware.Timeout(s15)).Post("/sts/switch-back", handleSwitchBack(auth, logger))
 
@@ -236,6 +237,17 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 // ARN to ask; the registry records describe.
 func (z *consoleAuthz) handleDynamic(rt chi.Router, prefix, method, path string, timeout time.Duration, describe string,
 	question func(*http.Request) (string, string), hf http.HandlerFunc) {
+	z.handleDecided(rt, prefix, method, path, timeout, describe, func(r *http.Request) (string, string, func() (bool, string)) {
+		action, arn := question(r)
+		return action, arn, func() (bool, string) { return z.decide(r, action, arn, allowLegacy) }
+	}, hf)
+}
+
+// handleDecided is handleDynamic for a route whose decision needs more than its action and ARN (Switch
+// role's asks with the role's trust): question returns the action and ARN, and the decision, run once the
+// request's body has been checked.
+func (z *consoleAuthz) handleDecided(rt chi.Router, prefix, method, path string, timeout time.Duration, describe string,
+	question func(*http.Request) (string, string, func() (bool, string)), hf http.HandlerFunc) {
 	z.reg.Add(awsaction.Route{Method: method, Path: prefix + path, Action: "per-request: " + describe})
 	mws := []func(http.Handler) http.Handler{}
 	if timeout > 0 {
@@ -244,12 +256,12 @@ func (z *consoleAuthz) handleDynamic(rt chi.Router, prefix, method, path string,
 	mws = append(mws, func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r, bc := withBodyCheck(r)
-			action, arn := question(r)
+			action, arn, decide := question(r)
 			if bc.refused != "" {
 				writeBodyRefused(w, bc.refused)
 				return
 			}
-			if ok, reason := z.decide(r, action, arn, allowLegacy); !ok {
+			if ok, reason := decide(); !ok {
 				writeAccessDenied(w, action, arn, reason)
 				return
 			}

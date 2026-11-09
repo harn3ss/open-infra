@@ -1,8 +1,68 @@
 package iamauthz
 
 import (
+	"encoding/json"
+	"strings"
+
 	"github.com/harn3ss/open-infra/policyengine"
 )
+
+// TrustStatements is a role's trust (its spec.trust) as the role's resource policy for sts:AssumeRole,
+// passed to the evaluator with WithResourcePolicy: a trust policy is the role's resource-based policy, so
+// AWS's evaluation logic decides an assume with it. Another account's role then needs both the trust and
+// the caller's own policy; within one account a trust naming the caller itself is enough on its own, and
+// one naming the account delegates to the account's policies.
+//
+// Each entry is read as an AWS trust policy's principal:
+//
+//	"*"                    anyone, of any account
+//	"arn:…"                that principal; an account's root ARN is every principal of that account
+//	a 12-digit account id  that account (its root ARN)
+//	"<name>", "User::<n>"  that user of the ROLE's account: another account's principal is named by its
+//	                       ARN, never by a bare name
+//	"Role::<name>"         that role of the role's account
+//
+// Entries that name no IAM principal (a ServiceAccount, an OIDC provider, the VM instance principal, a
+// role outside the IAM home) are left out: no sts:AssumeRole caller is one. The trust policy's written
+// conditions are AuthorizeTrust's, checked as well.
+func TrustStatements(trust []string, roleAccount string) ([]ResourceStatement, error) {
+	if roleAccount == "" {
+		roleAccount = ManagementAccount
+	}
+	var principals []string
+	for _, t := range trust {
+		t = strings.TrimSpace(t)
+		switch {
+		case t == "":
+		case t == "*", strings.HasPrefix(t, "arn:"):
+			principals = append(principals, t)
+		case len(t) == 12 && strings.Trim(t, "0123456789") == "":
+			principals = append(principals, "arn:aws:iam::"+t+":root")
+		case strings.HasPrefix(t, "User::"):
+			principals = append(principals, "arn:aws:iam::"+roleAccount+":user/"+strings.TrimPrefix(t, "User::"))
+		case strings.HasPrefix(t, "Role::"):
+			principals = append(principals, "arn:aws:iam::"+roleAccount+":role/"+strings.TrimPrefix(t, "Role::"))
+		case strings.ContainsAny(t, ":/") || t == "vm":
+			// not an IAM principal
+		default:
+			principals = append(principals, "arn:aws:iam::"+roleAccount+":user/"+t)
+		}
+	}
+	if len(principals) == 0 {
+		return nil, nil
+	}
+	doc, err := json.Marshal(map[string]any{
+		"Version": "2012-10-17",
+		"Statement": []any{map[string]any{
+			"Effect": "Allow", "Principal": map[string]any{"AWS": principals}, "Action": "sts:AssumeRole",
+		}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	stmts, _, err := ParseResourcePolicy(string(doc))
+	return stmts, err
+}
 
 // AuthorizeTrust evaluates a role's trust policy — its AssumeRolePolicyDocument, as written — for one
 // assume of the role by p: allowed when a statement whose Principal names p allows action (sts:AssumeRole)

@@ -437,23 +437,136 @@ func TestConsoleIAM_DocumentsAreValidatedAsIAMDoes(t *testing.T) {
 	}
 }
 
-// A role's trust admits the caller by name, ARN, typed name, its account, or anyone — nothing else.
+// A role's trust admits the caller by name, ARN, typed name, its account, or anyone — nothing else; and
+// another account's role admits it only by "*", its account or its ARN: a bare name there is that
+// account's own user.
 func TestSwitchRole_TrustNamesTheCaller(t *testing.T) {
 	alice := iamauthz.Principal{Type: iamauthz.User, ID: "alice"}
 	for _, trust := range [][]string{{"*"}, {"alice"}, {"User::alice"}, {"arn:aws:iam::000000000000:user/alice"},
 		{"arn:aws:iam::000000000000:root"}, {"000000000000"}} {
-		if !trusts(trust, alice, "alice") {
+		if !trusts(trust, alice, "alice", "000000000000") {
 			t.Errorf("trust %v must admit alice", trust)
 		}
 	}
 	for _, trust := range [][]string{{}, {"bob"}, {"arn:aws:iam::900000000001:root"}, {"Role::alice"}} {
-		if trusts(trust, alice, "alice") {
+		if trusts(trust, alice, "alice", "000000000000") {
 			t.Errorf("trust %v must not admit alice", trust)
 		}
 	}
+	for _, trust := range [][]string{{"*"}, {"arn:aws:iam::000000000000:user/alice"}, {"arn:aws:iam::000000000000:root"}, {"000000000000"}} {
+		if !trusts(trust, alice, "alice", "900000000002") {
+			t.Errorf("another account's trust %v must admit alice", trust)
+		}
+	}
+	for _, trust := range [][]string{{"alice"}, {"User::alice"}, {"arn:aws:iam::900000000002:user/alice"}} {
+		if trusts(trust, alice, "alice", "900000000002") {
+			t.Errorf("another account's trust %v names its own user, not alice of the management account", trust)
+		}
+	}
 	root := iamauthz.Principal{Type: iamauthz.Root}
-	if !trusts([]string{"arn:aws:iam::000000000000:root"}, root, "root") || trusts([]string{"root"}, root, "root") {
+	if !trusts([]string{"arn:aws:iam::000000000000:root"}, root, "root", "000000000000") || trusts([]string{"root"}, root, "root", "000000000000") {
 		t.Error("root is admitted by its account, not by a user name")
+	}
+}
+
+// switchRoleRouter is the console's Switch role route over a fixed set of roles ("<account>/<role>" →
+// its trust), behind the gate z, with sessions signed by auth.
+func switchRoleRouter(z *consoleAuthz, roles map[string][]string) (http.Handler, *authStore) {
+	auth := &authStore{mode: "local", sessionKey: []byte("k"), cs: z.cs, ns: "open-infra-console", logger: testLogger()}
+	z.auth = auth
+	find := func(_ context.Context, account, name string) (string, crdRole, bool) {
+		trust, ok := roles[account+"/"+name]
+		if !ok {
+			return "", crdRole{}, false
+		}
+		var role crdRole
+		role.Metadata.Name, role.Spec.Trust = name, trust
+		return "home-" + account, role, true
+	}
+	router := chi.NewRouter()
+	router.Route("/api", func(api chi.Router) {
+		api.Use(auth.requireAuth)
+		z.handleDecided(api, apiPrefix, http.MethodPost, "/sts/switch-role", 0, "sts:AssumeRole on the role",
+			z.switchRoleQuestion(find), handleSwitchRole(find, auth, testLogger()))
+	})
+	return router, auth
+}
+
+// switchRole posts a Switch role as the console UI does, signed in as c.
+func switchRole(t *testing.T, router http.Handler, auth *authStore, c sessionClaims, account, role string) *httptest.ResponseRecorder {
+	t.Helper()
+	tok, err := auth.issueClaims(c.Claims)
+	if err != nil {
+		t.Fatalf("sign a session: %v", err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/sts/switch-role",
+		strings.NewReader(`{"account":"`+account+`","roleName":"`+role+`"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set(csrfHeader, "1")
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: tok})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, r)
+	return rec
+}
+
+// Switch role is decided as AWS decides sts:AssumeRole: another account's role needs both its trust and
+// the caller's own policy, a trust naming the caller in its own account is enough on its own, and an
+// account's root user cannot switch. The management account's administrator reaches a member account's
+// OrganizationAccountAccessRole (it was refused by the gate whatever the trust said).
+func TestSwitchRole_DecidedAsAssumeRole(t *testing.T) {
+	const member = "900000000002"
+	denyAssume := `{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"sts:AssumeRole","Resource":"*"}]}`
+	w := testWorld(t, map[string]string{"AdministratorAccess": adminDoc, "DenyAssume": denyAssume}, map[string][]string{
+		"User::admin":   {"AdministratorAccess"},
+		"User::alice":   {"AdministratorAccess"},
+		"User::denied":  {"DenyAssume"},
+		"Group::admins": {"AdministratorAccess"},
+	})
+	roles := map[string][]string{
+		member + "/organizationaccountaccessrole": {"arn:aws:iam::000000000000:root"},
+		member + "/team-alice":                    {"alice"}, // the member account's own alice
+		"000000000000/ops":                        {"nobody", "denied"},
+		"000000000000/delegated":                  {"arn:aws:iam::000000000000:root"},
+		"000000000000/untrusted":                  {"someone-else"},
+	}
+	for _, tc := range []struct {
+		name          string
+		who           sessionClaims
+		account, role string
+		want          int
+	}{
+		{"an administrator switches into a member account's OrganizationAccountAccessRole", userClaims("admin"), member, "organizationaccountaccessrole", 200},
+		{"…and so does a member of the admins group", userClaims("carol", "admins"), member, "organizationaccountaccessrole", 200},
+		{"a user no policy allows is refused another account's role, though its trust names the account", userClaims("nobody"), member, "organizationaccountaccessrole", 403},
+		{"another account's bare name is that account's user, not the caller", userClaims("alice"), member, "team-alice", 403},
+		{"a role that is not there is refused like one whose trust does not name the caller", userClaims("admin"), member, "missing", 403},
+		{"in its own account a trust naming the caller is enough, with no policy", userClaims("nobody"), "000000000000", "ops", 200},
+		{"…but an explicit Deny in the caller's policy refuses it", userClaims("denied"), "000000000000", "ops", 403},
+		{"a trust naming the account needs the caller's policy", userClaims("nobody"), "000000000000", "delegated", 403},
+		{"…which an administrator has", userClaims("admin"), "000000000000", "delegated", 200},
+		{"the caller's policy alone does not reach a role whose trust does not name it", userClaims("admin"), "000000000000", "untrusted", 403},
+		{"an account's root user cannot switch roles", rootClaims(), member, "organizationaccountaccessrole", 403},
+	} {
+		z := newTestAuthz(t, iamauthz.ModeEnforce, w, false)
+		router, auth := switchRoleRouter(z, roles)
+		rec := switchRole(t, router, auth, tc.who, tc.account, tc.role)
+		if rec.Code != tc.want {
+			t.Errorf("%s: %d %s, want %d", tc.name, rec.Code, rec.Body.String(), tc.want)
+			continue
+		}
+		var body map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		switch tc.want {
+		case 403:
+			if body["errorCode"] != "AccessDeniedException" || body["action"] != "sts:AssumeRole" ||
+				body["resource"] != "arn:aws:iam::"+tc.account+":role/"+tc.role {
+				t.Errorf("%s: the refusal is not AWS's AccessDenied for sts:AssumeRole on the role: %v", tc.name, body)
+			}
+		case 200:
+			if body["arn"] != "arn:aws:sts::"+tc.account+":assumed-role/"+tc.role+"/"+tc.who.Sub {
+				t.Errorf("%s: the session is %q, want the role's in its account", tc.name, body["arn"])
+			}
+		}
 	}
 }
 

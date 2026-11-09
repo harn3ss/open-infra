@@ -388,7 +388,14 @@ aws organizations describe-create-account-status --create-account-request-id car
 - A new member account gets an `OrganizationAccountAccessRole` that trusts the management account and
   holds `AdministratorAccess`, as AWS creates it.
 - **Switch role:** the console's account menu switches into a member account's role (and back), as the
-  AWS console does. From the CLI it is `sts assume-role` into that role's ARN.
+  AWS console does. From the CLI it is `sts assume-role` into that role's ARN. Both are decided the same
+  way:
+  - the role's trust policy must name you, or your account;
+  - for another account's role, or a trust that names only your account, your own policy must also allow
+    `sts:AssumeRole` on the role;
+  - a trust naming a user by name means that account's own user. A principal of another account is
+    named by its ARN;
+  - the root user cannot switch roles, as on AWS.
 - **Across accounts**, access works as on AWS: a role's trust policy names the other account (or a
   principal in it), or a resource policy grants it, and the other side's identity policy must allow it
   too.

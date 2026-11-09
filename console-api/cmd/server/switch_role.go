@@ -47,14 +47,72 @@ func (z *consoleAuthz) roleSessionOutsideEnforce(r *http.Request, c sessionClaim
 	return z.eval.ModeFor(r.Context(), z.principal(c)) != iamauthz.ModeEnforce
 }
 
-// switchRoleQuestion is the gate's question: sts:AssumeRole on the role's ARN in its account.
-func switchRoleQuestion(r *http.Request) (string, string) {
-	acct := strings.TrimSpace(peekBody(r, "account"))
-	role := strings.TrimSpace(peekBody(r, "roleName"))
-	if acct == "" {
-		acct = callerAccount(r)
+// switchRoleTarget is the account and role a Switch role request names (the session's own account when
+// it names none).
+func switchRoleTarget(r *http.Request) (account, role string) {
+	account = strings.TrimSpace(peekBody(r, "account"))
+	role = strings.TrimSpace(peekBody(r, "roleName"))
+	if account == "" {
+		account = callerAccount(r)
 	}
-	return "sts:AssumeRole", iamEntityARN("role", acct, role)
+	return account, role
+}
+
+// switchingUser is the session a Switch role acts for: the signed-in user itself, never a role session it
+// is in (the console switches from the user).
+func switchingUser(c sessionClaims) sessionClaims {
+	c.AssumedRole, c.Account = "", ""
+	return c
+}
+
+// roleFinder finds the role a Switch role names: its account's IAM home namespace and the role there.
+type roleFinder func(ctx context.Context, account, role string) (home string, r crdRole, ok bool)
+
+// accountRoles is the roleFinder over the cluster.
+func accountRoles(cs kubernetes.Interface, auth *authStore) roleFinder {
+	return func(ctx context.Context, account, name string) (string, crdRole, bool) {
+		home, ok := accountHome(ctx, cs, auth, account)
+		if !ok {
+			return "", crdRole{}, false
+		}
+		role, ok := roleIn(ctx, auth, home, name)
+		return home, role, ok
+	}
+}
+
+// switchRoleQuestion is Switch role's gate: sts:AssumeRole on the role, decided as AWS decides an assume
+// and as the aws-shim's STS does. The evaluator is asked as the signed-in user, with the role's trust as
+// the role's resource policy (iamauthz.TrustStatements):
+//   - another account's role needs both: the trust naming the caller or its account, and the caller's own
+//     policy allowing sts:AssumeRole on the role;
+//   - within one account a trust naming the caller itself is enough, and only an explicit Deny refuses it;
+//     a trust naming the account needs the caller's policy too;
+//   - an account's root user cannot assume a role.
+//
+// A role that is not there is asked with no trust at all, so its refusal is the same as for a role whose
+// trust does not name the caller. The handler then checks that the trust names the caller (AWS requires
+// the trust in every case) and the trust policy's written conditions.
+func (z *consoleAuthz) switchRoleQuestion(find roleFinder) func(*http.Request) (string, string, func() (bool, string)) {
+	return func(r *http.Request) (string, string, func() (bool, string)) {
+		account, name := switchRoleTarget(r)
+		action, arn := "sts:AssumeRole", iamEntityARN("role", account, name)
+		return action, arn, func() (bool, string) {
+			if c, ok := claimsFrom(r); ok && z.auth != nil && z.auth.mode != "none" &&
+				iamauthz.PrincipalFromClaims(switchingUser(c).Claims, "").Type == iamauthz.Root {
+				return false, "Roles may not be assumed by root accounts."
+			}
+			var trust []iamauthz.ResourceStatement
+			if accounts.ValidAccountID(account) && validName(name) {
+				if _, role, ok := find(r.Context(), account, name); ok {
+					var err error
+					if trust, err = iamauthz.TrustStatements(role.Spec.Trust, account); err != nil {
+						return false, "the role's trust policy does not compile: " + err.Error()
+					}
+				}
+			}
+			return z.decideAs(r, switchingUser, action, arn, allowLegacy, iamauthz.WithResourcePolicy(trust))
+		}
+	}
 }
 
 // accountHome is the namespace that is an account's IAM home: the console's own for the management
@@ -77,14 +135,18 @@ func accountHome(ctx context.Context, cs kubernetes.Interface, auth *authStore, 
 	return home.Name, true
 }
 
-// trusts reports whether a role's trust entries admit the caller: anyone ("*"), the caller by name or
-// ARN (or typed User::<name>), or the caller's account (its root ARN or bare id), as an AWS trust policy
-// naming a principal or an account does.
-func trusts(trust []string, caller iamauthz.Principal, callerName string) bool {
+// trusts reports whether the trust entries of a role in roleAccount admit the caller: anyone ("*"), the
+// caller by ARN, or the caller's account (its root ARN or bare id), as an AWS trust policy naming a
+// principal or an account does. A bare name (or typed User::<name>) is a user of the role's own account,
+// so it admits the caller only there: another account's principal is named by its ARN.
+func trusts(trust []string, caller iamauthz.Principal, callerName, roleAccount string) bool {
 	acct := caller.AccountID()
 	admit := []string{"*", "arn:aws:iam::" + acct + ":root", acct}
 	if caller.Type == iamauthz.User {
-		admit = append(admit, callerName, "User::"+callerName, caller.ARN())
+		admit = append(admit, caller.ARN())
+		if roleAccount == acct {
+			admit = append(admit, callerName, "User::"+callerName)
+		}
 	}
 	for _, t := range trust {
 		if slices.Contains(admit, strings.TrimSpace(t)) {
@@ -95,7 +157,7 @@ func trusts(trust []string, caller iamauthz.Principal, callerName string) bool {
 }
 
 // handleSwitchRole assumes a role for the console session (POST /api/sts/switch-role).
-func handleSwitchRole(cs kubernetes.Interface, auth *authStore, logger *slog.Logger) http.HandlerFunc {
+func handleSwitchRole(find roleFinder, auth *authStore, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, ok := claimsFrom(r)
 		if !ok {
@@ -116,21 +178,12 @@ func handleSwitchRole(cs kubernetes.Interface, auth *authStore, logger *slog.Log
 			return
 		}
 		// The caller as itself (switching from a role session switches from the user).
-		base := c
-		base.AssumedRole, base.Account = "", ""
+		base := switchingUser(c)
 		caller := iamauthz.PrincipalFromClaims(base.Claims, "")
 		roleARN := iamEntityARN("role", in.Account, in.Role)
-		denied := func() {
+		home, role, ok := find(r.Context(), in.Account, in.Role)
+		if !ok || !trusts(role.Spec.Trust, caller, base.Sub, in.Account) {
 			writeAccessDenied(w, "sts:AssumeRole", roleARN, "the role does not exist or its trust policy does not name you")
-		}
-		home, ok := accountHome(r.Context(), cs, auth, in.Account)
-		if !ok {
-			denied()
-			return
-		}
-		role, ok := roleIn(r.Context(), auth, home, in.Role)
-		if !ok || !trusts(role.Spec.Trust, caller, base.Sub) {
-			denied()
 			return
 		}
 		// The trust policy as written (CreateRole's document): its conditions — aws:MultiFactorAuthPresent

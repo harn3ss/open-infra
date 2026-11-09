@@ -6,6 +6,20 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — the console's Switch role reaches another account's role
+- **The cause:** the console's permission check for Switch role never passed the role's trust policy to
+  IAM policy evaluation. For another account's role that evaluation needs the role's own policy too, so it
+  refused every switch across accounts, whatever the trust said. A management account administrator was
+  refused a member account's `OrganizationAccountAccessRole`.
+- **Decided as `sts:AssumeRole`, as on AWS and as the CLI's `sts assume-role` already was:**
+  - the role's trust policy is evaluated as the role's resource policy;
+  - another account's role needs both its trust and the caller's own policy allowing `sts:AssumeRole`;
+  - within one account, a trust naming the caller is enough on its own, and only an explicit Deny refuses it.
+- **Tightened with it:**
+  - in another account's trust, a bare user name is that account's own user, never a caller of the same
+    name from another account;
+  - the root user cannot switch roles, as on AWS.
+
 ### Fixed — nodes pull runtime images from the in-cluster registry again
 - **The cause:** a node's pull credential was minted by hand into a Secret. When the ECR token key moved
   into OpenBao, that credential stopped verifying. Every node was then refused at the token endpoint (401),

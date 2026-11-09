@@ -107,6 +107,13 @@ func (z *consoleAuthz) enforced(r *http.Request) bool {
 // decide asks the evaluator, in the principal's mode, with legacy as the legacy decision. With
 // authentication off (AUTH_MODE=none, a development console) everything is allowed, as before.
 func (z *consoleAuthz) decide(r *http.Request, action, arn string, legacy func() (bool, string)) (bool, string) {
+	return z.decideAs(r, nil, action, arn, legacy)
+}
+
+// decideAs is decide for the principal the request's session acts as through as (nil: the session's own
+// principal; Switch role acts as the signed-in user), with the request's options (a resource policy).
+func (z *consoleAuthz) decideAs(r *http.Request, as func(sessionClaims) sessionClaims, action, arn string,
+	legacy func() (bool, string), opts ...iamauthz.RequestOption) (bool, string) {
 	if z == nil || z.auth == nil || z.auth.mode == "none" {
 		return true, ""
 	}
@@ -123,9 +130,12 @@ func (z *consoleAuthz) decide(r *http.Request, action, arn string, legacy func()
 		}
 		return legacy()
 	}
+	if as != nil {
+		c = as(c)
+	}
 	p := z.principal(c)
 	reqCtx := s3authz.RequestContext(c.Claims, r)
-	d := z.eval.Decide(r.Context(), p, action, arn, reqCtx, legacy)
+	d := z.eval.Decide(r.Context(), p, action, arn, reqCtx, legacy, opts...)
 	if !d.Allowed && d.Mode == iamauthz.ModeEnforce {
 		z.logger.Warn("iam denied", "principal", p.ARN(), "action", action, "resource", arn, "reason", d.Reason)
 	}
