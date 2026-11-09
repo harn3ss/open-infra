@@ -7,7 +7,9 @@
 # User, which has no policy, and one in the member account whose trust names that account's OWN user of the
 # administrator's name. Each User signs in to the console, which then switches role as its account menu does:
 #   - the administrator switches into the member account's OrganizationAccountAccessRole (its trust names
-#     the management account) and the session is that role's in that account; it switches back;
+#     the management account) and the session is that role's in that account; that session is refused the
+#     console's IAM pages, which manage the management account's IAM (no management user is made); it
+#     switches back;
 #   - the User with no policy is refused that role, with AWS's AccessDenied, since another account's role
 #     needs the caller's own policy too;
 #   - the User with no policy switches into the management account's role whose trust names it, as a trust
@@ -131,6 +133,15 @@ want="arn:aws:sts::$NEW_ACCOUNT:assumed-role/organizationaccountaccessrole/$ADMI
 read -r acct arn < <(me "$A_JAR.switched")
 [ "$acct" = "$NEW_ACCOUNT" ] && [ "$arn" = "$want" ] || fail "after Switch role the console session is account '$acct' as '$arn', want $NEW_ACCOUNT as $want"
 log "  ✓ the administrator switches into the member account's OrganizationAccountAccessRole: $arn"
+# The console's IAM pages manage the management account's IAM: the member account's role session is
+# refused them, so it cannot create (or mint keys for) a management account user.
+MADE="sr-made-$SFX"; CREATED_USERS+=("$MADE")
+code="$(curl -s -m 15 -b "$A_JAR.switched" -X POST -o "$PROBE_TMP/iam.out" -w '%{http_code}' \
+  -H 'Content-Type: application/json' -H 'X-Openinfra-Console: 1' -d "{\"name\":\"$MADE\",\"groups\":[]}" "$CONSOLE/api/iam/users")"
+[ "$code" = 403 ] && grep -q AccessDeniedException "$PROBE_TMP/iam.out" || fail "the member account's role session was not refused the console's IAM pages: $code $(head -c 300 "$PROBE_TMP/iam.out")"
+sleep 2
+kubectl -n "$USERS_NS" get users.iam.openinfra.dev "$MADE" >/dev/null 2>&1 && fail "the member account's role session created a management account user"
+log "  ✓ in the member account's role session the console's IAM pages refuse it: AccessDenied, no management user made"
 code="$(curl -s -m 15 -b "$A_JAR.switched" -c "$A_JAR.switched" -X POST -o "$PROBE_TMP/sb.out" -w '%{http_code}' \
   -H 'X-Openinfra-Console: 1' "$CONSOLE/api/sts/switch-back")"
 read -r acct arn < <(me "$A_JAR.switched")
