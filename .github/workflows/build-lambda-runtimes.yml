@@ -42,6 +42,7 @@ jobs:
           - { dir: python, image: open-infra-lambda-python,    cat: python,    args: "" }
           - { dir: nodejs, image: open-infra-lambda-nodejs,    cat: nodejs,    args: "" }
           - { dir: dotnet, image: open-infra-lambda-dotnet,    cat: dotnet,    args: "" }
+          - { dir: dotnet, image: open-infra-lambda-dotnet10,  cat: dotnet10,  args: "NET_VERSION=10.0" }
           - { dir: python, image: open-infra-lambda-python313, cat: python313, args: "PY_VERSION=3.13" }
           - { dir: nodejs, image: open-infra-lambda-nodejs22,  cat: nodejs22,  args: "NODE_VERSION=22" }
           - { dir: nodejs, image: open-infra-lambda-nodejs24,  cat: nodejs24,  args: "NODE_VERSION=24" }

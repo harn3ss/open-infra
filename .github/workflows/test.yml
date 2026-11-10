@@ -293,18 +293,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # The runtime bootstraps (node, python, dotnet8) run as processes against a stub aws-shim: the stored
-      # deployment package fetch (#402) — bearer token, SHA-256, retries, zip-entry refusals — and the
-      # function's own timeout, enforced from the invoke's arrival (#413).
+      # The runtime bootstraps (node, python, dotnet8 and dotnet10) run as processes against a stub aws-shim:
+      # the stored deployment package fetch (#402) — bearer token, SHA-256, retries, zip-entry refusals — and
+      # the function's own timeout, enforced from the invoke's arrival (#413). Each test runs once on the
+      # runner's Python and .NET 8, then again on Python 3.14 and .NET 10 (#409), as each runtime's image runs.
       - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: "8.0.x" }
-      - run: python3 test/lambda-runtime/code_package_test.py
-      - run: python3 test/lambda-runtime/cfn_response_test.py
-      - run: python3 test/lambda-runtime/context_test.py
-      - run: python3 test/lambda-runtime/log_tail_test.py
-      - run: python3 test/lambda-runtime/timeout_test.py
-      - run: python3 test/lambda-runtime/layers_url_test.py
-      - run: python3 test/lambda-runtime/role_credentials_test.py
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - uses: actions/setup-python@v5
+        id: py314
+        with: { python-version: "3.14", update-environment: false }
+      - name: runtime tests (python3, dotnet8)
+        run: |
+          for t in code_package cfn_response context log_tail timeout layers_url role_credentials; do
+            python3 test/lambda-runtime/${t}_test.py
+          done
+      - name: runtime tests (python3.14, dotnet10)
+        env: { OPENINFRA_TEST_DOTNET: "10.0" }
+        run: |
+          for t in code_package cfn_response context log_tail timeout layers_url role_credentials; do
+            "${{ steps.py314.outputs.python-path }}" test/lambda-runtime/${t}_test.py
+          done
 
   vm-creds-cli:
     name: vm-creds-cli

@@ -1,7 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- NetVersion is the .NET the host targets: 8.0 (dotnet8, the default) or 10.0 (dotnet10). A property,
+         not -p:TargetFramework, so restore and build agree on it (the Dockerfile passes NET_VERSION). -->
+    <NetVersion Condition="'$(NetVersion)' == ''">8.0</NetVersion>
+    <TargetFramework>net$(NetVersion)</TargetFramework>
     <Nullable>disable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>bootstrap</AssemblyName>

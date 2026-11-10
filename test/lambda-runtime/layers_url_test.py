@@ -141,6 +141,9 @@ class LayerCases:
             "AWS_ENDPOINT_URL_S3": self.s3.base, "AWS_REGION": "us-east-1",
             "PORT": str(ct.free_port()),
             "TMPDIR": self.tmpdir,
+            # As the .NET image runs its host (lambda-runtime/dotnet/Dockerfile): no diagnostics IPC, whose
+            # pipes and socket .NET 10 would otherwise leave in TMPDIR beside the runtime's own temp files.
+            "DOTNET_EnableDiagnostics": "0",
             # A dead proxy: a bootstrap that sent the token through a proxy could not reach the stub at all.
             "HTTP_PROXY": "http://127.0.0.1:9", "http_proxy": "http://127.0.0.1:9",
             "HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9",

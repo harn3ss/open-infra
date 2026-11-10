@@ -47,9 +47,13 @@ func TestLambdaRuntimeRefusal_FollowsAWSsDates(t *testing.T) {
 	if LambdaRuntimeRefusal("nodejs20.x", true, at("2027-08-31")) == "" {
 		t.Error("an update on the block-update date is refused")
 	}
-	// dotnet8 has no successor open-infra runs: no runtime is recommended.
-	if m := LambdaRuntimeRefusal("dotnet8", false, at("2027-08-01")); !strings.HasSuffix(m, "functions.") || strings.Contains(m, "recommend") {
+	// dotnet8's successor is dotnet10 (#409): numerically newer, though "dotnet10" sorts before "dotnet8".
+	if m := LambdaRuntimeRefusal("dotnet8", false, at("2027-08-01")); !strings.Contains(m, "(dotnet10)") {
 		t.Errorf("dotnet8: %q", m)
+	}
+	// After dotnet10's own block-create date, no .NET runtime remains to recommend.
+	if m := LambdaRuntimeRefusal("dotnet10", false, at("2028-12-14")); !strings.HasSuffix(m, "functions.") || strings.Contains(m, "recommend") {
+		t.Errorf("dotnet10: %q", m)
 	}
 	// Of two runtimes AWS deprecates on one day, the newer version is the one recommended.
 	if m := LambdaRuntimeRefusal("python3.8", false, at("2027-08-01")); !strings.Contains(m, "(python3.14)") {

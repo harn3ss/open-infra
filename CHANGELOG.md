@@ -6,6 +6,14 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — the `dotnet10` Lambda runtime
+- Functions run on `dotnet10` through the Lambda API, CloudFormation and `kind: Function`: a .NET build
+  published for `net10.0` runs on .NET 10, on its own runtime image (`open-infra-lambda-dotnet10`).
+- AWS's dates apply, as for every runtime: deprecated 2028-11-14, no new functions from 2028-12-14, no
+  updates from 2029-01-15. The console offers it until it is deprecated.
+- `dotnet8` is deprecated as of 2026-11-10, so the console no longer offers it. A refusal of `dotnet8`
+  (from 2027-07-29) recommends `dotnet10`, as Lambda's does.
+
 ### Security — an application's settings can no longer inject into its containers
 - An application's environment variable names, mount paths, secrets, queues, and its sidecars' images
   and environment names are rendered escaped, as one literal value each. Before, a crafted environment

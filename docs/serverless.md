@@ -269,7 +269,7 @@ aws lambda delete-function --function-name orders
   - The same checks run when `update-function-configuration` names a role.
 - **The code** is a .zip (`--zip-file`, up to 50 MB) or an S3 object (`--s3-bucket`/`--s3-key`, plus
   `--s3-object-version`), on one of the managed runtimes: `nodejs16.x` to `nodejs24.x`, `python3.8`
-  to `python3.14`, or `dotnet8`. These are the Node.js, Python and .NET runtimes AWS Lambda still creates
+  to `python3.14`, `dotnet8` or `dotnet10`. These are the Node.js, Python and .NET runtimes AWS Lambda still creates
   functions on, deprecated ones included. A deprecated runtime runs as AWS provides one, as-is: its
   interpreter gets no more upstream security fixes.
   - **An S3 object is read with your permissions:** you need `s3:GetObject` on it.
@@ -299,6 +299,7 @@ aws lambda delete-function --function-name orders
     | `python3.13` | 2029-06-30 | 2029-07-31 | 2029-08-31 |
     | `python3.14` | 2029-06-30 | 2029-07-31 | 2029-08-31 |
     | `dotnet8` | 2026-11-10 | 2027-07-29 | 2027-08-31 |
+    | `dotnet10` | 2028-11-14 | 2028-12-14 | 2029-01-15 |
 
     These are AWS's dates, from Lambda's
     [runtimes page](https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html); when AWS moves

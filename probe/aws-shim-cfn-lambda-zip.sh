@@ -10,6 +10,8 @@
 #      + S3Key, Runtime python3.12) deploys, and `aws lambda invoke` returns the handler's result;
 #   1c. runtimes AWS has deprecated but still creates functions on deploy and run on their own interpreter
 #      (nodejs18.x, python3.9), seeing Lambda's AWS_EXECUTION_ENV;
+#   2b. the newest runtimes (#409): python3.14 inline runs Python 3.14, and dotnet10 runs a handler published
+#      for net10.0 (packaged to S3) on .NET 10, each seeing Lambda's AWS_EXECUTION_ENV and its invoked ARN;
 #   3. an unsupported Runtime (nodejs14.x, which AWS no longer creates either) is refused, naming the supported runtimes;
 #   4. DENIAL: a deployer whose policy grants s3:GetObject on another prefix only (an assumed role) cannot
 #      deploy a package it may not read — the stack fails with Lambda's AccessDenied message, as AWS refuses.
@@ -28,7 +30,7 @@ ENDPOINT="${SHIM_ENDPOINT:-http://aws-shim.${SHIM_NS}.svc.cluster.local:4566}"
 REGION="${AWS_REGION:-us-east-1}"
 SFX="$(head -c4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 BUCKET="lzip-probe-$SFX"
-INLINE_STACK="lzip-inline-$SFX"; N24_STACK="lzip-n24-$SFX"; N18_STACK="lzip-n18-$SFX"; P39_STACK="lzip-p39-$SFX"; PKG_STACK="lzip-pkg-$SFX"; BAD_STACK="lzip-bad-$SFX"; DENY_STACK="lzip-deny-$SFX"
+INLINE_STACK="lzip-inline-$SFX"; N24_STACK="lzip-n24-$SFX"; N18_STACK="lzip-n18-$SFX"; P39_STACK="lzip-p39-$SFX"; PKG_STACK="lzip-pkg-$SFX"; P314_STACK="lzip-p314-$SFX"; DN10_STACK="lzip-dn10-$SFX"; BAD_STACK="lzip-bad-$SFX"; DENY_STACK="lzip-deny-$SFX"
 DEPLOYER_ROLE="lzip-deployer-$SFX"; BUCKET_STACK="lzip-bucket-$SFX"
 
 log()  { printf '▸ %s\n' "$*"; }
@@ -56,7 +58,7 @@ cleanup() {
   set +e
   unset AWS_SESSION_TOKEN
   [ -n "${ADMIN_AK:-}" ] && export AWS_ACCESS_KEY_ID="$ADMIN_AK" AWS_SECRET_ACCESS_KEY="$ADMIN_SK"
-  for s in "$DENY_STACK" "$BAD_STACK" "$PKG_STACK" "$P39_STACK" "$N18_STACK" "$N24_STACK" "$INLINE_STACK"; do stack_gone "$s"; done
+  for s in "$DENY_STACK" "$BAD_STACK" "$DN10_STACK" "$P314_STACK" "$PKG_STACK" "$P39_STACK" "$N18_STACK" "$N24_STACK" "$INLINE_STACK"; do stack_gone "$s"; done
   "${A[@]}" s3 rm "s3://$BUCKET" --recursive >/dev/null 2>&1
   stack_gone "$BUCKET_STACK"
   if [ -n "$ROLE_MADE" ]; then
@@ -224,6 +226,93 @@ assert r.get("sum") == 5, r
 PY
 ok "lambda invoke → {\"sum\":5} from the stored package"
 
+log "2b. the newest runtimes: python3.14 (inline) and dotnet10 (a net10.0 build, packaged)"
+sed -e 's/Runtime: nodejs22.x/Runtime: python3.14/' \
+    -e 's|exports.handler = async (event) => .*|import os, sys\n          def handler(event, context):\n              return {"greeting": "hello " + event["name"], "env": os.environ.get("AWS_EXECUTION_ENV"), "python": "%d.%d" % sys.version_info[:2], "arn": context.invoked_function_arn}|' \
+    "$W/inline.yaml" > "$W/p314.yaml"
+"${A[@]}" cloudformation deploy --template-file "$W/p314.yaml" --stack-name "$P314_STACK" --capabilities CAPABILITY_IAM >"$W/dp314" 2>&1 \
+  || fail "the python3.14 stack did not deploy: $(tail -c 600 "$W/dp314")"
+FNP314="$("${A[@]}" cloudformation describe-stacks --stack-name "$P314_STACK" --query "Stacks[0].Outputs[?OutputKey=='FnName'].OutputValue" --output text)"
+invoke "$FNP314" '{"name":"probe"}' "$W/outp314.json" || fail "lambda invoke $FNP314 failed: $(tail -c 400 "$W/inv")"
+python3 - "$W/outp314.json" "$FNP314" <<'PY' || fail "the python3.14 handler's result is wrong: $(cat "$W/outp314.json")"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r.get("greeting") == "hello probe" and r.get("python") == "3.14" and r.get("env") == "AWS_Lambda_python3.14", r
+assert r.get("arn", "").endswith(":function:" + sys.argv[2]), r
+PY
+ok "python3.14 runs Python 3.14 with AWS_EXECUTION_ENV=AWS_Lambda_python3.14 and its invoked ARN"
+# A .NET handler is a published build (Lambda takes Code.ZipFile only for Node.js and Python): built for
+# net10.0 with a .NET 10 SDK on PATH, or in Microsoft's SDK image. It declares the Amazon.Lambda.Core
+# interface it reads (the runtime binds it by name), so the build needs no package feed.
+mkdir -p "$W/dnsrc" "$W/dn"
+cat > "$W/dnsrc/Handler.csproj" <<'XML'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Handler</AssemblyName>
+  </PropertyGroup>
+</Project>
+XML
+cat > "$W/dnsrc/Fn.cs" <<'CS'
+using System.Collections.Generic;
+namespace Amazon.Lambda.Core { public interface ILambdaContext { string InvokedFunctionArn { get; } } }
+namespace Probe
+{
+    public static class Fn
+    {
+        public static Dictionary<string, string> Handle(Dictionary<string, string> e, Amazon.Lambda.Core.ILambdaContext c) =>
+            new Dictionary<string, string> {
+                ["greeting"] = "hello " + e["name"],
+                ["env"] = System.Environment.GetEnvironmentVariable("AWS_EXECUTION_ENV"),
+                ["framework"] = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+                ["arn"] = c.InvokedFunctionArn };
+    }
+}
+CS
+if command -v dotnet >/dev/null && dotnet --list-sdks 2>/dev/null | grep -q '^10\.'; then
+  DOTNET_CLI_TELEMETRY_OPTOUT=1 dotnet publish "$W/dnsrc/Handler.csproj" -c Release -o "$W/dn" --nologo >"$W/dnb" 2>&1 \
+    || fail "the net10.0 handler did not build: $(tail -c 600 "$W/dnb")"
+elif command -v docker >/dev/null; then
+  docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e DOTNET_CLI_TELEMETRY_OPTOUT=1 -v "$W/dnsrc:/src" -v "$W/dn:/out" -w /src \
+    mcr.microsoft.com/dotnet/sdk:10.0 dotnet publish Handler.csproj -c Release -o /out --nologo >"$W/dnb" 2>&1 \
+    || inconclusive "the net10.0 handler did not build in the .NET 10 SDK image: $(tail -c 400 "$W/dnb")"
+else
+  inconclusive "a .NET 10 SDK (dotnet on PATH, or docker for mcr.microsoft.com/dotnet/sdk:10.0) is needed to build a net10.0 handler"
+fi
+[ -f "$W/dn/Handler.dll" ] || fail "the net10.0 build produced no Handler.dll"
+cat > "$W/dn10.yaml" <<YAML
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  Exec:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: ${ROLE_TRUST}
+  Greeter:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: dotnet10
+      Handler: Handler::Probe.Fn::Handle
+      Role: !GetAtt Exec.Arn
+      MemorySize: 512
+      Code: ./dn
+Outputs:
+  FnName: { Value: !Ref Greeter }
+YAML
+( cd "$W" && "${A[@]}" cloudformation package --template-file dn10.yaml --s3-bucket "$BUCKET" --output-template-file dn10-packaged.yaml >"$W/pdn" 2>&1 ) \
+  || fail "aws cloudformation package (dotnet10) failed: $(tail -c 600 "$W/pdn")"
+"${A[@]}" cloudformation deploy --template-file "$W/dn10-packaged.yaml" --stack-name "$DN10_STACK" --capabilities CAPABILITY_IAM >"$W/ddn" 2>&1 \
+  || fail "the dotnet10 stack did not deploy: $(tail -c 600 "$W/ddn")"
+FNDN="$("${A[@]}" cloudformation describe-stacks --stack-name "$DN10_STACK" --query "Stacks[0].Outputs[?OutputKey=='FnName'].OutputValue" --output text)"
+invoke "$FNDN" '{"name":"probe"}' "$W/outdn.json" || fail "lambda invoke $FNDN failed: $(tail -c 400 "$W/inv")"
+python3 - "$W/outdn.json" "$FNDN" <<'PY' || fail "the dotnet10 handler's result is wrong: $(cat "$W/outdn.json")"
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r.get("greeting") == "hello probe" and r.get("env") == "AWS_Lambda_dotnet10", r
+assert r.get("framework", "").startswith(".NET 10."), r
+assert r.get("arn", "").endswith(":function:" + sys.argv[2]), r
+PY
+ok "dotnet10 runs a net10.0 build on .NET 10 with AWS_EXECUTION_ENV=AWS_Lambda_dotnet10 and its invoked ARN"
+
 # ── 3. an unsupported runtime ──────────────────────────────────────────────────────────────────────────
 log "3. an unsupported Runtime (nodejs14.x) is refused, naming the supported runtimes"
 sed 's/nodejs22.x/nodejs14.x/' "$W/inline.yaml" > "$W/bad.yaml"
@@ -235,7 +324,7 @@ if "${A[@]}" cloudformation create-stack --stack-name "$BAD_STACK" --template-bo
   echo "$st" > "$W/b"
   case "$st" in CREATE_COMPLETE*) fail "a nodejs14.x function was created" ;; esac
 fi
-grep -q "the supported runtimes are nodejs16.x, nodejs18.x, nodejs20.x, nodejs22.x, nodejs24.x, python3.8, python3.9, python3.10, python3.11, python3.12, python3.13, python3.14 and dotnet8" "$W/b" \
+grep -q "the supported runtimes are nodejs16.x, nodejs18.x, nodejs20.x, nodejs22.x, nodejs24.x, python3.8, python3.9, python3.10, python3.11, python3.12, python3.13, python3.14, dotnet8 and dotnet10" "$W/b" \
   || fail "the refusal does not name the supported runtimes: $(tail -c 600 "$W/b")"
 ok "refused: $(grep -o 'Runtime "nodejs14.x"[^;]*' "$W/b" | head -1 | cut -c1-80)…"
 

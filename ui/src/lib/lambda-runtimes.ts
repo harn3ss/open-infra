@@ -18,6 +18,7 @@ export const LAMBDA_RUNTIME_DEPRECATION: Record<string, string> = {
   "python3.13": "2029-06-30",
   "python3.14": "2029-06-30",
   "dotnet8": "2026-11-10",
+  "dotnet10": "2028-11-14",
 };
 
 /** The spec.code.runtime values deprecated at `now`, which the create form offers disabled. */

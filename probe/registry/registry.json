@@ -3231,7 +3231,7 @@
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 10,
+      "templateUses": 11,
       "verdict": "ok"
     },
     "AWS::IAM::User": {
@@ -3357,7 +3357,7 @@
         "s3-account"
       ],
       "status": "supported",
-      "templateUses": 16,
+      "templateUses": 17,
       "verdict": "ok"
     },
     "AWS::Lambda::Permission": {

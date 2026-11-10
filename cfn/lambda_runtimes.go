@@ -40,6 +40,7 @@ var lambdaRuntimeLifecycles = map[string]LambdaRuntimeLifecycle{
 	"python3.13": {day("2029-06-30"), day("2029-07-31"), day("2029-08-31")},
 	"python3.14": {day("2029-06-30"), day("2029-07-31"), day("2029-08-31")},
 	"dotnet8":    {day("2026-11-10"), day("2027-07-29"), day("2027-08-31")},
+	"dotnet10":   {day("2028-11-14"), day("2028-12-14"), day("2029-01-15")},
 }
 
 // LambdaRuntimeLifecycleOf is rt's lifecycle; ok is false for a runtime open-infra does not run.

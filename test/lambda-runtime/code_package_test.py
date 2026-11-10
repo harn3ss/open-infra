@@ -212,6 +212,9 @@ class CodePackageCases:
             "OPENINFRA_CODE_TOKEN_FILE": self.token_file,
             "PORT": str(free_port()),
             "TMPDIR": self.tmpdir,
+            # As the .NET image runs its host (lambda-runtime/dotnet/Dockerfile): no diagnostics IPC, whose
+            # pipes and socket .NET 10 would otherwise leave in TMPDIR beside the runtime's own temp files.
+            "DOTNET_EnableDiagnostics": "0",
             # A dead proxy: a bootstrap that sent the token through a proxy could not reach the stub at all.
             "HTTP_PROXY": "http://127.0.0.1:9", "http_proxy": "http://127.0.0.1:9",
             "HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9",
@@ -405,7 +408,8 @@ class NodeRuntime(CodePackageCases, unittest.TestCase):
 
 HANDLER_CSPROJ = """<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <NetVersion Condition="'$(NetVersion)' == ''">8.0</NetVersion>
+    <TargetFramework>net$(NetVersion)</TargetFramework>
     <AssemblyName>Handler</AssemblyName>
   </PropertyGroup>
 </Project>
@@ -420,8 +424,13 @@ HANDLER_CS = """namespace Pkg
 """
 
 
+# DOTNET_VERSION is the .NET the host and the handler are built for: 8.0 (dotnet8), or 10.0 (dotnet10) with
+# OPENINFRA_TEST_DOTNET=10.0, as each runtime's image builds its host (NetVersion, bootstrap.csproj).
+DOTNET_VERSION = os.environ.get("OPENINFRA_TEST_DOTNET", "8.0")
+
+
 def dotnet_publish(project, out):
-    r = subprocess.run(["dotnet", "publish", project, "-c", "Release", "-o", out, "--nologo"],
+    r = subprocess.run(["dotnet", "publish", project, "-c", "Release", "-p:NetVersion=" + DOTNET_VERSION, "-o", out, "--nologo"],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True,
                        env=dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1"))
     if r.returncode != 0:

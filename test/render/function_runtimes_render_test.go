@@ -31,6 +31,7 @@ func TestFunction_RuntimeImages(t *testing.T) {
 		"python3.11": "ghcr.io/harn3ss/open-infra-lambda-python311:latest",
 		"python3.14": "ghcr.io/harn3ss/open-infra-lambda-python314:latest",
 		"dotnet8":    "ghcr.io/harn3ss/open-infra-lambda-dotnet:latest",
+		"dotnet10":   "ghcr.io/harn3ss/open-infra-lambda-dotnet10:latest",
 	} {
 		out := render(t, tmpl, ctx(runtime))
 		if !strings.Contains(out, `image: "`+image) {
