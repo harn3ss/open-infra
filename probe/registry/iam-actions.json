@@ -1294,6 +1294,9 @@
   "route53resolver": [
    "iam:PassRole"
   ],
+  "s3": [
+   "s3:GetObject"
+  ],
   "secretsmanager": [
    "iam:PassRole"
   ],
