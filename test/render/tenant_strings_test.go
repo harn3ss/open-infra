@@ -159,6 +159,43 @@ func sampleFor(s map[string]any) (any, bool) {
 	return nil, false
 }
 
+// tenantBases are what a kind needs, beyond its XRD's required fields, for its composition to render at all:
+// a field set on the bare required fields alone is refused by a guard that wants a sibling, and so would go
+// unexercised. Each payload is set over this base.
+var tenantBases = map[string]map[string]any{
+	// A Function needs code or an image; with code, its handler, region, environment, secrets, queues,
+	// security groups and trigger all render (#405).
+	"XFunction": {"code": map[string]any{"runtime": "nodejs22", "handler": "index.handler",
+		"source": map[string]any{"configMap": "t1-code"}}},
+}
+
+// baseFor is kind's base spec: its required fields, and its tenantBases entry over them.
+func baseFor(kind string, s map[string]any) map[string]any {
+	out := baseObject(s)
+	for k, v := range tenantBases[kind] {
+		out[k] = deepCopyJSON(v)
+	}
+	return out
+}
+
+func deepCopyJSON(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(x))
+		for k, e := range x {
+			m[k] = deepCopyJSON(e)
+		}
+		return m
+	case []any:
+		l := make([]any, len(x))
+		for i, e := range x {
+			l[i] = deepCopyJSON(e)
+		}
+		return l
+	}
+	return v
+}
+
 func baseObject(s map[string]any) map[string]any {
 	out := map[string]any{}
 	props, _ := s["properties"].(map[string]any)
@@ -375,6 +412,7 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 		t.Fatalf("found only %d compositions with inline templates; the glob is wrong", len(comps))
 	}
 	checked, refused := 0, 0
+	perKind := map[string]int{}
 	for _, c := range comps {
 		sc, ok := schemas[c.kind]
 		if !ok {
@@ -386,7 +424,7 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 		for _, p := range paths {
 		payloads:
 			for pi, payload := range tenantPayloads {
-				spec := baseObject(sc.spec)
+				spec := baseFor(c.kind, sc.spec)
 				setPath(spec, sc.spec, p, payload)
 				out, err := renderTenant(c.tmpl, tenantCtx(spec))
 				if err != nil {
@@ -394,6 +432,7 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 					continue
 				}
 				checked++
+				perKind[c.kind]++
 				docs, perr := parseYAMLDocs(yamlLineBreaks.Replace(out))
 				if perr != nil || injectedStructure(docs) {
 					if strings.Contains(out, tenantMarker) {
@@ -421,6 +460,11 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 		}
 	}
 	t.Logf("rendered %d field payloads; %d refused or not reachable from a base spec", checked, refused)
+	for _, c := range comps {
+		if perKind[c.kind] == 0 {
+			t.Logf("no payload rendered for %s (%s): its base spec reaches none of its templates", c.kind, c.file)
+		}
+	}
 	if checked < 150 {
 		t.Errorf("only %d payloads rendered; the base specs no longer reach most templates", checked)
 	}

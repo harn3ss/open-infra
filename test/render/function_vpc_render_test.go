@@ -34,7 +34,7 @@ func TestFunction_VpcConfig(t *testing.T) {
 		`openinfra.dev/subnet-ids: "app-a,app-b"`,
 		`openinfra.dev/security-group-ids: "egress-allowlist"`,
 		`openinfra.dev/lambda-vpc: "true"`,
-		`openinfra.dev/sg-egress-allowlist: ""`,
+		`"openinfra.dev/sg-egress-allowlist": ""`,
 		"dnsPolicy: None",
 		`nameservers: [ "10.43.0.2" ]`,
 		`searches: [ "acct.svc.cluster.local", "svc.cluster.local", "cluster.local" ]`,

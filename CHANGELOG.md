@@ -6,6 +6,20 @@ the product's public contract.
 
 ## Unreleased
 
+### Security — a function's settings can no longer inject into its container
+- Every string a function's author sets is now rendered escaped, as one literal value: environment
+  variable names and values, the handler, the code source, the region, secrets, queues, security groups
+  and a trigger's subject.
+  - Before, a crafted environment variable (through CloudFormation, the console or a claim) could add a
+    `valueFrom` that read another Secret in the function's namespace.
+  - A value with a double quote broke the function's render, and a backslash or line break was changed.
+- The Lambda API now takes any environment variable value and any handler without whitespace, as Lambda
+  does, and refuses more than Lambda's 4 KB of variables.
+- A CloudFormation stack's function is refused, as Lambda refuses it, when it sets a reserved environment
+  variable (or one the platform sets) or more than 4 KB of them.
+- Security group names on a function must be label-safe names (letters, digits, `-`, `_` and `.`).
+- No running function changes: every live function renders the same objects as before.
+
 ### Fixed — Lambda functions with a role and a stored package run as on Lambda
 - **Layers with the function's own identity:** a function with an execution role or a stored deployment
   package gets its layers (`code.layers`) from the aws-shim with its own token, as Lambda fetches a

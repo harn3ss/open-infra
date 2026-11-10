@@ -780,7 +780,7 @@ func TestFunction_Code(t *testing.T) {
 			"name: OPENINFRA_HANDLER", `value: "app.handler"`,
 			"name: OPENINFRA_FUNCTION_NAME",
 			"mountPath: /var/task", "name: openinfra-code",
-			"configMap: { name: fn-code }",
+			`configMap: { name: "fn-code" }`,
 			// The ksvc Object derives readiness from the Knative Service's Ready condition, so a
 			// crash-looping / failed revision surfaces as a NotReady claim (not ready-on-create).
 			"policy: DeriveFromCelQuery",
@@ -812,8 +812,8 @@ func TestFunction_Code(t *testing.T) {
 			"name: LAMBDA_TASK_ROOT",
 			// Code secret mapped per-key; the S3 endpoint is SERVICE-SCOPED (AWS_ENDPOINT_URL_S3).
 			"name: AWS_ENDPOINT_URL_S3",
-			"secretKeyRef: { name: fn-s3, key: AWS_ENDPOINT_URL",
-			"secretKeyRef: { name: fn-s3, key: AWS_ACCESS_KEY_ID",
+			`secretKeyRef: { name: "fn-s3", key: AWS_ENDPOINT_URL`,
+			`secretKeyRef: { name: "fn-s3", key: AWS_ACCESS_KEY_ID`,
 		} {
 			if !strings.Contains(out, want) {
 				t.Errorf("bucket-source render missing %q; got:\n%s", want, out)

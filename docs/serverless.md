@@ -326,7 +326,8 @@ aws lambda delete-function --function-name orders
   - Lambda's reserved names are refused, and so are the ones the platform sets for the function's role,
     code and endpoints: `AWS_ENDPOINT_URL*`, `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`,
     `OPENINFRA_*`.
-  - A value with a double quote, a backslash or a line break is refused for now.
+  - A value is any string, as on Lambda, up to Lambda's 4 KB for all of a function's variables. A
+    CloudFormation stack's function takes the same values and fails on the same reserved names and limit.
 - **What a function here cannot be is refused, naming the parameter, never dropped:**
   - layers;
   - tags;

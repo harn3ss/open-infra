@@ -215,7 +215,7 @@ func TestFunction_ExecutionRoleCode(t *testing.T) {
 		t.Errorf("a code function with a role keeps its runtime env and gains the role's: %#v", env)
 	}
 	for _, want := range []string{"name: openinfra-code, mountPath: /var/task", "name: openinfra-sts-token, mountPath: /var/run/secrets/openinfra",
-		"configMap: { name: worker-code }", "audience: sts.openinfra"} {
+		`configMap: { name: "worker-code" }`, "audience: sts.openinfra"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("a code function with a role must mount both its code and its token (%q):\n%s", want, grepCtx(out, "volume"))
 		}

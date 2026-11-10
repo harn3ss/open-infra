@@ -114,8 +114,8 @@ spec:
               autoscaling.knative.dev/target: "50"
             # SecurityGroup membership: attached SGs' NetworkPolicies select these labels.
             labels:
-              openinfra.dev/sg-web: ""
-              openinfra.dev/sg-db-clients: ""
+              "openinfra.dev/sg-web": ""
+              "openinfra.dev/sg-db-clients": ""
           spec:
             # Max wall-clock per request (Knative revision timeout) — the AWS Lambda timeout knob.
             timeoutSeconds: 900
@@ -133,13 +133,13 @@ spec:
               - image: "ghcr.io/me/infer:2"
                 ports: [ { containerPort: 9000 } ]
                 env:
-                  - { name: MODE, value: "fast" }
-                  - { name: Q, value: "say "hi"" }
+                  - { name: "MODE", value: "fast" }
+                  - { name: "Q", value: "say \"hi\"" }
                   - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
                   - { name: OPENINFRA_QUEUES, value: "orders,events" }
                 envFrom:
-                  - secretRef: { name: api-db-app, optional: true }
-                  - secretRef: { name: fn-config, optional: true }
+                  - secretRef: { name: "api-db-app", optional: true }
+                  - secretRef: { name: "fn-config", optional: true }
                 # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
                 # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
                 # configured memory is RESERVED even while the pod is warm and idle. burstable true:
@@ -455,7 +455,7 @@ spec:
                   - { name: openinfra-code, mountPath: /var/task, readOnly: true }
             volumes:
               - name: openinfra-code
-                configMap: { name: fn-code }
+                configMap: { name: "fn-code" }
 ---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
@@ -571,9 +571,9 @@ spec:
                   # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
                   # global override would point every service — dynamodb, sns, … — at the S3
                   # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
-                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ACCESS_KEY_ID, optional: true } } }
-                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
-                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ENDPOINT_URL, optional: true } } }
+                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: "fn-s3", key: AWS_ACCESS_KEY_ID, optional: true } } }
+                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: "fn-s3", key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: "fn-s3", key: AWS_ENDPOINT_URL, optional: true } } }
                 # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
                 # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
                 # configured memory is RESERVED even while the pod is warm and idle. burstable true:
@@ -719,9 +719,9 @@ spec:
                   # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
                   # global override would point every service — dynamodb, sns, … — at the S3
                   # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
-                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ACCESS_KEY_ID, optional: true } } }
-                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
-                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ENDPOINT_URL, optional: true } } }
+                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: "fn-s3", key: AWS_ACCESS_KEY_ID, optional: true } } }
+                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: "fn-s3", key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: "fn-s3", key: AWS_ENDPOINT_URL, optional: true } } }
                 # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
                 # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
                 # configured memory is RESERVED even while the pod is warm and idle. burstable true:
@@ -840,12 +840,12 @@ spec:
                   # client; every other AWS service keeps its default resolution (a global AWS_ENDPOINT_URL
                   # would wrongly capture them all). A handler that never calls DynamoDB is unaffected.
                   - { name: AWS_ENDPOINT_URL_DYNAMODB, value: "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }
-                  - { name: TABLE, value: "orders" }
+                  - { name: "TABLE", value: "orders" }
                 volumeMounts:
                   - { name: openinfra-code, mountPath: /var/task, readOnly: true }
             volumes:
               - name: openinfra-code
-                configMap: { name: n22 }
+                configMap: { name: "n22" }
 ---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
@@ -967,9 +967,9 @@ spec:
                   # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
                   # global override would point every service — dynamodb, sns, … — at the S3
                   # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
-                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ACCESS_KEY_ID, optional: true } } }
-                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
-                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: fn-s3, key: AWS_ENDPOINT_URL, optional: true } } }
+                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: "fn-s3", key: AWS_ACCESS_KEY_ID, optional: true } } }
+                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: "fn-s3", key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: "fn-s3", key: AWS_ENDPOINT_URL, optional: true } } }
                 # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
                 # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
                 # configured memory is RESERVED even while the pod is warm and idle. burstable true:
@@ -1116,11 +1116,11 @@ spec:
                   # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
                   # global override would point every service — dynamodb, sns, … — at the S3
                   # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
-                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_ACCESS_KEY_ID, optional: true } } }
-                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
-                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_ENDPOINT_URL, optional: true } } }
+                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: "mirror-code-read", key: AWS_ACCESS_KEY_ID, optional: true } } }
+                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: "mirror-code-read", key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: "mirror-code-read", key: AWS_ENDPOINT_URL, optional: true } } }
                 envFrom:
-                  - secretRef: { name: fn-env-orders, optional: true }
+                  - secretRef: { name: "fn-env-orders", optional: true }
                 # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
                 # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
                 # configured memory is RESERVED even while the pod is warm and idle. burstable true:
@@ -1269,9 +1269,9 @@ spec:
                   # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
                   # global override would point every service — dynamodb, sns, … — at the S3
                   # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
-                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_ACCESS_KEY_ID, optional: true } } }
-                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
-                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: mirror-code-read, key: AWS_ENDPOINT_URL, optional: true } } }
+                  - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: "mirror-code-read", key: AWS_ACCESS_KEY_ID, optional: true } } }
+                  - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: "mirror-code-read", key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                  - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: "mirror-code-read", key: AWS_ENDPOINT_URL, optional: true } } }
                 # memory → the AWS Lambda memory knob (also the per-invocation ceiling); gpu → device limit.
                 # Default (burstable false): request == limit == memory → Guaranteed QoS, so the full
                 # configured memory is RESERVED even while the pod is warm and idle. burstable true:

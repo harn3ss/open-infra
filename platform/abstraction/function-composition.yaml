@@ -284,14 +284,14 @@ spec:
                         # SecurityGroup membership: attached SGs' NetworkPolicies select these labels.
                         labels:
                           {{- range $sg := $spec.securityGroups }}
-                          openinfra.dev/sg-{{ $sg }}: ""
+                          {{ printf "openinfra.dev/sg-%s" $sg | toJson }}: ""
                           {{- end }}
                         {{- else if $inVpc }}
                         # In a VPC: a member of its VPC configuration's security groups.
                         labels:
                           openinfra.dev/lambda-vpc: "true"
                           {{- range $sg := $vpcCfg.securityGroupIds }}
-                          openinfra.dev/sg-{{ $sg }}: ""
+                          {{ printf "openinfra.dev/sg-%s" $sg | toJson }}: ""
                           {{- end }}
                         {{- end }}
                       spec:
@@ -357,13 +357,13 @@ spec:
                             {{- if or $code $spec.env $spec.queues $role }}
                             env:
                             {{- if $code }}
-                              - { name: OPENINFRA_HANDLER, value: "{{ $code.handler }}" }
+                              - { name: OPENINFRA_HANDLER, value: {{ $code.handler | toJson }} }
                               - { name: OPENINFRA_FUNCTION_NAME, value: "{{ $name }}" }
                               # The function's Timeout, which the runtime enforces from each invoke's arrival.
                               - { name: OPENINFRA_TIMEOUT_S, value: "{{ int ($spec.timeout | default 300) }}" }
                               {{- if $csrc.bucket }}
-                              - { name: OPENINFRA_CODE_BUCKET, value: "{{ $csrc.bucket }}" }
-                              - { name: OPENINFRA_CODE_KEY, value: "{{ $csrc.key }}" }
+                              - { name: OPENINFRA_CODE_BUCKET, value: {{ $csrc.bucket | toJson }} }
+                              - { name: OPENINFRA_CODE_KEY, value: {{ $csrc.key | toJson }} }
                               {{- end }}
                               {{- if $code.layers }}
                               - { name: OPENINFRA_LAYERS, value: {{ $code.layers | toJson | quote }} }
@@ -377,8 +377,8 @@ spec:
                               # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
                               # handler relies on them (e.g. an SDK client needs a region). They can't be set
                               # as function env because AWS reserves the names, so the runtime must inject them.
-                              - { name: AWS_REGION, value: "{{ $code.region | default "us-east-1" }}" }
-                              - { name: AWS_DEFAULT_REGION, value: "{{ $code.region | default "us-east-1" }}" }
+                              - { name: AWS_REGION, value: {{ $code.region | default "us-east-1" | toJson }} }
+                              - { name: AWS_DEFAULT_REGION, value: {{ $code.region | default "us-east-1" | toJson }} }
                               - { name: AWS_LAMBDA_FUNCTION_NAME, value: "{{ $name }}" }
                               - { name: AWS_LAMBDA_FUNCTION_VERSION, value: "$LATEST" }
                               - { name: AWS_LAMBDA_LOG_GROUP_NAME, value: "/aws/lambda/{{ $name }}" }
@@ -398,9 +398,9 @@ spec:
                               # the service-scoped AWS_ENDPOINT_URL_S3, never the global AWS_ENDPOINT_URL (a
                               # global override would point every service — dynamodb, sns, … — at the S3
                               # gateway). The shim reads AWS_ENDPOINT_URL_S3 for its own code fetch.
-                              - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: {{ $csrc.secret }}, key: AWS_ACCESS_KEY_ID, optional: true } } }
-                              - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: {{ $csrc.secret }}, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
-                              - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: {{ $csrc.secret }}, key: AWS_ENDPOINT_URL, optional: true } } }
+                              - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: {{ $csrc.secret | toJson }}, key: AWS_ACCESS_KEY_ID, optional: true } } }
+                              - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: {{ $csrc.secret | toJson }}, key: AWS_SECRET_ACCESS_KEY, optional: true } } }
+                              - { name: AWS_ENDPOINT_URL_S3, valueFrom: { secretKeyRef: { name: {{ $csrc.secret | toJson }}, key: AWS_ENDPOINT_URL, optional: true } } }
                               {{- end }}
                               {{- if $pkg.sha256 }}
                               # The stored deployment package: the runtime fetches it from the aws-shim at cold start with
@@ -429,18 +429,22 @@ spec:
                               - { name: AWS_DEFAULT_REGION, value: "{{ $fnRegion }}" }
                               {{- end }}
                             {{- end }}
+                            {{- /* Every string a function's author writes (its environment, handler, code source,
+                                   region, secrets, queues, security groups, trigger subject) is rendered with toJson:
+                                   a JSON string is a YAML double-quoted scalar, so a quote, backslash, line break or
+                                   "{{" in it stays one literal value and can never add a setting (#405). */}}
                             {{- range $spec.env }}
-                              - { name: {{ .name }}, value: "{{ .value }}" }
+                              - { name: {{ .name | toJson }}, value: {{ .value | toJson }} }
                             {{- end }}
                             {{- if $spec.queues }}
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: OPENINFRA_QUEUES, value: "{{ join "," $spec.queues }}" }
+                              - { name: OPENINFRA_QUEUES, value: {{ join "," $spec.queues | toJson }} }
                             {{- end }}
                             {{- end }}
                             {{- if $spec.secrets }}
                             envFrom:
                             {{- range $spec.secrets }}
-                              - secretRef: { name: {{ . }}, optional: true }
+                              - secretRef: { name: {{ . | toJson }}, optional: true }
                             {{- end }}
                             {{- end }}
                             {{- if or (and $code $csrc.configMap) $ident }}
@@ -475,7 +479,7 @@ spec:
                         volumes:
                         {{- if and $code $csrc.configMap }}
                           - name: openinfra-code
-                            configMap: { name: {{ $csrc.configMap }} }
+                            configMap: { name: {{ $csrc.configMap | toJson }} }
                         {{- end }}
                         {{- if $ident }}
                           # The function identity's token, for the aws-shim (its STS audience) only: the execution
@@ -572,12 +576,14 @@ spec:
                     name: {{ $name }}-pump-cfg
                     namespace: {{ $ns }}
                   data:
+                    {{- /* The subject is the author's: quote escapes it into one double-quoted line of this
+                           config (as toJson does for the manifest, #405) and, unlike toJson, keeps ">" as written. */}}
                     benthos.yaml: |
                       logger: { level: INFO, format: logfmt }
                       input:
                         nats_jetstream:
                           urls: ["nats://nats.nats.svc.cluster.local:4222"]
-                          subject: "{{ $tsubject }}"
+                          subject: {{ $tsubject | quote }}
                           durable: "fn-{{ $name }}"
                           deliver: all
                           ack_wait: 2m

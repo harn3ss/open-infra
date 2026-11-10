@@ -6184,6 +6184,8 @@ components:
               type: array
               items:
                 type: string
+                maxLength: 60
+                pattern: ^[A-Za-z0-9]([-A-Za-z0-9_.]{0,58}[A-Za-z0-9])?$
               description: Names of SecurityGroups (firewall rule sets) to attach to this function's pods.
             vpcConfig:
               type: object
@@ -6214,6 +6216,7 @@ components:
                   items:
                     type: string
                     maxLength: 60
+                    pattern: ^[A-Za-z0-9]([-A-Za-z0-9_.]{0,58}[A-Za-z0-9])?$
                   description: 'Security group ids (kind: SecurityGroup names) of the same VPC.'
                 vpcId:
                   type: string

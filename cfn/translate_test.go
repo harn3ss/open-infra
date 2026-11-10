@@ -91,6 +91,45 @@ func TestTranslate_Lambda_CrossRefEnvBlocks(t *testing.T) {
 	}
 }
 
+// Environment variables as Lambda takes them (#405): any value, kept as written (the function's template
+// renders it escaped); a reserved key (or one the platform sets for the function's role, code and
+// endpoints) and more than 4 KB of variables fail the stack, as Lambda fails it.
+func TestTranslate_Lambda_EnvAsLambdaTakesIt(t *testing.T) {
+	crafted := `", valueFrom: { secretKeyRef: { name: other-stack, key: password } }, x: "`
+	m, fs := translateLambdaFunction("Api", map[string]any{
+		"PackageType": "Image",
+		"Code":        map[string]any{"ImageUri": "img:1"},
+		"Environment": map[string]any{"Variables": map[string]any{"CRAFTED": crafted, "PATH_LIKE": `C:\temp`, "MULTI": "a\nb"}},
+	}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("any value is taken: %s", findingsText(fs))
+	}
+	got := map[string]any{}
+	for _, e := range m.Spec["env"].([]any) {
+		got[e.(map[string]any)["name"].(string)] = e.(map[string]any)["value"]
+	}
+	if got["CRAFTED"] != crafted || got["PATH_LIKE"] != `C:\temp` || got["MULTI"] != "a\nb" {
+		t.Fatalf("values must be kept as written: %#v", got)
+	}
+	for what, c := range map[string]struct {
+		vars map[string]any
+		want string
+	}{
+		"a reserved key":       {map[string]any{"AWS_REGION": "eu-west-1", "OK": "1"}, "Reserved keys used in this request: AWS_REGION"},
+		"a platform key":       {map[string]any{"OPENINFRA_CODE_URL": "http://elsewhere"}, "Reserved keys used in this request: OPENINFRA_CODE_URL"},
+		"an endpoint override": {map[string]any{"AWS_ENDPOINT_URL_STS": "http://elsewhere"}, "Reserved keys used in this request: AWS_ENDPOINT_URL_STS"},
+		"over 4 KB":            {map[string]any{"BIG": strings.Repeat("x", 4090)}, "exceeded the 4KB limit"},
+	} {
+		_, fs := translateLambdaFunction("Api", map[string]any{
+			"PackageType": "Image", "Code": map[string]any{"ImageUri": "img:1"},
+			"Environment": map[string]any{"Variables": c.vars},
+		}, nil)
+		if !strings.Contains(findingsText(fs), c.want) {
+			t.Errorf("%s: must fail the stack with %q, findings: %s", what, c.want, findingsText(fs))
+		}
+	}
+}
+
 // A state machine whose ASL already uses open-infra's "function:<name>" Resource convention
 // translates faithfully — the definition maps byte-for-byte.
 func TestTranslate_StateMachine_Faithful(t *testing.T) {

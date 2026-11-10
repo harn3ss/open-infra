@@ -57,30 +57,10 @@ const (
 var (
 	// roleARNRe is a role ARN as Lambda's Role takes it, and as the Function's spec.role allows one.
 	roleARNRe = regexp.MustCompile(`^arn:aws(-[a-z]+)*:iam::[0-9]{12}:role/([A-Za-z0-9+=,.@_-]+/)*[A-Za-z0-9+=,.@_-]{1,64}$`)
-	// lambdaEnvNameRe is Lambda's pattern for an environment variable's name.
-	lambdaEnvNameRe = regexp.MustCompile(`^[a-zA-Z]([a-zA-Z0-9_])+$`)
-	// lambdaHandlerRe is the handlers open-infra's runtimes take (index.handler, pkg/mod.fn,
-	// Assembly::Namespace.Class::Method).
-	lambdaHandlerRe = regexp.MustCompile(`^[A-Za-z0-9_.:/$-]{1,128}$`)
+	// lambdaHandlerRe is Lambda's pattern for a handler: no whitespace. The function's template renders it
+	// escaped (#405), so any such handler is one literal value.
+	lambdaHandlerRe = regexp.MustCompile(`^[^\s]+$`)
 )
-
-// lambdaReservedEnv are the environment variables a function's own configuration may not set: Lambda's
-// reserved keys, and the ones the platform sets for the function's runtime, role and code (an endpoint or
-// token file named by the caller would send the function's identity elsewhere).
-var lambdaReservedEnv = map[string]bool{
-	"_HANDLER": true, "_X_AMZN_TRACE_ID": true, "AWS_DEFAULT_REGION": true, "AWS_REGION": true,
-	"AWS_EXECUTION_ENV": true, "AWS_LAMBDA_FUNCTION_NAME": true, "AWS_LAMBDA_FUNCTION_MEMORY_SIZE": true,
-	"AWS_LAMBDA_FUNCTION_VERSION": true, "AWS_LAMBDA_INITIALIZATION_TYPE": true, "AWS_LAMBDA_LOG_GROUP_NAME": true,
-	"AWS_LAMBDA_LOG_STREAM_NAME": true, "AWS_ACCESS_KEY": true, "AWS_ACCESS_KEY_ID": true,
-	"AWS_SECRET_ACCESS_KEY": true, "AWS_SESSION_TOKEN": true, "AWS_LAMBDA_RUNTIME_API": true,
-	"LAMBDA_TASK_ROOT": true, "LAMBDA_RUNTIME_DIR": true,
-	"AWS_ROLE_ARN": true, "AWS_ROLE_SESSION_NAME": true, "AWS_WEB_IDENTITY_TOKEN_FILE": true, "NATS_URL": true,
-}
-
-func lambdaEnvReserved(name string) bool {
-	return lambdaReservedEnv[name] || strings.HasPrefix(name, "OPENINFRA_") || name == "AWS_ENDPOINT_URL" ||
-		strings.HasPrefix(name, "AWS_ENDPOINT_URL_")
-}
 
 // lambdaUnsupported are request members a Function cannot carry, with what is accepted when it is
 // Lambda's default (nil: never accepted).
@@ -768,10 +748,10 @@ func applyLambdaSettings(spec, body map[string]any) *lambdaErr {
 		env := []any{}
 		var reserved []string
 		for _, k := range sortedMapKeys(vars) {
-			if !lambdaEnvNameRe.MatchString(k) {
-				return lambdaValidation("environment.variables", k, "Member must satisfy regular expression pattern: [a-zA-Z]([a-zA-Z0-9_])+")
+			if !cfn.LambdaEnvNameOK(k) {
+				return lambdaValidation("environment.variables", k, "Member must satisfy regular expression pattern: "+cfn.LambdaEnvNamePattern)
 			}
-			if lambdaEnvReserved(k) {
+			if cfn.LambdaEnvReserved(k) {
 				reserved = append(reserved, k)
 				continue
 			}
@@ -779,15 +759,14 @@ func applyLambdaSettings(spec, body map[string]any) *lambdaErr {
 			if !isStr {
 				return lambdaValidation("environment.variables", k, "Member must be a string")
 			}
-			// The function's template carries a value in double quotes: a quote, a backslash or a line break
-			// would not survive it.
-			if strings.ContainsAny(val, "\"\\\n\r") {
-				return invalidParam("The value of environment variable %s has a double quote, a backslash or a line break, which open-infra's functions do not carry yet", k)
-			}
+			// Any value, as on Lambda: the function's template renders it escaped (#405).
 			env = append(env, map[string]any{"name": k, "value": val})
 		}
 		if len(reserved) > 0 {
-			return invalidParam("Lambda was unable to configure your environment variables because the environment variables you have provided contains reserved keys that are currently not supported for modification. Reserved keys used in this request: %s", strings.Join(reserved, ", "))
+			return invalidParam("%s", cfn.LambdaReservedEnvMessage(reserved))
+		}
+		if msg := cfn.LambdaEnvOverLimit(vars); msg != "" {
+			return invalidParam("%s", msg)
 		}
 		// No variables is an empty list, never a removed field: Crossplane copies a claim's spec to its
 		// composite by merging, which cannot remove a field, and then back, so a removed list returns.
@@ -829,8 +808,11 @@ func setRuntimeAndHandler(fc map[string]any, rt, handler string) *lambdaErr {
 	if !ok {
 		return invalidParam("The runtime parameter of %s is not a runtime open-infra runs; the supported runtimes are %s", rt, cfn.LambdaRuntimeList)
 	}
+	if len(handler) > 128 {
+		return lambdaValidation("handler", handler, "Member must have length less than or equal to 128")
+	}
 	if !lambdaHandlerRe.MatchString(handler) {
-		return lambdaValidation("handler", handler, `Member must satisfy regular expression pattern: [A-Za-z0-9_.:/$-]{1,128}`)
+		return lambdaValidation("handler", handler, `Member must satisfy regular expression pattern: [^\s]+`)
 	}
 	fc["runtime"], fc["handler"] = runtime, handler
 	return nil

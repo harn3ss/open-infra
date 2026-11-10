@@ -4112,15 +4112,31 @@ func lambdaEnv(id string, _ map[string]any, props map[string]any, f *[]Finding) 
 		return nil
 	}
 	var out []any
+	var reserved []string
+	measured := map[string]any{}
 	// stable order for a deterministic manifest
 	names := sortedKeys(vars)
 	for _, name := range names {
+		// Lambda's own refusal, which fails the stack on AWS: its reserved keys (with those the platform sets
+		// for the function's role, code and endpoints). A name or value is any string: the function's
+		// template renders it escaped (#405).
+		if LambdaEnvReserved(name) {
+			reserved = append(reserved, name)
+			continue
+		}
 		val, ok := concrete(vars[name])
 		if !ok {
 			*f = append(*f, Finding{"Resource " + id, "environment variable " + name + " resolves to a cross-resource attribute with no concrete value (open-infra has no AWS ARNs)"})
 			continue
 		}
+		measured[name] = val
 		out = append(out, map[string]any{"name": name, "value": val})
+	}
+	if len(reserved) > 0 {
+		*f = append(*f, Finding{"Resource " + id, LambdaReservedEnvMessage(reserved)})
+	}
+	if msg := LambdaEnvOverLimit(measured); msg != "" {
+		*f = append(*f, Finding{"Resource " + id, msg})
 	}
 	return out
 }

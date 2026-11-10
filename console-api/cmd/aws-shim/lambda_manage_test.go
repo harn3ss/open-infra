@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -228,7 +229,8 @@ func TestCreateFunction_RefusesWhatItCannotCarry(t *testing.T) {
 		"memory":                   {"MemorySize": 64},
 		"reserved env":             {"Environment": map[string]any{"Variables": map[string]any{"AWS_ENDPOINT_URL": "http://elsewhere"}}},
 		"platform env":             {"Environment": map[string]any{"Variables": map[string]any{"OPENINFRA_CODE_URL": "http://elsewhere"}}},
-		"quoted value":             {"Environment": map[string]any{"Variables": map[string]any{"XX": `a", valueFrom: {`}}},
+		"over 4 KB of variables":   {"Environment": map[string]any{"Variables": map[string]any{"BIG": strings.Repeat("x", 4090)}}},
+		"handler too long":         {"Handler": strings.Repeat("h", 129)},
 		"env name":                 {"Environment": map[string]any{"Variables": map[string]any{"1BAD": "x"}}},
 		"handler":                  {"Handler": "index.handler; rm -rf"},
 		"name":                     {"FunctionName": "Orders_API"},
@@ -251,6 +253,49 @@ func TestCreateFunction_RefusesWhatItCannotCarry(t *testing.T) {
 		"TracingConfig": map[string]any{"Mode": "PassThrough"}, "EphemeralStorage": map[string]any{"Size": 512}})), testUser)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("Lambda's defaults are accepted: %d %s", w.Code, w.Body)
+	}
+}
+
+// An environment variable's value is any string, as on Lambda, and is stored as written; the function's
+// template renders it escaped (#405). A handler is any string without whitespace.
+func TestCreateFunction_AnyValueAsOnLambda(t *testing.T) {
+	values := map[string]string{
+		"QUOTED":    `say "hi"`,
+		"BACKSLASH": `C:\temp\new`,
+		"LINES":     "one\ntwo\r\nthree",
+		"BRACES":    `{{ .observed }}`,
+		"CRAFTED":   `", valueFrom: { secretKeyRef: { name: other-stack, key: password } }, x: "`,
+		"JSON":      `{"a":[1,2],"b":"c"}`,
+	}
+	vars := map[string]any{}
+	for k, v := range values {
+		vars[k] = v
+	}
+	h, dyn, _ := manageFixture(t, nil)
+	w := serveWith(h, lambdaReq(http.MethodPost, "/2015-03-31/functions", lmCreateBody(t, map[string]any{
+		"Environment": map[string]any{"Variables": vars}, "Handler": "src/handlers/orders.main"})), testUser)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("any value is accepted: %d %s", w.Code, w.Body)
+	}
+	fn, err := dyn.Resource(functionClaimGVR).Namespace("default").Get(context.Background(), "orders", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, _, _ := unstructured.NestedSlice(fn.Object, "spec", "env")
+	got := map[string]string{}
+	for _, e := range env {
+		m, _ := e.(map[string]any)
+		got[fmt.Sprint(m["name"])] = fmt.Sprint(m["value"])
+	}
+	for k, v := range values {
+		if got[k] != v {
+			t.Errorf("%s stored as %q, want %q", k, got[k], v)
+		}
+	}
+	var cfg map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &cfg)
+	if ev, _ := cfg["Environment"].(map[string]any)["Variables"].(map[string]any); ev["CRAFTED"] != values["CRAFTED"] {
+		t.Errorf("the answer reports the value as written: %v", ev["CRAFTED"])
 	}
 }
 

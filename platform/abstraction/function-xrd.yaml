@@ -233,7 +233,8 @@ spec:
                   description: "Secrets to inject (envFrom) — e.g. an app's DB/bucket creds, or a Sealed Secret"
                 securityGroups:
                   type: array
-                  items: { type: string }
+                  # A SecurityGroup's name becomes a pod label (openinfra.dev/sg-<name>), so it is a label-safe name.
+                  items: { type: string, maxLength: 60, pattern: '^[A-Za-z0-9]([-A-Za-z0-9_.]{0,58}[A-Za-z0-9])?$' }
                   description: "Names of SecurityGroups (firewall rule sets) to attach to this function's pods."
                 vpcConfig:
                   type: object
@@ -257,7 +258,7 @@ spec:
                     securityGroupIds:
                       type: array
                       maxItems: 5
-                      items: { type: string, maxLength: 60 }
+                      items: { type: string, maxLength: 60, pattern: '^[A-Za-z0-9]([-A-Za-z0-9_.]{0,58}[A-Za-z0-9])?$' }
                       description: "Security group ids (kind: SecurityGroup names) of the same VPC."
                     vpcId:
                       type: string
