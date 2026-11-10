@@ -13,9 +13,11 @@
 //
 // A function's pods fetch their package at cold start from /v1/function-code with their own identity token
 // (functionCodeHandler): the shim checks the token is a pod Knative runs for that function — the check that
-// gives a function its execution role (functionOf) — and serves that function's package and no other. The
-// handler already holds that token (it is how its role's credentials are fetched), so it learns nothing new:
-// it can fetch the code it already runs.
+// gives a function its execution role (functionOf) — and serves that function's package and no other: the
+// package and layers of the Knative revision the pod runs, so a published version, or the configuration a
+// failed update leaves running, keeps its own code as on Lambda. The handler already holds that token (it
+// is how its role's credentials are fetched), so it learns nothing new: it can fetch the code it already
+// runs.
 package main
 
 import (
@@ -24,6 +26,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +42,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	"github.com/minio/minio-go/v7"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
@@ -252,16 +256,16 @@ func (h *functionCodeHandler) serve(w http.ResponseWriter, r *http.Request, requ
 		http.Error(w, "the function's account is suspended", http.StatusForbidden)
 		return
 	}
-	claim, err := h.dyn.Resource(functionClaimGVR).Namespace(fn.namespace).Get(r.Context(), fn.name, metav1.GetOptions{})
-	if err != nil {
-		http.Error(w, "the function could not be read; retry", http.StatusServiceUnavailable)
+	rc, code, msg := h.revisionCodeOf(r.Context(), fn)
+	if code != 0 {
+		http.Error(w, msg, code)
 		return
 	}
 	if lq := r.URL.Query().Get("layer"); lq != "" {
-		h.serveLayer(w, r, fn, claim, lq)
+		h.serveLayer(w, r, fn, rc.layers, lq)
 		return
 	}
-	sha, _, _ := unstructured.NestedString(claim.Object, "spec", "code", "source", "package", "sha256")
+	sha := rc.sha256
 	if len(sha) != 64 {
 		http.Error(w, "the function has no stored deployment package", http.StatusNotFound)
 		return
@@ -292,12 +296,67 @@ func (h *functionCodeHandler) serve(w http.ResponseWriter, r *http.Request, requ
 	http.Error(w, "the deployment package store is unavailable; retry", http.StatusServiceUnavailable)
 }
 
-// serveLayer serves layer lq (an index into the function's spec.code.layers) to the function's own pod, as
-// Lambda extracts a function's layers into /opt: only a layer the function declares, and only an object its
-// account may read (layerReader). The runtime fetches it with OPENINFRA_LAYERS_URL ?layer=<i>.
-func (h *functionCodeHandler) serveLayer(w http.ResponseWriter, r *http.Request, fn functionIdentity, claim *unstructured.Unstructured, lq string) {
+// revisionCode is what one of a function's Knative revisions was rendered with: its deployment package's
+// SHA-256 (OPENINFRA_CODE_SHA256) and its layers (OPENINFRA_LAYERS). A pod is served its own revision's,
+// never the function's latest: on Lambda each version keeps the code and layers it was published with
+// (a version here is a pinned revision), and a function whose update failed goes on running its previous
+// configuration (#418).
+type revisionCode struct {
+	sha256 string
+	layers []any
+}
+
+// revisionCodeOf reads the revision fn's pod runs (functionIdentity.revision, proven by functionOf) and
+// answers what it was rendered with; on failure an HTTP status and message. Only the two values are read
+// from the revision's spec, never logged.
+func (h *functionCodeHandler) revisionCodeOf(ctx context.Context, fn functionIdentity) (revisionCode, int, string) {
+	if fn.revision == "" {
+		return revisionCode{}, http.StatusUnauthorized, "unauthorized"
+	}
+	rev, err := h.dyn.Resource(knativeRevisionGVR).Namespace(fn.namespace).Get(ctx, fn.revision, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return revisionCode{}, http.StatusNotFound, "the function's revision is gone"
+	}
+	if err != nil {
+		return revisionCode{}, http.StatusServiceUnavailable, "the function could not be read; retry"
+	}
+	if rev.GetLabels()[knativeServiceLabel] != fn.name {
+		return revisionCode{}, http.StatusUnauthorized, "unauthorized"
+	}
+	var rc revisionCode
+	shaSeen, layersSeen := false, false
+	containers, _, _ := unstructured.NestedSlice(rev.Object, "spec", "containers")
+	for _, c := range containers {
+		cm, _ := c.(map[string]any)
+		env, _, _ := unstructured.NestedSlice(cm, "env")
+		for _, e := range env {
+			ev, _ := e.(map[string]any)
+			switch fnStr(ev["name"]) {
+			case "OPENINFRA_CODE_SHA256":
+				if !shaSeen {
+					rc.sha256, shaSeen = fnStr(ev["value"]), true
+				}
+			case "OPENINFRA_LAYERS":
+				if !layersSeen {
+					layersSeen = true
+					if v := fnStr(ev["value"]); v != "" {
+						if json.Unmarshal([]byte(v), &rc.layers) != nil {
+							return revisionCode{}, http.StatusNotFound, "the function's revision declares no layers it can be served"
+						}
+					}
+				}
+			}
+		}
+	}
+	return rc, 0, ""
+}
+
+// serveLayer serves layer lq (an index into the layers the pod's revision was rendered with, the
+// function's spec.code.layers when it was made) to the function's own pod, as Lambda extracts a function's
+// layers into /opt: only a layer that configuration declares, and only an object the function's account may
+// read now (layerReader). The runtime fetches it with OPENINFRA_LAYERS_URL ?layer=<i>.
+func (h *functionCodeHandler) serveLayer(w http.ResponseWriter, r *http.Request, fn functionIdentity, layers []any, lq string) {
 	ctx := r.Context()
-	layers, _, _ := unstructured.NestedSlice(claim.Object, "spec", "code", "layers")
 	i, err := strconv.Atoi(lq)
 	if err != nil || i < 0 || i >= len(layers) {
 		http.Error(w, "the function declares no layer "+lq, http.StatusNotFound)

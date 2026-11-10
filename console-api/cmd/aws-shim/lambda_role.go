@@ -68,6 +68,8 @@ type functionIdentity struct {
 	name      string // the kind: Function's name
 	role      string // its spec.role: a role name or a role ARN
 	username  string // the identity's ServiceAccount username
+	// revision is the Knative revision whose pod the token is bound to: the configuration that pod runs.
+	revision string
 	// account is the function's member account ("" for the management account's function); home is that
 	// member account's home namespace.
 	account, home string
@@ -134,7 +136,8 @@ func (f *k8sFunctionIdentities) functionOf(ctx context.Context, token string) (f
 	if err != nil || string(pod.UID) != podUID || pod.Labels[knativeServiceLabel] != fn {
 		return functionIdentity{}, false
 	}
-	if !f.knativeRevisionPod(ctx, ns, fn, pod.OwnerReferences) {
+	revision, ok := f.knativeRevisionPod(ctx, ns, fn, pod.OwnerReferences)
+	if !ok {
 		return functionIdentity{}, false
 	}
 	acct, err := f.cs.CoreV1().ServiceAccounts(ns).Get(ctx, sa, metav1.GetOptions{})
@@ -146,7 +149,7 @@ func (f *k8sFunctionIdentities) functionOf(ctx context.Context, token string) (f
 		return functionIdentity{}, false
 	}
 	role, _, _ := unstructured.NestedString(claim.Object, "spec", "role")
-	id := functionIdentity{namespace: ns, name: fn, role: role, username: u}
+	id := functionIdentity{namespace: ns, name: fn, role: role, username: u, revision: revision}
 	if f.accounts != nil {
 		if f.accounts.AccountOf(ns) == "" {
 			return functionIdentity{}, false // a platform namespace is no account's
@@ -161,14 +164,18 @@ func (f *k8sFunctionIdentities) functionOf(ctx context.Context, token string) (f
 // fn: its controller is a ReplicaSet whose controller is a Deployment whose controller is a Knative
 // Revision, and that Deployment carries Knative's serving.knative.dev/service=<fn>. Owner references are
 // set by the controllers that create the objects (a pod's by its ReplicaSet, a ReplicaSet's by its
-// Deployment, the Deployment's by Knative), so a pod's labels alone are never the proof. Fails closed.
-func (f *k8sFunctionIdentities) knativeRevisionPod(ctx context.Context, ns, fn string, owners []metav1.OwnerReference) bool {
+// Deployment, the Deployment's by Knative), so a pod's labels alone are never the proof. It answers that
+// revision's name. Fails closed.
+func (f *k8sFunctionIdentities) knativeRevisionPod(ctx context.Context, ns, fn string, owners []metav1.OwnerReference) (string, bool) {
 	dep, ok := podDeployment(ctx, f.meta, ns, owners)
 	if !ok || dep.Labels[knativeServiceLabel] != fn {
-		return false
+		return "", false
 	}
 	revRef := metav1.GetControllerOfNoCopy(dep)
-	return revRef != nil && revRef.Kind == "Revision" && revRef.APIVersion == "serving.knative.dev/v1"
+	if revRef == nil || revRef.Kind != "Revision" || revRef.APIVersion != "serving.knative.dev/v1" || revRef.Name == "" {
+		return "", false
+	}
+	return revRef.Name, true
 }
 
 // assumeFunctionRole decides an AssumeRoleWithWebIdentity whose token is function fn's own identity: Lambda

@@ -12,6 +12,11 @@ the product's public contract.
   function's layers itself.
   - The shim serves a function only the layers it names, and only objects its account may read.
   - Before, layers needed the code in S3 with static keys, so such a function could not render at all.
+- **Each configuration keeps its own code and layers:** a function's pod is served the deployment package
+  and layers its own configuration was made with, not the function's latest. A published version keeps
+  its code after `UpdateFunctionCode`, and after a failed update the previous configuration restarts with
+  its own layers. Before, such a pod was served the latest package and failed its hash check, or the
+  latest layers.
 - **The role's credentials as Lambda hands them over:** before the handler loads, the Node.js, Python and
   .NET runtimes set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` (with
   `AWS_CREDENTIAL_EXPIRATION`), renewed before they expire. Code that reads credentials as it loads now works.

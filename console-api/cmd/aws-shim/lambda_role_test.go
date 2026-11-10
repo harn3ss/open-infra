@@ -190,6 +190,10 @@ func TestFunctionIdentity_OnlyTheFunctionsOwnPod(t *testing.T) {
 	if id.namespace != ns || id.name != "orders" || id.role != "orders-reader" || id.username != user || id.account != "" {
 		t.Errorf("the function's identity: %+v", id)
 	}
+	// It names the Knative revision the pod runs: the configuration whose code and layers it is served.
+	if id.revision != "orders-uid-rev" {
+		t.Errorf("the pod's revision: %q, want orders-uid-rev", id.revision)
+	}
 }
 
 // A member account's function is that account's, with its home.

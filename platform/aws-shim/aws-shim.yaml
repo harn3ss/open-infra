@@ -200,8 +200,11 @@ rules:
     verbs: [get]
   # Lambda PublishVersion (lambda_versions.go): a version is published from the revision the function's
   # latest change runs, so the shim reads the function's Knative Service (its status: the latest ready and
-  # created revisions) and that revision's metadata (when it was created). get only, each by name. The
-  # Service's spec carries what the kind: Function's does, which the shim already reads.
+  # created revisions) and that revision's metadata (when it was created). A function's pod is served the
+  # deployment package and layers of the revision it runs (lambda_packages.go), as each Lambda version keeps
+  # its own, so the shim reads that one revision's OPENINFRA_CODE_SHA256 and OPENINFRA_LAYERS. get only,
+  # each by name. A Service's or revision's spec carries what the kind: Function's does, which the shim
+  # already reads.
   - apiGroups: [serving.knative.dev]
     resources: [services, revisions]
     verbs: [get]

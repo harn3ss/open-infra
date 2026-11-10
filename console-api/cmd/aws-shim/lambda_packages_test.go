@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -240,6 +241,28 @@ func (f fakeFnIdentities) functionOf(_ context.Context, token string) (functionI
 	return id, ok
 }
 
+// testRevision is one of function fn's Knative revisions in namespace team, rendered with these OPENINFRA_*
+// values: what a pod of that revision is served.
+func testRevision(name, fn string, env map[string]string) *unstructured.Unstructured {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	ev := []any{map[string]any{"name": "OPENINFRA_RUNTIME", "value": "nodejs22"}}
+	for _, k := range keys {
+		ev = append(ev, map[string]any{"name": k, "value": env[k]})
+	}
+	return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "serving.knative.dev/v1", "kind": "Revision",
+		"metadata": map[string]any{"name": name, "namespace": "team", "labels": map[string]any{knativeServiceLabel: fn}},
+		"spec":     map[string]any{"containers": []any{map[string]any{"name": "user-container", "env": ev}}}}}
+}
+
+func revisionsClient(objs ...runtime.Object) *dynamicfake.FakeDynamicClient {
+	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{knativeRevisionGVR: "RevisionList"}, objs...)
+}
+
 func fnCodeFixture(t *testing.T) (*functionCodeHandler, []byte, []byte) {
 	t.Helper()
 	a := testZip(t, map[string]string{"index.js": "a"})
@@ -248,23 +271,19 @@ func fnCodeFixture(t *testing.T) (*functionCodeHandler, []byte, []byte) {
 	f.buckets[lambdaCodeBucket] = true
 	f.objects[lambdaCodeBucket+"/team/"+shaOf(a)+".zip"] = a
 	f.objects[lambdaCodeBucket+"/team/"+shaOf(b)+".zip"] = b
-	claim := func(name, sha string) *unstructured.Unstructured {
-		src := map[string]any{"configMap": name + "-code"}
-		if sha != "" {
-			src = map[string]any{"package": map[string]any{"sha256": sha}}
-		}
-		return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "openinfra.dev/v1", "kind": "Function",
-			"metadata": map[string]any{"name": name, "namespace": "team"},
-			"spec":     map[string]any{"code": map[string]any{"runtime": "nodejs22", "handler": "index.handler", "source": src}}}}
-	}
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{functionClaimGVR: "FunctionList"},
-		claim("fa", shaOf(a)), claim("fb", shaOf(b)), claim("plain", ""))
+	dyn := revisionsClient(
+		testRevision("fa-00001", "fa", map[string]string{"OPENINFRA_CODE_SHA256": shaOf(a)}),
+		testRevision("fb-00001", "fb", map[string]string{"OPENINFRA_CODE_SHA256": shaOf(b)}),
+		testRevision("plain-00001", "plain", map[string]string{"OPENINFRA_CODE_CONFIGMAP": "plain-code"}))
 	h := &functionCodeHandler{
 		identities: fakeFnIdentities{
-			"tok-a":     {namespace: "team", name: "fa"},
-			"tok-b":     {namespace: "team", name: "fb"},
-			"tok-plain": {namespace: "team", name: "plain"},
-			"tok-susp":  {namespace: "team", name: "fa", suspended: true},
+			"tok-a":       {namespace: "team", name: "fa", revision: "fa-00001"},
+			"tok-b":       {namespace: "team", name: "fb", revision: "fb-00001"},
+			"tok-plain":   {namespace: "team", name: "plain", revision: "plain-00001"},
+			"tok-susp":    {namespace: "team", name: "fa", revision: "fa-00001", suspended: true},
+			"tok-norev":   {namespace: "team", name: "fa"},
+			"tok-gone":    {namespace: "team", name: "fa", revision: "fa-00009"},
+			"tok-another": {namespace: "team", name: "fa", revision: "fb-00001"},
 		},
 		dyn: dyn, store: &packageStore{mc: blobMinio(t, f)}, logger: discardLogger(),
 	}
@@ -298,11 +317,14 @@ func TestFunctionCode_OnlyTheFunctionsOwnPackage(t *testing.T) {
 		hdr   []string
 		want  int
 	}{
-		"no token":          {"", nil, http.StatusUnauthorized},
-		"not a function's":  {"tok-other", nil, http.StatusUnauthorized},
-		"no stored package": {"tok-plain", nil, http.StatusNotFound},
-		"suspended account": {"tok-susp", nil, http.StatusForbidden},
-		"through a proxy":   {"tok-a", []string{"X-Forwarded-For", "203.0.113.9"}, http.StatusNotFound},
+		"no token":                    {"", nil, http.StatusUnauthorized},
+		"not a function's":            {"tok-other", nil, http.StatusUnauthorized},
+		"no stored package":           {"tok-plain", nil, http.StatusNotFound},
+		"suspended account":           {"tok-susp", nil, http.StatusForbidden},
+		"no revision":                 {"tok-norev", nil, http.StatusUnauthorized},
+		"a revision gone":             {"tok-gone", nil, http.StatusNotFound},
+		"another function's revision": {"tok-another", nil, http.StatusUnauthorized},
+		"through a proxy":             {"tok-a", []string{"X-Forwarded-For", "203.0.113.9"}, http.StatusNotFound},
 	} {
 		if rr := getFnCode(h, c.token, c.hdr...); rr.Code != c.want || bytes.Equal(rr.Body.Bytes(), a) {
 			t.Errorf("%s: got %d, want %d with no package", name, rr.Code, c.want)
@@ -320,7 +342,7 @@ func (f fakeLayers) layerReadDenied(_ context.Context, _, bucket, _ string) (boo
 	return false, ""
 }
 
-// A function's pod gets the layers its own function declares, by index, each only when its account may
+// A function's pod gets the layers its own revision declares, by index, each only when its account may
 // read it; an undeclared index, another function's layers and a refused object are not served (#418).
 func TestFunctionCode_OnlyTheFunctionsOwnLayers(t *testing.T) {
 	deps := testZip(t, map[string]string{"nodejs/node_modules/dep/index.js": "module.exports = 1;"})
@@ -328,19 +350,16 @@ func TestFunctionCode_OnlyTheFunctionsOwnLayers(t *testing.T) {
 	f.buckets["team-layers"], f.buckets["other-account"] = true, true
 	f.objects["team-layers/deps.zip"] = deps
 	f.objects["other-account/secret.zip"] = []byte("not yours")
-	withLayers := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "openinfra.dev/v1", "kind": "Function",
-		"metadata": map[string]any{"name": "fl", "namespace": "team"},
-		"spec": map[string]any{"code": map[string]any{"runtime": "nodejs22", "handler": "index.handler",
-			"source": map[string]any{"package": map[string]any{"sha256": strings.Repeat("a", 64)}},
-			"layers": []any{map[string]any{"bucket": "team-layers", "key": "deps.zip"},
-				map[string]any{"bucket": "other-account", "key": "secret.zip"}}}}}}
-	plain := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "openinfra.dev/v1", "kind": "Function",
-		"metadata": map[string]any{"name": "plain", "namespace": "team"},
-		"spec":     map[string]any{"code": map[string]any{"runtime": "nodejs22", "handler": "index.handler"}}}}
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{functionClaimGVR: "FunctionList"}, withLayers, plain)
+	layers := `[{"bucket":"team-layers","key":"deps.zip"},{"bucket":"other-account","key":"secret.zip"}]`
+	dyn := revisionsClient(
+		testRevision("fl-00001", "fl", map[string]string{"OPENINFRA_CODE_SHA256": strings.Repeat("a", 64), "OPENINFRA_LAYERS": layers}),
+		testRevision("plain-00001", "plain", map[string]string{"OPENINFRA_CODE_SHA256": strings.Repeat("a", 64)}),
+		testRevision("bad-00001", "bad", map[string]string{"OPENINFRA_LAYERS": "not json"}))
 	h := &functionCodeHandler{
-		identities: fakeFnIdentities{"tok-l": {namespace: "team", name: "fl"}, "tok-plain": {namespace: "team", name: "plain"}},
-		dyn:        dyn, store: &packageStore{mc: blobMinio(t, f)}, layers: fakeLayers{"other-account": true}, logger: discardLogger(),
+		identities: fakeFnIdentities{"tok-l": {namespace: "team", name: "fl", revision: "fl-00001"},
+			"tok-plain": {namespace: "team", name: "plain", revision: "plain-00001"},
+			"tok-bad":   {namespace: "team", name: "bad", revision: "bad-00001"}},
+		dyn: dyn, store: &packageStore{mc: blobMinio(t, f)}, layers: fakeLayers{"other-account": true}, logger: discardLogger(),
 	}
 	get := func(token, layer string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, functionCodePath+"?layer="+layer, nil)
@@ -360,6 +379,7 @@ func TestFunctionCode_OnlyTheFunctionsOwnLayers(t *testing.T) {
 		"an index it does not declare":       {"tok-l", "2", http.StatusNotFound},
 		"not an index":                       {"tok-l", "x", http.StatusNotFound},
 		"a function with no layers":          {"tok-plain", "0", http.StatusNotFound},
+		"layers that do not parse":           {"tok-bad", "0", http.StatusNotFound},
 	} {
 		if rr := get(c.token, c.layer); rr.Code != c.want || strings.Contains(rr.Body.String(), "not yours") {
 			t.Errorf("%s: %d, want %d with no object", name, rr.Code, c.want)
@@ -368,6 +388,46 @@ func TestFunctionCode_OnlyTheFunctionsOwnLayers(t *testing.T) {
 	h.layers = nil
 	if rr := get("tok-l", "0"); rr.Code != http.StatusNotFound {
 		t.Errorf("a shim that does not serve layers: %d", rr.Code)
+	}
+}
+
+// Each revision keeps the code and layers it was rendered with, as each Lambda version keeps its own: once
+// the function's latest configuration names other code and another layer, a pod of an earlier revision (a
+// published version, or the configuration a failed update left running) still gets its own (#418).
+func TestFunctionCode_EachRevisionKeepsItsOwnCodeAndLayers(t *testing.T) {
+	v1 := testZip(t, map[string]string{"index.js": "v1"})
+	v2 := testZip(t, map[string]string{"index.js": "v2"})
+	l1 := testZip(t, map[string]string{"nodejs/node_modules/dep/index.js": "module.exports = 1;"})
+	l2 := testZip(t, map[string]string{"nodejs/node_modules/dep/index.js": "module.exports = 2;"})
+	f := newBlobS3()
+	f.buckets[lambdaCodeBucket], f.buckets["team-layers"] = true, true
+	f.objects[lambdaCodeBucket+"/team/"+shaOf(v1)+".zip"] = v1
+	f.objects[lambdaCodeBucket+"/team/"+shaOf(v2)+".zip"] = v2
+	f.objects["team-layers/l1.zip"], f.objects["team-layers/l2.zip"] = l1, l2
+	dyn := revisionsClient(
+		testRevision("fn-00001", "fn", map[string]string{"OPENINFRA_CODE_SHA256": shaOf(v1),
+			"OPENINFRA_LAYERS": `[{"bucket":"team-layers","key":"l1.zip"}]`}),
+		testRevision("fn-00002", "fn", map[string]string{"OPENINFRA_CODE_SHA256": shaOf(v2),
+			"OPENINFRA_LAYERS": `[{"bucket":"team-layers","key":"l2.zip"}]`}))
+	h := &functionCodeHandler{
+		identities: fakeFnIdentities{"tok-1": {namespace: "team", name: "fn", revision: "fn-00001"},
+			"tok-2": {namespace: "team", name: "fn", revision: "fn-00002"}},
+		dyn: dyn, store: &packageStore{mc: blobMinio(t, f)}, layers: fakeLayers{}, logger: discardLogger(),
+	}
+	get := func(token, query string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, functionCodePath+query, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		h.serve(rr, req, "req")
+		return rr
+	}
+	for token, want := range map[string]struct{ code, layer []byte }{"tok-1": {v1, l1}, "tok-2": {v2, l2}} {
+		if rr := get(token, ""); rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), want.code) {
+			t.Errorf("%s: the revision's own package: %d", token, rr.Code)
+		}
+		if rr := get(token, "?layer=0"); rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), want.layer) {
+			t.Errorf("%s: the revision's own layer: %d", token, rr.Code)
+		}
 	}
 }
 

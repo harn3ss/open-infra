@@ -158,13 +158,17 @@ aws iam put-role-policy --role-name orders-writer --policy-name send --policy-do
   runs ([Lambda .zip functions](cloudformation.md#lambda-zip-functions)):
   - The platform keeps the package, as Lambda keeps one, and names it by its SHA-256.
   - The function's pods fetch it from the aws-shim at cold start with the function's own identity, check
-    the hash, and unpack it into `/var/task`. The shim serves a pod only its own function's package.
+    the hash, and unpack it into `/var/task`. The shim serves a pod only its own function's package: the
+    one its configuration was made with, so a published version keeps its own code after
+    `UpdateFunctionCode`, as on Lambda.
   - No keys are involved, so it combines with a role.
 - **Layers** (`code.layers`, each an S3 bucket and key) are extracted, in order, into `/opt` at cold start.
   A function with its own identity (a role or a stored package) fetches them from the aws-shim with its
   token, as Lambda fetches a function's layers itself: the role needs no access to them. The shim serves
-  a function only the layers it names, and only objects its account may read: its own buckets, or another
-  account's whose bucket policy grants the account. A function whose package is read with keys
+  a function only the layers its configuration names, and only objects its account may read: its own
+  buckets, or another account's whose bucket policy grants the account. Each configuration keeps its own
+  layers: a published version, or the configuration a failed update leaves running, restarts with the
+  layers it was made with. A function whose package is read with keys
   (`code.source.secret`) fetches its layers with those keys.
 
 Execution roles need the aws-shim with STS enabled (its session sealing key), as `sts:AssumeRole` does.

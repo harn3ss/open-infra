@@ -11,7 +11,8 @@
 #      /opt with the function's own identity, no keys: the handler loads a module the layer provides;
 #   3. a layer the function's account may not read (a platform bucket) is not served: the update fails,
 #      and get-function-configuration answers LastUpdateStatus Failed (FunctionError) while the function
-#      stays Active on its previous configuration, which still answers;
+#      stays Active on its previous configuration, which still answers after a cold start, served its own
+#      layer (each configuration keeps its code and layers, as each Lambda version does);
 #   4. DENIAL: a principal no policy allows is refused create-function with AccessDeniedException.
 # Everything the probe made is removed on exit.
 #
@@ -113,10 +114,12 @@ PY
 BUCKET_MADE=1
 "${A[@]}" s3api put-object --bucket "$BUCKET" --key layer.zip --body "$W/layer.zip" >/dev/null 2>"$W/err" || inconclusive "put-object: $(tail -c 300 "$W/err")"
 
-invoke() { "${A[@]}" --cli-read-timeout 200 lambda invoke --function-name "$FN" --cli-binary-format raw-in-base64-out --payload '{}' "$W/out.json" >/dev/null 2>"$W/inv.err"; }
-# answers <python-expr over r>: wait (up to 4 min) until an invoke's answer satisfies it.
+invoke() { "${A[@]}" --cli-read-timeout 150 lambda invoke --function-name "$FN" --cli-binary-format raw-in-base64-out --payload '{}' "$W/out.json" >/dev/null 2>"$W/inv.err"; }
+# answers <python-expr over r>: wait (up to 6 min, however long each invoke takes) until an invoke's answer
+# satisfies it.
 answers() {
-  for _ in $(seq 1 48); do
+  local until=$((SECONDS + 360))
+  while [ "$SECONDS" -lt "$until" ]; do
     if invoke && python3 -c "import json,sys;r=json.load(open('$W/out.json'));sys.exit(0 if ($1) else 1)" 2>/dev/null; then return 0; fi
     sleep 5
   done
@@ -156,8 +159,13 @@ for _ in $(seq 1 72); do
   sleep 10
 done
 [ "$status" = "Failed FunctionError Active" ] || fail "get-function-configuration answered '$status', want LastUpdateStatus Failed (FunctionError) on an Active function: $(head -c 400 "$W/cfg.json")"
-answers 'r.get("layer") == "from-the-layer"' || fail "the function's previous configuration must still answer"
-ok "LastUpdateStatus Failed (FunctionError), the function Active on its previous configuration, which answers"
+# The previous configuration starts afresh: a cold start fetches its code and layers again, and it must be
+# served its own layer, not the one the failed update names.
+PREV="$(kubectl -n "$NS" get ksvc "$FN" -o jsonpath='{.status.latestReadyRevisionName}')"
+[ -n "$PREV" ] || fail "the function has no ready revision to fall back on"
+kubectl -n "$NS" delete pod -l "serving.knative.dev/revision=$PREV" --wait=false >/dev/null 2>&1
+answers 'r.get("layer") == "from-the-layer"' || fail "the function's previous configuration must still answer, cold-started on its own layer: $(tail -c 300 "$W/inv.err")"
+ok "LastUpdateStatus Failed (FunctionError), the function Active on its previous configuration, which cold-starts on its own layer and answers"
 
 log "4. DENIAL"
 AWS_ACCESS_KEY_ID="$NOBODY_AK" AWS_SECRET_ACCESS_KEY="$NOBODY_SK" "${A[@]}" lambda create-function --function-name "$FN-denied" \
