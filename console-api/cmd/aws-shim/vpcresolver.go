@@ -43,6 +43,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
@@ -856,22 +857,31 @@ func rdata(b dnsmessage.ResourceBody) string {
 
 // Listen opens the resolver's UDP and TCP sockets on addr (one port for both).
 func (s *vpcResolver) Listen(addr string) error {
-	pc, err := net.ListenPacket("udp", addr)
-	if err != nil {
-		return err
+	host, port, splitErr := net.SplitHostPort(addr)
+	anyPort := splitErr == nil && port == "0"
+	// Port 0 picks a free UDP port and then takes the same TCP port, which another socket may hold: pick
+	// again, a few times, rather than fail.
+	for attempt := 0; ; attempt++ {
+		pc, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return err
+		}
+		tcpAddr := addr
+		if anyPort {
+			_, p, _ := net.SplitHostPort(pc.LocalAddr().String())
+			tcpAddr = net.JoinHostPort(host, p)
+		}
+		ln, err := net.Listen("tcp", tcpAddr)
+		if err != nil {
+			_ = pc.Close()
+			if anyPort && attempt < 20 && errors.Is(err, syscall.EADDRINUSE) {
+				continue
+			}
+			return err
+		}
+		s.pc, s.ln = pc, ln
+		return nil
 	}
-	tcpAddr := addr
-	if host, port, err := net.SplitHostPort(addr); err == nil && port == "0" {
-		_, p, _ := net.SplitHostPort(pc.LocalAddr().String())
-		tcpAddr = net.JoinHostPort(host, p)
-	}
-	ln, err := net.Listen("tcp", tcpAddr)
-	if err != nil {
-		_ = pc.Close()
-		return err
-	}
-	s.pc, s.ln = pc, ln
-	return nil
 }
 
 // Addr is the address the resolver listens on.
