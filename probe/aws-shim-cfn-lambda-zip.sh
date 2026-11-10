@@ -244,7 +244,7 @@ ok "python3.14 runs Python 3.14 with AWS_EXECUTION_ENV=AWS_Lambda_python3.14 and
 # A .NET handler is a published build (Lambda takes Code.ZipFile only for Node.js and Python): built for
 # net10.0 with a .NET 10 SDK on PATH, or in Microsoft's SDK image. It declares the Amazon.Lambda.Core
 # interface it reads (the runtime binds it by name), so the build needs no package feed.
-mkdir -p "$W/dnsrc" "$W/dn"
+mkdir -p "$W/dnsrc" "$W/dn10pkg"
 cat > "$W/dnsrc/Handler.csproj" <<'XML'
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
@@ -270,16 +270,16 @@ namespace Probe
 }
 CS
 if command -v dotnet >/dev/null && dotnet --list-sdks 2>/dev/null | grep -q '^10\.'; then
-  DOTNET_CLI_TELEMETRY_OPTOUT=1 dotnet publish "$W/dnsrc/Handler.csproj" -c Release -o "$W/dn" --nologo >"$W/dnb" 2>&1 \
+  DOTNET_CLI_TELEMETRY_OPTOUT=1 dotnet publish "$W/dnsrc/Handler.csproj" -c Release -o "$W/dn10pkg" --nologo >"$W/dnb" 2>&1 \
     || fail "the net10.0 handler did not build: $(tail -c 600 "$W/dnb")"
 elif command -v docker >/dev/null; then
-  docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e DOTNET_CLI_TELEMETRY_OPTOUT=1 -v "$W/dnsrc:/src" -v "$W/dn:/out" -w /src \
+  docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e DOTNET_CLI_TELEMETRY_OPTOUT=1 -v "$W/dnsrc:/src" -v "$W/dn10pkg:/out" -w /src \
     mcr.microsoft.com/dotnet/sdk:10.0 dotnet publish Handler.csproj -c Release -o /out --nologo >"$W/dnb" 2>&1 \
     || inconclusive "the net10.0 handler did not build in the .NET 10 SDK image: $(tail -c 400 "$W/dnb")"
 else
   inconclusive "a .NET 10 SDK (dotnet on PATH, or docker for mcr.microsoft.com/dotnet/sdk:10.0) is needed to build a net10.0 handler"
 fi
-[ -f "$W/dn/Handler.dll" ] || fail "the net10.0 build produced no Handler.dll"
+[ -f "$W/dn10pkg/Handler.dll" ] || fail "the net10.0 build produced no Handler.dll"
 cat > "$W/dn10.yaml" <<YAML
 AWSTemplateFormatVersion: "2010-09-09"
 Resources:
@@ -294,7 +294,7 @@ Resources:
       Handler: Handler::Probe.Fn::Handle
       Role: !GetAtt Exec.Arn
       MemorySize: 512
-      Code: ./dn
+      Code: ./dn10pkg
 Outputs:
   FnName: { Value: !Ref Greeter }
 YAML
