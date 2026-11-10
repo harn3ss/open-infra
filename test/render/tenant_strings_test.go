@@ -163,6 +163,14 @@ func sampleFor(s map[string]any) (any, bool) {
 // a field set on the bare required fields alone is refused by a guard that wants a sibling, and so would go
 // unexercised. Each payload is set over this base.
 var tenantBases = map[string]map[string]any{
+	// An Application with no image is data-only and renders no container: with one, its environment,
+	// ports, resources, volumes, sidecars, secrets and security groups all render (#420).
+	"XApplication": {"image": "registry.example/app:1"},
+	// A bucket is named after its claim unless bucketName says otherwise, and the test's claim name is
+	// too short for an S3 bucket name.
+	"XBucket": {"bucketName": "tenant-bucket-1"},
+	// An EmailSender needs a sender address.
+	"XEmailSender": {"fromAddress": "noreply@example.com"},
 	// A Function needs code or an image; with code, its handler, region, environment, secrets, queues,
 	// security groups and trigger all render (#405).
 	"XFunction": {"code": map[string]any{"runtime": "nodejs22", "handler": "index.handler",
@@ -412,7 +420,7 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 		t.Fatalf("found only %d compositions with inline templates; the glob is wrong", len(comps))
 	}
 	checked, refused := 0, 0
-	perKind := map[string]int{}
+	perKind, freeKind := map[string]int{}, map[string]int{}
 	for _, c := range comps {
 		sc, ok := schemas[c.kind]
 		if !ok {
@@ -421,6 +429,7 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 		}
 		var paths []string
 		freeStringPaths(sc.spec, "", &paths)
+		freeKind[c.kind] += len(paths)
 		for _, p := range paths {
 		payloads:
 			for pi, payload := range tenantPayloads {
@@ -460,9 +469,15 @@ func TestTenantStrings_NeverReachScripts(t *testing.T) {
 		}
 	}
 	t.Logf("rendered %d field payloads; %d refused or not reachable from a base spec", checked, refused)
+	// A kind with free string fields whose base spec does not render is a kind this test does not check:
+	// every payload is "refused" by the guard that refuses the base. Give it a tenantBases entry. (A kind
+	// whose every string field admission constrains has none; a payload its own guard refuses is a pass.)
 	for _, c := range comps {
-		if perKind[c.kind] == 0 {
-			t.Logf("no payload rendered for %s (%s): its base spec reaches none of its templates", c.kind, c.file)
+		if freeKind[c.kind] == 0 || perKind[c.kind] > 0 {
+			continue
+		}
+		if _, err := renderTenant(c.tmpl, tenantCtx(baseFor(c.kind, schemas[c.kind].spec))); err != nil {
+			t.Errorf("%s (%s): its base spec does not render, so none of its %d free string fields is checked; add a tenantBases entry", c.kind, c.file, freeKind[c.kind])
 		}
 	}
 	if checked < 150 {

@@ -222,8 +222,8 @@ func TestApplication_RolelessGoldenCoversTheShapes(t *testing.T) {
 	}
 	for _, want := range []string{
 		"kind: Deployment", "kind: HorizontalPodAutoscaler", "kind: Ingress", "replicas: 3",
-		"ovn.kubernetes.io/logical_switch: private-a", "openinfra.dev/sg-web", "name: log-shipper",
-		"claimName: app-data", "DATABASE_RO_HOST", "MONGODB_URI", "SQLSERVER_URL", "NATS_URL", "app-uploads",
+		`ovn.kubernetes.io/logical_switch: "private-a"`, "openinfra.dev/sg-web", `name: "log-shipper"`,
+		`claimName: "app-data"`, "DATABASE_RO_HOST", "MONGODB_URI", "SQLSERVER_URL", "NATS_URL", "app-uploads",
 	} {
 		if !strings.Contains(g, want) {
 			t.Errorf("the golden never renders %q: a case lost its shape", want)

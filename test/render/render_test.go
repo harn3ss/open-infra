@@ -107,7 +107,7 @@ func TestApplication_WorkloadShapes(t *testing.T) {
 		t.Errorf("an env value with a quote must be JSON-escaped; got:\n%s", grepCtx(full, "GREETING"))
 	}
 	// Only the primary carries envFrom for the app's secret; the sidecar did not opt in.
-	if n := strings.Count(full, "secretRef: { name: app-config, optional: true }"); n != 1 {
+	if n := strings.Count(full, `secretRef: { name: "app-config", optional: true }`); n != 1 {
 		t.Errorf("the app's secret must reach the primary only (1 envFrom), not a sidecar that didn't list it; got %d:\n%s", n, grepCtx(full, "app-config"))
 	}
 }
@@ -825,7 +825,7 @@ func TestFunction_Code(t *testing.T) {
 		}
 		// The code secret is mapped per-key, NOT via envFrom, and the handler must get the service-scoped
 		// endpoint, never the GLOBAL AWS_ENDPOINT_URL (which would misroute non-S3 SDK calls to the gateway).
-		if strings.Contains(out, "secretRef: { name: fn-s3 }") {
+		if strings.Contains(out, "secretRef: { name: fn-s3") || strings.Contains(out, `secretRef: { name: "fn-s3"`) {
 			t.Errorf("code secret should be mapped per-key, not via envFrom:\n%s", out)
 		}
 		if strings.Contains(out, "name: AWS_ENDPOINT_URL,") {

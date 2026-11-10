@@ -4090,10 +4090,12 @@ components:
               description: Arguments to the entrypoint/command (a Pod `args`).
             cpu:
               type: string
+              pattern: ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][-+]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?$
               description: CPU request/limit for the primary container (e.g. "500m" or "2"). When unset, a small default is
                 used (an ECS TaskDefinition container's Cpu maps here).
             memory:
               type: string
+              pattern: ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][-+]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?$
               description: Memory request/limit for the primary container (e.g. "512Mi" or "1Gi"). When unset, a small default
                 is used (an ECS container's Memory maps here).
             startupGraceSeconds:
@@ -4118,6 +4120,7 @@ components:
                 properties:
                   name:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
                     description: Port name (required for a multi-port Service), e.g. smtp.
                   port:
                     type: integer
@@ -4127,7 +4130,11 @@ components:
                     description: The container port it maps to (defaults to port).
                   protocol:
                     type: string
-                    description: TCP (default) or UDP.
+                    enum:
+                    - TCP
+                    - UDP
+                    - SCTP
+                    description: TCP (default), UDP or SCTP.
             quota:
               type: object
               description: "Namespace-wide object-count ceilings (compiles to a ResourceQuota). These are generous safety\
@@ -4160,6 +4167,7 @@ components:
                 properties:
                   name:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
                     description: Name of a volume declared in spec.volumes.
                   mountPath:
                     type: string
@@ -4177,9 +4185,11 @@ components:
                 properties:
                   name:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
                     description: Volume name, referenced by volumeMounts.
                   volume:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$
                     description: 'Optional: name of a kind: Volume (must be mode: Filesystem, same namespace) to mount here
                       as durable storage, instead of an ephemeral emptyDir. Gives a stateful app image a place to keep its
                       data across restarts (#152).'
@@ -4189,6 +4199,7 @@ components:
                 \ for it (e.g. my-api.example.com). Requires spec.port: the Ingress routes to the app's HTTP port."
             subnet:
               type: string
+              pattern: ^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$
               description: "Name of a kind: Subnet to place this app in (kube-ovn). The pod draws its IP from that subnet\
                 \ and inherits its OVN-enforced topological isolation \u2014 the AWS \"launch in this subnet\" model. Omit\
                 \ to use the namespace's default network."
@@ -4468,6 +4479,7 @@ components:
                 properties:
                   name:
                     type: string
+                    pattern: ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
                     description: Sidecar container name (unique within the pod).
                   image:
                     type: string
@@ -4488,10 +4500,12 @@ components:
                     description: Optional container port the sidecar listens on.
                   cpu:
                     type: string
+                    pattern: ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][-+]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?$
                     description: CPU request/limit for this sidecar (e.g. "250m"). When unset, a small default is used (an
                       ECS sidecar container's Cpu maps here).
                   memory:
                     type: string
+                    pattern: ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][-+]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?$
                     description: Memory request/limit for this sidecar (e.g. "256Mi"). When unset, a small default is used
                       (an ECS sidecar container's Memory maps here).
                   env:
@@ -4516,6 +4530,7 @@ components:
                       properties:
                         name:
                           type: string
+                          pattern: ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$
                           description: Name of a volume declared in spec.volumes.
                         mountPath:
                           type: string
@@ -4524,6 +4539,7 @@ components:
                     type: array
                     items:
                       type: string
+                      pattern: ^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$
                     description: "Secrets (by name, in the app's namespace) whose keys this sidecar receives as environment\
                       \ variables. A sidecar receives NO secrets unless listed here \u2014 not the app's spec.secrets and\
                       \ not its bucket credentials \u2014 so a logging agent or proxy never holds the app's credentials. Name\
@@ -4533,12 +4549,15 @@ components:
               type: array
               items:
                 type: string
+                pattern: ^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$
               description: Secret names (in the app's namespace) whose keys are injected into the primary container as environment
                 variables. Sidecars do not receive them; a sidecar lists the secrets it needs in its own sidecars[].secrets.
             securityGroups:
               type: array
               items:
                 type: string
+                maxLength: 60
+                pattern: ^[A-Za-z0-9]([-A-Za-z0-9_.]{0,58}[A-Za-z0-9])?$
               description: SecurityGroup (firewall rule set) names to attach to this app's pods.
         status:
           type: object

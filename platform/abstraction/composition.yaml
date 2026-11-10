@@ -247,13 +247,13 @@ spec:
                           app.kubernetes.io/name: {{ $name }}
                           {{- /* SecurityGroup membership: each attached SG's NetworkPolicy selects this label */}}
                           {{- range $sg := ($spec.securityGroups | default list) }}
-                          openinfra.dev/sg-{{ $sg }}: ""
+                          {{ printf "openinfra.dev/sg-%s" $sg | toJson }}: ""
                           {{- end }}
                         {{- if $spec.subnet }}
                         annotations:
                           # Place the app in a kind: Subnet (kube-ovn): the pod draws its IP from that
                           # subnet and inherits its OVN-enforced isolation — the AWS "in this subnet" model.
-                          ovn.kubernetes.io/logical_switch: {{ $spec.subnet }}
+                          ovn.kubernetes.io/logical_switch: {{ $spec.subnet | toJson }}
                         {{- end }}
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
@@ -293,7 +293,7 @@ spec:
                             {{- if or $spec.volumeMounts $assume }}
                             volumeMounts:
                             {{- range $spec.volumeMounts }}
-                              - { name: {{ .name }}, mountPath: {{ .mountPath }} }
+                              - { name: {{ .name | toJson }}, mountPath: {{ .mountPath | toJson }} }
                             {{- end }}
                             {{- if $assume }}
                               - { name: openinfra-sts-token, mountPath: /var/run/secrets/openinfra, readOnly: true }
@@ -335,7 +335,7 @@ spec:
                               - { name: AWS_DEFAULT_REGION, value: "{{ $appRegion }}" }
                             {{- end }}
                             {{- range $spec.env }}
-                              - { name: {{ .name }}, value: {{ .value | toJson }} }
+                              - { name: {{ .name | toJson }}, value: {{ .value | toJson }} }
                             {{- end }}
                             {{- if $spec.database }}
                             {{- if eq $dbEngine "mongo" }}
@@ -372,7 +372,7 @@ spec:
                             {{- end }}
                             {{- if $spec.queues }}
                               - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
-                              - { name: OPENINFRA_QUEUES, value: "{{ join "," $spec.queues }}" }
+                              - { name: OPENINFRA_QUEUES, value: {{ join "," $spec.queues | toJson }} }
                             {{- end }}
                             {{- end }}
                             {{- $envFrom := list }}
@@ -381,15 +381,15 @@ spec:
                             {{- if $envFrom }}
                             envFrom:
                             {{- range $envFrom }}
-                              - secretRef: { name: {{ . }}, optional: true }
+                              - secretRef: { name: {{ . | toJson }}, optional: true }
                             {{- end }}
                             {{- end }}
                           {{- /* Optional sidecars: auxiliary containers alongside the app (logging,
                                  proxies, an ECS multi-container task). The app above is the primary;
                                  no sidecars -> this renders nothing, so existing apps are unchanged. */}}
                           {{- range $s := ($spec.sidecars | default list) }}
-                          - name: {{ $s.name }}
-                            image: {{ $s.image }}
+                          - name: {{ $s.name | toJson }}
+                            image: {{ $s.image | toJson }}
                             {{- if $s.command }}
                             command: {{ $s.command | toJson }}
                             {{- end }}
@@ -406,13 +406,13 @@ spec:
                             {{- if $s.env }}
                             env:
                             {{- range $s.env }}
-                              - { name: {{ .name }}, value: {{ .value | toJson }} }
+                              - { name: {{ .name | toJson }}, value: {{ .value | toJson }} }
                             {{- end }}
                             {{- end }}
                             {{- if $s.volumeMounts }}
                             volumeMounts:
                             {{- range $s.volumeMounts }}
-                              - { name: {{ .name }}, mountPath: {{ .mountPath }} }
+                              - { name: {{ .name | toJson }}, mountPath: {{ .mountPath | toJson }} }
                             {{- end }}
                             {{- end }}
                             {{- /* Least privilege: a sidecar receives NO secrets by default — not the
@@ -423,7 +423,7 @@ spec:
                             {{- if $s.secrets }}
                             envFrom:
                             {{- range $s.secrets }}
-                              - secretRef: { name: {{ . }}, optional: true }
+                              - secretRef: { name: {{ . | toJson }}, optional: true }
                             {{- end }}
                             {{- end }}
                           {{- end }}
@@ -434,9 +434,9 @@ spec:
                         volumes:
                         {{- range $spec.volumes }}
                           {{- if .volume }}
-                          - { name: {{ .name }}, persistentVolumeClaim: { claimName: {{ .volume }} } }
+                          - { name: {{ .name | toJson }}, persistentVolumeClaim: { claimName: {{ .volume | toJson }} } }
                           {{- else }}
-                          - { name: {{ .name }}, emptyDir: {} }
+                          - { name: {{ .name | toJson }}, emptyDir: {} }
                           {{- end }}
                         {{- end }}
                         {{- if $assume }}

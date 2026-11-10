@@ -23,7 +23,8 @@ func containerBlock(t *testing.T, out, name string) string {
 	t.Helper()
 	lines := strings.Split(out, "\n")
 	for i, ln := range lines {
-		if strings.TrimSpace(ln) != "- name: "+name {
+		// A sidecar's name renders JSON-quoted (#420); the primary's is the app's own.
+		if tl := strings.TrimSpace(ln); tl != "- name: "+name && tl != `- name: "`+name+`"` {
 			continue
 		}
 		indent := len(ln) - len(strings.TrimLeft(ln, " "))
@@ -63,7 +64,7 @@ func TestApplication_SidecarSecretsOptIn(t *testing.T) {
 	// The primary keeps the full bundle: every spec.secrets entry + the bucket credentials.
 	primary := containerBlock(t, out, "app")
 	for _, s := range []string{"app-db", "app-api", "myapp-minio"} {
-		if !strings.Contains(primary, "secretRef: { name: "+s+", optional: true }") {
+		if !strings.Contains(primary, `secretRef: { name: "`+s+`", optional: true }`) {
 			t.Errorf("the primary container must get secret %s via envFrom; got:\n%s", s, primary)
 		}
 	}
@@ -76,7 +77,7 @@ func TestApplication_SidecarSecretsOptIn(t *testing.T) {
 	// A sidecar that opts in gets exactly what it lists — no more.
 	worker := containerBlock(t, out, "worker")
 	for _, s := range []string{"app-db", "myapp-minio"} {
-		if !strings.Contains(worker, "secretRef: { name: "+s+", optional: true }") {
+		if !strings.Contains(worker, `secretRef: { name: "`+s+`", optional: true }`) {
 			t.Errorf("sidecar worker listed %s and must get it via envFrom; got:\n%s", s, worker)
 		}
 	}
@@ -86,7 +87,7 @@ func TestApplication_SidecarSecretsOptIn(t *testing.T) {
 
 	// A listed Secret need not be one of spec.secrets (any Secret in the namespace).
 	proxy := containerBlock(t, out, "proxy")
-	if !strings.Contains(proxy, "secretRef: { name: proxy-tls, optional: true }") {
+	if !strings.Contains(proxy, `secretRef: { name: "proxy-tls", optional: true }`) {
 		t.Errorf("sidecar proxy listed proxy-tls and must get it; got:\n%s", proxy)
 	}
 	for _, s := range []string{"app-db", "app-api", "myapp-minio"} {

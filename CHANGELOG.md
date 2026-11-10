@@ -6,6 +6,18 @@ the product's public contract.
 
 ## Unreleased
 
+### Security — an application's settings can no longer inject into its containers
+- An application's environment variable names, mount paths, secrets, queues, and its sidecars' images
+  and environment names are rendered escaped, as one literal value each. Before, a crafted environment
+  variable name could add a `valueFrom` that read another Secret in the application's namespace.
+- Identifiers are checked when an application is created or changed:
+  - port, volume and sidecar names are lowercase letters, digits and hyphens;
+  - a port's protocol is `TCP`, `UDP` or `SCTP`;
+  - cpu and memory are quantities such as `500m` or `512Mi`;
+  - secret, volume and subnet references are resource names;
+  - security group names are label-safe names.
+- No running application changes: every live application renders the same objects as before.
+
 ### Security — a function's settings can no longer inject into its container
 - Every string a function's author sets is now rendered escaped, as one literal value: environment
   variable names and values, the handler, the code source, the region, secrets, queues, security groups

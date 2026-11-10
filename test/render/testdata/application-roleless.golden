@@ -181,12 +181,12 @@ spec:
           metadata:
             labels:
               app.kubernetes.io/name: web-full
-              openinfra.dev/sg-web: ""
-              openinfra.dev/sg-db-clients: ""
+              "openinfra.dev/sg-web": ""
+              "openinfra.dev/sg-db-clients": ""
             annotations:
               # Place the app in a kind: Subnet (kube-ovn): the pod draws its IP from that
               # subnet and inherits its OVN-enforced isolation — the AWS "in this subnet" model.
-              ovn.kubernetes.io/logical_switch: private-a
+              ovn.kubernetes.io/logical_switch: "private-a"
           spec:
             # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
             enableServiceLinks: false
@@ -216,11 +216,11 @@ spec:
                 readinessProbe: { tcpSocket: { port: 8080 } }
                 livenessProbe:  { tcpSocket: { port: 8080 } }
                 env:
-                  - { name: MODE, value: "fast" }
-                  - { name: Q, value: "say \"hi\"" }
+                  - { name: "MODE", value: "fast" }
+                  - { name: "Q", value: "say \"hi\"" }
                 envFrom:
-                  - secretRef: { name: api-config, optional: true }
-                  - secretRef: { name: api-keys, optional: true }
+                  - secretRef: { name: "api-config", optional: true }
+                  - secretRef: { name: "api-keys", optional: true }
 ---
 # --- Service --- (only when the app exposes a port; a port-less worker has none).
 #     The HTTP port (80 -> spec.port) plus any spec.additionalPorts — e.g. an SMTP 1025
@@ -800,8 +800,8 @@ spec:
                   requests: { cpu: 50m, memory: 64Mi }
                   limits: { cpu: 500m, memory: 512Mi }
                 env:
-                  - { name: MODE, value: "fast" }
-                  - { name: Q, value: "say \"hi\"" }
+                  - { name: "MODE", value: "fast" }
+                  - { name: "Q", value: "say \"hi\"" }
                   - { name: NATS_URL, value: "nats://nats.nats.svc.cluster.local:4222" }
                   - { name: OPENINFRA_QUEUES, value: "orders,events" }
 ---
@@ -1184,8 +1184,8 @@ spec:
                   requests: { cpu: 50m, memory: 64Mi }
                   limits: { cpu: 500m, memory: 512Mi }
                 volumeMounts:
-                  - { name: scratch, mountPath: /tmp/work }
-                  - { name: data, mountPath: /var/lib/app }
+                  - { name: "scratch", mountPath: "/tmp/work" }
+                  - { name: "data", mountPath: "/var/lib/app" }
                 # Health checks auto-injected — k8s self-heals. The startup probe gives a slow
                 # first boot (DB init, AV signature download) time to begin listening before
                 # liveness can kill it: failureThreshold*10s ≈ startupGraceSeconds (default 150).
@@ -1195,21 +1195,21 @@ spec:
                 readinessProbe: { tcpSocket: { port: 3000 } }
                 livenessProbe:  { tcpSocket: { port: 3000 } }
                 envFrom:
-                  - secretRef: { name: sidecars-volumes-minio, optional: true }
-              - name: log-shipper
-                image: fluent/fluent-bit:3
+                  - secretRef: { name: "sidecars-volumes-minio", optional: true }
+              - name: "log-shipper"
+                image: "fluent/fluent-bit:3"
                 # $s.cpu/memory (an ECS sidecar container's Cpu/Memory) override the defaults.
                 resources:
                   requests: { cpu: 25m, memory: 32Mi }
                   limits: { cpu: 500m, memory: 512Mi }
                 env:
-                  - { name: LEVEL, value: "info" }
+                  - { name: "LEVEL", value: "info" }
                 volumeMounts:
-                  - { name: scratch, mountPath: /logs }
+                  - { name: "scratch", mountPath: "/logs" }
                 envFrom:
-                  - secretRef: { name: shipper-token, optional: true }
-              - name: proxy
-                image: envoyproxy/envoy:v1.30
+                  - secretRef: { name: "shipper-token", optional: true }
+              - name: "proxy"
+                image: "envoyproxy/envoy:v1.30"
                 command: ["envoy"]
                 args: ["-c","/etc/envoy.yaml"]
                 ports: [ { containerPort: 9901 } ]
@@ -1218,8 +1218,8 @@ spec:
                   requests: { cpu: 100m, memory: 128Mi }
                   limits: { cpu: 100m, memory: 128Mi }
             volumes:
-              - { name: scratch, emptyDir: {} }
-              - { name: data, persistentVolumeClaim: { claimName: app-data } }
+              - { name: "scratch", emptyDir: {} }
+              - { name: "data", persistentVolumeClaim: { claimName: "app-data" } }
 ---
 # --- Service --- (only when the app exposes a port; a port-less worker has none).
 #     The HTTP port (80 -> spec.port) plus any spec.additionalPorts — e.g. an SMTP 1025
@@ -4722,7 +4722,7 @@ spec:
                     valueFrom:
                       secretKeyRef: { name: observed-composed-db-app, key: uri }
                 envFrom:
-                  - secretRef: { name: observed-composed-minio, optional: true }
+                  - secretRef: { name: "observed-composed-minio", optional: true }
 ---
 # --- Service --- (only when the app exposes a port; a port-less worker has none).
 #     The HTTP port (80 -> spec.port) plus any spec.additionalPorts — e.g. an SMTP 1025
