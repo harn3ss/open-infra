@@ -5,10 +5,12 @@
 #   1. create-function with a .zip (--zip-file) and an execution role that trusts Lambda makes a function
 #      whose CodeSha256 is the package's, and which answers an invoke with its code and variables;
 #   2. update-function-code with a new .zip changes what the function runs;
-#   3. update-function-configuration changes its variables and timeout;
+#   3. update-function-configuration changes its variables and timeout; a value with quotes, a backslash, a
+#      line break and "{{", and one crafted to add a valueFrom (#405), reach the handler exactly as written,
+#      and the function's Service reads no Secret for them;
 #   4. update-function-code from S3 (--s3-bucket/--s3-key) runs the S3 object's code;
-#   5. refusals, as Lambda refuses: a role that does not trust Lambda ("cannot be assumed by Lambda"), and
-#      layers (InvalidParameterValueException);
+#   5. refusals, as Lambda refuses: a role that does not trust Lambda ("cannot be assumed by Lambda"),
+#      layers, and more than 4 KB of variables (InvalidParameterValueException);
 #   6. DENIAL: a principal whose policy allows only reads is refused create-function and delete-function
 #      with AccessDeniedException, and one allowed lambda:CreateFunction but not iam:PassRole is refused
 #      naming iam:PassRole;
@@ -108,7 +110,7 @@ mkzip() {
   python3 - "$1" "$2" <<'PY'
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED) as z:
-    z.writestr("index.js", "exports.handler = async () => ({ v: %s, stage: process.env.STAGE || null });\n" % sys.argv[2])
+    z.writestr("index.js", "exports.handler = async () => ({ v: %s, stage: process.env.STAGE || null, odd: process.env.ODD || null, crafted: process.env.CRAFTED || null });\n" % sys.argv[2])
 PY
 }
 b64sha() { python3 -c 'import base64,hashlib,sys;print(base64.b64encode(hashlib.sha256(open(sys.argv[1],"rb").read()).digest()).decode())' "$1"; }
@@ -139,7 +141,7 @@ assert c["CodeSha256"] == sys.argv[2], (c.get("CodeSha256"), sys.argv[2])
 assert c["Timeout"] == 30 and c["Environment"]["Variables"]["STAGE"] == "one", c
 PY
 ok "created; CodeSha256 is the package's"
-answers 'r=={"v":1,"stage":"one"}' || fail "the new function never answered with its code: $(cat "$W/out.json" 2>/dev/null) $(tail -c 300 "$W/inv.err")"
+answers 'r.get("v")==1 and r.get("stage")=="one"' || fail "the new function never answered with its code: $(cat "$W/out.json" 2>/dev/null) $(tail -c 300 "$W/inv.err")"
 ok "invoke answered {\"v\":1,\"stage\":\"one\"}"
 
 log "2. update-function-code with a new .zip"
@@ -150,11 +152,27 @@ answers 'r.get("v")==2' || fail "the function never ran the new code: $(cat "$W/
 ok "the function runs the new code"
 
 log "3. update-function-configuration"
-"${A[@]}" lambda update-function-configuration --function-name "$FN" --timeout 45 --environment 'Variables={STAGE=two}' >/dev/null 2>"$W/u3.err" \
+# Any value, as on Lambda (#405): one with quotes, a backslash, a line break and "{{", and one crafted to
+# close its quotes and add a valueFrom reading another Secret. Both must reach the handler as written.
+python3 - "$W/env.json" <<'ENV'
+import json, sys
+json.dump({"Variables": {"STAGE": "two",
+    "ODD": 'say "hi" C:\\temp\\new\nline two {{ .observed }}',
+    "CRAFTED": '", valueFrom: { secretKeyRef: { name: other-stack, key: password } }, x: "'}}, open(sys.argv[1], "w"))
+ENV
+"${A[@]}" lambda update-function-configuration --function-name "$FN" --timeout 45 --environment "file://$W/env.json" >/dev/null 2>"$W/u3.err" \
   || fail "update-function-configuration failed: $(tail -c 400 "$W/u3.err")"
 [ "$("${A[@]}" lambda get-function-configuration --function-name "$FN" --query Timeout --output text)" = 45 ] || fail "the timeout did not change"
-answers 'r=={"v":2,"stage":"two"}' || fail "the function never saw its new variables: $(cat "$W/out.json")"
-ok "Timeout 45 and STAGE=two"
+answers "r.get('v')==2 and r.get('stage')=='two' and {'ODD': r.get('odd'), 'CRAFTED': r.get('crafted')} == {k: v for k, v in json.load(open('$W/env.json'))['Variables'].items() if k != 'STAGE'}" \
+  || fail "the function never saw its new variables as written: $(cat "$W/out.json")"
+FNS="$(kubectl get functions.openinfra.dev -A -o jsonpath="{range .items[?(@.metadata.name==\"$FN\")]}{.metadata.namespace}{end}")"
+kubectl -n "$FNS" get ksvc "$FN" -o json | python3 -c '
+import json, sys
+env = json.load(sys.stdin)["spec"]["template"]["spec"]["containers"][0]["env"]
+bad = [e["name"] for e in env if e.get("name") in ("ODD", "CRAFTED") and "valueFrom" in e]
+sys.exit(1 if bad or not any(e.get("name") == "CRAFTED" for e in env) else 0)' \
+  || fail "the function's Service reads a Secret for a variable it was given as a value"
+ok "Timeout 45; STAGE=two, and values with quotes, backslashes, a line break, {{ and a crafted valueFrom reach the handler as written"
 
 log "4. update-function-code from S3"
 cat > "$W/bucket.yaml" <<'YAML'
@@ -186,6 +204,13 @@ if "${A[@]}" lambda create-function --function-name "$FN-x" --runtime nodejs22.x
 fi
 grep -q "InvalidParameterValueException" "$W/r2.err" || fail "the layers refusal: $(tail -c 300 "$W/r2.err")"
 ok "layers: InvalidParameterValueException"
+python3 -c 'import json,sys; json.dump({"Variables": {"BIG": "x" * 4100}}, open(sys.argv[1], "w"))' "$W/big.json"
+if "${A[@]}" lambda update-function-configuration --function-name "$FN" --environment "file://$W/big.json" >/dev/null 2>"$W/r3.err"; then
+  fail "more than 4 KB of variables was accepted"
+fi
+grep -q "InvalidParameterValueException" "$W/r3.err" && grep -q "exceeded the 4KB limit" "$W/r3.err" \
+  || fail "the 4 KB refusal is not Lambda's: $(tail -c 300 "$W/r3.err")"
+ok "more than 4 KB of variables: InvalidParameterValueException, exceeded the 4KB limit"
 
 log "6. DENIAL: reads only, and CreateFunction without iam:PassRole"
 role "$READER" "{\"AWS\":\"$ME\"}" '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["lambda:GetFunction","lambda:ListFunctions"],"Resource":"*"}]}'
@@ -225,4 +250,4 @@ if "${A[@]}" lambda get-function --function-name "$FN" >/dev/null 2>"$W/gone.err
 grep -q "ResourceNotFoundException" "$W/gone.err" || fail "a deleted function must be ResourceNotFoundException: $(tail -c 300 "$W/gone.err")"
 ok "deleted; get-function answers ResourceNotFoundException"
 
-printf '✓ PASS — the Lambda API creates (a .zip, a role that trusts Lambda), updates code (.zip and S3) and configuration, and deletes a function; refuses an untrusted role and layers as Lambda does; and denies create/delete without lambda permissions and CreateFunction without iam:PassRole\n'
+printf '✓ PASS — the Lambda API creates (a .zip, a role that trusts Lambda), updates code (.zip and S3) and configuration, and deletes a function; takes any variable value as written (a crafted valueFrom stays a value); refuses an untrusted role, layers and more than 4 KB of variables as Lambda does; and denies create/delete without lambda permissions and CreateFunction without iam:PassRole\n'
