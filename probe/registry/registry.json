@@ -1055,7 +1055,8 @@
         "lambda-timeout",
         "lambda-api",
         "lambda-versions",
-        "lambda-account-invoke"
+        "lambda-account-invoke",
+        "lambda-layers"
       ],
       "refused": [],
       "service": "Lambda",
@@ -1243,7 +1244,9 @@
       "tier": "proven"
     },
     "s3": {
-      "actions": [],
+      "actions": [
+        "s3:GetObject"
+      ],
       "conditional": false,
       "deployableTypes": [
         "AWS::S3::Bucket",

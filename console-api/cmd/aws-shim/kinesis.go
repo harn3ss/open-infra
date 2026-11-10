@@ -72,9 +72,9 @@ func writeKinesisJSON(w http.ResponseWriter, requestID string, obj any) {
 	_ = json.NewEncoder(w).Encode(obj)
 }
 
-func (h *kinesisHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeKinesisError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *kinesisHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeKinesisError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 func verbForKinesisOp(op string) (string, bool) {

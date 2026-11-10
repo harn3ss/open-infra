@@ -12,7 +12,24 @@
 // OPENINFRA_CODE_URL = the function's stored deployment package, served by the aws-shim (never both),
 // fetched with the function's own identity token, no keys: OPENINFRA_CODE_SHA256 = its recorded SHA-256
 // (64 lowercase hex), checked before unpacking; OPENINFRA_CODE_TOKEN_FILE = the projected identity token,
-// sent as "Authorization: Bearer <token>". OPENINFRA_LAYERS = JSON [{bucket,key}] into /opt.
+// sent as "Authorization: Bearer <token>". OPENINFRA_LAYERS = JSON [{bucket,key}] into /opt (merged, in
+// order), each fetched from S3/MinIO with the code bucket's keys, unless OPENINFRA_LAYERS_URL = the
+// function's layers, served by the aws-shim: layer i (0-based, in the order of OPENINFRA_LAYERS) is
+// GET {OPENINFRA_LAYERS_URL}?layer={i}, fetched with the function's own identity token and no keys
+// (OPENINFRA_LAYERS_TOKEN_FILE = the projected identity token, sent as "Authorization: Bearer <token>"),
+// retried and refused as the stored deployment package is, and unpacked into /opt with the same entry checks
+// (no SHA-256: the aws-shim serves the layer version the function names).
+//
+// The execution role's credentials are in the environment as Lambda hands them over (RoleCredentials.cs):
+// when AWS_ROLE_ARN, AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ENDPOINT_URL_STS are set and AWS_ACCESS_KEY_ID is
+// not, the bootstrap calls sts:AssumeRoleWithWebIdentity on AWS_ENDPOINT_URL_STS at cold start (after the
+// code and layers are unpacked, before the handler assembly loads) and sets AWS_ACCESS_KEY_ID,
+// AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN (and AWS_CREDENTIAL_EXPIRATION, for the SDKs that read it to
+// know when to read them again; the AWS SDK for .NET reads them at every call), so code that reads
+// credentials as it loads finds them. Before an invocation, when they would expire within 5 minutes of its Timeout's end, they are
+// refreshed the same way (no call otherwise). A failed call is logged in one line and never fails the
+// function: at cold start nothing is set (the SDK's web identity provider still works), at a refresh the
+// current credentials are kept (and the next try waits 30 seconds). The values are never logged.
 //
 // Handler format (AWS .NET convention): OPENINFRA_HANDLER = "Assembly::Namespace.Type::Method".
 // Supported signatures: Method(TIn) and Method(TIn, ILambdaContext), sync or Task/Task<T>. TIn is the
@@ -84,6 +101,7 @@ static class Bootstrap
         try
         {
             await FetchCodeAsync();
+            await RoleCredentials.InitAsync(); // the role's credentials in the environment before the handler loads
             LoadHandler();
         }
         catch (CodeSourceException e)
@@ -111,6 +129,7 @@ static class Bootstrap
         var bucket = Environment.GetEnvironmentVariable("OPENINFRA_CODE_BUCKET");
         var codeUrl = Environment.GetEnvironmentVariable("OPENINFRA_CODE_URL");
         var layersRaw = Environment.GetEnvironmentVariable("OPENINFRA_LAYERS") ?? "";
+        var layersUrl = Environment.GetEnvironmentVariable("OPENINFRA_LAYERS_URL") ?? "";
         if (!string.IsNullOrEmpty(codeUrl))
         {
             if (!string.IsNullOrEmpty(bucket))
@@ -118,22 +137,28 @@ static class Bootstrap
                     "package comes from one code source (its stored package or an S3 object), not both");
             await FetchPackageAsync(codeUrl, TaskDir);
         }
-        if (string.IsNullOrEmpty(bucket) && string.IsNullOrEmpty(layersRaw)) return;
+        // The layers, from the aws-shim with the function's identity when OPENINFRA_LAYERS_URL says so: never
+        // with the bucket's keys.
+        bool urlLayers = layersRaw != "" && layersUrl != "";
+        bool s3Layers = layersRaw != "" && !urlLayers;
+        if (!string.IsNullOrEmpty(bucket) || s3Layers)
+        {
+            var cfg = new AmazonS3Config { ForcePathStyle = true };
+            // Service-scoped AWS_ENDPOINT_URL_S3 first (so the handler's global endpoint isn't forced to the
+            // S3 gateway); fall back to the legacy global AWS_ENDPOINT_URL.
+            var endpoint = Environment.GetEnvironmentVariable("AWS_ENDPOINT_URL_S3") ?? Environment.GetEnvironmentVariable("AWS_ENDPOINT_URL");
+            if (!string.IsNullOrEmpty(endpoint)) cfg.ServiceURL = endpoint;
+            else cfg.RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(
+                Environment.GetEnvironmentVariable("AWS_REGION") ?? "us-east-1");
+            using var s3 = new AmazonS3Client(cfg);
 
-        var cfg = new AmazonS3Config { ForcePathStyle = true };
-        // Service-scoped AWS_ENDPOINT_URL_S3 first (so the handler's global endpoint isn't forced to the
-        // S3 gateway); fall back to the legacy global AWS_ENDPOINT_URL.
-        var endpoint = Environment.GetEnvironmentVariable("AWS_ENDPOINT_URL_S3") ?? Environment.GetEnvironmentVariable("AWS_ENDPOINT_URL");
-        if (!string.IsNullOrEmpty(endpoint)) cfg.ServiceURL = endpoint;
-        else cfg.RegionEndpoint = Amazon.RegionEndpoint.GetBySystemName(
-            Environment.GetEnvironmentVariable("AWS_REGION") ?? "us-east-1");
-        using var s3 = new AmazonS3Client(cfg);
-
-        if (!string.IsNullOrEmpty(bucket))
-            await FetchUnzipAsync(s3, bucket, Environment.GetEnvironmentVariable("OPENINFRA_CODE_KEY") ?? "", TaskDir);
-        if (!string.IsNullOrEmpty(layersRaw))
-            foreach (var layer in JsonSerializer.Deserialize<List<Layer>>(layersRaw))
-                await FetchUnzipAsync(s3, layer.bucket, layer.key ?? "", OptDir);
+            if (!string.IsNullOrEmpty(bucket))
+                await FetchUnzipAsync(s3, bucket, Environment.GetEnvironmentVariable("OPENINFRA_CODE_KEY") ?? "", TaskDir);
+            if (s3Layers)
+                foreach (var layer in JsonSerializer.Deserialize<List<Layer>>(layersRaw))
+                    await FetchUnzipAsync(s3, layer.bucket, layer.key ?? "", OptDir);
+        }
+        if (urlLayers) await FetchLayersAsync(layersUrl, layersRaw, OptDir);
     }
 
     sealed class Layer { public string bucket { get; set; } public string key { get; set; } }
@@ -160,33 +185,72 @@ static class Bootstrap
     // serves a pod only its own function's package; the shim may be restarting, so a network error, a 5xx
     // or a 429 is retried (5 attempts, 1s/2s/4s/8s apart), while a refusal (400/401/403/404, any other
     // status) fails start at once. The token is re-read on every attempt (kubelet rotates it), never logged.
-    const long CodeMaxBytes = 64L * 1024 * 1024;
+    // The function's layers (OPENINFRA_LAYERS_URL) are fetched the same way.
+    const long CodeMaxBytes = 64L * 1024 * 1024; // a deployment package or a layer .zip
     const int CodeAttempts = 5;
     static readonly TimeSpan CodeAttemptTimeout = TimeSpan.FromMinutes(2); // a stalled attempt is retried
+    const string Package = "the deployment package";
 
     // A start failure whose message says it all: logged alone, without a stack trace.
     sealed class CodeSourceException : Exception { public CodeSourceException(string message) : base(message) { } }
     // A network failure, a 5xx or a 429 from the code URL: worth another attempt.
     sealed class RetryableFetchException : Exception { public RetryableFetchException(string message) : base(message) { } }
 
-    static string ReadToken(string tokenFile)
+    // ReadToken reads the function's identity token from tokenFile, the file the env var tokenVar names.
+    static string ReadToken(string tokenFile, string tokenVar = "OPENINFRA_CODE_TOKEN_FILE")
     {
         string token;
         try { token = File.ReadAllText(tokenFile).Trim(); }
         catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
         {
-            throw new CodeSourceException($"cannot read OPENINFRA_CODE_TOKEN_FILE {tokenFile}: {e.Message}");
+            throw new CodeSourceException($"cannot read {tokenVar} {tokenFile}: {e.Message}");
         }
         if (token.Length == 0)
-            throw new CodeSourceException($"OPENINFRA_CODE_TOKEN_FILE {tokenFile} is empty: the function's identity token is missing");
+            throw new CodeSourceException($"{tokenVar} {tokenFile} is empty: the function's identity token is missing");
         return token;
+    }
+
+    // HttpUri parses the URL the env var urlVar holds: http or https, with a host, else start fails.
+    static Uri HttpUri(string raw, string urlVar)
+    {
+        if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Host) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            throw new CodeSourceException($"{urlVar} must be an http or https URL, got '{raw}'");
+        return uri;
+    }
+
+    // IdentityClient is the client for a request that carries the function's identity token: no proxy (the
+    // token goes to the aws-shim and nowhere else) and no redirects (a 3xx fails start).
+    static HttpClient IdentityClient() =>
+        new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false, ConnectTimeout = TimeSpan.FromSeconds(30) })
+        {
+            Timeout = Timeout.InfiniteTimeSpan, // each attempt carries its own deadline
+        };
+
+    // FetchWithIdentityAsync GETs one .zip from the aws-shim into tmp with the function's identity token,
+    // read afresh from tokenFile for every attempt: a network error, a 5xx or a 429 is retried (CodeAttempts
+    // attempts, 1s/2s/4s/8s apart), any other refusal fails at once. Returns (size, sha256 hex). what names it
+    // in errors, name in the retry lines.
+    static async Task<(long, string)> FetchWithIdentityAsync(HttpClient client, Uri uri, string shown, string tokenFile, string tokenVar,
+        string tmp, string what = Package, string name = Package)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try { return await GetPackageOnceAsync(client, uri, ReadToken(tokenFile, tokenVar), tmp, what); }
+            catch (RetryableFetchException e)
+            {
+                if (attempt >= CodeAttempts)
+                    throw new CodeSourceException($"could not fetch {what} from {shown} in {CodeAttempts} attempts: {e.Message}");
+                int delay = 1 << (attempt - 1); // 1s, 2s, 4s, 8s
+                Console.Error.WriteLine($"open-infra-runtime: fetching {name}: {e.Message}; retrying in {delay}s (attempt {attempt} of {CodeAttempts})");
+                await Task.Delay(TimeSpan.FromSeconds(delay));
+            }
+        }
     }
 
     static async Task FetchPackageAsync(string codeUrl, string dest)
     {
-        if (!Uri.TryCreate(codeUrl, UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Host) ||
-            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-            throw new CodeSourceException($"OPENINFRA_CODE_URL must be an http or https URL, got '{codeUrl}'");
+        var uri = HttpUri(codeUrl, "OPENINFRA_CODE_URL");
         var want = Environment.GetEnvironmentVariable("OPENINFRA_CODE_SHA256") ?? "";
         if (want.Length != 64 || !want.All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
             throw new CodeSourceException("OPENINFRA_CODE_URL needs OPENINFRA_CODE_SHA256, the deployment package's recorded SHA-256 " +
@@ -196,29 +260,12 @@ static class Bootstrap
             throw new CodeSourceException("OPENINFRA_CODE_URL needs OPENINFRA_CODE_TOKEN_FILE, the path of the function's identity token; it is not set");
         ReadToken(tokenFile); // unreadable or empty fails start before any request
 
-        // No proxy (the token goes to the aws-shim and nowhere else) and no redirects (a 3xx fails start).
-        using var client = new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false, ConnectTimeout = TimeSpan.FromSeconds(30) })
-        {
-            Timeout = Timeout.InfiniteTimeSpan, // each attempt carries its own deadline
-        };
+        using var client = IdentityClient();
         Directory.CreateDirectory(dest);
         var tmp = Path.Combine(Path.GetTempPath(), $"oi-{Environment.ProcessId}-{Guid.NewGuid():N}.zip");
         try
         {
-            long size = 0;
-            string got = null;
-            for (int attempt = 1; got == null; attempt++)
-            {
-                try { (size, got) = await GetPackageOnceAsync(client, uri, ReadToken(tokenFile), tmp); }
-                catch (RetryableFetchException e)
-                {
-                    if (attempt >= CodeAttempts)
-                        throw new CodeSourceException($"could not fetch the deployment package from {codeUrl} in {CodeAttempts} attempts: {e.Message}");
-                    int delay = 1 << (attempt - 1); // 1s, 2s, 4s, 8s
-                    Console.Error.WriteLine($"open-infra-runtime: fetching the deployment package: {e.Message}; retrying in {delay}s (attempt {attempt} of {CodeAttempts})");
-                    await Task.Delay(TimeSpan.FromSeconds(delay));
-                }
-            }
+            var (size, got) = await FetchWithIdentityAsync(client, uri, codeUrl, tokenFile, "OPENINFRA_CODE_TOKEN_FILE", tmp);
             if (got != want)
                 throw new CodeSourceException($"the deployment package does not match its recorded SHA-256 (recorded {want[..12]}, fetched {got[..12]})");
             ExtractGuarded(tmp, dest);
@@ -230,10 +277,54 @@ static class Bootstrap
         }
     }
 
-    // One GET of the package, streamed into tmp while it is hashed and held to the size cap. Returns
-    // (size, sha256 hex); throws RetryableFetchException for a network failure / 5xx / 429, else
-    // CodeSourceException.
-    static async Task<(long, string)> GetPackageOnceAsync(HttpClient client, Uri uri, string token, string tmp)
+    // FetchLayersAsync fetches the function's layers from the aws-shim (OPENINFRA_LAYERS_URL) with its identity
+    // token, never with keys, and unpacks them in order (each over the last) into dest, as the stored
+    // deployment package is fetched and unpacked. layersRaw is OPENINFRA_LAYERS: layer i is ?layer=i.
+    static async Task FetchLayersAsync(string layersUrl, string layersRaw, string dest)
+    {
+        HttpUri(layersUrl, "OPENINFRA_LAYERS_URL");
+        int count;
+        try
+        {
+            using var doc = JsonDocument.Parse(layersRaw);
+            count = doc.RootElement.ValueKind == JsonValueKind.Array ? doc.RootElement.GetArrayLength() : -1;
+        }
+        catch (JsonException) { count = -1; }
+        if (count < 0) throw new CodeSourceException("OPENINFRA_LAYERS must be a JSON array of the function's layers");
+        const string tokenVar = "OPENINFRA_LAYERS_TOKEN_FILE";
+        var tokenFile = Environment.GetEnvironmentVariable(tokenVar) ?? "";
+        if (tokenFile == "")
+            throw new CodeSourceException("OPENINFRA_LAYERS_URL needs OPENINFRA_LAYERS_TOKEN_FILE, the path of the function's identity token; it is not set");
+        ReadToken(tokenFile, tokenVar); // unreadable or empty fails start before any request
+
+        using var client = IdentityClient();
+        Directory.CreateDirectory(dest);
+        for (int i = 0; i < count; i++)
+        {
+            var shown = layersUrl + (layersUrl.Contains('?') ? "&" : "?") + "layer=" + i.ToString(CultureInfo.InvariantCulture);
+            var tmp = Path.Combine(Path.GetTempPath(), $"oi-{Environment.ProcessId}-{Guid.NewGuid():N}.zip");
+            long size;
+            try
+            {
+                (size, _) = await FetchWithIdentityAsync(client, new Uri(shown), shown, tokenFile, tokenVar, tmp, "the layer", $"layer {i}");
+                ExtractGuarded(tmp, dest, "the layer");
+            }
+            catch (Exception e) // CodeSourceException, or a .zip that cannot be read
+            {
+                throw new CodeSourceException($"cannot load layer {i} into {dest}: {e.Message}");
+            }
+            finally
+            {
+                try { File.Delete(tmp); } catch { /* never written */ }
+            }
+            Console.Error.WriteLine($"open-infra-runtime: unpacked layer {i} ({size} bytes) into {dest}");
+        }
+    }
+
+    // One GET of a .zip (what: the deployment package or a layer), streamed into tmp while it is hashed and
+    // held to the size cap. Returns (size, sha256 hex); throws RetryableFetchException for a network failure /
+    // 5xx / 429, else CodeSourceException.
+    static async Task<(long, string)> GetPackageOnceAsync(HttpClient client, Uri uri, string token, string tmp, string what = Package)
     {
         using var cts = new CancellationTokenSource(CodeAttemptTimeout);
         using var req = new HttpRequestMessage(HttpMethod.Get, uri);
@@ -257,7 +348,7 @@ static class Bootstrap
             }
             var declared = resp.Content.Headers.ContentLength;
             if (declared > CodeMaxBytes)
-                throw new CodeSourceException($"the deployment package is {declared} bytes, over the {CodeMaxBytes} byte (64 MiB) limit");
+                throw new CodeSourceException($"{what} is {declared} bytes, over the {CodeMaxBytes} byte (64 MiB) limit");
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             long size = 0;
             var buf = new byte[81920];
@@ -282,7 +373,7 @@ static class Bootstrap
                         if (n == 0) break;
                         size += n;
                         if (size > CodeMaxBytes)
-                            throw new CodeSourceException($"the deployment package is over the {CodeMaxBytes} byte (64 MiB) limit");
+                            throw new CodeSourceException($"{what} is over the {CodeMaxBytes} byte (64 MiB) limit");
                         hash.AppendData(buf, 0, n);
                         await outFile.WriteAsync(buf.AsMemory(0, n));
                     }
@@ -311,7 +402,7 @@ static class Bootstrap
 
     // Unpack the package into dest, refusing the WHOLE package if any entry is absolute or has a ".."
     // segment (ExtractToDirectory would stop only at an entry that escapes, part-way through unpacking).
-    static void ExtractGuarded(string zipPath, string dest)
+    static void ExtractGuarded(string zipPath, string dest, string what = Package)
     {
         var root = Path.GetFullPath(dest);
         var rootPrefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
@@ -322,7 +413,7 @@ static class Bootstrap
             var full = Path.GetFullPath(Path.Combine(root, name));
             if (name.StartsWith('/') || name.StartsWith('\\') || name.Split('/', '\\').Contains("..") ||
                 (full != root && !full.StartsWith(rootPrefix, StringComparison.Ordinal)))
-                throw new CodeSourceException($"the deployment package has an entry that would unpack outside {dest}, refused: '{name}'");
+                throw new CodeSourceException($"{what} has an entry that would unpack outside {dest}, refused: '{name}'");
         }
         zip.ExtractToDirectory(dest, overwriteFiles: true);
     }
@@ -480,6 +571,15 @@ static class Bootstrap
             if (req.HttpMethod == "GET" && req.Url.AbsolutePath == "/_openinfra_health")
             {
                 Send(ctx, 200, "{\"ok\":true}"); return;
+            }
+            // The role's credentials, refreshed first when they near their expiry. The wait is the platform's,
+            // not the invocation's: it is not counted against its Timeout.
+            var refreshing = RoleCredentials.RefreshIfDueAsync();
+            if (!refreshing.IsCompleted)
+            {
+                var before = Stopwatch.GetTimestamp();
+                await refreshing;
+                received += Stopwatch.GetTimestamp() - before;
             }
             string body;
             using (var sr = new StreamReader(req.InputStream, req.ContentEncoding ?? Encoding.UTF8)) body = await sr.ReadToEndAsync();

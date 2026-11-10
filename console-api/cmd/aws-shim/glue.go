@@ -88,10 +88,10 @@ func writeGlueJSON(w http.ResponseWriter, requestID string, obj any) {
 	_ = json.NewEncoder(w).Encode(obj)
 }
 
-func (h *glueHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
+func (h *glueHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
 	// AWS surfaces a SigV4 mismatch as InvalidSignatureException before the service sees it.
-	writeGlueError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+	writeGlueError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 // verbForGlueOp maps a Glue operation to the coarse RBAC verb its SubjectAccessReview checks (catalog

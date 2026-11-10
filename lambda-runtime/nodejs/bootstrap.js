@@ -21,10 +21,27 @@
 //     never together with OPENINFRA_CODE_BUCKET. Fetched with the function's own identity token, no keys:
 //     OPENINFRA_CODE_SHA256 = the package's recorded SHA-256 (64 lowercase hex), checked before unpacking
 //     OPENINFRA_CODE_TOKEN_FILE = the projected identity token, sent as "Authorization: Bearer <token>"
-//   OPENINFRA_LAYERS = JSON [{bucket,key}] extracted (merged, in order) into /opt — optional
+//   OPENINFRA_LAYERS = JSON [{bucket,key}] extracted (merged, in order) into /opt — optional. Each layer .zip
+//     is fetched from S3/MinIO with the code bucket's keys, unless:
+//     OPENINFRA_LAYERS_URL = the function's layers, served by the aws-shim: layer i (0-based, in the order of
+//       OPENINFRA_LAYERS) is GET {OPENINFRA_LAYERS_URL}?layer={i}, fetched with the function's own identity
+//       token and no keys, retried and refused as the stored deployment package is, and unpacked into /opt
+//       with the same entry checks (no SHA-256: the aws-shim serves the layer version the function names).
+//     OPENINFRA_LAYERS_TOKEN_FILE = the projected identity token for it, sent as "Authorization: Bearer <token>"
 //   OPENINFRA_TIMEOUT_S = the function's Timeout in whole seconds, 1-900; unset, not a whole number or
 //     out of range means 300. Read once at start.
 //   PORT = listen port (default 8080; Knative sets it)
+//
+// The execution role's credentials are in the environment as Lambda hands them over: when AWS_ROLE_ARN,
+// AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ENDPOINT_URL_STS are set and AWS_ACCESS_KEY_ID is not, the bootstrap
+// calls sts:AssumeRoleWithWebIdentity on AWS_ENDPOINT_URL_STS at cold start (after the code and layers are
+// unpacked, before the handler's module loads) and sets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and
+// AWS_SESSION_TOKEN (and AWS_CREDENTIAL_EXPIRATION, from which the AWS SDK for JavaScript v3 knows to read
+// them again before they expire), so code that reads credentials as it loads finds them. Before an
+// invocation, when they would expire within 5 minutes of its Timeout's end, they are refreshed the same way
+// (no call otherwise). A failed call is logged in one line and never fails the function: at cold start
+// nothing is set (the SDK's web identity provider still works), at a refresh the current credentials are
+// kept (and the next try waits 30 seconds). The values are never logged.
 //
 // The function's Timeout is enforced here, as Lambda's service enforces it: each invocation's clock starts
 // when its request reaches this bootstrap (a cold start, the wait for an instance, is not counted, as
@@ -195,29 +212,46 @@ async function fetchUnzip(cfg, bucket, key, dest) {
 // function's .zip and the function fetches it with its OWN identity — no keys in the pod. The aws-shim
 // serves a pod only its own function's package; the shim may be restarting, so a network error, a 5xx or
 // a 429 is retried (5 attempts, 1s/2s/4s/8s apart), while a refusal (400/401/403/404, any other status)
-// fails start at once. The token is re-read on every attempt (kubelet rotates it) and never logged.
-const CODE_MAX_BYTES = 64 * 1024 * 1024;
+// fails start at once. The token is re-read on every attempt (kubelet rotates it) and never logged. The
+// function's layers (OPENINFRA_LAYERS_URL) are fetched the same way.
+const CODE_MAX_BYTES = 64 * 1024 * 1024; // a deployment package or a layer .zip
 const CODE_ATTEMPTS = 5;
 const CODE_IDLE_MS = 30000; // an attempt with no bytes for this long is a network error (retried)
+// What a fetch is: `what` in its errors, `name` in its retry lines.
+const PACKAGE = { what: "the deployment package", name: "the deployment package" };
 
 // A start failure whose message says it all: logged alone, without a stack.
 function codeError(msg) { const e = new Error(msg); e.openinfraCode = true; return e; }
 function retryable(msg) { const e = new Error(msg); e.retryable = true; return e; }
 
-function readToken(tokenFile) {
+// readToken reads the function's identity token from tokenFile, the file the env var tokenVar names.
+function readToken(tokenFile, tokenVar) {
+  tokenVar = tokenVar || "OPENINFRA_CODE_TOKEN_FILE";
   let token;
   try {
     token = fs.readFileSync(tokenFile, "utf8").trim();
   } catch (e) {
-    throw codeError(`cannot read OPENINFRA_CODE_TOKEN_FILE: ${e.message}`);
+    throw codeError(`cannot read ${tokenVar}: ${e.message}`);
   }
-  if (!token) throw codeError(`OPENINFRA_CODE_TOKEN_FILE ${tokenFile} is empty: the function's identity token is missing`);
+  if (!token) throw codeError(`${tokenVar} ${tokenFile} is empty: the function's identity token is missing`);
   return token;
 }
 
-// One GET of the package, streamed into destFile while it is hashed and held to the size cap. Resolves
-// {size, sha256}; rejects retryable() for a network failure, a 5xx or a 429, codeError() otherwise.
-function getPackageOnce(target, token, destFile) {
+// httpTarget parses the URL the env var urlVar holds: http or https, with a host, else start fails.
+function httpTarget(raw, urlVar) {
+  const target = url.parse(raw);
+  if ((target.protocol !== "http:" && target.protocol !== "https:") || !target.hostname) {
+    throw codeError(`${urlVar} must be an http or https URL, got '${raw}'`);
+  }
+  return target;
+}
+
+// One GET of a .zip (item: the deployment package or a layer), streamed into destFile while it is hashed
+// and held to the size cap. Resolves {size, sha256}; rejects retryable() for a network failure, a 5xx or a
+// 429, codeError() otherwise.
+function getPackageOnce(target, token, destFile, item) {
+  item = item || PACKAGE;
+  const capText = `${CODE_MAX_BYTES} byte (64 MiB) limit`;
   return new Promise(function (resolve, reject) {
     const mod = target.protocol === "https:" ? https : http;
     let settled = false;
@@ -239,7 +273,7 @@ function getPackageOnce(target, token, destFile) {
       }
       const declared = res.headers["content-length"] !== undefined ? parseInt(res.headers["content-length"], 10) : -1;
       if (declared > CODE_MAX_BYTES) {
-        fail(codeError(`the deployment package is ${declared} bytes, over the ${CODE_MAX_BYTES} byte (64 MiB) limit`));
+        fail(codeError(`${item.what} is ${declared} bytes, over the ${capText}`));
         req.destroy();
         return;
       }
@@ -251,7 +285,7 @@ function getPackageOnce(target, token, destFile) {
         if (settled) return;
         size += c.length;
         if (size > CODE_MAX_BYTES) {
-          fail(codeError(`the deployment package is over the ${CODE_MAX_BYTES} byte (64 MiB) limit`));
+          fail(codeError(`${item.what} is over the ${capText}`));
           out.destroy();
           req.destroy();
           return;
@@ -292,11 +326,27 @@ function unsafeEntries(zipFile) {
 
 function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-async function fetchPackage(codeUrl, dest) {
-  const target = url.parse(codeUrl);
-  if ((target.protocol !== "http:" && target.protocol !== "https:") || !target.hostname) {
-    throw codeError(`OPENINFRA_CODE_URL must be an http or https URL, got '${codeUrl}'`);
+// fetchWithIdentity GETs one .zip from the aws-shim (shown: its URL) into tmp with the function's identity
+// token, read afresh from tokenFile for every attempt: a network error, a 5xx or a 429 is retried
+// (CODE_ATTEMPTS attempts, 1s/2s/4s/8s apart), any other refusal fails at once. Resolves {size, sha256}.
+async function fetchWithIdentity(target, shown, tokenFile, tokenVar, tmp, item) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await getPackageOnce(target, readToken(tokenFile, tokenVar), tmp, item);
+    } catch (e) {
+      if (!e.retryable) throw e;
+      if (attempt >= CODE_ATTEMPTS) {
+        throw codeError(`could not fetch ${item.what} from ${shown} in ${CODE_ATTEMPTS} attempts: ${e.message}`);
+      }
+      const delay = Math.pow(2, attempt - 1); // 1s, 2s, 4s, 8s
+      process.stderr.write(`open-infra-runtime: fetching ${item.name}: ${e.message}; retrying in ${delay}s (attempt ${attempt} of ${CODE_ATTEMPTS})\n`);
+      await sleep(delay * 1000);
+    }
   }
+}
+
+async function fetchPackage(codeUrl, dest) {
+  const target = httpTarget(codeUrl, "OPENINFRA_CODE_URL");
   const want = process.env.OPENINFRA_CODE_SHA256 || "";
   if (!/^[0-9a-f]{64}$/.test(want)) {
     throw codeError("OPENINFRA_CODE_URL needs OPENINFRA_CODE_SHA256, the deployment package's recorded SHA-256 as 64 lowercase hex characters" +
@@ -308,21 +358,7 @@ async function fetchPackage(codeUrl, dest) {
   mkdirp(dest);
   const tmp = path.join(os.tmpdir(), `oi-${process.pid}-${Date.now()}.zip`);
   try {
-    let got;
-    for (let attempt = 1; ; attempt++) {
-      try {
-        got = await getPackageOnce(target, readToken(tokenFile), tmp);
-        break;
-      } catch (e) {
-        if (!e.retryable) throw e;
-        if (attempt >= CODE_ATTEMPTS) {
-          throw codeError(`could not fetch the deployment package from ${codeUrl} in ${CODE_ATTEMPTS} attempts: ${e.message}`);
-        }
-        const delay = Math.pow(2, attempt - 1); // 1s, 2s, 4s, 8s
-        process.stderr.write(`open-infra-runtime: fetching the deployment package: ${e.message}; retrying in ${delay}s (attempt ${attempt} of ${CODE_ATTEMPTS})\n`);
-        await sleep(delay * 1000);
-      }
-    }
+    const got = await fetchWithIdentity(target, codeUrl, tokenFile, "OPENINFRA_CODE_TOKEN_FILE", tmp, PACKAGE);
     if (got.sha256 !== want) {
       throw codeError(`the deployment package does not match its recorded SHA-256 (recorded ${want.slice(0, 12)}, fetched ${got.sha256.slice(0, 12)})`);
     }
@@ -334,6 +370,36 @@ async function fetchPackage(codeUrl, dest) {
     process.stderr.write(`open-infra-runtime: unpacked the deployment package (${want.slice(0, 12)}, ${got.size} bytes) into ${dest}\n`);
   } finally {
     try { fs.unlinkSync(tmp); } catch (_e) { /* never written */ }
+  }
+}
+
+// fetchLayers fetches the function's layers from the aws-shim (OPENINFRA_LAYERS_URL) with its identity
+// token, never with keys, and unpacks them in order (each over the last) into dest, as the stored
+// deployment package is fetched and unpacked. layers is OPENINFRA_LAYERS: layer i is ?layer=i.
+async function fetchLayers(layersUrl, layers, dest) {
+  httpTarget(layersUrl, "OPENINFRA_LAYERS_URL");
+  if (!Array.isArray(layers)) throw codeError("OPENINFRA_LAYERS must be a JSON array of the function's layers");
+  const tokenVar = "OPENINFRA_LAYERS_TOKEN_FILE";
+  const tokenFile = process.env.OPENINFRA_LAYERS_TOKEN_FILE || "";
+  if (!tokenFile) throw codeError("OPENINFRA_LAYERS_URL needs OPENINFRA_LAYERS_TOKEN_FILE, the path of the function's identity token; it is not set");
+  readToken(tokenFile, tokenVar); // unreadable or empty fails start before any request
+  mkdirp(dest);
+  for (let i = 0; i < layers.length; i++) {
+    const shown = layersUrl + (layersUrl.indexOf("?") === -1 ? "?" : "&") + "layer=" + i;
+    const tmp = path.join(os.tmpdir(), `oi-${process.pid}-${Date.now()}-layer${i}.zip`);
+    try {
+      const got = await fetchWithIdentity(url.parse(shown), shown, tokenFile, tokenVar, tmp, { what: "the layer", name: `layer ${i}` });
+      const unsafe = unsafeEntries(tmp);
+      if (unsafe.length) {
+        throw codeError(`the layer has entries that would unpack outside ${dest}, refused: ${unsafe.slice(0, 5).join(", ")}`);
+      }
+      execFileSync("unzip", ["-o", "-q", tmp, "-d", dest]);
+      process.stderr.write(`open-infra-runtime: unpacked layer ${i} (${got.size} bytes) into ${dest}\n`);
+    } catch (e) {
+      throw codeError(`cannot load layer ${i} into ${dest}: ${(e && e.message) || String(e)}`);
+    } finally {
+      try { fs.unlinkSync(tmp); } catch (_e) { /* never written */ }
+    }
   }
 }
 
@@ -354,6 +420,7 @@ async function fetchCode() {
   const bucket = process.env.OPENINFRA_CODE_BUCKET;
   const codeUrl = process.env.OPENINFRA_CODE_URL;
   const layersRaw = process.env.OPENINFRA_LAYERS || "";
+  const layersUrl = process.env.OPENINFRA_LAYERS_URL || "";
   if (!bucket && !codeUrl && !layersRaw) return;
   try {
     if (codeUrl && bucket) {
@@ -363,7 +430,11 @@ async function fetchCode() {
     if (codeUrl) await fetchPackage(codeUrl, TASK_DIR);
     const cfg = s3Config();
     if (bucket) await fetchUnzip(cfg, bucket, process.env.OPENINFRA_CODE_KEY || "", TASK_DIR);
-    if (layersRaw) {
+    if (layersRaw && layersUrl) {
+      let layers;
+      try { layers = JSON.parse(layersRaw); } catch (_e) { layers = null; }
+      await fetchLayers(layersUrl, layers, OPT_DIR); // with the function's identity: never the bucket's keys
+    } else if (layersRaw) {
       for (const layer of JSON.parse(layersRaw)) {
         await fetchUnzip(cfg, layer.bucket, layer.key || "", OPT_DIR);
       }
@@ -394,6 +465,153 @@ function addLayerPaths() {
     process.env.NODE_PATH = [process.env.NODE_PATH, ...candidates].filter(Boolean).join(path.delimiter);
     require("module").Module._initPaths();
   }
+}
+
+// --- The execution role's credentials, as Lambda hands them to a function: AWS_ACCESS_KEY_ID,
+// AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN are in the environment before the handler's module loads, so
+// code that reads credentials as it loads (AWS SDK v2's AWS.config.credentials, a library's constructor)
+// finds them. They are the role's session from sts:AssumeRoleWithWebIdentity on AWS_ENDPOINT_URL_STS, with
+// the function's own identity token; AWS_CREDENTIAL_EXPIRATION carries their expiry, without which SDK v3
+// would keep the first ones in a client made at load. (SDK v2 never reads them again: a client it made at load
+// keeps them until they expire.) Never logged; a failure never fails the function.
+const STS_TIMEOUT_MS = 5000; // one STS call, connect to answer
+const STS_DURATION_S = "43200"; // asked for first; a role whose maximum is shorter gets its maximum
+const CREDS_EARLY_MS = 5 * 60 * 1000; // refreshed when they would expire this soon after an invocation's deadline
+const CREDS_RETRY_MS = 30 * 1000; // after a failed refresh, the next is tried no sooner than this
+const ROLE_CREDS = { active: false, nextTry: 0, inFlight: null };
+
+function xmlUnescape(s) {
+  return s.replace(/&(lt|gt|amp|quot|apos|#x[0-9a-fA-F]+|#[0-9]+);/g, function (_m, e) {
+    if (e[0] === "#") return String.fromCharCode(e[1] === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10));
+    return { lt: "<", gt: ">", amp: "&", quot: "\"", apos: "'" }[e];
+  });
+}
+
+// xmlText is the text of the first <tag> element in xml (any namespace prefix), unescaped; "" when absent.
+function xmlText(xml, tag) {
+  const m = new RegExp("<(?:[A-Za-z0-9_.-]+:)?" + tag + "(?:\\s[^>]*)?>([^<]*)</(?:[A-Za-z0-9_.-]+:)?" + tag + ">").exec(xml);
+  return m ? xmlUnescape(m[1]).trim() : "";
+}
+
+// stsPost POSTs a form to the STS endpoint: resolves {status, body}, rejects on a network error or no
+// answer in STS_TIMEOUT_MS.
+function stsPost(endpoint, form) {
+  return new Promise(function (resolve, reject) {
+    const target = url.parse(endpoint.replace(/\/+$/, "") + "/");
+    const mod = target.protocol === "https:" ? https : http;
+    const body = Buffer.from(form, "utf8");
+    let done = false;
+    let timer = null;
+    const finish = function (err, val) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      err ? reject(err) : resolve(val);
+    };
+    const req = mod.request({ host: target.hostname, port: target.port, path: target.path, method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": body.length } }, function (res) {
+      const chunks = [];
+      let len = 0;
+      res.on("data", function (c) { if (len < 65536) { chunks.push(c); len += c.length; } });
+      res.on("end", function () { finish(null, { status: res.statusCode, body: Buffer.concat(chunks).toString("utf8") }); });
+      res.on("error", function (e) { finish(e); });
+      res.on("aborted", function () { finish(new Error("the answer broke off")); });
+    });
+    timer = setTimeout(function () {
+      finish(new Error(`no answer from ${target.host} in ${STS_TIMEOUT_MS / 1000}s`));
+      req.destroy();
+    }, STS_TIMEOUT_MS);
+    req.on("error", function (e) { finish(e); });
+    req.end(body);
+  });
+}
+
+// assumeRole is sts:AssumeRoleWithWebIdentity for the execution role, with the function's identity token:
+// resolves {accessKeyId, secretAccessKey, sessionToken, expiration, expiresMs}. A rejection's message holds
+// no credential and no token.
+async function assumeRole() {
+  const tokenFile = process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
+  let token;
+  try {
+    token = fs.readFileSync(tokenFile, "utf8").trim();
+  } catch (e) {
+    throw new Error(`cannot read AWS_WEB_IDENTITY_TOKEN_FILE ${tokenFile}: ${e.code || e.message}`);
+  }
+  if (!token) throw new Error(`AWS_WEB_IDENTITY_TOKEN_FILE ${tokenFile} is empty`);
+  const params = [
+    ["Action", "AssumeRoleWithWebIdentity"], ["Version", "2011-06-15"],
+    ["RoleArn", process.env.AWS_ROLE_ARN],
+    ["RoleSessionName", process.env.AWS_ROLE_SESSION_NAME || process.env.AWS_LAMBDA_FUNCTION_NAME || "lambda"],
+    ["WebIdentityToken", token], ["DurationSeconds", STS_DURATION_S],
+  ];
+  const form = function (ps) { return ps.map(function (p) { return encodeURIComponent(p[0]) + "=" + encodeURIComponent(p[1]); }).join("&"); };
+  const ok = function (r) { return r.status >= 200 && r.status < 300; };
+  const endpoint = process.env.AWS_ENDPOINT_URL_STS;
+  let r = await stsPost(endpoint, form(params));
+  if (!ok(r) && /DurationSeconds|MaxSessionDuration/.test(r.body)) {
+    r = await stsPost(endpoint, form(params.slice(0, -1))); // the role's own maximum session instead
+  }
+  if (!ok(r)) {
+    const code = xmlText(r.body, "Code");
+    const msg = xmlText(r.body, "Message").split(token).join("<token>").slice(0, 200);
+    throw new Error(`STS answered HTTP ${r.status}` + (code ? ` ${code}` : "") + (msg ? `: ${msg}` : ""));
+  }
+  const block = /<(?:[A-Za-z0-9_.-]+:)?Credentials(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?Credentials>/.exec(r.body);
+  const c = block ? block[1] : "";
+  const got = {
+    accessKeyId: xmlText(c, "AccessKeyId"), secretAccessKey: xmlText(c, "SecretAccessKey"),
+    sessionToken: xmlText(c, "SessionToken"), expiration: xmlText(c, "Expiration"),
+  };
+  got.expiresMs = Date.parse(got.expiration);
+  if (!got.accessKeyId || !got.secretAccessKey || !got.sessionToken || isNaN(got.expiresMs)) {
+    throw new Error("STS's answer has no AccessKeyId, SecretAccessKey, SessionToken and Expiration");
+  }
+  return got;
+}
+
+// setRoleCredentials puts the credentials in the environment, and when the next refresh is due: their
+// lifetime (by the wall clock, as STS states it) is counted down on the monotonic clock.
+function setRoleCredentials(c) {
+  process.env.AWS_ACCESS_KEY_ID = c.accessKeyId;
+  process.env.AWS_SECRET_ACCESS_KEY = c.secretAccessKey;
+  process.env.AWS_SESSION_TOKEN = c.sessionToken;
+  process.env.AWS_CREDENTIAL_EXPIRATION = c.expiration;
+  ROLE_CREDS.active = true;
+  ROLE_CREDS.nextTry = monoMs() + (c.expiresMs - Date.now()) - CREDS_EARLY_MS - TIMEOUT_S * 1000;
+}
+
+// initRoleCredentials runs at cold start, before the handler's module loads.
+async function initRoleCredentials() {
+  const e = process.env;
+  if (!e.AWS_ROLE_ARN || !e.AWS_WEB_IDENTITY_TOKEN_FILE || !e.AWS_ENDPOINT_URL_STS || e.AWS_ACCESS_KEY_ID) return;
+  try {
+    const c = await assumeRole();
+    setRoleCredentials(c);
+    process.stderr.write(`open-infra-runtime: the execution role's credentials are in the environment (expiring ${c.expiration})\n`);
+  } catch (err) {
+    process.stderr.write(`open-infra-runtime: the execution role's credentials are not in the environment: ${err.message}; ` +
+      "the AWS SDK gets them with the web identity token instead\n");
+  }
+}
+
+// refreshRoleCredentials is called before each invocation: a promise when a refresh is under way (the
+// invocation waits for it), else null — no call at all until the credentials near their expiry.
+function refreshRoleCredentials() {
+  if (ROLE_CREDS.inFlight) return ROLE_CREDS.inFlight;
+  if (!ROLE_CREDS.active || monoMs() < ROLE_CREDS.nextTry) return null;
+  ROLE_CREDS.inFlight = (async function () {
+    try {
+      const c = await assumeRole();
+      setRoleCredentials(c);
+      process.stderr.write(`open-infra-runtime: refreshed the execution role's credentials (expiring ${c.expiration})\n`);
+    } catch (err) {
+      ROLE_CREDS.nextTry = monoMs() + CREDS_RETRY_MS;
+      process.stderr.write(`open-infra-runtime: could not refresh the execution role's credentials: ${err.message}; the current ones are kept\n`);
+    } finally {
+      ROLE_CREDS.inFlight = null;
+    }
+  })();
+  return ROLE_CREDS.inFlight;
 }
 
 // packageIsModule reports whether /var/task is an ESM package ("type":"module" in package.json),
@@ -606,6 +824,7 @@ function main() {
   (async () => {
     await fetchCode();
     addLayerPaths(); // layer modules require()-able before the handler loads
+    await initRoleCredentials(); // the role's credentials in the environment before the handler loads
     const handler = await loadHandler();
     process.stderr.write(
       `open-infra-runtime: serving ${process.env.OPENINFRA_HANDLER} on :${PORT} ` +
@@ -625,6 +844,15 @@ function main() {
       const parts = [];
       req.on("data", (c) => parts.push(c));
       req.on("end", async () => {
+        // The role's credentials, refreshed first when they near their expiry. The wait is the platform's,
+        // not the invocation's: it is not counted against its Timeout.
+        let held = 0;
+        const refreshing = refreshRoleCredentials();
+        if (refreshing) {
+          const t = monoMs();
+          await refreshing;
+          held = monoMs() - t;
+        }
         const raw = Buffer.concat(parts).toString("utf8");
         // Direct-invoke mode (AWS `Invoke` semantics) when the caller sets X-Openinfra-Invoke: direct —
         // the shim's Invoke, open-appsync, and Step Functions all do. Then the handler's RAW return
@@ -647,7 +875,7 @@ function main() {
           event._http = { method: req.method, path: q[0], query: q[1] || "", headers: req.headers };
         }
         let result;
-        const deadline = received + TIMEOUT_S * 1000;
+        const deadline = received + held + TIMEOUT_S * 1000;
         const context = lambdaContext(req.headers, deadline);
         const cap = direct && String(req.headers["x-amz-log-type"] || "") === "Tail" ? new LogCapture() : null;
         let raised = null;

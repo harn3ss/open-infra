@@ -309,3 +309,83 @@ func TestFunctionCode_OnlyTheFunctionsOwnPackage(t *testing.T) {
 		}
 	}
 }
+
+// fakeLayers refuses the buckets it names, as an account check would.
+type fakeLayers map[string]bool
+
+func (f fakeLayers) layerReadDenied(_ context.Context, _, bucket, _ string) (bool, string) {
+	if f[bucket] {
+		return true, "not this account's"
+	}
+	return false, ""
+}
+
+// A function's pod gets the layers its own function declares, by index, each only when its account may
+// read it; an undeclared index, another function's layers and a refused object are not served (#418).
+func TestFunctionCode_OnlyTheFunctionsOwnLayers(t *testing.T) {
+	deps := testZip(t, map[string]string{"nodejs/node_modules/dep/index.js": "module.exports = 1;"})
+	f := newBlobS3()
+	f.buckets["team-layers"], f.buckets["other-account"] = true, true
+	f.objects["team-layers/deps.zip"] = deps
+	f.objects["other-account/secret.zip"] = []byte("not yours")
+	withLayers := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "openinfra.dev/v1", "kind": "Function",
+		"metadata": map[string]any{"name": "fl", "namespace": "team"},
+		"spec": map[string]any{"code": map[string]any{"runtime": "nodejs22", "handler": "index.handler",
+			"source": map[string]any{"package": map[string]any{"sha256": strings.Repeat("a", 64)}},
+			"layers": []any{map[string]any{"bucket": "team-layers", "key": "deps.zip"},
+				map[string]any{"bucket": "other-account", "key": "secret.zip"}}}}}}
+	plain := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "openinfra.dev/v1", "kind": "Function",
+		"metadata": map[string]any{"name": "plain", "namespace": "team"},
+		"spec":     map[string]any{"code": map[string]any{"runtime": "nodejs22", "handler": "index.handler"}}}}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{functionClaimGVR: "FunctionList"}, withLayers, plain)
+	h := &functionCodeHandler{
+		identities: fakeFnIdentities{"tok-l": {namespace: "team", name: "fl"}, "tok-plain": {namespace: "team", name: "plain"}},
+		dyn:        dyn, store: &packageStore{mc: blobMinio(t, f)}, layers: fakeLayers{"other-account": true}, logger: discardLogger(),
+	}
+	get := func(token, layer string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, functionCodePath+"?layer="+layer, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		h.serve(rr, req, "req")
+		return rr
+	}
+	if rr := get("tok-l", "0"); rr.Code != http.StatusOK || !bytes.Equal(rr.Body.Bytes(), deps) {
+		t.Fatalf("the function's own layer 0: %d", rr.Code)
+	}
+	for name, c := range map[string]struct {
+		token, layer string
+		want         int
+	}{
+		"an object its account may not read": {"tok-l", "1", http.StatusForbidden},
+		"an index it does not declare":       {"tok-l", "2", http.StatusNotFound},
+		"not an index":                       {"tok-l", "x", http.StatusNotFound},
+		"a function with no layers":          {"tok-plain", "0", http.StatusNotFound},
+	} {
+		if rr := get(c.token, c.layer); rr.Code != c.want || strings.Contains(rr.Body.String(), "not yours") {
+			t.Errorf("%s: %d, want %d with no object", name, rr.Code, c.want)
+		}
+	}
+	h.layers = nil
+	if rr := get("tok-l", "0"); rr.Code != http.StatusNotFound {
+		t.Errorf("a shim that does not serve layers: %d", rr.Code)
+	}
+}
+
+// A layer is read as the function's account would read it: its own account's bucket, not another's that no
+// bucket policy opens to it, and never a platform bucket (#418).
+func TestLayerReadDenied_IsTheFunctionsAccounts(t *testing.T) {
+	s3h, _, _ := s3AccountsFixture(t)
+	ctx := context.Background()
+	for _, c := range []struct {
+		account, bucket string
+		denied          bool
+	}{
+		{testMember, "team-data", false}, {testMember, "mgmt-data", true},
+		{"", "mgmt-data", false}, {"", "team-data", true},
+		{"", lambdaCodeBucket, true}, {testMember, lambdaCodeBucket, true}, {testMember, "", true},
+	} {
+		if denied, why := s3h.layerReadDenied(ctx, c.account, c.bucket, "layer.zip"); denied != c.denied {
+			t.Errorf("account %q, bucket %q: denied=%v (%s), want %v", c.account, c.bucket, denied, why, c.denied)
+		}
+	}
+}

@@ -22,6 +22,48 @@ import (
 // from "your signature was wrong", so valid key IDs can't be enumerated by probing.
 var errAuth = errors.New("aws-shim: authentication failed")
 
+// errExpiredToken is the one failure answered apart: a request signed with an authentic session's own
+// secret whose session has expired. AWS answers it ExpiredToken (ExpiredTokenException in the JSON
+// protocols), which tells an SDK to renew its credentials; revealing it tells the caller nothing it did
+// not already hold (the session's secret). Each service writes it in its dialect (authCode, authMessage).
+var errExpiredToken = errors.New("aws-shim: the security token included in the request is expired")
+
+type expiredTokenKey struct{}
+
+// withExpiredToken marks r as refused for an expired session token, for its service's authFailure.
+func withExpiredToken(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), expiredTokenKey{}, true))
+}
+
+func expiredToken(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	v, _ := r.Context().Value(expiredTokenKey{}).(bool)
+	return v
+}
+
+// authCode is a service's authentication-failure code for r: AWS's expired-token code when r's session
+// token had expired (ExpiredTokenException where the service's code is an ...Exception, else
+// ExpiredToken), the service's own code otherwise.
+func authCode(r *http.Request, code string) string {
+	if !expiredToken(r) {
+		return code
+	}
+	if strings.HasSuffix(code, "Exception") {
+		return "ExpiredTokenException"
+	}
+	return "ExpiredToken"
+}
+
+// authMessage is the failure's message: AWS's for an expired session token, the service's own otherwise.
+func authMessage(r *http.Request, msg string) string {
+	if expiredToken(r) {
+		return "The security token included in the request is expired"
+	}
+	return msg
+}
+
 // keyLookuper resolves an access key ID to its secret + owner (satisfied by *awskeys.Store).
 type keyLookuper interface {
 	Lookup(ctx context.Context, accessKeyID string) (awskeys.Key, bool)
@@ -195,6 +237,9 @@ func (a *authenticator) authenticate(ctx context.Context, r *http.Request) (iam.
 		}
 		sess, ok := a.sts.Verify(cred.AccessKeyID, tok)
 		if !ok {
+			if exp, isExp := a.sts.VerifyExpired(cred.AccessKeyID, tok); isExp && awssig.Verify(r, cred, exp.SecretKey) == nil {
+				return iam.Claims{}, errExpiredToken
+			}
 			return iam.Claims{}, errAuth
 		}
 		if err := awssig.Verify(r, cred, sess.SecretKey); err != nil {
@@ -240,6 +285,9 @@ func (a *authenticator) authenticatePresigned(ctx context.Context, r *http.Reque
 		}
 		sess, ok := a.sts.Verify(p.AccessKeyID, tok)
 		if !ok {
+			if exp, isExp := a.sts.VerifyExpired(p.AccessKeyID, tok); isExp && awssig.VerifyPresigned(r, p, exp.SecretKey, now) == nil {
+				return iam.Claims{}, errExpiredToken
+			}
 			return iam.Claims{}, errAuth
 		}
 		if err := awssig.VerifyPresigned(r, p, sess.SecretKey, now); err != nil {

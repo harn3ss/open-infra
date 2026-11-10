@@ -61,9 +61,9 @@ func newACMHandler(c *cfnDoorway, logger *slog.Logger) *acmHandler {
 	return &acmHandler{cfn: c, logger: logger}
 }
 
-func (h *acmHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeACMError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *acmHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeACMError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 func writeACMError(w http.ResponseWriter, status int, code, requestID, message string) {

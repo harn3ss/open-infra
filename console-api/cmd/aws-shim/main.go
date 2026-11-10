@@ -1000,6 +1000,9 @@ func run(logger *slog.Logger) error {
 	var fnCodeH *functionCodeHandler
 	if cfnDoor != nil && cfnDoor.packages != nil && dyn != nil {
 		fnCodeH = &functionCodeHandler{identities: fnIdentities, dyn: dyn, store: cfnDoor.packages, logger: logger}
+		if cfnDoor.s3 != nil {
+			fnCodeH.layers = cfnDoor.s3 // layers: objects the function's account may read (lambda_packages.go)
+		}
 		logger.Info("function deployment packages served", slog.String("path", functionCodePath))
 	}
 	router := newRouter(logger, auth, jwtAuth, lambdaAuth, services, vmCredsH, caBundleH, fnCodeH)

@@ -578,10 +578,10 @@ func lastSegment(res string) string {
 	return res
 }
 
-func (h *stsHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
+func (h *stsHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
 	// STS's dialect: a query-protocol <ErrorResponse> with the SignatureDoesNotMatch code.
-	writeQueryError(w, http.StatusForbidden, "SignatureDoesNotMatch", requestID,
-		"The request signature we calculated does not match the signature you provided.", stsXMLNamespace)
+	writeQueryError(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."), stsXMLNamespace)
 }
 
 const stsXMLNamespace = "https://sts.amazonaws.com/doc/2011-06-15/"

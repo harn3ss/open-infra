@@ -42,6 +42,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // lambdaListMax is the most functions one ListFunctions page holds (AWS returns at most 50 whatever
@@ -181,6 +182,9 @@ func (h *lambdaHandler) serveRead(w http.ResponseWriter, r *http.Request, claims
 		writeLambdaError(w, http.StatusNotFound, "ResourceNotFoundException", requestID,
 			"Function not found: "+h.functionARNIn(ctx, name)+":"+qualifier)
 		return
+	}
+	if qualifier == "" || qualifier == "$LATEST" {
+		h.withUpdateStatus(ctx, obj, cfg) // an update that failed beyond the claim says so (#418)
 	}
 	switch op {
 	case "GetFunctionConfiguration":
@@ -466,6 +470,70 @@ func lambdaRuntime(rt string) string {
 		return rt + ".x"
 	}
 	return rt
+}
+
+// xfunctionGVR is the Function claims' composite resource, cluster-scoped.
+var xfunctionGVR = schema.GroupVersionResource{Group: "openinfra.dev", Version: "v1", Resource: "xfunctions"}
+
+// withUpdateStatus completes one function's State and LastUpdateStatus (GetFunction, GetFunctionConfiguration)
+// from where an update fails beyond its claim: the composite not rendering (Synced=False), or the latest
+// revision failing while the previous one serves. Lambda answers such an update LastUpdateStatus Failed, with
+// its reason and reason code, and the function stays Active while its previous configuration serves (#418).
+// A list (ListFunctions) keeps the claim's own conditions: these reads are per function.
+func (h *lambdaHandler) withUpdateStatus(ctx context.Context, obj *unstructured.Unstructured, cfg map[string]any) {
+	if h.fns == nil || h.fns.dyn == nil || cfg == nil || obj == nil {
+		return
+	}
+	reason, code := "", ""
+	if xr, _, _ := unstructured.NestedString(obj.Object, "spec", "resourceRef", "name"); xr != "" {
+		if x, err := h.fns.dyn.Resource(xfunctionGVR).Get(ctx, xr, metav1.GetOptions{}); err == nil {
+			if c := conditionOf(x, "Synced"); fnStr(c["status"]) == "False" {
+				reason, code = renderFailure(fnStr(c["message"])), "InvalidConfiguration"
+			}
+		}
+	}
+	serving := false
+	if ks, err := h.fns.dyn.Resource(knativeServiceGVR).Namespace(obj.GetNamespace()).Get(ctx, obj.GetName(), metav1.GetOptions{}); err == nil {
+		latestReady, _, _ := unstructured.NestedString(ks.Object, "status", "latestReadyRevisionName")
+		serving = latestReady != ""
+		if c := conditionOf(ks, "ConfigurationsReady"); reason == "" && fnStr(c["status"]) == "False" {
+			reason, code = fnStr(c["message"]), "FunctionError"
+		}
+	}
+	if reason == "" {
+		return
+	}
+	cfg["LastUpdateStatus"], cfg["LastUpdateStatusReason"], cfg["LastUpdateStatusReasonCode"] = "Failed", reason, code
+	if serving {
+		cfg["State"] = "Active"
+		delete(cfg, "StateReason")
+		return
+	}
+	cfg["State"], cfg["StateReason"], cfg["StateReasonCode"] = "Failed", reason, code
+}
+
+// conditionOf is obj's status condition of type t (nil when it has none).
+func conditionOf(obj *unstructured.Unstructured, t string) map[string]any {
+	conds, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	for _, c := range conds {
+		if m, _ := c.(map[string]any); fnStr(m["type"]) == t {
+			return m
+		}
+	}
+	return nil
+}
+
+// renderFailure is a composite's render error as the function's update failure: the composition's own
+// message ("Lambda function: ...") when it gave one, else the error as it is.
+func renderFailure(msg string) string {
+	if i := strings.Index(msg, "Lambda function: "); i >= 0 {
+		out := msg[i:]
+		if j := strings.IndexAny(out, "\"\n"); j > 0 {
+			out = out[:j]
+		}
+		return out
+	}
+	return msg
 }
 
 // functionState maps the claim's Synced/Ready conditions onto Lambda's State and LastUpdateStatus.

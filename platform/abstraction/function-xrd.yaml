@@ -141,8 +141,12 @@ spec:
                       description: >-
                         Lambda LAYERS: .zip artifacts extracted (merged, in order) into /opt at cold
                         start, so the handler can import shared code/deps they provide (a python layer's
-                        zip carries a python/ tree -> importable). Each is a bucket+key fetched with the
-                        same S3 creds as source.secret, so layers require a bucket source. v1: python.
+                        zip carries a python/ tree, a Node.js layer's a nodejs/node_modules tree). Each is
+                        an S3 bucket+key. A function with its own identity (an execution role or a stored
+                        deployment package) fetches them from the aws-shim with its identity token, which
+                        serves only objects the function's account may read (its own buckets, or another
+                        account's whose bucket policy grants it); a function whose code is read with
+                        source.secret fetches them with those keys.
                       items:
                         type: object
                         required: [bucket, key]

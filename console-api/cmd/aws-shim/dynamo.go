@@ -160,9 +160,9 @@ func writeDynamoJSON(w http.ResponseWriter, requestID string, obj any) {
 	_ = json.NewEncoder(w).Encode(obj)
 }
 
-func (h *dynamoHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeDynamoError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *dynamoHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeDynamoError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 // verbForOp maps a DynamoDB operation to the coarse RBAC verb its SubjectAccessReview checks — the

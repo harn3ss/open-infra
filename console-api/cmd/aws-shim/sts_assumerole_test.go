@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -301,4 +302,43 @@ func signedSessionRequest(t *testing.T, accessKeyID, secretKey, token string) *h
 		"/20150830/us-east-1/sts/aws4_request, "+
 		"SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token, Signature="+sig)
 	return req
+}
+
+// An expired session is answered as AWS answers it, so an SDK renews its credentials (an SDK v2 client
+// re-reads the credentials the Lambda runtime renewed): ExpiredToken in the query and S3 dialects,
+// ExpiredTokenException in the JSON ones. Only a request signed with the expired session's own secret is
+// told so; a wrong signature on the same token stays the one indistinguishable failure.
+func TestAuthenticate_AnExpiredSessionIsExpiredToken(t *testing.T) {
+	minter := testMinter(t)
+	auth := &authenticator{keys: fakeKeys{}, resolve: func(context.Context, string) ([]string, bool) { return nil, false }, sts: minter}
+	akid, secret, tok, _, err := minter.MintSessionAt(awssts.Session{RoleName: "app", SessionName: "s"}, time.Now().Add(-2*time.Hour), time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.authenticate(context.Background(), signedSessionRequest(t, akid, secret, tok)); !errors.Is(err, errExpiredToken) {
+		t.Fatalf("an expired session signed with its own secret: %v, want errExpiredToken", err)
+	}
+	if _, err := auth.authenticate(context.Background(), signedSessionRequest(t, akid, "not-the-secret", tok)); !errors.Is(err, errAuth) {
+		t.Fatalf("a wrong signature on an expired token: %v, want the one failure", err)
+	}
+	r := withExpiredToken(httptest.NewRequest(http.MethodPost, "/", nil))
+	for name, c := range map[string]struct {
+		svc  awsService
+		code string
+	}{
+		"query (SQS)":   {&sqsHandler{}, "ExpiredToken"},
+		"JSON (Dynamo)": {&dynamoHandler{}, "ExpiredTokenException"},
+		"S3":            {&s3Handler{}, "ExpiredToken"},
+	} {
+		w := httptest.NewRecorder()
+		c.svc.authFailure(w, r, "req")
+		if !strings.Contains(w.Body.String(), c.code) || !strings.Contains(strings.ToLower(w.Body.String()), "expired") {
+			t.Errorf("%s: %d %s, want %s", name, w.Code, w.Body.String(), c.code)
+		}
+	}
+	w := httptest.NewRecorder()
+	(&sqsHandler{}).authFailure(w, httptest.NewRequest(http.MethodPost, "/", nil), "req")
+	if strings.Contains(w.Body.String(), "Expired") {
+		t.Errorf("a request not refused for expiry keeps the service's own failure: %s", w.Body.String())
+	}
 }

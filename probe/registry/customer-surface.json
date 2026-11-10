@@ -6866,7 +6866,7 @@
       "tier": "proven"
     },
     "s3": {
-      "actions": 0,
+      "actions": 1,
       "class": "aws",
       "operations": 33,
       "service": "S3",

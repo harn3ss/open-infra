@@ -101,9 +101,9 @@ func newOrganizationsHandler(cs kubernetes.Interface, cfg *rest.Config, authzNS 
 	return h
 }
 
-func (h *organizationsHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeOrgError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *organizationsHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeOrgError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 func writeOrgError(w http.ResponseWriter, status int, code, requestID, message string) {

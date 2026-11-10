@@ -145,9 +145,9 @@ func writeSFNJSON(w http.ResponseWriter, requestID string, obj any) {
 	_ = json.NewEncoder(w).Encode(obj)
 }
 
-func (h *sfnHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeSFNError(w, http.StatusForbidden, "AccessDeniedException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *sfnHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeSFNError(w, http.StatusForbidden, authCode(r, "AccessDeniedException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 // verbForSFNOp maps a Step Functions op to its coarse RBAC verb + the CRD resource it authorizes against,

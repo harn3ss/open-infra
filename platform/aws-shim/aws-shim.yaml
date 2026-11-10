@@ -570,6 +570,28 @@ rules:
     resources: [functions]
     verbs: [get, list]
 ---
+# A function's composite (cluster-scoped), get by the name its claim records: GetFunction reports an update
+# whose composite does not render as LastUpdateStatus Failed, with the composition's reason
+# (lambda_read.go withUpdateStatus). get only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: open-infra-aws-shim-function-composites
+rules:
+  - apiGroups: [openinfra.dev]
+    resources: [xfunctions]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aws-shim-function-composites
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: open-infra-aws-shim-function-composites }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # Bound in every namespace: each account's functions (and the resources whose logs AWS keeps) are in that
 # account's own namespaces — the management account's Lambda and stack namespaces, a member account's home —
 # which are made as accounts are, so a binding per namespace could never keep up. Read only; what a caller

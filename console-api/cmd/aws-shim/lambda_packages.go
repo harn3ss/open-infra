@@ -30,10 +30,14 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn"
+	"github.com/harn3ss/open-infra/cfn/awsidentity"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
+	"github.com/harn3ss/open-infra/console-api/internal/s3authz"
 	"github.com/minio/minio-go/v7"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -208,12 +212,22 @@ func s3PackageErr(pkg *cfn.CodePackage, err error) error {
 	return fmt.Errorf("Error occurred while GetObject. S3 Error Code: %s. S3 Error Message: %s (s3://%s/%s)", code, msg, pkg.S3Bucket, pkg.S3Key)
 }
 
-// functionCodeHandler serves a function's pods their stored deployment package.
+// functionCodeHandler serves a function's pods their stored deployment package, and its layers.
 type functionCodeHandler struct {
 	identities functionIdentities
 	dyn        dynamic.Interface
 	store      *packageStore
-	logger     *slog.Logger
+	// layers decides a layer read (nil: layers are not served). Lambda fetches a function's layers itself,
+	// so the function's role needs no access to them; here a layer is an S3 object named in the function's
+	// own spec (spec.code.layers), which a tenant may write, so the read is decided as the function's
+	// account would be decided: its own bucket, or another account's whose bucket policy grants it.
+	layers layerReader
+	logger *slog.Logger
+}
+
+// layerReader decides whether a function's account may read a layer object.
+type layerReader interface {
+	layerReadDenied(ctx context.Context, account, bucket, key string) (bool, string)
 }
 
 func (h *functionCodeHandler) serve(w http.ResponseWriter, r *http.Request, requestID string) {
@@ -241,6 +255,10 @@ func (h *functionCodeHandler) serve(w http.ResponseWriter, r *http.Request, requ
 	claim, err := h.dyn.Resource(functionClaimGVR).Namespace(fn.namespace).Get(r.Context(), fn.name, metav1.GetOptions{})
 	if err != nil {
 		http.Error(w, "the function could not be read; retry", http.StatusServiceUnavailable)
+		return
+	}
+	if lq := r.URL.Query().Get("layer"); lq != "" {
+		h.serveLayer(w, r, fn, claim, lq)
 		return
 	}
 	sha, _, _ := unstructured.NestedString(claim.Object, "spec", "code", "source", "package", "sha256")
@@ -272,4 +290,80 @@ func (h *functionCodeHandler) serve(w http.ResponseWriter, r *http.Request, requ
 		h.logger.Warn("function-code: reading the package failed", "function", fn.namespace+"/"+fn.name, "error", err.Error())
 	}
 	http.Error(w, "the deployment package store is unavailable; retry", http.StatusServiceUnavailable)
+}
+
+// serveLayer serves layer lq (an index into the function's spec.code.layers) to the function's own pod, as
+// Lambda extracts a function's layers into /opt: only a layer the function declares, and only an object its
+// account may read (layerReader). The runtime fetches it with OPENINFRA_LAYERS_URL ?layer=<i>.
+func (h *functionCodeHandler) serveLayer(w http.ResponseWriter, r *http.Request, fn functionIdentity, claim *unstructured.Unstructured, lq string) {
+	ctx := r.Context()
+	layers, _, _ := unstructured.NestedSlice(claim.Object, "spec", "code", "layers")
+	i, err := strconv.Atoi(lq)
+	if err != nil || i < 0 || i >= len(layers) {
+		http.Error(w, "the function declares no layer "+lq, http.StatusNotFound)
+		return
+	}
+	layer, _ := layers[i].(map[string]any)
+	bucket, key := fnStr(layer["bucket"]), fnStr(layer["key"])
+	if h.layers == nil {
+		http.Error(w, "this shim does not serve layers", http.StatusNotFound)
+		return
+	}
+	if denied, why := h.layers.layerReadDenied(ctx, fn.account, bucket, key); denied {
+		if h.logger != nil {
+			h.logger.Info("function-code: layer read refused", "function", fn.namespace+"/"+fn.name, "layer", i, "reason", why)
+		}
+		http.Error(w, fmt.Sprintf("the function's account may not read layer %d (s3://%s/%s)", i, bucket, key), http.StatusForbidden)
+		return
+	}
+	obj, err := h.store.mc.GetObject(ctx, bucket, key, minio.GetObjectOptions{})
+	if err == nil {
+		var st minio.ObjectInfo
+		if st, err = obj.Stat(); err == nil {
+			defer obj.Close()
+			if st.Size > maxPackageZip {
+				http.Error(w, fmt.Sprintf("layer %d is larger than %d bytes", i, maxPackageZip), http.StatusRequestEntityTooLarge)
+				return
+			}
+			w.Header().Set("Content-Type", "application/zip")
+			w.Header().Set("Content-Length", fmt.Sprint(st.Size))
+			w.WriteHeader(http.StatusOK)
+			if _, cerr := io.Copy(w, obj); cerr != nil && h.logger != nil {
+				h.logger.Warn("function-code: sending a layer failed", "function", fn.namespace+"/"+fn.name, "layer", i, "error", cerr.Error())
+			}
+			return
+		}
+		obj.Close()
+	}
+	if minioErrToS3(err) == "NoSuchKey" || minioErrToS3(err) == "NoSuchBucket" {
+		http.Error(w, fmt.Sprintf("layer %d is not there (s3://%s/%s)", i, bucket, key), http.StatusNotFound)
+		return
+	}
+	if h.logger != nil {
+		h.logger.Warn("function-code: reading a layer failed", "function", fn.namespace+"/"+fn.name, "layer", i, "error", err.Error())
+	}
+	http.Error(w, "the layer's bucket is unavailable; retry", http.StatusServiceUnavailable)
+}
+
+// layerReadDenied decides a function's layer read as its account's (functionCodeHandler.serveLayer): the
+// account's own bucket, or another account's whose bucket policy grants the account; never a platform
+// bucket. account "" is the management account.
+func (h *s3Handler) layerReadDenied(ctx context.Context, account, bucket, key string) (bool, string) {
+	if bucket == "" || key == "" {
+		return true, "the layer names no S3 object"
+	}
+	if isPlatformBucket(bucket) {
+		return true, "a platform bucket holds no layer"
+	}
+	if account == "" {
+		account = awsidentity.Current().AccountID
+	}
+	ok, reason := h.gate().AllowAccount(ctx,
+		s3authz.Request{Action: "s3:GetObject", Verb: "get", Bucket: bucket, Key: key, Object: true},
+		s3authz.Account{
+			Principal: iamauthz.Principal{Type: iamauthz.Root, Account: account},
+			Owner:     h.bucketOwner(ctx, bucket),
+			Policy:    func() string { return h.bucketPolicyDoc(ctx, bucket) },
+		}, map[string]any{})
+	return !ok, reason
 }

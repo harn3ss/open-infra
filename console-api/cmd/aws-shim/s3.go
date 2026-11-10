@@ -82,7 +82,7 @@ type s3op struct {
 
 // authFailure writes S3's dialect of an authentication rejection (design's indistinguishable 403).
 func (h *s3Handler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeS3Error(w, "SignatureDoesNotMatch", requestID, r.URL.Path)
+	writeS3Error(w, authCode(r, "SignatureDoesNotMatch"), requestID, r.URL.Path)
 }
 
 // serve handles an already-authenticated S3 request: decode intent → authorize via the shared

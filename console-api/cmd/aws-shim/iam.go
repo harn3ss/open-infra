@@ -64,9 +64,9 @@ func newIAMHandler(cs kubernetes.Interface, dyn dynamic.Interface, keys *awskeys
 	return &iamHandler{cs: cs, dyn: dyn, keys: keys, authz: authz, usersNS: usersNS, account: account, region: region, logger: logger}
 }
 
-func (h *iamHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeQueryError(w, http.StatusForbidden, "SignatureDoesNotMatch", requestID,
-		"The request signature we calculated does not match the signature you provided.", iamXMLNamespace)
+func (h *iamHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeQueryError(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."), iamXMLNamespace)
 }
 
 // verbForIAMOp maps an IAM op to its coarse RBAC verb + the CRD resource it authorizes against in legacy

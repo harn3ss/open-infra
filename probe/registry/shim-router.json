@@ -840,6 +840,9 @@
         "PutObjectTagging",
         "UploadPart",
         "UploadPartCopy"
+      ],
+      "actions": [
+        "s3:GetObject"
       ]
     },
     "secretsmanager": {

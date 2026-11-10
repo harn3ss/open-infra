@@ -51,3 +51,17 @@ func TestAWSShim_EC2ReadGrantIsReadOnlyInTheStackNamespace(t *testing.T) {
 	rb := yamlDoc(t, path, "RoleBinding", "aws-shim-ec2-reads")
 	mustContain(t, "aws-shim-ec2-reads binding", rb, "  namespace: open-infra-cfn\n", "kind: Role, name: aws-shim-ec2-reads }")
 }
+
+// GetFunction reads a function's composite to report a failed update (lambda_read.go withUpdateStatus):
+// get on xfunctions alone — no list, watch or write, nothing else (#418).
+func TestAWSShim_FunctionCompositeGrantIsGetOnly(t *testing.T) {
+	const path = "../../platform/aws-shim/aws-shim.yaml"
+	cr := yamlDoc(t, path, "ClusterRole", "open-infra-aws-shim-function-composites")
+	mustContain(t, "function composites", cr, "rules:\n  - apiGroups: [openinfra.dev]\n    resources: [xfunctions]\n    verbs: [get]")
+	if strings.Count(cr, "verbs:") != 1 || strings.Count(cr, "apiGroups:") != 1 {
+		t.Errorf("the function composite grant must hold one get rule, got:\n%s", cr)
+	}
+	crb := yamlDoc(t, path, "ClusterRoleBinding", "aws-shim-function-composites")
+	mustContain(t, "function composites binding", crb, "kind: ClusterRole, name: open-infra-aws-shim-function-composites }",
+		"name: aws-shim\n    namespace: open-infra-aws-shim")
+}

@@ -302,9 +302,9 @@ func (h *cfnDoorway) postCustomResourceEvent(ctx context.Context, namespace, fun
 	return out, "", nil
 }
 
-func (h *cfnDoorway) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeQueryError(w, http.StatusForbidden, "SignatureDoesNotMatch", requestID,
-		"The request signature we calculated does not match the signature you provided.", cfnXMLNamespace)
+func (h *cfnDoorway) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeQueryError(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."), cfnXMLNamespace)
 }
 
 // applierFor builds an Applier that impersonates the caller for resource ops (the authority seam).

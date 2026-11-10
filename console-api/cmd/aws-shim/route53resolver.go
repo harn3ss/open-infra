@@ -97,9 +97,9 @@ func writeR53RJSON(w http.ResponseWriter, requestID string, obj any) {
 	_ = json.NewEncoder(w).Encode(obj)
 }
 
-func (h *r53rHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeR53RError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *r53rHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeR53RError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 // fail answers err: a Route 53 Resolver error as itself (400, as AWS answers each), anything else as an

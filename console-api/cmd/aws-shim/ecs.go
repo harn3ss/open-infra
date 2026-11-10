@@ -92,9 +92,9 @@ func writeECSJSON(w http.ResponseWriter, requestID string, obj any) {
 	_ = json.NewEncoder(w).Encode(obj)
 }
 
-func (h *ecsDoorway) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeECSError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *ecsDoorway) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeECSError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 // ECS keeps each account's clusters, task definitions and services apart: a member account's records, its

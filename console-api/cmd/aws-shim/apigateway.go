@@ -96,9 +96,9 @@ func writeAGWJSON(w http.ResponseWriter, status int, requestID string, obj any) 
 	_ = json.NewEncoder(w).Encode(obj)
 }
 
-func (h *apigwHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeAGWError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *apigwHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeAGWError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 // --- control plane ---

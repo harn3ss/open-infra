@@ -73,9 +73,9 @@ func writeCognitoJSON(w http.ResponseWriter, requestID string, obj any) {
 	_ = json.NewEncoder(w).Encode(obj)
 }
 
-func (h *cognitoHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeCognitoError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *cognitoHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeCognitoError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 // serve handles a SigV4-authenticated (control-plane) request.

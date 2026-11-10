@@ -36,6 +36,7 @@ type s3ErrorInfo struct {
 // error-mapping (and its retry policy) behaves exactly as it would against real AWS.
 var s3Errors = map[string]s3ErrorInfo{
 	"SignatureDoesNotMatch": {http.StatusForbidden, "The request signature we calculated does not match the signature you provided."},
+	"ExpiredToken":          {http.StatusBadRequest, "The provided token has expired."},
 	"InvalidAccessKeyId":    {http.StatusForbidden, "The AWS access key ID you provided does not exist in our records."},
 	"AccessDenied":          {http.StatusForbidden, "Access Denied."},
 	"NoSuchKey":             {http.StatusNotFound, "The specified key does not exist."},

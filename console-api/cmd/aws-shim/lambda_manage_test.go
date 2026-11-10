@@ -450,3 +450,92 @@ func TestLambdaAPI_RuntimePastAWSsDates(t *testing.T) {
 		t.Fatalf("the function moved to %q", rt)
 	}
 }
+
+// The Lambda API leaves a function with one code source and one runtime, as Lambda does, though a claim is
+// merged into its composite (a field the claim stops carrying would stay there): UpdateFunctionCode
+// clears the S3 source it replaces with the stored package, and a move to a managed runtime clears the
+// custom runtime image. A function it creates is not published on the gateway: on Lambda a function is
+// reachable over HTTP only through a function URL (#418).
+func TestLambdaAPI_OneCodeSourceOneRuntimeAndNotPublished(t *testing.T) {
+	customImage := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "openinfra.dev/v1", "kind": "Function",
+		"metadata": map[string]any{"name": "legacy", "namespace": "default"},
+		"spec": map[string]any{"role": lmRole("exec"), "timeout": int64(10), "code": map[string]any{
+			"runtimeImage": "registry.example/runtime/nodejs18:1", "unsupportedRuntime": true, "handler": "index.handler",
+			"source": map[string]any{"bucket": "deploy", "key": "legacy.zip", "secret": "legacy-s3"}}}}}
+	h, dyn, _ := manageFixture(t, nil, customImage)
+	code, raw := zipB64(t, map[string]string{"index.js": "exports.handler = async () => 3;\n"})
+	if w := serveWith(h, lambdaReq(http.MethodPut, "/2015-03-31/functions/legacy/code", map[string]any{"ZipFile": code}), testUser); w.Code != http.StatusOK {
+		t.Fatalf("UpdateFunctionCode: %d %s", w.Code, w.Body)
+	}
+	src, _, _ := unstructured.NestedMap(getClaim(t, dyn, "default", "legacy").Object, "spec", "code", "source")
+	if pkg, _ := src["package"].(map[string]any); pkg == nil || pkg["sha256"] != shaOf(raw) {
+		t.Fatalf("the function must name its stored package: %v", src)
+	}
+	for _, k := range []string{"bucket", "key", "secret"} {
+		if v, ok := src[k]; !ok || v != "" {
+			t.Errorf("source.%s must be cleared, not left for the composite to keep: %v", k, src)
+		}
+	}
+	if _, ok := src["configMap"]; ok {
+		t.Errorf("a source the function never had is not written: %v", src)
+	}
+	w := serveWith(h, lambdaReq(http.MethodPut, "/2015-03-31/functions/legacy/configuration", map[string]any{"Runtime": "nodejs22.x"}), testUser)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateFunctionConfiguration --runtime: %d %s", w.Code, w.Body)
+	}
+	fc, _, _ := unstructured.NestedMap(getClaim(t, dyn, "default", "legacy").Object, "spec", "code")
+	if fc["runtime"] != "nodejs22" || fc["runtimeImage"] != "" || fc["unsupportedRuntime"] != false {
+		t.Fatalf("a move to a managed runtime leaves no custom runtime image: %v", fc)
+	}
+	if w := serveWith(h, lambdaReq(http.MethodPost, "/2015-03-31/functions", lmCreateBody(t, nil)), testUser); w.Code != http.StatusCreated {
+		t.Fatalf("CreateFunction: %d %s", w.Code, w.Body)
+	}
+	if expose, found, _ := unstructured.NestedBool(getClaim(t, dyn, "default", "orders").Object, "spec", "expose"); !found || expose {
+		t.Errorf("a function the Lambda API creates is not published on the gateway: expose=%v (set %v)", expose, found)
+	}
+}
+
+// An update that fails beyond the claim is reported as Lambda reports it: LastUpdateStatus Failed with its
+// reason and reason code, while the function stays Active on the configuration that still serves. A
+// composite that does not render is InvalidConfiguration (its composition's own message); a latest revision
+// that fails is FunctionError. A function whose update succeeded is untouched (#418).
+func TestGetFunctionConfiguration_AFailedUpdateIsFailed(t *testing.T) {
+	claim := func(name string) *unstructured.Unstructured {
+		c := zipFunction("default", name)
+		_ = unstructured.SetNestedField(c.Object, "xfn-"+name, "spec", "resourceRef", "name")
+		_ = unstructured.SetNestedSlice(c.Object, []any{map[string]any{"type": "Ready", "status": "True"}}, "status", "conditions")
+		return c
+	}
+	xr := func(name string, synced, msg string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "openinfra.dev/v1", "kind": "XFunction",
+			"metadata": map[string]any{"name": "xfn-" + name},
+			"status":   map[string]any{"conditions": []any{map[string]any{"type": "Synced", "status": synced, "message": msg}}}}}
+	}
+	ksvc := func(name, cfgReady, msg string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "serving.knative.dev/v1", "kind": "Service",
+			"metadata": map[string]any{"name": name, "namespace": "default"},
+			"status": map[string]any{"latestReadyRevisionName": name + "-00001",
+				"conditions": []any{map[string]any{"type": "ConfigurationsReady", "status": cfgReady, "message": msg}}}}}
+	}
+	h, _, _ := manageFixture(t, nil,
+		claim("unrendered"), xr("unrendered", "False", `cannot compose resources: pipeline step "render-resources" returned a fatal result: cannot execute template: at <fail "Lambda function: layers need the function's own identity (code.layers)">`), ksvc("unrendered", "True", ""),
+		claim("unstarted"), xr("unstarted", "True", ""), ksvc("unstarted", "False", `Revision "unstarted-00002" failed with message: container exited.`),
+		claim("fine"), xr("fine", "True", ""), ksvc("fine", "True", ""))
+	get := func(name string) map[string]any {
+		w := lambdaGet(h, "/2015-03-31/functions/"+name+"/configuration", testUser)
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return out
+	}
+	if c := get("unrendered"); c["LastUpdateStatus"] != "Failed" || c["LastUpdateStatusReasonCode"] != "InvalidConfiguration" ||
+		c["LastUpdateStatusReason"] != "Lambda function: layers need the function's own identity (code.layers)" || c["State"] != "Active" {
+		t.Errorf("a composite that does not render: %v", c)
+	}
+	if c := get("unstarted"); c["LastUpdateStatus"] != "Failed" || c["LastUpdateStatusReasonCode"] != "FunctionError" ||
+		!strings.Contains(fnStr(c["LastUpdateStatusReason"]), "container exited") || c["State"] != "Active" {
+		t.Errorf("a latest revision that fails: %v", c)
+	}
+	if c := get("fine"); c["LastUpdateStatus"] != "Successful" || c["State"] != "Active" {
+		t.Errorf("a successful update is untouched: %v", c)
+	}
+}

@@ -19,10 +19,28 @@
 #     own identity token, no keys:
 #     OPENINFRA_CODE_SHA256     = the package's recorded SHA-256 (64 lowercase hex), checked before unpacking
 #     OPENINFRA_CODE_TOKEN_FILE = the projected identity token, sent as "Authorization: Bearer <token>"
-#   OPENINFRA_LAYERS  = JSON [{bucket,key}] extracted (merged, in order) into /opt — optional
+#   OPENINFRA_LAYERS  = JSON [{bucket,key}] extracted (merged, in order) into /opt — optional. Each
+#     layer .zip is fetched from S3/MinIO with the code bucket's keys, unless:
+#     OPENINFRA_LAYERS_URL = the function's layers, served by the aws-shim: layer i (0-based, in the
+#       order of OPENINFRA_LAYERS) is GET {OPENINFRA_LAYERS_URL}?layer={i}, fetched with the function's
+#       own identity token and no keys (boto3 is never imported for it), retried and refused as the
+#       stored deployment package is, and unpacked into /opt with the same entry checks (no SHA-256:
+#       the aws-shim serves the layer version the function names).
+#     OPENINFRA_LAYERS_TOKEN_FILE = the projected identity token for it, sent as "Authorization: Bearer <token>"
 #   OPENINFRA_TIMEOUT_S = the function's Timeout in whole seconds, 1-900; unset, not a whole number
 #                       or out of range means 300. Read once at start.
 #   PORT              = listen port (default 8080; Knative sets this)
+#
+# The execution role's credentials are in the environment as Lambda hands them over: when AWS_ROLE_ARN,
+# AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ENDPOINT_URL_STS are set and AWS_ACCESS_KEY_ID is not, the
+# bootstrap calls sts:AssumeRoleWithWebIdentity on AWS_ENDPOINT_URL_STS at cold start (after the code and
+# layers are unpacked, before the handler's module is imported) and sets AWS_ACCESS_KEY_ID,
+# AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN (and AWS_CREDENTIAL_EXPIRATION, from which botocore knows
+# to read them again before they expire), so code that reads credentials as it loads finds them. Before an invocation, when they would expire within 5 minutes of
+# its Timeout's end, they are refreshed the same way (no call otherwise). A failed call is logged in one
+# line and never fails the function: at cold start nothing is set (the SDK's web identity provider still
+# works), at a refresh the current credentials are kept (and the next try waits 30 seconds). The values
+# are never logged.
 #
 # The function's Timeout is enforced here, as Lambda's service enforces it: each invocation's clock
 # starts when its request reaches this bootstrap (a cold start, the wait for an instance, is not
@@ -282,10 +300,12 @@ def _fetch_unzip(s3, bucket, key, dest):
 # serves a pod only its own function's package; the shim may be restarting, so a network error, a 5xx or
 # a 429 is retried (5 attempts, 1s/2s/4s/8s apart), while a refusal (400/401/403/404, any other status)
 # fails start at once. The token is re-read on every attempt (kubelet rotates it) and never logged.
-# stdlib only (urllib + hashlib + zipfile): boto3 is never imported on this path.
-_CODE_MAX_BYTES = 64 * 1024 * 1024
+# stdlib only (urllib + hashlib + zipfile): boto3 is never imported on this path. The function's layers
+# (OPENINFRA_LAYERS_URL) are fetched the same way.
+_CODE_MAX_BYTES = 64 * 1024 * 1024  # a deployment package or a layer .zip
 _CODE_ATTEMPTS = 5
 _CODE_IDLE_S = 30  # an attempt with no bytes for this long is a network error (retried)
+_PACKAGE = "the deployment package"
 
 
 class _CodeError(Exception):
@@ -296,20 +316,42 @@ class _Retryable(Exception):
     """A network failure, a 5xx or a 429 from the code URL: worth another attempt."""
 
 
-def _read_token(token_file):
+def _read_token(token_file, token_var="OPENINFRA_CODE_TOKEN_FILE"):
+    """The function's identity token, from token_file (the file the env var token_var names)."""
     try:
         with open(token_file) as f:
             token = f.read().strip()
     except OSError as e:
-        raise _CodeError(f"cannot read OPENINFRA_CODE_TOKEN_FILE {token_file}: {e.strerror or e}")
+        raise _CodeError(f"cannot read {token_var} {token_file}: {e.strerror or e}")
     if not token:
-        raise _CodeError(f"OPENINFRA_CODE_TOKEN_FILE {token_file} is empty: the function's identity token is missing")
+        raise _CodeError(f"{token_var} {token_file} is empty: the function's identity token is missing")
     return token
 
 
-def _get_package_once(opener, code_url, token, tmp):
-    """One GET of the package, streamed into tmp while it is hashed and held to the size cap.
-    Returns (size, sha256 hex); raises _Retryable for a network failure / 5xx / 429, else _CodeError."""
+def _check_http_url(raw, url_var):
+    import urllib.parse
+
+    if not raw.startswith(("http://", "https://")) or not urllib.parse.urlsplit(raw).hostname:
+        raise _CodeError(f"{url_var} must be an http or https URL, got {raw!r}")
+
+
+def _identity_opener():
+    """An opener for a request that carries the function's identity token: no proxy (the token goes to
+    the aws-shim and nowhere else) and no redirects (urllib would carry the Authorization header along: a
+    3xx fails instead)."""
+    import urllib.request
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
+def _get_package_once(opener, code_url, token, tmp, what=_PACKAGE):
+    """One GET of a .zip (what: the deployment package or a layer), streamed into tmp while it is hashed
+    and held to the size cap. Returns (size, sha256 hex); raises _Retryable for a network failure / 5xx /
+    429, else _CodeError."""
     import hashlib
     import http.client
     import urllib.error
@@ -318,7 +360,7 @@ def _get_package_once(opener, code_url, token, tmp):
     req = urllib.request.Request(code_url, headers={"Authorization": "Bearer " + token})
     try:
         resp = opener.open(req, timeout=_CODE_IDLE_S)
-    except urllib.error.HTTPError as e:  # any non-2xx (redirects are not followed: see _fetch_package)
+    except urllib.error.HTTPError as e:  # any non-2xx (redirects are not followed: see _identity_opener)
         try:
             body = e.read(4096).decode("utf-8", "replace")[:200]
         except Exception:
@@ -336,7 +378,7 @@ def _get_package_once(opener, code_url, token, tmp):
         declared = resp.headers.get("Content-Length")
         declared = int(declared) if declared and declared.isdigit() else None
         if declared is not None and declared > _CODE_MAX_BYTES:
-            raise _CodeError(f"the deployment package is {declared} bytes, over the {_CODE_MAX_BYTES} byte (64 MiB) limit")
+            raise _CodeError(f"{what} is {declared} bytes, over the {_CODE_MAX_BYTES} byte (64 MiB) limit")
         digest = hashlib.sha256()
         size = 0
         with open(tmp, "wb") as out:
@@ -349,7 +391,7 @@ def _get_package_once(opener, code_url, token, tmp):
                     break
                 size += len(chunk)
                 if size > _CODE_MAX_BYTES:
-                    raise _CodeError(f"the deployment package is over the {_CODE_MAX_BYTES} byte (64 MiB) limit")
+                    raise _CodeError(f"{what} is over the {_CODE_MAX_BYTES} byte (64 MiB) limit")
                 digest.update(chunk)
                 out.write(chunk)
         # http.client ends a short read quietly rather than raising IncompleteRead: check the length.
@@ -358,7 +400,7 @@ def _get_package_once(opener, code_url, token, tmp):
         return size, digest.hexdigest()
 
 
-def _unzip_guarded(zip_path, dest):
+def _unzip_guarded(zip_path, dest, what=_PACKAGE):
     """Unpack zip_path into dest, refusing the whole package if any entry is absolute or has a '..'
     segment (zipfile would rewrite such a name and carry on; the package is refused instead)."""
     import zipfile
@@ -369,18 +411,32 @@ def _unzip_guarded(zip_path, dest):
             target = os.path.realpath(os.path.join(root, name))
             if (name.startswith(("/", "\\")) or ".." in name.replace("\\", "/").split("/")
                     or (target != root and not target.startswith(root + os.sep))):
-                raise _CodeError(f"the deployment package has an entry that would unpack outside {dest}, refused: {name!r}")
+                raise _CodeError(f"{what} has an entry that would unpack outside {dest}, refused: {name!r}")
         z.extractall(dest)
+
+
+def _fetch_with_identity(opener, url, token_file, token_var, tmp, what=_PACKAGE, name=_PACKAGE):
+    """GET one .zip from the aws-shim into tmp with the function's identity token, read afresh from
+    token_file for every attempt: a network error, a 5xx or a 429 is retried (_CODE_ATTEMPTS attempts,
+    1s/2s/4s/8s apart), any other refusal fails at once. Returns (size, sha256 hex). what names it in
+    errors, name in the retry lines."""
+    for attempt in range(1, _CODE_ATTEMPTS + 1):
+        try:
+            return _get_package_once(opener, url, _read_token(token_file, token_var), tmp, what)
+        except _Retryable as e:
+            if attempt == _CODE_ATTEMPTS:
+                raise _CodeError(f"could not fetch {what} from {url} in {_CODE_ATTEMPTS} attempts: {e}")
+            delay = 2 ** (attempt - 1)  # 1s, 2s, 4s, 8s
+            sys.stderr.write(f"open-infra-runtime: fetching {name}: {e}; retrying in {delay}s "
+                             f"(attempt {attempt} of {_CODE_ATTEMPTS})\n")
+            time.sleep(delay)
 
 
 def _fetch_package(code_url, dest):
     import re
     import tempfile
-    import urllib.parse
-    import urllib.request
 
-    if not code_url.startswith(("http://", "https://")) or not urllib.parse.urlsplit(code_url).hostname:
-        raise _CodeError(f"OPENINFRA_CODE_URL must be an http or https URL, got {code_url!r}")
+    _check_http_url(code_url, "OPENINFRA_CODE_URL")
     want = os.environ.get("OPENINFRA_CODE_SHA256", "")
     if not re.fullmatch(r"[0-9a-f]{64}", want):
         raise _CodeError("OPENINFRA_CODE_URL needs OPENINFRA_CODE_SHA256, the deployment package's recorded SHA-256 "
@@ -390,28 +446,12 @@ def _fetch_package(code_url, dest):
         raise _CodeError("OPENINFRA_CODE_URL needs OPENINFRA_CODE_TOKEN_FILE, the path of the function's identity "
                          "token; it is not set")
     _read_token(token_file)  # unreadable or empty fails start before any request
-
-    class _NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *args, **kwargs):
-            return None  # never follow (urllib would carry the Authorization header along): a 3xx fails start
-
-    # No proxy (the token goes to the aws-shim and nowhere else) and no redirects.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+    opener = _identity_opener()
     os.makedirs(dest, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix="oi-", suffix=".zip")
     os.close(fd)
     try:
-        for attempt in range(1, _CODE_ATTEMPTS + 1):
-            try:
-                size, got = _get_package_once(opener, code_url, _read_token(token_file), tmp)
-                break
-            except _Retryable as e:
-                if attempt == _CODE_ATTEMPTS:
-                    raise _CodeError(f"could not fetch the deployment package from {code_url} in {_CODE_ATTEMPTS} attempts: {e}")
-                delay = 2 ** (attempt - 1)  # 1s, 2s, 4s, 8s
-                sys.stderr.write(f"open-infra-runtime: fetching the deployment package: {e}; retrying in {delay}s "
-                                 f"(attempt {attempt} of {_CODE_ATTEMPTS})\n")
-                time.sleep(delay)
+        size, got = _fetch_with_identity(opener, code_url, token_file, "OPENINFRA_CODE_TOKEN_FILE", tmp)
         if got != want:
             raise _CodeError(f"the deployment package does not match its recorded SHA-256 (recorded {want[:12]}, fetched {got[:12]})")
         _unzip_guarded(tmp, dest)
@@ -423,31 +463,76 @@ def _fetch_package(code_url, dest):
     sys.stderr.write(f"open-infra-runtime: unpacked the deployment package ({want[:12]}, {size} bytes) into {dest}\n")
 
 
+def _fetch_layers(layers_url, layers_raw, dest):
+    """Fetch the function's layers from the aws-shim (OPENINFRA_LAYERS_URL) with its identity token, never
+    with keys, and unpack them in order (each over the last) into dest, as the stored deployment package
+    is fetched and unpacked. layers_raw is OPENINFRA_LAYERS: layer i is ?layer=i."""
+    import tempfile
+
+    _check_http_url(layers_url, "OPENINFRA_LAYERS_URL")
+    try:
+        layers = json.loads(layers_raw)
+    except ValueError:
+        layers = None
+    if not isinstance(layers, list):
+        raise _CodeError("OPENINFRA_LAYERS must be a JSON array of the function's layers")
+    token_var = "OPENINFRA_LAYERS_TOKEN_FILE"
+    token_file = os.environ.get(token_var, "")
+    if not token_file:
+        raise _CodeError("OPENINFRA_LAYERS_URL needs OPENINFRA_LAYERS_TOKEN_FILE, the path of the function's "
+                         "identity token; it is not set")
+    _read_token(token_file, token_var)  # unreadable or empty fails start before any request
+    opener = _identity_opener()
+    os.makedirs(dest, exist_ok=True)
+    sep = "&" if "?" in layers_url else "?"
+    for i in range(len(layers)):
+        url = f"{layers_url}{sep}layer={i}"
+        fd, tmp = tempfile.mkstemp(prefix="oi-", suffix=".zip")
+        os.close(fd)
+        try:
+            size, _ = _fetch_with_identity(opener, url, token_file, token_var, tmp, "the layer", f"layer {i}")
+            _unzip_guarded(tmp, dest, "the layer")
+        except Exception as e:  # _CodeError, or a .zip that cannot be read
+            raise _CodeError(f"cannot load layer {i} into {dest}: {e}")
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        sys.stderr.write(f"open-infra-runtime: unpacked layer {i} ({size} bytes) into {dest}\n")
+
+
 def _fetch_code():
     """Fetch + unzip the handler .zip into /var/task — the function's stored deployment package
     (OPENINFRA_CODE_URL, fetched with the function's identity token) or the code bucket object (the
     Lambda S3-code model) — and any declared layers into /opt (the Lambda layer model) at cold start.
     Bucket/layer creds and endpoint come from the injected S3 secret (AWS_ACCESS_KEY_ID /
-    AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL). A failure here crashes the pod (exit 2) rather than
-    serving a broken handler. No-op when the handler is ConfigMap-mounted and no layers are declared."""
+    AWS_SECRET_ACCESS_KEY / AWS_ENDPOINT_URL), unless OPENINFRA_LAYERS_URL serves the layers (fetched with
+    the function's identity token, like the stored package). A failure here crashes the pod (exit 2)
+    rather than serving a broken handler. No-op when the handler is ConfigMap-mounted and no layers are
+    declared."""
     bucket = os.environ.get("OPENINFRA_CODE_BUCKET")
     code_url = os.environ.get("OPENINFRA_CODE_URL")
     layers_raw = os.environ.get("OPENINFRA_LAYERS", "")
+    layers_url = os.environ.get("OPENINFRA_LAYERS_URL", "")
     if not bucket and not code_url and not layers_raw:
         return  # ConfigMap-mounted (or otherwise pre-populated) /var/task, no layers
+    s3_layers = bool(layers_raw) and not layers_url
     try:
         if code_url and bucket:
             raise _CodeError("OPENINFRA_CODE_URL and OPENINFRA_CODE_BUCKET are both set: a function's deployment "
                              "package comes from one code source (its stored package or an S3 object), not both")
         if code_url:  # the stored deployment package (stdlib only: no boto3)
             _fetch_package(code_url, TASK_DIR)
-        if bucket or layers_raw:
+        if bucket or s3_layers:
             s3 = _s3_client()
             if bucket:  # the handler zip
                 _fetch_unzip(s3, bucket, os.environ.get("OPENINFRA_CODE_KEY", ""), TASK_DIR)
-            if layers_raw:  # layers: a JSON list of {bucket, key}, extracted (merged, in order) into /opt
+            if s3_layers:  # layers: a JSON list of {bucket, key}, extracted (merged, in order) into /opt
                 for layer in json.loads(layers_raw):
                     _fetch_unzip(s3, layer["bucket"], layer.get("key", ""), OPT_DIR)
+        if layers_raw and layers_url:  # the layers, with the function's identity (stdlib only: no boto3, no keys)
+            _fetch_layers(layers_url, layers_raw, OPT_DIR)
     except _CodeError as e:
         sys.stderr.write(f"open-infra-runtime: {e}\n")
         sys.exit(2)
@@ -469,6 +554,168 @@ def _add_layer_paths():
     for p in candidates:
         if os.path.isdir(p) and p not in sys.path:
             sys.path.insert(0, p)
+
+
+# --- The execution role's credentials, as Lambda hands them to a function: AWS_ACCESS_KEY_ID,
+# AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN are in the environment before the handler's module is
+# imported, so code that reads credentials as it loads finds them. They are the role's session from
+# sts:AssumeRoleWithWebIdentity on AWS_ENDPOINT_URL_STS, with the function's own identity token;
+# AWS_CREDENTIAL_EXPIRATION carries their expiry, which botocore reads to re-read the environment before
+# they expire (without it, a client made at import would keep them past it). Never logged; a failure never
+# fails the function. stdlib only (urllib + ElementTree).
+_STS_TIMEOUT_S = 5  # one STS call: connect, and each read
+_STS_DURATION_S = "43200"  # asked for first; a role whose maximum is shorter gets its maximum
+_CREDS_EARLY_S = 5 * 60  # refreshed when they would expire this soon after an invocation's deadline
+_CREDS_RETRY_S = 30  # after a failed refresh, the next is tried no sooner than this
+_ISO8601_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$")
+
+
+def _iso8601_epoch(s):
+    """Seconds since the epoch of an ISO 8601 time (STS's Expiration), or None."""
+    import calendar
+
+    m = _ISO8601_RE.match(s.strip())
+    if not m:
+        return None
+    t = calendar.timegm(tuple(int(m.group(i)) for i in range(1, 7)) + (0, 0, 0))
+    tz = m.group(7)
+    if tz and tz != "Z":
+        sign = 1 if tz[0] == "+" else -1
+        hh, mm = int(tz[1:3]), int(tz[-2:])
+        t -= sign * (hh * 3600 + mm * 60)
+    return t
+
+
+class _RoleCredentials:
+    """The execution role's credentials in the environment: fetched at cold start, refreshed before an
+    invocation when they near their expiry."""
+
+    def __init__(self):
+        self.active = False  # set by this runtime: only then refreshed
+        self.next_try = 0.0  # time.monotonic() at which a refresh is due
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def _post(endpoint, form):
+        """POST a form to the STS endpoint: (status, body). Raises OSError for a network failure."""
+        import http.client
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        data = urllib.parse.urlencode(form).encode()
+        req = urllib.request.Request(endpoint.rstrip("/") + "/", data=data, method="POST",
+                                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+        try:
+            with _identity_opener().open(req, timeout=_STS_TIMEOUT_S) as resp:
+                return resp.getcode(), resp.read(65536).decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read(65536).decode("utf-8", "replace")
+            except Exception:
+                body = ""
+            return e.code, body
+        except http.client.HTTPException as e:
+            raise OSError(str(e) or type(e).__name__)
+
+    @staticmethod
+    def _assume():
+        """sts:AssumeRoleWithWebIdentity for the execution role: (key id, secret, session token,
+        expiration as STS gives it, its epoch seconds). An exception's message holds no credential and
+        no token."""
+        import xml.etree.ElementTree as ET
+
+        token_file = os.environ["AWS_WEB_IDENTITY_TOKEN_FILE"]
+        try:
+            with open(token_file) as f:
+                token = f.read().strip()
+        except OSError as e:
+            raise RuntimeError(f"cannot read AWS_WEB_IDENTITY_TOKEN_FILE {token_file}: {e.strerror or e}")
+        if not token:
+            raise RuntimeError(f"AWS_WEB_IDENTITY_TOKEN_FILE {token_file} is empty")
+        form = [("Action", "AssumeRoleWithWebIdentity"), ("Version", "2011-06-15"),
+                ("RoleArn", os.environ["AWS_ROLE_ARN"]),
+                ("RoleSessionName", os.environ.get("AWS_ROLE_SESSION_NAME") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+                 or "lambda"),
+                ("WebIdentityToken", token), ("DurationSeconds", _STS_DURATION_S)]
+        endpoint = os.environ["AWS_ENDPOINT_URL_STS"]
+        try:
+            status, body = _RoleCredentials._post(endpoint, form)
+            if not 200 <= status < 300 and ("DurationSeconds" in body or "MaxSessionDuration" in body):
+                status, body = _RoleCredentials._post(endpoint, form[:-1])  # the role's own maximum session
+        except OSError as e:  # refused, reset, timed out, name not resolved
+            raise RuntimeError(str(e) or type(e).__name__)
+
+        def text(root, tag):
+            for el in root.iter():
+                if el.tag.rsplit("}", 1)[-1] == tag:
+                    return (el.text or "").strip()
+            return ""
+
+        try:
+            root = ET.fromstring(body)
+        except ET.ParseError:
+            root = None
+        if not 200 <= status < 300:
+            code = text(root, "Code") if root is not None else ""
+            msg = (text(root, "Message") if root is not None else "").replace(token, "<token>")[:200]
+            raise RuntimeError(f"STS answered HTTP {status}" + (f" {code}" if code else "") + (f": {msg}" if msg else ""))
+        creds = None
+        if root is not None:
+            creds = next((el for el in root.iter() if el.tag.rsplit("}", 1)[-1] == "Credentials"), None)
+        got = [text(creds, t) if creds is not None else "" for t in ("AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration")]
+        expires = _iso8601_epoch(got[3])
+        if not all(got) or expires is None:
+            raise RuntimeError("STS's answer has no AccessKeyId, SecretAccessKey, SessionToken and Expiration")
+        return got[0], got[1], got[2], got[3], expires
+
+    def _set(self, got):
+        """Put the credentials in the environment, and when the next refresh is due: their lifetime (by
+        the wall clock, as STS states it) is counted down on the monotonic clock."""
+        akid, secret, session, expiration, expires = got
+        os.environ["AWS_ACCESS_KEY_ID"] = akid
+        os.environ["AWS_SECRET_ACCESS_KEY"] = secret
+        os.environ["AWS_SESSION_TOKEN"] = session
+        os.environ["AWS_CREDENTIAL_EXPIRATION"] = expiration
+        self.active = True
+        self.next_try = time.monotonic() + (expires - time.time()) - _CREDS_EARLY_S - _TIMEOUT_S
+
+    def init(self):
+        """At cold start, before the handler's module is imported."""
+        env = os.environ
+        if not (env.get("AWS_ROLE_ARN") and env.get("AWS_WEB_IDENTITY_TOKEN_FILE") and env.get("AWS_ENDPOINT_URL_STS")):
+            return
+        if env.get("AWS_ACCESS_KEY_ID"):
+            return  # keys already given: they stay the function's
+        try:
+            got = self._assume()
+        except Exception as e:
+            sys.stderr.write(f"open-infra-runtime: the execution role's credentials are not in the environment: {e}; "
+                             f"the AWS SDK gets them with the web identity token instead\n")
+            return
+        self._set(got)
+        sys.stderr.write(f"open-infra-runtime: the execution role's credentials are in the environment (expiring {got[3]})\n")
+
+    def refresh_if_due(self):
+        """Before an invocation: no call at all until the credentials near their expiry. Concurrent
+        invocations wait for the one refresh."""
+        if not self.active or time.monotonic() < self.next_try:
+            return
+        with self.lock:
+            if time.monotonic() < self.next_try:
+                return  # refreshed (or failed) while this invocation waited
+            try:
+                got = self._assume()
+            except Exception as e:
+                self.next_try = time.monotonic() + _CREDS_RETRY_S
+                sys.stderr.write(f"open-infra-runtime: could not refresh the execution role's credentials: {e}; "
+                                 f"the current ones are kept\n")
+                return
+            self._set(got)
+            sys.stderr.write(f"open-infra-runtime: refreshed the execution role's credentials (expiring {got[3]})\n")
+
+
+_ROLE_CREDENTIALS = _RoleCredentials()
 
 
 def _load_handler():
@@ -631,6 +878,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "GET" and self.path == "/_openinfra_health":
             self._send(200, b'{"ok":true}')
             return
+        # The role's credentials, refreshed first when they near their expiry. The wait is the platform's,
+        # not the invocation's: it is not counted against its Timeout.
+        _ROLE_CREDENTIALS.refresh_if_due()
         # The invocation's clock starts when its request reaches the bootstrap (headers read, body not yet).
         deadline = time.monotonic() + _TIMEOUT_S
         raw = self._read_body()
@@ -714,6 +964,7 @@ def main():
     sys.stdout, sys.stderr = _Tee(sys.stdout), _Tee(sys.stderr)
     _fetch_code()
     _add_layer_paths()  # layer modules importable before the handler loads
+    _ROLE_CREDENTIALS.init()  # the role's credentials in the environment before the handler is imported
     HANDLER = _load_handler()
     sys.stderr.write(
         f"open-infra-runtime: serving {os.environ.get('OPENINFRA_HANDLER')} on :{PORT} "

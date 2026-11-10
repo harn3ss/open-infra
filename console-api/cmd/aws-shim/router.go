@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"path"
@@ -199,6 +200,9 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// SERVICE writes its own dialect of the rejection.
 	claims, err := rt.auth.authenticate(r.Context(), r)
 	if err != nil {
+		if errors.Is(err, errExpiredToken) {
+			r = withExpiredToken(r) // answered ExpiredToken, in the service's dialect (auth.go)
+		}
 		svc.authFailure(w, r, requestID)
 		return
 	}

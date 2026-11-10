@@ -276,7 +276,7 @@ the sections below; the one-line summary:
 |---|---|---|---|
 | **[S3](#s3-faithful-proven)** | MinIO | REST/XML | path-style, and virtual-hosted on the install's S3 hostnames |
 | **[STS](#sts-faithful)** | identity / sealed tokens | query/XML | `AssumeRole` opt-in (OpenBao-custodied sealing key) |
-| **[Lambda](#lambda-knative-function-invoke)** | Knative `Function` | Lambda REST | layers, VPC configuration and tags refused |
+| **[Lambda](#lambda-knative-function-invoke)** | Knative `Function` | Lambda REST | layers and tags refused through the API |
 | **[AppSync](#appsync-graphql-over-open-appsync--slice-1-runs-live-experimental)** | open-appsync engine | GraphQL | **experimental**; needs `components.openAppsync` |
 | **[DynamoDB](#dynamodb-ferretdb--documentdb-postgres-transactions)** | FerretDB + documentdb Postgres | JSON 1.0 | `ProjectionExpression` `501`; Streams via the `dynamodbstreams` API |
 | **[SQS](#sqs-postgres-backed-probe-proven)** | Postgres | JSON | standard and FIFO queues; `ReceiveRequestAttemptId` refused |
@@ -632,7 +632,7 @@ authorized against its creator's authority when it is created — so `GetPolicy`
   caller, and a trust policy naming `lambda.amazonaws.com` with no conditions.
 - **A .zip package** (`Code.ZipFile`, or `S3Bucket`/`S3Key` read as the caller may read it) is checked and
   stored as a stack's is, and named by its SHA-256 (`CodeSha256`, `CodeSize`).
-- **Refused, naming the parameter:** what a Function cannot carry (layers, VPC configuration, tags, a
+- **Refused, naming the parameter:** what a Function cannot carry through the API (layers, tags, a
   non-`x86_64` architecture, and the rest listed in
   [serverless.md](serverless.md#creating-and-changing-functions-with-the-lambda-api)).
 - **Tested:** `probe/aws-shim-lambda-api.sh`.

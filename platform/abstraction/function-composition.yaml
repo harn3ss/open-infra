@@ -57,8 +57,11 @@ spec:
             {{-   if gt (int $nsrc) 1 }}{{- fail "Lambda function: the deployment package is inline code (ZipFile), an S3 object (S3Bucket and S3Key) or a stored package, only one of them (code.source)" }}{{- end }}
             {{-   if eq (int $nsrc) 0 }}{{- fail "Lambda function: the deployment package needs inline code (ZipFile) or an S3 object (S3Bucket and S3Key) (code.source)" }}{{- end }}
             {{-   if and $csrc.package $csrc.secret }}{{- fail "Lambda function: a stored deployment package is fetched with the function's own identity, never with keys (code.source.package / code.source.secret)" }}{{- end }}
-            {{- /* Layers are .zip artifacts fetched with the handler's S3 creds, so they require a bucket source. */}}
-            {{-   if and $code.layers (not (and $csrc.bucket $csrc.secret)) }}{{- fail "Lambda function: layers need the deployment package in S3, with credentials to read it (code.source.bucket and code.source.secret)" }}{{- end }}
+            {{- /* Layers are .zip artifacts in S3, extracted into /opt. As Lambda fetches them, a function with its own
+                   identity (an execution role or a stored package) gets them from the aws-shim with its token, which
+                   serves only objects the function's account may read; a function whose code is read with keys
+                   fetches them with those keys. One of the two is needed. */}}
+            {{-   if and $code.layers (not (or (and $csrc.bucket $csrc.secret) $spec.role $csrc.package)) }}{{- fail "Lambda function: layers need the function's own identity (an execution role, or a stored deployment package) or the deployment package in S3 with credentials to read it (code.layers)" }}{{- end }}
             {{- end }}
             {{- /* Burstable admission (the Lambda memory model). Default false = today's Guaranteed QoS
                    (request == limit == memory). true: request = a per-runtime floor, limit = memory, so a
@@ -364,6 +367,12 @@ spec:
                               {{- end }}
                               {{- if $code.layers }}
                               - { name: OPENINFRA_LAYERS, value: {{ $code.layers | toJson | quote }} }
+                              {{- if not (and $csrc.bucket $csrc.secret) }}
+                              # Layers fetched as Lambda fetches them: from the aws-shim with the function's identity
+                              # token, each an object the function's account may read. The role needs no access to them.
+                              - { name: OPENINFRA_LAYERS_URL, value: "{{ if $inVpc }}{{ $lvService }}{{ else }}{{ $shimEndpoint }}{{ end }}/v1/function-code" }
+                              - { name: OPENINFRA_LAYERS_TOKEN_FILE, value: "/var/run/secrets/openinfra/token" }
+                              {{- end }}
                               {{- end }}
                               # AWS Lambda reserved runtime variables — AWS's own runtime injects these and a
                               # handler relies on them (e.g. an SDK client needs a region). They can't be set

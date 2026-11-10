@@ -109,10 +109,10 @@ func writeECRJSON(w http.ResponseWriter, requestID string, obj any) {
 	_ = json.NewEncoder(w).Encode(obj)
 }
 
-func (h *ecrHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
+func (h *ecrHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
 	// AWS surfaces a SigV4 mismatch as InvalidSignatureException before the service sees it.
-	writeECRError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+	writeECRError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 // verbForECROp maps an ECR operation to the coarse RBAC verb its SubjectAccessReview checks

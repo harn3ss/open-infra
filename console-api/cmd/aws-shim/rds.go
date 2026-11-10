@@ -92,9 +92,9 @@ func newRDSHandler(cs kubernetes.Interface, cnpg *rdsCNPG, authzNS, account, reg
 		passwordWait: 5 * time.Minute, passwordPoll: 10 * time.Second}
 }
 
-func (h *rdsHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeQueryError(w, http.StatusForbidden, "SignatureDoesNotMatch", requestID,
-		"The request signature we calculated does not match the signature you provided.", rdsXMLNamespace)
+func (h *rdsHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeQueryError(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."), rdsXMLNamespace)
 }
 
 func verbForRDSOp(op string) (string, bool) {

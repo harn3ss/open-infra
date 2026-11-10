@@ -141,7 +141,13 @@ aws iam put-role-policy --role-name orders-writer --policy-name send --policy-do
   `assumed-role/<role>/<function>`, as on Lambda), and `AWS_ENDPOINT_URL` / `AWS_ENDPOINT_URL_STS` (the
   aws-shim, where the credentials are valid). An image function also gets `AWS_REGION` and
   `AWS_DEFAULT_REGION` (the install's region); a code function keeps its runtime's. The SDK assumes the
-  role on its first call and renews the credentials before they expire. Like any web-identity session,
+  role on its first call and renews the credentials before they expire.
+- **A code function also gets the role's credentials as Lambda hands them over**: before the handler loads,
+  the runtime assumes the role with the function's token and sets `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`, renewing them before they expire. So code that reads
+  credentials as it loads, as some SDK v2 libraries do, works as on Lambda. They are the same role's
+  temporary credentials, from the same token. If the role cannot be assumed at start, the function still
+  starts, and the SDK's web-identity path is left to try. Like any web-identity session,
   the function's carries no MFA context (`aws:MultiFactorAuthPresent` is absent). `GetFunctionConfiguration`
   reports the role as the function's `Role`.
 - **A role and package keys don't combine**: a function whose package is read from a bucket with static
@@ -154,6 +160,12 @@ aws iam put-role-policy --role-name orders-writer --policy-name send --policy-do
   - The function's pods fetch it from the aws-shim at cold start with the function's own identity, check
     the hash, and unpack it into `/var/task`. The shim serves a pod only its own function's package.
   - No keys are involved, so it combines with a role.
+- **Layers** (`code.layers`, each an S3 bucket and key) are extracted, in order, into `/opt` at cold start.
+  A function with its own identity (a role or a stored package) fetches them from the aws-shim with its
+  token, as Lambda fetches a function's layers itself: the role needs no access to them. The shim serves
+  a function only the layers it names, and only objects its account may read: its own buckets, or another
+  account's whose bucket policy grants the account. A function whose package is read with keys
+  (`code.source.secret`) fetches its layers with those keys.
 
 Execution roles need the aws-shim with STS enabled (its session sealing key), as `sts:AssumeRole` does.
 A function without `spec.role` has no role and runs exactly as before: it reaches what it needs through
@@ -292,11 +304,20 @@ aws lambda delete-function --function-name orders
   the account: `ResourceConflictException` if it is taken.
 - **What the answers hold:**
   - every answer is the function's configuration, as on AWS: `State` starts as `Pending` until the
-    function is ready, and an update answers `LastUpdateStatus: InProgress`. A later read takes its state
-    from the function's conditions, which do not say when an update has finished rolling out: invoke the
-    function to see the new code;
+    function is ready, and an update answers `LastUpdateStatus: InProgress`;
+  - `GetFunction` and `GetFunctionConfiguration` report an update that failed as Lambda does:
+    `LastUpdateStatus: Failed`, with `LastUpdateStatusReason` and `LastUpdateStatusReasonCode`
+    (`InvalidConfiguration` for a configuration the function cannot run, `FunctionError` for code that does
+    not start). The function stays `Active` while its previous configuration still serves.
+    `ListFunctions` takes its state from each function's own conditions;
   - `RevisionId` names its current revision: an update that passes `--revision-id` changes only that
     revision, or answers `PreconditionFailedException`.
+- **A function you create is not published on the gateway** (`expose: false`): on Lambda a function is
+  reachable over HTTP only through a function URL, which open-infra does not have yet, so it is invoked
+  through the Lambda API.
+- **One code source and one runtime:** `UpdateFunctionCode` replaces the function's code source with the
+  new package, and `UpdateFunctionConfiguration --runtime` moves a function off a runtime image of its
+  own onto the managed runtime, as Lambda has only one of each.
 - **Environment variables** replace the function's variables, as on AWS.
   - Lambda's reserved names are refused, and so are the ones the platform sets for the function's role,
     code and endpoints: `AWS_ENDPOINT_URL*`, `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`,

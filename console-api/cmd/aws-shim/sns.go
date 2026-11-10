@@ -68,9 +68,9 @@ func newSNSHandler(cs kubernetes.Interface, authzNS, account, region string, sto
 	return &snsHandler{cs: cs, authzNS: authzNS, account: account, region: region, store: store, sqs: sqs, logger: logger}
 }
 
-func (h *snsHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeQueryError(w, http.StatusForbidden, "SignatureDoesNotMatch", requestID,
-		"The request signature we calculated does not match the signature you provided.", snsXMLNamespace)
+func (h *snsHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeQueryError(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."), snsXMLNamespace)
 }
 
 // verbForSNSOp maps an SNS op to its coarse RBAC verb. Publish and Subscribe are both "create"

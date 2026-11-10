@@ -284,3 +284,33 @@ func TestRotate_Concurrent(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// An expired session is told apart only when its token is authentic and minted for the access key that
+// signs with it: VerifyExpired answers it, Verify does not; a live session, another key's or a tampered
+// token is not an expired one.
+func TestVerifyExpired_OnlyAnAuthenticExpiredSession(t *testing.T) {
+	m := newTestMinter(t)
+	akid, _, tok, _, err := m.MintSessionAt(Session{RoleName: "app", SessionName: "s"}, time.Now().Add(-2*time.Hour), time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Verify(akid, tok); ok {
+		t.Fatal("an expired session must not verify")
+	}
+	if sess, ok := m.VerifyExpired(akid, tok); !ok || sess.RoleName != "app" {
+		t.Fatalf("an authentic expired session: %+v %v", sess, ok)
+	}
+	if _, ok := m.VerifyExpired("ASIAOTHERKEY0000000", tok); ok {
+		t.Error("another access key's expired token")
+	}
+	if _, ok := m.VerifyExpired(akid, tok[:len(tok)-4]+"AAAA"); ok {
+		t.Error("a tampered token")
+	}
+	liveAK, _, liveTok, _, err := m.MintSession(Session{RoleName: "app", SessionName: "s"}, time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.VerifyExpired(liveAK, liveTok); ok {
+		t.Error("a live session is not an expired one")
+	}
+}

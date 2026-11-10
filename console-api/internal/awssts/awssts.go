@@ -179,6 +179,12 @@ func (m *Minter) MintInAccount(acct, ns, role string, groups []string, sessionNa
 // [MinDuration, max]. The access key id, secret and timestamps are the minter's: whatever s carries in
 // them is replaced.
 func (m *Minter) MintSession(s Session, ttl, max time.Duration) (accessKeyID, secretKey, sessionToken string, expiry time.Time, err error) {
+	return m.MintSessionAt(s, time.Now(), ttl, max)
+}
+
+// MintSessionAt is MintSession for a session issued at issuedAt (one already past its expiry, to show how
+// an expired session is answered).
+func (m *Minter) MintSessionAt(s Session, issuedAt time.Time, ttl, max time.Duration) (accessKeyID, secretKey, sessionToken string, expiry time.Time, err error) {
 	if ttl <= 0 {
 		ttl = DefaultDuration
 	}
@@ -202,7 +208,7 @@ func (m *Minter) MintSession(s Session, ttl, max time.Duration) (accessKeyID, se
 		return "", "", "", time.Time{}, err
 	}
 	secretKey = base64.RawStdEncoding.EncodeToString(sk)
-	issuedAt := time.Now().UTC()
+	issuedAt = issuedAt.UTC()
 	expiry = issuedAt.Add(ttl)
 	sess := s
 	sess.AccessKeyID, sess.SecretKey, sess.IssuedAt, sess.Expiry = accessKeyID, secretKey, issuedAt, expiry
@@ -227,6 +233,18 @@ func (m *Minter) Verify(accessKeyID, sessionToken string) (Session, bool) {
 		return Session{}, false
 	}
 	if time.Now().UTC().After(sess.Expiry) {
+		return Session{}, false
+	}
+	return sess, true
+}
+
+// VerifyExpired is Verify's other answer: the session of an authentic token minted for accessKeyID that
+// has expired (ok=false for any other token, a valid one included). The caller answers such a request as
+// AWS does (ExpiredToken), once its signature proves it holds the session's secret, so an SDK renews its
+// credentials; every other failure stays indistinguishable.
+func (m *Minter) VerifyExpired(accessKeyID, sessionToken string) (Session, bool) {
+	sess, err := m.open(sessionToken)
+	if err != nil || sess.AccessKeyID != accessKeyID || !time.Now().UTC().After(sess.Expiry) {
 		return Session{}, false
 	}
 	return sess, true

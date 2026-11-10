@@ -93,9 +93,9 @@ func writeEBJSON(w http.ResponseWriter, requestID string, obj any) {
 	_ = json.NewEncoder(w).Encode(obj)
 }
 
-func (h *ebHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeEBError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *ebHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeEBError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 func verbForEBOp(op string) (string, bool) {

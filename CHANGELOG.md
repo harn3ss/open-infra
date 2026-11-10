@@ -6,6 +6,28 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — Lambda functions with a role and a stored package run as on Lambda
+- **Layers with the function's own identity:** a function with an execution role or a stored deployment
+  package gets its layers (`code.layers`) from the aws-shim with its own token, as Lambda fetches a
+  function's layers itself.
+  - The shim serves a function only the layers it names, and only objects its account may read.
+  - Before, layers needed the code in S3 with static keys, so such a function could not render at all.
+- **The role's credentials as Lambda hands them over:** before the handler loads, the Node.js, Python and
+  .NET runtimes set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` (with
+  `AWS_CREDENTIAL_EXPIRATION`), renewed before they expire. Code that reads credentials as it loads now works.
+- **An expired session is answered `ExpiredToken`**, as AWS answers it (`ExpiredTokenException` in the JSON
+  protocols). An SDK then renews its credentials, so an SDK v2 client made at load re-reads the renewed
+  environment.
+- **The Lambda API:**
+  - `UpdateFunctionCode` replaces a function's code source, so a function whose code came from S3 no longer
+    ends up with two;
+  - `UpdateFunctionConfiguration --runtime` moves a function off a runtime image of its own;
+  - `CreateFunction` no longer publishes the function on the gateway: on Lambda a function is reachable over
+    HTTP only through a function URL;
+  - `GetFunction` and `GetFunctionConfiguration` report a failed update as `LastUpdateStatus: Failed`, with
+    its reason and reason code, while the function stays `Active` on the configuration that still serves.
+- A function picks up the new runtimes at its next revision.
+
 ### Fixed — a member account's IAM user deploys a stack from its own bucket
 - **The cause:** a CloudFormation deploy reads a Lambda function's packaged code (`Code` `S3Bucket`/`S3Key`)
   after the request returns, as the caller. That read lost the caller's account. A member account's IAM

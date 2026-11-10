@@ -853,6 +853,46 @@ func TestFunction_Code(t *testing.T) {
 		}
 	})
 
+	// Layers of a function with its own identity (a stored package, or an execution role) are fetched as
+	// Lambda fetches them: from the aws-shim with the function's token (OPENINFRA_LAYERS_URL), never with
+	// keys. A function whose code is read with keys keeps fetching its layers with them (no URL), and a
+	// function with neither is refused (#418).
+	t.Run("layers fetched with the function's identity", func(t *testing.T) {
+		pkg := map[string]any{"sha256": strings.Repeat("a", 64), "size": 100}
+		for name, code := range map[string]map[string]any{
+			"a stored package": {"runtime": "nodejs22", "handler": "index.handler",
+				"source": map[string]any{"package": pkg},
+				"layers": []any{map[string]any{"bucket": "team-layers", "key": "deps.zip"}}},
+		} {
+			out := render(t, tmpl, ctx(map[string]any{"code": code}))
+			for _, want := range []string{"name: OPENINFRA_LAYERS,", "name: OPENINFRA_LAYERS_URL", "/v1/function-code",
+				"name: OPENINFRA_LAYERS_TOKEN_FILE", "/var/run/secrets/openinfra/token", "serviceAccountName: fn-"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("%s: missing %q:\n%s", name, want, out)
+				}
+			}
+			if strings.Contains(out, "secretKeyRef") {
+				t.Errorf("%s: layers fetched with the function's identity must not read keys:\n%s", name, out)
+			}
+		}
+		keyed := render(t, tmpl, ctx(map[string]any{
+			"code": map[string]any{"runtime": "python3.12", "handler": "app.handler",
+				"source": map[string]any{"bucket": "fn-artifacts", "key": "f.zip", "secret": "fn-s3"},
+				"layers": []any{map[string]any{"bucket": "fn-artifacts", "key": "layer-deps.zip"}}},
+		}))
+		if strings.Contains(keyed, "OPENINFRA_LAYERS_URL") {
+			t.Errorf("a function whose code is read with keys fetches its layers with them, not from the shim:\n%s", keyed)
+		}
+		err := renderErr(tmpl, ctx(map[string]any{
+			"code": map[string]any{"runtime": "python3.12", "handler": "app.handler",
+				"source": map[string]any{"configMap": "fn-code"},
+				"layers": []any{map[string]any{"bucket": "fn-artifacts", "key": "layer-deps.zip"}}},
+		}))
+		if err == nil || !strings.Contains(err.Error(), "layers need the function's own identity") {
+			t.Errorf("layers with neither an identity nor keys must be refused, got %v", err)
+		}
+	})
+
 	// nodejs20 runtime: the same code contract selects the Node base image instead of python. The
 	// handler/source/layer env wiring is runtime-agnostic (the Node shim reads the same vars).
 	t.Run("nodejs", func(t *testing.T) {

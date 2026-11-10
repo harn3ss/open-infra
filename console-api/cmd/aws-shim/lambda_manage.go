@@ -372,7 +372,9 @@ func (h *lambdaHandler) createFunction(w http.ResponseWriter, r *http.Request, c
 		lambdaValidation("role", nil, "Member must not be null").write(w, requestID)
 		return
 	}
-	spec := map[string]any{}
+	// A function is reachable over HTTP only through a function URL, as on Lambda (open-infra has none yet):
+	// it is invoked through the Lambda API, never published on the gateway (the Function kind's default).
+	spec := map[string]any{"expose": false}
 	if e := h.passExecutionRole(r, claims, ns, role); e != nil {
 		e.write(w, requestID)
 		return
@@ -539,7 +541,7 @@ func (h *lambdaHandler) updateFunction(w http.ResponseWriter, r *http.Request, c
 				e.write(w, requestID)
 				return
 			}
-			fc["source"] = map[string]any{"package": pkg}
+			fc["source"] = replacedSource(fc["source"], pkg)
 		}
 		if dry, _ := body["DryRun"].(bool); dry {
 			writeLambdaJSON(w, requestID, h.functionConfiguration(ctx, obj, ""))
@@ -583,6 +585,9 @@ func (h *lambdaHandler) updateFunction(w http.ResponseWriter, r *http.Request, c
 			if e := setRuntimeAndHandler(fc, rt, handler); e != nil {
 				e.write(w, requestID)
 				return
+			}
+			if hasRT {
+				clearRuntimeImage(fc)
 			}
 		}
 		if d, ok := body["Description"]; ok {
@@ -792,6 +797,33 @@ func applyLambdaSettings(spec, body map[string]any) *lambdaErr {
 }
 
 // setRuntimeAndHandler sets a .zip function's runtime and handler.
+// replacedSource is a function's code source after UpdateFunctionCode stored pkg: the stored package, and
+// every other source the function had cleared. A claim is merged into its composite, so a source field the
+// claim stops carrying would stay on the composite, and the function would have two code sources (#418).
+func replacedSource(prev any, pkg map[string]any) map[string]any {
+	src := map[string]any{"package": pkg}
+	if old, _ := prev.(map[string]any); old != nil {
+		for _, k := range []string{"bucket", "key", "secret", "configMap"} {
+			if _, had := old[k]; had {
+				src[k] = ""
+			}
+		}
+	}
+	return src
+}
+
+// clearRuntimeImage leaves a function that moved to a managed runtime with no custom runtime image (a
+// function runs on one or the other), for the same reason as replacedSource: the composite keeps what the
+// claim does not clear (#418).
+func clearRuntimeImage(fc map[string]any) {
+	if _, had := fc["runtimeImage"]; had {
+		fc["runtimeImage"] = ""
+	}
+	if _, had := fc["unsupportedRuntime"]; had {
+		fc["unsupportedRuntime"] = false
+	}
+}
+
 func setRuntimeAndHandler(fc map[string]any, rt, handler string) *lambdaErr {
 	runtime, ok := cfn.LambdaRuntime(rt)
 	if !ok {

@@ -121,9 +121,9 @@ func newServiceQuotasHandler(cs kubernetes.Interface, dyn dynamic.Interface, ns,
 	return h
 }
 
-func (h *serviceQuotasHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeSQError(w, http.StatusForbidden, "InvalidSignatureException", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *serviceQuotasHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeSQError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 func writeSQError(w http.ResponseWriter, status int, code, requestID, message string) {

@@ -89,9 +89,9 @@ func writeSQSJSON(w http.ResponseWriter, requestID string, obj any) {
 	_ = json.NewEncoder(w).Encode(obj)
 }
 
-func (h *sqsHandler) authFailure(w http.ResponseWriter, _ *http.Request, requestID string) {
-	writeSQSError(w, http.StatusForbidden, "SignatureDoesNotMatch", requestID,
-		"The request signature we calculated does not match the signature you provided.")
+func (h *sqsHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
+	writeSQSError(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 
 // verbForSQSOp maps an SQS operation to the coarse RBAC verb its SubjectAccessReview checks. Note
