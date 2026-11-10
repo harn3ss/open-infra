@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — the AWS services recover by themselves when their database comes back
+- If the aws-shim starts while its database is unreachable (for example when both restart after a node
+  event), the services that database holds answer "not configured" while everything else serves: SQS,
+  SNS, KMS, Secrets Manager, EventBridge, CloudWatch and CloudWatch Logs, SSM, API Gateway, Kinesis,
+  Cognito, Route 53 Resolver, and DynamoDB transactions. With Route 53 Resolver down, a function in a VPC
+  resolves no name; its traffic stays blocked.
+- Before, they stayed down until the shim was restarted by hand. Now the shim checks the database every
+  15 seconds and restarts itself once it answers, which brings them back.
+
 ### Added — the `dotnet10` Lambda runtime
 - Functions run on `dotnet10` through the Lambda API, CloudFormation and `kind: Function`: a .NET build
   published for `net10.0` runs on .NET 10, on its own runtime image (`open-infra-lambda-dotnet10`).

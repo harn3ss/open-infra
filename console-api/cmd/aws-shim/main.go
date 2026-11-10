@@ -147,6 +147,9 @@ func run(logger *slog.Logger) error {
 	// under a Postgres BEGIN/COMMIT, and writes through them are read-consistent over the mongo
 	// wire. Optional: unset -> Transact* answers an honest 501.
 	var pg *sql.DB
+	// degradedPG are the backing Postgres the shim started without; once each answers, the shim restarts so
+	// the services it holds come up (pg_recover.go).
+	degradedPG := map[string]string{}
 	if pgURI := getenv("MONGO_PG_URI", ""); pgURI != "" {
 		if db, perr := sql.Open("postgres", pgURI); perr != nil {
 			logger.Warn("DynamoDB transactions unavailable: documentdb Postgres open failed — Transact* answers 501 until recovery; the shim stays up", slog.String("err", perr.Error()))
@@ -156,7 +159,8 @@ func run(logger *slog.Logger) error {
 			cancel()
 			if perr != nil {
 				// Non-fatal: a documentdb outage degrades only DynamoDB Transact*, not the whole shim.
-				logger.Warn("DynamoDB transactions unavailable: documentdb Postgres unreachable — Transact* answers 501 until recovery; the shim stays up", slog.String("err", perr.Error()))
+				logger.Warn("DynamoDB transactions unavailable: documentdb Postgres unreachable — Transact* answers 501 until it is reachable, then the shim restarts; the shim stays up", slog.String("err", perr.Error()))
+				degradedPG["documentdb"] = pgURI
 			} else {
 				pg = db
 				logger.Info("connected to the documentdb Postgres for DynamoDB transactions")
@@ -189,7 +193,7 @@ func run(logger *slog.Logger) error {
 		// A backing-store outage must NOT take the whole shim down. Build these shared-Postgres stores in
 		// a closure; on ANY failure, log and leave them nil — each service is nil-guarded at registration,
 		// so it simply isn't served (an honest 501) while the shim, Cedar enforcement, and every other
-		// backend keep running. A shim restart re-attempts the connection.
+		// backend keep running. Once the Postgres answers, the shim restarts and connects (pg_recover.go).
 		initErr := func() error {
 			db, serr := sql.Open("postgres", sqsURI)
 			if serr != nil {
@@ -199,7 +203,7 @@ func run(logger *slog.Logger) error {
 			serr = db.PingContext(sctx)
 			cancel()
 			if serr != nil {
-				return fmt.Errorf("SQS_PG_URI set but the SQS Postgres is unreachable: %w", serr)
+				return fmt.Errorf("SQS_PG_URI set but the SQS Postgres is unreachable: %w (%w)", serr, errPGUnreachable)
 			}
 			sqsSt = &sqsStore{db: db}
 			if serr := sqsSt.ensureSchema(context.Background()); serr != nil {
@@ -302,7 +306,10 @@ func run(logger *slog.Logger) error {
 			return nil
 		}()
 		if initErr != nil {
-			logger.Warn("shared SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/DynamoDBStreams/Cognito Postgres unavailable — those services answer 501 until recovery; the shim + Cedar enforcement stay up", slog.String("err", initErr.Error()))
+			logger.Warn("shared SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/DynamoDBStreams/Cognito/Route53Resolver Postgres unavailable — those services answer 501 until it is reachable, then the shim restarts; the shim + Cedar enforcement stay up", slog.String("err", initErr.Error()))
+			if errors.Is(initErr, errPGUnreachable) {
+				degradedPG["shared"] = sqsURI // a schema error stays degraded: a restart would only repeat it
+			}
 			sqsSt, snsSt, kmsSt, secretsSt, ebSt, cwlSt, ssmSt, apigwSt, apigwV1St, cwSt, kinesisSt, ddbStreamSt, cognitoSt = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 			cfnSvcOwners, ec2KeySt, ec2FlowSt, sharedPG, r53rSt = nil, nil, nil, nil, nil
 		}
@@ -1087,6 +1094,9 @@ func run(logger *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	for what, dsn := range degradedPG {
+		go restartWhenReachable(ctx, what, pgPing(dsn), pgRecoverEvery, logger, restartSelf)
+	}
 	if vpcIfaces != nil {
 		go vpcIfaces.Run(ctx) // follows the Lambda VPC subnet's addresses; exits when ctx is cancelled
 	}
