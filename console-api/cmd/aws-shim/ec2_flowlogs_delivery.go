@@ -3,10 +3,13 @@
 //
 // Where the records come from: a VPC security group's NetworkPolicy is annotated for OVN to log the packets
 // it drops (ovn.kubernetes.io/enable_log, log_acl_actions "drop"); ovn-controller writes one acl_log line
-// per dropped packet to its node's ovs-ovn pod, whose output the log store (Loki) keeps. A line's address
-// on the logging side — the source of an egress packet (from-lport), the destination of an ingress one
-// (to-lport) — is an execution environment's, and vpcInterfaces says which function's network interface
-// had it then (vpcnet.go). Lines whose address is no VPC function's are someone else's and are ignored.
+// per dropped packet to its node's ovs-ovn pod, whose output the log store (Loki) keeps. Only a packet the
+// function sent (egress, from-lport) is recorded: a Lambda function's network interface carries only the
+// traffic the function starts and accepts no connection, so nothing inbound ever appears on it. Here the
+// inbound packets a group drops are Lambda's own (Knative's activator and probes reaching a starting
+// execution environment), never the customer's. The source address of an egress packet is an execution
+// environment's, and vpcInterfaces says which function's network interface had it then (vpcnet.go). Lines
+// whose address is no VPC function's are someone else's and are ignored.
 // As on AWS, traffic to the VPC's DNS resolver and Lambda's own service traffic are never recorded: here
 // the shim's VPC resolver port (5353) and its Lambda service port (4568).
 //
@@ -565,22 +568,19 @@ func (d *flowLogDelivery) read(ctx context.Context, from, to int64, fn func(loki
 	return start, nil
 }
 
-// ingest attributes one line to the function interface that sent or was to receive its packet, and adds
-// it to the window of each flow log that records it.
+// ingest attributes one line to the function interface that sent its packet, and adds it to the window of
+// each flow log that records it. An inbound packet is never recorded: a function accepts no connection, and
+// what a group drops inbound is Lambda's own traffic (see the top of this file).
 func (d *flowLogDelivery) ingest(st *flowLogState, e lokiEntry, shim map[string]bool, known bool) {
 	p, ok := parseACLLog(e.Line)
-	if !ok {
+	if !ok || !p.Egress {
 		return
 	}
 	action := p.action()
 	if action == "" {
 		return
 	}
-	ip := p.Dst
-	if p.Egress {
-		ip = p.Src
-	}
-	in, ok := d.ifaces.At(ip, time.Unix(0, e.TsNs))
+	in, ok := d.ifaces.At(p.Src, time.Unix(0, e.TsNs))
 	if !ok || serviceFlow(p, shim, known) {
 		return
 	}

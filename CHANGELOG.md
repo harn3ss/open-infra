@@ -20,6 +20,18 @@ the product's public contract.
   and the query log records it. A security group's HTTPS egress to `0.0.0.0/0` reaches the platform's AWS
   endpoint.
 
+### Fixed — a function's VPC flow log records only traffic the function sends
+- A flow log recorded a REJECT for each packet a function's security group refused on the way in. A
+  Lambda function accepts no connection, so on AWS nothing inbound appears on its network interface, and
+  here the inbound packets a group refuses are Lambda's own: the platform reaching an execution
+  environment while it starts.
+- Each function starting in a VPC added hundreds of such records to its flow log's log group. A rollout
+  that restarted many functions at once wrote enough of them to fill the database behind the
+  Postgres-backed services (SQS, SNS, CloudWatch Logs, Route 53 Resolver, KMS, Secrets Manager, SSM,
+  EventBridge and others), which then stopped until it was given more room.
+- Now only refused packets the function sent are recorded, as the docs already said. That database's
+  volume is also larger (20 GiB, from 2 GiB).
+
 ### Fixed — the AWS services recover by themselves when their database comes back
 - If the aws-shim starts while its database is unreachable (for example when both restart after a node
   event), the services that database holds answer "not configured" while everything else serves: SQS,

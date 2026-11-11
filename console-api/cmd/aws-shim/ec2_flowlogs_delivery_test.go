@@ -241,12 +241,12 @@ func ingestAll(d *flowLogDelivery, st *flowLogState, lines map[int]string, until
 	}
 }
 
-// A dropped packet's line is attributed to the interface that sent it (egress) or was to receive it
-// (ingress), recorded by each flow log whose VPC, subnet or interface it is, in that flow log's account,
-// aggregated per window into one record per interface and 5-tuple (packets = the dropped packets, start and
-// end the first and last), and published once the window has closed, each interface's records into its
-// stream, oldest first. Allowed packets, other addresses' lines and the resolver's and Lambda's own
-// traffic are never recorded.
+// A dropped packet's line is attributed to the interface that sent it, recorded by each flow log whose VPC,
+// subnet or interface it is, in that flow log's account, aggregated per window into one record per
+// interface and 5-tuple (packets = the dropped packets, start and end the first and last), and published
+// once the window has closed, each interface's records into its stream, oldest first. Allowed packets,
+// inbound packets (a function accepts no connection: what a group drops inbound is Lambda's own traffic),
+// other addresses' lines and the resolver's and Lambda's own traffic are never recorded.
 func TestFlowLogDelivery_AttributesAggregatesAndPublishes(t *testing.T) {
 	dl := &fakeDeliverer{}
 	d := flDelivery(dl, nil)
@@ -262,7 +262,8 @@ func TestFlowLogDelivery_AttributesAggregatesAndPublishes(t *testing.T) {
 		6:  aclLine(flT0, "drop", "from-lport", tcpFlow("10.17.0.5", "198.51.100.7", 41391, 443, "syn")), // retransmitted
 		8:  aclLine(flT0, "drop", "from-lport", tcpFlow("10.17.0.5", "198.51.100.7", 41391, 443, "syn")),
 		9:  aclLine(flT0, "drop", "from-lport", tcpFlow("10.17.0.5", "198.51.100.7", 41392, 443, "syn")), // another flow
-		10: aclLine(flT0, "drop", "to-lport", udpFlow("192.0.2.10", "10.17.0.6", 53000, 9999)),           // ingress
+		10: aclLine(flT0, "drop", "to-lport", udpFlow("192.0.2.10", "10.17.0.6", 53000, 9999)),           // inbound: never
+		7:  aclLine(flT0, "drop", "to-lport", tcpFlow("10.42.0.30", "10.17.0.5", 41000, 8012, "syn")),    // Lambda's own (the activator), inbound: never
 		11: aclLine(flT0, "allow", "from-lport", tcpFlow("10.17.0.5", "198.51.100.8", 40000, 80, "syn")), // allowed: never
 		12: aclLine(flT0, "drop", "from-lport", tcpFlow("10.99.0.1", "198.51.100.7", 40000, 443, "syn")), // no function's
 		13: aclLine(flT0, "drop", "from-lport", udpFlow("10.17.0.5", "10.42.0.20", 40001, 5353)),         // the resolver
@@ -287,7 +288,6 @@ func TestFlowLogDelivery_AttributesAggregatesAndPublishes(t *testing.T) {
 	}
 	vpcB := dl.messages("flows-vpc", flENIB+"-all")
 	wantB := []string{
-		"2 " + flAccount + " " + flENIB + " 192.0.2.10 10.17.0.6 53000 9999 17 1 0 " + flSecs(10) + " " + flSecs(10) + " REJECT OK",
 		"2 " + flAccount + " " + flENIB + " 10.17.0.6 203.0.113.9 0 0 1 1 0 " + flSecs(15) + " " + flSecs(15) + " REJECT OK",
 	}
 	if strings.Join(vpcB, "\n") != strings.Join(wantB, "\n") {
@@ -295,7 +295,6 @@ func TestFlowLogDelivery_AttributesAggregatesAndPublishes(t *testing.T) {
 	}
 	sub := dl.messages("flows-sub", flENIB+"-all")
 	wantSub := []string{
-		"5 " + flENIB + " vpc-lambda subnet-b - 0 IPv4 192.0.2.10 10.17.0.6 us-east-1 use1-az1 - ingress REJECT",
 		"5 " + flENIB + " vpc-lambda subnet-b - 0 IPv4 10.17.0.6 203.0.113.9 us-east-1 use1-az1 - egress REJECT",
 	}
 	if strings.Join(sub, "\n") != strings.Join(wantSub, "\n") {
