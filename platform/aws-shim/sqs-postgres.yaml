@@ -16,7 +16,11 @@ metadata:
 spec:
   instances: 1
   storage:
-    size: 2Gi
+    # The store behind every Postgres-backed front door (SQS, SNS, CloudWatch Logs and metrics, Route 53
+    # Resolver, KMS, Secrets Manager, SSM, EventBridge, ...), not just SQS. 2Gi filled up: data plus
+    # write-ahead log (CNPG keeps wal_keep_size 512MB, and max_wal_size can reach 1GB between checkpoints).
+    # Longhorn expands it in place (resizeInUseVolumes).
+    size: 20Gi
     # Longhorn (replicated), NOT the cluster-default local-path: local-path pins the PV to one node, so when
     # that node was powered off the volume was stranded and the whole shim went down for days with no failover.
     # Longhorn replicates the data across nodes so a single node loss can't strand it. Pinned
