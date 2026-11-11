@@ -77,9 +77,8 @@ services:
     sigv4: [lambda]
     # lambda-account-invoke: a member account's principal invokes the account's named functions in its own
     # namespace (#412)
-    probes: [lambda, lambda-execution-role, lambda-timeout, lambda-api, lambda-versions, lambda-account-invoke, lambda-layers]
     # lambda-aws-names: aws-sdk v2 clients with no endpoint reach the platform by AWS's own hostnames (#335)
-    pending: [lambda-aws-names]
+    probes: [lambda, lambda-execution-role, lambda-timeout, lambda-api, lambda-versions, lambda-account-invoke, lambda-layers, lambda-aws-names]
   - name: ECS
     cell: "service + task def → one `kind: Application` (cfn engine), caller-authority via impersonation"
     tier: proven

@@ -1056,7 +1056,8 @@
         "lambda-api",
         "lambda-versions",
         "lambda-account-invoke",
-        "lambda-layers"
+        "lambda-layers",
+        "lambda-aws-names"
       ],
       "refused": [],
       "service": "Lambda",
