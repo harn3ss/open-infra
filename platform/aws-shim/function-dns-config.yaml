@@ -1,0 +1,11 @@
+# Points Lambda functions at the function resolver (function-aws-endpoints.yaml): with it, and the AWS endpoints CA
+# published in openinfra-platform-ca, a function resolves AWS's own hostnames to the platform and trusts the CA
+# (function-composition.yaml). Without it functions resolve AWS's names as the cluster does. Adding or removing
+# it changes every function's pod, so each restarts once: roll it in batches. networking.functionAwsEndpoints:
+# false excludes this file with the resolver.
+apiVersion: apiextensions.crossplane.io/v1alpha1
+kind: EnvironmentConfig
+metadata:
+  name: openinfra-function-dns
+data:
+  resolver: "10.43.0.54"

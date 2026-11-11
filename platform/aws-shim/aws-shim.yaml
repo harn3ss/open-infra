@@ -1161,6 +1161,9 @@ spec:
             # on, whose addresses the shim follows; the VPC resolver's listener; the Lambda service port.
             - { name: LAMBDA_VPC_SUBNET, value: "openinfra-lambda-vpc" }
             - { name: VPC_RESOLVER_LISTEN, value: ":5353" }
+            # The VPC resolver answers AWS's own hostnames as the platform serves them (after the VPC's DNS
+            # Firewall), as the function resolver does outside a VPC (function-aws-endpoints.yaml).
+            - { name: VPC_RESOLVER_AWS_NAMES, value: "on" }
             - { name: LAMBDA_SERVICE_LISTEN, value: ":4568" }
             # The install's AWS identity (aws-identity.yaml): the account and region every ARN, queue URL
             # and StackId is built in, and the CloudFormation pseudo-parameters resolve to.
