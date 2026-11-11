@@ -163,6 +163,28 @@ spec:
                      security group, so neither is filtered here. */}}
               {{- $shim := dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" "open-infra-aws-shim")) "podSelector" (dict "matchLabels" (dict "app" "aws-shim")) }}
               {{- $egressRules = append $egressRules (dict "to" (list $shim) "ports" (list (dict "protocol" "UDP" "port" 5353) (dict "protocol" "TCP" "port" 5353) (dict "protocol" "TCP" "port" 4568))) }}
+              {{- /* AWS's own hostnames resolve to the platform's AWS front door (#335): its AWS-names listener,
+                     Service port 443, is the shim's pod port 8443, which no rule written in AWS's terms names.
+                     So an egress rule that admits HTTPS (TCP 443, all TCP, or all traffic) to anywhere
+                     (0.0.0.0/0, how a function reaches AWS's endpoints through a NAT) or to the aws-shim also
+                     admits that listener. */}}
+              {{- $httpsToAWS := false }}
+              {{- range $rule := ($spec.egress | default list) }}
+                {{- $proto := $rule.protocol | default "TCP" }}
+                {{- $https := eq $proto "ALL" }}
+                {{- if eq $proto "TCP" }}
+                  {{- if not $rule.ports }}{{ $https = true }}{{ end }}
+                  {{- range $p := ($rule.ports | default list) }}{{ if eq (int $p) 443 }}{{ $https = true }}{{ end }}{{ end }}
+                {{- end }}
+                {{- if $https }}
+                  {{- range $dst := ($rule.to | default list) }}
+                    {{- if or (eq ($dst.cidr | default "") "0.0.0.0/0") (eq ($dst.namespace | default "") "open-infra-aws-shim") }}{{ $httpsToAWS = true }}{{ end }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
+              {{- if $httpsToAWS }}
+              {{- $egressRules = append $egressRules (dict "to" (list $shim) "ports" (list (dict "protocol" "TCP" "port" 8443))) }}
+              {{- end }}
               {{- end }}
             {{- end }}
             {{- if $wantNodes }}

@@ -44,3 +44,40 @@ func splitSuffixes(lists ...string) []string {
 	}
 	return out
 }
+
+// awsNameRules are AWS's own hostnames the platform answers for its functions and VM guests, in order, as the
+// guest and function resolvers' Corefiles have them (platform/aws-shim/guest-aws-endpoints.yaml and
+// function-aws-endpoints.yaml; a test holds the three equal). A name matching one resolves as its target: the
+// aws-shim, or the registry that serves ECR's names. The VPC resolver applies them for functions in a VPC.
+var awsNameRules = []awsNameRule{
+	{regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.aws-shim\.open-infra-aws-shim\.svc(\.cluster\.local)?\.$`), awsShimTarget},
+	{regexp.MustCompile(`^[0-9]{12}\.dkr\.ecr\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$`), "ecr-registry-aws.open-infra-ecr.svc.cluster.local."},
+	{regexp.MustCompile(`^(acm|api\.ecr|athena|apigateway|appsync|cloudformation|cognito-idp|dynamodb|ec2|ecr|ecs|eks|email|events|glue|kinesis|kms|lambda|logs|monitoring|organizations|rds|route53resolver|s3|secretsmanager|servicequotas|sns|sqs|ssm|states|streams\.dynamodb|sts|sync-states)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$`), awsShimTarget},
+	{regexp.MustCompile(`^[a-z0-9]+\.(execute-api|appsync-api)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$`), awsShimTarget},
+	{regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3(\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+)?\.amazonaws\.com\.$`), awsShimTarget},
+	{regexp.MustCompile(`^(sts|iam|cloudfront|s3|queue|[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.queue)\.amazonaws\.com\.$`), awsShimTarget},
+}
+
+// awsShimTarget is the aws-shim's own name, the target of the names of the services it serves.
+const awsShimTarget = "aws-shim.open-infra-aws-shim.svc.cluster.local."
+
+type awsNameRule struct {
+	re     *regexp.Regexp
+	target string
+}
+
+// awsNameTarget is what an AWS hostname resolves as on this platform: its rule's target; or, for any other
+// amazonaws.com name (a service the platform does not serve), sinkhole: answered NXDOMAIN, never sent to AWS.
+// A name that is neither returns "", false.
+func awsNameTarget(name string) (target string, sinkhole bool) {
+	n := strings.ToLower(name)
+	if !strings.HasSuffix(n, ".") {
+		n += "."
+	}
+	for _, r := range awsNameRules {
+		if r.re.MatchString(n) {
+			return r.target, false
+		}
+	}
+	return "", n == "amazonaws.com." || strings.HasSuffix(n, ".amazonaws.com.")
+}

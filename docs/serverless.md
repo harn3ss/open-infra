@@ -337,6 +337,38 @@ aws lambda delete-function --function-name orders
     left at Lambda's default.
 - **Names:** a function name here is lowercase letters, digits and hyphens, up to 63 characters.
 
+## Calling AWS by AWS's own hostnames
+
+A function reaches the platform's AWS services by AWS's own hostnames, as it reaches AWS's on Lambda. So an
+SDK client built with no endpoint reaches this platform rather than AWS. That matters for the JavaScript
+`aws-sdk` v2 (`new AWS.DynamoDB()`), which reads none of the endpoint variables.
+- **Resolved to the platform:** the names of the services the platform serves:
+  - their regional endpoints, for example `dynamodb.us-east-1.amazonaws.com` or `states.<region>.amazonaws.com`;
+  - a bucket's virtual-hosted name, `<bucket>.s3.amazonaws.com` or `<bucket>.s3.<region>.amazonaws.com`;
+  - the global `sts`, `iam`, `cloudfront` and `s3` names, and SQS's legacy names.
+
+  The platform's AWS endpoint serves them over HTTPS, with a certificate from its own AWS endpoints
+  certificate authority, which is limited to `amazonaws.com` names.
+- **Trust:** a function trusts that authority, and nothing else does. A Node.js function trusts it through
+  `NODE_EXTRA_CA_CERTS`. A Python function trusts it through botocore's CA bundle (`AWS_CA_BUNDLE`), unless
+  the function sets its own bundle.
+- **Any other `amazonaws.com` name has no address.** Such a name belongs to a service the platform doesn't
+  serve. The call fails at once with an error naming the host (`getaddrinfo ENOTFOUND <host>` in Node.js),
+  instead of waiting out the function's timeout, and it never reaches AWS.
+- **In a VPC,** the VPC's Route 53 Resolver answers these names the same way, after the VPC's DNS Firewall.
+  As on AWS:
+  - a firewall rule group that blocks everything else must allow `*.amazonaws.com` (or the services' names);
+  - the function's security groups must allow HTTPS (TCP 443) egress to `0.0.0.0/0`, the rule that lets a
+    function reach AWS's endpoints through a NAT gateway.
+
+  The VPC's query log records both kinds of answer.
+- **Not covered:**
+  - .NET functions don't trust the platform's certificate. The AWS SDK for .NET 3.7.300 or later reads the
+    endpoint variables instead.
+  - Other partitions' names (`amazonaws.com.cn`).
+  - S3's dash-region and dualstack names.
+  - A bucket whose name contains a dot, by its virtual-hosted name. As on AWS, use path-style.
+
 ## In a VPC
 
 A function can be put in subnets and security groups of a VPC (`--vpc-config`, CloudFormation

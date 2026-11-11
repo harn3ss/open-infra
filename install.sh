@@ -136,6 +136,13 @@ if [ "$(yget networking.guestAwsEndpoints)" = "false" ]; then
   EXCLUDES="${EXCLUDES},aws-shim/guest-aws-endpoints.yaml,aws-shim/guest-aws-endpoints-ca.yaml"
   LOG "guest AWS endpoints off (networking.guestAwsEndpoints: false)"
 fi
+# AWS's own names for Lambda functions (rides on the aws-shim; ON unless
+# networking.functionAwsEndpoints: false): the function resolver and the setting that points
+# functions at it. Off => functions resolve AWS's names as the cluster does.
+if [ "$(yget networking.functionAwsEndpoints)" = "false" ]; then
+  EXCLUDES="${EXCLUDES},aws-shim/function-aws-endpoints.yaml,aws-shim/function-dns-config.yaml"
+  LOG "function AWS endpoints off (networking.functionAwsEndpoints: false)"
+fi
 incl openAppsync "open-appsync/*" # open-appsync engine (backs the shim's AppSync surface)
 # Customer-owned encryption: OpenBao Transit (KMS), kind: EncryptionKey + its reconciler, and the
 # encrypted Longhorn StorageClass. OFF unless components.encryption: true (its key service is OpenBao,

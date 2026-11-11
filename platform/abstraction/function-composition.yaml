@@ -149,6 +149,21 @@ spec:
             {{-     $lvService = (index $d "lambdaService") | default $lvService }}
             {{-   end }}
             {{- end }}
+            {{- /* AWS's own hostnames (#335). When the platform answers them for functions (the openinfra-function-dns
+                   EnvironmentConfig names the function resolver, and the AWS endpoints CA is published beside the
+                   platform root), a function resolves through the function resolver (in a VPC, through its VPC
+                   resolver, which does the same) and trusts the AWS endpoints CA: an SDK client built with no
+                   endpoint, such as aws-sdk v2's, which reads no endpoint variable, then reaches the platform's AWS
+                   front door rather than AWS. Without them nothing here changes. */}}
+            {{- $fnResolver := "" }}
+            {{- range $i := (((index (.extraResources | default dict) "function-dns") | default dict).items | default list) }}
+            {{-   $fnResolver = (index ($i.resource.data | default dict) "resolver") | default $fnResolver }}
+            {{- end }}
+            {{- $awsCA := "" }}
+            {{- range $i := (((index (.extraResources | default dict) "platform-ca") | default dict).items | default list) }}
+            {{-   $awsCA = (index ($i.resource.data | default dict) "awsEndpointsCA") | default $awsCA }}
+            {{- end }}
+            {{- $awsNames := and $fnResolver $awsCA }}
             {{- /* Unsupported (BYO) runtime: fail closed into an isolated posture — cluster-local (expose
                    off), min-scale 0 and non-production label on the Service below, and egress-denied here. */}}
             {{- if $unsupported }}{{- $expose = false }}{{- end }}
@@ -303,6 +318,15 @@ spec:
                           nameservers: [ {{ $lvResolver | toJson }} ]
                           searches: [ {{ printf "%s.svc.cluster.local" $ns | toJson }}, "svc.cluster.local", "cluster.local" ]
                           options: [ { name: ndots, value: "5" } ]
+                        {{- else if $awsNames }}
+                        # The function resolver is the function's only DNS (#335): AWS's own hostnames of the services
+                        # the platform serves reach its AWS front door, other amazonaws.com names fail at once, and
+                        # every other name resolves as the cluster's. If it does not answer, nothing else does.
+                        dnsPolicy: None
+                        dnsConfig:
+                          nameservers: [ {{ $fnResolver | toJson }} ]
+                          searches: [ {{ printf "%s.svc.cluster.local" $ns | toJson }}, "svc.cluster.local", "cluster.local" ]
+                          options: [ { name: ndots, value: "5" } ]
                         {{- end }}
                         {{- if or $spec.reservedConcurrency $burst }}
                         # One request per instance (Lambda's 1-per-sandbox model): set by reservedConcurrency
@@ -354,7 +378,7 @@ spec:
                         containers:
                           - image: {{ $img | toJson }}
                             ports: [ { containerPort: {{ $spec.port | default 8080 }} } ]
-                            {{- if or $code $spec.env $spec.queues $role }}
+                            {{- if or $code $spec.env $spec.queues $role $awsNames }}
                             env:
                             {{- if $code }}
                               - { name: OPENINFRA_HANDLER, value: {{ $code.handler | toJson }} }
@@ -429,6 +453,12 @@ spec:
                               - { name: AWS_DEFAULT_REGION, value: "{{ $fnRegion }}" }
                               {{- end }}
                             {{- end }}
+                            {{- if $awsNames }}
+                              # The AWS endpoints CA (#335): Node adds it to its roots; the Python runtime adds it
+                              # to botocore's bundle.
+                              - { name: NODE_EXTRA_CA_CERTS, value: "/etc/openinfra/aws-endpoints-ca/ca.crt" }
+                              - { name: OPENINFRA_AWS_ENDPOINTS_CA, value: "/etc/openinfra/aws-endpoints-ca/ca.crt" }
+                            {{- end }}
                             {{- /* Every string a function's author writes (its environment, handler, code source,
                                    region, secrets, queues, security groups, trigger subject) is rendered with toJson:
                                    a JSON string is a YAML double-quoted scalar, so a quote, backslash, line break or
@@ -447,13 +477,16 @@ spec:
                               - secretRef: { name: {{ . | toJson }}, optional: true }
                             {{- end }}
                             {{- end }}
-                            {{- if or (and $code $csrc.configMap) $ident }}
+                            {{- if or (and $code $csrc.configMap) $ident $awsNames }}
                             volumeMounts:
                             {{- if and $code $csrc.configMap }}
                               - { name: openinfra-code, mountPath: /var/task, readOnly: true }
                             {{- end }}
                             {{- if $ident }}
                               - { name: openinfra-sts-token, mountPath: /var/run/secrets/openinfra, readOnly: true }
+                            {{- end }}
+                            {{- if $awsNames }}
+                              - { name: openinfra-aws-endpoints-ca, mountPath: /etc/openinfra/aws-endpoints-ca, readOnly: true }
                             {{- end }}
                             {{- end }}
                             {{- if or $spec.memory (gt (int $gpu) 0) }}
@@ -475,7 +508,7 @@ spec:
                                 nvidia.com/gpu: {{ $gpu }}
                                 {{- end }}
                             {{- end }}
-                        {{- if or (and $code $csrc.configMap) $ident }}
+                        {{- if or (and $code $csrc.configMap) $ident $awsNames }}
                         volumes:
                         {{- if and $code $csrc.configMap }}
                           - name: openinfra-code
@@ -491,6 +524,11 @@ spec:
                                     audience: sts.openinfra
                                     expirationSeconds: 3600
                                     path: token
+                        {{- end }}
+                        {{- if $awsNames }}
+                          # The AWS endpoints CA's certificate (public; its key stays in OpenBao), #335.
+                          - name: openinfra-aws-endpoints-ca
+                            configMap: { name: {{ printf "%s-aws-endpoints-ca" $name | toJson }} }
                         {{- end }}
                         {{- end }}
                     {{- if $pinned }}
@@ -530,14 +568,21 @@ spec:
                       openinfra.dev/function: {{ $name }}
                   automountServiceAccountToken: false
             {{- end }}
-            {{- if or $ident $inVpc }}
             ---
             # Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
-            # else the install's own account) and the install's region, for the role's ARN; and, in a VPC,
-            # the Lambda VPC settings.
+            # else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+            # Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
             apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
             kind: ExtraResources
             requirements:
+              function-dns:
+                apiVersion: apiextensions.crossplane.io/v1alpha1
+                kind: EnvironmentConfig
+                matchName: openinfra-function-dns
+              platform-ca:
+                apiVersion: apiextensions.crossplane.io/v1alpha1
+                kind: EnvironmentConfig
+                matchName: openinfra-platform-ca
               {{- if $ident }}
               aws-identity:
                 apiVersion: apiextensions.crossplane.io/v1alpha1
@@ -554,6 +599,25 @@ spec:
                 kind: EnvironmentConfig
                 matchName: openinfra-lambda-vpc
               {{- end }}
+            {{- if $awsNames }}
+            ---
+            # The AWS endpoints CA's certificate, for the function's pod to trust (#335).
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: aws-endpoints-ca
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: {{ printf "%s-aws-endpoints-ca" $name | toJson }}
+                    namespace: {{ $ns }}
+                    labels: { openinfra.dev/function: {{ $name }} }
+                  data:
+                    ca.crt: {{ $awsCA | toJson }}
             {{- end }}
             {{- if $spec.trigger }}
             {{- $tstream := $spec.trigger.stream }}

@@ -64,6 +64,12 @@ networking:
   # never AWS (platform/aws-shim/guest-aws-endpoints.yaml). false => guests use the
   # cluster DNS, and such URLs reach AWS. A guest picks the change up at its next start.
   guestAwsEndpoints: true
+  # Lambda functions likewise: AWS's own names of the services the aws-shim serves reach the
+  # platform (an SDK client with no endpoint, such as aws-sdk v2's, included), other
+  # amazonaws.com names fail at once, and functions trust the AWS endpoints CA
+  # (platform/aws-shim/function-aws-endpoints.yaml). false => functions resolve AWS's names as
+  # the cluster does. Turning it on or off restarts every function once.
+  functionAwsEndpoints: true
 
   # Ingress controller bundled with k3s. Keep traefik for v1.
   ingress: traefik

@@ -93,6 +93,9 @@ type vpcResolver struct {
 
 	ttl, clientWait, upstreamWait time.Duration
 
+	// awsNames: AWS's own hostnames are answered as the platform serves them (#335; VPC_RESOLVER_AWS_NAMES).
+	awsNames bool
+
 	mu     sync.Mutex
 	cache  map[string]*cachedVPC // account + "/" + VPC id
 	logged map[string]time.Time  // when a repeated log line was last written (every)
@@ -356,6 +359,17 @@ func (s *vpcResolver) answer(ctx context.Context, raw []byte, src string, srcPor
 			return s.fit(q, pack(resp))
 		}
 	}
+	// AWS's own hostnames (#335), after the DNS Firewall as on AWS: the names of the services the platform serves
+	// resolve to its AWS front door, as AWS's resolver answers them with AWS's, and every other amazonaws.com name
+	// is NXDOMAIN at once, so a call to a service the platform does not serve fails fast instead of hanging on
+	// egress that leads nowhere. Neither is sent upstream.
+	if s.awsNames {
+		if target, sinkhole := awsNameTarget(q.question.Name.String()); target != "" || sinkhole {
+			resp := s.awsNameAnswer(ctx, q, target)
+			s.record(in, cfg, q, resp, v.logged())
+			return s.fit(q, pack(resp))
+		}
+	}
 	up, err := s.forward(ctx, q.raw)
 	if err != nil {
 		if s.every("upstream", 10*time.Second) {
@@ -478,6 +492,39 @@ func (s *vpcResolver) resolveOverride(ctx context.Context, name dnsmessage.Name,
 		return nil
 	}
 	return r.Answers
+}
+
+// awsNameAnswer answers an AWS hostname as the platform serves it: the target's own records of the asked type,
+// under the asked name; NXDOMAIN when there is no target (a service the platform does not serve); SERVFAIL when
+// the target cannot be resolved, so the client asks again.
+func (s *vpcResolver) awsNameAnswer(ctx context.Context, q query, target string) dnsmessage.Message {
+	if target == "" {
+		return reply(q.msg.Header, &q.question, dnsmessage.RCodeNameError)
+	}
+	name, err := dnsmessage.NewName(target)
+	if err != nil {
+		return reply(q.msg.Header, &q.question, dnsmessage.RCodeServerFailure)
+	}
+	ask := dnsmessage.Message{Header: dnsmessage.Header{RecursionDesired: true},
+		Questions: []dnsmessage.Question{{Name: name, Type: q.question.Type, Class: dnsmessage.ClassINET}}}
+	raw, err := ask.Pack()
+	if err != nil {
+		return reply(q.msg.Header, &q.question, dnsmessage.RCodeServerFailure)
+	}
+	up, err := s.forward(ctx, raw)
+	var got dnsmessage.Message
+	if err != nil || got.Unpack(up) != nil || got.Header.RCode != dnsmessage.RCodeSuccess {
+		return reply(q.msg.Header, &q.question, dnsmessage.RCodeServerFailure)
+	}
+	m := reply(q.msg.Header, &q.question, dnsmessage.RCodeSuccess)
+	for _, a := range got.Answers {
+		if a.Header.Type != q.question.Type {
+			continue // the target's own address records only, never a chain of the cluster's names
+		}
+		a.Header.Name = q.question.Name
+		m.Answers = append(m.Answers, a)
+	}
+	return m
 }
 
 // cnameTargets are the names the answer's CNAME records redirect to.

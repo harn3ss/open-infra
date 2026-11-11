@@ -1127,6 +1127,9 @@ func run(logger *slog.Logger) error {
 			logger.Warn("vpc resolver: the Route 53 Resolver store is not configured; VPC functions' queries fail closed")
 		}
 		res := newVPCResolver(r53rSt, vpcIfaces, upstream, sink, region, logger)
+		// AWS's own hostnames answered as the platform serves them, for functions in a VPC (#335): on with the
+		// function resolver for functions outside one.
+		res.awsNames = getenv("VPC_RESOLVER_AWS_NAMES", "off") == "on"
 		if lerr := res.Listen(addr); lerr != nil {
 			logger.Error("vpc resolver: cannot listen; VPC functions have no DNS", slog.String("addr", addr), slog.String("error", lerr.Error()))
 		} else {

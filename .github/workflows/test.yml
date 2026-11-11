@@ -307,13 +307,13 @@ jobs:
         with: { python-version: "3.14", update-environment: false }
       - name: runtime tests (python3, dotnet8)
         run: |
-          for t in code_package cfn_response context log_tail timeout layers_url role_credentials; do
+          for t in code_package cfn_response context log_tail timeout layers_url role_credentials aws_endpoints_ca; do
             python3 test/lambda-runtime/${t}_test.py
           done
       - name: runtime tests (python3.14, dotnet10)
         env: { OPENINFRA_TEST_DOTNET: "10.0" }
         run: |
-          for t in code_package cfn_response context log_tail timeout layers_url role_credentials; do
+          for t in code_package cfn_response context log_tail timeout layers_url role_credentials aws_endpoints_ca; do
             "${{ steps.py314.outputs.python-path }}" test/lambda-runtime/${t}_test.py
           done
 

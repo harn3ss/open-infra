@@ -959,11 +959,38 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("open-infra-runtime: " + (fmt % args) + "\n")
 
 
+# The AWS endpoints CA: the platform answers AWS's own hostnames (dynamodb.<region>.amazonaws.com, a bucket's
+# virtual-hosted name, ...) with its own AWS front door, under a certificate from this CA, so an SDK client
+# built with no endpoint reaches the platform rather than AWS. The function's pod mounts the CA's certificate
+# (OPENINFRA_AWS_ENDPOINTS_CA); botocore verifies TLS against AWS_CA_BUNDLE alone, so it gets the system's
+# roots and this CA together. A function that names its own AWS_CA_BUNDLE keeps it.
+SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
+
+
+def _trust_aws_endpoints_ca():
+    ca = os.environ.get("OPENINFRA_AWS_ENDPOINTS_CA", "")
+    if not ca or os.environ.get("AWS_CA_BUNDLE"):
+        return
+    try:
+        with open(ca, "rb") as f:
+            extra = f.read()
+        with open(os.environ.get("OPENINFRA_SYSTEM_CA_BUNDLE", SYSTEM_CA_BUNDLE), "rb") as f:
+            system = f.read()
+        path = os.path.join(os.environ.get("TMPDIR", "/tmp"), "openinfra-ca-bundle.pem")
+        with open(path, "wb") as f:
+            f.write(system.rstrip(b"\n") + b"\n" + extra)
+    except OSError as e:
+        sys.stderr.write(f"open-infra-runtime: the AWS endpoints CA is not trusted: {e}\n")
+        return
+    os.environ["AWS_CA_BUNDLE"] = path
+
+
 def main():
     global HANDLER
     sys.stdout, sys.stderr = _Tee(sys.stdout), _Tee(sys.stderr)
     _fetch_code()
     _add_layer_paths()  # layer modules importable before the handler loads
+    _trust_aws_endpoints_ca()  # before the handler's SDK reads its CA bundle
     _ROLE_CREDENTIALS.init()  # the role's credentials in the environment before the handler is imported
     HANDLER = _load_handler()
     sys.stderr.write(

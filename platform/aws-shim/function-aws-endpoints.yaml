@@ -1,0 +1,181 @@
+# AWS's own hostnames for Lambda functions: a resolver for function pods only, so an SDK client a function
+# builds with no endpoint reaches this platform's AWS front door, never AWS.
+#
+# The platform hands functions their AWS endpoint in AWS_ENDPOINT_URL_DYNAMODB / _S3 (and the role's
+# AWS_ENDPOINT_URL), which the JavaScript SDK v3 and recent botocore read. aws-sdk v2 reads none of them, in the
+# environment or in a config file, and many functions carry it: such a client calls
+# dynamodb.<region>.amazonaws.com, which leaves the cluster, and the call hangs until the function times out.
+#
+# 1. The function resolver (kube-system/openinfra-function-dns at 10.43.0.54), a CoreDNS that answers
+#    - the amazonaws.com names of the services the aws-shim serves with the shim's address: the same rules as
+#      the VM guests' resolver (guest-aws-endpoints.yaml; a test keeps the two lists equal);
+#    - every other amazonaws.com name with NXDOMAIN, at once, and logs it: a service the platform does not
+#      serve fails fast with an error naming the host, and the call never reaches AWS;
+#    - every other name as the cluster DNS does.
+#    A function outside a VPC uses it as its only DNS (function-composition.yaml, dnsPolicy None, from the
+#    openinfra-function-dns EnvironmentConfig): if it does not answer, nothing else does. A function in a VPC
+#    resolves through its VPC's Route 53 Resolver instead (the aws-shim), which does the same after the VPC's
+#    DNS Firewall. No other pod uses it, and its NetworkPolicy admits only function pods.
+# 2. The AWS endpoints CA (guest-aws-endpoints.yaml): a root of its own, name-constrained to amazonaws.com,
+#    its key in OpenBao. A function's pod mounts its certificate (a ConfigMap the composition renders from the
+#    openinfra-platform-ca EnvironmentConfig) and its runtime trusts it: Node through NODE_EXTRA_CA_CERTS, the
+#    Python runtime by adding it to botocore's bundle. No other pod trusts it.
+# 3. The aws-shim serves the AWS names on its AWS-names TLS listener (Service port 443).
+#
+# Functions start using it when the openinfra-function-dns EnvironmentConfig exists (function-dns-config.yaml):
+# each function's pod then changes, so each restarts once.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openinfra-function-dns
+  namespace: kube-system
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health :8080
+        ready :8181
+        # The shim's own name, virtual-hosted (S3 against AWS_ENDPOINT_URL with a default SDK client).
+        rewrite stop name regex ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.aws-shim\.open-infra-aws-shim\.svc(\.cluster\.local)?\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        # A registry by its ECR name.
+        rewrite stop name regex ^[0-9]{12}\.dkr\.ecr\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ ecr-registry-aws.open-infra-ecr.svc.cluster.local. answer auto
+        # The regional endpoints of the services the aws-shim serves.
+        rewrite stop name regex ^(acm|api\.ecr|athena|apigateway|appsync|cloudformation|cognito-idp|dynamodb|ec2|ecr|ecs|eks|email|events|glue|kinesis|kms|lambda|logs|monitoring|organizations|rds|route53resolver|s3|secretsmanager|servicequotas|sns|sqs|ssm|states|streams\.dynamodb|sts|sync-states)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        # An API's invoke name, an AppSync API's, a bucket's (regional or global).
+        rewrite stop name regex ^[a-z0-9]+\.(execute-api|appsync-api)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        rewrite stop name regex ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3(\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+)?\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        # Global endpoints, and SQS's legacy names.
+        rewrite stop name regex ^(sts|iam|cloudfront|s3|queue|[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.queue)\.amazonaws\.com\.$ aws-shim.open-infra-aws-shim.svc.cluster.local. answer auto
+        # Everything else goes on to the sinkhole below, which passes all but the remaining amazonaws.com names on
+        # to the cluster DNS. (A server block may forward only once, hence the second block.)
+        forward . 127.0.0.1:1053
+        cache 30
+        loop
+        reload
+        loadbalance
+    }
+    .:1053 {
+        bind 127.0.0.1
+        errors
+        # The sinkhole: an amazonaws.com name the rules above did not send to the platform is a service it does
+        # not serve. NXDOMAIN at once, logged by name, so the call fails fast and is seen, and never reaches AWS.
+        log amazonaws.com {
+            class denial
+        }
+        template ANY ANY amazonaws.com {
+            rcode NXDOMAIN
+            # A proper negative answer (the log classes it as a denial, and a client may cache it for a minute).
+            authority "amazonaws.com. 60 IN SOA sinkhole.openinfra.invalid. hostmaster.openinfra.invalid. 1 3600 600 86400 60"
+        }
+        # Everything else: the cluster DNS (this pod's own resolv.conf, ClusterFirst).
+        forward . /etc/resolv.conf
+        reload
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openinfra-function-dns
+  namespace: kube-system
+  labels: { app.kubernetes.io/name: openinfra-function-dns }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app.kubernetes.io/name: openinfra-function-dns }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: openinfra-function-dns }
+      annotations:
+        # A Corefile change restarts the pods (reload also picks it up in place).
+        openinfra.dev/corefile-rev: "1"
+    spec:
+      priorityClassName: system-cluster-critical
+      dnsPolicy: ClusterFirst
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: { app.kubernetes.io/name: openinfra-function-dns }
+      containers:
+        - name: coredns
+          # The same CoreDNS as the guest resolver.
+          image: docker.io/rancher/mirrored-coredns-coredns:1.14.3@sha256:b21d26b915e10acb5bc78715c1e8b6047ab2675389b2bcc18b3a6499d90e74c0
+          args: [-conf, /etc/coredns/Corefile]
+          ports:
+            - { name: dns, containerPort: 53, protocol: UDP }
+            - { name: dns-tcp, containerPort: 53, protocol: TCP }
+          livenessProbe:
+            httpGet: { path: /health, port: 8080 }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /ready, port: 8181 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { add: [NET_BIND_SERVICE], drop: [ALL] }
+          volumeMounts:
+            - { name: config, mountPath: /etc/coredns, readOnly: true }
+      volumes:
+        - name: config
+          configMap: { name: openinfra-function-dns }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: openinfra-function-dns
+  namespace: kube-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: openinfra-function-dns }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openinfra-function-dns
+  namespace: kube-system
+  labels: { app.kubernetes.io/name: openinfra-function-dns }
+spec:
+  # A fixed address: a function's pod names it in its dnsConfig.
+  clusterIP: 10.43.0.54
+  selector: { app.kubernetes.io/name: openinfra-function-dns }
+  ports:
+    - { name: dns, port: 53, targetPort: 53, protocol: UDP }
+    - { name: dns-tcp, port: 53, targetPort: 53, protocol: TCP }
+---
+# Only function pods may ask it (a pod Knative runs for a function carries serving.knative.dev/service), and the
+# kubelet's probes (the node's join address).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openinfra-function-dns
+  namespace: kube-system
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: openinfra-function-dns }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchExpressions:
+              - { key: serving.knative.dev/service, operator: Exists }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - from:
+        - ipBlock: { cidr: 100.64.0.0/16 }
+      ports:
+        - { protocol: TCP, port: 8080 }
+        - { protocol: TCP, port: 8181 }

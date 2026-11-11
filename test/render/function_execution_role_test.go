@@ -244,7 +244,9 @@ func TestFunction_ExecutionRoleIdentityName(t *testing.T) {
 		t.Errorf("a function named vm-web runs as fn-vm-web (never the VM identity vm-web), got %q", got)
 	}
 	out = render(t, tmpl, fnRoleCtx("plain", "team-a", map[string]any{"image": "ghcr.io/me/app:1"}, nil))
-	for _, forbidden := range []string{"kind: ServiceAccount", "serviceAccountName", "AWS_ROLE_ARN", "kind: ExtraResources", "openinfra-sts-token"} {
+	// Every function asks for the function resolver and the AWS endpoints CA (#335); only one with a role asks
+	// for the install's identity and the accounts.
+	for _, forbidden := range []string{"kind: ServiceAccount", "serviceAccountName", "AWS_ROLE_ARN", "matchName: openinfra-aws-identity", "apiVersion: organizations.openinfra.dev/v1", "openinfra-sts-token"} {
 		if strings.Contains(out, forbidden) {
 			t.Errorf("a function with no role must not render %q", forbidden)
 		}

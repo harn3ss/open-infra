@@ -39,6 +39,21 @@ spec:
               - image: "ghcr.io/me/hello:1"
                 ports: [ { containerPort: 8080 } ]
 ---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
+---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
 #     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
@@ -152,6 +167,21 @@ spec:
                     memory: "2Gi"
                     nvidia.com/gpu: 1
 ---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
+---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
 #     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
@@ -234,6 +264,21 @@ spec:
             containers:
               - image: "ghcr.io/me/hello:1"
                 ports: [ { containerPort: 8080 } ]
+---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
 ---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
@@ -341,6 +386,21 @@ spec:
                   requests: { memory: "256Mi" }
                   limits:
                     memory: "1Gi"
+---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
 ---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
@@ -456,6 +516,21 @@ spec:
             volumes:
               - name: openinfra-code
                 configMap: { name: "fn-code" }
+---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
 ---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
@@ -584,6 +659,21 @@ spec:
                   requests: { memory: "512Mi" }
                   limits:
                     memory: "512Mi"
+---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
 ---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
@@ -733,6 +823,21 @@ spec:
                   limits:
                     memory: "1024Mi"
 ---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
+---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
 #     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
@@ -846,6 +951,21 @@ spec:
             volumes:
               - name: openinfra-code
                 configMap: { name: "n22" }
+---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
 ---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
@@ -980,6 +1100,21 @@ spec:
                   requests: { memory: "256Mi" }
                   limits:
                     memory: "256Mi"
+---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
 ---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
@@ -1132,6 +1267,21 @@ spec:
                   limits:
                     memory: "1024Mi"
 ---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
+---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
 #     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
@@ -1283,6 +1433,21 @@ spec:
                   limits:
                     memory: "512Mi"
 ---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
+---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
 #     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
@@ -1367,6 +1532,21 @@ spec:
             revisionName: "fn-00001"
             percent: 0
 ---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
+---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
 #     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
@@ -1442,6 +1622,21 @@ spec:
             containers:
               - image: "ghcr.io/me/cdc:1"
                 ports: [ { containerPort: 8080 } ]
+---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
 ---
 # Event-source mapping: a Benthos "pump" holds a durable JetStream
 # consumer and POSTs each CDC event to this function (which cold-starts
@@ -1584,6 +1779,21 @@ spec:
             containers:
               - image: "ghcr.io/me/cdc:1"
                 ports: [ { containerPort: 8080 } ]
+---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
 ---
 # Event-source mapping: a Benthos "pump" holds a durable JetStream
 # consumer and POSTs each CDC event to this function (which cold-starts
@@ -1737,6 +1947,21 @@ spec:
               - image: "ghcr.io/me/hello:1"
                 ports: [ { containerPort: 8081 } ]
 ---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
+---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so
 #     callers elsewhere still invoke by URL), plus Prometheus; every other namespace is
@@ -1812,6 +2037,21 @@ spec:
             containers:
               - image: "ghcr.io/me/hello:1"
                 ports: [ { containerPort: 8080 } ]
+---
+# Read-only: the account the function's namespace belongs to (the kind: Account that lists it,
+# else the install's own account) and the install's region, for the role's ARN; in a VPC, the
+# Lambda VPC settings; and the function resolver and the AWS endpoints CA (#335).
+apiVersion: meta.gotemplating.fn.crossplane.io/v1alpha1
+kind: ExtraResources
+requirements:
+  function-dns:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-function-dns
+  platform-ca:
+    apiVersion: apiextensions.crossplane.io/v1alpha1
+    kind: EnvironmentConfig
+    matchName: openinfra-platform-ca
 ---
 # --- Tenant isolation (ingress) for Functions (Knative revision pods): this namespace and
 #     Knative's data path only (every call comes through the gateway or the activator, so

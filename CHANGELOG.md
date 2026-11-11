@@ -6,6 +6,20 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — functions reach the platform by AWS's own hostnames
+- An SDK client a function builds with no endpoint reaches the platform's AWS services, not AWS. This
+  includes the JavaScript `aws-sdk` v2, which reads none of the endpoint variables. Before, such a call left
+  the platform and hung until the function timed out.
+- **Resolved to the platform:** the names of the services the platform serves. That covers their regional
+  endpoints, buckets' virtual-hosted names, the global names and SQS's legacy names. They are served over
+  HTTPS under the platform's own AWS endpoints certificate authority, which is limited to `amazonaws.com`
+  names. Functions trust it (Node.js and Python), and nothing else does.
+- **Sinkholed:** any other `amazonaws.com` name, a service the platform doesn't serve, has no address. The
+  call fails at once with an error naming the host.
+- **In a VPC,** the VPC's Route 53 Resolver answers these names the same way, after the VPC's DNS Firewall,
+  and the query log records it. A security group's HTTPS egress to `0.0.0.0/0` reaches the platform's AWS
+  endpoint.
+
 ### Fixed — the AWS services recover by themselves when their database comes back
 - If the aws-shim starts while its database is unreachable (for example when both restart after a node
   event), the services that database holds answer "not configured" while everything else serves: SQS,
