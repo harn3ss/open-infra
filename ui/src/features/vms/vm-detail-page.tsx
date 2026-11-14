@@ -51,6 +51,7 @@ import {
 import { VmVolumesTab } from "./vm-volumes";
 import { VmNetworkTab } from "./vm-network";
 import { ScreenshotDialog, SystemLogDialog } from "./vm-console-dialogs";
+import { VmConnectDialog } from "./vm-connect-dialog";
 import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
 import { InstanceTypeLabel } from "@/components/common/instance-type-label";
 import { EC2_INSTANCE_TYPES } from "@/lib/instance-types";
@@ -77,6 +78,7 @@ export function VmDetailPage() {
   const navigate = useNavigate();
   const [showPass, setShowPass] = useState(false);
   const [consoleView, setConsoleView] = useState<"log" | "screenshot" | null>(null);
+  const [connectOpen, setConnectOpen] = useState(false);
 
   const vmPath = openinfraPaths.virtualmachine(namespace, name);
 
@@ -233,6 +235,9 @@ export function VmDetailPage() {
               <Play className="size-4" /> Start
             </Button>
           )}
+          <Button variant="outline" onClick={() => setConnectOpen(true)}>
+            Connect
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline">
@@ -256,6 +261,15 @@ export function VmDetailPage() {
         </>
       }
     >
+      <VmConnectDialog
+        namespace={namespace}
+        name={name}
+        instanceId={vm.status?.instanceId}
+        isWindows={isWin}
+        connectCmd={connectCmd}
+        open={connectOpen}
+        onOpenChange={setConnectOpen}
+      />
       <SystemLogDialog
         namespace={namespace}
         name={name}

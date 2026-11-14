@@ -229,6 +229,11 @@ rules:
   - apiGroups: [subresources.kubevirt.io]
     resources: [virtualmachineinstances/vnc, virtualmachineinstances/vnc/screenshot]
     verbs: [get]
+  # EC2 Serial Console (serial_console_gateway.go): a session's stream is the VMI's serial console, opened
+  # only for a key pushed with ec2-instance-connect:SendSerialConsoleSSHPublicKey on that instance.
+  - apiGroups: [subresources.kubevirt.io]
+    resources: [virtualmachineinstances/console]
+    verbs: [get]
   # S3 CreateBucket, DeleteBucket and CloudFormation teardown: find the kind: Bucket a bucket is (its
   # composite reports the bucket in status.bucket), and read that claim (whether it is ready, being
   # deleted). Read-only; the claim is written (aws-shim-buckets, and the service-linked role in a member
@@ -375,6 +380,74 @@ subjects:
   - kind: ServiceAccount
     name: aws-shim
     namespace: open-infra-aws-shim
+---
+# EC2 Serial Console (ec2_serial_access.go, ec2_instance_connect.go, serial_console_gateway.go): each
+# account's access setting is one ConfigMap here, ec2-serial-console-access (create, then read-modify-write
+# of that one); an instance's one session is a Lease here, serial-console-<instance id>, held while it is
+# open. The gateway's host key is a Secret here (aws-shim-keys grants it). The console shares the setting
+# and the sessions (open-infra-console-serial-console below).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-serial-console
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [ec2-serial-console-access]
+    verbs: [get, update, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-serial-console
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-serial-console }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+# The console's EC2 Serial Console: the account's access setting (read, and turned on or off by
+# "Manage access", ec2:Enable/DisableSerialConsoleAccess), an instance's one session (its browser terminal
+# holds the same Lease the SSH gateway does), and the SSH endpoint's address, shown with its ssh command.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: open-infra-console-serial-console
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [ec2-serial-console-access]
+    verbs: [get, update, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, update, delete]
+  - apiGroups: [""]
+    resources: [services]
+    resourceNames: [aws-shim-serial-console]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: open-infra-console-serial-console
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: open-infra-console-serial-console }
+subjects:
+  - kind: ServiceAccount
+    name: console
+    namespace: open-infra-console
 ---
 # Console access-key management: the console BFF's "Security credentials" surface mints, lists,
 # deactivates and deletes a User's access keys, so the console SA needs full Secret access in the
@@ -1124,8 +1197,13 @@ spec:
               protocol: TCP
             - name: lambda-service
               containerPort: 4568
+            # EC2 Serial Console's SSH endpoint (serial_console_gateway.go); the aws-shim-serial-console
+            # Service answers on 22.
+            - name: serial-console
+              containerPort: 2222
           env:
             - { name: LISTEN_ADDR, value: ":4566" }
+            - { name: SERIAL_CONSOLE_LISTEN_ADDR, value: ":2222" }
             # EC2 instance metadata (IMDS): serve rotating role credentials (/v1/vm-credentials) to the
             # in-guest metadata agent of a kind: VirtualMachine with spec.instanceRole, identified by its
             # per-VM ServiceAccount token (never the source IP). Inert for a VM that declares no
@@ -1443,6 +1521,26 @@ spec:
     - name: lambda-service
       port: 4568
       targetPort: 4568
+---
+# EC2 Serial Console's SSH endpoint, on the network as AWS's serial-console.ec2-instance-connect.<region>.aws
+# is: `ssh -i key <instance id>.port0@<this address>` after `aws ec2-instance-connect
+# send-serial-console-ssh-public-key`. It lets in only a key pushed for that instance in the last 60
+# seconds, which IAM allowed, for an account that allows serial console access (off until it is turned on);
+# it asks no password. MetalLB gives it an address on the LAN.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws-shim-serial-console
+  namespace: open-infra-aws-shim
+  labels: { app: aws-shim }
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  selector: { app: aws-shim }
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 2222
 ---
 # Step Functions StartSyncExecution endpoint alias. The AWS SDK/CLI resolve StartSyncExecution to a
 # SEPARATE, "sync-"prefixed host (AWS's sync-states.<region>.amazonaws.com), and apply that prefix even

@@ -25,10 +25,10 @@ by `probe/shimgen.py`), and CI fails when a capability a customer can reach has 
 |---|---|---|---|---|---|
 | Resource types (claim kinds) | 54 | 2 | 1 | 0 | 57 |
 | Resource properties (spec fields) | 367 | 25 | 0 | 0 | 392 |
-| Console API routes | 112 | 1 | 1 | 0 | 114 |
+| Console API routes | 117 | 1 | 1 | 0 | 119 |
 | Console screens | 156 | 4 | 3 | 0 | 163 |
-| AWS APIs (signing names) | 34 | 0 | 0 | 0 | 34 |
-| **All** | **723** | **32** | **5** | **0** | **760** |
+| AWS APIs (signing names) | 35 | 0 | 0 | 0 | 35 |
+| **All** | **729** | **32** | **5** | **0** | **766** |
 
 11 of the console routes need no authorization (sign-in, sign-out, who-am-I, the console's own configuration), as AWS's sign-in and console metadata need none. 2 platform extras and 14 properties in Kubernetes vocabulary await the operator's ruling (below).
 <!-- END shimgen:surface-summary -->
@@ -265,6 +265,9 @@ action cannot be registered, and every one is shown, in CI, to refuse a principa
 | `POST /api/dataflows/{namespace}/{name}/status` | platform extra | `openinfra:GetDataFlow` | `arn:aws:openinfra:us-east-1:{account}:dataflow/{name}` |
 | `POST /api/db-stats` | AWS-shaped | `pi:DescribeDimensionKeys` | `*` |
 | `POST /api/directories/{namespace}/{name}/ldap` | AWS-shaped | `ds:DescribeDirectories` | `arn:aws:ds:us-east-1:{account}:directory/{name}` |
+| `GET /api/ec2/serial-console-access` | AWS-shaped | `ec2:GetSerialConsoleAccessStatus` | `*` |
+| `POST /api/ec2/serial-console-access/disable` | AWS-shaped | `ec2:DisableSerialConsoleAccess` | `*` |
+| `POST /api/ec2/serial-console-access/enable` | AWS-shaped | `ec2:EnableSerialConsoleAccess` | `*` |
 | `GET /api/encryption/destructions` | AWS-shaped | `kms:ListKeys` | `*` |
 | `GET /api/encryption/keys` | AWS-shaped | `kms:ListKeys` | `*` |
 | `GET /api/functions/{namespace}/{name}/code` | AWS-shaped | `lambda:GetFunction` | `arn:aws:lambda:us-east-1:{account}:function:{name}` |
@@ -337,6 +340,8 @@ action cannot be registered, and every one is shown, in CI, to refuse a principa
 | `POST /api/vm-snapshots/restore` | AWS-shaped | `ec2:RunInstances` | `arn:aws:ec2:us-east-1:{account}:snapshot/{id}` |
 | `GET /api/vms/{namespace}/{name}/console-output` | AWS-shaped | `ec2:GetConsoleOutput` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
 | `GET /api/vms/{namespace}/{name}/console-screenshot` | AWS-shaped | `ec2:GetConsoleScreenshot` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
+| `GET /api/vms/{namespace}/{name}/serial-console` | AWS-shaped | `ec2-instance-connect:SendSerialConsoleSSHPublicKey` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
+| `GET /api/vms/{namespace}/{name}/serial-console/check` | AWS-shaped | `ec2-instance-connect:SendSerialConsoleSSHPublicKey` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
 | `POST /api/vms/{namespace}/{name}/snapshot` | AWS-shaped | `ec2:CreateSnapshots` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
 
 Decided per request:
@@ -460,7 +465,8 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | Cognito | `cognito-idp` | proven | 20 |
 | DynamoDB | `dynamodb` | proven | 19 |
 | DynamoDB | `dynamodbstreams` | proven | 4 |
-| EC2 | `ec2` | proven | 28 |
+| EC2 | `ec2` | proven | 31 |
+| EC2 | `ec2-instance-connect` | proven | 2 |
 | ECR | `ecr` | proven | 37 |
 | ECS | `ecs` | proven | 13 |
 | EKS | `eks` | proven | 4 |

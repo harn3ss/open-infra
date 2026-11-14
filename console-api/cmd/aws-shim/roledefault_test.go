@@ -406,6 +406,27 @@ func roleDoorCases() []roleDoorCase {
 				h.door.authz = a
 				return ec2Call(h, c, url.Values{"Action": {"DeleteFlowLogs"}, "FlowLogId.1": {"fl-0123456789abcdef0"}})
 			}},
+		// --- EC2 Serial Console: the account setting (on "*"), and EC2 Instance Connect's key push on the instance ---
+		{door: "ec2", op: "GetSerialConsoleAccessStatus", action: "ec2:GetSerialConsoleAccessStatus", resType: "Account", denyCode: "UnauthorizedOperation",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h, _ := ec2Fixture(t)
+				h.settingsNS, h.door.authz = testSettingsNS, a
+				return ec2Call(h, c, url.Values{"Action": {"GetSerialConsoleAccessStatus"}})
+			}},
+		{door: "ec2", op: "EnableSerialConsoleAccess", action: "ec2:EnableSerialConsoleAccess", resType: "Account", denyCode: "UnauthorizedOperation",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h, _ := ec2Fixture(t)
+				h.settingsNS, h.door.authz = testSettingsNS, a
+				return ec2Call(h, c, url.Values{"Action": {"EnableSerialConsoleAccess"}})
+			}},
+		{door: "ec2-instance-connect", op: "SendSerialConsoleSSHPublicKey", action: "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+			resType: "Instance", resName: webID, denyCode: "AccessDeniedException",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h, e := eicFixture(t, true)
+				e.door.authz = a
+				key, _ := edKey(t)
+				return eicCall(h, c, pushBody(webID, key, ""))
+			}},
 		// --- SES ---
 		{door: "ses", op: "GetSendQuota", action: "ses:GetSendQuota", resType: "Identity", denyCode: "AccessDenied",
 			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {

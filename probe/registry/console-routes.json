@@ -135,6 +135,12 @@
   },
   {
    "method": "GET",
+   "path": "/api/ec2/serial-console-access",
+   "action": "ec2:GetSerialConsoleAccessStatus",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
    "path": "/api/encryption/destructions",
    "action": "kms:ListKeys",
    "resource": "*"
@@ -338,6 +344,18 @@
    "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
   },
   {
+   "method": "GET",
+   "path": "/api/vms/{namespace}/{name}/serial-console",
+   "action": "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+   "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/vms/{namespace}/{name}/serial-console/check",
+   "action": "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+   "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+  },
+  {
    "method": "PATCH",
    "path": "/api/iam/groups/{name}",
    "action": "iam:UpdateGroup",
@@ -420,6 +438,18 @@
    "path": "/api/directories/{namespace}/{name}/ldap",
    "action": "ds:DescribeDirectories",
    "resource": "arn:aws:ds:us-east-1:{account}:directory/{name}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/ec2/serial-console-access/disable",
+   "action": "ec2:DisableSerialConsoleAccess",
+   "resource": "*"
+  },
+  {
+   "method": "POST",
+   "path": "/api/ec2/serial-console-access/enable",
+   "action": "ec2:EnableSerialConsoleAccess",
+   "resource": "*"
   },
   {
    "method": "POST",

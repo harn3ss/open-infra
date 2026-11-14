@@ -605,10 +605,45 @@ aws ec2 get-console-screenshot --instance-id <instance-id> --wake-up \
   ask. Use it for a Windows instance, whose boot and errors are on the screen rather than the serial
   console.
 
-Neither is a session: you can't type into them. To work on an instance, connect to it with SSH or RDP.
-There is no browser desktop for a Linux instance, as on EC2; see [Desktops & workspaces](#desktops--workspaces).
-Not yet provided: EC2 Serial Console (an interactive serial session) and a browser Remote Desktop for
-Windows instances.
+Neither is a session: you can't type into them. To work on an instance, connect to it with SSH or RDP, or
+with its serial console (below). There is no browser desktop for a Linux instance, as on EC2; see
+[Desktops & workspaces](#desktops--workspaces). Not yet provided: a browser Remote Desktop for Windows
+instances.
+
+## EC2 Serial Console: a session on the instance's serial port
+
+As on EC2, the serial console is a text session on an instance's serial port (`ttyS0`), for when the
+network can't reach the guest: a broken network or SSH configuration, a guest stopped in its boot. It works
+whatever the instance's network and security groups allow.
+
+1. **Allow access for the account.** It is off until an administrator turns it on, and while it is off no
+   instance of the account can be connected to. In the console: an instance's **Connect → EC2 serial
+   console → Manage access**. From the CLI:
+   ```bash
+   aws ec2 enable-serial-console-access
+   aws ec2 get-serial-console-access-status
+   ```
+   (`ec2:EnableSerialConsoleAccess`, `ec2:DisableSerialConsoleAccess`, `ec2:GetSerialConsoleAccessStatus`.)
+2. **Connect** with `ec2-instance-connect:SendSerialConsoleSSHPublicKey` on the instance:
+   - **In the browser:** the instance's **Connect → EC2 serial console → Connect** opens a terminal on its
+     serial port. Press Enter for the login prompt.
+   - **With SSH:** push a public key, then connect within 60 seconds, as the instance ID and port:
+     ```bash
+     aws ec2-instance-connect send-serial-console-ssh-public-key --instance-id <instance-id> \
+       --serial-port 0 --ssh-public-key file://my_key.pub
+     ssh -i my_key <instance-id>.port0@<serial-console-endpoint>
+     ```
+     The endpoint's address is on the same Connect tab. It takes only a key pushed for that instance in the
+     last 60 seconds, ED25519 or RSA of 2048 bits or more, and asks no password.
+3. **Sign in** at the guest's login prompt with its user and password (the instance's **Access** tab): the
+   serial console is the guest's own login, so a key-only account can't sign in there. On Windows, the serial
+   console is the Special Administration Console when the guest turns it on (`bcdedit /ems on`), as on EC2.
+
+An instance has one serial console session at a time: while one is open, in the browser or over SSH, a
+second is refused (`SerialConsoleSessionLimitExceededException`). Other refusals: access off for the account
+(`SerialConsoleAccessDisabledException`), an instance that isn't running (`EC2InstanceStateInvalidException`),
+and a principal without the action (`AccessDeniedException`). To end an SSH session, type `~.` at the start
+of a line.
 
 ## Networking: NAT vs direct-LAN (macvtap)
 

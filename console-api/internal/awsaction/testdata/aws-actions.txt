@@ -79,6 +79,7 @@ dynamodb:DescribeTable
 dynamodb:ListTables
 dynamodb:UpdateTable
 dynamodb:UpdateTimeToLive
+ec2-instance-connect:SendSerialConsoleSSHPublicKey
 ec2:AllocateAddress
 ec2:AssociateAddress
 ec2:AssociateIamInstanceProfile
@@ -118,8 +119,11 @@ ec2:DescribeVolumes
 ec2:DescribeVpcEndpoints
 ec2:DescribeVpcs
 ec2:DetachVolume
+ec2:DisableSerialConsoleAccess
+ec2:EnableSerialConsoleAccess
 ec2:GetConsoleOutput
 ec2:GetConsoleScreenshot
+ec2:GetSerialConsoleAccessStatus
 ec2:ImportImage
 ec2:ModifyImageAttribute
 ec2:ModifyInstanceAttribute

@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — EC2 Serial Console
+- A text session on an instance's serial port, as EC2's: in the browser from the instance's **Connect → EC2
+  serial console**, or with `aws ec2-instance-connect send-serial-console-ssh-public-key` and `ssh
+  <instance-id>.port0@<endpoint>`. It reaches a guest whatever its network allows.
+- Off until an account allows it (`aws ec2 enable-serial-console-access`, or **Manage access** in the
+  console). A session is decided as `ec2-instance-connect:SendSerialConsoleSSHPublicKey` on the instance; a
+  pushed key is good for 60 seconds, and an instance has one session at a time. See
+  [docs/virtual-machines.md](docs/virtual-machines.md#ec2-serial-console-a-session-on-the-instances-serial-port).
+
 ### Added — an instance's system log and screenshot, as EC2's
 - **Get system log** and **Get instance screenshot**, under a VM's **Actions → Monitor and troubleshoot**
   in the console, and `aws ec2 get-console-output` / `get-console-screenshot` on the AWS front door. The

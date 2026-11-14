@@ -4821,6 +4821,11 @@
       "reason": "the published form schema of a platform resource type; no resource data",
       "resource": ""
     },
+    "GET /api/ec2/serial-console-access": {
+      "action": "ec2:GetSerialConsoleAccessStatus",
+      "class": "aws",
+      "resource": "*"
+    },
     "GET /api/encryption/destructions": {
       "action": "kms:ListKeys",
       "class": "aws",
@@ -4998,6 +5003,16 @@
       "class": "aws",
       "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
     },
+    "GET /api/vms/{namespace}/{name}/serial-console": {
+      "action": "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+      "class": "aws",
+      "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+    },
+    "GET /api/vms/{namespace}/{name}/serial-console/check": {
+      "action": "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+      "class": "aws",
+      "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+    },
     "GET /healthz": {
       "action": "",
       "class": "aws",
@@ -5102,6 +5117,16 @@
       "action": "ds:DescribeDirectories",
       "class": "aws",
       "resource": "arn:aws:ds:us-east-1:{account}:directory/{name}"
+    },
+    "POST /api/ec2/serial-console-access/disable": {
+      "action": "ec2:DisableSerialConsoleAccess",
+      "class": "aws",
+      "resource": "*"
+    },
+    "POST /api/ec2/serial-console-access/enable": {
+      "action": "ec2:EnableSerialConsoleAccess",
+      "class": "aws",
+      "resource": "*"
     },
     "POST /api/functions/{namespace}/{name}/invoke": {
       "action": "lambda:InvokeFunction",
@@ -6766,7 +6791,14 @@
     "ec2": {
       "actions": 2,
       "class": "aws",
-      "operations": 28,
+      "operations": 31,
+      "service": "EC2",
+      "tier": "proven"
+    },
+    "ec2-instance-connect": {
+      "actions": 2,
+      "class": "aws",
+      "operations": 2,
       "service": "EC2",
       "tier": "proven"
     },
@@ -6958,11 +6990,11 @@
     "pendingKubernetesFields": 14,
     "publicRoutes": 11,
     "routes": {
-      "aws": 112,
+      "aws": 117,
       "extra": 1,
       "operator": 1,
       "removed": 0,
-      "total": 114
+      "total": 119
     },
     "screens": {
       "aws": 156,
@@ -6972,11 +7004,11 @@
       "total": 163
     },
     "services": {
-      "aws": 34,
+      "aws": 35,
       "extra": 0,
       "operator": 0,
       "removed": 0,
-      "total": 34
+      "total": 35
     }
   }
 }

@@ -546,13 +546,37 @@
         "DescribeVolumes",
         "DescribeVpcEndpoints",
         "DescribeVpcs",
+        "DisableSerialConsoleAccess",
+        "EnableSerialConsoleAccess",
         "GetConsoleOutput",
         "GetConsoleScreenshot",
+        "GetSerialConsoleAccessStatus",
         "ImportKeyPair",
         "RebootInstances",
         "StartInstances",
         "StopInstances",
         "TerminateInstances"
+      ],
+      "probes": [
+        "ec2",
+        "cfn-structural-reads",
+        "ec2-console"
+      ],
+      "refused": [],
+      "service": "EC2",
+      "tier": "proven"
+    },
+    "ec2-instance-connect": {
+      "actions": [
+        "ec2-instance-connect:SendSerialConsoleSSHPublicKey"
+      ],
+      "conditional": true,
+      "deployableTypes": [],
+      "handler": "eicHandler",
+      "namespaces": [],
+      "operations": [
+        "SendSSHPublicKey",
+        "SendSerialConsoleSSHPublicKey"
       ],
       "probes": [
         "ec2",
@@ -1595,11 +1619,11 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 628,
+    "operations": 633,
     "planOnly": 11,
     "refused": 11,
     "services": 32,
-    "signingNames": 34,
+    "signingNames": 35,
     "violations": 0
   },
   "types": {

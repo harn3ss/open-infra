@@ -169,7 +169,7 @@ func Screenshot(ctx context.Context, cs kubernetes.Interface, ns, name string, w
 		return nil, err
 	}
 	// The launcher outlives a stop for a moment; the VMI is what runs (a stopped VM has none).
-	if err := vmiRunning(ctx, cs, ns, name); err != nil {
+	if err := VMIRunning(ctx, cs, ns, name); err != nil {
 		return nil, err
 	}
 	// virt-api's screenshot route declares no media type, so it answers only a request that accepts any
@@ -190,8 +190,8 @@ func Screenshot(ctx context.Context, cs kubernetes.Interface, ns, name string, w
 	return ToJPEG(png)
 }
 
-// vmiRunning: VM ns/name's VirtualMachineInstance exists and is Running, else ErrNotRunning.
-func vmiRunning(ctx context.Context, cs kubernetes.Interface, ns, name string) error {
+// VMIRunning: VM ns/name's VirtualMachineInstance exists and is Running, else ErrNotRunning.
+func VMIRunning(ctx context.Context, cs kubernetes.Interface, ns, name string) error {
 	raw, err := cs.CoreV1().RESTClient().Get().
 		AbsPath("/apis/kubevirt.io/v1/namespaces/" + ns + "/virtualmachineinstances/" + name).DoRaw(ctx)
 	if apierrors.IsNotFound(err) {

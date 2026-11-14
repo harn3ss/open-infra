@@ -398,6 +398,8 @@ export interface VirtualMachineSpec {
 export interface VirtualMachineStatus {
   os?: string;
   ip?: string;
+  /** The instance's EC2 id (i- and 17 hex digits), as DescribeInstances reports it. */
+  instanceId?: string;
   ready?: boolean;
   conditions?: Condition[];
 }

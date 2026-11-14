@@ -71,6 +71,7 @@ declare -A CALL=(
   [dynamodb]="dynamodb list-tables"
   [dynamodbstreams]="dynamodbstreams list-streams"
   [ec2]="ec2 describe-instances"
+  [ec2-instance-connect]="ec2-instance-connect send-serial-console-ssh-public-key --instance-id i-00000000000000000 --serial-port 0 --ssh-public-key ssh-ed25519-AAAA-not-a-key"
   [ecr]="ecr describe-repositories"
   [ecs]="ecs list-clusters"
   [eks]="eks list-clusters"

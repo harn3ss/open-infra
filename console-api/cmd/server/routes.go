@@ -127,6 +127,14 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	// the instance as EC2's GetConsoleOutput and GetConsoleScreenshot.
 	h(get, "/vms/{namespace}/{name}/console-output", s15, "ec2:GetConsoleOutput", z.kindARN("VirtualMachine"), handleVMConsoleOutput(cs, logger))
 	h(get, "/vms/{namespace}/{name}/console-screenshot", s20, "ec2:GetConsoleScreenshot", z.kindARN("VirtualMachine"), handleVMConsoleScreenshot(cs, logger))
+	// EC2 Serial Console (vm_serial_console.go): the account's access setting, and a VM's browser terminal,
+	// which is ec2-instance-connect:SendSerialConsoleSSHPublicKey on the instance, as the AWS console's is.
+	serial := newSerialConsole(cs, client.Config, getenv("KEYS_NAMESPACE", "open-infra-aws-shim"), z, logger)
+	h(get, "/ec2/serial-console-access", s10, "ec2:GetSerialConsoleAccessStatus", nil, serial.handleAccessStatus())
+	h(post, "/ec2/serial-console-access/enable", s10, "ec2:EnableSerialConsoleAccess", nil, serial.handleSetAccess(true))
+	h(post, "/ec2/serial-console-access/disable", s10, "ec2:DisableSerialConsoleAccess", nil, serial.handleSetAccess(false))
+	h(get, "/vms/{namespace}/{name}/serial-console/check", s10, "ec2-instance-connect:SendSerialConsoleSSHPublicKey", z.kindARN("VirtualMachine"), serial.handleCheck())
+	h(get, "/vms/{namespace}/{name}/serial-console", 0, "ec2-instance-connect:SendSerialConsoleSSHPublicKey", z.kindARN("VirtualMachine"), serial.handleTerminal())
 
 	// SageMaker jobs: register, logs (CloudWatch Logs), metrics, model-monitor reports.
 	h(post, "/trainingjobs/{namespace}/{name}/register", s20, "sagemaker:CreateModelPackage", nil, handleTrainingJobRegister(cs, auth, logger))

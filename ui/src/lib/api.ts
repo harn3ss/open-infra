@@ -892,6 +892,31 @@ export async function getVmConsoleScreenshot(namespace: string, name: string): P
   );
 }
 
+/** EC2 Serial Console: the session's account's access setting, and the SSH endpoint's address. */
+export interface SerialConsoleAccess {
+  serialConsoleAccessEnabled: boolean;
+  endpoint?: string;
+}
+
+export function getSerialConsoleAccess(): Promise<SerialConsoleAccess> {
+  return request<SerialConsoleAccess>("/ec2/serial-console-access");
+}
+
+export function setSerialConsoleAccess(allow: boolean): Promise<SerialConsoleAccess> {
+  return request<SerialConsoleAccess>(`/ec2/serial-console-access/${allow ? "enable" : "disable"}`, { method: "POST" });
+}
+
+/** Whether a VM's serial console session can open now: its instance id, or EC2 Instance Connect's error. */
+export function checkSerialConsole(namespace: string, name: string): Promise<{ instanceId: string }> {
+  return request(`/vms/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/serial-console/check`);
+}
+
+/** The websocket URL of a VM's browser serial console. */
+export function serialConsoleUrl(namespace: string, name: string): string {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}${API_BASE}/vms/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/serial-console`;
+}
+
 export function createVmSnapshot(namespace: string, name: string): Promise<VmSnapshot> {
   return request<VmSnapshot>(
     `/vms/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/snapshot`,

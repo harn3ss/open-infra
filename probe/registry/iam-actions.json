@@ -1204,6 +1204,10 @@
    "ec2:DeleteFlowLogs",
    "iam:PassRole"
   ],
+  "ec2-instance-connect": [
+   "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
+   "iam:PassRole"
+  ],
   "ecr": [
    "ecr:BatchCheckLayerAvailability",
    "ecr:BatchDeleteImage",
@@ -1416,6 +1420,7 @@
   "dynamodb:ListTables",
   "dynamodb:UpdateTable",
   "dynamodb:UpdateTimeToLive",
+  "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
   "ec2:AllocateAddress",
   "ec2:AssociateAddress",
   "ec2:AssociateIamInstanceProfile",

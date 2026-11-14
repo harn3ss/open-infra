@@ -97,11 +97,15 @@ var ec2Ops = map[string]ec2Op{
 	"RebootInstances":           {"Instance", "update"},
 	"GetConsoleOutput":          {"Instance", "get"},
 	"GetConsoleScreenshot":      {"Instance", "get"},
-	"TerminateInstances":        {"Instance", "delete"},
-	"DescribeNetworkInterfaces": {"NetworkInterface", "get"},
-	"CreateFlowLogs":            {"VpcFlowLog", "create"},
-	"DescribeFlowLogs":          {"VpcFlowLog", "get"},
-	"DeleteFlowLogs":            {"VpcFlowLog", "delete"},
+	// EC2 Serial Console's account setting (ec2_serial_access.go).
+	"GetSerialConsoleAccessStatus": {"Account", "get"},
+	"EnableSerialConsoleAccess":    {"Account", "update"},
+	"DisableSerialConsoleAccess":   {"Account", "update"},
+	"TerminateInstances":           {"Instance", "delete"},
+	"DescribeNetworkInterfaces":    {"NetworkInterface", "get"},
+	"CreateFlowLogs":               {"VpcFlowLog", "create"},
+	"DescribeFlowLogs":             {"VpcFlowLog", "get"},
+	"DeleteFlowLogs":               {"VpcFlowLog", "delete"},
 }
 
 type ec2Handler struct {
@@ -118,6 +122,9 @@ type ec2Handler struct {
 	// GetConsoleScreenshot); nil: internal/vmconsole, as the shim.
 	consoleOutput     func(ctx context.Context, namespace, name string) ([]byte, error)
 	consoleScreenshot func(ctx context.Context, namespace, name string, wake bool) ([]byte, error)
+	// settingsNS is the shim's own namespace, where account settings are kept (EC2 Serial Console access:
+	// internal/serialconsole); empty: not configured.
+	settingsNS string
 }
 
 func newEC2Handler(door *cfnDoorway, keys *ec2KeyStore, logger *slog.Logger) *ec2Handler {
@@ -182,6 +189,11 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 	if h.door == nil {
 		writeEC2Error(w, http.StatusServiceUnavailable, "Unavailable", requestID, "EC2 needs the CloudFormation front door's account namespace, which is not configured on this shim")
+		return
+	}
+	if ec2SerialAccessOp(op) {
+		// The account's EC2 Serial Console access (ec2_serial_access.go).
+		h.serialAccessOp(ctx, w, r, claims, op, requestID)
 		return
 	}
 	if ec2ConsoleOp(op) {

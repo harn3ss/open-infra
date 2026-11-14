@@ -207,6 +207,12 @@ rules:
     resources:
       - virtualmachineinstances/vnc/screenshot
     verbs: [get]
+  # A VM's "Connect → EC2 serial console" (ec2-instance-connect:SendSerialConsoleSSHPublicKey, decided per
+  # instance by the route table): its browser terminal is the VMI's serial console.
+  - apiGroups: [subresources.kubevirt.io]
+    resources:
+      - virtualmachineinstances/console
+    verbs: [get]
   # Hotplug attach/detach of volumes to running VMs (EBS-style). These subresources
   # are invoked via PUT (RBAC verb: update); --persist updates the VM spec too.
   - apiGroups: [subresources.kubevirt.io]

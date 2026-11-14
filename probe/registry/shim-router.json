@@ -283,8 +283,11 @@
         "DescribeVolumes",
         "DescribeVpcEndpoints",
         "DescribeVpcs",
+        "DisableSerialConsoleAccess",
+        "EnableSerialConsoleAccess",
         "GetConsoleOutput",
         "GetConsoleScreenshot",
+        "GetSerialConsoleAccessStatus",
         "ImportKeyPair",
         "RebootInstances",
         "StartInstances",
@@ -293,6 +296,18 @@
       ],
       "actions": [
         "ec2:DeleteFlowLogs",
+        "iam:PassRole"
+      ],
+      "conditional": true
+    },
+    "ec2-instance-connect": {
+      "handler": "eicHandler",
+      "operations": [
+        "SendSSHPublicKey",
+        "SendSerialConsoleSSHPublicKey"
+      ],
+      "actions": [
+        "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
         "iam:PassRole"
       ],
       "conditional": true

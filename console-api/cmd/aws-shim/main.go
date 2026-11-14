@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -768,7 +769,31 @@ func run(logger *slog.Logger) error {
 			ec2H := newEC2Handler(cfnH, ec2KeySt, logger)
 			// Lambda's network interfaces and VPC Flow Logs (ec2_network_interfaces.go, ec2_flowlogs.go).
 			ec2H.flowLogs, ec2H.vpc, ec2H.fns, ec2H.rolesNS = ec2FlowSt, vpcIfaces, fns, rolesNS
+			ec2H.settingsNS = keysNS // EC2 Serial Console access, per account (ec2_serial_access.go)
 			services["ec2"] = ec2H
+			// EC2 Serial Console: EC2 Instance Connect's SendSerialConsoleSSHPublicKey pushes a key for 60
+			// seconds (ec2_instance_connect.go), and the SSH gateway lets it in to the instance's serial
+			// console (serial_console_gateway.go), on SERIAL_CONSOLE_LISTEN_ADDR.
+			serialKeySt := newSerialKeys()
+			services["ec2-instance-connect"] = newEICHandler(ec2H, serialKeySt, logger)
+			if addr := getenv("SERIAL_CONSOLE_LISTEN_ADDR", ""); addr != "" {
+				go func() {
+					gw, gerr := newSerialGateway(context.Background(), cs, kc.Config, keysNS, serialKeySt, logger)
+					if gerr != nil {
+						logger.Error("EC2 Serial Console gateway not started", "error", gerr.Error())
+						return
+					}
+					l, lerr := net.Listen("tcp", addr)
+					if lerr != nil {
+						logger.Error("EC2 Serial Console gateway not started", "addr", addr, "error", lerr.Error())
+						return
+					}
+					logger.Info("EC2 Serial Console gateway listening", "addr", addr)
+					if serr := gw.serve(l); serr != nil {
+						logger.Error("EC2 Serial Console gateway stopped", "error", serr.Error())
+					}
+				}()
+			}
 			flowLogWorker = newFlowLogWorker(ec2H, sharedPG, cwlSt, vpcIfaces, dyn, cs, authzChecker, acctDir, rolesNS, logger)
 			if ec2KeySt != nil {
 				cfnH.keyPairs = ec2KeySt.publicKeys

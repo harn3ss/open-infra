@@ -34,7 +34,7 @@ var SupportedServices = map[string]bool{
 // SupportedActions are the actions of a service the aws-shim enforces only in part: just these import
 // (named exactly — a wildcard such as ec2:* would also cover actions it does not enforce, so it is
 // refused like any unsupported action). ec2: a CloudFormation stack's Elastic IP allocations and the EC2
-// front door's operations. ec2messages: the SSM agent's command channel (an instance role's
+// front door's operations. ec2-instance-connect: the EC2 Serial Console key push. ec2messages: the SSM agent's command channel (an instance role's
 // AmazonSSMManagedInstanceCore), which the aws-shim checks when a VM's metadata agent fetches and reports
 // Run Command invocations.
 var SupportedActions = map[string]map[string]bool{
@@ -43,8 +43,13 @@ var SupportedActions = map[string]map[string]bool{
 		"DescribeImages": true, "DescribeRegions": true, "DescribeAvailabilityZones": true, "DescribeKeyPairs": true,
 		"ImportKeyPair": true, "CreateKeyPair": true, "DeleteKeyPair": true, "DeleteVolume": true,
 		"DescribeInternetGateways": true, "DescribeRouteTables": true, "DescribeNetworkAcls": true, "DescribeVpcEndpoints": true,
-		"DescribeNetworkInterfaces": true, "CreateFlowLogs": true, "DescribeFlowLogs": true, "DeleteFlowLogs": true},
-	"ec2messages": {"GetMessages": true, "SendReply": true, "AcknowledgeMessage": true, "DeleteMessage": true, "FailMessage": true, "GetEndpoint": true},
+		"DescribeNetworkInterfaces": true, "CreateFlowLogs": true, "DescribeFlowLogs": true, "DeleteFlowLogs": true,
+		"GetConsoleOutput": true, "GetConsoleScreenshot": true,
+		"GetSerialConsoleAccessStatus": true, "EnableSerialConsoleAccess": true, "DisableSerialConsoleAccess": true},
+	// ec2-instance-connect: EC2 Serial Console's key push, on the instance's ec2 ARN (SendSSHPublicKey is not
+	// served, so the service as a whole does not import).
+	"ec2-instance-connect": {"SendSerialConsoleSSHPublicKey": true},
+	"ec2messages":          {"GetMessages": true, "SendReply": true, "AcknowledgeMessage": true, "DeleteMessage": true, "FailMessage": true, "GetEndpoint": true},
 }
 
 // condType classifies a populated request-context attribute by value type, which fixes the AWS

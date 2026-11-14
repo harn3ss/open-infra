@@ -54,6 +54,7 @@ noResourceTypes:
   sts: "STS issues credentials; CloudFormation has no STS resource type."
   dynamodbstreams: "A table's stream is a property of AWS::DynamoDB::Table (StreamSpecification), not a resource."
   organizations: "Accounts are created with organizations:CreateAccount (or as a kind: Account); the CloudFormation engine translates no AWS::Organizations type, so a stack creates none."
+  ec2-instance-connect: "EC2 Instance Connect pushes a key for one serial console session; CloudFormation has no EC2 Instance Connect resource type."
   servicequotas: "Quotas are an account's limits, set by an operator approving a request (kind: Account spec.serviceQuotas); the CloudFormation engine translates no Service Quotas type, so a stack creates none."
 
 # The calls that read a resource type, where the default does not find them (or finds another type's
