@@ -326,6 +326,18 @@
    "resource": "*"
   },
   {
+   "method": "GET",
+   "path": "/api/vms/{namespace}/{name}/console-output",
+   "action": "ec2:GetConsoleOutput",
+   "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/vms/{namespace}/{name}/console-screenshot",
+   "action": "ec2:GetConsoleScreenshot",
+   "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+  },
+  {
    "method": "PATCH",
    "path": "/api/iam/groups/{name}",
    "action": "iam:UpdateGroup",

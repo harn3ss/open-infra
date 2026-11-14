@@ -327,7 +327,7 @@ create on its own API's front door):
 | Cognito | `cognito-idp` | 20: AdminConfirmSignUp, AdminCreateUser, AdminGetUser, AdminInitiateAuth, AdminSetUserPassword, ConfirmForgotPassword, ConfirmSignUp, CreateUserPool, CreateUserPoolClient, DeleteUserPool, DescribeUserPool, DescribeUserPoolClient, ForgotPassword, GetUser, GlobalSignOut, InitiateAuth, ListUserPoolClients, ResendConfirmationCode, RespondToAuthChallenge, SignUp | 2 |
 | DynamoDB | `dynamodb` | 19: BatchGetItem, BatchWriteItem, CreateTable, DeleteItem, DeleteTable, DescribeContinuousBackups, DescribeTable, DescribeTimeToLive, GetItem, ListTables, PutItem, Query, RestoreTableToPointInTime, Scan, TransactGetItems, TransactWriteItems, UpdateContinuousBackups, UpdateItem, UpdateTimeToLive | 1 |
 | DynamoDB | `dynamodbstreams` | 4: DescribeStream, GetRecords, GetShardIterator, ListStreams | 0 |
-| EC2 | `ec2` | 26: CreateFlowLogs, CreateKeyPair, DeleteFlowLogs, DeleteKeyPair, DeleteVolume, DescribeAddresses, DescribeAvailabilityZones, DescribeFlowLogs, DescribeImages, DescribeInstances, DescribeInternetGateways, DescribeKeyPairs, DescribeNetworkAcls, DescribeNetworkInterfaces, DescribeRegions, DescribeRouteTables, DescribeSecurityGroups, DescribeSubnets, DescribeVolumes, DescribeVpcEndpoints, DescribeVpcs, ImportKeyPair, RebootInstances, StartInstances, StopInstances, TerminateInstances | 17 |
+| EC2 | `ec2` | 28: CreateFlowLogs, CreateKeyPair, DeleteFlowLogs, DeleteKeyPair, DeleteVolume, DescribeAddresses, DescribeAvailabilityZones, DescribeFlowLogs, DescribeImages, DescribeInstances, DescribeInternetGateways, DescribeKeyPairs, DescribeNetworkAcls, DescribeNetworkInterfaces, DescribeRegions, DescribeRouteTables, DescribeSecurityGroups, DescribeSubnets, DescribeVolumes, DescribeVpcEndpoints, DescribeVpcs, GetConsoleOutput, GetConsoleScreenshot, ImportKeyPair, RebootInstances, StartInstances, StopInstances, TerminateInstances | 17 |
 | ECR | `ecr` | 37: BatchCheckLayerAvailability, BatchDeleteImage, BatchGetImage, BatchGetImageScanFindings, CompleteLayerUpload, CreatePullThroughCacheRule, CreateRepository, DeleteLifecyclePolicy, DeletePullThroughCacheRule, DeleteRepository, DeleteRepositoryPolicy, DescribeImageScanFindings, DescribeImages, DescribePullThroughCacheRules, DescribeRegistry, DescribeRepositories, GetAuthorizationToken, GetDownloadUrlForLayer, GetLifecyclePolicy, GetLifecyclePolicyPreview, GetRegistryPolicy, GetRepositoryPolicy, InitiateLayerUpload, ListImages, ListTagsForResource, PutImage, PutImageScanningConfiguration, PutImageTagMutability, PutLifecyclePolicy, PutRegistryPolicy, PutReplicationConfiguration, SetRepositoryPolicy, StartImageScan, StartLifecyclePolicyPreview, TagResource, UntagResource, UploadLayerPart | 1 |
 | ECS | `ecs` | 13: CreateCluster, CreateService, DeleteCluster, DeleteService, DeregisterTaskDefinition, DescribeClusters, DescribeServices, DescribeTaskDefinition, ListClusters, ListServices, RegisterTaskDefinition, RunTask, UpdateService | 3 |
 | EKS | `eks` | 4: DescribeCluster, DescribeNodegroup, ListClusters, ListNodegroups; recognized and refused: AssociateIdentityProviderConfig, CreateCluster, CreateNodegroup, DeleteCluster, DeleteNodegroup, DescribeIdentityProviderConfig, DisassociateIdentityProviderConfig, UpdateAddon, UpdateClusterConfig, UpdateClusterVersion | 0 |
@@ -2326,6 +2326,15 @@ volumes kept, and is refused with `OperationNotPermitted` while the instance's `
 set. An instance a stack made can be terminated, as on AWS; the stack then drifts. Every named instance is
 checked before any is changed: an unknown id is `InvalidInstanceID.NotFound`, one in a state the operation
 cannot leave is `IncorrectInstanceState`, and `DryRun` answers `DryRunOperation` once authorized.
+
+Console: `GetConsoleOutput` answers the last 64 KB of the instance's serial console (base64, as EC2's
+`Output`) and `GetConsoleScreenshot` a JPEG of its display (`ImageData`; `WakeUp` moves the pointer first,
+to wake a blanked screen). Each names one instance, decided as `ec2:GetConsoleOutput` /
+`ec2:GetConsoleScreenshot` on `Instance::<id>`; the instance is found with the caller's own authority, then
+the shim reads its console. An instance that isn't running, or one started before its console was collected
+(the collection starts at its next start), answers no `Output`, as EC2 does for one with nothing buffered;
+a screenshot of an instance that isn't running is `IncorrectInstanceState`. `probe/aws-shim-ec2-console.sh`
+proves both, and a refusal.
 
 Authorization: `ec2:<Action>` on the resource (`Instance::`, `Volume::`, `KeyPair::`; a Describe on `*`;
 each named instance for the state operations), additive for a User and default-deny for an assumed role;

@@ -95,6 +95,8 @@ var ec2Ops = map[string]ec2Op{
 	"StartInstances":            {"Instance", "update"},
 	"StopInstances":             {"Instance", "update"},
 	"RebootInstances":           {"Instance", "update"},
+	"GetConsoleOutput":          {"Instance", "get"},
+	"GetConsoleScreenshot":      {"Instance", "get"},
 	"TerminateInstances":        {"Instance", "delete"},
 	"DescribeNetworkInterfaces": {"NetworkInterface", "get"},
 	"CreateFlowLogs":            {"VpcFlowLog", "create"},
@@ -112,6 +114,10 @@ type ec2Handler struct {
 	vpc       *vpcInterfaces   // the Lambda VPC subnet's interfaces (nil: no function is in a VPC)
 	fns       *fnLocator       // the namespaces an account keeps its functions in
 	rolesNS   string           // the IAM home, where the management account's roles are (iam:PassRole)
+	// consoleOutput and consoleScreenshot read an instance's console (GetConsoleOutput,
+	// GetConsoleScreenshot); nil: internal/vmconsole, as the shim.
+	consoleOutput     func(ctx context.Context, namespace, name string) ([]byte, error)
+	consoleScreenshot func(ctx context.Context, namespace, name string, wake bool) ([]byte, error)
 }
 
 func newEC2Handler(door *cfnDoorway, keys *ec2KeyStore, logger *slog.Logger) *ec2Handler {
@@ -176,6 +182,11 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	ctx := withPrincipal(r.Context(), claims.PrincipalType()+"::"+claims.PrincipalID())
 	if h.door == nil {
 		writeEC2Error(w, http.StatusServiceUnavailable, "Unavailable", requestID, "EC2 needs the CloudFormation front door's account namespace, which is not configured on this shim")
+		return
+	}
+	if ec2ConsoleOp(op) {
+		// Authorized on the named instance, then read in the caller's account (ec2_console.go).
+		h.consoleOp(ctx, w, r, claims, op, requestID)
 		return
 	}
 	if ec2InstanceStateOp(op) {

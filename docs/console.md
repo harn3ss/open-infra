@@ -47,7 +47,7 @@ row opens a **full-page detail view** with AWS-style tabs and actions:
 |---|---|
 | **Application** | spec, attached DB/buckets/queues, conditions, YAML · create / delete |
 | **Function** (Lambda) | Overview (image/scaling/URL), Monitoring (Grafana), YAML · create / delete |
-| **Virtual Machine** (EC2) | Overview (phase/IP/resources), **VNC console**, **Network** (security groups — the firewall; reachable LAN ports follow the rules), disks (hotplug attach/detach), Start/Stop, YAML · create / delete |
+| **Virtual Machine** (EC2) | Overview (phase/IP/resources), Access (SSH/RDP login), **Actions → Monitor and troubleshoot → Get system log / Get instance screenshot**, **Network** (security groups — the firewall; reachable LAN ports follow the rules), disks (hotplug attach/detach), Start/Stop, YAML · create / delete |
 | **Model** (Bedrock) | **Playground** (chat with the model), Overview (endpoint + API key), GPU Monitoring, YAML · create / delete |
 | **Database** (RDS) | Overview (phase/instances/storage + **Start/Stop** + **HA toggle** for on-demand non-HA↔HA), **Peek** (live connections / CDC lag / top queries), Connectivity (host/port/db/user + connection URI), Monitoring, YAML. See [databases.md](databases.md) |
 | **Data Flow** (Glue/Step Functions) | A drag-and-drop **canvas**: palette of databases / topics / transform functions / buckets; connect them into replication (two-way), migration (one-way), stream (to a topic) or pipe (ETL) edges; a guided **Set up replication** wizard; a live per-edge lag/dead-letter overlay; right-click a node for **Configure** or **Peek metrics** (per-step captured / lag / per-table throughput / dead-letters). Deploys one `kind: DataFlow`. See [dataflow.md](dataflow.md) · create / delete |

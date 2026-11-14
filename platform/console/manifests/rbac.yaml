@@ -199,6 +199,13 @@ rules:
     resources:
       - virtualmachineinstances/vnc
     verbs: [get]
+  # A VM's "Get instance screenshot" (ec2:GetConsoleScreenshot, decided per instance by the route table):
+  # KubeVirt's still image of the VMI's display. Its "Get system log" reads the virt-launcher pod's
+  # guest-console-log container through pods/log, granted above.
+  - apiGroups: [subresources.kubevirt.io]
+    resources:
+      - virtualmachineinstances/vnc/screenshot
+    verbs: [get]
   # Hotplug attach/detach of volumes to running VMs (EBS-style). These subresources
   # are invoked via PUT (RBAC verb: update); --persist updates the VM spec too.
   - apiGroups: [subresources.kubevirt.io]

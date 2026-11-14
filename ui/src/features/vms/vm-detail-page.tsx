@@ -1,10 +1,19 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Eye, EyeOff, Monitor, Play, Power, Camera, Trash2 } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, Monitor, Play, Power, Camera, Trash2 } from "lucide-react";
 import { DetailShell } from "@/components/common/detail-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DetailRow } from "@/components/common/detail-row";
@@ -41,6 +50,7 @@ import {
 } from "./vm-shared";
 import { VmVolumesTab } from "./vm-volumes";
 import { VmNetworkTab } from "./vm-network";
+import { ScreenshotDialog, SystemLogDialog } from "./vm-console-dialogs";
 import { ResourceSecurityTab } from "@/components/common/resource-security-tab";
 import { InstanceTypeLabel } from "@/components/common/instance-type-label";
 import { EC2_INSTANCE_TYPES } from "@/lib/instance-types";
@@ -66,6 +76,7 @@ export function VmDetailPage() {
   };
   const navigate = useNavigate();
   const [showPass, setShowPass] = useState(false);
+  const [consoleView, setConsoleView] = useState<"log" | "screenshot" | null>(null);
 
   const vmPath = openinfraPaths.virtualmachine(namespace, name);
 
@@ -208,21 +219,55 @@ export function VmDetailPage() {
       subtitle={osLabel(spec?.os)}
       status={status}
       actions={
-        running ? (
-          <Button
-            variant="outline"
-            onClick={() => power.mutate(false)}
-            disabled={power.isPending}
-          >
-            <Power className="size-4" /> Stop
-          </Button>
-        ) : (
-          <Button onClick={() => power.mutate(true)} disabled={power.isPending}>
-            <Play className="size-4" /> Start
-          </Button>
-        )
+        <>
+          {running ? (
+            <Button
+              variant="outline"
+              onClick={() => power.mutate(false)}
+              disabled={power.isPending}
+            >
+              <Power className="size-4" /> Stop
+            </Button>
+          ) : (
+            <Button onClick={() => power.mutate(true)} disabled={power.isPending}>
+              <Play className="size-4" /> Start
+            </Button>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline">
+                Actions <ChevronDown className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>Monitor and troubleshoot</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  <DropdownMenuItem onSelect={() => setConsoleView("log")}>
+                    Get system log
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setConsoleView("screenshot")}>
+                    Get instance screenshot
+                  </DropdownMenuItem>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </>
       }
     >
+      <SystemLogDialog
+        namespace={namespace}
+        name={name}
+        open={consoleView === "log"}
+        onOpenChange={(o) => setConsoleView(o ? "log" : null)}
+      />
+      <ScreenshotDialog
+        namespace={namespace}
+        name={name}
+        open={consoleView === "screenshot"}
+        onOpenChange={(o) => setConsoleView(o ? "screenshot" : null)}
+      />
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>

@@ -123,6 +123,10 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	// decides RunInstances on the snapshot behind the image it launches.
 	h(post, "/vm-snapshots/restore", s20, "ec2:RunInstances", z.snapshotARN("ec2", true), handleVMSnapshotRestore(cs, auth, logger))
 	h(del, "/vm-snapshots", s20, "ec2:DeleteSnapshot", z.snapshotARN("ec2", false), handleVMSnapshotDelete(cs, auth, logger))
+	// A VM's Actions → Monitor and troubleshoot: its system log and a screenshot of its display, decided on
+	// the instance as EC2's GetConsoleOutput and GetConsoleScreenshot.
+	h(get, "/vms/{namespace}/{name}/console-output", s15, "ec2:GetConsoleOutput", z.kindARN("VirtualMachine"), handleVMConsoleOutput(cs, logger))
+	h(get, "/vms/{namespace}/{name}/console-screenshot", s20, "ec2:GetConsoleScreenshot", z.kindARN("VirtualMachine"), handleVMConsoleScreenshot(cs, logger))
 
 	// SageMaker jobs: register, logs (CloudWatch Logs), metrics, model-monitor reports.
 	h(post, "/trainingjobs/{namespace}/{name}/register", s20, "sagemaker:CreateModelPackage", nil, handleTrainingJobRegister(cs, auth, logger))

@@ -4988,6 +4988,16 @@
       "class": "aws",
       "resource": "*"
     },
+    "GET /api/vms/{namespace}/{name}/console-output": {
+      "action": "ec2:GetConsoleOutput",
+      "class": "aws",
+      "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+    },
+    "GET /api/vms/{namespace}/{name}/console-screenshot": {
+      "action": "ec2:GetConsoleScreenshot",
+      "class": "aws",
+      "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+    },
     "GET /healthz": {
       "action": "",
       "class": "aws",
@@ -6756,7 +6766,7 @@
     "ec2": {
       "actions": 2,
       "class": "aws",
-      "operations": 26,
+      "operations": 28,
       "service": "EC2",
       "tier": "proven"
     },
@@ -6948,11 +6958,11 @@
     "pendingKubernetesFields": 14,
     "publicRoutes": 11,
     "routes": {
-      "aws": 110,
+      "aws": 112,
       "extra": 1,
       "operator": 1,
       "removed": 0,
-      "total": 112
+      "total": 114
     },
     "screens": {
       "aws": 156,

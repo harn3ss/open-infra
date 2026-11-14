@@ -6,6 +6,18 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — an instance's system log and screenshot, as EC2's
+- **Get system log** and **Get instance screenshot**, under a VM's **Actions → Monitor and troubleshoot**
+  in the console, and `aws ec2 get-console-output` / `get-console-screenshot` on the AWS front door. The
+  log is the last 64 KB of the guest's serial console; the screenshot is a JPEG of its display. Each is
+  decided as `ec2:GetConsoleOutput` / `ec2:GetConsoleScreenshot` on the instance.
+- A VM's serial console is collected from its next start: a VM running now shows its system log after it
+  is stopped and started. The screenshot works on every running VM.
+
+### Fixed — the docs no longer promise a VNC console on every VM
+- The console has none, and AWS has none: an instance is reached with SSH or RDP, and troubleshot with its
+  system log and screenshot. A browser desktop for Linux instances is not offered, as on EC2.
+
 ### Added — functions reach the platform by AWS's own hostnames
 - An SDK client a function builds with no endpoint reaches the platform's AWS services, not AWS. This
   includes the JavaScript `aws-sdk` v2, which reads none of the endpoint variables. Before, such a call left

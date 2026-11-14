@@ -585,8 +585,29 @@ which is released.
 bare `kubectl delete vm <name>` is ambiguous and may hit the kubevirt.io VM, which Crossplane then
 recreates, without releasing the address. Delete the fully-qualified `virtualmachines.openinfra.dev`.)*
 
-> Web (in-browser) console is intentionally **not** provided — access is native
-> SSH / RDP, so there is no extra in-cluster console dependency to run.
+## Troubleshooting an instance you can't reach: system log and screenshot
+
+As on EC2, two read-only views show what an instance's console shows, for a guest that won't boot or
+can't be reached over the network. In the console they are the instance's **Actions → Monitor and
+troubleshoot** menu; from the AWS CLI:
+
+```bash
+aws ec2 get-console-output --instance-id <instance-id> --latest --output text
+aws ec2 get-console-screenshot --instance-id <instance-id> --wake-up \
+  --query ImageData --output text | base64 -d > screen.jpg
+```
+
+- **Get system log** (`ec2:GetConsoleOutput`): the last 64 KB the guest wrote to its serial console, such
+  as kernel and boot messages and the login prompt. An instance started before its system log was collected
+  has none until its next stop and start.
+- **Get instance screenshot** (`ec2:GetConsoleScreenshot`): a still image of the display, taken when you
+  ask. Use it for a Windows instance, whose boot and errors are on the screen rather than the serial
+  console.
+
+Neither is a session: you can't type into them. To work on an instance, connect to it with SSH or RDP.
+There is no browser desktop for a Linux instance, as on EC2; see [Desktops & workspaces](#desktops--workspaces).
+Not yet provided: EC2 Serial Console (an interactive serial session) and a browser Remote Desktop for
+Windows instances.
 
 ## Networking: NAT vs direct-LAN (macvtap)
 
@@ -730,7 +751,8 @@ open-infra's answer to **AWS WorkSpaces** is a VM, not a separate abstraction:
   # (cloud-init runcmd — Ubuntu example)
   # apt-get install -y xubuntu-desktop xrdp && systemctl enable --now xrdp
   ```
-  then RDP in (or just use SSH/X-forwarding).
+  then RDP in (or just use SSH/X-forwarding). As on EC2, a Linux desktop is served by the guest itself;
+  the platform shows no Linux desktop in the browser.
 - **Per-user** — give each person their own VM (one claim each); the disk
   persists across stop/start. Expose on the LAN (`expose: true`) or port-forward.
 

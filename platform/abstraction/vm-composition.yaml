@@ -554,6 +554,10 @@ spec:
                             smm: { enabled: true }
                           {{- end }}
                           devices:
+                            # The guest's serial console output, kept by KubeVirt's guest-console-log
+                            # container in the virt-launcher pod: EC2's "Get system log" (GetConsoleOutput).
+                            # Takes effect when the VM next starts.
+                            logSerialConsole: true
                             {{- if $vTPM }}
                             tpm: {}   # ephemeral vTPM 2.0 (Secure Boot / Windows 11 guests)
                             {{- end }}

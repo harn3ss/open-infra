@@ -25,10 +25,10 @@ by `probe/shimgen.py`), and CI fails when a capability a customer can reach has 
 |---|---|---|---|---|---|
 | Resource types (claim kinds) | 54 | 2 | 1 | 0 | 57 |
 | Resource properties (spec fields) | 367 | 25 | 0 | 0 | 392 |
-| Console API routes | 110 | 1 | 1 | 0 | 112 |
+| Console API routes | 112 | 1 | 1 | 0 | 114 |
 | Console screens | 156 | 4 | 3 | 0 | 163 |
 | AWS APIs (signing names) | 34 | 0 | 0 | 0 | 34 |
-| **All** | **721** | **32** | **5** | **0** | **758** |
+| **All** | **723** | **32** | **5** | **0** | **760** |
 
 11 of the console routes need no authorization (sign-in, sign-out, who-am-I, the console's own configuration), as AWS's sign-in and console metadata need none. 2 platform extras and 14 properties in Kubernetes vocabulary await the operator's ruling (below).
 <!-- END shimgen:surface-summary -->
@@ -335,6 +335,8 @@ action cannot be registered, and every one is shown, in CI, to refuse a principa
 | `DELETE /api/vm-snapshots` | AWS-shaped | `ec2:DeleteSnapshot` | `arn:aws:ec2:us-east-1:{account}:snapshot/{id}` |
 | `GET /api/vm-snapshots` | AWS-shaped | `ec2:DescribeSnapshots` | `*` |
 | `POST /api/vm-snapshots/restore` | AWS-shaped | `ec2:RunInstances` | `arn:aws:ec2:us-east-1:{account}:snapshot/{id}` |
+| `GET /api/vms/{namespace}/{name}/console-output` | AWS-shaped | `ec2:GetConsoleOutput` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
+| `GET /api/vms/{namespace}/{name}/console-screenshot` | AWS-shaped | `ec2:GetConsoleScreenshot` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
 | `POST /api/vms/{namespace}/{name}/snapshot` | AWS-shaped | `ec2:CreateSnapshots` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
 
 Decided per request:
@@ -458,7 +460,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | Cognito | `cognito-idp` | proven | 20 |
 | DynamoDB | `dynamodb` | proven | 19 |
 | DynamoDB | `dynamodbstreams` | proven | 4 |
-| EC2 | `ec2` | proven | 26 |
+| EC2 | `ec2` | proven | 28 |
 | ECR | `ecr` | proven | 37 |
 | ECS | `ecs` | proven | 13 |
 | EKS | `eks` | proven | 4 |

@@ -214,6 +214,20 @@ rules:
   - apiGroups: [subresources.kubevirt.io]
     resources: [virtualmachines/restart]
     verbs: [update]
+  # EC2 GetConsoleOutput and GetConsoleScreenshot (ec2_console.go, internal/vmconsole): only once the
+  # caller has ec2:GetConsoleOutput / ec2:GetConsoleScreenshot on the instance and the shim has found it in
+  # the caller's account. The serial output is the guest-console-log container's log in the VM's
+  # virt-launcher pod, found by its labels (list; pods get is granted above), and the screenshot is
+  # KubeVirt's vnc/screenshot of the VMI. Read-only.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [subresources.kubevirt.io]
+    resources: [virtualmachineinstances/vnc/screenshot]
+    verbs: [get]
   # S3 CreateBucket, DeleteBucket and CloudFormation teardown: find the kind: Bucket a bucket is (its
   # composite reports the bucket in status.bucket), and read that claim (whether it is ready, being
   # deleted). Read-only; the claim is written (aws-shim-buckets, and the service-linked role in a member

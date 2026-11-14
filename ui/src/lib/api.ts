@@ -856,6 +856,42 @@ export interface VmSnapshot {
   sizeBytes: number;
 }
 
+/** EC2's GetConsoleOutput: the instance's system log (the last 64 KB of its serial console). */
+export interface VmConsoleOutput {
+  output: string;
+  timestamp: string;
+  /** Why there is no output, when there is none. */
+  note?: string;
+}
+
+export function getVmConsoleOutput(namespace: string, name: string): Promise<VmConsoleOutput> {
+  return request<VmConsoleOutput>(
+    `/vms/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/console-output`,
+  );
+}
+
+/** EC2's GetConsoleScreenshot with WakeUp: a JPEG of the instance's display. */
+export async function getVmConsoleScreenshot(namespace: string, name: string): Promise<Blob> {
+  const path = `/vms/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/console-screenshot?wake=true`;
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, { headers: { Accept: "image/jpeg, application/json" } });
+  } catch (cause) {
+    throw new ApiError("Network error reaching the BFF. Is the open-infra BFF running?", 0, cause);
+  }
+  if (res.ok) return res.blob();
+  if (res.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  const body = await parseBody(res);
+  const err = (typeof body === "object" && body !== null ? body : {}) as { error?: unknown; errorCode?: unknown };
+  throw new ApiError(
+    typeof err.error === "string" && err.error ? err.error : `Request failed (${res.status})`,
+    res.status,
+    body,
+    undefined,
+    typeof err.errorCode === "string" ? err.errorCode : undefined,
+  );
+}
+
 export function createVmSnapshot(namespace: string, name: string): Promise<VmSnapshot> {
   return request<VmSnapshot>(
     `/vms/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/snapshot`,

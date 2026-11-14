@@ -118,6 +118,8 @@ ec2:DescribeVolumes
 ec2:DescribeVpcEndpoints
 ec2:DescribeVpcs
 ec2:DetachVolume
+ec2:GetConsoleOutput
+ec2:GetConsoleScreenshot
 ec2:ImportImage
 ec2:ModifyImageAttribute
 ec2:ModifyInstanceAttribute

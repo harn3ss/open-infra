@@ -49,7 +49,7 @@ git push infra.yaml ──► GitHub repo (app code + Dockerfile + infra.yaml)
 | Kinesis | streaming CDC | **Debezium** → **NATS JetStream** | `kind: Stream`; row changes → events on `cdc.<name>.*` — see [streaming.md](streaming.md) |
 | Lambda | serverless | **Knative** (net-kourier) | `kind: Function`; scale-to-zero 0..N..0, optional GPU |
 | Bedrock | managed inference | **Ollama** on GPU + **NVIDIA device plugin** | `kind: Model`; OpenAI-compatible, key-gated |
-| EC2 (full VMs) | virtual machines | **KubeVirt + CDI** | `kind: VirtualMachine`; Linux + Windows, VNC, hotplug disks |
+| EC2 (full VMs) | virtual machines | **KubeVirt + CDI** | `kind: VirtualMachine`; Linux + Windows, system log + screenshot, hotplug disks |
 | ECR | registry | **GHCR** | Harbor (offline/self-host) planned |
 | CloudFormation/CDK | a stack template | **infra.yaml → Crossplane**, or the **`cfn` engine** | write kinds directly (the heart of the product), or ingest a CloudFormation/CDK template with `cfn` (plan/deploy/update/destroy/drift) — to the extent of its committed mapping table, not full parity; see [cloudformation.md](cloudformation.md) |
 | AWS Terraform provider | infra as HCL | **`harn3ss/openinfra`** on the Terraform Registry | every kind as a typed resource + a data source, so open-infra can sit in a plan alongside DNS/TLS/cloud accounts — see [terraform.md](terraform.md) |

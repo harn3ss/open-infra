@@ -283,6 +283,8 @@
         "DescribeVolumes",
         "DescribeVpcEndpoints",
         "DescribeVpcs",
+        "GetConsoleOutput",
+        "GetConsoleScreenshot",
         "ImportKeyPair",
         "RebootInstances",
         "StartInstances",
