@@ -13,6 +13,7 @@ package vmconsole
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/jpeg"
@@ -21,6 +22,7 @@ import (
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -32,7 +34,8 @@ const MaxOutput = 64 * 1024
 const LogContainer = "guest-console-log"
 
 var (
-	// ErrNotRunning: the instance has no running VM (stopped, starting or gone).
+	// ErrNotRunning: the instance has no running VM (stopped, starting or gone); for Output, nothing is
+	// buffered either.
 	ErrNotRunning = errors.New("the instance is not running")
 	// ErrNoLog: the VM is running but was started without serial console logging (it started before
 	// logging was turned on, and gets it at its next start).
@@ -63,18 +66,62 @@ func launcherPod(ctx context.Context, cs kubernetes.Interface, ns, name string) 
 	return &running[0], nil
 }
 
-// Output is the last MaxOutput bytes of VM ns/name's serial console output.
-func Output(ctx context.Context, cs kubernetes.Interface, ns, name string) ([]byte, error) {
-	pod, err := launcherPod(ctx, cs, ns, name)
+// logPod is the newest virt-launcher pod of VM ns/name whose log container has started: the running
+// VM's, or once it stops, the one it ran in while that pod remains (EC2, too, answers a stopped instance's
+// last output). A running VM started without the log container is ErrNoLog; nothing is ErrNotRunning.
+func logPod(ctx context.Context, cs kubernetes.Interface, ns, name string) (*corev1.Pod, error) {
+	pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
+		LabelSelector: "kubevirt.io=virt-launcher,vm.kubevirt.io/name=" + name,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if !hasLogContainer(pod) {
-		return nil, ErrNoLog
+	var logged []corev1.Pod
+	runningUnlogged := false
+	for _, p := range pods.Items {
+		switch {
+		case !hasLogContainer(&p):
+			if p.Status.Phase == corev1.PodRunning && p.DeletionTimestamp == nil {
+				runningUnlogged = true
+			}
+		case logStarted(&p):
+			logged = append(logged, p)
+		}
+	}
+	if len(logged) == 0 {
+		if runningUnlogged {
+			return nil, ErrNoLog
+		}
+		return nil, ErrNotRunning
+	}
+	sort.Slice(logged, func(i, j int) bool {
+		return logged[j].CreationTimestamp.Before(&logged[i].CreationTimestamp)
+	})
+	return &logged[0], nil
+}
+
+// logStarted: the pod's log container has run (it is running, or has finished), so it has a log.
+func logStarted(pod *corev1.Pod) bool {
+	for _, st := range append(append([]corev1.ContainerStatus{}, pod.Status.InitContainerStatuses...), pod.Status.ContainerStatuses...) {
+		if st.Name == LogContainer && (st.State.Running != nil || st.State.Terminated != nil) {
+			return true
+		}
+	}
+	return false
+}
+
+// Output is the last MaxOutput bytes of VM ns/name's serial console output.
+func Output(ctx context.Context, cs kubernetes.Interface, ns, name string) ([]byte, error) {
+	pod, err := logPod(ctx, cs, ns, name)
+	if err != nil {
+		return nil, err
 	}
 	// Serial output is mostly short lines; 8,000 lines covers 64 KB, then keep the tail.
 	tail := int64(8000)
 	stream, err := cs.CoreV1().Pods(ns).GetLogs(pod.Name, &corev1.PodLogOptions{Container: LogContainer, TailLines: &tail}).Stream(ctx)
+	if apierrors.IsNotFound(err) {
+		return nil, ErrNotRunning // the pod went as it was read
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +168,10 @@ func Screenshot(ctx context.Context, cs kubernetes.Interface, ns, name string, w
 	if _, err := launcherPod(ctx, cs, ns, name); err != nil {
 		return nil, err
 	}
+	// The launcher outlives a stop for a moment; the VMI is what runs (a stopped VM has none).
+	if err := vmiRunning(ctx, cs, ns, name); err != nil {
+		return nil, err
+	}
 	// virt-api's screenshot route declares no media type, so it answers only a request that accepts any
 	// (406 Not Acceptable otherwise): said here, not left to the client's default.
 	req := cs.CoreV1().RESTClient().Get().
@@ -130,10 +181,37 @@ func Screenshot(ctx context.Context, cs kubernetes.Interface, ns, name string, w
 		req = req.Param("moveCursor", "true")
 	}
 	png, err := req.DoRaw(ctx)
+	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+		return nil, ErrNotRunning // it stopped as it was asked
+	}
 	if err != nil {
 		return nil, err
 	}
 	return ToJPEG(png)
+}
+
+// vmiRunning: VM ns/name's VirtualMachineInstance exists and is Running, else ErrNotRunning.
+func vmiRunning(ctx context.Context, cs kubernetes.Interface, ns, name string) error {
+	raw, err := cs.CoreV1().RESTClient().Get().
+		AbsPath("/apis/kubevirt.io/v1/namespaces/" + ns + "/virtualmachineinstances/" + name).DoRaw(ctx)
+	if apierrors.IsNotFound(err) {
+		return ErrNotRunning
+	}
+	if err != nil {
+		return err
+	}
+	var vmi struct {
+		Status struct {
+			Phase string `json:"phase"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &vmi); err != nil {
+		return err
+	}
+	if vmi.Status.Phase != "Running" {
+		return ErrNotRunning
+	}
+	return nil
 }
 
 // ToJPEG re-encodes an image (KubeVirt's PNG) as a JPEG.

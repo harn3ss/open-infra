@@ -2331,9 +2331,10 @@ Console: `GetConsoleOutput` answers the last 64 KB of the instance's serial cons
 `Output`) and `GetConsoleScreenshot` a JPEG of its display (`ImageData`; `WakeUp` moves the pointer first,
 to wake a blanked screen). Each names one instance, decided as `ec2:GetConsoleOutput` /
 `ec2:GetConsoleScreenshot` on `Instance::<id>`; the instance is found with the caller's own authority, then
-the shim reads its console. An instance that isn't running, or one started before its console was collected
-(the collection starts at its next start), answers no `Output`, as EC2 does for one with nothing buffered;
-a screenshot of an instance that isn't running is `IncorrectInstanceState`. `probe/aws-shim-ec2-console.sh`
+the shim reads its console. A stopped instance answers its last output while the VM's launcher remains,
+moments after the stop (EC2 keeps it longer); after that, and for an instance started before its console was
+collected (the collection starts at its next start), there is no `Output`, as EC2 answers for one with
+nothing buffered. A screenshot of an instance that isn't running is `IncorrectInstanceState`. `probe/aws-shim-ec2-console.sh`
 proves both, and a refusal.
 
 Authorization: `ec2:<Action>` on the resource (`Instance::`, `Volume::`, `KeyPair::`; a Describe on `*`;

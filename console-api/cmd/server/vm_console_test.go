@@ -39,6 +39,8 @@ func TestVMConsoleOutput(t *testing.T) {
 	always := corev1.ContainerRestartPolicyAlways
 	sidecar := vmLauncher("web", "compute") // KubeVirt 1.8: the log container is a native sidecar
 	sidecar.Spec.InitContainers = []corev1.Container{{Name: "guest-console-log", RestartPolicy: &always}}
+	sidecar.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: "guest-console-log",
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}
 	cs := fake.NewSimpleClientset(sidecar, vmLauncher("old", "compute"))
 	for _, c := range []struct{ vm, want string }{
 		{"web", "fake logs"}, // the fake clientset's log body

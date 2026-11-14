@@ -6,8 +6,8 @@
 #   - get-console-output --latest answers the guest's serial console (the CLI decodes EC2's base64 Output):
 #     the boot reaches a login prompt, and the text is the last 64 KB at most
 #   - get-console-screenshot --wake-up answers a JPEG (EC2's base64 ImageData)
-#   - once the instance is stopped: get-console-output answers no Output, as EC2 does for an instance with
-#     nothing buffered, and get-console-screenshot is IncorrectInstanceState
+#   - once the instance is stopped: get-console-screenshot is IncorrectInstanceState, and get-console-output
+#     answers its last output (as EC2 does) or, once the VM's launcher has gone, no Output
 # and the NEGATIVES:
 #   - a principal whose policy allows ec2:* but denies ec2:GetConsoleOutput and ec2:GetConsoleScreenshot
 #     on this instance is refused both (UnauthorizedOperation)
@@ -155,7 +155,7 @@ as "$DAK" "$DSK" ec2 describe-instances --instance-ids "$IID" >/dev/null || fail
 log "  ✓ UnauthorizedOperation for both; the principal's other EC2 access stands"
 
 # --- 7. a stopped instance --------------------------------------------------------------------------
-log "stop-instances, then: no Output, and a screenshot is IncorrectInstanceState"
+log "stop-instances, then: a screenshot is IncorrectInstanceState; the output is the last, or none"
 as "$WAK" "$WSK" ec2 stop-instances --instance-ids "$IID" >/dev/null || fail "stop-instances failed"
 STATE=""
 for _ in $(seq 1 36); do
@@ -164,8 +164,10 @@ for _ in $(seq 1 36); do
   sleep 5
 done
 [ "$STATE" = stopped ] || fail "the instance is '$STATE' 3 minutes after stop-instances, want stopped"
-[ "$(as "$WAK" "$WSK" ec2 get-console-output --instance-id "$IID" --query Output)" = "None" ] || fail "a stopped instance answered console output"
 if as "$WAK" "$WSK" ec2 get-console-screenshot --instance-id "$IID" >/dev/null 2>"$TMP/st"; then fail "a stopped instance answered a screenshot"; fi
 grep -q "IncorrectInstanceState" "$TMP/st" || fail "a stopped instance's screenshot gave $(cat "$TMP/st")"
+LAST="$(as "$WAK" "$WSK" ec2 get-console-output --instance-id "$IID" --query Output)" || fail "get-console-output of a stopped instance failed"
+[ "$LAST" = "None" ] || printf '%s' "$LAST" | grep -q "login:" || fail "a stopped instance answered output that is not its last: $(printf '%s' "$LAST" | tail -c 200)"
+log "  ✓ IncorrectInstanceState; the output is $([ "$LAST" = None ] && echo none || echo "the last boot's")"
 
 log "PASS: EC2 GetConsoleOutput and GetConsoleScreenshot"

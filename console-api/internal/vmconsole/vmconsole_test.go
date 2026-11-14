@@ -62,6 +62,17 @@ func TestOutputWithoutLogging(t *testing.T) {
 	}
 }
 
+// logged marks the pod's log container as started (running), in the status list its kind is in.
+func logged(p *corev1.Pod, sidecar bool) *corev1.Pod {
+	st := corev1.ContainerStatus{Name: LogContainer, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}
+	if sidecar {
+		p.Status.InitContainerStatuses = append(p.Status.InitContainerStatuses, st)
+	} else {
+		p.Status.ContainerStatuses = append(p.Status.ContainerStatuses, st)
+	}
+	return p
+}
+
 // KubeVirt 1.8 runs the log container as a native sidecar (an init container that restarts always); the
 // log is read from it, as from a plain container.
 func TestOutputFromSidecar(t *testing.T) {
@@ -69,11 +80,28 @@ func TestOutputFromSidecar(t *testing.T) {
 	p := launcher("virt-launcher-web-1", "web", corev1.PodRunning, time.Now(), "compute")
 	p.Spec.InitContainers = []corev1.Container{{Name: LogContainer, RestartPolicy: &always}}
 	plain := launcher("virt-launcher-db-1", "db", corev1.PodRunning, time.Now(), "compute", LogContainer)
-	cs := fake.NewSimpleClientset(p, plain)
+	cs := fake.NewSimpleClientset(logged(p, true), logged(plain, false))
 	for _, vm := range []string{"web", "db"} {
 		if out, err := Output(context.Background(), cs, "acct", vm); err != nil || len(out) == 0 {
 			t.Errorf("%s: %q %v, want the log", vm, out, err)
 		}
+	}
+}
+
+// Once a VM stops, its last output is answered while the pod it ran in remains (EC2 answers a stopped
+// instance's last output too); a launcher whose log container hasn't started has nothing yet.
+func TestOutputAfterStop(t *testing.T) {
+	t0 := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+	done := launcher("virt-launcher-web-1", "web", corev1.PodSucceeded, t0, "compute", LogContainer)
+	done.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: LogContainer,
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}}}}
+	starting := launcher("virt-launcher-db-1", "db", corev1.PodPending, t0, "compute", LogContainer)
+	cs := fake.NewSimpleClientset(done, starting)
+	if out, err := Output(context.Background(), cs, "acct", "web"); err != nil || len(out) == 0 {
+		t.Errorf("a stopped VM's last output: %q %v", out, err)
+	}
+	if _, err := Output(context.Background(), cs, "acct", "db"); !errors.Is(err, ErrNotRunning) {
+		t.Errorf("a launcher whose log hasn't started: %v, want ErrNotRunning (nothing buffered)", err)
 	}
 }
 
@@ -117,13 +145,24 @@ func TestToJPEG(t *testing.T) {
 }
 
 // The screenshot is asked for as virt-api serves it: its route declares no media type, so a request that
-// does not accept */* is 406 Not Acceptable (as live). wake moves the pointer first.
+// does not accept */* is 406 Not Acceptable (as live). wake moves the pointer first; only a Running VMI
+// is captured.
 func TestScreenshotAcceptsAny(t *testing.T) {
 	var p bytes.Buffer
 	_ = png.Encode(&p, image.NewRGBA(image.Rect(0, 0, 8, 8)))
 	var query string
+	phase := "Running"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.URL.Path == "/apis/kubevirt.io/v1/namespaces/acct/virtualmachineinstances/web":
+			if phase == "" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"kind":"VirtualMachineInstance","status":{"phase":"` + phase + `"}}`))
 		case r.URL.Path == "/api/v1/namespaces/acct/pods":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"virt-launcher-web-1","namespace":"acct"},"status":{"phase":"Running"}}]}`))
@@ -153,5 +192,11 @@ func TestScreenshotAcceptsAny(t *testing.T) {
 	}
 	if query != "moveCursor=true" {
 		t.Errorf("wake sent %q, want moveCursor=true", query)
+	}
+	// The launcher outlives a stop for a moment: a VMI that has finished, or is gone, is not running.
+	for _, phase = range []string{"Succeeded", ""} {
+		if _, err := Screenshot(context.Background(), cs, "acct", "web", false); !errors.Is(err, ErrNotRunning) {
+			t.Errorf("VMI phase %q: %v, want ErrNotRunning", phase, err)
+		}
 	}
 }

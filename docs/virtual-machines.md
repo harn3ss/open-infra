@@ -598,8 +598,9 @@ aws ec2 get-console-screenshot --instance-id <instance-id> --wake-up \
 ```
 
 - **Get system log** (`ec2:GetConsoleOutput`): the last 64 KB the guest wrote to its serial console, such
-  as kernel and boot messages and the login prompt. An instance started before its system log was collected
-  has none until its next stop and start.
+  as kernel and boot messages and the login prompt. A stopped instance shows its last log only for a few
+  moments after it stops (EC2 keeps it longer). An instance started before its system log was collected has
+  none until its next stop and start.
 - **Get instance screenshot** (`ec2:GetConsoleScreenshot`): a still image of the display, taken when you
   ask. Use it for a Windows instance, whose boot and errors are on the screen rather than the serial
   console.
