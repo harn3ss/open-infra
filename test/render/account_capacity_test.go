@@ -16,6 +16,7 @@ var capacityLabels = map[string]string{
 	"openinfra.dev/capacity-memory":  "requests.memory",
 	"openinfra.dev/capacity-gpu":     "requests.nvidia.com/gpu",
 	"openinfra.dev/capacity-storage": "requests.storage",
+	"openinfra.dev/capacity-pods":    "count/pods",
 }
 
 func TestAccount_CapacityLabelsEveryNamespace(t *testing.T) {
@@ -28,7 +29,7 @@ func TestAccount_CapacityLabelsEveryNamespace(t *testing.T) {
 	want := map[string]string{
 		"openinfra.dev/capacity-cpu": "16", "openinfra.dev/capacity-memory": "64Gi",
 		"openinfra.dev/capacity-gpu": "1", "openinfra.dev/capacity-storage": "500Gi",
-		"openinfra.dev/pod-budget": "200",
+		"openinfra.dev/capacity-pods": "200",
 	}
 	for _, ns := range k["Namespace"] {
 		for l, v := range want {
@@ -39,31 +40,27 @@ func TestAccount_CapacityLabelsEveryNamespace(t *testing.T) {
 	}
 }
 
-// No capacity: no capacity labels, so no quota is generated and an existing account is unchanged.
-// Only the limits set are labelled; gpus: 0 is a limit (none allowed), not "unset".
-func TestAccount_CapacityOnlyWhatIsSet(t *testing.T) {
+// Every capacity label is always written, "none" for an unset limit: provider-kubernetes never removes a
+// label it stops rendering, so "none" is how removing a limit reaches the namespace. gpus: 0 is a limit
+// (none allowed), not "unset". A hand-set pod budget is not the composition's to write.
+func TestAccount_CapacityUnsetIsNone(t *testing.T) {
 	k := byKind(accountDocs(t, map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a"}}, "000000000000"))
 	for l := range capacityLabels {
-		if got := mstr(k["Namespace"][0], "metadata", "labels", l); got != "" {
-			t.Errorf("no capacity, but label %s = %q", l, got)
+		if got := mstr(k["Namespace"][0], "metadata", "labels", l); got != "none" {
+			t.Errorf("no capacity: label %s = %q, want none", l, got)
 		}
 	}
 	if got := mstr(k["Namespace"][0], "metadata", "labels", "openinfra.dev/pod-budget"); got != "" {
-		t.Errorf("no capacity, but pod-budget = %q", got)
+		t.Errorf("the composition must not write the hand-set pod budget, got %q", got)
 	}
 
 	k = byKind(accountDocs(t, map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a"},
 		"capacity": map[string]any{"gpus": 0, "memory": "8Gi"}}, "000000000000"))
-	labels := k["Namespace"][0]
-	if got := mstr(labels, "metadata", "labels", "openinfra.dev/capacity-gpu"); got != "0" {
-		t.Errorf("gpus: 0 must label capacity-gpu=0 (none allowed), got %q", got)
-	}
-	if got := mstr(labels, "metadata", "labels", "openinfra.dev/capacity-memory"); got != "8Gi" {
-		t.Errorf("capacity-memory = %q, want 8Gi", got)
-	}
-	for _, l := range []string{"openinfra.dev/capacity-cpu", "openinfra.dev/capacity-storage", "openinfra.dev/pod-budget"} {
-		if got := mstr(labels, "metadata", "labels", l); got != "" {
-			t.Errorf("unset limit labelled: %s = %q", l, got)
+	want := map[string]string{"openinfra.dev/capacity-gpu": "0", "openinfra.dev/capacity-memory": "8Gi",
+		"openinfra.dev/capacity-cpu": "none", "openinfra.dev/capacity-storage": "none", "openinfra.dev/capacity-pods": "none"}
+	for l, v := range want {
+		if got := mstr(k["Namespace"][0], "metadata", "labels", l); got != v {
+			t.Errorf("label %s = %q, want %q", l, got, v)
 		}
 	}
 }
@@ -117,11 +114,27 @@ func TestAccountCapacityPolicy_MatchesTheComposition(t *testing.T) {
 		if v := mget(gen, "synchronize"); v != true && v != "true" {
 			t.Errorf("rule %s must synchronize, so the quota follows the label", mstr(rule, "name"))
 		}
+		// Each selector names one label: it must exist and not be "none" (an unset limit).
 		var keys []string
 		for _, a := range mget(rule, "match", "any").([]any) {
+			exists, notNone, key := false, false, ""
 			for _, e := range mget(a.(map[string]any), "resources", "selector", "matchExpressions").([]any) {
-				keys = append(keys, mstr(e.(map[string]any), "key"))
+				ex := e.(map[string]any)
+				if key != "" && mstr(ex, "key") != key {
+					t.Errorf("rule %s: one selector must name one label", mstr(rule, "name"))
+				}
+				key = mstr(ex, "key")
+				switch mstr(ex, "operator") {
+				case "Exists":
+					exists = true
+				case "NotIn":
+					notNone = strings.Join(toStrings(mget(ex, "values")), ",") == "none"
+				}
 			}
+			if !exists || !notNone {
+				t.Errorf("rule %s: label %s must be matched as Exists and NotIn [none]", mstr(rule, "name"), key)
+			}
+			keys = append(keys, key)
 		}
 		switch mstr(gen, "kind") {
 		case "ResourceQuota":

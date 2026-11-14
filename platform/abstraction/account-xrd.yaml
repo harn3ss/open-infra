@@ -189,7 +189,7 @@ spec:
                       type: integer
                       minimum: 1
                       maximum: 100000
-                      description: "Pods the namespace may run at once (count/pods, the tenant pod budget)."
+                      description: "Pods the namespace may run at once (count/pods)."
                 ses:
                   type: object
                   description: >-

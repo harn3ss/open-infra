@@ -114,24 +114,15 @@ spec:
                       openinfra.dev/function-concurrency: {{ printf "%d" (int $concurrency) | toJson }}
                       {{- /* spec.capacity: the operator's ceiling on what the account may reserve in each of
                              its namespaces. The account-capacity policy (the compliance component) turns each
-                             label into a ResourceQuota; pods reuses the tenant pod budget's label. */}}
-                      {{- with $spec.capacity }}
-                      {{- if .cpu }}
-                      openinfra.dev/capacity-cpu: {{ .cpu | toJson }}
-                      {{- end }}
-                      {{- if .memory }}
-                      openinfra.dev/capacity-memory: {{ .memory | toJson }}
-                      {{- end }}
-                      {{- if hasKey . "gpus" }}
-                      openinfra.dev/capacity-gpu: {{ printf "%d" (int .gpus) | toJson }}
-                      {{- end }}
-                      {{- if .storage }}
-                      openinfra.dev/capacity-storage: {{ .storage | toJson }}
-                      {{- end }}
-                      {{- if .pods }}
-                      openinfra.dev/pod-budget: {{ printf "%d" (int .pods) | toJson }}
-                      {{- end }}
-                      {{- end }}
+                             label into a ResourceQuota. Every label is always written, "none" when its limit is
+                             unset: provider-kubernetes never removes a label it stops rendering, so "none" is
+                             how a removed limit reaches the namespace (and the policy drops its quota). */}}
+                      {{- $cap := $spec.capacity | default dict }}
+                      openinfra.dev/capacity-cpu: {{ $cap.cpu | default "none" | toJson }}
+                      openinfra.dev/capacity-memory: {{ $cap.memory | default "none" | toJson }}
+                      openinfra.dev/capacity-gpu: {{ if hasKey $cap "gpus" }}{{ printf "%d" (int $cap.gpus) | toJson }}{{ else }}"none"{{ end }}
+                      openinfra.dev/capacity-storage: {{ $cap.storage | default "none" | toJson }}
+                      openinfra.dev/capacity-pods: {{ if $cap.pods }}{{ printf "%d" (int $cap.pods) | toJson }}{{ else }}"none"{{ end }}
                       {{- if eq $i 0 }}
                       openinfra.dev/account-home: "true"
                       {{- end }}
