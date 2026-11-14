@@ -645,6 +645,10 @@ second is refused (`SerialConsoleSessionLimitExceededException`). Other refusals
 and a principal without the action (`AccessDeniedException`). To end an SSH session, type `~.` at the start
 of a line.
 
+A serial line doesn't carry the terminal's size, so the guest keeps its own (80×24 by default) whatever your
+window is. Full-screen programs such as `htop` or `vi` draw at that size until you tell the guest yours, with
+`stty rows <rows> cols <columns>` after you sign in. The browser terminal shows the command for its window.
+
 ## Networking: NAT vs direct-LAN (macvtap)
 
 `spec.network` controls how the VM attaches:
