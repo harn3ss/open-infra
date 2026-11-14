@@ -43,14 +43,26 @@ jobs:
             tags: |
               type=raw,value=latest
               type=raw,value=pg17
+              type=raw,value=pg17.7
               type=sha,format=short
             sarif: trivy-babelfish
           - pg: "16"
             version: BABEL_4_10_0__PG_16_14
             tags: |
               type=raw,value=pg16
+              type=raw,value=pg16.14
               type=sha,format=short,suffix=-pg16
             sarif: trivy-babelfish-pg16
+          # Babelfish 4.9 on PostgreSQL 16.13 (Aurora PostgreSQL 16.13's): a stable branch, not a
+          # release, so it builds from these pinned commits.
+          - pg: "16.13"
+            version: BABEL_4_9_STABLE__PG_16_13
+            pg_commit: d466f3ae8a29adebf2c415ba313e269c2168681c
+            ext_commit: bf29f078cccbd151414ff402db9b4d361adc0098
+            tags: |
+              type=raw,value=pg16.13
+              type=sha,format=short,suffix=-pg16.13
+            sarif: trivy-babelfish-pg16.13
     steps:
       - uses: actions/checkout@v7
 
@@ -77,7 +89,10 @@ jobs:
           context: babelfish
           file: babelfish/Dockerfile
           push: true
-          build-args: BABELFISH_VERSION=${{ matrix.version }}
+          build-args: |
+            BABELFISH_VERSION=${{ matrix.version }}
+            BABELFISH_PG_COMMIT=${{ matrix.pg_commit }}
+            BABELFISH_EXT_COMMIT=${{ matrix.ext_commit }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=babelfish-pg${{ matrix.pg }}

@@ -1050,13 +1050,17 @@ spec:
             {{- $bfPass := printf "Bbf%s9x" (printf "%s-bf" .observed.composite.resource.metadata.uid | sha256sum | trunc 18) }}
             {{- /* our first-party signed image (built FROM the pinned community base + our
                    TLS-capable start.sh); see babelfish/ + build-babelfish.yml */}}
-            {{- /* database.engineVersion picks the PostgreSQL major under Babelfish, as Aurora's
-                   EngineVersion does: 16 = Babelfish 4.10 on PG 16.14 (restores an Aurora PG 16
-                   bbf_dump), else 17 = Babelfish 5.4 on PG 17.7. */}}
+            {{- /* database.engineVersion picks the PostgreSQL version under Babelfish, as Aurora's
+                   EngineVersion does: 16.13 = Babelfish 4.9 on PG 16.13, 16/16.14 = Babelfish 4.10
+                   on PG 16.14, else 17/17.7 = Babelfish 5.4 on PG 17.7. A bbf_dump restores only
+                   into the exact PostgreSQL version it came from. */}}
             {{- /* database.masterUsername names the admin login (RDS MasterUsername); default appuser. */}}
             {{- $bfUser := $spec.database.masterUsername | default "appuser" }}
             {{- $bfImg := "ghcr.io/harn3ss/open-infra-babelfish:latest" }}
-            {{- if eq ($spec.database.engineVersion | default "17") "16" }}
+            {{- $bfVer := $spec.database.engineVersion | default "17" }}
+            {{- if eq $bfVer "16.13" }}
+              {{- $bfImg = "ghcr.io/harn3ss/open-infra-babelfish:pg16.13" }}
+            {{- else if or (eq $bfVer "16") (eq $bfVer "16.14") }}
               {{- $bfImg = "ghcr.io/harn3ss/open-infra-babelfish:pg16" }}
             {{- end }}
             ---

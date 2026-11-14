@@ -63,18 +63,19 @@ The TDS + Postgres listeners are **TLS-encrypted** (a cert-manager cert from the
 issued + mounted, and the listener enables `ssl`), so clients connect with
 `Encrypt=mandatory;TrustServerCertificate=true` — verified with `encrypt_option = TRUE`.
 
-**Engine version.** `database.engineVersion` chooses the PostgreSQL major version under Babelfish,
-as Aurora PostgreSQL's engine version does:
+**Engine version.** `database.engineVersion` chooses the PostgreSQL version under Babelfish, as
+Aurora PostgreSQL's engine version does:
 
 | `engineVersion` | Babelfish | PostgreSQL |
 |---|---|---|
-| `17` (default) | 5.4 | 17.7 |
-| `16` | 4.10 | 16.14 |
+| `17` or `17.7` (default) | 5.4 | 17.7 |
+| `16` or `16.14` | 4.10 | 16.14 |
+| `16.13` | 4.9 | 16.13 |
 
-Choose `16` to bring over an Aurora PostgreSQL 16 database that runs Babelfish 4.x. Babelfish
-restores a dump (`bbf_dumpall` + `bbf_dump`) only into the same PostgreSQL major version and the
-same migration mode (`single-db` here). The version is fixed when the database is created; to
-move to a newer major version, create a new database and move the data.
+A Babelfish dump (`bbf_dumpall` + `bbf_dump`) restores only into the exact PostgreSQL version it
+came from, and the same migration mode (`single-db` here); the dump itself checks both. To bring
+over an Aurora PostgreSQL cluster, choose the version it runs. The version is fixed when the
+database is created; to move to another version, create a new database and move the data.
 
 **Admin login.** `database.masterUsername` names the database's admin login, as RDS's
 `MasterUsername` does (default `appuser`). A restore recreates the source's logins, so if the
@@ -84,7 +85,7 @@ the source's master username. Fixed at creation.
 ```yaml
 database:
   engine: babelfish
-  engineVersion: "16"
+  engineVersion: "16.13"
   name: babelfish_db        # the PostgreSQL database Babelfish lives in, as on Aurora
   masterUsername: dbadmin
 ```

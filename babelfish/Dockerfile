@@ -12,6 +12,11 @@ FROM ubuntu:22.04 AS base
 # ---------------------------------------------------------------------------- build
 FROM base AS builder
 ARG BABELFISH_VERSION=BABEL_5_4_0__PG_17_7
+# Optional: build from two pinned commits instead of a release tarball, for a Babelfish line the
+# project ships as a stable branch but not as a release (e.g. 4.9 on PostgreSQL 16.13, which Aurora
+# runs). Both must be full commit SHAs: the PostgreSQL fork and babelfish_extensions.
+ARG BABELFISH_PG_COMMIT=
+ARG BABELFISH_EXT_COMMIT=
 ENV DEBIAN_FRONTEND=noninteractive
 ENV JOBS=8
 
@@ -29,8 +34,20 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 
 WORKDIR /workplace
 ENV BABELFISH_URL=https://github.com/babelfish-for-postgresql/babelfish-for-postgresql
-RUN wget -q ${BABELFISH_URL}/releases/download/${BABELFISH_VERSION}/${BABELFISH_VERSION}.tar.gz \
-	&& tar -xzf ${BABELFISH_VERSION}.tar.gz
+ENV BABELFISH_ORG=https://github.com/babelfish-for-postgresql
+RUN if [ -n "${BABELFISH_PG_COMMIT}" ]; then \
+		echo "${BABELFISH_PG_COMMIT}${BABELFISH_EXT_COMMIT}" | grep -Eq '^[0-9a-f]{80}$' \
+		&& wget -q -O pg.tar.gz ${BABELFISH_ORG}/postgresql_modified_for_babelfish/archive/${BABELFISH_PG_COMMIT}.tar.gz \
+		&& wget -q -O ext.tar.gz ${BABELFISH_ORG}/babelfish_extensions/archive/${BABELFISH_EXT_COMMIT}.tar.gz \
+		&& mkdir -p ${BABELFISH_VERSION} ext \
+		&& tar -xzf pg.tar.gz --strip-components=1 -C ${BABELFISH_VERSION} \
+		&& tar -xzf ext.tar.gz --strip-components=1 -C ext \
+		&& cp -r ext/contrib/babelfishpg_common ext/contrib/babelfishpg_money ext/contrib/babelfishpg_tds ext/contrib/babelfishpg_tsql ${BABELFISH_VERSION}/contrib/ \
+		&& rm -rf ext pg.tar.gz ext.tar.gz; \
+	else \
+		wget -q ${BABELFISH_URL}/releases/download/${BABELFISH_VERSION}/${BABELFISH_VERSION}.tar.gz \
+		&& tar -xzf ${BABELFISH_VERSION}.tar.gz; \
+	fi
 
 ENV BABELFISH_HOME=/opt/babelfish
 ENV PG_CONFIG=${BABELFISH_HOME}/bin/pg_config

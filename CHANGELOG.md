@@ -21,10 +21,10 @@ the product's public contract.
   endpoint.
 
 ### Added — Babelfish on PostgreSQL 16 (`database.engineVersion`)
-- A Babelfish database can now run on PostgreSQL 16 (Babelfish 4.10) as well as the default
-  PostgreSQL 17 (Babelfish 5.4): set `database.engineVersion: "16"`.
-- Babelfish restores a `bbf_dump` only into the same PostgreSQL major version, so this is how an
-  Aurora PostgreSQL 16 database running Babelfish 4.x comes over. The version is fixed at creation.
+- A Babelfish database can now run on PostgreSQL 16.13 (Babelfish 4.9) or 16.14 (Babelfish 4.10)
+  as well as the default PostgreSQL 17.7 (Babelfish 5.4): set `database.engineVersion`.
+- Babelfish restores a `bbf_dump` only into the exact PostgreSQL version it came from, so choose
+  the version the source Aurora cluster runs. The version is fixed at creation.
 - `database.masterUsername` names a Babelfish database's admin login, as RDS's `MasterUsername`
   does (default `appuser`), so a restore whose source has its own `appuser` login doesn't collide.
 

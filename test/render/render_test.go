@@ -1255,8 +1255,8 @@ func TestManagedDB_BabelfishEngine(t *testing.T) {
 }
 
 // TestManagedDB_BabelfishEngineVersion: database.engineVersion picks the PostgreSQL major under
-// Babelfish, as Aurora PostgreSQL's EngineVersion does. 16 runs the PG 16 build (which restores an
-// Aurora PostgreSQL 16 bbf_dump); unset or 17 runs the default PG 17 build.
+// Babelfish, as Aurora PostgreSQL's EngineVersion does: 16.13 runs Babelfish 4.9 on PG 16.13, 16 and
+// 16.14 run 4.10 on PG 16.14, unset, 17 and 17.7 run the default 5.4 on PG 17.7.
 func TestManagedDB_BabelfishEngineVersion(t *testing.T) {
 	tmpl := extractInlineTemplate(t, compositionPath)
 	ctx := func(db map[string]any) map[string]any {
@@ -1279,17 +1279,16 @@ func TestManagedDB_BabelfishEngineVersion(t *testing.T) {
 		{"unset", map[string]any{"engine": "babelfish", "name": "appdb"}, "open-infra-babelfish:latest"},
 		{"17", map[string]any{"engine": "babelfish", "name": "appdb", "engineVersion": "17"}, "open-infra-babelfish:latest"},
 		{"16", map[string]any{"engine": "babelfish", "name": "appdb", "engineVersion": "16"}, "open-infra-babelfish:pg16"},
+		{"16.14", map[string]any{"engine": "babelfish", "name": "appdb", "engineVersion": "16.14"}, "open-infra-babelfish:pg16"},
+		{"16.13", map[string]any{"engine": "babelfish", "name": "appdb", "engineVersion": "16.13"}, "open-infra-babelfish:pg16.13"},
+		{"17.7", map[string]any{"engine": "babelfish", "name": "appdb", "engineVersion": "17.7"}, "open-infra-babelfish:latest"},
 	} {
 		out := render(t, tmpl, ctx(c.db))
 		if !strings.Contains(out, "image: "+"ghcr.io/harn3ss/"+c.want) {
 			t.Errorf("engineVersion %s: want image %s; got:\n%s", c.name, c.want, grepCtx(out, "open-infra-babelfish"))
 		}
-		other := "open-infra-babelfish:pg16"
-		if c.want == other {
-			other = "open-infra-babelfish:latest"
-		}
-		if strings.Contains(out, other) {
-			t.Errorf("engineVersion %s must not render %s", c.name, other)
+		if n := strings.Count(out, "ghcr.io/harn3ss/open-infra-babelfish:"); n != strings.Count(out, "ghcr.io/harn3ss/"+c.want) {
+			t.Errorf("engineVersion %s: every Babelfish image must be %s", c.name, c.want)
 		}
 	}
 }
