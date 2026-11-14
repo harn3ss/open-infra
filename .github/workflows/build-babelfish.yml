@@ -32,6 +32,25 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-latest
+    # One image per PostgreSQL major under Babelfish (database.engineVersion): 17 is the default
+    # (:latest), 16 restores an Aurora PostgreSQL 16 (Babelfish 4.x) bbf_dump.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pg: "17"
+            version: BABEL_5_4_0__PG_17_7
+            tags: |
+              type=raw,value=latest
+              type=raw,value=pg17
+              type=sha,format=short
+            sarif: trivy-babelfish
+          - pg: "16"
+            version: BABEL_4_10_0__PG_16_14
+            tags: |
+              type=raw,value=pg16
+              type=sha,format=short,suffix=-pg16
+            sarif: trivy-babelfish-pg16
     steps:
       - uses: actions/checkout@v7
 
@@ -49,9 +68,7 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/open-infra-babelfish
-          tags: |
-            type=raw,value=latest
-            type=sha,format=short
+          tags: ${{ matrix.tags }}
 
       - name: Build & push
         id: build
@@ -60,10 +77,11 @@ jobs:
           context: babelfish
           file: babelfish/Dockerfile
           push: true
+          build-args: BABELFISH_VERSION=${{ matrix.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=babelfish-pg${{ matrix.pg }}
+          cache-to: type=gha,mode=max,scope=babelfish-pg${{ matrix.pg }}
 
       # --- Supply chain: scan + sign the pushed image ---
       - name: Trivy vulnerability scan (SARIF)
@@ -86,7 +104,7 @@ jobs:
         if: always()
         with:
           sarif_file: trivy-results.sarif
-          category: trivy-babelfish
+          category: ${{ matrix.sarif }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3

@@ -1043,14 +1043,20 @@ spec:
                       limits: { cpu: {{ $dbCpu | default "2" | quote }}, memory: {{ $dbMem | default "1Gi" | quote }} }
             {{- else if eq $dbEngine "babelfish" }}
             {{- /* Babelfish for PostgreSQL — SQL-Server-compatible managed DB (TDS 1433 +
-                   T-SQL, backed by PG 17). EXPERIMENTAL. Not a CNPG image, so it runs as a
+                   T-SQL, backed by PG 17, or 16 with engineVersion "16"). EXPERIMENTAL. Not a CNPG image, so it runs as a
                    plain StatefulSet on Longhorn (node-independent), single instance for v1;
                    back it up with Velero. The password is injected from the Secret via env at
                    first-boot init (start.sh -p), never baked into the pod args. */}}
             {{- $bfPass := printf "Bbf%s9x" (printf "%s-bf" .observed.composite.resource.metadata.uid | sha256sum | trunc 18) }}
             {{- /* our first-party signed image (built FROM the pinned community base + our
                    TLS-capable start.sh); see babelfish/ + build-babelfish.yml */}}
+            {{- /* database.engineVersion picks the PostgreSQL major under Babelfish, as Aurora's
+                   EngineVersion does: 16 = Babelfish 4.10 on PG 16.14 (restores an Aurora PG 16
+                   bbf_dump), else 17 = Babelfish 5.4 on PG 17.7. */}}
             {{- $bfImg := "ghcr.io/harn3ss/open-infra-babelfish:latest" }}
+            {{- if eq ($spec.database.engineVersion | default "17") "16" }}
+              {{- $bfImg = "ghcr.io/harn3ss/open-infra-babelfish:pg16" }}
+            {{- end }}
             ---
             # Connection secret — SQL Server (TDS) + native Postgres endpoints.
             apiVersion: kubernetes.crossplane.io/v1alpha2

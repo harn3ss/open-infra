@@ -4239,6 +4239,9 @@ components:
             database:
               type: object
               description: Attach a managed database; open-infra provisions it and injects its connection URL into the app.
+              x-kubernetes-validations:
+              - rule: '!has(self.engineVersion) || (has(self.engine) && self.engine == ''babelfish'')'
+                message: database.engineVersion applies to engine babelfish only.
               properties:
                 engine:
                   type: string
@@ -4254,6 +4257,19 @@ components:
                     \ injects DATABASE_URL). babelfish = SQL Server-compatible (TDS 1433 + T-SQL on Postgres) \u2014 experimental,\
                     \ single instance. sqlserver = REAL Microsoft SQL Server (TDS 1433 + T-SQL) \u2014 opt-in (requires acceptEula);\
                     \ Developer/Evaluation editions are non-production; single instance on Longhorn, injects SQLSERVER_URL."
+                engineVersion:
+                  type: string
+                  enum:
+                  - '16'
+                  - '17'
+                  x-kubernetes-validations:
+                  - rule: self == oldSelf
+                    message: 'database.engineVersion is fixed at creation: a major-version upgrade is not served. Create a
+                      new database at the new version and move the data.'
+                  description: 'babelfish only: the PostgreSQL major version under Babelfish, as Aurora PostgreSQL''s EngineVersion
+                    chooses it. 17 (the default) = Babelfish 5.4 on PostgreSQL 17.7. 16 = Babelfish 4.10 on PostgreSQL 16.14:
+                    choose it to restore a bbf_dump of an Aurora PostgreSQL 16 (Babelfish 4.x) cluster, because Babelfish
+                    restores a dump only into the same PostgreSQL version. Fixed at creation.'
                 edition:
                   type: string
                   enum:

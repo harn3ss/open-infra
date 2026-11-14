@@ -63,6 +63,25 @@ The TDS + Postgres listeners are **TLS-encrypted** (a cert-manager cert from the
 issued + mounted, and the listener enables `ssl`), so clients connect with
 `Encrypt=mandatory;TrustServerCertificate=true` — verified with `encrypt_option = TRUE`.
 
+**Engine version.** `database.engineVersion` chooses the PostgreSQL major version under Babelfish,
+as Aurora PostgreSQL's engine version does:
+
+| `engineVersion` | Babelfish | PostgreSQL |
+|---|---|---|
+| `17` (default) | 5.4 | 17.7 |
+| `16` | 4.10 | 16.14 |
+
+Choose `16` to bring over an Aurora PostgreSQL 16 database that runs Babelfish 4.x. Babelfish
+restores a dump (`bbf_dumpall` + `bbf_dump`) only into the same PostgreSQL major version and the
+same migration mode (`single-db` here). The version is fixed when the database is created; to
+move to a newer major version, create a new database and move the data.
+
+```yaml
+database:
+  engine: babelfish
+  engineVersion: "16"
+```
+
 Caveats (why it's experimental): it runs as a **single-instance StatefulSet on Longhorn**, not
 under the CloudNativePG operator — there is **no streaming-replication HA** yet (durability is
 Longhorn + Velero), and Babelfish covers a large but **not complete** subset of T-SQL (check

@@ -1254,6 +1254,46 @@ func TestManagedDB_BabelfishEngine(t *testing.T) {
 	}
 }
 
+// TestManagedDB_BabelfishEngineVersion: database.engineVersion picks the PostgreSQL major under
+// Babelfish, as Aurora PostgreSQL's EngineVersion does. 16 runs the PG 16 build (which restores an
+// Aurora PostgreSQL 16 bbf_dump); unset or 17 runs the default PG 17 build.
+func TestManagedDB_BabelfishEngineVersion(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	ctx := func(db map[string]any) map[string]any {
+		return map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{"database": db},
+			"metadata": map[string]any{
+				"uid": "00000000-0000-0000-0000-0000000000bf",
+				"labels": map[string]any{
+					"crossplane.io/claim-name":      "sqlapp",
+					"crossplane.io/claim-namespace": "default",
+				},
+			},
+		}}}}
+	}
+	for _, c := range []struct {
+		name string
+		db   map[string]any
+		want string
+	}{
+		{"unset", map[string]any{"engine": "babelfish", "name": "appdb"}, "open-infra-babelfish:latest"},
+		{"17", map[string]any{"engine": "babelfish", "name": "appdb", "engineVersion": "17"}, "open-infra-babelfish:latest"},
+		{"16", map[string]any{"engine": "babelfish", "name": "appdb", "engineVersion": "16"}, "open-infra-babelfish:pg16"},
+	} {
+		out := render(t, tmpl, ctx(c.db))
+		if !strings.Contains(out, "image: "+"ghcr.io/harn3ss/"+c.want) {
+			t.Errorf("engineVersion %s: want image %s; got:\n%s", c.name, c.want, grepCtx(out, "open-infra-babelfish"))
+		}
+		other := "open-infra-babelfish:pg16"
+		if c.want == other {
+			other = "open-infra-babelfish:latest"
+		}
+		if strings.Contains(out, other) {
+			t.Errorf("engineVersion %s must not render %s", c.name, other)
+		}
+	}
+}
+
 // TestVirtualMachine_ArchPin: a Windows VM is STRUCTURALLY amd64 (q35/MBR/amd64 sysprep) and must pin
 // nodeSelector arch: amd64 so it can never schedule onto an arm64 node; a Linux VM (multi-arch
 // containerDisk) stays flexible unless a per-resource openinfra.dev/arch targets one.
