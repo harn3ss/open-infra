@@ -121,8 +121,11 @@ func Screenshot(ctx context.Context, cs kubernetes.Interface, ns, name string, w
 	if _, err := launcherPod(ctx, cs, ns, name); err != nil {
 		return nil, err
 	}
+	// virt-api's screenshot route declares no media type, so it answers only a request that accepts any
+	// (406 Not Acceptable otherwise): said here, not left to the client's default.
 	req := cs.CoreV1().RESTClient().Get().
-		AbsPath("/apis/subresources.kubevirt.io/v1/namespaces/" + ns + "/virtualmachineinstances/" + name + "/vnc/screenshot")
+		AbsPath("/apis/subresources.kubevirt.io/v1/namespaces/"+ns+"/virtualmachineinstances/"+name+"/vnc/screenshot").
+		SetHeader("Accept", "image/png, */*")
 	if wake {
 		req = req.Param("moveCursor", "true")
 	}

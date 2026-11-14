@@ -8,13 +8,17 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 )
 
 func launcher(name, vm string, phase corev1.PodPhase, created time.Time, containers ...string) *corev1.Pod {
@@ -109,5 +113,45 @@ func TestToJPEG(t *testing.T) {
 	}
 	if _, err := ToJPEG([]byte("not an image")); err == nil {
 		t.Error("garbage must not encode")
+	}
+}
+
+// The screenshot is asked for as virt-api serves it: its route declares no media type, so a request that
+// does not accept */* is 406 Not Acceptable (as live). wake moves the pointer first.
+func TestScreenshotAcceptsAny(t *testing.T) {
+	var p bytes.Buffer
+	_ = png.Encode(&p, image.NewRGBA(image.Rect(0, 0, 8, 8)))
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/namespaces/acct/pods":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"virt-launcher-web-1","namespace":"acct"},"status":{"phase":"Running"}}]}`))
+		case r.URL.Path == "/apis/subresources.kubevirt.io/v1/namespaces/acct/virtualmachineinstances/web/vnc/screenshot":
+			if !strings.Contains(r.Header.Get("Accept"), "*/*") {
+				http.Error(w, "406: Not Acceptable", http.StatusNotAcceptable)
+				return
+			}
+			query = r.URL.RawQuery
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(p.Bytes())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	cs, err := kubernetes.NewForConfig(&rest.Config{Host: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, err := Screenshot(context.Background(), cs, "acct", "web", true)
+	if err != nil {
+		t.Fatalf("screenshot: %v", err)
+	}
+	if _, err := jpeg.DecodeConfig(bytes.NewReader(j)); err != nil {
+		t.Errorf("not a JPEG: %v", err)
+	}
+	if query != "moveCursor=true" {
+		t.Errorf("wake sent %q, want moveCursor=true", query)
 	}
 }

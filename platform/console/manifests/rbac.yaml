@@ -200,8 +200,9 @@ rules:
       - virtualmachineinstances/vnc
     verbs: [get]
   # A VM's "Get instance screenshot" (ec2:GetConsoleScreenshot, decided per instance by the route table):
-  # KubeVirt's still image of the VMI's display. Its "Get system log" reads the virt-launcher pod's
-  # guest-console-log container through pods/log, granted above.
+  # KubeVirt's still image of the VMI's display (the API server authorizes it as vnc, granted above; virt-api
+  # as vnc/screenshot). Its "Get system log" reads the virt-launcher pod's guest-console-log container
+  # through pods/log, granted above.
   - apiGroups: [subresources.kubevirt.io]
     resources:
       - virtualmachineinstances/vnc/screenshot
