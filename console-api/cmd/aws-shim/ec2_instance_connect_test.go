@@ -15,6 +15,7 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/serialconsole"
+	"github.com/harn3ss/open-infra/console-api/internal/vmconsole"
 	"github.com/harn3ss/open-infra/policyengine"
 )
 
@@ -33,6 +34,12 @@ func eicFixture(t *testing.T, access bool) (*eicHandler, *ec2Handler) {
 	}
 	h := newEICHandler(e, newSerialKeys(), nil)
 	h.busy = func(context.Context, string) (bool, error) { return false, nil }
+	h.running = func(_ context.Context, _, vm string) error { // the web instance runs, the db one is stopped
+		if vm == "s-web" {
+			return nil
+		}
+		return vmconsole.ErrNotRunning
+	}
 	return h, e
 }
 

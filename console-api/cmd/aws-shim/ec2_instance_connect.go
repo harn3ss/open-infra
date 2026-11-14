@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/serialconsole"
+	"github.com/harn3ss/open-infra/console-api/internal/vmconsole"
 )
 
 func init() { accountScopedServices["ec2-instance-connect"] = true }
@@ -95,6 +97,8 @@ type eicHandler struct {
 	logger *slog.Logger
 	// busy reports whether an instance has its one session open; nil: internal/serialconsole's lease.
 	busy func(ctx context.Context, instanceID string) (bool, error)
+	// running reports whether a VM runs (vmconsole.ErrNotRunning if not); nil: its VMI, as the shim.
+	running func(ctx context.Context, ns, vm string) error
 }
 
 func newEICHandler(ec2H *ec2Handler, keys *serialKeys, logger *slog.Logger) *eicHandler {
@@ -191,9 +195,17 @@ func (h *eicHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		writeEICError(w, "EC2InstanceNotFoundException", requestID, "Instance not found: "+req.InstanceID)
 		return
 	}
-	if in.state != "running" {
+	// Running is the VM's own state (its VMI), not the claim's read-back, which lags a boot by minutes.
+	running := h.running
+	if running == nil {
+		running = func(ctx context.Context, ns, vm string) error { return vmconsole.VMIRunning(ctx, e.door.cs, ns, vm) }
+	}
+	if err := running(ctx, e.accountNS(ctx), in.claim.GetName()); errors.Is(err, vmconsole.ErrNotRunning) {
 		writeEICError(w, "EC2InstanceStateInvalidException", requestID,
 			"Unable to connect because the instance is not in a valid state. Connecting to a stopped or terminated instance is not supported. If the instance is stopped, start your instance, and try to connect again.")
+		return
+	} else if err != nil {
+		h.fail(w, requestID, err)
 		return
 	}
 	key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(req.SSHPublicKey))
