@@ -560,7 +560,8 @@
       "probes": [
         "ec2",
         "cfn-structural-reads",
-        "ec2-console"
+        "ec2-console",
+        "ec2-serial-console"
       ],
       "refused": [],
       "service": "EC2",
@@ -581,7 +582,8 @@
       "probes": [
         "ec2",
         "cfn-structural-reads",
-        "ec2-console"
+        "ec2-console",
+        "ec2-serial-console"
       ],
       "refused": [],
       "service": "EC2",
