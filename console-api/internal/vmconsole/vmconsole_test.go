@@ -58,6 +58,21 @@ func TestOutputWithoutLogging(t *testing.T) {
 	}
 }
 
+// KubeVirt 1.8 runs the log container as a native sidecar (an init container that restarts always); the
+// log is read from it, as from a plain container.
+func TestOutputFromSidecar(t *testing.T) {
+	always := corev1.ContainerRestartPolicyAlways
+	p := launcher("virt-launcher-web-1", "web", corev1.PodRunning, time.Now(), "compute")
+	p.Spec.InitContainers = []corev1.Container{{Name: LogContainer, RestartPolicy: &always}}
+	plain := launcher("virt-launcher-db-1", "db", corev1.PodRunning, time.Now(), "compute", LogContainer)
+	cs := fake.NewSimpleClientset(p, plain)
+	for _, vm := range []string{"web", "db"} {
+		if out, err := Output(context.Background(), cs, "acct", vm); err != nil || len(out) == 0 {
+			t.Errorf("%s: %q %v, want the log", vm, out, err)
+		}
+	}
+}
+
 // The tail is at most n bytes and starts on a line, as EC2's last 64 KB of output.
 func TestLast(t *testing.T) {
 	if got := Last([]byte("short"), 10); string(got) != "short" {

@@ -36,7 +36,10 @@ func vmLauncher(vm string, containers ...string) *corev1.Pod {
 // The system log: the guest's serial output when it is collected, otherwise a note saying why not (the
 // instance isn't running, or it started before collection was on), never an error.
 func TestVMConsoleOutput(t *testing.T) {
-	cs := fake.NewSimpleClientset(vmLauncher("web", "compute", "guest-console-log"), vmLauncher("old", "compute"))
+	always := corev1.ContainerRestartPolicyAlways
+	sidecar := vmLauncher("web", "compute") // KubeVirt 1.8: the log container is a native sidecar
+	sidecar.Spec.InitContainers = []corev1.Container{{Name: "guest-console-log", RestartPolicy: &always}}
+	cs := fake.NewSimpleClientset(sidecar, vmLauncher("old", "compute"))
 	for _, c := range []struct{ vm, want string }{
 		{"web", "fake logs"}, // the fake clientset's log body
 		{"old", "next stop and start"},

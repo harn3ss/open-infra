@@ -69,13 +69,7 @@ func Output(ctx context.Context, cs kubernetes.Interface, ns, name string) ([]by
 	if err != nil {
 		return nil, err
 	}
-	has := false
-	for _, c := range pod.Spec.Containers {
-		if c.Name == LogContainer {
-			has = true
-		}
-	}
-	if !has {
+	if !hasLogContainer(pod) {
 		return nil, ErrNoLog
 	}
 	// Serial output is mostly short lines; 8,000 lines covers 64 KB, then keep the tail.
@@ -90,6 +84,22 @@ func Output(ctx context.Context, cs kubernetes.Interface, ns, name string) ([]by
 		return nil, err
 	}
 	return Last(b, MaxOutput), nil
+}
+
+// hasLogContainer: the launcher runs the log container, as a native sidecar (an init container that
+// restarts always, as KubeVirt 1.8 does) or as a container.
+func hasLogContainer(pod *corev1.Pod) bool {
+	for _, c := range pod.Spec.InitContainers {
+		if c.Name == LogContainer {
+			return true
+		}
+	}
+	for _, c := range pod.Spec.Containers {
+		if c.Name == LogContainer {
+			return true
+		}
+	}
+	return false
 }
 
 // Last is the last n bytes of b, starting at a line boundary when one is within reach, so the output
