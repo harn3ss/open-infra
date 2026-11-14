@@ -4242,6 +4242,8 @@ components:
               x-kubernetes-validations:
               - rule: '!has(self.engineVersion) || (has(self.engine) && self.engine == ''babelfish'')'
                 message: database.engineVersion applies to engine babelfish only.
+              - rule: '!has(self.masterUsername) || (has(self.engine) && self.engine == ''babelfish'')'
+                message: database.masterUsername applies to engine babelfish only.
               properties:
                 engine:
                   type: string
@@ -4270,6 +4272,19 @@ components:
                     chooses it. 17 (the default) = Babelfish 5.4 on PostgreSQL 17.7. 16 = Babelfish 4.10 on PostgreSQL 16.14:
                     choose it to restore a bbf_dump of an Aurora PostgreSQL 16 (Babelfish 4.x) cluster, because Babelfish
                     restores a dump only into the same PostgreSQL version. Fixed at creation.'
+                masterUsername:
+                  type: string
+                  pattern: ^[a-z_][a-z0-9_]{0,62}$
+                  x-kubernetes-validations:
+                  - rule: self == oldSelf
+                    message: database.masterUsername is fixed at creation.
+                  - rule: '!(self in [''postgres'', ''rdsadmin'', ''sysadmin'', ''sa'', ''dbo'', ''guest'', ''public''])'
+                    message: database.masterUsername cannot be a reserved name (postgres, rdsadmin, sysadmin, sa, dbo, guest,
+                      public).
+                  description: 'babelfish only: the name of the database''s admin login, as RDS''s MasterUsername. Defaults
+                    to appuser. Restoring a bbf_dump recreates the source''s logins, so if the source has its own login named
+                    appuser, choose another name (the source''s master username is the natural choice). Lowercase letters,
+                    digits and underscores. Fixed at creation.'
                 edition:
                   type: string
                   enum:

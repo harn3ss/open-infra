@@ -1294,6 +1294,33 @@ func TestManagedDB_BabelfishEngineVersion(t *testing.T) {
 	}
 }
 
+// TestManagedDB_BabelfishMasterUsername: database.masterUsername names the admin login (RDS
+// MasterUsername) everywhere it appears: the init command and both connection URLs. Unset keeps appuser.
+func TestManagedDB_BabelfishMasterUsername(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	for _, c := range []struct{ set, want string }{{"", "appuser"}, {"migr_admin", "migr_admin"}} {
+		db := map[string]any{"engine": "babelfish", "name": "babelfish_db"}
+		if c.set != "" {
+			db["masterUsername"] = c.set
+		}
+		out := render(t, tmpl, map[string]any{"observed": map[string]any{"composite": map[string]any{"resource": map[string]any{
+			"spec": map[string]any{"database": db},
+			"metadata": map[string]any{
+				"uid":    "00000000-0000-0000-0000-0000000000bf",
+				"labels": map[string]any{"crossplane.io/claim-name": "sqlapp", "crossplane.io/claim-namespace": "default"},
+			},
+		}}}})
+		for _, want := range []string{"USERNAME: " + c.want, "User Id=" + c.want + ";", "postgres://" + c.want + ":", "/start.sh -u " + c.want + " "} {
+			if !strings.Contains(out, want) {
+				t.Errorf("masterUsername %q: render missing %q", c.set, want)
+			}
+		}
+		if c.set != "" && strings.Contains(out, "appuser") {
+			t.Errorf("masterUsername %q: appuser still rendered", c.set)
+		}
+	}
+}
+
 // TestVirtualMachine_ArchPin: a Windows VM is STRUCTURALLY amd64 (q35/MBR/amd64 sysprep) and must pin
 // nodeSelector arch: amd64 so it can never schedule onto an arm64 node; a Linux VM (multi-arch
 // containerDisk) stays flexible unless a per-resource openinfra.dev/arch targets one.

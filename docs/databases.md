@@ -76,10 +76,17 @@ restores a dump (`bbf_dumpall` + `bbf_dump`) only into the same PostgreSQL major
 same migration mode (`single-db` here). The version is fixed when the database is created; to
 move to a newer major version, create a new database and move the data.
 
+**Admin login.** `database.masterUsername` names the database's admin login, as RDS's
+`MasterUsername` does (default `appuser`). A restore recreates the source's logins, so if the
+source has its own login called `appuser`, give the new database a different admin name, such as
+the source's master username. Fixed at creation.
+
 ```yaml
 database:
   engine: babelfish
   engineVersion: "16"
+  name: babelfish_db        # the PostgreSQL database Babelfish lives in, as on Aurora
+  masterUsername: dbadmin
 ```
 
 Caveats (why it's experimental): it runs as a **single-instance StatefulSet on Longhorn**, not

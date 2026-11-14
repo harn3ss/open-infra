@@ -25,6 +25,8 @@ the product's public contract.
   PostgreSQL 17 (Babelfish 5.4): set `database.engineVersion: "16"`.
 - Babelfish restores a `bbf_dump` only into the same PostgreSQL major version, so this is how an
   Aurora PostgreSQL 16 database running Babelfish 4.x comes over. The version is fixed at creation.
+- `database.masterUsername` names a Babelfish database's admin login, as RDS's `MasterUsername`
+  does (default `appuser`), so a restore whose source has its own `appuser` login doesn't collide.
 
 ### Fixed — a function's VPC flow log records only traffic the function sends
 - A flow log recorded a REJECT for each packet a function's security group refused on the way in. A
