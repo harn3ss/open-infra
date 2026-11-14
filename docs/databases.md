@@ -63,6 +63,9 @@ The TDS + Postgres listeners are **TLS-encrypted** (a cert-manager cert from the
 issued + mounted, and the listener enables `ssl`), so clients connect with
 `Encrypt=mandatory;TrustServerCertificate=true` — verified with `encrypt_option = TRUE`.
 
+SQL Server's spatial types, `geography` and `geometry`, are supported: as on Aurora, Babelfish
+implements them on PostGIS (3.5.1 here), which the image includes.
+
 **Engine version.** `database.engineVersion` chooses the PostgreSQL version under Babelfish, as
 Aurora PostgreSQL's engine version does:
 

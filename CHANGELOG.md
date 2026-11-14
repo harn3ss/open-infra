@@ -25,6 +25,9 @@ the product's public contract.
   as well as the default PostgreSQL 17.7 (Babelfish 5.4): set `database.engineVersion`.
 - Babelfish restores a `bbf_dump` only into the exact PostgreSQL version it came from, so choose
   the version the source Aurora cluster runs. The version is fixed at creation.
+- Babelfish now supports SQL Server's spatial types, `geography` and `geometry`. As on Aurora,
+  Babelfish implements them on PostGIS, which the image now includes (3.5.1). Without them, a
+  database that uses either type could not be restored.
 - `database.masterUsername` names a Babelfish database's admin login, as RDS's `MasterUsername`
   does (default `appuser`), so a restore whose source has its own `appuser` login doesn't collide.
 
