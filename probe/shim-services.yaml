@@ -104,8 +104,7 @@ services:
     cell: "`Describe*` over the platform's VMs, volumes, groups, VPCs and subnets (the guest's i- ids), and a VPC's internet gateways, route tables, network ACLs and endpoints (a stack's by their Refs); key pairs an instance's `KeyName` carries; Lambda's network interfaces (`DescribeNetworkInterfaces`) and VPC Flow Logs of the traffic a VPC's security groups reject (`REJECT`, to CloudWatch Logs)"
     tier: proven
     sigv4: [ec2]
-    probes: [ec2, cfn-structural-reads]
-    pending: [ec2-console] # GetConsoleOutput / GetConsoleScreenshot on a VM it launches, and their denial
+    probes: [ec2, cfn-structural-reads, ec2-console]
   - name: ECR
     cell: "→ a backing OCI registry (Distribution /v2)"
     tier: proven

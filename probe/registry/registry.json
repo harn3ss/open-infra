@@ -556,7 +556,8 @@
       ],
       "probes": [
         "ec2",
-        "cfn-structural-reads"
+        "cfn-structural-reads",
+        "ec2-console"
       ],
       "refused": [],
       "service": "EC2",
