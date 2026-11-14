@@ -42,7 +42,10 @@ rules:
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
-  name: account-capacity
+  # Kyverno refuses any change to a generate rule's match once the policy exists ("change of immutable
+  # fields for a generate rule"), so a change to which labels a rule matches ships under a new name: Argo CD
+  # creates the new policy and prunes the old, and the quotas are regenerated.
+  name: account-capacity-quota
   annotations:
     policies.kyverno.io/title: Account capacity
     policies.kyverno.io/category: Tenancy / resource governance
