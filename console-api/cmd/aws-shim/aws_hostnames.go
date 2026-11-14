@@ -52,7 +52,7 @@ func splitSuffixes(lists ...string) []string {
 var awsNameRules = []awsNameRule{
 	{regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\.aws-shim\.open-infra-aws-shim\.svc(\.cluster\.local)?\.$`), awsShimTarget},
 	{regexp.MustCompile(`^[0-9]{12}\.dkr\.ecr\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$`), "ecr-registry-aws.open-infra-ecr.svc.cluster.local."},
-	{regexp.MustCompile(`^(acm|api\.ecr|athena|apigateway|appsync|cloudformation|cognito-idp|dynamodb|ec2|ecr|ecs|eks|email|events|glue|kinesis|kms|lambda|logs|monitoring|organizations|rds|route53resolver|s3|secretsmanager|servicequotas|sns|sqs|ssm|states|streams\.dynamodb|sts|sync-states)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$`), awsShimTarget},
+	{regexp.MustCompile(`^(acm|api\.ecr|athena|apigateway|appsync|cloudformation|cognito-idp|dynamodb|ec2|ec2-instance-connect|ecr|ecs|eks|email|events|glue|kinesis|kms|lambda|logs|monitoring|organizations|rds|route53resolver|s3|secretsmanager|servicequotas|sns|sqs|ssm|states|streams\.dynamodb|sts|sync-states)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$`), awsShimTarget},
 	{regexp.MustCompile(`^[a-z0-9]+\.(execute-api|appsync-api)\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.amazonaws\.com\.$`), awsShimTarget},
 	{regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\.s3(\.[a-z]{2}(-gov)?-[a-z]+-[0-9]+)?\.amazonaws\.com\.$`), awsShimTarget},
 	{regexp.MustCompile(`^(sts|iam|cloudfront|s3|queue|[a-z]{2}(-gov)?-[a-z]+-[0-9]+\.queue)\.amazonaws\.com\.$`), awsShimTarget},
