@@ -1,0 +1,168 @@
+# Account capacity: the operator's ceiling on what one account may reserve in each of its namespaces, so a
+# single tenant (a runaway job, a fan-out, an agent following bad instructions) can't take the shared
+# cluster's CPU, memory, GPUs or storage.
+#
+# Set on the account, never by hand: kind: Account spec.capacity labels each of the account's namespaces
+#     openinfra.dev/capacity-cpu      requests.cpu             (e.g. "16")
+#     openinfra.dev/capacity-memory   requests.memory          (e.g. "64Gi")
+#     openinfra.dev/capacity-gpu      requests.nvidia.com/gpu  (e.g. "1")
+#     openinfra.dev/capacity-storage  requests.storage         (e.g. "500Gi")
+# and spec.capacity.pods sets openinfra.dev/pod-budget, which tenant-pod-budget.yaml already enforces.
+#
+# ENFORCEMENT is a native ResourceQuota per label: a pod or volume claim that would take the namespace past
+# a limit is refused when it is created, whatever created it (the aws-shim, the CloudFormation engine, the
+# console or a composition). Kyverno only GENERATES the quotas and never blocks admission itself, as with
+# the other tenancy policies (failurePolicy: Ignore: a Kyverno outage is a no-op, the quotas are
+# regenerated later). Quotas never evict: lowering a limit below what is running refuses new pods only.
+#
+# A requests.cpu or requests.memory quota refuses any pod with a container that declares no request. So
+# when either is set, a LimitRange gives such containers a small default request (50m CPU, 64Mi memory):
+# they are counted against the limit instead of refused. Containers that declare requests are unchanged.
+#
+# Per namespace: an account with several namespaces gets each limit in each of them. Inert until an
+# account sets spec.capacity, so this file is safe to ship before anyone uses it. Part of the opt-in
+# `compliance` component (Kyverno). The RBAC that lets Kyverno's background controller manage the
+# ResourceQuotas is granted in tenant-pod-budget.yaml; the LimitRange grant is below.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kyverno-background-controller-limitranges
+  labels:
+    rbac.kyverno.io/aggregate-to-background-controller: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+rules:
+  - apiGroups: [""]
+    resources: [limitranges]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: account-capacity
+  annotations:
+    policies.kyverno.io/title: Account capacity
+    policies.kyverno.io/category: Tenancy / resource governance
+    policies.kyverno.io/description: >-
+      Generates native ResourceQuotas (requests.cpu, requests.memory, requests.nvidia.com/gpu,
+      requests.storage) into each namespace an account's spec.capacity labels, bounding what one account
+      may reserve on the shared cluster.
+    # kyverno.io is a CRD from the opt-in compliance component: skip the dry-run so a fresh/DR sync doesn't
+    # deadlock before the CRD exists, and apply after Kyverno (wave 1).
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  # Required so this never blocks admission (see tenant-pod-budget.yaml for the 2026-10-15 outage this
+  # prevents): a generate policy with Kyverno's default Fail fails closed when the controller is down.
+  failurePolicy: Ignore
+  background: true
+  generateExisting: true
+  rules:
+    - name: capacity-cpu
+      match:
+        any:
+          - resources:
+              kinds: [Namespace]
+              selector:
+                matchExpressions:
+                  - { key: openinfra.dev/capacity-cpu, operator: Exists }
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: account-capacity-cpu
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels: { openinfra.dev/managed-by: account-capacity }
+          spec:
+            hard:
+              requests.cpu: "{{request.object.metadata.labels.\"openinfra.dev/capacity-cpu\"}}"
+    - name: capacity-memory
+      match:
+        any:
+          - resources:
+              kinds: [Namespace]
+              selector:
+                matchExpressions:
+                  - { key: openinfra.dev/capacity-memory, operator: Exists }
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: account-capacity-memory
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels: { openinfra.dev/managed-by: account-capacity }
+          spec:
+            hard:
+              requests.memory: "{{request.object.metadata.labels.\"openinfra.dev/capacity-memory\"}}"
+    - name: capacity-gpu
+      match:
+        any:
+          - resources:
+              kinds: [Namespace]
+              selector:
+                matchExpressions:
+                  - { key: openinfra.dev/capacity-gpu, operator: Exists }
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: account-capacity-gpu
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels: { openinfra.dev/managed-by: account-capacity }
+          spec:
+            hard:
+              requests.nvidia.com/gpu: "{{request.object.metadata.labels.\"openinfra.dev/capacity-gpu\"}}"
+    - name: capacity-storage
+      match:
+        any:
+          - resources:
+              kinds: [Namespace]
+              selector:
+                matchExpressions:
+                  - { key: openinfra.dev/capacity-storage, operator: Exists }
+      generate:
+        apiVersion: v1
+        kind: ResourceQuota
+        name: account-capacity-storage
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels: { openinfra.dev/managed-by: account-capacity }
+          spec:
+            hard:
+              requests.storage: "{{request.object.metadata.labels.\"openinfra.dev/capacity-storage\"}}"
+    # A requests.cpu/requests.memory quota refuses request-less containers; give them a small default so
+    # they are counted instead.
+    - name: capacity-default-requests
+      match:
+        any:
+          - resources:
+              kinds: [Namespace]
+              selector:
+                matchExpressions:
+                  - { key: openinfra.dev/capacity-cpu, operator: Exists }
+          - resources:
+              kinds: [Namespace]
+              selector:
+                matchExpressions:
+                  - { key: openinfra.dev/capacity-memory, operator: Exists }
+      generate:
+        apiVersion: v1
+        kind: LimitRange
+        name: account-capacity-defaults
+        namespace: "{{request.object.metadata.name}}"
+        synchronize: true
+        data:
+          metadata:
+            labels: { openinfra.dev/managed-by: account-capacity }
+          spec:
+            limits:
+              - type: Container
+                defaultRequest: { cpu: 50m, memory: 64Mi }

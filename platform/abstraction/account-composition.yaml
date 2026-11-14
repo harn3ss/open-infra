@@ -112,6 +112,26 @@ spec:
                       # policy (the compliance component) turns it into a ResourceQuota on this namespace's
                       # burstable function pods.
                       openinfra.dev/function-concurrency: {{ printf "%d" (int $concurrency) | toJson }}
+                      {{- /* spec.capacity: the operator's ceiling on what the account may reserve in each of
+                             its namespaces. The account-capacity policy (the compliance component) turns each
+                             label into a ResourceQuota; pods reuses the tenant pod budget's label. */}}
+                      {{- with $spec.capacity }}
+                      {{- if .cpu }}
+                      openinfra.dev/capacity-cpu: {{ .cpu | toJson }}
+                      {{- end }}
+                      {{- if .memory }}
+                      openinfra.dev/capacity-memory: {{ .memory | toJson }}
+                      {{- end }}
+                      {{- if hasKey . "gpus" }}
+                      openinfra.dev/capacity-gpu: {{ printf "%d" (int .gpus) | toJson }}
+                      {{- end }}
+                      {{- if .storage }}
+                      openinfra.dev/capacity-storage: {{ .storage | toJson }}
+                      {{- end }}
+                      {{- if .pods }}
+                      openinfra.dev/pod-budget: {{ printf "%d" (int .pods) | toJson }}
+                      {{- end }}
+                      {{- end }}
                       {{- if eq $i 0 }}
                       openinfra.dev/account-home: "true"
                       {{- end }}

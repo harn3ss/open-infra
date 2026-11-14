@@ -154,6 +154,42 @@ spec:
                       value:
                         type: number
                         minimum: 0
+                capacity:
+                  type: object
+                  description: >-
+                    The most the account's workloads may reserve, set by the operator to protect the shared
+                    cluster. Each limit applies in each of the account's namespaces and is enforced natively, by
+                    a ResourceQuota the compliance component generates there: a pod that would take the
+                    namespace past a limit is refused when it is created, whatever made it (the AWS API,
+                    CloudFormation or the console). Unset limits are not enforced; an account with no capacity
+                    is unchanged. Setting cpu or memory also gives containers that declare no request a small
+                    default one, so they are counted instead of refused.
+                  properties:
+                    cpu:
+                      type: string
+                      maxLength: 16
+                      pattern: '^[0-9]+(\.[0-9]+)?m?$'
+                      description: "CPU the namespace's pods may request in total (requests.cpu), e.g. \"16\" or \"500m\"."
+                    memory:
+                      type: string
+                      maxLength: 16
+                      pattern: '^[0-9]+(Ki|Mi|Gi|Ti)$'
+                      description: "Memory the namespace's pods may request in total (requests.memory), e.g. \"64Gi\"."
+                    gpus:
+                      type: integer
+                      minimum: 0
+                      maximum: 64
+                      description: "GPUs the namespace's pods may request in total (requests.nvidia.com/gpu); 0 allows none."
+                    storage:
+                      type: string
+                      maxLength: 16
+                      pattern: '^[0-9]+(Mi|Gi|Ti)$'
+                      description: "Storage the namespace's volume claims may request in total (requests.storage), e.g. \"500Gi\"."
+                    pods:
+                      type: integer
+                      minimum: 1
+                      maximum: 100000
+                      description: "Pods the namespace may run at once (count/pods, the tenant pod budget)."
                 ses:
                   type: object
                   description: >-

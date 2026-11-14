@@ -20,6 +20,13 @@ the product's public contract.
   and the query log records it. A security group's HTTPS egress to `0.0.0.0/0` reaches the platform's AWS
   endpoint.
 
+### Added — a capacity ceiling per account
+- An operator can now cap what one account's workloads reserve on the shared cluster: CPU, memory, GPUs,
+  storage and pods, with `spec.capacity` on its `kind: Account`. Each limit is enforced natively in each
+  of the account's namespaces: a pod or volume claim that would pass it is refused when it is created,
+  whichever way it was created. Accounts without `capacity` are unchanged. Requires the `compliance`
+  component. See [docs/iam.md](docs/iam.md#account-capacity-operators).
+
 ### Added — Babelfish on PostgreSQL 16 (`database.engineVersion`)
 - A Babelfish database can now run on PostgreSQL 16.13 (Babelfish 4.9) or 16.14 (Babelfish 4.10)
   as well as the default PostgreSQL 17.7 (Babelfish 5.4): set `database.engineVersion`.
