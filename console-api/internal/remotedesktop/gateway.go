@@ -275,6 +275,7 @@ func (s *Session) Relay(ctx context.Context, b Browser, h *Handle, o RelayOption
 	}
 	var mu sync.Mutex
 	lastInput := now()
+	guacdErr := "" // the error guacd reported, which is why the connection ended whichever side closes first
 	expires := h.Connection().ExpiresAt
 	expiresMsg := func(t time.Time) string {
 		return guac.New(guac.Internal, internalExpires, strconv.FormatInt(t.UnixMilli(), 10)).String()
@@ -289,22 +290,19 @@ func (s *Session) Relay(ctx context.Context, b Browser, h *Handle, o RelayOption
 	// guacd → browser, whole instructions, batched while more are already read.
 	go func() {
 		var buf strings.Builder
-		var lastErr string
 		for {
 			in, raw, err := s.rd.Read()
 			if err != nil {
 				if buf.Len() > 0 {
 					_ = send(buf.String())
 				}
-				if lastErr != "" {
-					done <- end{StatusFailed, lastErr}
-				} else {
-					done <- end{StatusDisconnected, "the remote session ended"}
-				}
+				done <- end{StatusDisconnected, "the remote session ended"}
 				return
 			}
 			if in.Opcode == "error" && len(in.Args) > 0 {
-				lastErr = in.Args[0]
+				mu.Lock()
+				guacdErr = in.Args[0]
+				mu.Unlock()
 			}
 			buf.WriteString(raw)
 			if s.rd.Buffered() == 0 || buf.Len() >= 32<<10 {
@@ -375,6 +373,12 @@ func (s *Session) Relay(ctx context.Context, b Browser, h *Handle, o RelayOption
 	for {
 		select {
 		case e := <-done:
+			mu.Lock()
+			failed := guacdErr
+			mu.Unlock()
+			if failed != "" {
+				return StatusFailed, failed
+			}
 			return e.status, e.reason
 		case st := <-h.Ended():
 			fail("This Remote Desktop connection was ended.", guac.StatusSessionClosed)

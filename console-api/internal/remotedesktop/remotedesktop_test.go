@@ -250,6 +250,33 @@ func TestRelayGuacdError(t *testing.T) {
 	}
 }
 
+// guacd's error decides the status even when the browser leaves first (it disconnects on seeing it).
+func TestRelayGuacdErrorThenBrowserLeaves(t *testing.T) {
+	sess, guacd, h := relayFixture(t)
+	b := newBrowser()
+	go func() {
+		io.WriteString(guacd, guac.Error("Authentication failure", guac.StatusClientUnauthorized).String())
+		time.Sleep(50 * time.Millisecond)
+		b.in <- guac.New("disconnect").String()
+		io.Copy(io.Discard, guacd)
+	}()
+	st, why := sess.Relay(context.Background(), b, h, RelayOptions{Tick: time.Second})
+	if st != StatusFailed || why != "Authentication failure" {
+		t.Fatalf("%s %q", st, why)
+	}
+}
+
+// An ended connection carries no end time it no longer has.
+func TestHistoryHasNoZeroExpiry(t *testing.T) {
+	s := &Store{CS: fake.NewClientset(), NS: testNS}
+	h, _ := s.Open(context.Background(), conn(acctA), "console-0")
+	h.Close(StatusDisconnected, "")
+	cm, _ := s.CS.CoreV1().ConfigMaps(testNS).Get(context.Background(), HistoryConfigMap(acctA), metav1.GetOptions{})
+	if strings.Contains(cm.Data["connections"], "expiresAt") {
+		t.Fatalf("history: %s", cm.Data["connections"])
+	}
+}
+
 // ── the gateway ─────────────────────────────────────────────────────────────
 
 // Connect hands guacd this replica's tunnel address; guacd's connection back (and only guacd's) is

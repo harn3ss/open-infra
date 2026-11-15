@@ -131,13 +131,16 @@ spec:
             - cp /certs/tls.crt /tmp/loaded.crt && exec /opt/guacamole/entrypoint.sh -l 4822 -C /certs/tls.crt -K /certs/tls.key
           ports:
             - { name: guacd, containerPort: 4822, protocol: TCP }
+          # Both checks read guacd's listening socket from /proc (port 4822 is 12D6, state 0A is LISTEN)
+          # rather than connecting: a plain connection to its TLS port is an error in guacd's log.
           readinessProbe:
-            tcpSocket: { port: 4822 }
+            exec:
+              command: ["/bin/sh", "-c", "grep -q ':12D6 00000000:0000 0A' /proc/net/tcp /proc/net/tcp6"]
             periodSeconds: 10
           livenessProbe:
             # Restart onto a renewed certificate; and guacd must still listen.
             exec:
-              command: ["/bin/sh", "-c", "cmp -s /certs/tls.crt /tmp/loaded.crt && nc -z 127.0.0.1 4822"]
+              command: ["/bin/sh", "-c", "cmp -s /certs/tls.crt /tmp/loaded.crt && grep -q ':12D6 00000000:0000 0A' /proc/net/tcp /proc/net/tcp6"]
             initialDelaySeconds: 15
             periodSeconds: 60
           securityContext:

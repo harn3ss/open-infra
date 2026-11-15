@@ -72,7 +72,7 @@ type Connection struct {
 	Username     string     `json:"username"`  // the Windows user it signed in as
 	Status       string     `json:"status"`
 	StartedAt    time.Time  `json:"startedAt"`
-	ExpiresAt    time.Time  `json:"expiresAt,omitempty"`
+	ExpiresAt    time.Time  `json:"expiresAt,omitzero"`
 	EndedAt      *time.Time `json:"endedAt,omitempty"`
 	Reason       string     `json:"reason,omitempty"`
 }
