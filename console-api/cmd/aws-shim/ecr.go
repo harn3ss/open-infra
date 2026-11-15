@@ -701,7 +701,9 @@ func (h *ecrHandler) registry(ctx context.Context) (*registryClient, error) {
 	// that single read/delete needs.
 	if h.tokenAuth && h.signer != nil {
 		mint := func(repo string, actions ...string) (string, error) {
-			access := []ecrAccess{{Type: "repository", Name: repo, Actions: actions}}
+			// actions are the ECR actions the call is (ListImages, BatchGetImage, BatchDeleteImage); the
+			// registry's gate admits the call on them, the registry on the scopes they need.
+			access := []ecrAccess{registryAccess(repo, "", registryScopes(actions), actions)}
 			return h.signer.mintRegistry(ecrInternalSubject, h.issuer, h.service, access, 5*time.Minute)
 		}
 		return newTokenRegistryClient(h.registryURL, mint), nil

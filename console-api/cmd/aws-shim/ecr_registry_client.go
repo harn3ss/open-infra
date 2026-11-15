@@ -64,7 +64,7 @@ var manifestAcceptTypes = strings.Join([]string{
 }, ", ")
 
 // do issues a /v2 request bounded by the caller's context and the client's own timeout. It authenticates
-// with a shim-minted per-repo Bearer token (token-auth registries) scoped to repo + actions, or with the
+// with a shim-minted per-repo Bearer token (token-auth registries) for repo and the ECR actions the call is, or with the
 // shared Basic credential (legacy htpasswd registries) when no minter is configured.
 func (c *registryClient) do(ctx context.Context, method, path, accept, repo string, actions ...string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
@@ -90,7 +90,7 @@ func (c *registryClient) do(ctx context.Context, method, path, accept, repo stri
 // listTags returns the tags a repository holds. A 404 means the registry has never seen the repository
 // (an ECR repo declared but not yet pushed to), which is an EMPTY tag set, not an error.
 func (c *registryClient) listTags(ctx context.Context, repo string) ([]string, error) {
-	resp, err := c.do(ctx, http.MethodGet, "/v2/"+repo+"/tags/list", "", repo, "pull")
+	resp, err := c.do(ctx, http.MethodGet, "/v2/"+repo+"/tags/list", "", repo, "ecr:ListImages")
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func (c *registryClient) listTags(ctx context.Context, repo string) ([]string, e
 // of the config + layer sizes parsed from the manifest when present (the real pushed image size), and the
 // manifest Content-Length only as a fallback — never a fabricated number.
 func (c *registryClient) resolveDigest(ctx context.Context, repo, ref string) (digest string, size int64, err error) {
-	resp, err := c.do(ctx, http.MethodGet, "/v2/"+repo+"/manifests/"+ref, manifestAcceptTypes, repo, "pull")
+	resp, err := c.do(ctx, http.MethodGet, "/v2/"+repo+"/manifests/"+ref, manifestAcceptTypes, repo, "ecr:BatchGetImage")
 	if err != nil {
 		return "", 0, err
 	}
@@ -139,7 +139,7 @@ func (c *registryClient) resolveDigest(ctx context.Context, repo, ref string) (d
 // deleteManifest removes a manifest by digest. A 404 means it is already gone, which is success for a
 // delete (idempotent) — the same stance the KMS crypto-erase reaper takes toward an already-destroyed key.
 func (c *registryClient) deleteManifest(ctx context.Context, repo, digest string) error {
-	resp, err := c.do(ctx, http.MethodDelete, "/v2/"+repo+"/manifests/"+digest, "", repo, "delete")
+	resp, err := c.do(ctx, http.MethodDelete, "/v2/"+repo+"/manifests/"+digest, "", repo, "ecr:BatchDeleteImage")
 	if err != nil {
 		return err
 	}

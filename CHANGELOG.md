@@ -6,6 +6,15 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — `docker push` works with ECR's documented push policy
+- The registry decided requests by three coarse scopes and needed the pull scope for every write, so a
+  principal holding exactly ECR's push policy (which has no `ecr:GetDownloadUrlForLayer`) was refused
+  `docker push` with `insufficient_scope`. As on ECR, each registry request is now decided as its own ECR
+  action: checking for a layer is `ecr:BatchCheckLayerAvailability`, downloading one
+  `ecr:GetDownloadUrlForLayer`, uploading one the layer-upload actions, writing a manifest `ecr:PutImage`.
+  A refused request gets ECR's `DENIED` error naming the action and the repository. See
+  [docs/aws-shim.md](docs/aws-shim.md).
+
 ### Fixed — a CloudFormation service role (`RoleARN`) is honoured
 - `CreateStack`, `UpdateStack`, `DeleteStack` and `CreateChangeSet` ignored `RoleARN`, so a stack meant to run
   as a restricted role ran with the caller's own permissions. As on AWS, the operation now acts as the

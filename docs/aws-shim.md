@@ -259,7 +259,7 @@ handed an `amazonaws.com` URL: an SDK that sends to the `QueueUrl`'s host whatev
 `DescribeStacks` outputs and `ListExports` follow the same rule — a caller that came by
 `cloudformation.<region>.amazonaws.com` (a guest) gets the stack's queue URLs at `sqs.<region>.amazonaws.com`,
 every other caller the shim's own. The registry answers `<account>.dkr.ecr.<region>.amazonaws.com` through
-`ecr-registry-aws`, a third instance of the same registry that serves TLS itself (its token realm is this
+`ecr-registry-aws`, a third instance of the same registry, whose gate serves TLS (its token realm is this
 shim's in-cluster TLS port).
 
 ## Services
@@ -2078,38 +2078,55 @@ policies** (authorization is the shim's one RBAC + Cedar world, not a second ECR
 **pull-through cache**, the **ECR internal layer-upload API** (`PutImage`/`InitiateLayerUpload`/… — the data
 plane is standard OCI at the `proxyEndpoint`, not this), and **resource tags**.
 
-**The data plane is authorized per repository, per caller** — the Docker registry **bearer-token protocol**,
-with the shim as the token server, so all callers share one backing registry yet each reaches only its own
-repositories. The registry answers an unauthenticated `docker` request with `401 Bearer realm=<shim>/ecr/token`;
-`docker` presents the `GetAuthorizationToken` credential there with the scopes it needs
-(`repository:<name>:pull,push`); the shim authorizes **each** repository + action against the caller (a User:
-RBAC, then a data-plane `ecr:` Deny of any action the docker action needs refuses it; an assumed role: its
-policy alone) and mints
-a five-minute registry token whose `access` claim lists only what was granted; the registry verifies that token
-against the shim's signing certificate (published as the `ecr-token-cert` ConfigMap). With `components.openbao`
-the private key is OpenBao Transit key `openinfra/transit/ecr-token`, which OpenBao never exports; without
-OpenBao it is kept in a Secret in the shim's namespace and enforces the scopes on every manifest and layer operation. A scope the caller
-may not have is simply absent from the token, so the registry refuses that operation. "The caller" is whoever
-called `GetAuthorizationToken`:
+**The data plane is authorized per repository, per caller, per ECR action** — the Docker registry
+**bearer-token protocol**, with the shim as the token server, so all callers share one backing registry yet
+each reaches only what it may do with its own repositories. The registry answers an unauthenticated `docker`
+request with `401 Bearer realm=<shim>/ecr/token`; `docker` presents the `GetAuthorizationToken` credential
+there with the scopes it needs (`repository:<name>:pull,push`). The shim decides **each ECR action** those
+scopes stand for, on each repository, as ECR decides each registry call, and mints a five-minute registry
+token whose `access` claim lists only what was granted:
 
-- **A User** — the same impersonated `SubjectAccessReview` the control plane runs: `pull` → `get`, `push` →
-  `create`, `delete` → `delete` on `openinfra.dev/repositories`. (A User's fine-grained `ecr:` data-plane
-  statements govern the `ecr.*` API above, not these registry scopes.)
+| Registry request | ECR action | Scope |
+|---|---|---|
+| `GET`/`HEAD` a manifest, `GET` referrers | `ecr:BatchGetImage` | pull |
+| `HEAD` a layer (does the repository have it?) | `ecr:BatchCheckLayerAvailability` | pull, push |
+| `GET` a layer | `ecr:GetDownloadUrlForLayer` | pull |
+| `GET` the tag list | `ecr:ListImages` | pull |
+| `POST` an upload / `PATCH` a chunk / `PUT` to complete it | `ecr:InitiateLayerUpload` / `ecr:UploadLayerPart` / `ecr:CompleteLayerUpload` | push |
+| `PUT` a manifest | `ecr:PutImage` | push |
+| `DELETE` a manifest | `ecr:BatchDeleteImage` | delete |
+
+Each registry runs behind a **gate** in its pod (`ecr-registry-gate`), which admits each request only on the
+ECR action in that table and refuses the rest with ECR's error, `403 DENIED` "User: `<arn>` is not
+authorized to perform: `<action>` on resource: `<repository ARN>`". So ECR's documented push policy
+(`BatchCheckLayerAvailability`, the three layer-upload actions, `PutImage` and `BatchGetImage`, without
+`GetDownloadUrlForLayer`) pushes and cannot download a layer, as on AWS. A layer mount from another repository
+(`?mount=&from=`) is honoured only when the caller may download the layer there
+(`ecr:GetDownloadUrlForLayer`), as [ECR documents](https://docs.aws.amazon.com/AmazonECR/latest/userguide/blob-mounting.html);
+otherwise the upload starts afresh. The registry's catalog and deleting a layer are not served, as on ECR.
+The registry verifies the token against the shim's signing certificate (published as the `ecr-token-cert`
+ConfigMap). With `components.openbao` the private key is OpenBao Transit key `openinfra/transit/ecr-token`,
+which OpenBao never exports; without OpenBao it is kept in a Secret in the shim's namespace. "The caller" is
+whoever called `GetAuthorizationToken`:
+
+- **A User** — the same impersonated `SubjectAccessReview` the control plane runs: reads → `get`, uploads and
+  `PutImage` → `create`, `BatchDeleteImage` → `delete` on `openinfra.dev/repositories`; a data-plane `ecr:`
+  Deny of an action then refuses that action.
 - **An assumed role** (`sts:AssumeRole`, web identity, or a VM's `instanceRole`) — the role's data-plane
   policy, **default-deny**, in AWS action names, exactly as an IAM role is evaluated against ECR:
   `GetAuthorizationToken` needs `ecr:GetAuthorizationToken` on `Resource: "*"` (a grant on one repository's
-  ARN does not confer it — the action has no resource on AWS either); a **pull** needs **both**
-  `ecr:BatchGetImage` and `ecr:GetDownloadUrlForLayer` on the repository; a **push** needs
+  ARN does not confer it — the action has no resource on AWS either); a **pull** needs `ecr:BatchGetImage`
+  (the manifest) and `ecr:GetDownloadUrlForLayer` (the layers) on the repository; a **push** needs
   `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`,
-  `ecr:CompleteLayerUpload` and `ecr:PutImage` on it (`docker push` also checks existing layers through the
-  pull scope, so a pushing role normally holds the pull pair too); deleting an image needs
-  `ecr:BatchDeleteImage`. An explicit `Deny` wins, wildcards (`ecr:*`, `repository/team/*`) work, and a
-  role's control-plane calls are default-deny too (`DescribeRepositories` with no `repositoryNames` is checked
-  against `*`, as on AWS). The role's policy is re-evaluated on every token request, so a policy change
-  applies to the next `docker pull` once the policy engine refreshes (30 s), and the role's **Revoke
-  sessions** cutoff refuses its ECR credentials issued before it. A role is refused a credential when
-  per-repository token auth is not enabled, and refused everything when the data-plane policy engine is not
-  configured.
+  `ecr:CompleteLayerUpload` and `ecr:PutImage` on it; deleting an image needs `ecr:BatchDeleteImage`. An
+  explicit `Deny` wins, wildcards (`ecr:*`, `repository/team/*`) work, and a role's control-plane calls are
+  default-deny too (`DescribeRepositories` with no `repositoryNames` is checked against `*`, as on AWS). The
+  role's policy is re-evaluated on every token request, so a policy change applies to the next `docker pull`
+  once the policy engine refreshes (30 s), and the role's **Revoke sessions** cutoff refuses its ECR
+  credentials issued before it. A role is refused a credential when per-repository token auth is not
+  enabled, and refused everything when the data-plane policy engine is not configured.
+
+In enforce mode (`IAM_AUTHZ=enforce`) IAM policy decides each action for both, as at the `ecr.*` API.
 
 **Instance-role pulls.** An EC2 workload pulls its image the AWS way, unmodified: the VM's `instanceRole`
 (from an `AWS::IAM::Role` with an inline policy granting `ecr:GetAuthorizationToken` on `*` plus the pull pair
@@ -2151,7 +2168,10 @@ credential that decodes to `AWS:<credential>` + a `proxyEndpoint`; `CreateReposi
 succeeds with it; a **reader's** `CreateRepository` is refused with **no record created**; `PutLifecyclePolicy`
 is refused honestly; and a wrong secret is rejected on signature. `probe/aws-shim-ecr-perrepo.sh` proves the
 per-repository decisions against the live registry: it challenges with `Bearer`, a power user's token can
-start a blob upload, and a reader's token can pull but not push.
+start a blob upload, and a reader's token can pull but not push. `probe/aws-shim-ecr-push-policy.sh` proves
+the per-action decisions: a role holding exactly ECR's documented push policy pushes an image (layer check,
+upload, manifest) and is refused downloading a layer with `DENIED`, and a role without `ecr:PutImage`
+uploads layers and is refused the manifest.
 
 ### Glue Data Catalog (over the existing Iceberg REST catalog; JSON protocol; probe-proven)
 

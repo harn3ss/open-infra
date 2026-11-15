@@ -1215,6 +1215,7 @@
    "ecr:CompleteLayerUpload",
    "ecr:GetDownloadUrlForLayer",
    "ecr:InitiateLayerUpload",
+   "ecr:ListImages",
    "ecr:PutImage",
    "ecr:UploadLayerPart",
    "iam:PassRole"
@@ -1477,6 +1478,7 @@
   "ecr:CompleteLayerUpload",
   "ecr:GetDownloadUrlForLayer",
   "ecr:InitiateLayerUpload",
+  "ecr:ListImages",
   "ecr:PutImage",
   "ecr:UploadLayerPart",
   "ecs:CreateService",

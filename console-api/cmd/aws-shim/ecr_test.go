@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -375,8 +376,9 @@ func TestECR_RegistryClientTokenAuth(t *testing.T) {
 	if err := rc.deleteManifest(context.Background(), "foo", "sha256:abc"); err != nil {
 		t.Fatalf("token deleteManifest: %v", err)
 	}
-	if len(minted) != 3 || minted[0] != "pull@foo" || minted[1] != "pull@foo" || minted[2] != "delete@foo" {
-		t.Fatalf("minted scopes = %v want [pull@foo pull@foo delete@foo]", minted)
+	want := []string{"ecr:ListImages@foo", "ecr:BatchGetImage@foo", "ecr:BatchDeleteImage@foo"}
+	if !slices.Equal(minted, want) {
+		t.Fatalf("minted = %v want %v", minted, want)
 	}
 	if got := seen(); len(got) != 3 {
 		t.Fatalf("registry saw %d bearer requests want 3", len(got))

@@ -110,6 +110,7 @@ services:
     tier: proven
     sigv4: [ecr]
     probes: [ecr, ecr-perrepo, ecr-node-pull]
+    pending: [ecr-push-policy]
 
   # --- data ---
   - name: RDS

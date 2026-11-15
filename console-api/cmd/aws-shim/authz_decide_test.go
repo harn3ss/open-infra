@@ -283,9 +283,9 @@ func TestEveryLegacyCheckRunsOnlyAsALegacyDecision(t *testing.T) {
 		"cfn_authz_test.go": "",
 	}
 	allowedFuncs := map[string]string{
-		"canDo":                "CloudFormation's coarse gate: every caller passes it inside a legacy closure",
-		"legacyAuthorizeScope": "the ECR token's decision before IAM policy (decided per action in authorizeScope)",
-		"identityDenied":       "SES's legacy branch; in enforce it returns identityDeniedIAM first",
+		"canDo":                 "CloudFormation's coarse gate: every caller passes it inside a legacy closure",
+		"legacyAuthorizeAction": "the ECR token's decision before IAM policy (each action decided in grantedActions)",
+		"identityDenied":        "SES's legacy branch; in enforce it returns identityDeniedIAM first",
 	}
 	fset := token.NewFileSet()
 	files, err := os.ReadDir(".")

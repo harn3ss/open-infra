@@ -8,19 +8,22 @@
 //     caller (user "AWS", password = a caller JWT) — mintCaller / verifyCaller.
 //  2. `docker login`/push → the registry answers 401 Bearer realm=<the shim's /ecr/token>.
 //  3. docker calls /ecr/token with that credential (Basic auth) + a scope
-//     (repository:<repo>:pull,push). The endpoint authenticates the caller, authorizes EACH
-//     requested repo+action against the caller's ECR permissions, and mints a registry JWT whose
-//     `access` claims are ONLY the granted scopes — mintRegistry.
-//  4. The registry validates that JWT against its trusted cert (rootcertbundle = this signer's
-//     self-signed cert, embedded as x5c) and enforces the per-repo scopes on every layer op.
+//     (repository:<repo>:pull,push). The endpoint authenticates the caller, decides EACH ECR action
+//     the requested scopes stand for on each repo, and mints a registry JWT whose `access` claims are
+//     ONLY what was granted: the ECR actions, and the registry scopes they need — mintRegistry.
+//  4. The registry's gate (internal/ecrgate, in the registry's pod) admits each request only on the ECR
+//     action ECR authorizes it as (a layer-existence check on BatchCheckLayerAvailability, a layer
+//     download on GetDownloadUrlForLayer, …). The registry behind it validates the JWT against its
+//     trusted cert (rootcertbundle = this signer's self-signed cert, embedded as x5c) and enforces the
+//     per-repo scopes.
 //
 // So a token issued to principal A can push/pull only A's repos, even though all callers share one
 // backing registry — the coarse single-htpasswd authority (any token → any repo) is gone.
 //
 // "The caller's ECR permissions" are those of the principal that called GetAuthorizationToken: for a User,
 // the impersonated SubjectAccessReview on openinfra.dev/repositories; for an sts:AssumeRole session (a VM
-// instance role, a web-identity role), the role's data-plane policy, default-deny, in AWS action names —
-// pull needs ecr:BatchGetImage + ecr:GetDownloadUrlForLayer, push the layer-upload set + ecr:PutImage.
+// instance role, a web-identity role), the role's data-plane policy, default-deny, in AWS action names;
+// in enforce, IAM policy. Each ECR action is decided on its own (ecrScopeActions), as ECR decides each call.
 package main
 
 import (
@@ -43,6 +46,7 @@ import (
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
+	"github.com/harn3ss/open-infra/console-api/internal/ecrgate"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -294,12 +298,10 @@ func (s *ecrTokenSigner) verifyCaller(token string) (ecrCaller, error) {
 	return c, nil
 }
 
-// ecrAccess is one entry of a registry token's `access` claim — a repository and the granted actions.
-type ecrAccess struct {
-	Type    string   `json:"type"`
-	Name    string   `json:"name"`
-	Actions []string `json:"actions"`
-}
+// ecrAccess is one entry of a registry token's `access` claim: a repository, the registry scopes and ECR
+// actions granted on it, the scopes asked for, and the repository's ARN. The registry reads the scopes;
+// its gate (internal/ecrgate) decides each request on the ECR action it needs.
+type ecrAccess = ecrgate.Access
 
 // mintRegistry issues the Docker registry access token: an RS256 JWT carrying the GRANTED per-repo
 // scopes in its `access` claim, with the signer's cert in x5c so the registry trusts it against its
@@ -403,14 +405,17 @@ func parseScope(s string) (ecrAccess, bool) {
 	return ecrAccess{Type: "repository", Name: name, Actions: strings.Split(actions, ",")}, true
 }
 
-// ecrRoleActions maps a Docker registry action to the ECR IAM actions an assumed role's policy must allow —
-// ALL of them — on the repository: the permissions AWS documents for the same docker operation. A pull
-// needs both image-read actions (a manifest without its layers, or the reverse, is no pull); a push needs
-// the full layer-upload + manifest-put set.
-func ecrRoleActions(action string) []string {
-	switch action {
+// ecrScopeActions are the ECR actions a Docker registry scope stands for. Each is decided on its own, as
+// ECR decides each registry call: a pull is BatchGetImage (manifests), GetDownloadUrlForLayer (layers),
+// BatchCheckLayerAvailability and ListImages; a push is the layer-upload set and PutImage, and checks
+// which layers the repository already has (BatchCheckLayerAvailability); a delete is BatchDeleteImage.
+// The registry's gate then admits each request only on the action it needs, so ECR's documented push
+// policy, which has no GetDownloadUrlForLayer, pushes and cannot download a layer.
+func ecrScopeActions(scope string) []string {
+	switch scope {
 	case "pull":
-		return []string{"ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"}
+		return []string{"ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability",
+			"ecr:ListImages"}
 	case "push":
 		return []string{"ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart",
 			"ecr:CompleteLayerUpload", "ecr:PutImage"}
@@ -420,68 +425,97 @@ func ecrRoleActions(action string) []string {
 	return nil
 }
 
-// authorizeScope decides one requested repo+action for the caller. A User keeps the impersonated
-// SubjectAccessReview the control plane runs (verb on openinfra.dev/repositories). An assumed role is
-// authorized by its data-plane policy alone, default-deny: every ECR action the docker action needs must
-// be allowed on Repository::<repo>; with no data-plane engine configured, nothing is granted.
-func (h *ecrHandler) authorizeScope(ctx context.Context, r *http.Request, claims iam.Claims, repo, action string) bool {
-	need := ecrRoleActions(action)
-	if len(need) == 0 {
-		return false
-	}
-	// Every ECR action the docker action needs, on Repository::<repo> (decide): legacy decides once, as
-	// before (legacyAuthorizeScope); in enforce IAM policy decides each.
-	for i, a := range need {
-		legacy := func() (bool, string) { return true, "" }
-		if i == 0 {
-			legacy = func() (bool, string) { return h.legacyAuthorizeScope(ctx, r, claims, repo, action), "" }
-		}
-		if ok, _ := decide(ctx, r, h.authz, claims, a, "Repository", repo, legacy); !ok {
-			return false
+// registryScopes are the registry scopes that granted ECR actions need beside them: distribution asks
+// for pull on every read and every write, push on every write, and delete to delete a manifest.
+func registryScopes(actions []string) []string {
+	var pull, push, del bool
+	for _, a := range actions {
+		switch a {
+		case "ecr:BatchDeleteImage":
+			del = true
+		case "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage":
+			pull, push = true, true
+		default:
+			pull = true
 		}
 	}
-	return true
+	var out []string
+	if pull {
+		out = append(out, "pull")
+	}
+	if push {
+		out = append(out, "push")
+	}
+	if del {
+		out = append(out, "delete")
+	}
+	return out
 }
 
-// legacyAuthorizeScope is authorizeScope's decision before IAM policy decided.
-func (h *ecrHandler) legacyAuthorizeScope(ctx context.Context, r *http.Request, claims iam.Claims, repo, action string) bool {
-	if claims.AssumedRole != "" {
-		need := ecrRoleActions(action)
-		if len(need) == 0 {
-			return false
-		}
-		for _, a := range need {
-			if ok, _ := allowedForAssumedRole(ctx, h.authz, claims, a, "Repository", repo, r); !ok {
-				return false
+// registryAccess is the token entry for one repository: the registry scopes the granted ECR actions need,
+// the actions themselves, and the scopes decided (so the gate refuses what was decided and not granted).
+func registryAccess(name, resource string, requested, granted []string) ecrAccess {
+	return ecrAccess{Type: "repository", Name: name, Actions: append(registryScopes(granted), granted...),
+		Requested: requested, Resource: resource}
+}
+
+// grantedActions decides, for the caller, each ECR action the requested scopes stand for on the
+// repository, and returns those allowed. In enforce IAM policy decides each (decide); before that, the
+// legacy decision is the one the control plane makes (legacyAuthorizeAction).
+func (h *ecrHandler) grantedActions(ctx context.Context, r *http.Request, claims iam.Claims, repo string, scopes []string) []string {
+	verbs := map[string]bool{} // a User's coarse SubjectAccessReview, once per verb
+	seen := map[string]bool{}
+	var granted []string
+	for _, scope := range scopes {
+		for _, a := range ecrScopeActions(scope) {
+			if seen[a] {
+				continue
+			}
+			seen[a] = true
+			legacy := func() (bool, string) { return h.legacyAuthorizeAction(ctx, r, claims, repo, a, verbs), "" }
+			if ok, _ := decide(ctx, r, h.authz, claims, a, "Repository", repo, legacy); ok {
+				granted = append(granted, a)
 			}
 		}
-		return true
+	}
+	return granted
+}
+
+// legacyAuthorizeAction is grantedActions' decision before IAM policy decided. An assumed role is
+// authorized by its data-plane policy alone, default-deny. A User keeps the impersonated
+// SubjectAccessReview the control plane runs (a verb on openinfra.dev/repositories), which its data-plane
+// policy can only tighten: an ecr: Deny stops the action at the registry as it does at the ECR API.
+func (h *ecrHandler) legacyAuthorizeAction(ctx context.Context, r *http.Request, claims iam.Claims, repo, action string,
+	verbs map[string]bool) bool {
+	if claims.AssumedRole != "" {
+		ok, _ := allowedForAssumedRole(ctx, h.authz, claims, action, "Repository", repo, r)
+		return ok
 	}
 	verb := ecrActionVerb(action)
 	if verb == "" {
 		return false
 	}
-	if ok, _ := coarseOnly(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, repo)(); !ok {
+	ok, done := verbs[verb]
+	if !done {
+		ok, _ = coarseOnly(ctx, h.cs, claims, verb, "openinfra.dev", "repositories", h.authzNS, repo)()
+		verbs[verb] = ok
+	}
+	if !ok {
 		return false
 	}
-	// A User's data-plane policy can only tighten, as at the ECR API: a Deny of any ECR action the docker
-	// action needs refuses it, so an ecr: Deny stops a docker pull or push as it stops BatchGetImage.
-	for _, a := range ecrRoleActions(action) {
-		if denied, _ := deniedByDataPlane(ctx, h.authz, claims, a, "Repository", repo, r); denied {
-			return false
-		}
-	}
-	return true
+	denied, _ := deniedByDataPlane(ctx, h.authz, claims, action, "Repository", repo, r)
+	return !denied
 }
 
-// ecrActionVerb maps a Docker registry action to the RBAC verb the caller must hold on the repo.
+// ecrActionVerb maps an ECR registry action to the RBAC verb a User must hold on the repository: reads get,
+// writes create, deleting an image delete.
 func ecrActionVerb(action string) string {
 	switch action {
-	case "pull":
+	case "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability", "ecr:ListImages":
 		return "get"
-	case "push":
+	case "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage":
 		return "create"
-	case "delete":
+	case "ecr:BatchDeleteImage":
 		return "delete"
 	}
 	return ""
@@ -565,16 +599,13 @@ func (h *ecrHandler) issueRegistryToken(w http.ResponseWriter, r *http.Request, 
 				h.audit(ctx, "TokenGrant", acc.Name, "deny", "the path is in another account's registry")
 				continue
 			}
-			var allowed []string
-			for _, action := range acc.Actions {
-				if h.authorizeScope(ctx, r, claims, repo, action) {
-					allowed = append(allowed, action)
-				}
-			}
+			allowed := h.grantedActions(ctx, r, claims, repo, acc.Actions)
+			// The entry is written even when nothing was granted: the registry's gate then answers ECR's
+			// access-denied error for this repository instead of sending the client back here.
+			granted = append(granted, registryAccess(acc.Name, h.accountRepoArn(ctx, repo), acc.Actions, allowed))
 			if len(allowed) > 0 {
-				granted = append(granted, ecrAccess{Type: "repository", Name: acc.Name, Actions: allowed})
 				h.audit(ctx, "TokenGrant", acc.Name, "allow", strings.Join(allowed, ","))
-			} else if len(acc.Actions) > 0 {
+			} else {
 				h.audit(ctx, "TokenGrant", acc.Name, "deny", "not authorized")
 			}
 		}
@@ -582,7 +613,8 @@ func (h *ecrHandler) issueRegistryToken(w http.ResponseWriter, r *http.Request, 
 
 	// No scope (the `docker login` probe) → an access-less token (login succeeds; the per-repo grant
 	// happens on the subsequent scoped pull/push requests).
-	tok, err := h.signer.mintRegistry(caller.Sub, h.issuer, service, granted, 5*time.Minute)
+	// The subject is the caller's ARN, which the gate names in an access-denied message, as ECR does.
+	tok, err := h.signer.mintRegistry(principalOf(ctx, claims).ARN(), h.issuer, service, granted, 5*time.Minute)
 	if err != nil {
 		writeDockerTokenError(w, http.StatusInternalServerError, "UNKNOWN", "could not mint token")
 		return

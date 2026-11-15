@@ -360,6 +360,7 @@
         "ecr:CompleteLayerUpload",
         "ecr:GetDownloadUrlForLayer",
         "ecr:InitiateLayerUpload",
+        "ecr:ListImages",
         "ecr:PutImage",
         "ecr:UploadLayerPart",
         "iam:PassRole"

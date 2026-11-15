@@ -6848,7 +6848,7 @@
       "tier": "proven"
     },
     "ecr": {
-      "actions": 9,
+      "actions": 10,
       "class": "aws",
       "operations": 37,
       "service": "ECR",

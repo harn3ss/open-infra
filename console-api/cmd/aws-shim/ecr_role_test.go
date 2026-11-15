@@ -232,8 +232,41 @@ func TestECR_DescribeRepositories_UserDenyEachName(t *testing.T) {
 // --- the registry token realm (/ecr/token) ---
 
 // realmGrant runs the GET token flow with a caller credential and the given scopes and returns the
-// registry token's granted access (repo -> sorted actions) plus the HTTP status.
+// registry scopes the token grants (repo -> sorted pull/push/delete; a repository granted nothing is
+// absent) plus the HTTP status.
 func realmGrant(t *testing.T, h *ecrHandler, cred string, scopes ...string) (map[string][]string, int) {
+	t.Helper()
+	entries, code := realmEntries(t, h, cred, scopes...)
+	return grantsOf(entries, func(a string) bool { return !strings.HasPrefix(a, "ecr:") }), code
+}
+
+// realmActions is realmGrant's ECR actions: repo -> the sorted ECR actions the registry's gate admits.
+func realmActions(t *testing.T, h *ecrHandler, cred string, scopes ...string) map[string][]string {
+	t.Helper()
+	entries, _ := realmEntries(t, h, cred, scopes...)
+	return grantsOf(entries, func(a string) bool { return strings.HasPrefix(a, "ecr:") })
+}
+
+func grantsOf(entries []ecrAccess, keep func(string) bool) map[string][]string {
+	out := map[string][]string{}
+	for _, a := range entries {
+		for _, act := range a.Actions {
+			if keep(act) {
+				out[a.Name] = append(out[a.Name], act)
+			}
+		}
+		sort.Strings(out[a.Name])
+	}
+	for k, v := range out {
+		if len(v) == 0 {
+			delete(out, k)
+		}
+	}
+	return out
+}
+
+// realmEntries is the access claim of the registry token the GET token flow returns.
+func realmEntries(t *testing.T, h *ecrHandler, cred string, scopes ...string) ([]ecrAccess, int) {
 	t.Helper()
 	q := url.Values{"service": {"ecr-registry"}, "scope": scopes}
 	req := httptest.NewRequest("GET", "http://ecr/ecr/token?"+q.Encode(), nil)
@@ -254,12 +287,7 @@ func realmGrant(t *testing.T, h *ecrHandler, cred string, scopes ...string) (map
 	if err := json.Unmarshal([]byte(jwtPayload(t, tok)), &claims); err != nil {
 		t.Fatalf("decode registry token: %v", err)
 	}
-	out := map[string][]string{}
-	for _, a := range claims.Access {
-		out[a.Name] = append(out[a.Name], a.Actions...)
-		sort.Strings(out[a.Name])
-	}
-	return out, w.Code
+	return claims.Access, w.Code
 }
 
 func jwtPayload(t *testing.T, tok string) string {
@@ -288,10 +316,11 @@ func roleCred(t *testing.T, h *ecrHandler) string {
 func TestECRToken_AssumedRoleScopes(t *testing.T) {
 	pullPair := []string{"ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"}
 	cases := []struct {
-		name   string
-		authz  *dataplaneauthz.Checker
-		scopes []string
-		want   map[string][]string
+		name    string
+		authz   *dataplaneauthz.Checker
+		scopes  []string
+		want    map[string][]string // the registry scopes
+		actions map[string][]string // the ECR actions the gate admits (unchecked when nil)
 	}{
 		{
 			name:   "pull-only role: its repository's pull, never push, never another repository",
@@ -300,16 +329,18 @@ func TestECRToken_AssumedRoleScopes(t *testing.T) {
 			want:   map[string][]string{"app": {"pull"}},
 		},
 		{
-			name:   "pull needs both image-read actions",
-			authz:  roleChecker(dpAllow([]string{"ecr:BatchGetImage"}, "Repository::app")),
-			scopes: []string{"repository:app:pull"},
-			want:   map[string][]string{},
+			name:    "BatchGetImage alone reads manifests, not layers",
+			authz:   roleChecker(dpAllow([]string{"ecr:BatchGetImage"}, "Repository::app")),
+			scopes:  []string{"repository:app:pull"},
+			want:    map[string][]string{"app": {"pull"}},
+			actions: map[string][]string{"app": {"ecr:BatchGetImage"}},
 		},
 		{
-			name:   "pull needs both image-read actions (the other one)",
-			authz:  roleChecker(dpAllow([]string{"ecr:GetDownloadUrlForLayer"}, "Repository::app")),
-			scopes: []string{"repository:app:pull"},
-			want:   map[string][]string{},
+			name:    "GetDownloadUrlForLayer alone reads layers, not manifests",
+			authz:   roleChecker(dpAllow([]string{"ecr:GetDownloadUrlForLayer"}, "Repository::app")),
+			scopes:  []string{"repository:app:pull"},
+			want:    map[string][]string{"app": {"pull"}},
+			actions: map[string][]string{"app": {"ecr:GetDownloadUrlForLayer"}},
 		},
 		{
 			name:   "push with the full documented set",
@@ -318,10 +349,22 @@ func TestECRToken_AssumedRoleScopes(t *testing.T) {
 			want:   map[string][]string{"app": {"pull", "push"}},
 		},
 		{
-			name:   "push missing ecr:PutImage is no push",
+			// https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-push-iam.html: no GetDownloadUrlForLayer
+			name: "ECR's documented push policy pushes and does not download layers",
+			authz: roleChecker(dpAllow([]string{"ecr:CompleteLayerUpload", "ecr:UploadLayerPart", "ecr:InitiateLayerUpload",
+				"ecr:BatchCheckLayerAvailability", "ecr:PutImage", "ecr:BatchGetImage"}, "Repository::app")),
+			scopes: []string{"repository:app:pull,push"},
+			want:   map[string][]string{"app": {"pull", "push"}},
+			actions: map[string][]string{"app": {"ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage",
+				"ecr:CompleteLayerUpload", "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart"}},
+		},
+		{
+			name:   "push missing ecr:PutImage uploads layers and writes no manifest",
 			authz:  roleChecker(dpAllow(append(append([]string{}, pullPair...), pushActions[:4]...), "Repository::app")),
 			scopes: []string{"repository:app:pull,push"},
-			want:   map[string][]string{"app": {"pull"}},
+			want:   map[string][]string{"app": {"pull", "push"}},
+			actions: map[string][]string{"app": {"ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage",
+				"ecr:CompleteLayerUpload", "ecr:GetDownloadUrlForLayer", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart"}},
 		},
 		{
 			name:   "ecr:* on a repository prefix",
@@ -333,7 +376,11 @@ func TestECRToken_AssumedRoleScopes(t *testing.T) {
 			name:   "an explicit deny on one repository wins over ecr:* on *",
 			authz:  roleChecker(dpAllow([]string{"ecr:*"}, "*"), dpDeny([]string{"ecr:GetDownloadUrlForLayer"}, "Repository::secret")),
 			scopes: []string{"repository:secret:pull", "repository:app:pull"},
-			want:   map[string][]string{"app": {"pull"}},
+			want:   map[string][]string{"app": {"pull"}, "secret": {"pull"}},
+			actions: map[string][]string{
+				"app":    {"ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:ListImages"},
+				"secret": {"ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:ListImages"},
+			},
 		},
 		{
 			name:   "data-plane engine not configured: nothing",
@@ -352,6 +399,11 @@ func TestECRToken_AssumedRoleScopes(t *testing.T) {
 			}
 			if !equalGrants(got, tc.want) {
 				t.Fatalf("granted %v, want %v", got, tc.want)
+			}
+			if tc.actions != nil {
+				if acts := realmActions(t, h, roleCred(t, h), tc.scopes...); !equalGrants(acts, tc.actions) {
+					t.Fatalf("ECR actions %v, want %v", acts, tc.actions)
+				}
 			}
 		})
 	}
@@ -455,9 +507,14 @@ func TestECRToken_UserDataPlaneDenyHolds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := realmGrant(t, h, cred, "repository:secret-app:pull", "repository:app:pull,push")
-	if !equalGrants(got, map[string][]string{"app": {"pull"}}) {
-		t.Fatalf("the User's Denies must remove secret-app pull and app push, got %v", got)
+	got := realmActions(t, h, cred, "repository:secret-app:pull", "repository:app:pull,push")
+	want := map[string][]string{
+		"secret-app": {"ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:ListImages"},
+		"app": {"ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:CompleteLayerUpload",
+			"ecr:GetDownloadUrlForLayer", "ecr:InitiateLayerUpload", "ecr:ListImages", "ecr:UploadLayerPart"},
+	}
+	if !equalGrants(got, want) {
+		t.Fatalf("the User's Denies must remove secret-app's BatchGetImage and app's PutImage, got %v", got)
 	}
 }
 

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/harn3ss/open-infra/console-api/internal/ecrgate"
 )
 
 func newTestECRSigner(t *testing.T) *ecrTokenSigner {
@@ -85,7 +88,8 @@ func TestECRToken_OAuth2PostFlow(t *testing.T) {
 	}
 	_ = json.Unmarshal(pb, &claims)
 	if len(claims.Access) != 1 || claims.Access[0].Name != "runtime/nodejs18" ||
-		len(claims.Access[0].Actions) != 1 || claims.Access[0].Actions[0] != "pull" {
+		!slices.Contains(claims.Access[0].Actions, "pull") || slices.Contains(claims.Access[0].Actions, "push") ||
+		!slices.Contains(claims.Access[0].Actions, "ecr:GetDownloadUrlForLayer") {
 		t.Fatalf("POST flow access claim wrong: %+v", claims.Access)
 	}
 
@@ -138,5 +142,15 @@ func TestECRToken_RegistryTokenShape(t *testing.T) {
 	if len(claims.Access) != 1 || claims.Access[0].Name != "team-a/app" ||
 		len(claims.Access[0].Actions) != 2 {
 		t.Fatalf("access claim wrong: %+v", claims.Access)
+	}
+}
+
+// The token service decides, for each scope, exactly the ECR actions the registry's gate takes the scope to
+// stand for: a mismatch would have the gate refuse what was never decided, or pass what was refused.
+func TestECRToken_ScopeActionsAreTheGates(t *testing.T) {
+	for _, scope := range []string{"pull", "push", "delete", "catalog"} {
+		if got, want := ecrScopeActions(scope), ecrgate.ScopeActions(scope); !slices.Equal(got, want) {
+			t.Errorf("scope %s: the token service decides %v, the gate expects %v", scope, got, want)
+		}
 	}
 }
