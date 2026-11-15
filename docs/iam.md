@@ -280,6 +280,8 @@ aws sts assume-role --role-arn arn:aws:iam::<account>:role/deployer --role-sessi
 - **Execution roles:** a function's role (`spec.role`, a Lambda function's `Role` in a stack), trusting
   `lambda.amazonaws.com`, gives the function's code the role's credentials, as on Lambda
   ([execution role](serverless.md#execution-role)).
+- **Task execution roles:** the role that pulls an application's image (`spec.executionRole`, an ECS task
+  definition's `ExecutionRoleArn`), in its own account ([task execution roles](#task-execution-roles-applications)).
 - **Task roles:** an application's role (`spec.assumeRole`, an ECS task definition's `TaskRoleArn` in a
   stack), trusting `ecs-tasks.amazonaws.com`, gives the application's code the role's credentials, as on
   ECS ([task roles](#task-roles-applications)).
@@ -346,6 +348,37 @@ aws iam put-role-policy --role-name web-reader --policy-name read --policy-docum
   credentials before they expire. Like any web-identity session, the application's carries no MFA context.
 - **The application runs as its own identity**, a ServiceAccount named after it, so an application named
   `vm-<name>` cannot have a task role (that name is a virtual machine's identity).
+
+### Task execution roles (applications)
+
+An application's image is pulled by its **task execution role**, as ECS pulls a task's image with the task
+definition's `ExecutionRoleArn`. Name the role in `spec.executionRole` (a role name or ARN of the
+application's own account; CloudFormation's and ECS's `ExecutionRoleArn` map to it):
+
+```yaml
+apiVersion: iam.openinfra.dev/v1
+kind: Role
+metadata:
+  name: web-execution
+spec:
+  trust: ["Service::ecs-tasks.amazonaws.com"]  # ECS may use it for a task
+```
+
+- **Its policies decide where the image may come from**: `ecr:GetAuthorizationToken`, then
+  `ecr:BatchGetImage` and `ecr:GetDownloadUrlForLayer` on the repository, as AWS's
+  `AmazonECSTaskExecutionRolePolicy` allows them. A role without them cannot pull, and the task stays
+  pending, as an ECS task with `CannotPullContainerError` does.
+- **Its trust policy must name `ecs-tasks.amazonaws.com`**, with no conditions (they are not evaluated
+  for the ECS service yet). It is used only for the application that names it, from that application's
+  own pods.
+- **Naming it takes `iam:PassRole` on it**, passed to `ecs-tasks.amazonaws.com`, as registering a task
+  definition with an execution role does on AWS.
+- **Without one**, the image is pulled with the node's own credential, which reaches the management
+  account's repositories alone: a member account's application whose image is in its own registry needs
+  an execution role, as a Fargate task with a private ECR image does.
+
+The nodes pull this way once the platform's ECR credential provider is installed on them
+(`platform/aws-shim/ecr-credential-provider.yaml`, an operator's step: it is armed node by node).
 
 ### Passing a role (`iam:PassRole`)
 

@@ -2156,6 +2156,16 @@ on `arn:aws:ecr:<region>:<account>:repository/<name>` — see
 `aws ecr get-login-password | docker login …` then `docker pull <repositoryUri>:<tag>` work inside the guest
 for that repository and fail for every other.
 
+**Application pulls.** An application's image is pulled with its **task execution role**
+(`spec.executionRole`, an ECS task definition's `ExecutionRoleArn`), as ECS pulls a task's image
+([task execution roles](iam.md#task-execution-roles-applications)). The node's kubelet runs the platform's
+ECR credential provider for each image from the registry, with a token bound to the pod the image is for
+(audience `openinfra-ecr-pull`); the provider trades it at the shim's `/ecr/pod-credential` for the
+execution role's ECR credential, so `/ecr/token` decides each repository on that role's policies, in the
+application's own account. A pod that is no application's, or an application with no execution role, gets
+no credential from it and is pulled as below. An execution role that may not pull gets a credential the
+registry refuses, so the pull fails rather than fall back to the node's credential.
+
 **Node pulls.** A function's `code.runtimeImage` in the registry is pulled by the node's container runtime,
 with a credential the node's own identity obtains, as a node's instance role gets its ECR credential on AWS.
 - **How it is issued:** the node agent (on nodes labelled `openinfra.dev/ecr-pull=enabled`) presents its
