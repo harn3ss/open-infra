@@ -5,9 +5,9 @@ go 1.26.4
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6
-	github.com/emersion/go-smtp v0.25.1
+	github.com/emersion/go-smtp v0.26.0
 	github.com/go-chi/chi/v5 v5.5.0
-	github.com/go-jose/go-jose/v4 v4.1.6
+	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/go-ldap/ldap/v3 v3.4.15
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/harn3ss/open-infra/cfn v0.0.0-00010101000000-000000000000
@@ -15,17 +15,17 @@ require (
 	github.com/lib/pq v1.12.3
 	github.com/microsoft/go-mssqldb v1.11.2
 	github.com/minio/minio-go/v7 v7.4.1
-	github.com/nats-io/nats.go v1.54.0
+	github.com/nats-io/nats.go v1.55.0
 	go.mongodb.org/mongo-driver v1.17.10
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.59.0
 	golang.org/x/net v0.62.0
-	k8s.io/api v0.37.1
-	k8s.io/apimachinery v0.37.1
-	k8s.io/client-go v0.37.1
+	k8s.io/api v0.37.2
+	k8s.io/apimachinery v0.37.2
+	k8s.io/client-go v0.37.2
 	rsc.io/qr v0.2.0
 	sigs.k8s.io/yaml v1.6.0
 )
@@ -107,10 +107,10 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/term v0.47.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/term v0.48.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
