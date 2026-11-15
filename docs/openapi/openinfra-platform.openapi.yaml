@@ -4223,6 +4223,17 @@ components:
                 repositories the app''s image may come from (AmazonECSTaskExecutionRolePolicy allows them all: ecr:GetAuthorizationToken,
                 ecr:BatchGetImage, ecr:GetDownloadUrlForLayer). Without it, an image in the account''s own ECR registry is
                 pulled only for the management account''s apps. Naming a role needs iam:PassRole on it.'
+            logGroup:
+              type: string
+              pattern: ^[.\-_/#A-Za-z0-9]{1,512}$
+              description: The CloudWatch Logs group the app's containers log to (an ECS container's awslogs driver, awslogs-group).
+                Their output is read in this group, through the aws-shim's CloudWatch Logs API, in streams named <logStreamPrefix>/<container>/<task
+                id>. Unset, the group is /ecs/<application>.
+            logStreamPrefix:
+              type: string
+              pattern: ^[^:*]{1,256}$
+              description: 'The prefix of the app''s log streams in logGroup (awslogs-stream-prefix): each container''s stream
+                is <prefix>/<container>/<task id>. Unset, it is ecs.'
             expose:
               type: boolean
               default: false

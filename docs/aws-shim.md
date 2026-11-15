@@ -1290,14 +1290,17 @@ of it, beside the groups SDKs create:
 | `/aws/lambda/<function>` | a `kind: Function`'s output (its own container) | `YYYY/MM/DD/[$LATEST]<id>`, one per execution environment |
 | `/aws/sagemaker/TrainingJobs` | every `kind: TrainingJob`'s output | `<job>/algo-1-<start>` |
 | `/aws/sagemaker/ProcessingJobs` | every `kind: ProcessingJob`'s output | `<job>/algo-1-<start>` |
-| `/ecs/<application>` | a `kind: Application`'s containers | `ecs/<container>/<task id>` |
+| `/ecs/<application>`, or the group its task definition's `awslogs` driver names (`awslogs-group`) | a `kind: Application`'s containers | `ecs/<container>/<task id>`, or `<awslogs-stream-prefix>/<container>/<task id>` |
 
 So `aws logs tail /aws/lambda/<fn> --follow` and `aws logs filter-log-events` find what a function printed.
 A group exists while its resource does, in the caller's account. `DescribeLogGroups`, `DescribeLogStreams`,
 `GetLogEvents` and `FilterLogEvents` answer for it as for any group, with the same filter-pattern rules and
 terminating tokens. It is **read-only** — the workload writes it, and `PutLogEvents`, `PutRetentionPolicy`
 or deleting it is refused — and its `retentionInDays` is the log store's (`LOKI_RETENTION_DAYS`, 7 by
-default), which the log store enforces. `LOKI_URL=off` turns these groups off.
+default), which the log store enforces. `LOKI_URL=off` turns these groups off. A group an application's
+task definition names (`spec.logGroup`) is the exception to read-only: it is whatever created it (a stack's
+`AWS::Logs::LogGroup`, `CreateLogGroup`), with that group's retention, and only its events are the log
+store's.
 
 `probe/aws-shim-cloudwatchlogs.sh` proves the store over real SDK round-trips — ordered byte-identical
 read-back with original ms timestamps, out-of-order batch rejected, `FilterLogEvents` matches only the

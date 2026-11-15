@@ -388,3 +388,43 @@ func TestCWLDerived_StoreQueryLimitIsCapped(t *testing.T) {
 		t.Fatalf("asked the store for limit %v, want at most %d", asked, lokiMaxEntries)
 	}
 }
+
+// An application's task definition names its group and stream prefix (awslogs-group, awslogs-stream-prefix):
+// its containers' output is read there, in streams named <prefix>/<container>/<task id>, under any group
+// name. Creating, retaining and deleting that group stay the group's own (a stack creates it).
+func TestCWLDerived_AwslogsGroupTheTaskNames(t *testing.T) {
+	h, loki := cwlDerivedFixture(t, true)
+	app := claimOf("Application", "default", "api")
+	app.Object["spec"] = map[string]any{"logGroup": "example-group", "logStreamPrefix": "svc"}
+	if _, err := h.derived.dyn.Resource(applicationGVR).Namespace("default").Create(t.Context(), app, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	loki.lines = append(loki.lines, logLine("default", "api-5f6d8-abcde", "app", "api", at(2*time.Hour), "listening on 8080"))
+
+	code, out := cwlCall(t, h, testUser, "DescribeLogStreams", map[string]any{"logGroupName": "example-group"})
+	if code != 200 {
+		t.Fatalf("DescribeLogStreams: %d %v", code, out)
+	}
+	sts := sliceOf(out["logStreams"])
+	want := "svc/app/" + podID("default", "api-5f6d8-abcde")
+	if len(sts) != 1 || sts[0].(map[string]any)["logStreamName"] != want {
+		t.Fatalf("streams %v; want %s", sts, want)
+	}
+	_, out = cwlCall(t, h, testUser, "GetLogEvents", map[string]any{"logGroupName": "example-group", "logStreamName": want})
+	if ev := sliceOf(out["events"]); len(ev) != 1 || ev[0].(map[string]any)["message"] != "listening on 8080" {
+		t.Fatalf("events %v", out)
+	}
+	// It is listed under its own name, not /ecs/api.
+	_, out = cwlCall(t, h, testUser, "DescribeLogGroups", map[string]any{})
+	if got := strings.Join(groupNames(out), ","); !strings.Contains(got, "example-group") || strings.Contains(got, "/ecs/api") {
+		t.Fatalf("groups %s", got)
+	}
+	// A write is the group's own: here the store, which this fixture does not have.
+	if code, _ := cwlCall(t, h, testUser, "PutRetentionPolicy", map[string]any{"logGroupName": "example-group", "retentionInDays": 30}); code != http.StatusNotImplemented {
+		t.Fatalf("PutRetentionPolicy on the task's group: %d; want it to reach the group's own store", code)
+	}
+	// /ecs/<application> stays read-only.
+	if code, _ := cwlCall(t, h, testUser, "PutRetentionPolicy", map[string]any{"logGroupName": "/ecs/web", "retentionInDays": 30}); code != http.StatusBadRequest {
+		t.Fatalf("PutRetentionPolicy on /ecs/web: %d; want refused", code)
+	}
+}

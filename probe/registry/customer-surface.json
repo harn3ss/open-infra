@@ -99,6 +99,24 @@
       "how": "update",
       "kind": "Application"
     },
+    "Application.logGroup": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "logGroup",
+      "how": "update",
+      "kind": "Application"
+    },
+    "Application.logStreamPrefix": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "logStreamPrefix",
+      "how": "update",
+      "kind": "Application"
+    },
     "Application.memory": {
       "actions": [
         "ecs:UpdateService"
@@ -7027,11 +7045,11 @@
   },
   "summary": {
     "fields": {
-      "aws": 368,
+      "aws": 370,
       "extra": 25,
       "operator": 0,
       "removed": 0,
-      "total": 393
+      "total": 395
     },
     "kinds": {
       "aws": 54,

@@ -150,8 +150,11 @@ func (h *cwlHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 			h.describeLogGroups(ctx, w, requestID, body, claims)
 			return
 		}
-		// A service's own group (/aws/lambda/<fn> …): read from the log store, and read-only.
-		if g, ok := h.derived.resolve(ctx, claims, group); ok {
+		// A service's own group (/aws/lambda/<fn> …): read from the log store, and read-only. A group an
+		// application's awslogs driver names is read the same way, while creating, retaining and deleting
+		// it stay the group's own (a stack creates the group its task definition names).
+		read := op == "DescribeLogStreams" || op == "GetLogEvents" || op == "FilterLogEvents"
+		if g, ok := h.derived.resolve(ctx, claims, group, read); ok && (read || !g.declared) {
 			switch op {
 			case "DescribeLogStreams":
 				h.derivedDescribeStreams(ctx, w, requestID, g, body)
@@ -353,6 +356,9 @@ func (h *cwlHandler) describeLogGroups(ctx context.Context, w http.ResponseWrite
 	if h.derived != nil {
 		acct := h.accountOf(ctx)
 		for _, g := range h.derived.groups(ctx, claims, prefix) {
+			if _, stored := entries[g.Name]; stored && g.declared {
+				continue // the group its creator made (its retention, its ARN); the events are the log store's
+			}
 			entries[g.Name] = map[string]any{
 				"logGroupName": g.Name, "arn": h.groupARNIn(acct, g.Name), "creationTime": g.Created.UnixMilli(),
 				"storedBytes": 0, "retentionInDays": h.derived.retention, "logGroupClass": "STANDARD",

@@ -10,7 +10,8 @@
 //     (pod), named as Lambda names them: YYYY/MM/DD/[$LATEST]<id>
 //   - /aws/sagemaker/TrainingJobs   every kind: TrainingJob's pods, stream <job>/algo-1-<start epoch>
 //   - /aws/sagemaker/ProcessingJobs every kind: ProcessingJob's pods, stream <job>/algo-1-<start epoch>
-//   - /ecs/<application>            a kind: Application's pods, stream ecs/<container>/<task id>
+//   - /ecs/<application>            a kind: Application's pods, stream ecs/<container>/<task id>; or the group
+//     and stream prefix its task definition's awslogs driver names (spec.logGroup, spec.logStreamPrefix)
 //
 // They exist while the resource does, in the namespaces the Lambda API serves (the functions namespace and
 // the stack namespace) of the caller's account — a member account's in its home namespace, where its
@@ -67,6 +68,11 @@ type derivedGroup struct {
 	Name    string
 	Kind    string // lambda | training | processing | ecs
 	Created time.Time
+	// streamPrefix is an ecs group's awslogs-stream-prefix: its streams are <prefix>/<container>/<task id>.
+	streamPrefix string
+	// declared: an application's task definition names the group (spec.logGroup), so the group itself is
+	// whatever created it (a stack, CreateLogGroup), and only its events are the log store's.
+	declared bool
 	// sources are the log store selectors whose lines are the group's events, each with how a pod's stream
 	// is named.
 	sources []derivedSource
@@ -180,7 +186,9 @@ func (d *cwlDerived) groups(ctx context.Context, claims iam.Claims, prefix strin
 			add(lambdaGroup(ns, fn.GetName(), fn.GetCreationTimestamp().Time))
 		}
 		for _, app := range d.list(ctx, applicationGVR, ns) {
-			add(ecsGroup(ns, app.GetName(), app.GetCreationTimestamp().Time))
+			group, _, _ := unstructured.NestedString(app.Object, "spec", "logGroup")
+			prefix, _, _ := unstructured.NestedString(app.Object, "spec", "logStreamPrefix")
+			add(ecsGroup(ns, app.GetName(), group, prefix, app.GetCreationTimestamp().Time))
 		}
 		for kind, gvr := range map[string]schema.GroupVersionResource{"training": trainingJobGVR, "processing": processingJobGVR} {
 			for _, job := range d.list(ctx, gvr, ns) {
@@ -209,9 +217,10 @@ func (d *cwlDerived) groups(ctx context.Context, claims iam.Claims, prefix strin
 	return dedupGroups(out)
 }
 
-// resolve is the derived group of that name in the caller's account.
-func (d *cwlDerived) resolve(ctx context.Context, claims iam.Claims, name string) (derivedGroup, bool) {
-	if d == nil || !isDerivedName(name) {
+// resolve is the derived group of that name in the caller's account. A name of none of the derived forms
+// can still be an application's own (its awslogs-group), which anyName asks to look for.
+func (d *cwlDerived) resolve(ctx context.Context, claims iam.Claims, name string, anyName ...bool) (derivedGroup, bool) {
+	if d == nil || (!isDerivedName(name) && !(len(anyName) > 0 && anyName[0])) {
 		return derivedGroup{}, false
 	}
 	for _, g := range d.groups(ctx, claims, name) {
@@ -253,8 +262,14 @@ func lambdaGroup(ns, fn string, created time.Time) derivedGroup {
 		selector: fmt.Sprintf(`{namespace=%q,container="user-container",app=~%q}`, ns, regexp.QuoteMeta(fn)+`-[0-9]+`)}}}
 }
 
-func ecsGroup(ns, app string, created time.Time) derivedGroup {
-	return derivedGroup{Name: cwlECSPrefix + app, Kind: "ecs", Created: created, sources: []derivedSource{{
+// ecsGroup is an application's group: the one its task definition's awslogs driver names (spec.logGroup),
+// else /ecs/<application>, with its streams named after the driver's stream prefix (else "ecs").
+func ecsGroup(ns, app, group, streamPrefix string, created time.Time) derivedGroup {
+	declared := group != ""
+	if !declared {
+		group = cwlECSPrefix + app
+	}
+	return derivedGroup{Name: group, Kind: "ecs", Created: created, streamPrefix: streamPrefix, declared: declared, sources: []derivedSource{{
 		selector: fmt.Sprintf(`{namespace=%q,app=%q,pod=~%q}`, ns, app, regexp.QuoteMeta(app)+`-[a-z0-9]+-[a-z0-9]+`)}}}
 }
 
@@ -342,7 +357,11 @@ func streamName(g derivedGroup, src derivedSource, labels map[string]string, fir
 		if c == "" {
 			c = "app"
 		}
-		return "ecs/" + c + "/" + id
+		prefix := g.streamPrefix
+		if prefix == "" {
+			prefix = "ecs"
+		}
+		return prefix + "/" + c + "/" + id
 	}
 }
 
