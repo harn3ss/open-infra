@@ -52,6 +52,11 @@ type Claims struct {
 	// UserSession marks an IAM user's own temporary credentials (sts:GetSessionToken), which AWS restricts:
 	// no IAM call without MFA, and no STS call but AssumeRole and GetCallerIdentity.
 	UserSession bool `json:"-"`
+	// SessionPolicy is an assumed-role session's inline session policy (AssumeRole's Policy), as written,
+	// and SessionPolicyRefs the managed session policies it named (PolicyArns), as IAM policy world names.
+	// With either, the session may do only what the role's policies AND these allow (AWS session policies).
+	SessionPolicy     string   `json:"sessionPolicy,omitempty"`
+	SessionPolicyRefs []string `json:"sessionPolicyRefs,omitempty"`
 }
 
 // MFAContext is a temporary credential's multi-factor authentication: Present when it was authenticated

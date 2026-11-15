@@ -49,6 +49,7 @@ services:
     tier: proven
     sigv4: [sts]
     probes: [sts, vm-credentials, app-assume-role, sts-deny, sts-switch-role]
+    pending: [sts-session-policy]
   - name: IAM
     cell: "roles/policies/users → AWS policy JSON → Cedar"
     tier: proven

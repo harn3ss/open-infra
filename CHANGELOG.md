@@ -6,6 +6,12 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — STS session policies narrow the session
+- `sts:AssumeRole` and `AssumeRoleWithWebIdentity` ignored `Policy` and `PolicyArns`, so a session meant to be
+  narrowed kept its role's full permissions. They now apply as on AWS: the session may do only what both
+  the role and its session policies allow. They're sealed into the session token, and a malformed or
+  oversized one is refused with AWS's error. See [docs/aws-shim.md](docs/aws-shim.md).
+
 ### Fixed — `aws:SourceIp` can no longer be claimed with a forwarding header
 - The AWS front door and the console took `aws:SourceIp` from the first `X-Forwarded-For` entry of any
   request, so a caller inside the cluster could claim another address and satisfy an `IpAddress`

@@ -276,7 +276,14 @@ func (h *stsHandler) assumeRole(w http.ResponseWriter, r *http.Request, claims i
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, bad, stsXMLNamespace)
 		return
 	}
-	sess := awssts.Session{RoleName: roleName, Groups: role.groups, SessionName: sessionName, Caller: callerName(claims)}
+	// Session policies (Policy, PolicyArns) narrow the session to what both they and the role allow.
+	pol, polRefs, code, msg := sessionPolicies(r, roleAcct, roleNS)
+	if code != "" {
+		writeQueryError(w, http.StatusBadRequest, code, requestID, msg, stsXMLNamespace)
+		return
+	}
+	sess := awssts.Session{RoleName: roleName, Groups: role.groups, SessionName: sessionName, Caller: callerName(claims),
+		Policy: pol, PolicyRefs: polRefs}
 	if roleAcct != h.account {
 		// A session of another account's role acts in that account (its token records it).
 		sess.Account, sess.Namespace = roleAcct, roleNS
@@ -364,9 +371,14 @@ func (h *stsHandler) assumeRoleWithWebIdentity(w http.ResponseWriter, r *http.Re
 		writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID, bad, stsXMLNamespace)
 		return
 	}
+	pol, polRefs, code, msg := sessionPolicies(r, h.account, "")
+	if code != "" {
+		writeQueryError(w, http.StatusBadRequest, code, requestID, msg, stsXMLNamespace)
+		return
+	}
 	// A web-identity session carries no MFA context: AWS cannot know whether the provider used MFA.
 	akid, sk, tok, exp, err := h.minter.MintSession(awssts.Session{RoleName: roleName, Groups: role.groups,
-		SessionName: sessionName, Caller: username, Federated: true}, ttl, awssts.MaxDuration)
+		SessionName: sessionName, Caller: username, Federated: true, Policy: pol, PolicyRefs: polRefs}, ttl, awssts.MaxDuration)
 	if err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not mint credentials", stsXMLNamespace)
 		return

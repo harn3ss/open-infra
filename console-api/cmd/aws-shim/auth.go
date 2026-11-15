@@ -176,12 +176,14 @@ func (a *authenticator) sessionClaims(ctx context.Context, sess awssts.Session) 
 		return iam.Claims{}, false
 	}
 	return iam.Claims{
-		Sub:           "assumed-role/" + sess.RoleName + "/" + sess.SessionName,
-		Groups:        sess.Groups,
-		AssumedRole:   principal,
-		SessionExpiry: sess.Expiry,
-		Account:       acct,
-		MFA:           sessionMFA(sess),
+		Sub:               "assumed-role/" + sess.RoleName + "/" + sess.SessionName,
+		Groups:            sess.Groups,
+		AssumedRole:       principal,
+		SessionExpiry:     sess.Expiry,
+		Account:           acct,
+		MFA:               sessionMFA(sess),
+		SessionPolicy:     sess.Policy,
+		SessionPolicyRefs: sess.PolicyRefs,
 	}, true
 }
 

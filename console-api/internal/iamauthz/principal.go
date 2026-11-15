@@ -140,8 +140,15 @@ type Session struct {
 	// Name is the session name (assumed-role/<role>/<name>).
 	Name string
 	// Policies are the session policy's statements: they intersect the role's permissions (they can
-	// only narrow). Empty means no session policy.
+	// only narrow). Empty means no session policy, unless Declared.
 	Policies []policyengine.Statement
+	// Refs are managed session policies (AssumeRole's PolicyArns), as World policy names: their current
+	// statements join Policies when the request is decided.
+	Refs []string
+	// Declared is set when the session was given session policies: they apply even when they resolve to
+	// no statement (a document that does not compile, a policy that no longer exists), which then
+	// allows nothing.
+	Declared bool
 }
 
 // AccountID is the principal's account, the management account when unset.
@@ -215,10 +222,21 @@ func sessionOf(c iam.Claims) *Session {
 	if i := strings.LastIndexByte(name, '/'); i >= 0 {
 		name = name[i+1:]
 	}
-	if name == "" || name == c.AssumedRole {
+	declared := c.SessionPolicy != "" || len(c.SessionPolicyRefs) > 0
+	if (name == "" || name == c.AssumedRole) && !declared {
 		return nil
 	}
-	return &Session{Name: name}
+	s := &Session{Name: name}
+	if declared {
+		s.Declared, s.Refs = true, c.SessionPolicyRefs
+		if c.SessionPolicy != "" {
+			// A session policy that no longer compiles allows nothing (Declared, no statements).
+			if stmts, _, err := CompileDocument(c.SessionPolicy); err == nil {
+				s.Policies = stmts
+			}
+		}
+	}
+	return s
 }
 
 // plainGroups strips the impersonation prefix and drops the implicit users group.

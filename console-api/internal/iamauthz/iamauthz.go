@@ -340,8 +340,16 @@ func (e *Evaluator) Authorize(ctx context.Context, p Principal, action, resource
 		hasBoundary, boundary = w.BoundaryFor(string(p.Type), p.ID)
 	}
 	var session []policyengine.Statement
+	sessionDeclared := false
 	if p.Session != nil {
-		session = p.Session.Policies
+		session = append(session, p.Session.Policies...)
+		if len(p.Session.Refs) > 0 {
+			byName := w.ByName()
+			for _, ref := range p.Session.Refs {
+				session = append(session, byName[ref].Statements...) // a policy gone since contributes nothing
+			}
+		}
+		sessionDeclared = p.Session.Declared
 	}
 	for _, set := range []struct {
 		name  string
@@ -379,7 +387,7 @@ func (e *Evaluator) Authorize(ctx context.Context, p Principal, action, resource
 			return Decision{Reason: "denied by the permission boundary (the action is outside it)", MatchedPolicy: "boundary"}
 		}
 	}
-	if len(session) > 0 {
+	if len(session) > 0 || sessionDeclared {
 		ok, err := within(session, req)
 		if err != nil {
 			return Decision{Reason: "the session policy does not compile: " + err.Error()}

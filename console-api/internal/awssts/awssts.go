@@ -65,6 +65,11 @@ type Session struct {
 	// Federated marks a web-identity session (AssumeRoleWithWebIdentity), which AWS carries no MFA
 	// context for at all: aws:MultiFactorAuthPresent is absent.
 	Federated bool `json:"fed,omitempty"`
+	// Policy is the session policy passed to AssumeRole (its Policy parameter, as written) and PolicyRefs
+	// the managed session policies (its PolicyArns), as IAM policy world names. They narrow the session to
+	// what both the role and they allow. Sealed in the token like the rest, so the caller can't change them.
+	Policy     string   `json:"pol,omitempty"`
+	PolicyRefs []string `json:"polRefs,omitempty"`
 }
 
 // Minter seals and opens session tokens. It holds one PRIMARY AES-256 key, used to seal (Mint) and to

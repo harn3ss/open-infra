@@ -480,7 +480,13 @@ faithful AWS temporary credential: an `ASIA…` access key id, a secret, and an 
 A session lasts 1 hour unless `DurationSeconds` asks otherwise, from 15 minutes up to the role's
 `spec.maxSessionDuration` (AWS's `MaxSessionDuration`: 1 hour by default, at most 12 hours); a longer
 request is refused with `ValidationError`, as on AWS, and a session assumed by another role's session
-(role chaining) is capped at 1 hour. The shim first checks the target `kind: Role`'s `spec.trust` (who
+(role chaining) is capped at 1 hour. **Session policies** narrow a session as on AWS: `Policy` (an inline
+policy document, up to 2,048 characters) and `PolicyArns` (up to 10 managed policies: AWS managed ones,
+or the role's own account's) leave the session only what both the role's policies and the session policies
+allow. They can narrow a session, never widen it. A `Deny` in them denies, and a session policy that
+resolves to nothing allows nothing. They are sealed into the session token. A document that isn't a valid
+policy is `MalformedPolicyDocument`; too long or too many is `ValidationError`. Session tags (`Tags`) are
+not supported yet. The shim first checks the target `kind: Role`'s `spec.trust` (who
 may assume it — empty ⇒ nobody, fail closed). Each entry names one kind of principal, so one kind
 never stands in for another of the same name: a `kind: User` name (or `User::<name>`), `Role::<name>`
 (a session of that role; `<namespace>/<name>` for a Role outside the IAM home namespace),
