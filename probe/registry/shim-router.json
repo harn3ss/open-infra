@@ -358,6 +358,7 @@
         "ecr:BatchDeleteImage",
         "ecr:BatchGetImage",
         "ecr:CompleteLayerUpload",
+        "ecr:GetAuthorizationToken",
         "ecr:GetDownloadUrlForLayer",
         "ecr:InitiateLayerUpload",
         "ecr:ListImages",

@@ -35,6 +35,9 @@
 #     iam:PassRole on a task definition's TaskRoleArn. A role trusting ecs-tasks.amazonaws.com is assumable
 #     by any Application that names it, so naming it is the gate (a role whose trust names the app's
 #     ServiceAccount itself is the app's anyway). Checked in the app's namespace, as for a Function.
+#   - Application (spec.executionRole, an ECS task definition's ExecutionRoleArn): the same way, as ECS
+#     needs iam:PassRole on a task definition's execution role. The aws-shim gives the role's ECR pull
+#     credential to the app's own pods, so naming it is the gate.
 #
 # Each check applies when the Role is set or changed, never to updates that leave it alone (Crossplane's
 # own claim updates, status writes).
@@ -168,6 +171,38 @@ spec:
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
+  name: openinfra-pass-role-application-execution
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [openinfra.dev]
+        apiVersions: ["*"]
+        operations: [CREATE, UPDATE]
+        resources: [applications]
+  matchConditions:
+    - name: sets-or-changes-the-execution-role
+      expression: >-
+        has(object.spec) && has(object.spec.executionRole) && object.spec.executionRole != '' &&
+        (request.operation == 'CREATE' || !has(oldObject.spec) || !has(oldObject.spec.executionRole) ||
+         oldObject.spec.executionRole != object.spec.executionRole)
+  variables:
+    - name: role
+      expression: "object.spec.executionRole.substring(object.spec.executionRole.lastIndexOf('/') + 1).lowerAscii()"
+  validations:
+    - expression: >-
+        authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
+        .name(variables.role).check('passrole').allowed() ||
+        authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)
+        .name(variables.role).check('passrole:ecs-tasks.amazonaws.com').allowed()
+      reason: Forbidden
+      messageExpression: >-
+        'iam:PassRole denied: ' + request.userInfo.username + ' may not pass Role ' + object.spec.executionRole +
+        ' to Application ' + request.namespace + '/' + object.metadata.name + ' (an admin can grant passrole on that Role)'
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
   name: openinfra-instance-role-binding
 spec:
   failurePolicy: Fail
@@ -223,6 +258,14 @@ metadata:
   name: openinfra-pass-role-application
 spec:
   policyName: openinfra-pass-role-application
+  validationActions: [Deny, Audit]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: openinfra-pass-role-application-execution
+spec:
+  policyName: openinfra-pass-role-application-execution
   validationActions: [Deny, Audit]
 ---
 apiVersion: admissionregistration.k8s.io/v1

@@ -4213,6 +4213,16 @@ components:
                 \ on the aws-shim) \u2014 so its calls are exactly as authorized as the role's policies. The role's trust\
                 \ policy must name ecs-tasks.amazonaws.com (or this app's identity, system:serviceaccount:<namespace>:<name>).\
                 \ Naming a role needs iam:PassRole on it. Requires the aws-shim with assume-role enabled."
+            executionRole:
+              type: string
+              maxLength: 2048
+              pattern: ^(arn:aws(-[a-z]+)*:iam::[0-9]{12}:role/([A-Za-z0-9+=,.@_-]+/)*)?[A-Za-z0-9+=,.@_-]{1,64}$
+              description: 'The app''s task execution role (an ECS task definition''s ExecutionRoleArn): the name or ARN of
+                a kind: Role of the app''s own account, which pulls the app''s image from ECR, as ECS pulls a task''s image
+                with its execution role. Its trust policy must name ecs-tasks.amazonaws.com, and its policies decide which
+                repositories the app''s image may come from (AmazonECSTaskExecutionRolePolicy allows them all: ecr:GetAuthorizationToken,
+                ecr:BatchGetImage, ecr:GetDownloadUrlForLayer). Without it, an image in the account''s own ECR registry is
+                pulled only for the management account''s apps. Naming a role needs iam:PassRole on it.'
             expose:
               type: boolean
               default: false

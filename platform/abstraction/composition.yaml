@@ -59,10 +59,17 @@ spec:
                    read as extra resources. Unset, nothing below renders and the app renders exactly as
                    before. */}}
             {{- $assume := $spec.assumeRole | default "" }}
+            {{- /* executionRole (an ECS task definition's ExecutionRoleArn) pulls the app's image: the
+                   kubelet hands the pod's token to the ECR credential provider, and the aws-shim gives the
+                   execution role's ECR credential to a pod of this app's Deployment running as its own
+                   ServiceAccount (it reads spec.executionRole from the Application itself). So the app
+                   runs as its own ServiceAccount when it names either role. */}}
+            {{- $exec := $spec.executionRole | default "" }}
+            {{- $identitySA := or $assume $exec }}
             {{- /* The workload ServiceAccount is named after the app, and vm-<x> is a VirtualMachine's own
                    identity (vm-composition.yaml): an app of that name would run as the VM's
                    ServiceAccount, fight over it, and hold a token for it. The prefix is reserved. */}}
-            {{- if and $assume (hasPrefix "vm-" $name) }}{{- fail (printf "kind: Application %s/%s: an app named vm-* cannot use assumeRole (ServiceAccounts named vm-<name> are VirtualMachine identities); rename the app" $ns $name) }}{{- end }}
+            {{- if and $identitySA (hasPrefix "vm-" $name) }}{{- fail (printf "kind: Application %s/%s: an app named vm-* cannot use assumeRole or executionRole (ServiceAccounts named vm-<name> are VirtualMachine identities); rename the app" $ns $name) }}{{- end }}
             {{- $stsAudience := "sts.openinfra" }}
             {{- $shimEndpoint := "http://aws-shim.open-infra-aws-shim.svc.cluster.local:4566" }}
             {{- $appRoleArn := "" }}
@@ -265,7 +272,7 @@ spec:
                         # a clear signal the lan-expose feature isn't set up.)
                         nodeSelector: { ovn.kubernetes.io/external-gw: "true" }
                         {{- end }}
-                        {{- if $assume }}
+                        {{- if $identitySA }}
                         serviceAccountName: {{ $name }}
                         {{- end }}
                         containers:
@@ -449,13 +456,14 @@ spec:
                                     path: token
                         {{- end }}
                         {{- end }}
-            {{- if $assume }}
+            {{- if $identitySA }}
             ---
-            # --- Workload-identity ServiceAccount (assumeRole): the pod runs as this SA. The aws-shim
-            #     hands the task role's credentials to a pod of this app's Deployment running as it (it
-            #     checks the token's pod, the pod's ReplicaSet and Deployment, and this ServiceAccount's
-            #     openinfra.dev/application label) when the role trusts ecs-tasks.amazonaws.com, or to any
-            #     pod running as it when the role's trust names system:serviceaccount:<ns>:<name>. ---
+            # --- Workload-identity ServiceAccount (assumeRole, executionRole): the pod runs as this SA.
+            #     The aws-shim hands the task role's credentials, and the execution role's ECR pull
+            #     credential, to a pod of this app's Deployment running as it (it checks the token's pod,
+            #     the pod's ReplicaSet and Deployment, and this ServiceAccount's openinfra.dev/application
+            #     label) when the role trusts ecs-tasks.amazonaws.com; the task role also to any pod
+            #     running as it when the role's trust names system:serviceaccount:<ns>:<name>. ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:
@@ -470,6 +478,8 @@ spec:
                     name: {{ $name }}
                     namespace: {{ $ns }}
                     labels: { app.kubernetes.io/name: {{ $name }}, openinfra.dev/application: {{ $name }} }
+            {{- end }}
+            {{- if $assume }}
             {{- /* assumeRole trust binding (#111 §2 — the IRSA trust gap): the role's spec.trust MUST
                    name ecs-tasks.amazonaws.com (the ECS task-role trust), the app's SA principal
                    system:serviceaccount:<ns>:<name>, or "*" for sts:AssumeRoleWithWebIdentity to

@@ -22,6 +22,8 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /aws-shim ./cmd/aws-shim
 # The ECR registry's gate (cmd/ecr-registry-gate) runs beside the registry in its pod, from this image.
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /ecr-registry-gate ./cmd/ecr-registry-gate
+# The kubelet's ECR credential provider (cmd/ecr-credential-provider), installed on each node from this image.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /ecr-credential-provider ./cmd/ecr-credential-provider
 
 FROM gcr.io/distroless/static-debian12
 ARG OPENINFRA_FIPS=true   # amd64 default; build-arm64 sets false via the label
@@ -31,4 +33,5 @@ EXPOSE 4566
 USER 65532:65532
 COPY --from=build /aws-shim /aws-shim
 COPY --from=build /ecr-registry-gate /ecr-registry-gate
+COPY --from=build /ecr-credential-provider /ecr-credential-provider
 ENTRYPOINT ["/aws-shim"]

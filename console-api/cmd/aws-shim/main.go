@@ -863,6 +863,21 @@ func run(logger *slog.Logger) error {
 		// its ECR credential on AWS.
 		ecrH.nodePull = &ecrNodePull{review: (&k8sTokenReviewer{cs: cs, audience: ecrNodePullAudience}).Review,
 			agents: parseNodePullAgents(os.Getenv("ECR_NODE_PULL_AGENTS"))}
+		// An application's image is pulled with its task execution role (ecr_pod_credential.go): the nodes' ECR
+		// credential provider trades the pod's token (the kubelet's, audience openinfra-ecr-pull) for the role's
+		// pull credential, as ECS pulls a task's image with its ExecutionRoleArn.
+		if stsH, ok := services["sts"].(*stsHandler); ok && dyn != nil && stsH.roles != nil {
+			if md, merr := metadata.NewForConfig(kc.Config); merr == nil {
+				ecrH.podPull = &ecrPodPull{
+					apps:    &k8sApplicationIdentities{cs: cs, dyn: dyn, meta: md, audience: ecrPodPullAudience, accounts: acctDir},
+					roleOf:  stsH.workloadRoleOf,
+					iamHome: getenv("ROLES_NAMESPACE", getenv("USERS_NAMESPACE", dataplaneauthz.DefaultHomeNamespace)),
+					account: account,
+				}
+			} else {
+				logger.Warn("execution-role image pulls disabled: cannot build the metadata client", "err", merr)
+			}
+		}
 		// Per-repo data-plane auth (the Docker bearer-token protocol). The PRIVATE signing key lives in
 		// the shim's own namespace (keysNS — where it may create Secrets); the PUBLIC cert is published
 		// as a ConfigMap in the registry's namespace for the registry to mount as the token
@@ -1342,6 +1357,7 @@ func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, 
 		r.Get("/ecr/token", ecr.serveToken)                    // classic token flow (Basic auth + ?scope=)
 		r.Post("/ecr/token", ecr.servePostToken)               // OAuth2 token flow (form creds), used by containerd's puller
 		r.Get("/ecr/node-credential", ecr.serveNodeCredential) // a node agent's identity → the node pull credential
+		r.Post("/ecr/pod-credential", ecr.servePodCredential)  // a pod's token → its app's execution-role pull credential
 	}
 
 	// Every other request is an AWS-SDK call; the serviceRouter authenticates once and dispatches

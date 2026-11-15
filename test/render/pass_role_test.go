@@ -79,12 +79,25 @@ func TestPassRole_AdmissionChecksTheRequesterOnTheNamedRole(t *testing.T) {
 		"authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)",
 		".name(variables.role).check('passrole').allowed()")
 
+	// An Application's execution role (spec.executionRole), the same way: the aws-shim gives its ECR pull
+	// credential to the app's own pods, so naming it is the gate.
+	exec := yamlDoc(t, passRoleYAML, "ValidatingAdmissionPolicy", "openinfra-pass-role-application-execution")
+	mustContain(t, "Application execution-role policy", exec,
+		"apiGroups: [openinfra.dev]", "resources: [applications]", "operations: [CREATE, UPDATE]",
+		"failurePolicy: Fail",
+		"has(object.spec) && has(object.spec.executionRole) && object.spec.executionRole != ''",
+		"request.operation == 'CREATE'", "oldObject.spec.executionRole != object.spec.executionRole",
+		"object.spec.executionRole.substring(object.spec.executionRole.lastIndexOf('/') + 1).lowerAscii()",
+		"authorizer.group('iam.openinfra.dev').resource('roles').namespace(request.namespace)",
+		".name(variables.role).check('passrole').allowed()")
+
 	// A PassRole limited by iam:PassedToService compiles into the service's own verb (passrole:<service>):
 	// each check accepts its own service's verb, and no other's (AWSLambda_FullAccess passes a role to a
 	// Function, never to a VirtualMachine).
 	for _, c := range []struct{ doc, policy, own string }{
 		{vm, "VM", "ec2.amazonaws.com"}, {sa, "ServiceAccount", "ec2.amazonaws.com"},
 		{fn, "Function", "lambda.amazonaws.com"}, {app, "Application", "ecs-tasks.amazonaws.com"},
+		{exec, "Application execution-role", "ecs-tasks.amazonaws.com"},
 	} {
 		mustContain(t, c.policy+" policy", c.doc, ".check('passrole:"+c.own+"').allowed()")
 		for _, other := range []string{"ec2.amazonaws.com", "lambda.amazonaws.com", "ecs-tasks.amazonaws.com", "states.amazonaws.com"} {
@@ -94,7 +107,8 @@ func TestPassRole_AdmissionChecksTheRequesterOnTheNamedRole(t *testing.T) {
 		}
 	}
 
-	for _, p := range []string{"openinfra-pass-role", "openinfra-instance-role-binding", "openinfra-pass-role-function", "openinfra-pass-role-application"} {
+	for _, p := range []string{"openinfra-pass-role", "openinfra-instance-role-binding", "openinfra-pass-role-function",
+		"openinfra-pass-role-application", "openinfra-pass-role-application-execution"} {
 		b := yamlDoc(t, passRoleYAML, "ValidatingAdmissionPolicyBinding", p)
 		mustContain(t, p+" binding", b, "policyName: "+p, "validationActions: [Deny, Audit]")
 	}

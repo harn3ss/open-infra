@@ -72,7 +72,10 @@ type ecrHandler struct {
 	revoke sessionRevoker
 	// nodePull issues the node puller's credential to the node agents (ecr_node_pull.go). nil: not served.
 	nodePull *ecrNodePull
-	logger   *slog.Logger
+	// podPull issues an application's execution-role pull credential to the nodes' ECR credential provider
+	// (ecr_pod_credential.go). nil: not served.
+	podPull *ecrPodPull
+	logger  *slog.Logger
 }
 
 func newECRHandler(cs kubernetes.Interface, authzNS, account, region, ns, registryURL, proxyEndpoint, authSecret string, logger *slog.Logger) *ecrHandler {

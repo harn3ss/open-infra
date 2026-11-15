@@ -3857,10 +3857,23 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName, acct string) (map
 			spec0["volumes"] = appVols
 		}
 	}
-	for _, p := range []string{"Cpu", "Memory", "ExecutionRoleArn", "NetworkMode", "RequiresCompatibilities", "RuntimePlatform"} {
+	for _, p := range []string{"Cpu", "Memory", "NetworkMode", "RequiresCompatibilities", "RuntimePlatform"} {
 		if _, ok := td[p]; ok {
-			caveats = append(caveats, "TaskDefinition "+p+" dropped — task-level sizing is via per-container resources/quotas; ExecutionRoleArn (the ECS agent's image-pull/log role) has no equivalent (the platform pulls images), and launch-compat/network-mode don't map")
+			caveats = append(caveats, "TaskDefinition "+p+" dropped — task-level sizing is via per-container resources/quotas, and launch-compat/network-mode don't map")
 		}
+	}
+	// ExecutionRoleArn -> the Application's execution role (spec.executionRole): the role that pulls the
+	// task's image from ECR, as ECS pulls it with the task definition's execution role. It is a role of the
+	// app's own account, must trust ecs-tasks.amazonaws.com, and naming it takes iam:PassRole on it.
+	if era, ok := concrete(td["ExecutionRoleArn"]); ok && era != "" {
+		role := k8sName(iamRoleNameFromArn(era))
+		spec0["executionRole"] = role
+		caveats = append(caveats, "ExecutionRoleArn -> the app's execution role is kind: Role "+role+" of its own account: it pulls the task's image from ECR (its policies decide which repositories); that Role must exist and trust ecs-tasks.amazonaws.com, and naming it takes iam:PassRole on it")
+		if a := awsidentity.AccountOfARN(era); a != "" && a != acct {
+			caveats = append(caveats, "ExecutionRoleArn "+era+" is a role of account "+a+"; an application's execution role is a role of its own account, so the app's image is pulled as kind: Role "+role+" of this stack's account ("+acct+")")
+		}
+	} else if _, present := td["ExecutionRoleArn"]; present {
+		caveats = append(caveats, "ExecutionRoleArn could not be resolved (an unresolvable intrinsic) — set the Application's executionRole natively to the kind: Role name")
 	}
 	// TaskRoleArn -> the Application's task role (#117 §3, spec.assumeRole): the task's application runs AS
 	// this role — its SDK assumes it on the aws-shim (sts:AssumeRoleWithWebIdentity) with no keys, as ECS

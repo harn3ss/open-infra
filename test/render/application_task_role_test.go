@@ -207,3 +207,39 @@ func TestApplication_TaskRoleUnlabellableName(t *testing.T) {
 		t.Errorf("AWS_ROLE_ARN = %q", env["AWS_ROLE_ARN"])
 	}
 }
+
+// An Application's execution role (spec.executionRole, an ECS task definition's ExecutionRoleArn) pulls its
+// image: the app's pods run as its own labelled ServiceAccount, so the kubelet's token for the ECR credential
+// provider is the app's identity (the aws-shim reads the role from the Application). Without a task role the
+// app gets none of the task role's web-identity token or environment.
+func TestApplication_ExecutionRoleRunsAsTheAppsOwnIdentity(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	spec := map[string]any{"image": "ghcr.io/me/app:1", "port": float64(8080), "executionRole": "app-execution"}
+	out := render(t, tmpl, appRoleCtx("orders", "team-a", spec, fnRoleExtra("123456789012", "eu-west-1")))
+	dep := appDeployment(t, out, "orders")
+	if got := mstr(dep, "spec", "template", "spec", "serviceAccountName"); got != "orders" {
+		t.Errorf("an app with an execution role must run as its own ServiceAccount orders, got %q", got)
+	}
+	docs, _ := parseYAMLDocs(out)
+	sa := objectFor(docs, "ServiceAccount", "orders")
+	if sa == nil {
+		t.Fatalf("no ServiceAccount rendered:\n%s", out)
+	}
+	if l := strMap(mget(sa, "spec", "forProvider", "manifest", "metadata", "labels")); l["openinfra.dev/application"] != "orders" {
+		t.Errorf("the identity ServiceAccount's labels: %v", l)
+	}
+	env, _ := appEnv(t, dep)
+	for _, k := range []string{"AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE"} {
+		if _, ok := env[k]; ok {
+			t.Errorf("an app with no task role must not get %s", k)
+		}
+	}
+	if strings.Contains(out, "audience: sts.openinfra") || strings.Contains(out, "assumed-role:") {
+		t.Errorf("an app with no task role must get no STS token and no task-role trust check:\n%s", out)
+	}
+	// An app with neither role renders exactly as before: no ServiceAccount of its own.
+	plain := render(t, tmpl, appRoleCtx("orders", "team-a", map[string]any{"image": "ghcr.io/me/app:1", "port": float64(8080)}, nil))
+	if d := appDeployment(t, plain, "orders"); mstr(d, "spec", "template", "spec", "serviceAccountName") != "" {
+		t.Error("an app with no role must keep the namespace's default ServiceAccount")
+	}
+}

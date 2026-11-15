@@ -558,8 +558,9 @@ Resources:
 	if !strings.Contains(joined, "trust ecs-tasks.amazonaws.com") || !strings.Contains(joined, "iam:PassRole") {
 		t.Fatalf("a task-role mapping must caveat the trust and PassRole requirements: %v", m.Caveats)
 	}
-	if !strings.Contains(joined, "ExecutionRoleArn") {
-		t.Fatalf("ExecutionRoleArn must stay a caveat: %v", m.Caveats)
+	// ExecutionRoleArn -> the app's execution role, which pulls its image (spec.executionRole).
+	if m.Spec["executionRole"] != "ecstaskexecutionrole" || !strings.Contains(joined, "ExecutionRoleArn -> the app's execution role") {
+		t.Fatalf("ExecutionRoleArn should map to executionRole=ecstaskexecutionrole, got %#v: %v", m.Spec["executionRole"], m.Caveats)
 	}
 	// The role ARN names another account than the stack's: the app's task role is its own account's role of
 	// that name, and a caveat says so.
@@ -574,7 +575,7 @@ Resources:
 	if len(ofs) != 0 || om.Spec["assumeRole"] != "data-reader" {
 		t.Fatalf("a task role of the stack's account: %#v %s", om.Spec["assumeRole"], findingsText(ofs))
 	}
-	if strings.Contains(strings.Join(om.Caveats, "\n"), "is a role of account") {
+	if strings.Contains(strings.Join(om.Caveats, "\n"), "TaskRoleArn "+"arn:aws:iam::"+ctx.account()) {
 		t.Errorf("a task role of the stack's account is not another account's: %v", om.Caveats)
 	}
 }

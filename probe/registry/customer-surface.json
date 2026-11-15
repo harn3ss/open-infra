@@ -72,6 +72,15 @@
       "how": "update",
       "kind": "Application"
     },
+    "Application.executionRole": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "executionRole",
+      "how": "update",
+      "kind": "Application"
+    },
     "Application.expose": {
       "actions": [
         "ecs:UpdateService"
@@ -6848,7 +6857,7 @@
       "tier": "proven"
     },
     "ecr": {
-      "actions": 10,
+      "actions": 11,
       "class": "aws",
       "operations": 37,
       "service": "ECR",
@@ -7018,11 +7027,11 @@
   },
   "summary": {
     "fields": {
-      "aws": 367,
+      "aws": 368,
       "extra": 25,
       "operator": 0,
       "removed": 0,
-      "total": 392
+      "total": 393
     },
     "kinds": {
       "aws": 54,

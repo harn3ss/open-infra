@@ -58,7 +58,10 @@ type applicationIdentity struct {
 	namespace string // the app's namespace
 	name      string // the kind: Application's name (its ServiceAccount's and its Deployment's)
 	role      string // its spec.assumeRole: a role name or a role ARN
-	username  string // the identity's ServiceAccount username
+	// executionRole is its spec.executionRole (a role name or a role ARN), which pulls its image
+	// (ecr_pod_credential.go); pod is the pod the token is bound to.
+	executionRole, pod string
+	username           string // the identity's ServiceAccount username
 	// account is the app's member account ("" for the management account's app); home is that member
 	// account's home namespace.
 	account, home string
@@ -117,7 +120,8 @@ func (a *k8sApplicationIdentities) applicationOf(ctx context.Context, token stri
 		return applicationIdentity{}, false
 	}
 	role, _, _ := unstructured.NestedString(claim.Object, "spec", "assumeRole")
-	id := applicationIdentity{namespace: ns, name: sa, role: role, username: u}
+	exec, _, _ := unstructured.NestedString(claim.Object, "spec", "executionRole")
+	id := applicationIdentity{namespace: ns, name: sa, role: role, executionRole: exec, pod: podName, username: u}
 	if a.accounts != nil {
 		if a.accounts.AccountOf(ns) == "" {
 			return applicationIdentity{}, false // a platform namespace is no account's
