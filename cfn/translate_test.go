@@ -416,8 +416,9 @@ Resources:
 	if env, _ := m.Spec["env"].([]any); len(env) != 1 {
 		t.Fatalf("container env should map: %#v", m.Spec["env"])
 	}
-	if !strings.Contains(strings.Join(m.Caveats, " "), "Cpu") {
-		t.Fatalf("task Cpu should surface a caveat: %v", m.Caveats)
+	// The task's Cpu ("256" units) is its container's size, as Fargate's task size is.
+	if m.Spec["cpu"] != "250m" {
+		t.Fatalf("task Cpu should size the container: %#v", m.Spec["cpu"])
 	}
 	// The Cluster and a bare TaskDefinition are no-ops (nil manifest, no findings).
 	if mc, fc := translateECSCluster("Web", nil, ctx); mc != nil || len(fc) != 0 {
@@ -1808,5 +1809,146 @@ func TestTranslate_S3_ObjectLockNoRetentionRefused(t *testing.T) {
 	_, fs := translateS3Bucket("Bare", map[string]any{"BucketName": "b", "ObjectLockEnabled": true}, nil)
 	if !strings.Contains(findingsText(fs), "DefaultRetention") {
 		t.Fatalf("bare ObjectLockEnabled must refuse, got: %s", findingsText(fs))
+	}
+}
+
+// A Fargate task's size (TaskDefinition Cpu / Memory) is what its containers share: a container without its
+// own size gets what the others leave, in CPU units (1024 = 1 vCPU) or vCPUs, MiB or GB.
+func TestTranslate_ECSService_TaskSize(t *testing.T) {
+	tmpl := func(cpu, mem, containers string) string {
+		return `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: ` + cpu + `
+      Memory: ` + mem + `
+      ContainerDefinitions:` + containers + `
+  Svc:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref Task
+`
+	}
+	one := `
+        - { Name: app, Image: registry/app:1, PortMappings: [ { ContainerPort: 8080 } ] }`
+	withSidecar := one + `
+        - { Name: log, Image: registry/log:1, Cpu: 64, Memory: 128 }`
+	sizedPrimary := `
+        - { Name: app, Image: registry/app:1, Cpu: 512, Memory: 1024, PortMappings: [ { ContainerPort: 8080 } ] }`
+	for _, c := range []struct {
+		name, cpu, mem, containers string
+		wantCPU, wantMem           string
+		wantSide                   bool
+	}{
+		{"units and MiB", `"256"`, `"512"`, one, "250m", "512Mi", false},
+		{"numbers", `1024`, `2048`, one, "1000m", "2048Mi", false},
+		{"vCPU and GB", `"0.5 vCPU"`, `"1 GB"`, one, "500m", "1024Mi", false},
+		{"a sidecar's share is left to it", `"256"`, `"512"`, withSidecar, "187m", "384Mi", true}, // 192 units
+		{"a sized primary keeps its size", `"1024"`, `"2048"`, sizedPrimary, "500m", "1024Mi", false},
+	} {
+		ctx := ecsCtx(t, tmpl(c.cpu, c.mem, c.containers))
+		m, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+		if len(fs) != 0 {
+			t.Fatalf("%s: %s", c.name, findingsText(fs))
+		}
+		if m.Spec["cpu"] != c.wantCPU || m.Spec["memory"] != c.wantMem {
+			t.Errorf("%s: cpu %v memory %v; want %s %s", c.name, m.Spec["cpu"], m.Spec["memory"], c.wantCPU, c.wantMem)
+		}
+		if c.wantSide {
+			side := m.Spec["sidecars"].([]any)[0].(map[string]any)
+			if side["cpu"] != "62m" || side["memory"] != "128Mi" {
+				t.Errorf("%s: the sidecar keeps its own size, got %v %v", c.name, side["cpu"], side["memory"])
+			}
+		}
+		if strings.Contains(strings.Join(m.Caveats, "\n"), "Cpu dropped") || strings.Contains(strings.Join(m.Caveats, "\n"), "Memory dropped") {
+			t.Errorf("%s: the task size is no longer dropped: %v", c.name, m.Caveats)
+		}
+	}
+}
+
+// A task definition's roles may be the stack's own: !GetAtt <Role>.Arn names the kind: Role the stack
+// creates, and a role whose trust does not name ecs-tasks.amazonaws.com is refused.
+func TestTranslate_ECSService_InStackRoles(t *testing.T) {
+	tmpl := func(trust string) string {
+		return `
+Resources:
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [ { Effect: Allow, Principal: { Service: ` + trust + ` }, Action: sts:AssumeRole } ] }
+  ExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [ { Effect: Allow, Principal: { Service: ecs-tasks.amazonaws.com }, Action: sts:AssumeRole } ] }
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ExecutionRoleArn: !GetAtt ExecRole.Arn
+      ContainerDefinitions: [ { Name: app, Image: registry/app:1, PortMappings: [ { ContainerPort: 8080 } ] } ]
+  Svc:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref Task
+`
+	}
+	ctx := ecsCtx(t, tmpl("ecs-tasks.amazonaws.com"))
+	m, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if len(fs) != 0 {
+		t.Fatal(findingsText(fs))
+	}
+	if m.Spec["assumeRole"] != ctx.name("TaskRole") || m.Spec["executionRole"] != ctx.name("ExecRole") {
+		t.Fatalf("in-stack roles: assumeRole %v executionRole %v; want %s %s", m.Spec["assumeRole"], m.Spec["executionRole"],
+			ctx.name("TaskRole"), ctx.name("ExecRole"))
+	}
+	if j := strings.Join(m.Caveats, "\n"); strings.Contains(j, "could not be resolved") {
+		t.Fatalf("an in-stack role is resolved: %v", m.Caveats)
+	}
+	ctx = ecsCtx(t, tmpl("lambda.amazonaws.com"))
+	if _, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx); !strings.Contains(findingsText(fs), "TaskRoleArn role TaskRole does not trust ecs-tasks.amazonaws.com") {
+		t.Fatalf("a role ECS cannot use must be refused: %s", findingsText(fs))
+	}
+}
+
+// The awslogs driver names the task's CloudWatch Logs group and stream prefix; another driver is a caveat.
+func TestTranslate_ECSService_AwslogsGroup(t *testing.T) {
+	tmpl := func(lc string) string {
+		return `
+Resources:
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: /ecs/example-app }
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Name: app
+          Image: registry/app:1
+          PortMappings: [ { ContainerPort: 8080 } ]
+          LogConfiguration: ` + lc + `
+  Svc:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref Task
+`
+	}
+	ctx := ecsCtx(t, tmpl(`{ LogDriver: awslogs, Options: { awslogs-group: !Ref Logs, awslogs-region: us-east-1, awslogs-stream-prefix: web } }`))
+	m, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if len(fs) != 0 {
+		t.Fatal(findingsText(fs))
+	}
+	if m.Spec["logGroup"] != "/ecs/example-app" || m.Spec["logStreamPrefix"] != "web" {
+		t.Fatalf("logGroup %v logStreamPrefix %v; want /ecs/example-app web", m.Spec["logGroup"], m.Spec["logStreamPrefix"])
+	}
+	// The ECS API's option keys arrive first-letter upper-cased (camelToCFN).
+	ctx = ecsCtx(t, tmpl(`{ LogDriver: awslogs, Options: { Awslogs-group: example-group, Awslogs-stream-prefix: p } }`))
+	if m, _ := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx); m.Spec["logGroup"] != "example-group" || m.Spec["logStreamPrefix"] != "p" {
+		t.Fatalf("from the ECS API: %v %v", m.Spec["logGroup"], m.Spec["logStreamPrefix"])
+	}
+	ctx = ecsCtx(t, tmpl(`{ LogDriver: splunk, Options: { splunk-url: https://splunk.example } }`))
+	m, _ = translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if _, set := m.Spec["logGroup"]; set || !strings.Contains(strings.Join(m.Caveats, "\n"), `driver "splunk" dropped`) {
+		t.Fatalf("another driver: %v %v", m.Spec["logGroup"], m.Caveats)
 	}
 }

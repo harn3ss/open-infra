@@ -3701,6 +3701,42 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 		return nil, f
 	}
 	td, _ := ctx.resolveProps(tdID)
+	// An in-stack role named by !GetAtt <Role>.Arn (or !Ref) is the role this stack creates: its kind: Role
+	// name, as for a Lambda execution role. A role ECS cannot use — one whose trust policy does not name
+	// ecs-tasks.amazonaws.com — is refused, as ECS refuses a task definition's role it cannot assume.
+	if raw, ok := ctx.rawProps(tdID); ok {
+		for _, p := range []string{"TaskRoleArn", "ExecutionRoleArn"} {
+			target, isRef := getAttTarget(raw[p])
+			if !isRef || !ctx.isType(target, "AWS::IAM::Role") {
+				continue
+			}
+			if svcs, parsed := trustServices(ctx.template.Resources[target].Properties["AssumeRolePolicyDocument"]); parsed && !slices.Contains(svcs, "ecs-tasks.amazonaws.com") {
+				f = append(f, Finding{"Resource " + tdID, "the " + p + " role " + target + " does not trust ecs-tasks.amazonaws.com, so ECS cannot use it — add ecs-tasks.amazonaws.com to its AssumeRolePolicyDocument"})
+				continue
+			}
+			td[p] = ctx.name(target)
+		}
+		// awslogs-group: !Ref <LogGroup> names the stack's own log group, by the name its Ref returns.
+		rawCs, _ := raw["ContainerDefinitions"].([]any)
+		cs, _ := td["ContainerDefinitions"].([]any)
+		for i := range rawCs {
+			if i >= len(cs) {
+				break
+			}
+			rawOpts, _ := mapAt(rawCs[i], "LogConfiguration", "Options")
+			opts, _ := mapAt(cs[i], "LogConfiguration", "Options")
+			for k, v := range rawOpts {
+				if !strings.EqualFold(k, "awslogs-group") || opts == nil {
+					continue
+				}
+				if target, isRef := getAttTarget(v); isRef && ctx.isType(target, "AWS::Logs::LogGroup") {
+					if name, ok := serviceStatic(target, "", ctx); ok && name != "" {
+						opts[k] = name
+					}
+				}
+			}
+		}
+	}
 	// The LB routes to a named container — that is the primary; the rest become sidecars.
 	primaryName := ""
 	if lbs, ok := props["LoadBalancers"].([]any); ok {
@@ -3857,9 +3893,9 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName, acct string) (map
 			spec0["volumes"] = appVols
 		}
 	}
-	for _, p := range []string{"Cpu", "Memory", "NetworkMode", "RequiresCompatibilities", "RuntimePlatform"} {
+	for _, p := range []string{"NetworkMode", "RequiresCompatibilities", "RuntimePlatform"} {
 		if _, ok := td[p]; ok {
-			caveats = append(caveats, "TaskDefinition "+p+" dropped — task-level sizing is via per-container resources/quotas, and launch-compat/network-mode don't map")
+			caveats = append(caveats, "TaskDefinition "+p+" dropped — launch compatibility and network mode don't map")
 		}
 	}
 	// ExecutionRoleArn -> the Application's execution role (spec.executionRole): the role that pulls the
@@ -3923,13 +3959,93 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName, acct string) (map
 				side[k] = v
 			}
 		}
+		if g, ok := cs["logGroup"]; ok {
+			if _, has := spec["logGroup"]; !has {
+				spec["logGroup"] = g // the task logs to the one group its containers name
+				if p, ok := cs["logStreamPrefix"]; ok {
+					spec["logStreamPrefix"] = p
+				}
+			} else if g != spec["logGroup"] {
+				caveats = append(caveats, fmt.Sprintf("container %s: its awslogs group %v is not the primary container's — the task's containers log to one group (%v)", name, g, spec["logGroup"]))
+			}
+		}
 		sidecars = append(sidecars, side)
 	}
 	if len(sidecars) > 0 {
 		spec["sidecars"] = sidecars
 		caveats = append(caveats, fmt.Sprintf("multi-container task: %q is the primary, the other %d container(s) map to Application sidecars (image/port/env/cpu/memory + shared-volume mounts carried; per-container health checks are not)", concreteOr(pc["Name"], "the primary"), len(sidecars)))
 	}
+	ecsTaskSize(td, spec, containers, primaryIdx, &caveats)
 	return spec, caveats, f
+}
+
+// ecsTaskSize applies a task definition's task-level size (Cpu, Memory: Fargate's task size, which its
+// containers share) to the Application: a primary container without its own size gets what the other
+// containers' own sizes leave of the task's. Cpu is CPU units ("256") or vCPUs ("0.25 vCPU"); Memory is MiB
+// ("512") or GB ("1 GB").
+func ecsTaskSize(td, spec map[string]any, containers []any, primaryIdx int, cav *[]string) {
+	others := func(props ...string) int {
+		n := 0
+		for i, raw := range containers {
+			c, _ := raw.(map[string]any)
+			if i == primaryIdx || c == nil {
+				continue
+			}
+			for _, p := range props {
+				if v := toInt(c[p]); v > 0 {
+					n += v
+					break
+				}
+			}
+		}
+		return n
+	}
+	share := func(prop, key string, parse func(string) (int, bool), unit func(int) string, used int) {
+		raw, ok := concrete(td[prop])
+		if !ok || raw == "" {
+			if _, present := td[prop]; present {
+				*cav = append(*cav, "TaskDefinition "+prop+" could not be resolved (an unresolvable intrinsic) — size the containers instead")
+			}
+			return
+		}
+		total, ok := parse(raw)
+		if !ok || total <= 0 {
+			*cav = append(*cav, "TaskDefinition "+prop+" "+raw+" is not a task size — size the containers instead")
+			return
+		}
+		if _, sized := spec[key]; sized {
+			return // the primary container is sized itself, within the task's size
+		}
+		if total-used <= 0 {
+			*cav = append(*cav, "TaskDefinition "+prop+" "+raw+" leaves nothing for the primary container after its sidecars — size it instead")
+			return
+		}
+		spec[key] = unit(total - used)
+	}
+	share("Cpu", "cpu", ecsParseTaskCPU, ecsCPU, others("Cpu"))
+	share("Memory", "memory", ecsParseTaskMemory, func(mi int) string { return fmt.Sprintf("%dMi", mi) }, others("Memory", "MemoryReservation"))
+}
+
+// ecsParseTaskCPU reads a task's Cpu as CPU units (1024 = 1 vCPU): "256", or "0.25 vCPU".
+func ecsParseTaskCPU(s string) (int, bool) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if v, ok := strings.CutSuffix(s, "vcpu"); ok {
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		return int(f * 1024), err == nil
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil
+}
+
+// ecsParseTaskMemory reads a task's Memory as MiB: "512", or "0.5 GB" / "1GB".
+func ecsParseTaskMemory(s string) (int, bool) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if v, ok := strings.CutSuffix(s, "gb"); ok {
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		return int(f * 1024), err == nil
+	}
+	n, err := strconv.Atoi(s)
+	return n, err == nil
 }
 
 // ecsPickPrimary chooses the primary container: the one the load balancer names, else the first
@@ -4004,8 +4120,34 @@ func ecsContainerSpec(tdID, where string, c map[string]any, f *[]Finding, cav *[
 	if _, ok := c["HealthCheck"]; ok {
 		*cav = append(*cav, fmt.Sprintf("container %v: HealthCheck is not mapped — the platform does not run the container's health command", c["Name"]))
 	}
-	if _, ok := c["LogConfiguration"]; ok {
-		*cav = append(*cav, fmt.Sprintf("container %v: LogConfiguration dropped — logs go to the platform's log pipeline", c["Name"]))
+	// LogConfiguration with the awslogs driver -> the app's CloudWatch Logs group and stream prefix
+	// (logGroup, logStreamPrefix): its containers' output is read in that group, in streams named
+	// <prefix>/<container>/<task id>, as the awslogs driver names them. Any other driver has no form here.
+	if lc, ok := c["LogConfiguration"].(map[string]any); ok {
+		if drv, _ := concrete(lc["LogDriver"]); drv == "awslogs" {
+			opts, _ := lc["Options"].(map[string]any)
+			opt := func(name string) string {
+				for k, v := range opts { // the ECS API's keys arrive with their first letter upper-cased
+					if strings.EqualFold(k, name) {
+						s, _ := concrete(v)
+						return s
+					}
+				}
+				return ""
+			}
+			if g := opt("awslogs-group"); g != "" {
+				spec["logGroup"] = g
+				if p := opt("awslogs-stream-prefix"); p != "" {
+					spec["logStreamPrefix"] = p
+				}
+			} else {
+				*cav = append(*cav, fmt.Sprintf("container %v: the awslogs driver names no awslogs-group — its logs are in /ecs/<application>", c["Name"]))
+			}
+		} else {
+			*cav = append(*cav, fmt.Sprintf("container %v: LogConfiguration driver %q dropped — logs go to the platform's log pipeline (the awslogs driver maps to a CloudWatch Logs group)", c["Name"], drv))
+		}
+	} else if _, ok := c["LogConfiguration"]; ok {
+		*cav = append(*cav, fmt.Sprintf("container %v: LogConfiguration dropped — it is not a log configuration", c["Name"]))
 	}
 	// Per-container resources (#117 §1): Cpu (CPU units, 1024 = 1 vCPU) -> cpu; Memory (or the soft
 	// MemoryReservation) in MiB -> memory. A faithful correspondence, requested == limited.
@@ -5976,4 +6118,17 @@ func sortedKeys(m map[string]any) []string {
 		}
 	}
 	return keys
+}
+
+// mapAt is the map at path below v (each step a map key), if there is one.
+func mapAt(v any, path ...string) (map[string]any, bool) {
+	for _, k := range path {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		v = m[k]
+	}
+	m, ok := v.(map[string]any)
+	return m, ok
 }
