@@ -77,6 +77,11 @@ updates:
       # patches still flow); do the migration deliberately, then remove this.
       - dependency-name: "@tanstack/react-table"
         update-types: ["version-update:semver-major"]
+      # @xterm/addon-fit 0.11 is the add-on for @xterm/xterm 6; the console's serial terminal is on xterm
+      # 5.5 (both pinned exactly). Move the two together, with a serial console click-through, then
+      # remove this.
+      - dependency-name: "@xterm/addon-fit"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   # ── GitHub Actions ────────────────────────────────────────────────────────────
   - package-ecosystem: github-actions
