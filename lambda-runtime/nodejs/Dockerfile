@@ -27,6 +27,10 @@ ARG NODE_VERSION
 ARG AWS_SDK_V3=3.1159.0
 # The SDK v3 for Node.js 18: 3.967.0 is its last release that supports Node.js 18 (3.968.0 needs 20).
 ARG AWS_SDK_V3_NODE18=3.967.0
+# ...whose @aws-sdk/xml-builder pins fast-xml-parser 5.2.5 exactly (CVE-2026-25896 critical, -25128, -26278,
+# -33036 high). The SDK is installed as one project with an npm override to this patched release (the 5.x
+# API the builder uses, fixed for all four from 5.5.6); the SDK for Node.js >= 20 has no fast-xml-parser.
+ARG FAST_XML_PARSER=5.5.12
 ARG AWS_SDK_V2=2.1692.0
 
 # unzip: Node has no stdlib zip-archive reader, so the bucket-source .zip is extracted with the system
@@ -38,6 +42,8 @@ ARG AWS_SDK_V2=2.1692.0
 #        does NOT use the SDK — it fetches the code bucket with a built-in SigV4 GET (crypto + http), so
 #        cold start works on every Node version; the SDK here is purely for handler code. v3 ships a
 #        common client set (extend the list as the estate declares more clients; v2 is one package = all).
+#        v3 is installed as one project (so npm's overrides apply), its hoisted node_modules copied into the
+#        global root NODE_PATH names.
 # apt-get upgrade: pull Debian security updates for base-image OS packages (perl-base, libgnutls30,
 #        libpcre2-8-0, libcap2, …) so the image isn't pinned to the base layer's snapshot.
 # rm npm/npx: the runtime only runs `node bootstrap.js`; npm is used once at build for the SDK install
@@ -54,13 +60,17 @@ RUN . /etc/os-release; if [ "$VERSION_CODENAME" = buster ]; then \
  && apt-get install -y --no-install-recommends unzip ca-certificates \
  && if [ "${NODE_VERSION%%.*}" -ge 18 ] 2>/dev/null; then \
       if [ "${NODE_VERSION%%.*}" -lt 20 ]; then AWS_SDK_V3="${AWS_SDK_V3_NODE18}"; fi ; \
-      npm install -g \
-        @aws-sdk/client-s3@${AWS_SDK_V3} @aws-sdk/client-dynamodb@${AWS_SDK_V3} \
-        @aws-sdk/lib-dynamodb@${AWS_SDK_V3} @aws-sdk/client-sns@${AWS_SDK_V3} \
-        @aws-sdk/client-sqs@${AWS_SDK_V3} @aws-sdk/client-lambda@${AWS_SDK_V3} \
-        @aws-sdk/client-sts@${AWS_SDK_V3} @aws-sdk/client-ssm@${AWS_SDK_V3} \
-        @aws-sdk/client-secrets-manager@${AWS_SDK_V3} @aws-sdk/client-kms@${AWS_SDK_V3} \
-        @aws-sdk/client-eventbridge@${AWS_SDK_V3} @aws-sdk/client-cloudwatch-logs@${AWS_SDK_V3} ; \
+      deps="" ; \
+      for c in client-s3 client-dynamodb lib-dynamodb client-sns client-sqs client-lambda client-sts client-ssm \
+               client-secrets-manager client-kms client-eventbridge client-cloudwatch-logs; do \
+        deps="${deps}${deps:+,}\"@aws-sdk/${c}\":\"${AWS_SDK_V3}\"" ; \
+      done ; \
+      mkdir -p /tmp/aws-sdk \
+      && printf '{"private":true,"dependencies":{%s},"overrides":{"fast-xml-parser":"%s"}}\n' "$deps" "$FAST_XML_PARSER" \
+           > /tmp/aws-sdk/package.json \
+      && npm install --prefix /tmp/aws-sdk --omit=dev --ignore-scripts --no-audit --no-fund \
+      && cp -a /tmp/aws-sdk/node_modules/. /usr/local/lib/node_modules/ \
+      && rm -rf /usr/local/lib/node_modules/.package-lock.json /tmp/aws-sdk ; \
     else \
       npm install -g aws-sdk@${AWS_SDK_V2} ; \
     fi \

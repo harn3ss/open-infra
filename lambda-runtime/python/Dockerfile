@@ -24,18 +24,20 @@ LABEL org.opencontainers.image.source="https://github.com/harn3ss/open-infra" \
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 # boto3 for the bucket (S3/MinIO) code-source path. The shim imports it lazily, so the
-# ConfigMap (inline) source never pays for it at runtime — it's here so bucket sources work.
-# The transitive/base packages are floored to their patched versions to clear Trivy CVE
-# findings on the runtime image — urllib3 (pulled by botocore) CVE-2026-97687 + CVE-2026-97689,
-# setuptools (from the python base image) CVE-2025-47273, msgpack GHSA-6v7p-g79w-8964. botocore
-# allows urllib3 <3 on Python >=3.10, so these floors do not conflict with boto3's own pins.
-# The floors need Python >= 3.10 (urllib3 2.8, msgpack 1.2) or 3.9 (setuptools 78): an older interpreter
-# gets the newest boto3 and packages that support it, which pip picks by their Requires-Python.
+# ConfigMap (inline) source never pays for it at runtime — it's here so bucket sources work, and because
+# AWS's Python runtimes ship boto3 for handlers.
+# Everything is UPGRADED (-U) to the newest release the interpreter supports: a plain install leaves the
+# base image's own setuptools and wheel where they are, with their CVEs (setuptools vendors its own wheel
+# and jaraco.context; 84.2.1 on Python >= 3.10 and 82.0.1 on 3.9 carry fixed copies). urllib3 (pulled by
+# botocore) is floored where botocore allows 2.x (Python >= 3.10). On 3.8 and 3.9 the newest botocore
+# still pins urllib3 < 1.27, as AWS's own runtimes for them do, and 3.8's newest setuptools is 75.3.4:
+# those images keep what their interpreter allows. wheel is a build tool nothing here runs: removed.
 RUN if python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then \
-      pip install --no-cache-dir "boto3>=1.34,<2" "urllib3>=2.8.0" "msgpack>=1.2.1" "setuptools>=78.1.1" ; \
+      pip install --no-cache-dir -U "boto3>=1.34,<2" "urllib3>=2.8.0" "setuptools>=84.2.1" ; \
     else \
-      pip install --no-cache-dir "boto3>=1.34,<2" "urllib3" "msgpack" "setuptools" ; \
+      pip install --no-cache-dir -U "boto3>=1.34,<2" "setuptools" ; \
     fi \
+    && python -m pip uninstall -y wheel \
     && python -m pip uninstall -y pip \
     && rm -rf /root/.cache/pip
 # pip is a BUILD-time tool — the runtime only runs bootstrap.py (stdlib) + boto3; a handler brings its
