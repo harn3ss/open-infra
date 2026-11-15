@@ -25,10 +25,10 @@ by `probe/shimgen.py`), and CI fails when a capability a customer can reach has 
 |---|---|---|---|---|---|
 | Resource types (claim kinds) | 54 | 2 | 1 | 0 | 57 |
 | Resource properties (spec fields) | 367 | 25 | 0 | 0 | 392 |
-| Console API routes | 117 | 1 | 1 | 0 | 119 |
-| Console screens | 156 | 4 | 3 | 0 | 163 |
+| Console API routes | 122 | 1 | 1 | 0 | 124 |
+| Console screens | 158 | 4 | 3 | 0 | 165 |
 | AWS APIs (signing names) | 35 | 0 | 0 | 0 | 35 |
-| **All** | **729** | **32** | **5** | **0** | **766** |
+| **All** | **736** | **32** | **5** | **0** | **773** |
 
 11 of the console routes need no authorization (sign-in, sign-out, who-am-I, the console's own configuration), as AWS's sign-in and console metadata need none. 2 platform extras and 14 properties in Kubernetes vocabulary await the operator's ruling (below).
 <!-- END shimgen:surface-summary -->
@@ -330,6 +330,9 @@ action cannot be registered, and every one is shown, in CI, to refuse a principa
 | `POST /api/queues/publish` | AWS-shaped | `sqs:SendMessage` | `arn:aws:sqs:us-east-1:{account}:{subject}` |
 | `GET /api/queues/{stream}/messages` | AWS-shaped | `sqs:ReceiveMessage` | `arn:aws:sqs:us-east-1:{account}:{stream}` |
 | `POST /api/queues/{stream}/purge` | AWS-shaped | `sqs:PurgeQueue` | `arn:aws:sqs:us-east-1:{account}:{stream}` |
+| `GET /api/remote-desktop/connections` | AWS-shaped | `ssm-guiconnect:ListConnections` | `*` |
+| `GET /api/remote-desktop/connections/{id}` | AWS-shaped | `ssm-guiconnect:GetConnection` | `*` |
+| `POST /api/remote-desktop/connections/{id}/cancel` | AWS-shaped | `ssm-guiconnect:CancelConnection` | `*` |
 | `GET /api/replications/{namespace}/{name}/status` | AWS-shaped | `dms:DescribeReplicationTasks` | `arn:aws:dms:us-east-1:{account}:task:{name}` |
 | `DELETE /api/snapshots` | AWS-shaped | `rds:DeleteDBSnapshot` | `arn:aws:rds:us-east-1:{account}:snapshot:{id}` |
 | `GET /api/snapshots` | AWS-shaped | `rds:DescribeDBSnapshots` | `*` |
@@ -340,6 +343,8 @@ action cannot be registered, and every one is shown, in CI, to refuse a principa
 | `POST /api/vm-snapshots/restore` | AWS-shaped | `ec2:RunInstances` | `arn:aws:ec2:us-east-1:{account}:snapshot/{id}` |
 | `GET /api/vms/{namespace}/{name}/console-output` | AWS-shaped | `ec2:GetConsoleOutput` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
 | `GET /api/vms/{namespace}/{name}/console-screenshot` | AWS-shaped | `ec2:GetConsoleScreenshot` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
+| `GET /api/vms/{namespace}/{name}/remote-desktop` | AWS-shaped | `ssm-guiconnect:StartConnection` | `*` |
+| `GET /api/vms/{namespace}/{name}/remote-desktop/check` | AWS-shaped | `ssm-guiconnect:StartConnection` | `*` |
 | `GET /api/vms/{namespace}/{name}/serial-console` | AWS-shaped | `ec2-instance-connect:SendSerialConsoleSSHPublicKey` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
 | `GET /api/vms/{namespace}/{name}/serial-console/check` | AWS-shaped | `ec2-instance-connect:SendSerialConsoleSSHPublicKey` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
 | `POST /api/vms/{namespace}/{name}/snapshot` | AWS-shaped | `ec2:CreateSnapshots` | `arn:aws:ec2:us-east-1:{account}:instance/{name}` |
@@ -402,6 +407,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | Email Senders | `/emailsenders`, `/emailsenders/$namespace/$name`, `/emailsenders/new` | AWS-shaped | `ses` |
 | Encryption Keys | `/encryption` | AWS-shaped | `kms` |
 | File Shares | `/fileshares`, `/fileshares/$namespace/$name`, `/fileshares/new` | AWS-shaped | `elasticfilesystem` |
+| Fleet Manager | `/fleet-manager`, `/fleet-manager/remote-desktop/$namespace/$name` | AWS-shaped | `ssm-guiconnect`, `ssm` |
 | Functions | `/functions`, `/functions/$namespace/$name`, `/functions/new` | AWS-shaped | `lambda` |
 | GraphQL | `/graphql`, `/graphql/$namespace/$name`, `/graphql/new` | AWS-shaped | `appsync` |
 | HTTP APIs | `/http-apis`, `/http-apis/$namespace/$name`, `/http-apis/new` | AWS-shaped | `apigateway` |

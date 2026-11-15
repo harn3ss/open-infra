@@ -213,6 +213,13 @@ rules:
     resources:
       - virtualmachineinstances/console
     verbs: [get]
+  # Fleet Manager Remote Desktop to a Windows instance (ssm-guiconnect:StartConnection and ssm:StartSession,
+  # decided per instance by the route table): the RDP stream reaches the instance's port 3389 through the
+  # VMI's port-forward, not the instance's network (remote-desktop-gateway.yaml).
+  - apiGroups: [subresources.kubevirt.io]
+    resources:
+      - virtualmachineinstances/portforward
+    verbs: [get]
   # Hotplug attach/detach of volumes to running VMs (EBS-style). These subresources
   # are invoked via PUT (RBAC verb: update); --persist updates the VM spec too.
   - apiGroups: [subresources.kubevirt.io]

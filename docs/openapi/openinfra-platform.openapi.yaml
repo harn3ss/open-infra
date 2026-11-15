@@ -9626,8 +9626,9 @@ components:
               type: boolean
               default: false
               description: "Give the VM a LAN IP (MetalLB LoadBalancer) carrying its access port \u2014 SSH 22 (Linux) or\
-                \ RDP 3389 (Windows). Default false: reach the VM via port-forward or the web VNC console instead. Setting\
-                \ any entry in ports also implies this."
+                \ RDP 3389 (Windows). Default false: reach it without one through the platform instead (Fleet Manager Remote\
+                \ Desktop for Windows, the EC2 serial console, or a port-forward). Setting any entry in ports also implies\
+                \ this."
             elasticIp:
               type: object
               description: 'Give an exposed VM the LAN address an Elastic IP allocation holds (a CloudFormation AWS::EC2::EIP

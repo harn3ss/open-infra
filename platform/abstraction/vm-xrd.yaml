@@ -1,7 +1,7 @@
 # open-infra's "EC2": a third public API, kind: VirtualMachine. Give it an OS from
 # the curated catalog and get a real VM (KubeVirt) with a persistent disk (CDI),
-# cloud-init/cloudbase-init login, a web VNC console, and SSH (Linux) or RDP
-# (Windows) access — provisioned the same way kind: Application provisions apps.
+# cloud-init/cloudbase-init login, SSH (Linux) or RDP (Windows) access, and its system log,
+# screenshot and serial console — provisioned the same way kind: Application provisions apps.
 # KEEP THIS SCHEMA STABLE — it is part of the product's contract.
 #
 # Synced after Crossplane's CRDs exist (sync-wave 2).
@@ -137,7 +137,7 @@ spec:
                 userData:
                   type: string
                   description: "First-boot user data (the EC2 UserData equivalent), Linux only. A shell script (starting with #!) is written to disk and run once at first boot, AFTER the base cloud-init (user/ssh/qemu-guest-agent) — so the VM stays reachable. Ignored on Windows. A full #cloud-config document is not accepted here (it can't be safely merged with the base config)."
-                expose:   { type: boolean, default: false, description: "Give the VM a LAN IP (MetalLB LoadBalancer) carrying its access port — SSH 22 (Linux) or RDP 3389 (Windows). Default false: reach the VM via port-forward or the web VNC console instead. Setting any entry in ports also implies this." }
+                expose:   { type: boolean, default: false, description: "Give the VM a LAN IP (MetalLB LoadBalancer) carrying its access port — SSH 22 (Linux) or RDP 3389 (Windows). Default false: reach it without one through the platform instead (Fleet Manager Remote Desktop for Windows, the EC2 serial console, or a port-forward). Setting any entry in ports also implies this." }
                 elasticIp:
                   type: object
                   description: "Give an exposed VM the LAN address an Elastic IP allocation holds (a CloudFormation AWS::EC2::EIP allocated by another stack, held by its holder Service in this namespace), instead of an address of its own: the address follows whichever VM names the allocation, and stays with the allocation when the VM goes. Until the allocation reports its address, the VM gets no LAN address."

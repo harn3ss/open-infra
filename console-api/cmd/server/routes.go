@@ -135,6 +135,15 @@ func registerAPIRoutes(api chi.Router, z *consoleAuthz, client *k8s.Client, auth
 	h(post, "/ec2/serial-console-access/disable", s10, "ec2:DisableSerialConsoleAccess", nil, serial.handleSetAccess(false))
 	h(get, "/vms/{namespace}/{name}/serial-console/check", s10, "ec2-instance-connect:SendSerialConsoleSSHPublicKey", z.kindARN("VirtualMachine"), serial.handleCheck())
 	h(get, "/vms/{namespace}/{name}/serial-console", 0, "ec2-instance-connect:SendSerialConsoleSSHPublicKey", z.kindARN("VirtualMachine"), serial.handleTerminal())
+	// Fleet Manager Remote Desktop (Systems Manager GUI Connect): RDP to a Windows instance in the browser.
+	// ssm-guiconnect's actions take no resource (AWS's own policies grant them on "*"); connecting is
+	// also ssm:StartSession on the instance and the port-forwarding document, asked in the handler.
+	rdp := newRemoteDesktop(cs, client.Config, z, logger)
+	h(get, "/vms/{namespace}/{name}/remote-desktop/check", s10, "ssm-guiconnect:StartConnection", nil, rdp.handleCheck())
+	h(get, "/vms/{namespace}/{name}/remote-desktop", 0, "ssm-guiconnect:StartConnection", nil, rdp.handleConnect())
+	h(get, "/remote-desktop/connections", s10, "ssm-guiconnect:ListConnections", nil, rdp.handleList())
+	h(get, "/remote-desktop/connections/{id}", s10, "ssm-guiconnect:GetConnection", nil, rdp.handleGet())
+	h(post, "/remote-desktop/connections/{id}/cancel", s10, "ssm-guiconnect:CancelConnection", nil, rdp.handleCancel())
 
 	// SageMaker jobs: register, logs (CloudWatch Logs), metrics, model-monitor reports.
 	h(post, "/trainingjobs/{namespace}/{name}/register", s20, "sagemaker:CreateModelPackage", nil, handleTrainingJobRegister(cs, auth, logger))

@@ -22,7 +22,8 @@ import {
 import { SerialTerminal } from "./serial-terminal";
 
 /*
- * The EC2 console's "Connect to instance": SSH client (or RDP client for Windows) and EC2 serial console.
+ * The EC2 console's "Connect to instance": SSH client (or RDP client for Windows, with an RDP client or with
+ * Fleet Manager's Remote Desktop in the browser) and EC2 serial console.
  * The serial console is the instance's serial port (ttyS0), for when the network can't reach it: allowed
  * per account (Manage access, ec2:EnableSerialConsoleAccess), one session per instance, opened in the
  * browser here or with `aws ec2-instance-connect send-serial-console-ssh-public-key` and ssh.
@@ -58,6 +59,8 @@ export function VmConnectDialog({
   const [terminal, setTerminal] = useState(false);
   const [manage, setManage] = useState(false);
   const [tab, setTab] = useState("client");
+  const [rdpVia, setRdpVia] = useState<"client" | "fleet">("client");
+  const fleetManager = isWindows && tab === "client" && rdpVia === "fleet";
   const access = useQuery({
     queryKey: ["serial-console-access"],
     queryFn: getSerialConsoleAccess,
@@ -94,12 +97,47 @@ export function VmConnectDialog({
               <TabsTrigger value="serial">EC2 serial console</TabsTrigger>
             </TabsList>
             <TabsContent value="client" className="space-y-3 pt-3">
-              <p className="text-sm text-muted-foreground">
-                {isWindows
-                  ? "Connect with a Remote Desktop client to the instance's address, as Administrator with the password on its Access tab."
-                  : "Connect with an SSH client, with your key or the password on the instance's Access tab."}
-              </p>
-              <Cmd value={connectCmd} />
+              {isWindows ? (
+                <div className="space-y-2 text-sm">
+                  <label className="flex items-start gap-2">
+                    <input
+                      type="radio"
+                      name="rdp-via"
+                      className="mt-1"
+                      checked={rdpVia === "client"}
+                      onChange={() => setRdpVia("client")}
+                    />
+                    <span>
+                      <span className="font-medium">Connect using RDP client</span>
+                      <span className="block text-muted-foreground">
+                        Connect with a Remote Desktop client to the instance's address, as Administrator with the
+                        password on its Access tab.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-2">
+                    <input
+                      type="radio"
+                      name="rdp-via"
+                      className="mt-1"
+                      checked={rdpVia === "fleet"}
+                      onChange={() => setRdpVia("fleet")}
+                    />
+                    <span>
+                      <span className="font-medium">Connect using Fleet Manager</span>
+                      <span className="block text-muted-foreground">
+                        Remote Desktop in your browser, with a Windows user name and password. No security group
+                        rule for port 3389 is needed.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Connect with an SSH client, with your key or the password on the instance's Access tab.
+                </p>
+              )}
+              {fleetManager ? null : <Cmd value={connectCmd} />}
             </TabsContent>
             <TabsContent value="serial" className="space-y-3 pt-3">
               {access.isError ? (
@@ -173,6 +211,24 @@ export function VmConnectDialog({
                 </Button>
                 <Button onClick={() => check.mutate()} disabled={check.isPending || !allowed}>
                   Connect
+                </Button>
+              </>
+            ) : fleetManager ? (
+              <>
+                <Button variant="outline" onClick={() => onOpenChange(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => {
+                    window.open(
+                      `/fleet-manager/remote-desktop/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+                      "_blank",
+                      "noopener",
+                    );
+                    onOpenChange(false);
+                  }}
+                >
+                  Fleet Manager Remote Desktop
                 </Button>
               </>
             ) : (

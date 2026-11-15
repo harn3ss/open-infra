@@ -1,15 +1,11 @@
 package serialconsole
 
 import (
-	"crypto/tls"
-	"errors"
 	"io"
-	"net/http"
-	"os"
-	"strings"
 
-	"golang.org/x/net/websocket"
 	"k8s.io/client-go/rest"
+
+	"github.com/harn3ss/open-infra/console-api/internal/vmconsole"
 )
 
 // Dial connects to VM ns/name's serial console (KubeVirt's console subresource of its
@@ -17,47 +13,5 @@ import (
 // lets one connection in at a time and drops the earlier one, so callers hold the instance's session
 // (Acquire) first.
 func Dial(cfg *rest.Config, ns, name string) (io.ReadWriteCloser, error) {
-	if cfg == nil {
-		return nil, errors.New("no cluster client configured")
-	}
-	tc, err := rest.TLSConfigFor(cfg)
-	if err != nil {
-		return nil, err
-	}
-	if tc == nil {
-		tc = &tls.Config{MinVersion: tls.VersionTLS12}
-	}
-	host := strings.TrimSuffix(cfg.Host, "/")
-	if !strings.HasPrefix(host, "https://") {
-		host = "https://" + strings.TrimPrefix(host, "http://")
-	}
-	u := "wss://" + strings.TrimPrefix(host, "https://") +
-		"/apis/subresources.kubevirt.io/v1/namespaces/" + ns + "/virtualmachineinstances/" + name + "/console"
-	wc, err := websocket.NewConfig(u, host)
-	if err != nil {
-		return nil, err
-	}
-	wc.Protocol = []string{"plain.kubevirt.io"}
-	wc.TlsConfig = tc
-	wc.Header = http.Header{}
-	if tok := bearer(cfg); tok != "" {
-		wc.Header.Set("Authorization", "Bearer "+tok)
-	}
-	c, err := websocket.DialConfig(wc)
-	if err != nil {
-		return nil, err
-	}
-	c.PayloadType = websocket.BinaryFrame
-	return c, nil
-}
-
-// bearer is cfg's token, read from its file on each dial when it has one (a projected ServiceAccount
-// token rotates).
-func bearer(cfg *rest.Config) string {
-	if cfg.BearerTokenFile != "" {
-		if b, err := os.ReadFile(cfg.BearerTokenFile); err == nil {
-			return strings.TrimSpace(string(b))
-		}
-	}
-	return cfg.BearerToken
+	return vmconsole.DialSubresource(cfg, ns, name, "console")
 }

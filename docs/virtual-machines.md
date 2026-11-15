@@ -606,9 +606,9 @@ aws ec2 get-console-screenshot --instance-id <instance-id> --wake-up \
   console.
 
 Neither is a session: you can't type into them. To work on an instance, connect to it with SSH or RDP, or
-with its serial console (below). There is no browser desktop for a Linux instance, as on EC2; see
-[Desktops & workspaces](#desktops--workspaces). Not yet provided: a browser Remote Desktop for Windows
-instances.
+with its serial console (below), or, for a Windows instance, with Fleet Manager's Remote Desktop in the
+browser (below). There is no browser desktop for a Linux instance, as on EC2; see
+[Desktops & workspaces](#desktops--workspaces).
 
 ## EC2 Serial Console: a session on the instance's serial port
 
@@ -648,6 +648,67 @@ of a line.
 A serial line doesn't carry the terminal's size, so the guest keeps its own (80×24 by default) whatever your
 window is. Full-screen programs such as `htop` or `vi` draw at that size until you tell the guest yours, with
 `stty rows <rows> cols <columns>` after you sign in. The browser terminal shows the command for its window.
+
+## Fleet Manager Remote Desktop: a Windows desktop in the browser
+
+As on AWS, Systems Manager's Fleet Manager opens a Remote Desktop (RDP) session to a Windows Server instance
+in the browser, with no RDP client to install. It reaches the instance through the platform, not the
+instance's network, so no security group has to allow port 3389, and the instance needs no address you can
+reach.
+
+1. **Connect.** An instance's **Connect → RDP client → Connect using Fleet Manager → Fleet Manager Remote
+   Desktop** opens the session in a new tab.
+2. **Sign in** with a Windows account on the instance (**User credentials**): `Administrator` and the
+   password on the instance's **Access** tab, or any account allowed to sign in with Remote Desktop.
+3. **Actions** in the session: **Ctrl+Alt+Del**; **Resolutions** (Adapt Automatically follows the window;
+   1920 x 1080, 1400 x 900, 1366 x 768 and 800 x 600 are fixed sizes, scaled to fit); **Renew session**;
+   **Disconnect**. Text copied in the session reaches your clipboard; text you copy is sent to the session
+   when the pointer moves back over it (the browser asks once to allow clipboard access).
+
+AWS's limits apply. A connection ends after 60 minutes unless you choose **Renew session**, which resets the
+timer (the session shows the time left and warns in its last five minutes), and after 10 minutes without
+keyboard or mouse input. An account has at most 5 active connections at a time. Windows Server's own license
+allows two Remote Desktop sessions at once. Remote Desktop takes English (US) keyboard input, as Fleet
+Manager's does.
+
+The permissions are AWS's:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": ["ec2:DescribeInstances"], "Resource": "*" },
+    { "Effect": "Allow",
+      "Action": "ssm:StartSession",
+      "Resource": [
+        "arn:aws:ec2:*:*:instance/*",
+        "arn:aws:ssm:*::document/AWS-StartPortForwardingSession"
+      ] },
+    { "Effect": "Allow",
+      "Action": ["ssm-guiconnect:StartConnection", "ssm-guiconnect:GetConnection",
+                 "ssm-guiconnect:CancelConnection", "ssm-guiconnect:ListConnections"],
+      "Resource": "*" }
+  ]
+}
+```
+
+Connecting is `ssm-guiconnect:StartConnection` and `ssm:StartSession` on both the instance and the
+`AWS-StartPortForwardingSession` document; a principal missing any of them is refused with
+`AccessDeniedException`. Grant `ssm:StartSession` on chosen instances to limit who reaches which.
+AWS's example policies add an `aws:CalledVia` condition to `ssm:StartSession`. That condition key isn't
+supported yet, and an Allow carrying it is dropped (the policy then grants less, never more), so leave it
+out here.
+
+Other refusals: an instance that isn't Windows Server (`ValidationException`), one that isn't running
+(`TargetNotConnected`), and an account at its 5 connections (`ServiceQuotaExceededException`). A wrong
+user name or password is the instance's own refusal, shown in the session.
+
+**Fleet Manager** in the console's navigation lists the account's connections: **Active connections** and
+**Connection history** (the last 200), each with its instance, Windows user, who connected, status and times
+(`ssm-guiconnect:ListConnections`). Open one for its details (`ssm-guiconnect:GetConnection`); an active one
+can be ended there (**End connection**, `ssm-guiconnect:CancelConnection`), which disconnects whoever is
+connected within a few seconds and leaves their Windows session signed in. Fleet Manager's **Key pair** and
+**Single sign-on** authentication, and session recording, are not provided.
 
 ## Networking: NAT vs direct-LAN (macvtap)
 
@@ -783,8 +844,9 @@ open-infra's answer to **AWS WorkSpaces** is a VM, not a separate abstraction:
 
 - **Windows desktop** — `os: windows-server-2022` (or 2019/2025) is the *Desktop Experience* edition.
   Connect with `mstsc /v:<host>:3389` as `Administrator` using the generated
-  password shown on the VM's page. (Per the licensing note above, eval is
-  non-production only.)
+  password shown on the VM's page, or in the browser with
+  [Fleet Manager Remote Desktop](#fleet-manager-remote-desktop-a-windows-desktop-in-the-browser).
+  (Per the licensing note above, eval is non-production only.)
 - **Linux desktop** — start from any Linux `os` and install a desktop + RDP on
   first boot, e.g. add to `infra.yaml`:
   ```yaml
@@ -796,7 +858,8 @@ open-infra's answer to **AWS WorkSpaces** is a VM, not a separate abstraction:
 - **Per-user** — give each person their own VM (one claim each); the disk
   persists across stop/start. Expose on the LAN (`expose: true`) or port-forward.
 
-Access is **native** (RDP/SSH), so there's no in-browser desktop gateway to run.
+A Linux desktop's access is **native** (RDP/SSH); a Windows desktop also opens in the browser through Fleet
+Manager.
 
 ## Troubleshooting
 

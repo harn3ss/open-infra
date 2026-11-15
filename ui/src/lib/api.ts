@@ -917,6 +917,54 @@ export function serialConsoleUrl(namespace: string, name: string): string {
   return `${proto}//${window.location.host}${API_BASE}/vms/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/serial-console`;
 }
 
+/** A Fleet Manager Remote Desktop connection (Systems Manager GUI Connect). */
+export interface RemoteDesktopConnection {
+  connectionId: string;
+  account: string;
+  instanceId: string;
+  instance: string;
+  namespace: string;
+  principal: string;
+  username: string;
+  status: string;
+  startedAt: string;
+  expiresAt?: string;
+  endedAt?: string;
+  reason?: string;
+}
+
+/** Whether a Remote Desktop connection to a VM can start now (ssm-guiconnect:StartConnection, ssm:StartSession). */
+export function checkRemoteDesktop(
+  namespace: string,
+  name: string,
+): Promise<{ instanceId: string; maxDurationMinutes: number; idleTimeoutMinutes: number }> {
+  return request(`/vms/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/remote-desktop/check`);
+}
+
+/** The websocket URL of a VM's Remote Desktop connection (the Guacamole protocol). */
+export function remoteDesktopUrl(namespace: string, name: string): string {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}${API_BASE}/vms/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/remote-desktop`;
+}
+
+/** The account's Remote Desktop connections (ssm-guiconnect:ListConnections). */
+export function listRemoteDesktopConnections(): Promise<{
+  active: RemoteDesktopConnection[];
+  history: RemoteDesktopConnection[];
+}> {
+  return request(`/remote-desktop/connections`);
+}
+
+/** One Remote Desktop connection (ssm-guiconnect:GetConnection). */
+export function getRemoteDesktopConnection(id: string): Promise<RemoteDesktopConnection> {
+  return request(`/remote-desktop/connections/${encodeURIComponent(id)}`);
+}
+
+/** End an active Remote Desktop connection (ssm-guiconnect:CancelConnection). */
+export function cancelRemoteDesktopConnection(id: string): Promise<{ connectionId: string; status: string }> {
+  return request(`/remote-desktop/connections/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+}
+
 export function createVmSnapshot(namespace: string, name: string): Promise<VmSnapshot> {
   return request<VmSnapshot>(
     `/vms/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/snapshot`,

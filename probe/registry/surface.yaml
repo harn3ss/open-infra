@@ -143,6 +143,7 @@ screens:
   Email Senders: {service: ses}
   Encryption Keys: {service: kms}
   File Shares: {service: elasticfilesystem}
+  Fleet Manager: {service: [ssm-guiconnect, ssm]}
   Functions: {service: lambda}
   GraphQL: {service: appsync}
   HTTP APIs: {service: apigateway}

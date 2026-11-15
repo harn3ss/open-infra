@@ -6,6 +6,20 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — Fleet Manager Remote Desktop for Windows instances
+- A Remote Desktop session to a Windows Server instance in the browser, as Systems Manager Fleet Manager
+  opens one: from the instance's **Connect → RDP client → Connect using Fleet Manager**, signing in with a
+  Windows account. It reaches the instance through the platform, so no security group has to allow 3389.
+- Decided as AWS decides it: `ssm-guiconnect:StartConnection`, and `ssm:StartSession` on the instance and the
+  `AWS-StartPortForwardingSession` document. AWS's limits hold: 60 minutes per connection (Renew session
+  resets it), 10 minutes idle, 5 active connections per account.
+- **Fleet Manager** in the console lists the account's active connections and history
+  (`ssm-guiconnect:ListConnections` / `GetConnection`), and ends an active one (`CancelConnection`). See
+  [docs/virtual-machines.md](docs/virtual-machines.md#fleet-manager-remote-desktop-a-windows-desktop-in-the-browser).
+- Operators: the console runs Apache Guacamole's `guacd` (1.6.0, pinned by digest) as
+  `remote-desktop-gateway`, reachable only from the console; each Windows instance admits KubeVirt's
+  `virt-api` on 3389 alone, for the session's port-forward.
+
 ### Added — EC2 Serial Console
 - A text session on an instance's serial port, as EC2's: in the browser from the instance's **Connect → EC2
   serial console**, or with `aws ec2-instance-connect send-serial-console-ssh-public-key` and `ssh

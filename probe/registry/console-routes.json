@@ -315,6 +315,18 @@
   },
   {
    "method": "GET",
+   "path": "/api/remote-desktop/connections",
+   "action": "ssm-guiconnect:ListConnections",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/remote-desktop/connections/{id}",
+   "action": "ssm-guiconnect:GetConnection",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
    "path": "/api/replications/{namespace}/{name}/status",
    "action": "dms:DescribeReplicationTasks",
    "resource": "arn:aws:dms:us-east-1:{account}:task:{name}"
@@ -342,6 +354,18 @@
    "path": "/api/vms/{namespace}/{name}/console-screenshot",
    "action": "ec2:GetConsoleScreenshot",
    "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+  },
+  {
+   "method": "GET",
+   "path": "/api/vms/{namespace}/{name}/remote-desktop",
+   "action": "ssm-guiconnect:StartConnection",
+   "resource": "*"
+  },
+  {
+   "method": "GET",
+   "path": "/api/vms/{namespace}/{name}/remote-desktop/check",
+   "action": "ssm-guiconnect:StartConnection",
+   "resource": "*"
   },
   {
    "method": "GET",
@@ -552,6 +576,12 @@
    "path": "/api/queues/{stream}/purge",
    "action": "sqs:PurgeQueue",
    "resource": "arn:aws:sqs:us-east-1:{account}:{stream}"
+  },
+  {
+   "method": "POST",
+   "path": "/api/remote-desktop/connections/{id}/cancel",
+   "action": "ssm-guiconnect:CancelConnection",
+   "resource": "*"
   },
   {
    "method": "POST",

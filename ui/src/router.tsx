@@ -77,6 +77,8 @@ import { DatabaseProxiesPage } from "@/features/databaseproxies/databaseproxies-
 import { DatabaseProxyDetailPage } from "@/features/databaseproxies/databaseproxy-detail-page";
 import { CreateDatabaseProxyPage } from "@/features/databaseproxies/create-databaseproxy-page";
 import { ParametersPage } from "@/features/parameters/parameters-page";
+import { FleetManagerPage } from "@/features/fleet-manager/fleet-manager-page";
+import { RemoteDesktopPage } from "@/features/fleet-manager/remote-desktop-page";
 import { ParameterDetailPage } from "@/features/parameters/parameter-detail-page";
 import { CreateParameterPage } from "@/features/parameters/create-parameter-page";
 import { FileSharesPage } from "@/features/fileshares/fileshares-page";
@@ -260,6 +262,13 @@ const replicationCreateRoute = createRoute({ getParentRoute: () => rootRoute, pa
 
 // kind: StateMachine (#23) — list, static /new (before the detail route), detail, and
 // the Execution detail route (executions are run under a state machine).
+// Systems Manager Fleet Manager: Remote Desktop connections, and a Remote Desktop session to a Windows instance.
+const fleetManagerRoute = createRoute({ getParentRoute: () => rootRoute, path: "/fleet-manager", component: FleetManagerPage });
+const remoteDesktopRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/fleet-manager/remote-desktop/$namespace/$name",
+  component: RemoteDesktopPage,
+});
 const statemachinesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/statemachines", component: StateMachinesPage });
 const statemachineCreateRoute = createRoute({ getParentRoute: () => rootRoute, path: "/statemachines/new", component: CreateStateMachinePage });
 const statemachineDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/statemachines/$namespace/$name", component: StateMachineDetailPage });
@@ -749,6 +758,8 @@ const autoScalingGroupCreateRoute = createRoute({ getParentRoute: () => rootRout
 const autoScalingGroupDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/auto-scaling-groups/$namespace/$name", component: AutoScalingGroupDetailPage });
 
 const routeTree = rootRoute.addChildren([
+  fleetManagerRoute,
+  remoteDesktopRoute,
   indexRoute,
   applicationsRoute,
   applicationCreateRoute,

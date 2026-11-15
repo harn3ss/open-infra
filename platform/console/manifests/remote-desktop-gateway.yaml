@@ -1,0 +1,230 @@
+# Fleet Manager Remote Desktop's gateway: guacd, Apache Guacamole's remote desktop proxy, which speaks
+# RDP to a Windows instance and the Guacamole protocol to the browser, through the console.
+#
+#   browser ──wss──▶ console (IAM decides ssm-guiconnect:StartConnection + ssm:StartSession)
+#                      │  ▲
+#             TLS 4822 │  │ the instance's RDP stream: guacd connects back to the console replica that
+#                      ▼  │ started the connection, which carries it through the VMI's port-forward
+#                    guacd   (KubeVirt), not the instance's network — no security group opens 3389
+#
+# guacd itself reaches nothing but the console: it holds no Kubernetes credential, its egress is the
+# console's pods alone, and it accepts connections from the console's pods alone. The console verifies
+# guacd's certificate before it sends a connection's Windows credentials, so they never cross the pod
+# network in clear text. The certificate is from a CA of this namespace's own (the platform root CA signs
+# only for the namespaces its admission policy lists), which the console trusts for guacd and nothing
+# else. guacd reads its certificate at start: when cert-manager renews it, the liveness check restarts
+# the container onto the new one.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: remote-desktop-selfsigned
+  namespace: open-infra-console
+spec:
+  selfSigned: {}
+---
+# The gateway's CA. Its key is kept across renewals (rotationPolicy Never), so a renewed CA certificate
+# still verifies the gateway certificate it signed before.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: remote-desktop-ca
+  namespace: open-infra-console
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  isCA: true
+  commonName: open-infra remote desktop gateway CA
+  secretName: remote-desktop-ca
+  duration: 87600h   # 10 years
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  issuerRef:
+    name: remote-desktop-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: remote-desktop-ca
+  namespace: open-infra-console
+spec:
+  ca:
+    secretName: remote-desktop-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: remote-desktop-gateway-tls
+  namespace: open-infra-console
+  annotations:
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  secretName: remote-desktop-gateway-tls
+  dnsNames:
+    - remote-desktop-gateway.open-infra-console.svc
+  usages: [server auth, digital signature]
+  duration: 2160h    # 90 days
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    encoding: PKCS8
+    rotationPolicy: Always
+  issuerRef:
+    name: remote-desktop-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: remote-desktop-gateway
+  namespace: open-infra-console
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: remote-desktop-gateway
+  namespace: open-infra-console
+  labels:
+    app: remote-desktop-gateway
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      app: remote-desktop-gateway
+  template:
+    metadata:
+      labels:
+        app: remote-desktop-gateway
+    spec:
+      serviceAccountName: remote-desktop-gateway
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: remote-desktop-gateway
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000     # the image's guacd user
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: guacd
+          # Apache Guacamole's guacd 1.6.0, pinned by digest (multi-arch index).
+          image: docker.io/guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f
+          command: ["/bin/sh", "-c"]
+          args:
+            - cp /certs/tls.crt /tmp/loaded.crt && exec /opt/guacamole/entrypoint.sh -l 4822 -C /certs/tls.crt -K /certs/tls.key
+          ports:
+            - { name: guacd, containerPort: 4822, protocol: TCP }
+          readinessProbe:
+            tcpSocket: { port: 4822 }
+            periodSeconds: 10
+          livenessProbe:
+            # Restart onto a renewed certificate; and guacd must still listen.
+            exec:
+              command: ["/bin/sh", "-c", "cmp -s /certs/tls.crt /tmp/loaded.crt && nc -z 127.0.0.1 4822"]
+            initialDelaySeconds: 15
+            periodSeconds: 60
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "2", memory: 1Gi }
+          volumeMounts:
+            - { name: tls, mountPath: /certs, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tls
+          secret: { secretName: remote-desktop-gateway-tls }
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+# guacd's replicas, by address: the console picks one for each connection and accepts the connection
+# back for the instance's stream from that address alone.
+apiVersion: v1
+kind: Service
+metadata:
+  name: remote-desktop-gateway-pods
+  namespace: open-infra-console
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: false
+  selector:
+    app: remote-desktop-gateway
+  ports:
+    - { name: guacd, port: 4822, targetPort: 4822, protocol: TCP }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: remote-desktop-gateway
+  namespace: open-infra-console
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: remote-desktop-gateway
+---
+# guacd talks to the console and nothing else, both ways.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: remote-desktop-gateway
+  namespace: open-infra-console
+spec:
+  podSelector:
+    matchLabels:
+      app: remote-desktop-gateway
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: console } }
+        # the kubelet's probes, from the node (kube-ovn's join subnet); no Service publishes guacd
+        - ipBlock: { cidr: 100.64.0.0/16 }
+      ports:
+        - { protocol: TCP, port: 4822 }
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app: console } }
+---
+# The console's Remote Desktop connections: an active one holds a Lease (remote-desktop-<connection id>)
+# in this namespace while it runs; ended ones are its account's history ConfigMap (the console's
+# ClusterRole already reads and writes ConfigMaps).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: open-infra-console-remote-desktop
+  namespace: open-infra-console
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, create, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: open-infra-console-remote-desktop
+  namespace: open-infra-console
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: open-infra-console-remote-desktop }
+subjects:
+  - kind: ServiceAccount
+    name: console
+    namespace: open-infra-console

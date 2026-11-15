@@ -362,10 +362,15 @@ sqs:PurgeQueue
 sqs:ReceiveMessage
 sqs:SendMessage
 sqs:SetQueueAttributes
+ssm-guiconnect:CancelConnection
+ssm-guiconnect:GetConnection
+ssm-guiconnect:ListConnections
+ssm-guiconnect:StartConnection
 ssm:DeleteParameter
 ssm:DescribeParameters
 ssm:GetParameter
 ssm:PutParameter
+ssm:StartSession
 states:CreateStateMachine
 states:DeleteStateMachine
 states:DescribeExecution

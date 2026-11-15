@@ -4978,6 +4978,16 @@
       "class": "aws",
       "resource": "arn:aws:sqs:us-east-1:{account}:{stream}"
     },
+    "GET /api/remote-desktop/connections": {
+      "action": "ssm-guiconnect:ListConnections",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/remote-desktop/connections/{id}": {
+      "action": "ssm-guiconnect:GetConnection",
+      "class": "aws",
+      "resource": "*"
+    },
     "GET /api/replications/{namespace}/{name}/status": {
       "action": "dms:DescribeReplicationTasks",
       "class": "aws",
@@ -5002,6 +5012,16 @@
       "action": "ec2:GetConsoleScreenshot",
       "class": "aws",
       "resource": "arn:aws:ec2:us-east-1:{account}:instance/{name}"
+    },
+    "GET /api/vms/{namespace}/{name}/remote-desktop": {
+      "action": "ssm-guiconnect:StartConnection",
+      "class": "aws",
+      "resource": "*"
+    },
+    "GET /api/vms/{namespace}/{name}/remote-desktop/check": {
+      "action": "ssm-guiconnect:StartConnection",
+      "class": "aws",
+      "resource": "*"
     },
     "GET /api/vms/{namespace}/{name}/serial-console": {
       "action": "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
@@ -5212,6 +5232,11 @@
       "action": "sqs:PurgeQueue",
       "class": "aws",
       "resource": "arn:aws:sqs:us-east-1:{account}:{stream}"
+    },
+    "POST /api/remote-desktop/connections/{id}/cancel": {
+      "action": "ssm-guiconnect:CancelConnection",
+      "class": "aws",
+      "resource": "*"
     },
     "POST /api/snapshots/restore": {
       "action": "rds:RestoreDBInstanceFromDBSnapshot",
@@ -5690,6 +5715,26 @@
       "reason": "",
       "service": [
         "elasticfilesystem"
+      ]
+    },
+    "/fleet-manager": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Fleet Manager",
+      "reason": "",
+      "service": [
+        "ssm-guiconnect",
+        "ssm"
+      ]
+    },
+    "/fleet-manager/remote-desktop/$namespace/$name": {
+      "class": "aws",
+      "flag": "",
+      "nav": "Fleet Manager",
+      "reason": "",
+      "service": [
+        "ssm-guiconnect",
+        "ssm"
       ]
     },
     "/flow-logs": {
@@ -6990,18 +7035,18 @@
     "pendingKubernetesFields": 14,
     "publicRoutes": 11,
     "routes": {
-      "aws": 117,
+      "aws": 122,
       "extra": 1,
       "operator": 1,
       "removed": 0,
-      "total": 119
+      "total": 124
     },
     "screens": {
-      "aws": 156,
+      "aws": 158,
       "extra": 4,
       "operator": 3,
       "removed": 0,
-      "total": 163
+      "total": 165
     },
     "services": {
       "aws": 35,

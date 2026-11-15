@@ -439,6 +439,9 @@ func isoPeersProblems(p isoPolicy, w isoWorkload, lbs []isoLB) []string {
 				probs = append(probs, "a namespaceSelector that is not one named namespace")
 				continue
 			}
+			if n == "kubevirt" && isoRemoteDesktopPeer(pm, r) {
+				continue
+			}
 			if n != p.ns && !isoPlatformPeers[n] {
 				probs = append(probs, "admits namespace "+n)
 			}
@@ -737,5 +740,53 @@ func TestIsolation_IngressRoutesDialByClusterIP(t *testing.T) {
 	}
 	if n != 3 {
 		t.Fatalf("want 3 routed services, got %d:\n%s", n, out)
+	}
+}
+
+// isoRemoteDesktopPeer reports whether a kubevirt-namespace peer is Fleet Manager Remote Desktop's way
+// into a Windows instance: virt-api alone (which dials an authorized port-forward), on TCP 3389 alone.
+func isoRemoteDesktopPeer(peer map[string]any, rule any) bool {
+	if strMap(mget(peer, "podSelector", "matchLabels"))["kubevirt.io"] != "virt-api" || len(strMap(mget(peer, "podSelector", "matchLabels"))) != 1 {
+		return false
+	}
+	ports, _ := mget(rule, "ports").([]any)
+	if len(ports) != 1 {
+		return false
+	}
+	proto := mstr(ports[0], "protocol")
+	return (proto == "" || proto == "TCP") && mstr(ports[0], "port") == "3389"
+}
+
+// A Windows instance, with or without security groups, admits virt-api on 3389 (Fleet Manager Remote
+// Desktop's port-forward), as AWS's Remote Desktop needs no inbound rule; a Linux one does not.
+func TestIsolation_WindowsVMAdmitsRemoteDesktopPortForward(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	for _, c := range []struct {
+		spec map[string]any
+		want bool
+	}{
+		{map[string]any{"os": "windows-server-2022", "size": "small"}, true},
+		{map[string]any{"os": "windows-server-2019", "size": "small", "securityGroups": []any{"web"}}, true},
+		{map[string]any{"os": "ubuntu-22.04", "size": "small"}, false},
+	} {
+		_, np := isoCollect(t, render(t, tmpl, isoCtx(c.spec)))
+		got := false
+		for _, p := range np {
+			if p.name != "iso-remote-desktop" {
+				continue
+			}
+			got = true
+			if len(p.ingress) != 1 {
+				t.Fatalf("%v: remote desktop policy ingress %v", c.spec, p.ingress)
+			}
+			from, _ := mget(p.ingress[0], "from").([]any)
+			pm, _ := from[0].(map[string]any)
+			if len(from) != 1 || strMap(mget(pm, "namespaceSelector", "matchLabels"))["kubernetes.io/metadata.name"] != "kubevirt" || !isoRemoteDesktopPeer(pm, p.ingress[0]) {
+				t.Errorf("%v: remote desktop policy admits more than virt-api on 3389: %v", c.spec, p.ingress)
+			}
+		}
+		if got != c.want {
+			t.Errorf("%v: remote desktop policy rendered=%v, want %v", c.spec, got, c.want)
+		}
 	}
 }

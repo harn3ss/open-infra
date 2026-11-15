@@ -30,6 +30,7 @@ import {
   LayoutDashboard,
   LineChart,
   Monitor,
+  MonitorSmartphone,
   Network,
   Package,
   Radio,
@@ -298,6 +299,7 @@ export const SERVICES: Service[] = [
   { label: "Monitoring", icon: LineChart, category: "Management & Governance", to: "/monitoring" }, // CloudWatch
   { label: "Cost Explorer", icon: DollarSign, category: "Management & Governance", to: "/cost" }, // Cost Explorer / Billing
   { label: "Parameters", icon: SlidersHorizontal, category: "Management & Governance", to: "/parameters" }, // SSM Parameter Store
+  { label: "Fleet Manager", icon: MonitorSmartphone, category: "Management & Governance", to: "/fleet-manager" }, // Systems Manager Fleet Manager (Remote Desktop)
   { label: "Audit", icon: ScrollText, category: "Management & Governance", to: "/audit" }, // CloudTrail
   { label: "Chaos", icon: Bomb, category: "Management & Governance", to: "/chaos", flag: "chaosUiEnabled" }, // FIS (flag-gated)
 
