@@ -151,10 +151,14 @@ spec:
           volumeMounts:
             - { name: tls, mountPath: /certs, readOnly: true }
             - { name: tmp, mountPath: /tmp }
+            # FreeRDP's own config directory (under guacd's home): writable, and gone with the pod.
+            - { name: home, mountPath: /home/guacd }
       volumes:
         - name: tls
           secret: { secretName: remote-desktop-gateway-tls }
         - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+        - name: home
           emptyDir: { sizeLimit: 64Mi }
 ---
 # guacd's replicas, by address: the console picks one for each connection and accepts the connection
