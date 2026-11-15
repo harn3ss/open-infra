@@ -24,20 +24,24 @@ import (
 
 const testShimNS = "open-infra-aws-shim"
 
-// pipeSerial is a VM's serial port that prints a login prompt and echoes what it is sent.
+// pipeSerial is a VM's serial port that prints a login prompt and echoes what it is sent — after the
+// prompt, as a guest's console would.
 type pipeSerial struct {
-	r *io.PipeReader
-	w *io.PipeWriter
+	r        *io.PipeReader
+	w        *io.PipeWriter
+	prompted chan struct{}
 }
 
 func newPipeSerial() *pipeSerial {
 	r, w := io.Pipe()
-	go func() { _, _ = w.Write([]byte("ubuntu login: ")) }()
-	return &pipeSerial{r: r, w: w}
+	p := &pipeSerial{r: r, w: w, prompted: make(chan struct{})}
+	go func() { _, _ = w.Write([]byte("ubuntu login: ")); close(p.prompted) }()
+	return p
 }
 func (p *pipeSerial) Read(b []byte) (int, error) { return p.r.Read(b) }
 func (p *pipeSerial) Write(b []byte) (int, error) {
-	go func() { _, _ = p.w.Write(append([]byte{}, b...)) }()
+	data := append([]byte{}, b...)
+	go func() { <-p.prompted; _, _ = p.w.Write(data) }()
 	return len(b), nil
 }
 func (p *pipeSerial) Close() error { return p.w.Close() }
@@ -141,7 +145,7 @@ func TestSerialConsoleTerminal(t *testing.T) {
 		_ = ws.SetReadDeadline(time.Now().Add(2 * time.Second))
 		var got strings.Builder
 		buf := make([]byte, 256)
-		for !strings.Contains(got.String(), "root") {
+		for !strings.Contains(got.String(), "ubuntu login: ") || !strings.Contains(got.String(), "root") {
 			n, err := ws.Read(buf)
 			if err != nil {
 				break
