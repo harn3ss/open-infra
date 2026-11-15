@@ -2,8 +2,8 @@
 #
 # The shim lives in the console-api Go module on purpose: it shares internal/iam so it reuses the
 # ONE authorization core (the same impersonated SubjectAccessReview the console uses) rather than a
-# weaker parallel auth. This image builds only ./cmd/aws-shim — no SPA, no embed — so it stays a
-# small static binary on distroless, like apply-sink. Build context is the repo ROOT — console-api
+# weaker parallel auth. This image builds ./cmd/aws-shim and the ECR registry's gate — no SPA, no
+# embed — so it stays small static binaries on distroless, like apply-sink. Build context is the repo ROOT — console-api
 # requires the shared dynamodb and policyengine modules via local replaces (../dynamodb,
 # ../policyengine), so those siblings are copied in beside it.
 FROM golang:1.27 AS build
@@ -20,6 +20,8 @@ RUN go mod download
 COPY console-api/ ./
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /aws-shim ./cmd/aws-shim
+# The ECR registry's gate (cmd/ecr-registry-gate) runs beside the registry in its pod, from this image.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /ecr-registry-gate ./cmd/ecr-registry-gate
 
 FROM gcr.io/distroless/static-debian12
 ARG OPENINFRA_FIPS=true   # amd64 default; build-arm64 sets false via the label
@@ -28,4 +30,5 @@ LABEL openinfra.dev/fips=${OPENINFRA_FIPS}
 EXPOSE 4566
 USER 65532:65532
 COPY --from=build /aws-shim /aws-shim
+COPY --from=build /ecr-registry-gate /ecr-registry-gate
 ENTRYPOINT ["/aws-shim"]
