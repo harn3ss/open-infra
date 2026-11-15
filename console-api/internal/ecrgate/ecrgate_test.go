@@ -34,38 +34,38 @@ func TestClassify(t *testing.T) {
 	cases := []struct {
 		method, path, query string
 		length              int64
-		repo, scope         string
+		repo                string
 		actions             []string
 		mountFrom           string
 	}{
-		{"HEAD", "/v2/" + repo + "/blobs/" + dig, "", 0, repo, "pull", []string{BatchCheckLayerAvailability}, ""},
-		{"GET", "/v2/" + repo + "/blobs/" + dig, "", 0, repo, "pull", []string{GetDownloadURLForLayer}, ""},
-		{"POST", "/v2/" + repo + "/blobs/uploads/", "", 0, repo, "push", []string{InitiateLayerUpload}, ""},
-		{"POST", "/v2/" + repo + "/blobs/uploads/", "digest=" + dig, 10, repo, "push",
+		{"HEAD", "/v2/" + repo + "/blobs/" + dig, "", 0, repo, []string{BatchCheckLayerAvailability}, ""},
+		{"GET", "/v2/" + repo + "/blobs/" + dig, "", 0, repo, []string{GetDownloadURLForLayer}, ""},
+		{"POST", "/v2/" + repo + "/blobs/uploads/", "", 0, repo, []string{InitiateLayerUpload}, ""},
+		{"POST", "/v2/" + repo + "/blobs/uploads/", "digest=" + dig, 10, repo,
 			[]string{InitiateLayerUpload, UploadLayerPart, CompleteLayerUpload}, ""},
-		{"POST", "/v2/" + repo + "/blobs/uploads/", "mount=" + dig + "&from=111122223333/other", 0, repo, "push",
+		{"POST", "/v2/" + repo + "/blobs/uploads/", "mount=" + dig + "&from=111122223333/other", 0, repo,
 			[]string{InitiateLayerUpload}, "111122223333/other"},
-		{"PATCH", "/v2/" + repo + "/blobs/uploads/0f3c-a1_b.c=", "", 100, repo, "push", []string{UploadLayerPart}, ""},
-		{"PUT", "/v2/" + repo + "/blobs/uploads/0f3c", "digest=" + dig, 0, repo, "push", []string{CompleteLayerUpload}, ""},
-		{"PUT", "/v2/" + repo + "/blobs/uploads/0f3c", "digest=" + dig, 5, repo, "push",
+		{"PATCH", "/v2/" + repo + "/blobs/uploads/0f3c-a1_b.c=", "", 100, repo, []string{UploadLayerPart}, ""},
+		{"PUT", "/v2/" + repo + "/blobs/uploads/0f3c", "digest=" + dig, 0, repo, []string{CompleteLayerUpload}, ""},
+		{"PUT", "/v2/" + repo + "/blobs/uploads/0f3c", "digest=" + dig, 5, repo,
 			[]string{UploadLayerPart, CompleteLayerUpload}, ""},
-		{"GET", "/v2/" + repo + "/blobs/uploads/0f3c", "", 0, repo, "pull", []string{UploadLayerPart}, ""},
-		{"PUT", "/v2/" + repo + "/manifests/v1.2", "", 0, repo, "push", []string{PutImage}, ""},
-		{"GET", "/v2/" + repo + "/manifests/latest", "", 0, repo, "pull", []string{BatchGetImage}, ""},
-		{"HEAD", "/v2/" + repo + "/manifests/" + dig, "", 0, repo, "pull", []string{BatchGetImage}, ""},
-		{"DELETE", "/v2/" + repo + "/manifests/" + dig, "", 0, repo, "delete", []string{BatchDeleteImage}, ""},
-		{"GET", "/v2/" + repo + "/tags/list", "", 0, repo, "pull", []string{ListImages}, ""},
-		{"GET", "/v2/" + repo + "/referrers/" + dig, "", 0, repo, "pull", []string{BatchGetImage}, ""},
+		{"GET", "/v2/" + repo + "/blobs/uploads/0f3c", "", 0, repo, []string{UploadLayerPart}, ""},
+		{"PUT", "/v2/" + repo + "/manifests/v1.2", "", 0, repo, []string{PutImage}, ""},
+		{"GET", "/v2/" + repo + "/manifests/latest", "", 0, repo, []string{BatchGetImage}, ""},
+		{"HEAD", "/v2/" + repo + "/manifests/" + dig, "", 0, repo, []string{BatchGetImage}, ""},
+		{"DELETE", "/v2/" + repo + "/manifests/" + dig, "", 0, repo, []string{BatchDeleteImage}, ""},
+		{"GET", "/v2/" + repo + "/tags/list", "", 0, repo, []string{ListImages}, ""},
+		{"GET", "/v2/" + repo + "/referrers/" + dig, "", 0, repo, []string{BatchGetImage}, ""},
 		// a repository may have a component named like a route word; the route still decides the name
-		{"GET", "/v2/a/blobs/b/manifests/latest", "", 0, "a/blobs/b", "pull", []string{BatchGetImage}, ""},
-		{"HEAD", "/v2/a/manifests/b/blobs/" + dig, "", 0, "a/manifests/b", "pull", []string{BatchCheckLayerAvailability}, ""},
+		{"GET", "/v2/a/blobs/b/manifests/latest", "", 0, "a/blobs/b", []string{BatchGetImage}, ""},
+		{"HEAD", "/v2/a/manifests/b/blobs/" + dig, "", 0, "a/manifests/b", []string{BatchCheckLayerAvailability}, ""},
 	}
 	for _, c := range cases {
 		q, _ := url.ParseQuery(c.query)
 		got, ok := Classify(c.method, c.path, q, c.length)
-		if !ok || got.Repo != c.repo || got.Scope != c.scope || !slices.Equal(got.Actions, c.actions) || got.MountFrom != c.mountFrom {
-			t.Errorf("%s %s?%s = %+v, %v; want repo %s scope %s actions %v mount %q",
-				c.method, c.path, c.query, got, ok, c.repo, c.scope, c.actions, c.mountFrom)
+		if !ok || got.Repo != c.repo || !slices.Equal(got.Actions, c.actions) || got.MountFrom != c.mountFrom {
+			t.Errorf("%s %s?%s = %+v, %v; want repo %s actions %v mount %q",
+				c.method, c.path, c.query, got, ok, c.repo, c.actions, c.mountFrom)
 		}
 	}
 	for _, c := range []struct{ method, path string }{
@@ -185,6 +185,12 @@ func TestUndecidedRequestsAreForwarded(t *testing.T) {
 	tok := token(t, Access{Type: "repository", Name: repo, Actions: nil, Requested: []string{"pull", "push"}, Resource: repoARN})
 	if w := serve(t, g, "HEAD", blob, tok); w.Code != http.StatusForbidden {
 		t.Errorf("nothing granted: %d; want 403", w.Code)
+	}
+	// a layer check is decided by a push scope too: asked only for push and refused it, the check is refused
+	tok = token(t, Access{Type: "repository", Name: repo, Actions: []string{"pull", "push", InitiateLayerUpload},
+		Requested: []string{"push"}, Resource: repoARN})
+	if w := serve(t, g, "HEAD", blob, tok); w.Code != http.StatusForbidden {
+		t.Errorf("layer check refused under push: %d; want 403", w.Code)
 	}
 }
 

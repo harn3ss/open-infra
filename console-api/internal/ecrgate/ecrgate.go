@@ -13,9 +13,9 @@
 //
 // The gate only refuses. Whatever it lets through is still checked by distribution, which verifies the
 // token's signature and scopes as before, so a request the gate forwards can never do more than the
-// token allows. A token the gate cannot read, a token with no entry for the repository (a client that has
-// not yet asked for this repository's scope, which distribution answers with its 401 challenge), and an
-// entry from a token service that did not decide per action are forwarded unchanged.
+// token allows. A token the gate cannot read, a token with no entry for the repository, and an action the
+// token service was not asked to decide (a client that has not yet asked for that scope, which
+// distribution answers with its 401 challenge) are forwarded unchanged.
 package ecrgate
 
 import (
@@ -42,11 +42,25 @@ const (
 	ListImages                  = "ecr:ListImages"
 )
 
+// ScopeActions are the ECR actions a registry scope stands for. Asked for a scope, the token service
+// decides each of them; an entry's Requested scopes therefore say which actions it decided.
+func ScopeActions(scope string) []string {
+	switch scope {
+	case "pull":
+		return []string{BatchGetImage, GetDownloadURLForLayer, BatchCheckLayerAvailability, ListImages}
+	case "push":
+		return []string{BatchCheckLayerAvailability, InitiateLayerUpload, UploadLayerPart, CompleteLayerUpload, PutImage}
+	case "delete":
+		return []string{BatchDeleteImage}
+	}
+	return nil
+}
+
 // Access is one entry of a registry token's access claim. Type, Name and Actions are the Docker registry
 // token's; Actions carries both the scopes distribution enforces (pull, push, delete) and the ECR actions
-// granted. Requested is the scopes the token service was asked for and decided on: an entry that has it
-// was decided per ECR action, so an action missing from it was refused. Resource is the repository's ARN,
-// for the access-denied message.
+// granted. Requested is the scopes the token service was asked for: it decided every action they stand
+// for (ScopeActions), so a decided action missing from Actions was refused. Resource is the repository's
+// ARN, for the access-denied message.
 type Access struct {
 	Type      string   `json:"type"`
 	Name      string   `json:"name"`
@@ -58,7 +72,6 @@ type Access struct {
 // Request is a registry request as ECR authorizes it.
 type Request struct {
 	Repo    string   // the registry path of the repository
-	Scope   string   // the distribution scope the method needs: pull, push or delete
 	Actions []string // the ECR actions the request needs, all of them
 	// MountFrom is the repository a blob mount (POST .../blobs/uploads/?mount=<digest>&from=<repo>) takes
 	// the layer from; mounting needs ecr:GetDownloadUrlForLayer there, as ECR documents.
@@ -101,17 +114,6 @@ var routes = []struct {
 	{regexp.MustCompile(`^/v2/(` + name + `)/referrers/` + digest + `$`), routeReferrers},
 }
 
-// scopeOf is the distribution scope a method needs (registry/handlers/app.go appendAccessRecords).
-func scopeOf(method string) string {
-	switch method {
-	case http.MethodGet, http.MethodHead:
-		return "pull"
-	case http.MethodDelete:
-		return "delete"
-	}
-	return "push"
-}
-
 // Classify maps a registry request to the ECR actions it needs. ok is false for a path or method ECR's
 // registry API does not serve (the catalog, deleting a layer), which the gate refuses without forwarding.
 func Classify(method, path string, query url.Values, contentLength int64) (req Request, ok bool) {
@@ -120,7 +122,7 @@ func Classify(method, path string, query url.Values, contentLength int64) (req R
 		if m == nil {
 			continue
 		}
-		req = Request{Repo: m[1], Scope: scopeOf(method)}
+		req = Request{Repo: m[1]}
 		switch rt.r {
 		case routeManifest:
 			switch method {
@@ -241,18 +243,19 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry, ok := entryFor(access, req.Repo)
-	if !ok || len(entry.Requested) == 0 || !slices.Contains(entry.Requested, req.Scope) {
-		// Not decided for this repository and scope yet: distribution's 401 sends the client back to the
-		// token service, which decides it.
+	if !ok {
+		// Not asked for this repository: distribution's 401 sends the client back to the token service.
 		g.proxy.ServeHTTP(w, r)
 		return
 	}
 	for _, a := range req.Actions {
-		if !slices.Contains(entry.Actions, a) {
+		if !slices.Contains(entry.Actions, a) && decided(entry, a) {
 			writeError(w, http.StatusForbidden, "DENIED", denied(sub, a, entry))
 			return
 		}
 	}
+	// An action not yet decided (the client asked for another scope) is left to distribution, whose 401
+	// sends the client back to the token service to ask for it.
 	if req.MountFrom != "" {
 		from, ok := entryFor(access, req.MountFrom)
 		if !ok || !slices.Contains(from.Actions, GetDownloadURLForLayer) {
@@ -265,6 +268,17 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	g.proxy.ServeHTTP(w, r)
+}
+
+// decided reports whether the token service decided action for the entry: whether a scope it was asked
+// for stands for it.
+func decided(entry Access, action string) bool {
+	for _, scope := range entry.Requested {
+		if slices.Contains(ScopeActions(scope), action) {
+			return true
+		}
+	}
+	return false
 }
 
 // denied is ECR's access-denied message.
