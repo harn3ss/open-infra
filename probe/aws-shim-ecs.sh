@@ -9,7 +9,9 @@
 #   - the create→run→describe path: RegisterTaskDefinition (one PUBLIC-image container + a containerPort)
 #     returns a task-def ARN at :1; CreateService provisions a kind: Application that becomes Ready; and
 #     DescribeServices reports desiredCount==runningCount==1 (an honest "running == desired once Ready",
-#     derived from the Application's own readiness, not a fabricated live count); DeleteService removes it
+#     derived from the Application's own readiness, not a fabricated live count); once steady it reports, as
+#     ECS does, pendingCount 0, one PRIMARY deployment (ecs-svc/…) COMPLETED, and the service's events in
+#     ECS's words (a task started, the steady state reached, newest first); DeleteService removes it
 #   - AUTHORITY (the #177 proof): a READER caller's identical CreateService is refused / provisions NOTHING,
 #     because the service is created AS the reader (who cannot create applications), never as the shim — the
 #     confused-deputy blast radius is structurally impossible (mirrors cloudformation.sh's reader test)
@@ -188,6 +190,33 @@ done
 [ "$dc" = "1" ]   || fail "describe-services desiredCount='$dc', want 1 (the service was not read back faithfully)"
 [ "$rcnt" = "1" ] || fail "describe-services runningCount='$rcnt', want 1 (the service never reported its desired replicas Ready)"
 log "    ✓ Application Ready; describe-services desiredCount=1, runningCount=1"
+
+log "  describe-services ${POS_SVC} → as ECS reports a steady service: pendingCount 0, a COMPLETED PRIMARY deployment, its events"
+i=0; st=""
+while [ "$i" -lt 90 ]; do
+  ecs "$AAK" "$ASK" describe-services --services "$POS_SVC" --output json >"$TMP/ds.json" 2>/dev/null || true
+  st="$(python3 - "$TMP/ds.json" "$POS_SVC" <<'PY' 2>&1
+import json, re, sys
+s = json.load(open(sys.argv[1]))["services"][0]
+name = sys.argv[2]
+assert s.get("pendingCount") == 0, ("pendingCount", s.get("pendingCount"))
+deps = s.get("deployments") or []
+assert len(deps) == 1 and deps[0]["status"] == "PRIMARY", ("deployments", deps)
+d = deps[0]
+assert re.fullmatch(r"ecs-svc/\d{19}", d["id"]), d["id"]
+assert d["rolloutState"] == "COMPLETED" and d["runningCount"] == 1 and d["desiredCount"] == 1, d
+msgs = [e["message"] for e in s.get("events") or []]
+assert msgs and msgs[0] == "(service %s) has reached a steady state." % name, msgs[:3]
+assert any(re.fullmatch(r"\(service %s\) has started 1 tasks: \(task [0-9a-f]{32}\)\." % re.escape(name), m) for m in msgs), msgs
+assert not any(w in m for m in msgs for w in ("pod", "ReplicaSet", "quota", "Deployment")), msgs
+print("ok")
+PY
+)" || true
+  [ "$st" = ok ] && break
+  sleep 5; i=$((i+5))
+done
+[ "$st" = ok ] || fail "describe-services does not report the steady service as ECS does: $st"
+log "    ✓ pendingCount 0; PRIMARY deployment ecs-svc/… COMPLETED; events: started 1 tasks, reached a steady state"
 
 # --- 2. teardown removes what was created ----------------------------------------------------------
 log "delete-service ${POS_SVC} → the kind: Application is deleted"

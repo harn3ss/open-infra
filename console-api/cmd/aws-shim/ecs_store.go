@@ -240,6 +240,9 @@ type ecsServiceRef struct {
 	Cluster     string         `json:"cluster"`
 	CreatedAt   string         `json:"createdAt"`
 	Body        map[string]any `json:"body"` // the last-applied Create/UpdateService request body
+	// History is each task definition the service was given and when, so each of its deployments reports
+	// the task definition it runs.
+	History []ecsTaskDefRecord `json:"history,omitempty"`
 }
 
 func (h *ecsDoorway) putServiceRef(ctx context.Context, ref *ecsServiceRef) error {

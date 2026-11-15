@@ -203,6 +203,17 @@ rules:
   - apiGroups: [apps]
     resources: [replicasets, deployments]
     verbs: [get]
+  # ECS DescribeServices (ecs_service_state.go): a service's task counts, deployments and events are its
+  # workload's, so once the caller has ecs:DescribeServices on the service the shim reads, in the caller's
+  # account's namespace, the app's Deployment (get, above), the ReplicaSets it controls (list, by the app's
+  # label) and what their controller recorded about them (events, by the ReplicaSet's name). It returns only
+  # ECS's fields: counts, rollout states and ECS's own event messages. Read-only.
+  - apiGroups: [apps]
+    resources: [replicasets]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [list]
   # Lambda PublishVersion (lambda_versions.go): a version is published from the revision the function's
   # latest change runs, so the shim reads the function's Knative Service (its status: the latest ready and
   # created revisions) and that revision's metadata (when it was created). A function's pod is served the

@@ -1983,9 +1983,27 @@ Implemented: `RegisterTaskDefinition`/`DescribeTaskDefinition`/`DeregisterTaskDe
 substance; a **cluster is an inert grouping** (the k3s cluster is the cluster, per `cfn/mapping.go`) — its
 records exist only so the cluster verbs report something faithful and a named cluster can be validated at
 `CreateService`. The service's authoritative state is the **live `kind: Application`** (read back for
-`Describe`/`ListServices`), never a shadow copy — `DescribeServices` reports `runningCount == desiredCount`
-only once the composite is actually Ready (its backing Deployment's replicas available), so it is an honest
-report of readiness, not a fabricated live count.
+`Describe`/`ListServices`), never a shadow copy. `DescribeServices` reports what ECS reports of a running
+service, from the Application's workload:
+
+- **`runningCount` / `pendingCount`**: the service's tasks started and ready, and those started and not yet
+  ready. A task the account's capacity refuses is neither, as on ECS: it is a service event.
+- **`deployments`**: each rollout still running tasks, as ECS lists them. The current one is `PRIMARY`; an
+  earlier one still draining is `ACTIVE`. Each has its `ecs-svc/…` id, its task definition, its counts,
+  and its `rolloutState` (`IN_PROGRESS` until the service is at its desired count with nothing pending,
+  then `COMPLETED`).
+- **`events`**: ECS's own messages, newest first, the 100 most recent, as ECS keeps them:
+  - "`(service <name>) has started 1 tasks: (task <id>).`" and "`… has stopped 1 running tasks: …`";
+  - "`(service <name>) (deployment ecs-svc/…) deployment completed.`" and "`(service <name>) has reached a
+    steady state.`";
+  - a task the account's capacity refuses: "`(service <name>) was unable to place a task. Reason: You've
+    reached the limit on the number of tasks you can run concurrently`", or the vCPU or memory form, as
+    [ECS words them](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/service-event-messages-list.html);
+  - any other refusal to start a task: "`(service <name>) is unable to consistently start tasks
+    successfully.`"
+
+  The shim reads the workload with its own read access, once the caller has `ecs:DescribeServices` on the
+  service, and only in the caller's account.
 
 **Authority — the way AWS does it, the reason the doorway is safe.** Exactly as the CloudFormation doorway:
 every resource mutation (`CreateService`/`UpdateService`/`DeleteService`) runs through an Applier that
@@ -2034,7 +2052,9 @@ gate via `BuildChangeSet`, which applies nothing), so each of these returns a 40
 
 `probe/aws-shim-ecs.sh` proves it against the deployed shim + engine: a `RegisterTaskDefinition` (one
 public-image container + a `containerPort`) returns a task-def ARN at `:1`; `CreateService` provisions a
-`kind: Application` that becomes Ready, and `DescribeServices` reports `desiredCount == runningCount == 1`;
+`kind: Application` that becomes Ready, and `DescribeServices` reports `desiredCount == runningCount == 1`,
+`pendingCount` 0, one `PRIMARY` deployment `COMPLETED`, and the events "has started 1 tasks" and "has
+reached a steady state" (newest);
 `DeleteService` removes the Application; a **reader's** identical `CreateService` provisions **nothing** (it
 runs as the reader, who cannot create applications — never as the shim, closing the confused-deputy blast
 radius); a Fargate service with a **raw awsvpc subnet** is refused at the gate and **`RunTask`** is refused,

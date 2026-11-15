@@ -6,6 +6,14 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — ECS `DescribeServices` reports deployments, events and pending tasks
+- `DescribeServices` returned no `deployments` or `events`, and `pendingCount` was always 0, so a service's
+  rollout, and a task refused by the account's capacity, could not be seen through ECS. As on ECS, it now
+  reports the service's tasks running and pending, each deployment still running tasks (`PRIMARY`,
+  `ACTIVE`) with its rollout state, and the service's events in ECS's words: tasks started and stopped, a
+  deployment completed, the steady state reached, and "was unable to place a task" with ECS's reason when
+  the account's capacity is reached. See [docs/aws-shim.md](docs/aws-shim.md).
+
 ### Fixed — `docker push` works with ECR's documented push policy
 - The registry decided requests by three coarse scopes and needed the pull scope for every write, so a
   principal holding exactly ECR's push policy (which has no `ecr:GetDownloadUrlForLayer`) was refused

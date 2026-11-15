@@ -172,7 +172,8 @@ func (h *ecsDoorway) createService(ctx context.Context, w http.ResponseWriter, r
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	body["taskDefinition"] = fmt.Sprintf("%s:%d", family, stored.Revision) // pin the resolved revision
-	if err := h.putServiceRef(ctx, &ecsServiceRef{ServiceName: serviceName, Cluster: cluster, CreatedAt: now, Body: body}); err != nil {
+	if err := h.putServiceRef(ctx, &ecsServiceRef{ServiceName: serviceName, Cluster: cluster, CreatedAt: now, Body: body,
+		History: []ecsTaskDefRecord{{TaskDefinition: body["taskDefinition"].(string), At: now}}}); err != nil {
 		h.internal(w, requestID, err)
 		return
 	}
@@ -241,6 +242,12 @@ func (h *ecsDoorway) updateService(ctx context.Context, w http.ResponseWriter, r
 		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, aerr.Error())
 		return
 	}
+	if td := newBody["taskDefinition"].(string); td != firstString(ref.Body, "taskDefinition") || body["forceNewDeployment"] == true {
+		ref.History = append(ref.History, ecsTaskDefRecord{TaskDefinition: td, At: time.Now().UTC().Format(time.RFC3339)})
+		if len(ref.History) > 20 {
+			ref.History = ref.History[len(ref.History)-20:]
+		}
+	}
 	ref.Body = newBody
 	if err := h.putServiceRef(ctx, ref); err != nil {
 		h.internal(w, requestID, err)
@@ -294,6 +301,9 @@ func (h *ecsDoorway) deleteService(ctx context.Context, w http.ResponseWriter, r
 	if err := h.deleteServiceRef(ctx, serviceName); err != nil {
 		h.logger.Warn("ecs DeleteService: could not delete service pointer", "service", serviceName, "error", err.Error())
 	}
+	if err := h.deleteConfigMap(ctx, eventsCMName(serviceName)); err != nil {
+		h.logger.Warn("ecs DeleteService: could not delete the service's events", "service", serviceName, "error", err.Error())
+	}
 	h.audit(ctx, "DeleteService", serviceName, "allow", "")
 	writeECSJSON(w, requestID, map[string]any{
 		"service": h.serviceObject(ctx, serviceName, strOrDefault(ref.Cluster, "default"), firstString(ref.Body, "taskDefinition"), ecsDesired(ref.Body), 0, "DRAINING", ref.CreatedAt, firstString(ref.Body, "launchType")),
@@ -318,11 +328,14 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 		appName := ecsName(svcName)
 		cluster := defCluster
 		tdRef := ""
-		if ref, found, _ := h.getServiceRef(ctx, svcName); found {
+		ref, found, _ := h.getServiceRef(ctx, svcName)
+		if found {
 			tdRef = firstString(ref.Body, "taskDefinition")
 			if ref.Cluster != "" {
 				cluster = ref.Cluster
 			}
+		} else {
+			ref = nil
 		}
 		if h.otherAccountsARN(ctx, raw) {
 			failures = append(failures, map[string]any{"arn": raw, "reason": "MISSING"})
@@ -334,15 +347,30 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 			failures = append(failures, map[string]any{"arn": h.serviceArn(ctx, cluster, svcName), "reason": "MISSING"})
 			continue
 		}
+		createdAt, launchType := "", ""
+		var history []ecsTaskDefRecord
+		if ref != nil {
+			createdAt, launchType, history = ref.CreatedAt, firstString(ref.Body, "launchType"), ref.History
+		}
+		// The service's tasks, deployments and events are its workload's (ecs_service_state.go).
+		if wl, ok := h.workload(ctx, obj, svcName, launchType, history, tdRef); ok {
+			svc := h.serviceObject(ctx, svcName, cluster, tdRef, wl.desired, wl.running, "ACTIVE", createdAt, launchType)
+			svc["pendingCount"] = wl.pending
+			svc["deployments"] = wl.deployments
+			svc["events"] = eventsJSON(wl.events)
+			services = append(services, svc)
+			continue
+		}
+		// No workload yet (the Application is still making it): what the Application says. It is Ready only
+		// when its Deployment's replicas are available, so runningCount == desiredCount is an honest report.
 		desired := specScalingMin(spec)
 		running := 0
-		// Readiness is read via the CALLER (ap, caller-authority) like the spec above — not the shim SA — so
-		// the doorway needs no read access to the caller's workload. The composite is Ready only when its
-		// Deployment's replicas are available, so runningCount == desiredCount is an honest report of Ready.
 		if rdy, _, _ := ap.GetReady(ctx, ecsAppAPIVersion, "Application", obj); rdy {
 			running = desired
 		}
-		services = append(services, h.serviceObject(ctx, svcName, cluster, tdRef, desired, running, "ACTIVE", "", ""))
+		svc := h.serviceObject(ctx, svcName, cluster, tdRef, desired, running, "ACTIVE", createdAt, launchType)
+		svc["deployments"], svc["events"] = []any{}, eventsJSON(h.keptEvents(ctx, svcName))
+		services = append(services, svc)
 	}
 	writeECSJSON(w, requestID, map[string]any{"services": services, "failures": failures})
 }
