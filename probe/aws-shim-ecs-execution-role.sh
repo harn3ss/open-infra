@@ -129,6 +129,13 @@ service "$AAK" "$ASK" "$SVC_OK" "$ROLE_OK" || fail "$SVC_OK not created"; SERVIC
 service "$AAK" "$ASK" "$SVC_NONE" "$ROLE_NONE" || fail "$SVC_NONE not created"; SERVICES+=("$SVC_NONE")
 
 counts() { as "$AAK" "$ASK" ecs describe-services --services "$1" --query 'services[0].[runningCount,pendingCount]' 2>/dev/null | tr '\t' ' '; }
+# diag <service>: where its task is and why (printed on a failure or an inconclusive result)
+diag() {
+  kubectl get pods -A -l "app.kubernetes.io/name=$1" -o jsonpath='{range .items[*]}  task pod {.metadata.namespace}/{.metadata.name} on {.spec.nodeName}: {.status.phase} {.status.containerStatuses[0].state.waiting.reason}{"\n"}{end}' >&2 2>/dev/null
+  local ns; ns="$(kubectl get pods -A -l "app.kubernetes.io/name=$1" -o jsonpath='{.items[0].metadata.namespace}' 2>/dev/null)"
+  [ -n "$ns" ] && kubectl -n "$ns" get events --sort-by=.lastTimestamp -o jsonpath='{range .items[*]}{.involvedObject.name} {.reason}: {.message}{"\n"}{end}' 2>/dev/null | grep -F "$1" | tail -4 | cut -c1-240 >&2
+  [ -n "$ns" ] || kubectl get applications.openinfra.dev -A 2>/dev/null | grep -F "$1" >&2 || echo "  no Application $1" >&2
+}
 # armed <service>: the node its task landed on has the ECR credential provider (yes/no/unknown)
 armed() {
   local node
@@ -138,17 +145,17 @@ armed() {
 }
 st=""
 for _ in $(seq 1 48); do st="$(counts "$SVC_OK")"; [ "$st" = "1 0" ] && break; sleep 5; done
-[ "$(armed "$SVC_OK")" = yes ] || inconclusive "${SVC_OK}'s task is on a node without the ECR credential provider"
-[ "$st" = "1 0" ] || fail "${SVC_OK} never ran its task (running pending = $st): its execution role could not pull"
+[ "$(armed "$SVC_OK")" = yes ] || { diag "$SVC_OK"; inconclusive "${SVC_OK}'s task is on a node without the ECR credential provider (running pending = $st)"; }
+if [ "$st" != "1 0" ]; then diag "$SVC_OK"; fail "${SVC_OK} never ran its task (running pending = $st): its execution role could not pull"; fi
 log "  ✓ ${SVC_OK}: runningCount 1 — pulled as its execution role"
 
 sleep 60 # well past the allowed service's pull
-[ "$(armed "$SVC_NONE")" = yes ] || inconclusive "${SVC_NONE}'s task is on a node without the ECR credential provider"
+[ "$(armed "$SVC_NONE")" = yes ] || { diag "$SVC_NONE"; inconclusive "${SVC_NONE}'s task is on a node without the ECR credential provider"; }
 st="$(counts "$SVC_NONE")"
 case "$st" in
   "0 1") log "  ✓ ${SVC_NONE}: runningCount 0, pendingCount 1 — its pull was refused, with no fall back to the node's credential" ;;
-  "1 0") fail "WIDER THAN AWS: ${SVC_NONE} ran an image its execution role may not pull" ;;
-  *) fail "${SVC_NONE} reports running pending = '$st'" ;;
+  "1 0") diag "$SVC_NONE"; fail "WIDER THAN AWS: ${SVC_NONE} ran an image its execution role may not pull" ;;
+  *) diag "$SVC_NONE"; fail "${SVC_NONE} reports running pending = '$st'" ;;
 esac
 
 # --- 4. passing the role takes iam:PassRole --------------------------------------------------------------
