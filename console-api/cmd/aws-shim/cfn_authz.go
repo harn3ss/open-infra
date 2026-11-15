@@ -175,6 +175,7 @@ func restAPIPlanOps(plan cfn.RestAPIPlan) []string {
 // shim-authority hook first checks the caller may do that step itself.
 func (h *cfnDoorway) asCaller(o cfn.DeployOptions, ap *impersonatingApplier) cfn.DeployOptions {
 	o.Owner = ap.user
+	o.RoleARN = ap.serviceRole // the stack's service role, recorded with it ("" keeps the stack's on an update)
 	// Nested stacks are created, read and deleted as the caller (cfn_nested.go). Creating one reads its
 	// child template as the caller, so an operation that may create one names its request (withRequest).
 	o.NestedStacks = &nestedDriver{h: h, ap: ap}

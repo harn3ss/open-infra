@@ -765,6 +765,8 @@ func run(logger *slog.Logger) error {
 			}
 			cfnH.fns = fns          // a stack's function may not take a name a Lambda-API function has
 			cfnH.accounts = acctDir // a member account's stack is recovered and signalled in its own home
+			// A stack's service role (RoleARN) is a kind: Role of the caller's account (cfn_service_role.go).
+			cfnH.roles, cfnH.rolesNS = &dynRoleResolver{dyn: dyn, ns: rolesNS}, rolesNS
 			services["cloudformation"] = cfnH
 			// CloudFront (cloudfront.*): the invalidations of a stack's distributions (cloudfront.go).
 			services["cloudfront"] = newCloudFrontHandler(cfnH, logger)

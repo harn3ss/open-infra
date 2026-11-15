@@ -313,6 +313,9 @@ type StackRecord struct {
 	// Owner is the caller that created the stack (kept across updates); "" on a record from before it
 	// was kept.
 	Owner string `json:"owner,omitempty"`
+	// RoleARN is the stack's service role (CloudFormation's RoleARN): every operation on the stack acts as
+	// that role instead of the caller, until an operation passes another. "" = the caller's own authority.
+	RoleARN string `json:"roleArn,omitempty"`
 	// TerminationProtection refuses the stack's delete while it is on (EnableTerminationProtection, as on
 	// AWS); kept across updates.
 	TerminationProtection bool              `json:"terminationProtection,omitempty"`
@@ -361,7 +364,10 @@ type DeployOptions struct {
 	// their own (nested_stacks.go). Nil (the CLI, which flattens them first): a stack with one refuses.
 	NestedStacks NestedStacks
 	// Owner is the caller a create records as the stack's owner (StackRecord.Owner); "" records none.
-	Owner   string
+	Owner string
+	// RoleARN is the service role the operation acts as (StackRecord.RoleARN), recorded with the stack; an
+	// update with none keeps the stack's.
+	RoleARN string
 	Params  map[string]string
 	Exports map[string]string // cross-stack Exports (export name -> value) for Fn::ImportValue
 	Wait    bool
@@ -770,7 +776,7 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	now := time.Now().UTC().Format(time.RFC3339)
 	rec := &StackRecord{
 		Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS",
-		CreatedAt: now, UpdatedAt: now, Template: string(data), Owner: opts.Owner,
+		CreatedAt: now, UpdatedAt: now, Template: string(data), Owner: opts.Owner, RoleARN: opts.RoleARN,
 		Description: templateDescription(data), Fidelity: opts.Fidelity, TerminationProtection: opts.TerminationProtection,
 	}
 	rec.setParams(data, opts.Params)
@@ -1025,7 +1031,8 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 		r.addressOf = addressHook(ctx, sr, func() []StackResource { return rec.Resources }, addressWaitCap)
 	}
 	rec = &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Status: "CREATE_IN_PROGRESS", CreatedAt: now, UpdatedAt: now,
-		Template: string(data), Owner: opts.Owner, Description: t.Description, Fidelity: opts.Fidelity, TerminationProtection: opts.TerminationProtection}
+		Template: string(data), Owner: opts.Owner, RoleARN: opts.RoleARN, Description: t.Description, Fidelity: opts.Fidelity,
+		TerminationProtection: opts.TerminationProtection}
 	rec.setParams(data, opts.Params)
 	rec.stackEvent("CREATE_IN_PROGRESS", startReason(opts))
 	if err := writeStackRecord(ctx, ap, rec, opts); err != nil {

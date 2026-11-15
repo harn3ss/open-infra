@@ -285,7 +285,8 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	newRec := &StackRecord{
 		Name: opts.StackName, Namespace: opts.Namespace, StackID: current.StackID, Status: "UPDATE_COMPLETE",
 		CreatedAt: current.CreatedAt, UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		Template: string(data), Owner: current.Owner, Description: templateDescription(data), Fidelity: opts.Fidelity, TerminationProtection: current.TerminationProtection,
+		Template: string(data), Owner: current.Owner, RoleARN: updatedRoleARN(opts.RoleARN, current.RoleARN),
+		Description: templateDescription(data), Fidelity: opts.Fidelity, TerminationProtection: current.TerminationProtection,
 	}
 	newRec.setParams(data, opts.Params)
 	for _, b := range desired {
@@ -436,4 +437,12 @@ func restorePrior(ctx context.Context, opts DeployOptions, ap Applier, prior, ad
 // to restore prior state during rollback.
 func renderStackResource(res StackResource, opts DeployOptions) ([]byte, error) {
 	return renderManifest(&Manifest{APIVersion: res.APIVersion, Kind: res.Kind, Name: res.Name, Spec: res.Spec}, opts)
+}
+
+// updatedRoleARN is the service role a stack keeps after an update: the one the update passed, else its own.
+func updatedRoleARN(passed, current string) string {
+	if passed != "" {
+		return passed
+	}
+	return current
 }

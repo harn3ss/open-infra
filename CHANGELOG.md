@@ -6,6 +6,12 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a CloudFormation service role (`RoleARN`) is honoured
+- `CreateStack`, `UpdateStack`, `DeleteStack` and `CreateChangeSet` ignored `RoleARN`, so a stack meant to run
+  as a restricted role ran with the caller's own permissions. As on AWS, the operation now acts as the
+  role. Passing it takes `iam:PassRole`, and the role must trust `cloudformation.amazonaws.com`. The role
+  stays with the stack for later operations and change sets, and `DescribeStacks` shows it.
+
 ### Fixed — STS session policies narrow the session
 - `sts:AssumeRole` and `AssumeRoleWithWebIdentity` ignored `Policy` and `PolicyArns`, so a session meant to be
   narrowed kept its role's full permissions. They now apply as on AWS: the session may do only what both

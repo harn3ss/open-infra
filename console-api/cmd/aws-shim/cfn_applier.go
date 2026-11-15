@@ -71,6 +71,9 @@ type impersonatingApplier struct {
 	// the management account's): the account the stack's background work acts in (accountCtx), recorded
 	// with the caller (cfn_accounts.go).
 	account, home string
+	// serviceRole is the stack's service role (RoleARN) this applier acts as, "" when it acts as the caller
+	// (cfn_service_role.go): recorded with the stack.
+	serviceRole string
 }
 
 // recordStore is where this applier keeps stack records.

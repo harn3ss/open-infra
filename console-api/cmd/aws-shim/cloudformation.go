@@ -67,6 +67,10 @@ const cfnAsyncTimeout = 60 * time.Minute
 const cfnWaitTimeout = 10 * time.Minute
 
 type cfnDoorway struct {
+	// roles resolves a stack's service role (RoleARN) and rolesNS is the management account's IAM home,
+	// where its roles live (cfn_service_role.go); nil roles = a RoleARN is refused as invalid.
+	roles   roleResolver
+	rolesNS string
 	cfg     *rest.Config      // base in-cluster config; copied + impersonated per caller
 	shimDyn dynamic.Interface // shim SA client for stack-record / changeset / drift bookkeeping
 	// packages keeps zip Lambdas' deployment packages (lambda_packages.go); nil = an S3 package refuses and
@@ -479,6 +483,13 @@ func (h *cfnDoorway) serveQuery(w http.ResponseWriter, r *http.Request, claims i
 	if err != nil {
 		writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, err.Error(), cfnXMLNamespace)
 		return
+	}
+	// A stack's service role (RoleARN): the operation acts as the role, not the caller (cfn_service_role.go).
+	if rap, rerr := h.serviceRoleApplier(r.Context(), r, claims, action); rerr != nil {
+		writeQueryError(w, rerr.status, rerr.code, requestID, rerr.message, cfnXMLNamespace)
+		return
+	} else if rap != nil {
+		ap = rap
 	}
 	if action != "ValidateTemplate" && !isMemberRequest(r.Context()) {
 		h.migrateLegacyRecords(r.Context()) // records an earlier front door kept as ConfigMaps (cfn_records.go)
@@ -1131,6 +1142,9 @@ func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {
 		b.WriteString("<Description>" + xesc(rec.Description) + "</Description>")
 	}
 	b.WriteString("<EnableTerminationProtection>" + strconv.FormatBool(rec.TerminationProtection) + "</EnableTerminationProtection>")
+	if rec.RoleARN != "" {
+		b.WriteString("<RoleARN>" + xesc(rec.RoleARN) + "</RoleARN>")
+	}
 	if rec.CreatedAt != "" {
 		b.WriteString("<CreationTime>" + xesc(rec.CreatedAt) + "</CreationTime>")
 	}
@@ -1321,6 +1335,9 @@ type changeSet struct {
 	// Execution is the change set's ExecutionStatus once ExecuteChangeSet ran it: EXECUTE_IN_PROGRESS,
 	// then EXECUTE_COMPLETE or EXECUTE_FAILED, as on AWS ("" = not executed).
 	Execution string `json:"execution,omitempty"`
+	// RoleARN is the service role passed to CreateChangeSet, which ExecuteChangeSet acts as ("" = the
+	// stack's own, or the caller).
+	RoleARN string `json:"roleArn,omitempty"`
 }
 
 // changeSetCMName is a change set's record name. A change-set name may not contain "." (AWS's pattern,
@@ -1405,7 +1422,7 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 	// NoEcho values stay out of the change-set record (a ConfigMap): they go to its NoEcho Secret.
 	plain, noEchoNames, noEchoValues := cfn.SplitNoEcho([]byte(body), params)
 	rec := &changeSet{StackName: stack, StackID: stackID, Name: csName, TemplateBody: body, Params: plain, NoEchoParams: noEchoNames,
-		Type: csType, Changes: cs.Changes}
+		Type: csType, Changes: cs.Changes, RoleARN: ap.serviceRole}
 	if err := h.noecho.put(ctx, changeSetCMName(stack, csName), stack, noEchoValues); err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not store the NoEcho parameters: "+err.Error(), cfnXMLNamespace)
 		return

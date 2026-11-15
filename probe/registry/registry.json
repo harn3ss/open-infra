@@ -95,7 +95,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 15
+      "probe": 16
     },
     "undeployableUses": [
       {
@@ -3671,10 +3671,11 @@
       ],
       "stackProbes": [
         "cfn-api",
-        "cfn-data-services"
+        "cfn-data-services",
+        "cfn-service-role"
       ],
       "status": "partial",
-      "templateUses": 6,
+      "templateUses": 7,
       "verdict": "ok"
     },
     "AWS::SQS::QueuePolicy": {
