@@ -26,14 +26,17 @@ RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 # boto3 for the bucket (S3/MinIO) code-source path. The shim imports it lazily, so the
 # ConfigMap (inline) source never pays for it at runtime — it's here so bucket sources work, and because
 # AWS's Python runtimes ship boto3 for handlers.
-# Everything is UPGRADED (-U) to the newest release the interpreter supports: a plain install leaves the
-# base image's own setuptools and wheel where they are, with their CVEs (setuptools vendors its own wheel
-# and jaraco.context; 84.2.1 on Python >= 3.10 and 82.0.1 on 3.9 carry fixed copies). urllib3 (pulled by
-# botocore) is floored where botocore allows 2.x (Python >= 3.10). On 3.8 and 3.9 the newest botocore
-# still pins urllib3 < 1.27, as AWS's own runtimes for them do, and 3.8's newest setuptools is 75.3.4:
-# those images keep what their interpreter allows. wheel is a build tool nothing here runs: removed.
+# Everything is UPGRADED (-U): a plain install leaves the base image's own setuptools and wheel where they
+# are, with their CVEs. setuptools is held at 81.x on Python >= 3.9: 81.0.0 is the last release with
+# pkg_resources (82 removed it, and handler libraries still import it, as AWS's runtimes let them) and
+# already vendors fixed wheel (0.46.3) and jaraco.context (6.1.0). urllib3 (pulled by botocore) is floored
+# where botocore allows 2.x (Python >= 3.10). On 3.8 and 3.9 the newest botocore still pins urllib3 < 1.27,
+# as AWS's own runtimes for them do, and 3.8's newest setuptools is 75.3.4: those images keep what their
+# interpreter allows. wheel is a build tool nothing here runs: removed.
 RUN if python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then \
-      pip install --no-cache-dir -U "boto3>=1.34,<2" "urllib3>=2.8.0" "setuptools>=84.2.1" ; \
+      pip install --no-cache-dir -U "boto3>=1.34,<2" "urllib3>=2.8.0" "setuptools>=81.0.0,<82" ; \
+    elif python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then \
+      pip install --no-cache-dir -U "boto3>=1.34,<2" "setuptools>=81.0.0,<82" ; \
     else \
       pip install --no-cache-dir -U "boto3>=1.34,<2" "setuptools" ; \
     fi \
