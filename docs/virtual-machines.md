@@ -710,6 +710,10 @@ can be ended there (**End connection**, `ssm-guiconnect:CancelConnection`), whic
 connected within a few seconds and leaves their Windows session signed in. Fleet Manager's **Key pair** and
 **Single sign-on** authentication, and session recording, are not provided.
 
+[`probe/fleet-manager-remote-desktop.sh`](../probe/fleet-manager-remote-desktop.sh) proves the path live:
+a principal without `ssm:StartSession` on the instance is refused, and one with Remote Desktop's permissions
+connects through to a new Windows instance's Remote Desktop service and is recorded in the account's history.
+
 ## Networking: NAT vs direct-LAN (macvtap)
 
 `spec.network` controls how the VM attaches:
