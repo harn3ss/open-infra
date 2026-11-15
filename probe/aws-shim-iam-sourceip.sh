@@ -55,7 +55,7 @@ list_queues() {
   printf '%s %s\n' "$1" "$2" | kubectl -n "$PROBE_NS" exec -i "$POD" -- sh -c '
     read -r AK SK
     set -- -s -o /tmp/out -w "%{http_code}" --aws-sigv4 "aws:amz:us-east-1:sqs" --user "$AK:$SK" \
-      -H "Content-Type: application/x-www-form-urlencoded" -d "Action=ListQueues&Version=2012-11-05"
+      -H "Content-Type: application/x-amz-json-1.0" -H "X-Amz-Target: AmazonSQS.ListQueues" -d "{}"
     [ -n "'"$xff"'" ] && set -- "$@" -H "X-Forwarded-For: '"$xff"'"
     curl "$@" "'"$INCLUSTER"'/"' 2>/dev/null
 }

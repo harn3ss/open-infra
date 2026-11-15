@@ -77,20 +77,34 @@ func (h *cfnDoorway) callerPolicyAllows(ctx context.Context, ap *impersonatingAp
 	return true, ""
 }
 
+// callerAllowed is a stack step on something the shim itself keeps (a queue, topic, key, REST API, a
+// Function's invoke) decided as that front door decides the same call: in enforce, the applier's IAM
+// policy alone (action on resType::resID: a role the stack acts as, or the caller); otherwise, as before, the
+// coarse RBAC question (verb on group/resource in ns, as the applier's identity) and then the data-plane
+// policy. These resources are not Kubernetes objects, so the RBAC question is only the legacy stand-in for
+// the action, which an IAM-policy-only principal (an assumed role) never has.
+func (h *cfnDoorway) callerAllowed(ctx context.Context, ap *impersonatingApplier, action, resType, resID,
+	verb, group, resource, ns, name string) (bool, string) {
+	caller := ap.callerClaims()
+	if ok, reason := decide(ctx, nil, h.authz, caller, action, resType, resID, func() (bool, string) {
+		if ok, why := h.callerCan(ctx, ap, verb, group, resource, ns, name); !ok {
+			return false, why
+		}
+		return scopedDataPlaneOnly(ctx, nil, h.authz, caller, action, resType, resID)()
+	}); !ok {
+		return false, fmt.Sprintf("%s may not %s on %s::%s: %s", ap.user, action, resType, resID, reason)
+	}
+	return true, ""
+}
+
 // canInvokeFunction is the custom-resource check: the one a Lambda Invoke of that Function makes.
 func (h *cfnDoorway) canInvokeFunction(ctx context.Context, ap *impersonatingApplier, ns, fn string) (bool, string) {
-	if ok, reason := h.callerCan(ctx, ap, "create", "openinfra.dev", "functions", ns, fn); !ok {
-		return false, reason
-	}
-	return h.callerPolicyAllows(ctx, ap, "lambda:InvokeFunction", "Function", fn)
+	return h.callerAllowed(ctx, ap, "lambda:InvokeFunction", "Function", fn, "create", "openinfra.dev", "functions", ns, fn)
 }
 
 // canDeleteRestAPI is the REST v1 check: the one the API Gateway front door makes for a delete.
 func (h *cfnDoorway) canDeleteRestAPI(ctx context.Context, ap *impersonatingApplier, apiID string) (bool, string) {
-	if ok, reason := h.callerCan(ctx, ap, "delete", "openinfra.dev", "applications", h.authzNS, apiID); !ok {
-		return false, reason
-	}
-	return h.callerPolicyAllows(ctx, ap, "apigateway:DeleteRestApi", "Api", apiID)
+	return h.callerAllowed(ctx, ap, "apigateway:DeleteRestApi", "Api", apiID, "delete", "openinfra.dev", "applications", h.authzNS, apiID)
 }
 
 // canProvisionRestAPI is the REST v1 create check: what the API Gateway front door checks for each call
@@ -104,10 +118,7 @@ func (h *cfnDoorway) canProvisionRestAPI(ctx context.Context, ap *impersonatingA
 	if name == "" {
 		name = plan.LogicalID
 	}
-	if ok, reason := h.callerCan(ctx, ap, "create", "openinfra.dev", "applications", h.authzNS, name); !ok {
-		return false, reason
-	}
-	if ok, reason := h.callerPolicyAllows(ctx, ap, "apigateway:CreateRestApi", "Api", name); !ok {
+	if ok, reason := h.callerAllowed(ctx, ap, "apigateway:CreateRestApi", "Api", name, "create", "openinfra.dev", "applications", h.authzNS, name); !ok {
 		return false, reason
 	}
 	for _, op := range restAPIPlanOps(plan) {
@@ -125,10 +136,7 @@ func (h *cfnDoorway) canProvisionRestAPI(ctx context.Context, ap *impersonatingA
 		if h.restV1 != nil && h.restV1.fnNS != "" {
 			fnNS = h.restV1.fnNamespace(ctx, fn)
 		}
-		if ok, reason := h.callerCan(ctx, ap, "create", "openinfra.dev", "functions", fnNS, fn); !ok {
-			return false, "not authorized to integrate function " + fn + ": " + reason
-		}
-		if ok, reason := h.callerPolicyAllows(ctx, ap, "lambda:InvokeFunction", "Function", fn); !ok {
+		if ok, reason := h.callerAllowed(ctx, ap, "lambda:InvokeFunction", "Function", fn, "create", "openinfra.dev", "functions", fnNS, fn); !ok {
 			return false, "not authorized to integrate function " + fn + ": " + reason
 		}
 	}

@@ -948,7 +948,8 @@
         "iam-username-like",
         "iam-login-profile",
         "iam-mfa",
-        "iam-passedtoservice"
+        "iam-passedtoservice",
+        "iam-sourceip"
       ],
       "refused": [],
       "service": "IAM",
@@ -1606,7 +1607,8 @@
         "vm-credentials",
         "app-assume-role",
         "sts-deny",
-        "sts-switch-role"
+        "sts-switch-role",
+        "sts-session-policy"
       ],
       "refused": [],
       "service": "STS",

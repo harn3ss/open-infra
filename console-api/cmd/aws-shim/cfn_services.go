@@ -268,10 +268,7 @@ func (a *impersonatingApplier) svcAuthorize(ctx context.Context, kind, op, name 
 		if s.verb == "" {
 			return cfn.Unauthorized(fmt.Sprintf("%s %s: no authorization mapping for %s", kind, name, s.action))
 		}
-		if ok, reason := a.door.callerCan(ctx, a, s.verb, "openinfra.dev", "applications", a.door.authzNS, s.resID); !ok {
-			return cfn.Unauthorized(fmt.Sprintf("%s %s not %sd: %s", kind, name, op, reason))
-		}
-		if ok, reason := a.door.callerPolicyAllows(ctx, a, s.action, s.resType, s.resID); !ok {
+		if ok, reason := a.door.callerAllowed(ctx, a, s.action, s.resType, s.resID, s.verb, "openinfra.dev", "applications", a.door.authzNS, s.resID); !ok {
 			return cfn.Unauthorized(fmt.Sprintf("%s %s not %sd: %s", kind, name, op, reason))
 		}
 	}
@@ -281,10 +278,7 @@ func (a *impersonatingApplier) svcAuthorize(ctx context.Context, kind, op, name 
 		if p, _ := spec["protocol"].(string); p == "lambda" {
 			fn, _ := spec["function"].(string)
 			ns := a.svc.lambdaNamespace(ctx, spec, a.ns)
-			if ok, reason := a.door.callerCan(ctx, a, "create", "openinfra.dev", "functions", ns, fn); !ok {
-				return cfn.Unauthorized(fmt.Sprintf("subscription %s not created: not authorized to deliver to function %s: %s", name, fn, reason))
-			}
-			if ok, reason := a.door.callerPolicyAllows(ctx, a, "lambda:InvokeFunction", "Function", fn); !ok {
+			if ok, reason := a.door.callerAllowed(ctx, a, "lambda:InvokeFunction", "Function", fn, "create", "openinfra.dev", "functions", ns, fn); !ok {
 				return cfn.Unauthorized(fmt.Sprintf("subscription %s not created: not authorized to deliver to function %s: %s", name, fn, reason))
 			}
 		}
@@ -315,10 +309,7 @@ func (a *impersonatingApplier) svcAuthorize(ctx context.Context, kind, op, name 
 			} else if found {
 				queue := queueNameFromURL(url)
 				verb, _ := verbForSQSOp("SendMessage")
-				ok, reason := a.door.callerCan(ctx, a, verb, "openinfra.dev", "applications", a.door.authzNS, queue)
-				if ok {
-					ok, reason = a.door.callerPolicyAllows(ctx, a, "sqs:SendMessage", "Queue", queue)
-				}
+				ok, reason := a.door.callerAllowed(ctx, a, "sqs:SendMessage", "Queue", queue, verb, "openinfra.dev", "applications", a.door.authzNS, queue)
 				if !ok {
 					granted, err := a.svc.sns.queueGrantsTopic(ctx, topicArn, url)
 					if err != nil {
@@ -341,10 +332,7 @@ func (a *impersonatingApplier) svcAuthorize(ctx context.Context, kind, op, name 
 		if target, _ := spec["targetKeyId"].(string); found && cur != target {
 			svcOp := map[string]string{"update": "UpdateAlias", "delete": "DeleteAlias"}[op]
 			verb, _ := verbForKMSOp(svcOp)
-			if ok, reason := a.door.callerCan(ctx, a, verb, "openinfra.dev", "applications", a.door.authzNS, cur); !ok {
-				return cfn.Unauthorized(fmt.Sprintf("%s %s not %sd: %s", kind, name, op, reason))
-			}
-			if ok, reason := a.door.callerPolicyAllows(ctx, a, "kms:"+svcOp, "Key", cur); !ok {
+			if ok, reason := a.door.callerAllowed(ctx, a, "kms:"+svcOp, "Key", cur, verb, "openinfra.dev", "applications", a.door.authzNS, cur); !ok {
 				return cfn.Unauthorized(fmt.Sprintf("%s %s not %sd: %s", kind, name, op, reason))
 			}
 		}
@@ -828,10 +816,7 @@ func (a *impersonatingApplier) svcUpdateKey(ctx context.Context, keyID string, s
 	}
 	check := func(svcOp string) error {
 		verb, _ := verbForKMSOp(svcOp)
-		if ok, reason := a.door.callerCan(ctx, a, verb, "openinfra.dev", "applications", a.door.authzNS, keyID); !ok {
-			return cfn.Unauthorized("key " + keyID + " not updated: " + reason)
-		}
-		if ok, reason := a.door.callerPolicyAllows(ctx, a, "kms:"+svcOp, "Key", keyID); !ok {
+		if ok, reason := a.door.callerAllowed(ctx, a, "kms:"+svcOp, "Key", keyID, verb, "openinfra.dev", "applications", a.door.authzNS, keyID); !ok {
 			return cfn.Unauthorized("key " + keyID + " not updated: " + reason)
 		}
 		return nil

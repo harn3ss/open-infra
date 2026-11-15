@@ -82,8 +82,8 @@ var delegated = map[string]struct{ file, shimCall, userCheck, resType string }{
 }
 
 // passThrough are wrappers whose own data-plane call forwards their parameters; their callers are scanned
-// instead (callerPolicyAllows: action and type at arguments 2 and 3).
-var passThrough = map[string]bool{"callerPolicyAllows": true}
+// instead (callerPolicyAllows, callerAllowed: action and type at arguments 2 and 3).
+var passThrough = map[string]bool{"callerPolicyAllows": true, "callerAllowed": true}
 
 // exampleArn is one ARN per resource type the shim checks, which the importer must map to that type.
 var exampleArn = map[string]string{

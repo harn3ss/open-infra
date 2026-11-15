@@ -8,6 +8,11 @@ import (
 	"time"
 
 	authzv1 "k8s.io/api/authorization/v1"
+
+	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
+	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
+	"github.com/harn3ss/open-infra/policyengine"
 )
 
 const (
@@ -122,5 +127,48 @@ func TestCFN_ServiceRoleRefusals(t *testing.T) {
 				t.Fatal("a refused CreateStack created the stack")
 			}
 		})
+	}
+}
+
+// A stack step on something the shim keeps (a queue) is decided as that front door decides it: for a
+// principal IAM policy decides (enforce), its policy alone — an assumed role allowed sqs:* creates the queue
+// though the coarse RBAC question says no, and one not allowed it is refused; otherwise the RBAC question
+// still gates, as before.
+func TestCFN_StackStepIsTheFrontDoorsDecision(t *testing.T) {
+	ctx := context.Background()
+	h, _ := cfnServeDoorway(t)
+	h.cs = csWithSAR(false) // the coarse RBAC question says no
+	role := iam.Claims{Sub: "assumed-role/" + ecrTestRole + "/AWSCloudFormation", AssumedRole: ecrTestRole}
+	ap, err := h.applierForIn(ctx, role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The platform's IAM_AUTHZ mode (read when the evaluator is built): enforce, or legacy.
+	world := func(enforce bool, stmts ...policyengine.Statement) *dataplaneauthz.Checker {
+		mode := "legacy"
+		if enforce {
+			mode = "enforce"
+		}
+		t.Setenv(iamauthz.EnvMode, mode)
+		return dataplaneauthz.New(func(context.Context) (dataplaneauthz.Snapshot, error) {
+			return dataplaneauthz.Snapshot{Docs: []dataplaneauthz.PolicyDoc{{Name: "role-access",
+				AppliesTo: []string{"Role::" + ecrTestRole}, Statements: stmts}}}, nil
+		}, time.Minute)
+	}
+	step := func() bool {
+		ok, _ := h.callerAllowed(ctx, ap, "sqs:CreateQueue", "Queue", "q", "create", "openinfra.dev", "applications", h.authzNS, "q")
+		return ok
+	}
+	h.authz = world(false, dpAllow([]string{"sqs:*"}, "*"))
+	if step() {
+		t.Fatal("legacy: the RBAC question must still gate the step")
+	}
+	h.authz = world(true, dpAllow([]string{"sqs:*"}, "*"))
+	if !step() {
+		t.Fatal("enforce: the role's IAM policy allows sqs:CreateQueue, and it alone decides")
+	}
+	h.authz = world(true, dpAllow([]string{"sqs:ListQueues"}, "*"))
+	if step() {
+		t.Fatal("enforce: a role not allowed sqs:CreateQueue must be refused")
 	}
 }

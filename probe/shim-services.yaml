@@ -48,14 +48,12 @@ services:
     cell: "identity + `AssumeRole` / web-identity"
     tier: proven
     sigv4: [sts]
-    probes: [sts, vm-credentials, app-assume-role, sts-deny, sts-switch-role]
-    pending: [sts-session-policy]
+    probes: [sts, vm-credentials, app-assume-role, sts-deny, sts-switch-role, sts-session-policy]
   - name: IAM
     cell: "roles/policies/users → AWS policy JSON → Cedar"
     tier: proven
     sigv4: [iam]
-    probes: [iam, iam-timecond, iam-username-like, iam-login-profile, iam-mfa, iam-passedtoservice]
-    pending: [iam-sourceip]
+    probes: [iam, iam-timecond, iam-username-like, iam-login-profile, iam-mfa, iam-passedtoservice, iam-sourceip]
   - name: KMS
     cell: "→ OpenBao Transit"
     tier: proven

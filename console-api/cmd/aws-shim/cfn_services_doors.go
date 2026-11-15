@@ -802,10 +802,7 @@ func (a *impersonatingApplier) doorExists(ctx context.Context, dk doorRoute, kin
 // delete (its RBAC resource and data-plane action): the pre-flight of a stack delete.
 func (a *impersonatingApplier) doorAuthorizeDelete(ctx context.Context, dk doorRoute, kind, name string, spec map[string]any) error {
 	res, rname, action, resType, resID := dk.deleteCheck(name, spec)
-	if ok, reason := a.door.callerCan(ctx, a, "delete", "openinfra.dev", res, a.door.authzNS, rname); !ok {
-		return cfn.Unauthorized(fmt.Sprintf("%s %s not deleted: %s", kind, name, reason))
-	}
-	if ok, reason := a.door.callerPolicyAllows(ctx, a, action, resType, resID); !ok {
+	if ok, reason := a.door.callerAllowed(ctx, a, action, resType, resID, "delete", "openinfra.dev", res, a.door.authzNS, rname); !ok {
 		return cfn.Unauthorized(fmt.Sprintf("%s %s not deleted: %s", kind, name, reason))
 	}
 	return nil

@@ -97,6 +97,16 @@ mkrole "$ROLE_UNTRUSTED" "$OTHER_TRUST" '{"Version":"2012-10-17","Statement":[{"
 arn() { printf 'arn:aws:iam::%s:role/%s' "$ACCOUNT" "$1"; }
 log "waiting 35s for the IAM policy world to load the roles' policies"
 sleep 35
+# A stack acting as a role needs the role's IAM policy compiled into the platform's RBAC too (the IAM
+# compiler runs every minute or two): wait until a RoleBinding names the role's identity.
+log "waiting for the IAM compiler to compile $ROLE_OK (up to 3 minutes)"
+compiled=""
+for _ in $(seq 1 36); do
+  if kubectl get rolebindings -A -o jsonpath='{range .items[*]}{range .subjects[*]}{.name}{"\n"}{end}{end}' 2>/dev/null \
+      | grep -q ":role/${ROLE_OK}\$"; then compiled=1; break; fi
+  sleep 5
+done
+[ -n "$compiled" ] || inconclusive "the IAM compiler did not compile $ROLE_OK in 3 minutes"
 
 TEMPLATE='{"Resources":{"Q":{"Type":"AWS::SQS::Queue"}}}'
 # final_status <stack>: the stack's status once it stops being *_IN_PROGRESS (up to ~3 minutes).
