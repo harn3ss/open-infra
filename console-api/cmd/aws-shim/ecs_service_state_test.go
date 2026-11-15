@@ -176,3 +176,13 @@ func TestECSState_EventsKeptNewestFirstAndCapped(t *testing.T) {
 		t.Fatal("a re-read event was kept twice")
 	}
 }
+
+// A task's id in the service's events is the id its log stream (ecs/<container>/<task id>) carries.
+func TestECSState_TaskIDIsTheLogStreams(t *testing.T) {
+	evs := ecsEventsOf("web", "acct", []corev1.Event{testEvent("u", "web-a", "SuccessfulCreate", "Created pod: web-a-1", ecsT0)})
+	stream := streamName(derivedGroup{Kind: "ecs"}, derivedSource{}, map[string]string{"namespace": "acct", "pod": "web-a-1", "container": "app"}, 0)
+	id := strings.TrimPrefix(stream, "ecs/app/")
+	if len(evs) != 1 || !strings.Contains(evs[0].Message, "(task "+id+")") {
+		t.Fatalf("event %q does not name the task its log stream %q does", evs[0].Message, stream)
+	}
+}

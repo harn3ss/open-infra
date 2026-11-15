@@ -59,11 +59,8 @@ type ecsWorkload struct {
 }
 
 // ecsTaskID is the ECS task id of one of the service's tasks: 32 hex digits, as ECS's are, stable for the
-// task's life.
-func ecsTaskID(ns, pod string) string {
-	sum := sha256.Sum256([]byte("ecs-task/" + ns + "/" + pod))
-	return hex.EncodeToString(sum[:16])
-}
+// task's life, and the id its awslogs stream carries (podID, cloudwatchlogs_loki.go).
+func ecsTaskID(ns, pod string) string { return podID(ns, pod) }
 
 // ecsDeploymentID is the id of the deployment a ReplicaSet is: ecs-svc/ and 19 digits, as ECS's are.
 func ecsDeploymentID(uid types.UID) string {
