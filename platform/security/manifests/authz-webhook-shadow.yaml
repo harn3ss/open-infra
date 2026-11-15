@@ -37,7 +37,9 @@ spec:
       securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: RuntimeDefault } }
       containers:
         - name: authz-webhook
-          image: ghcr.io/harn3ss/open-infra-authz-webhook:latest
+          # Pinned by digest: the authorizer changes only when this line does, never as a side effect of a
+          # restart pulling a newer :latest.
+          image: ghcr.io/harn3ss/open-infra-authz-webhook@sha256:3f160a47e6b2fd97d40b6ea4eb911bfed7c56edd666f63169283104247ce7bda
           imagePullPolicy: Always
           env:
             - { name: LISTEN_ADDR, value: "127.0.0.1:8099" }   # loopback: only the local API server reaches it
@@ -82,7 +84,9 @@ spec:
           # (a large corpus + a high SAR rate from thousands of reconciles + the aws-shim's per-request
           # SARs) 256Mi OOMKilled it repeatedly (240 restarts), and a crashlooping authorizer times out
           # SARs cluster-wide -> intermittent 403s on the data path. Raised to 1Gi (see multus 1Gi for
-          # the same class of fix) and CPU to 1 to cut SAR latency under load.
-          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "1", memory: 1Gi } }
+          # the same class of fix) and CPU to 1 to cut SAR latency under load. At 1 CPU it ran pinned at
+          # its limit (Go sizes GOMAXPROCS to the CPU limit, so it evaluated on one thread), and SARs past
+          # the API server's 3s timeout fell back to RBAC after a 3s stall each; raised to 4.
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: "4", memory: 1Gi } }
       volumes:
         - { name: tls, secret: { secretName: authz-webhook-tls } }
