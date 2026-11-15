@@ -206,7 +206,9 @@ data:
       cache:
         blobdescriptor: inmemory
     http:
-      addr: :5000
+      # Loopback only: clients reach the registry through its gate (ecr-registry-gate, port 5000 of the
+      # same pod), which decides each request as the ECR action AWS authorizes it as.
+      addr: 127.0.0.1:5001
       headers:
         X-Content-Type-Options: [nosniff]
     auth:
@@ -280,7 +282,6 @@ spec:
         - name: registry
           image: ghcr.io/distribution/distribution@sha256:4ba3adf47f5c866e9a29288c758c5328ef03396cb8f5f6454463655fa8bc83e2
           args: [serve, /etc/distribution/config.yml]
-          ports: [{ name: http, containerPort: 5000 }]
           env:
             - { name: REGISTRY_STORAGE_S3_ACCESSKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: accessKey } } }
             - { name: REGISTRY_STORAGE_S3_SECRETKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: secretKey } } }
@@ -290,17 +291,40 @@ spec:
             - { name: auth, mountPath: /auth }
             - { name: tmp, mountPath: /tmp }
             - { name: token-cert, mountPath: /token-cert, readOnly: true }
-          readinessProbe:
-            httpGet: { path: /, port: http }
-            initialDelaySeconds: 5
-            periodSeconds: 10
+          # On loopback, so the kubelet cannot reach it: the gate's readiness (forwarded here) covers it.
           livenessProbe:
-            httpGet: { path: /, port: http }
+            exec: { command: [wget, -q, -O, /dev/null, "http://127.0.0.1:5001/"] }
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+        # The ECR gate (cmd/ecr-registry-gate, from the aws-shim image): decides each request as the ECR
+        # action AWS authorizes it as (a layer-existence check as ecr:BatchCheckLayerAvailability, a layer
+        # download as ecr:GetDownloadUrlForLayer, …) against the registry token, then forwards it to the
+        # registry on loopback. It holds no credential.
+        - name: gate
+          # Pinned by digest: the gate decides who may do what, so it changes only when this line does.
+          image: ghcr.io/harn3ss/open-infra-aws-shim@sha256:ae84e045513deccd57c1dc5a97c3a0963c166f6ac360683a4e9b04658cbf5a55
+          command: [/ecr-registry-gate]
+          ports: [{ name: http, containerPort: 5000 }]
+          env:
+            - { name: GOMEMLIMIT, value: 100MiB }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { cpu: "1", memory: 128Mi }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -378,7 +402,6 @@ spec:
         - name: registry
           image: ghcr.io/distribution/distribution@sha256:4ba3adf47f5c866e9a29288c758c5328ef03396cb8f5f6454463655fa8bc83e2
           args: [serve, /etc/distribution/config.yml]
-          ports: [{ name: http, containerPort: 5000 }]
           env:
             - { name: REGISTRY_STORAGE_S3_ACCESSKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: accessKey } } }
             - { name: REGISTRY_STORAGE_S3_SECRETKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: secretKey } } }
@@ -393,17 +416,40 @@ spec:
             - { name: auth, mountPath: /auth }
             - { name: tmp, mountPath: /tmp }
             - { name: token-cert, mountPath: /token-cert, readOnly: true }
-          readinessProbe:
-            httpGet: { path: /, port: http }
-            initialDelaySeconds: 5
-            periodSeconds: 10
+          # On loopback, so the kubelet cannot reach it: the gate's readiness (forwarded here) covers it.
           livenessProbe:
-            httpGet: { path: /, port: http }
+            exec: { command: [wget, -q, -O, /dev/null, "http://127.0.0.1:5001/"] }
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+        # The ECR gate (cmd/ecr-registry-gate, from the aws-shim image): decides each request as the ECR
+        # action AWS authorizes it as (a layer-existence check as ecr:BatchCheckLayerAvailability, a layer
+        # download as ecr:GetDownloadUrlForLayer, …) against the registry token, then forwards it to the
+        # registry on loopback. It holds no credential.
+        - name: gate
+          # Pinned by digest: the gate decides who may do what, so it changes only when this line does.
+          image: ghcr.io/harn3ss/open-infra-aws-shim@sha256:ae84e045513deccd57c1dc5a97c3a0963c166f6ac360683a4e9b04658cbf5a55
+          command: [/ecr-registry-gate]
+          ports: [{ name: http, containerPort: 5000 }]
+          env:
+            - { name: GOMEMLIMIT, value: 100MiB }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { cpu: "1", memory: 128Mi }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

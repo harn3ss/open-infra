@@ -528,11 +528,11 @@ data:
   guestNameserver: "10.43.0.53"
 ---
 # The registry for its ECR names: the same distribution instance as ecr-registry-public (same storage
-# bucket, same upload secret, same token trust anchor), serving TLS itself with the AWS-names
-# certificate, so a guest pulls <account>.dkr.ecr.<region>.amazonaws.com/<repo> after an unmodified
-# `aws ecr get-login-password | docker login`. Its token realm is the shim's in-cluster TLS port, which
-# guests verify against the platform root. distribution reads its certificate once, so the wrapper
-# restarts the container when cert-manager renews it.
+# bucket, same upload secret, same token trust anchor), behind the ECR gate, which serves TLS with the
+# AWS-names certificate, so a guest pulls <account>.dkr.ecr.<region>.amazonaws.com/<repo> after an
+# unmodified `aws ecr get-login-password | docker login`. Its token realm is the shim's in-cluster TLS
+# port, which guests verify against the platform root. The gate reads the certificate again when
+# cert-manager renews it.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -562,51 +562,54 @@ spec:
       containers:
         - name: registry
           image: ghcr.io/distribution/distribution@sha256:4ba3adf47f5c866e9a29288c758c5328ef03396cb8f5f6454463655fa8bc83e2
-          command: [/bin/sh, -c]
-          args:
-            - |
-              set -u
-              stamp() { stat -L -c '%Y/%s' /tls/tls.crt /tls/tls.key | tr '\n' ' '; }
-              first="$(stamp)"
-              registry serve /etc/distribution/config.yml &
-              pid=$!
-              trap 'kill -TERM "$pid" 2>/dev/null; wait "$pid"; exit 0' TERM INT
-              while kill -0 "$pid" 2>/dev/null; do
-                sleep 60 &
-                wait $!
-                if [ "$(stamp)" != "$first" ]; then
-                  echo "the TLS certificate was renewed: restarting to serve it"
-                  kill -TERM "$pid"
-                  wait "$pid"
-                  exit 0
-                fi
-              done
-              wait "$pid"
-          ports: [{ name: https, containerPort: 5000 }]
+          args: [serve, /etc/distribution/config.yml]
           env:
             - { name: REGISTRY_STORAGE_S3_ACCESSKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: accessKey } } }
             - { name: REGISTRY_STORAGE_S3_SECRETKEY, valueFrom: { secretKeyRef: { name: ecr-registry-minio, key: secretKey } } }
             - { name: REGISTRY_HTTP_SECRET, valueFrom: { secretKeyRef: { name: ecr-registry-auth, key: httpSecret } } }
             - { name: REGISTRY_HTTP_RELATIVEURLS, value: "true" }
-            - { name: REGISTRY_HTTP_TLS_CERTIFICATE, value: /tls/tls.crt }
-            - { name: REGISTRY_HTTP_TLS_KEY, value: /tls/tls.key }
             - { name: REGISTRY_AUTH_TOKEN_REALM, value: "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567/ecr/token" }
           volumeMounts:
             - { name: config, mountPath: /etc/distribution }
             - { name: tmp, mountPath: /tmp }
             - { name: token-cert, mountPath: /token-cert, readOnly: true }
+          # On loopback, so the kubelet cannot reach it: the gate's readiness (forwarded here) covers it.
+          livenessProbe:
+            exec: { command: [wget, -q, -O, /dev/null, "http://127.0.0.1:5001/"] }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+        # The ECR gate (cmd/ecr-registry-gate, from the aws-shim image): serves TLS with the AWS-names
+        # certificate, decides each request as the ECR action AWS authorizes it as, and forwards it to the
+        # registry on loopback. It holds no credential.
+        - name: gate
+          # Pinned by digest: the gate decides who may do what, so it changes only when this line does.
+          image: ghcr.io/harn3ss/open-infra-aws-shim@sha256:ae84e045513deccd57c1dc5a97c3a0963c166f6ac360683a4e9b04658cbf5a55
+          command: [/ecr-registry-gate]
+          ports: [{ name: https, containerPort: 5000 }]
+          env:
+            - { name: GOMEMLIMIT, value: 100MiB }
+            - { name: TLS_CERT_FILE, value: /tls/tls.crt }
+            - { name: TLS_KEY_FILE, value: /tls/tls.key }
+          volumeMounts:
             - { name: tls, mountPath: /tls, readOnly: true }
           readinessProbe:
             httpGet: { path: /, port: https, scheme: HTTPS }
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            httpGet: { path: /, port: https, scheme: HTTPS }
+            tcpSocket: { port: https }
             initialDelaySeconds: 15
             periodSeconds: 20
           resources:
-            requests: { cpu: 50m, memory: 128Mi }
-            limits: { cpu: "1", memory: 512Mi }
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { cpu: "1", memory: 128Mi }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

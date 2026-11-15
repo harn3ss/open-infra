@@ -365,7 +365,7 @@ func TestGuestAWSEndpoints_ShimAndRegistryServeTheNames(t *testing.T) {
 	if svc["metadata"].(map[string]any)["namespace"] != "open-infra-ecr" || !strings.Contains(raw, "{ name: https, port: 443, targetPort: https }") {
 		t.Error("the guest registry must be ecr-registry-aws in open-infra-ecr, on port 443")
 	}
-	for _, want := range []string{"REGISTRY_HTTP_TLS_CERTIFICATE, value: /tls/tls.crt", "REGISTRY_HTTP_TLS_KEY, value: /tls/tls.key",
+	for _, want := range []string{"command: [/ecr-registry-gate]", "TLS_CERT_FILE, value: /tls/tls.crt", "TLS_KEY_FILE, value: /tls/tls.key",
 		`REGISTRY_AUTH_TOKEN_REALM, value: "https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567/ecr/token"`,
 		"secret: { secretName: ecr-registry-aws-endpoints-tls }", "httpGet: { path: /, port: https, scheme: HTTPS }"} {
 		if !strings.Contains(raw, want) {
