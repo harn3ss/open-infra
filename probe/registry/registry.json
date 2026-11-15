@@ -348,7 +348,8 @@
         "cfn-api",
         "cfn-lambda-zip",
         "cfn-cfnresponse",
-        "cfn-securitygroup"
+        "cfn-securitygroup",
+        "cfn-service-role"
       ],
       "refused": [],
       "service": "CloudFormation",

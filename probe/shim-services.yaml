@@ -189,8 +189,7 @@ services:
     cell: "owned cfn engine; stacks provision under the caller's authority (impersonation), or as their service role (RoleARN)"
     tier: proven
     sigv4: [cloudformation]
-    probes: [cloudformation, cfn-customresource, cfn-lift-and-shift, cfn-data-services, cfn-api, cfn-lambda-zip, cfn-cfnresponse, cfn-securitygroup]
-    pending: [cfn-service-role]
+    probes: [cloudformation, cfn-customresource, cfn-lift-and-shift, cfn-data-services, cfn-api, cfn-lambda-zip, cfn-cfnresponse, cfn-securitygroup, cfn-service-role]
   - name: CloudFront
     cell: "a stack's distribution (`kind: StaticSite`): its invalidations (Completed once the site serves the upload) and reads of it, its policies and origin access"
     tier: proven
