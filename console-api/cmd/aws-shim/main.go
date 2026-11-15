@@ -36,6 +36,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/accounts"
 	"github.com/harn3ss/open-infra/console-api/internal/awskeys"
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
+	"github.com/harn3ss/open-infra/console-api/internal/clientip"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
@@ -80,6 +81,9 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	cs := *kc.Clientset
+	// aws:SourceIp: X-Forwarded-For is believed only from the nodes, where the host-network ingress runs
+	// (and any proxy CIDR the operator adds); every other caller is its peer address (internal/clientip).
+	clientip.WatchNodes(context.Background(), cs, clientip.ParseCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"), logger), time.Minute, logger)
 
 	// Fine-grained data-plane authorization: a Cedar-backed checker over kind: Policy dataPlane
 	// blocks, cached and refreshed from the cluster. Additive to the coarse SAR (it can only tighten),

@@ -31,6 +31,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/harn3ss/open-infra/console-api/internal/awserr"
+	"github.com/harn3ss/open-infra/console-api/internal/clientip"
 	"github.com/harn3ss/open-infra/console-api/internal/crd"
 	"github.com/harn3ss/open-infra/console-api/internal/k8s"
 	"github.com/harn3ss/open-infra/console-api/internal/tracing"
@@ -69,6 +70,9 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	logger.Info("connected to Kubernetes API", slog.String("host", client.Host.String()))
+	// aws:SourceIp in the console's IAM decisions: X-Forwarded-For is believed only from the nodes, where
+	// the host-network ingress runs (internal/clientip).
+	clientip.WatchNodes(context.Background(), *client.Clientset, clientip.ParseCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS"), logger), time.Minute, logger)
 
 	// Reap JetStream streams/DLQ orphaned by deleted DataFlows (storage hygiene).
 	startDataFlowGC(client.Host, client.Transport, logger)

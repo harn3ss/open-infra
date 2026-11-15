@@ -26,13 +26,13 @@ package s3authz
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/harn3ss/open-infra/cfn/awsidentity"
+	"github.com/harn3ss/open-infra/console-api/internal/clientip"
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
@@ -263,16 +263,6 @@ func RequestContext(c iam.Claims, r *http.Request) map[string]any {
 	return out
 }
 
-// ClientIP is the request's source address: the first X-Forwarded-For hop, else the peer address.
-func ClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.Index(xff, ","); i > 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
-}
+// ClientIP is the request's source address (aws:SourceIp): the client the platform's ingress forwarded,
+// or the peer for anyone else, whatever forwarding headers it sends (internal/clientip).
+func ClientIP(r *http.Request) string { return clientip.Of(r) }

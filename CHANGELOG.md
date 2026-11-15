@@ -6,6 +6,13 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — `aws:SourceIp` can no longer be claimed with a forwarding header
+- The AWS front door and the console took `aws:SourceIp` from the first `X-Forwarded-For` entry of any
+  request, so a caller inside the cluster could claim another address and satisfy an `IpAddress`
+  condition. As on AWS, the address is now the one the request came from: the platform's ingress's
+  forwarded client (believed only from the cluster's nodes, where the ingress runs), or the caller's own
+  address. An operator with another proxy in front lists its addresses in `TRUSTED_PROXY_CIDRS`.
+
 ### Added — Fleet Manager Remote Desktop for Windows instances
 - A Remote Desktop session to a Windows Server instance in the browser, as Systems Manager Fleet Manager
   opens one: from the instance's **Connect → RDP client → Connect using Fleet Manager**, signing in with a

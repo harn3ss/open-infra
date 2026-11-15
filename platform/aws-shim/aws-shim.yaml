@@ -114,6 +114,11 @@ rules:
   - apiGroups: [""]
     resources: [namespaces]
     verbs: [get, list, watch]
+  # aws:SourceIp: the nodes' addresses are where the host-network ingress forwards from, the only peers
+  # whose X-Forwarded-For the shim believes (internal/clientip). Their addresses only.
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [list]
   # Service Quotas: an account's applied quotas are its kind: Account's spec.serviceQuotas (an operator's
   # approved increases), which any caller of GetServiceQuota may read for its own account. Read only.
   - apiGroups: [organizations.openinfra.dev]

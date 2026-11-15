@@ -238,6 +238,13 @@ AWS's evaluation logic:
 `Null`) and `aws:MultiFactorAuthAge` (the `Numeric` operators and their `IfExists` forms), and
 `iam:PassedToService` on `iam:PassRole` ([Passing a role](#passing-a-role-iampassrole)), with AWS's
 rules for a key a request does not carry (see [Multi-factor authentication](#multi-factor-authentication-mfa)).
+
+`aws:SourceIp` is the address a request came from, which, as on AWS, the caller can't choose. A request
+through the platform's ingress (the LAN endpoint) carries the client's address, which the ingress sets in
+`X-Forwarded-For`. A request from inside the cluster (a VM, a function, an application) carries its own
+address. A forwarding header is believed only from the cluster's nodes, where the ingress runs, so a caller
+can't claim another address. An operator whose LAN clients reach the platform through another proxy lists that
+proxy's addresses in the AWS front door's and console's `TRUSTED_PROXY_CIDRS` (operator setting).
 Condition key names are not case-sensitive, as on AWS. A statement whose condition the platform cannot
 evaluate is never read more broadly than written: an `Allow` with it grants nothing, and a `Deny` with
 it applies unconditionally. The policy's page reports which statements that affected.

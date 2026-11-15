@@ -54,6 +54,7 @@ services:
     tier: proven
     sigv4: [iam]
     probes: [iam, iam-timecond, iam-username-like, iam-login-profile, iam-mfa, iam-passedtoservice]
+    pending: [iam-sourceip]
   - name: KMS
     cell: "→ OpenBao Transit"
     tier: proven
