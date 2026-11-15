@@ -184,7 +184,12 @@ import base64, json, sys
 p = sys.argv[1].split(".")[1]
 claims = json.loads(base64.urlsafe_b64decode(p + "=" * (-len(p) % 4)))
 acts = sorted(a for x in claims.get("access", []) if x.get("name") == sys.argv[2] for a in x.get("actions", []))
-assert acts == ["pull"], acts
+# The registry scope is pull alone, and the ECR actions the registry's gate admits are reads alone: no
+# layer upload, no PutImage, no BatchDeleteImage.
+scopes = [a for a in acts if not a.startswith("ecr:")]
+reads = {"ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability", "ecr:ListImages"}
+assert scopes == ["pull"], acts
+assert {"ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"} <= set(acts) and set(acts) - {"pull"} <= reads, acts
 PY
 ok "another ServiceAccount: 403; no token: 401; the node pull credential asked for push,pull is granted pull alone"
 

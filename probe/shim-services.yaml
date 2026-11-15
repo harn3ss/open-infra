@@ -109,8 +109,7 @@ services:
     cell: "→ a backing OCI registry (Distribution /v2)"
     tier: proven
     sigv4: [ecr]
-    probes: [ecr, ecr-perrepo, ecr-node-pull]
-    pending: [ecr-push-policy]
+    probes: [ecr, ecr-perrepo, ecr-node-pull, ecr-push-policy]
 
   # --- data ---
   - name: RDS

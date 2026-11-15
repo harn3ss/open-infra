@@ -652,7 +652,8 @@
       "probes": [
         "ecr",
         "ecr-perrepo",
-        "ecr-node-pull"
+        "ecr-node-pull",
+        "ecr-push-policy"
       ],
       "refused": [],
       "service": "ECR",
