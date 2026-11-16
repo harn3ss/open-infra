@@ -10,6 +10,9 @@
 #   - the service whose execution role may not pull never runs a task (runningCount 0, pendingCount 1): its
 #     pull is refused, and the node does not fall back to its own credential, as ECS's
 #     CannotPullContainerError;
+#   - as ECS reports it, the refused task's container carries a CannotPullContainerError (DescribeTasks) and
+#     the service's events say it is unable to consistently start tasks;
+#   - ECR's BatchGetImage returns the pushed image's manifest;
 #   - a power user (PowerUserAccess has no iam:PassRole) naming the allowed role provisions nothing.
 # A task is decided by the ECR credential provider of the node it lands on; on a node where it is not
 # installed yet the result proves nothing, and the probe says so (exit 42).
@@ -99,6 +102,14 @@ docker tag "$SOURCE_IMAGE" "$REGHOST/$REPO:1" && docker push -q "$REGHOST/$REPO:
   || fail "docker push failed: $(head -c 300 "$TMP/push")"
 IMAGE="$NODE_REGISTRY/$REPO:1"
 log "  ✓ pushed; tasks run ${IMAGE}"
+got="$(as "$AAK" "$ASK" ecr batch-get-image --repository-name "$REPO" --image-ids imageTag=1 \
+  --query 'images[0].[imageId.imageTag,imageId.imageDigest]' 2>/dev/null | tr '\t' ' ')"
+want="$(as "$AAK" "$ASK" ecr describe-images --repository-name "$REPO" --query 'imageDetails[0].imageDigest' 2>/dev/null)"
+[ -n "$want" ] && [ "$got" = "1 ${want}" ] || fail "BatchGetImage of ${REPO}:1 = '${got}', want tag 1 with DescribeImages' digest ${want}"
+as "$AAK" "$ASK" ecr batch-get-image --repository-name "$REPO" --image-ids imageTag=1 --query 'images[0].imageManifest' 2>/dev/null \
+  | python3 -c 'import json,sys; m=json.load(sys.stdin); assert m.get("layers") or m.get("manifests")' 2>/dev/null \
+  || fail "BatchGetImage's imageManifest is not the image's manifest"
+log "  ✓ BatchGetImage returns ${REPO}:1's manifest, with DescribeImages' digest"
 
 # --- 2. two execution roles ----------------------------------------------------------------------------
 TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
@@ -157,6 +168,15 @@ case "$st" in
   "1 0") diag "$SVC_NONE"; fail "WIDER THAN AWS: ${SVC_NONE} ran an image its execution role may not pull" ;;
   *) diag "$SVC_NONE"; fail "${SVC_NONE} reports running pending = '$st'" ;;
 esac
+# As ECS reports it: the task's container carries a CannotPullContainerError, and the service's events say
+# it is unable to consistently start tasks.
+ntask="$(as "$AAK" "$ASK" ecs list-tasks --service-name "$SVC_NONE" --query 'taskArns[0]' 2>/dev/null)"
+reason="$(as "$AAK" "$ASK" ecs describe-tasks --tasks "$ntask" --query 'tasks[0].containers[0].reason' 2>/dev/null)"
+case "$reason" in CannotPullContainerError:*) ;; *) diag "$SVC_NONE"; fail "${SVC_NONE}'s task reason is '${reason}', want a CannotPullContainerError" ;; esac
+as "$AAK" "$ASK" ecs describe-services --services "$SVC_NONE" --query 'services[0].events[].message' 2>/dev/null | tr '\t' '\n' \
+  | grep -qF "(service ${SVC_NONE}) is unable to consistently start tasks successfully." \
+  || fail "${SVC_NONE}'s events do not say it is unable to consistently start tasks"
+log "  ✓ ${SVC_NONE}: DescribeTasks says CannotPullContainerError, and its events say it is unable to consistently start tasks"
 
 # --- 4. passing the role takes iam:PassRole --------------------------------------------------------------
 log "a power user (no iam:PassRole) naming ${ROLE_OK} provisions nothing"
