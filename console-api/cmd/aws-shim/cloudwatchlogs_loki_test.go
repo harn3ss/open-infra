@@ -390,12 +390,13 @@ func TestCWLDerived_StoreQueryLimitIsCapped(t *testing.T) {
 }
 
 // An application's task definition names its group and stream prefix (awslogs-group, awslogs-stream-prefix):
-// its containers' output is read there, in streams named <prefix>/<container>/<task id>, under any group
-// name. Creating, retaining and deleting that group stay the group's own (a stack creates it).
+// its containers' output is read there, in streams named <prefix>/<container>/<task id> with the container
+// named as the task definition names it, under any group name. Creating, retaining and deleting that group
+// stay the group's own (a stack creates it).
 func TestCWLDerived_AwslogsGroupTheTaskNames(t *testing.T) {
 	h, loki := cwlDerivedFixture(t, true)
 	app := claimOf("Application", "default", "api")
-	app.Object["spec"] = map[string]any{"logGroup": "example-group", "logStreamPrefix": "svc"}
+	app.Object["spec"] = map[string]any{"logGroup": "example-group", "logStreamPrefix": "svc", "containerName": "web"}
 	if _, err := h.derived.dyn.Resource(applicationGVR).Namespace("default").Create(t.Context(), app, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +407,7 @@ func TestCWLDerived_AwslogsGroupTheTaskNames(t *testing.T) {
 		t.Fatalf("DescribeLogStreams: %d %v", code, out)
 	}
 	sts := sliceOf(out["logStreams"])
-	want := "svc/app/" + podID("default", "api-5f6d8-abcde")
+	want := "svc/web/" + podID("default", "api-5f6d8-abcde")
 	if len(sts) != 1 || sts[0].(map[string]any)["logStreamName"] != want {
 		t.Fatalf("streams %v; want %s", sts, want)
 	}

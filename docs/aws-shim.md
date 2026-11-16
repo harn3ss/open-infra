@@ -1290,7 +1290,7 @@ of it, beside the groups SDKs create:
 | `/aws/lambda/<function>` | a `kind: Function`'s output (its own container) | `YYYY/MM/DD/[$LATEST]<id>`, one per execution environment |
 | `/aws/sagemaker/TrainingJobs` | every `kind: TrainingJob`'s output | `<job>/algo-1-<start>` |
 | `/aws/sagemaker/ProcessingJobs` | every `kind: ProcessingJob`'s output | `<job>/algo-1-<start>` |
-| `/ecs/<application>`, or the group its task definition's `awslogs` driver names (`awslogs-group`) | a `kind: Application`'s containers | `ecs/<container>/<task id>`, or `<awslogs-stream-prefix>/<container>/<task id>` |
+| `/ecs/<application>`, or the group its task definition's `awslogs` driver names (`awslogs-group`) | a `kind: Application`'s containers | `ecs/<container>/<task id>`, or `<awslogs-stream-prefix>/<container>/<task id>`, with each container named as its task definition names it |
 
 So `aws logs tail /aws/lambda/<fn> --follow` and `aws logs filter-log-events` find what a function printed.
 A group exists while its resource does, in the caller's account. `DescribeLogGroups`, `DescribeLogStreams`,

@@ -3942,6 +3942,10 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName, acct string) (map
 	for k, v := range ecsContainerSpec(tdID, fmt.Sprintf("%s.ContainerDefinitions[%d]", tdID, primaryIdx), pc, &f, &caveats) {
 		spec[k] = v
 	}
+	// Its name is the task definition's (the <container> of its awslogs streams), whatever the pod calls it.
+	if n, _ := concrete(pc["Name"]); ecsContainerNameRe.MatchString(n) {
+		spec["containerName"] = n
+	}
 	var sidecars []any
 	for i, cc := range containers {
 		if i == primaryIdx {
@@ -4073,6 +4077,9 @@ func ecsPickPrimary(containers []any, primaryName string) int {
 // ecsContainerSpec maps one ECS container to the {image, port, env} an Application container takes.
 // Command/EntryPoint overrides refuse (Application runs the image's entrypoint); the strict cknown
 // allowlist blocks anything else.
+// ecsContainerNameRe is an ECS container name: up to 255 letters, numbers, hyphens and underscores.
+var ecsContainerNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
+
 func ecsContainerSpec(tdID, where string, c map[string]any, f *[]Finding, cav *[]string) map[string]any {
 	cknown := map[string]bool{
 		"Name": true, "Image": true, "PortMappings": true, "Environment": true, "Essential": true,

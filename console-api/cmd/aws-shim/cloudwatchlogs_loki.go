@@ -70,6 +70,9 @@ type derivedGroup struct {
 	Created time.Time
 	// streamPrefix is an ecs group's awslogs-stream-prefix: its streams are <prefix>/<container>/<task id>.
 	streamPrefix string
+	// containerName is an ecs group's app container's name as its task definition names it (the pod calls
+	// it app): the <container> of its streams.
+	containerName string
 	// declared: an application's task definition names the group (spec.logGroup), so the group itself is
 	// whatever created it (a stack, CreateLogGroup), and only its events are the log store's.
 	declared bool
@@ -188,7 +191,8 @@ func (d *cwlDerived) groups(ctx context.Context, claims iam.Claims, prefix strin
 		for _, app := range d.list(ctx, applicationGVR, ns) {
 			group, _, _ := unstructured.NestedString(app.Object, "spec", "logGroup")
 			prefix, _, _ := unstructured.NestedString(app.Object, "spec", "logStreamPrefix")
-			add(ecsGroup(ns, app.GetName(), group, prefix, app.GetCreationTimestamp().Time))
+			container, _, _ := unstructured.NestedString(app.Object, "spec", "containerName")
+			add(ecsGroup(ns, app.GetName(), group, prefix, container, app.GetCreationTimestamp().Time))
 		}
 		for kind, gvr := range map[string]schema.GroupVersionResource{"training": trainingJobGVR, "processing": processingJobGVR} {
 			for _, job := range d.list(ctx, gvr, ns) {
@@ -263,14 +267,16 @@ func lambdaGroup(ns, fn string, created time.Time) derivedGroup {
 }
 
 // ecsGroup is an application's group: the one its task definition's awslogs driver names (spec.logGroup),
-// else /ecs/<application>, with its streams named after the driver's stream prefix (else "ecs").
-func ecsGroup(ns, app, group, streamPrefix string, created time.Time) derivedGroup {
+// else /ecs/<application>, with its streams named after the driver's stream prefix (else "ecs") and its
+// container's name as the task definition names it (spec.containerName, else the pod's).
+func ecsGroup(ns, app, group, streamPrefix, containerName string, created time.Time) derivedGroup {
 	declared := group != ""
 	if !declared {
 		group = cwlECSPrefix + app
 	}
-	return derivedGroup{Name: group, Kind: "ecs", Created: created, streamPrefix: streamPrefix, declared: declared, sources: []derivedSource{{
-		selector: fmt.Sprintf(`{namespace=%q,app=%q,pod=~%q}`, ns, app, regexp.QuoteMeta(app)+`-[a-z0-9]+-[a-z0-9]+`)}}}
+	return derivedGroup{Name: group, Kind: "ecs", Created: created, streamPrefix: streamPrefix,
+		containerName: containerName, declared: declared, sources: []derivedSource{{
+			selector: fmt.Sprintf(`{namespace=%q,app=%q,pod=~%q}`, ns, app, regexp.QuoteMeta(app)+`-[a-z0-9]+-[a-z0-9]+`)}}}
 }
 
 func jobSource(kind, ns, job string) derivedSource {
@@ -356,6 +362,9 @@ func streamName(g derivedGroup, src derivedSource, labels map[string]string, fir
 		c := labels["container"]
 		if c == "" {
 			c = "app"
+		}
+		if c == "app" && g.containerName != "" {
+			c = g.containerName // the app's container, by its task definition's name
 		}
 		prefix := g.streamPrefix
 		if prefix == "" {

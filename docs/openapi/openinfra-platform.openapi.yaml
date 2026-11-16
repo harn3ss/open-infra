@@ -4234,6 +4234,11 @@ components:
               pattern: ^[^:*]{1,256}$
               description: 'The prefix of the app''s log streams in logGroup (awslogs-stream-prefix): each container''s stream
                 is <prefix>/<container>/<task id>. Unset, it is ecs.'
+            containerName:
+              type: string
+              pattern: ^[A-Za-z0-9_-]{1,255}$
+              description: 'The app''s container''s name, as its ECS task definition names it: the <container> of its log
+                streams in logGroup. Unset, it is app.'
             expose:
               type: boolean
               default: false

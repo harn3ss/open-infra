@@ -36,6 +36,15 @@
       "how": "update",
       "kind": "Application"
     },
+    "Application.containerName": {
+      "actions": [
+        "ecs:UpdateService"
+      ],
+      "class": "aws",
+      "field": "containerName",
+      "how": "update",
+      "kind": "Application"
+    },
     "Application.cpu": {
       "actions": [
         "ecs:UpdateService"
@@ -7045,11 +7054,11 @@
   },
   "summary": {
     "fields": {
-      "aws": 370,
+      "aws": 371,
       "extra": 25,
       "operator": 0,
       "removed": 0,
-      "total": 395
+      "total": 396
     },
     "kinds": {
       "aws": 54,

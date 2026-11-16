@@ -36,7 +36,8 @@ the product's public contract.
   a role it cannot assume.
 - A container's `awslogs` log configuration was ignored, so its logs went to `/ecs/<application>` and the
   stack's own log group stayed empty. As on ECS, its logs are now read from the `awslogs-group` it names, in
-  streams `<awslogs-stream-prefix>/<container>/<task id>`. See
+  streams `<awslogs-stream-prefix>/<container>/<task id>`, the container named as the task definition names
+  it. See
   [docs/cloudformation.md](docs/cloudformation.md).
 
 ### Fixed — ECS `DescribeServices` reports deployments, events and pending tasks

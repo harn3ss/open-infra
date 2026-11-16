@@ -1923,7 +1923,7 @@ Resources:
     Type: AWS::ECS::TaskDefinition
     Properties:
       ContainerDefinitions:
-        - Name: app
+        - Name: web_app
           Image: registry/app:1
           PortMappings: [ { ContainerPort: 8080 } ]
           LogConfiguration: ` + lc + `
@@ -1940,6 +1940,10 @@ Resources:
 	}
 	if m.Spec["logGroup"] != "/ecs/example-app" || m.Spec["logStreamPrefix"] != "web" {
 		t.Fatalf("logGroup %v logStreamPrefix %v; want /ecs/example-app web", m.Spec["logGroup"], m.Spec["logStreamPrefix"])
+	}
+	// Its streams are named for the container as the task definition names it.
+	if m.Spec["containerName"] != "web_app" {
+		t.Fatalf("containerName %v; want the task definition's web_app", m.Spec["containerName"])
 	}
 	// The ECS API's option keys arrive first-letter upper-cased (camelToCFN).
 	ctx = ecsCtx(t, tmpl(`{ LogDriver: awslogs, Options: { Awslogs-group: example-group, Awslogs-stream-prefix: p } }`))
