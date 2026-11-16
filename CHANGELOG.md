@@ -6,6 +6,19 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a change set says when AWS would replace a resource
+- A change set reported every modified resource as `Replacement: False`. As on AWS, it now says whether the
+  update replaces the resource (`True`, `Conditional` or `False`) and lists the properties that change
+  (`Details`, each with its `RequiresRecreation`), from AWS's own update type of each property: changing a
+  task definition's `ExecutionRoleArn`, for one, replaces it. open-infra still updates the resource in place
+  and keeps its physical id; such a change set's summary says so. See
+  [docs/cloudformation.md](docs/cloudformation.md).
+
+### Fixed — a member account's stack names its own account in every resource's physical id
+- A resource that provisions nothing of its own (a task definition, a cluster) was given the management
+  account's id in its physical id (`DescribeStackResources`) in a member account's stack. It now carries the
+  stack's account, as the stack's other resources do.
+
 ### Added — ECS `ListTasks`, `DescribeTasks` and `ListTaskDefinitions`; ECR `BatchGetImage`
 - `ListTasks` and `DescribeTasks` list and describe a service's tasks as ECS does (ARN, task definition, the
   deployment that started it, status, containers), and `ListTaskDefinitions` lists the account's task

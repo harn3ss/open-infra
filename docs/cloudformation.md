@@ -100,6 +100,13 @@ required parameter has no value, when the template uses a `Transform`, or when t
 custom resource or an API Gateway REST API (their attributes resolve only during deploy). The summary
 then says so in a line of its own, and `GateSkipped` in `-json` gives the reason.
 
+A change set says, for each resource an update modifies, whether AWS would replace it (`Replacement`
+`True`, `Conditional` or `False`) and which properties change (`Details`, each with its
+`RequiresRecreation`), from AWS's own update type of each property (`cfn/update_types.go`, generated from
+AWS's CloudFormation resource specification by `cfn/gen_update_types.py`). open-infra itself updates a
+resource in place, keeping its physical id, so a replacing change also adds a line to the summary saying
+so.
+
 The aws-shim front door shows the same summary: in `DescribeChangeSet`'s `StatusReason` (what
 `aws cloudformation describe-change-set` and `deploy` show) and in `ValidateTemplate`'s `X-Openinfra-Fidelity` response header (its `Description` is the template's, as on AWS).
 

@@ -46,7 +46,12 @@ func FoldedResources(ctx context.Context, rec *StackRecord, opts DeployOptions, 
 	if params == nil {
 		params = rec.Parameters
 	}
-	r := newResolver(t, resolveParams(t, params), strMapToAny(opts.Exports), pseudoParams(rec.Name))
+	// The stack's own StackId (its account: a member account's stack names its account in its ARNs).
+	stackID := rec.StackID
+	if opts.StackID != "" {
+		stackID = opts.StackID
+	}
+	r := newResolver(t, resolveParams(t, params), strMapToAny(opts.Exports), pseudoParamsFor(rec.Name, stackID))
 	r.evalConditions()
 	sctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: newPhysNamer(rec.Name, rec.Resources), signalURL: opts.SignalURL}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, sctx) }

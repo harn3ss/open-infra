@@ -72,7 +72,7 @@ func templateResources(data []byte, params, exports map[string]string, stackName
 	var out []TemplateResource
 	for _, id := range ids {
 		res := t.Resources[id]
-		if !want[res.Type] || !sctx.included(res) {
+		if (len(want) > 0 && !want[res.Type]) || !sctx.included(res) { // no types: every resource
 			continue
 		}
 		e := d.env(id, res)

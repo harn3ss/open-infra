@@ -1488,7 +1488,34 @@ func (h *cfnDoorway) describeChangeSet(w http.ResponseWriter, r *http.Request, a
 		}
 		b.WriteString("<ResourceType>" + xesc(typ) + "</ResourceType>")
 		if c.Action == cfn.Modify {
-			b.WriteString("<Replacement>False</Replacement>")
+			// As AWS reports it: whether the update replaces the resource, and which properties change
+			// (cfn.Change's Replacement and Details, from AWS's update type of each).
+			rep := c.Replacement
+			if rep == "" {
+				rep = "False"
+			}
+			b.WriteString("<Replacement>" + rep + "</Replacement>")
+			if len(c.Details) > 0 {
+				scopes := map[string]bool{}
+				var details strings.Builder
+				for _, d := range c.Details {
+					attr := "Properties"
+					if d.Name == "Tags" {
+						attr = "Tags"
+					}
+					scopes[attr] = true
+					details.WriteString("<member><Target><Attribute>" + attr + "</Attribute><Name>" + xesc(d.Name) +
+						"</Name><RequiresRecreation>" + d.RequiresRecreation + "</RequiresRecreation></Target>" +
+						"<Evaluation>Static</Evaluation><ChangeSource>DirectModification</ChangeSource></member>")
+				}
+				b.WriteString("<Scope>")
+				for _, sc := range []string{"Properties", "Tags"} {
+					if scopes[sc] {
+						b.WriteString("<member>" + sc + "</member>")
+					}
+				}
+				b.WriteString("</Scope><Details>" + details.String() + "</Details>")
+			}
 		}
 		b.WriteString("</ResourceChange></member>")
 	}

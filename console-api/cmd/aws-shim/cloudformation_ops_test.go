@@ -209,12 +209,13 @@ func opsDoorway(t *testing.T, fa *fakeAPI, owner string) *cfnDoorway {
 		{Version: "v1", Resource: "secrets"}:                                "SecretList",
 		{Group: "openinfra.dev", Version: "v1", Resource: "volumes"}:        "VolumeList",
 		{Group: "openinfra.dev", Version: "v1", Resource: "encryptionkeys"}: "EncryptionKeyList",
+		{Group: "openinfra.dev", Version: "v1", Resource: "applications"}:   "ApplicationList",
 	}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), gvrs)
 	dyn.PrependReactor("*", "*", fa.react)
 	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{{Version: "v1"}, {Group: "openinfra.dev", Version: "v1"}})
 	mapper.Add(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, meta.RESTScopeNamespace)
-	for _, k := range []string{"Volume", "EncryptionKey"} {
+	for _, k := range []string{"Volume", "EncryptionKey", "Application"} {
 		mapper.Add(schema.GroupVersionKind{Group: "openinfra.dev", Version: "v1", Kind: k}, meta.RESTScopeNamespace)
 	}
 	h := &cfnDoorway{shimDyn: dyn, mapper: mapper, ns: opsNS, account: "000000000000", region: "us-east-1",

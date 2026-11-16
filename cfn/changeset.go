@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -36,6 +37,18 @@ type Change struct {
 	// change, as AWS does, but an update has no object of its to apply or delete — it records the change
 	// (the new template, and the resource's events). Name is its physical id (its Ref).
 	Folded bool `json:",omitempty"`
+	// Replacement is whether a Modify replaces the resource, as AWS's change set says: True when a property
+	// that changes is Immutable, Conditional when one may replace it, else False ("" = not a Modify).
+	Replacement string `json:",omitempty"`
+	// Details are the properties a Modify changes, each with whether it recreates the resource
+	// (RequiresRecreation Never, Conditionally or Always).
+	Details []PropertyChange `json:",omitempty"`
+}
+
+// PropertyChange is one property a change modifies.
+type PropertyChange struct {
+	Name               string
+	RequiresRecreation string
 }
 
 type ChangeSet struct {
@@ -136,7 +149,112 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 		cur = current
 	}
 	cs.Changes = append(cs.Changes, foldedChanges(ctx, cur, data, opts, desired)...)
+	if cur != nil {
+		markReplacements(cs.Changes, cur, data, opts)
+	}
 	return cs, desired, current, nil
+}
+
+// markReplacements sets each Modify's Replacement and Details from the properties that change between the
+// current template and the new one, each as its stack resolves it, and AWS's update type for each
+// (updateTypes, from AWS's resource specification): an Immutable property replaces the resource, a
+// Conditional one may.
+func markReplacements(changes []Change, current *StackRecord, data []byte, opts DeployOptions) {
+	stackID := opts.StackID
+	if stackID == "" {
+		stackID = current.StackID
+	}
+	newRes, err := templateResources(data, opts.Params, opts.Exports, opts.StackName, stackID, current.Resources, current.CreatedAt, nil)
+	if err != nil {
+		return
+	}
+	// The current template resolves with the parameters it was deployed with (a NoEcho value is not
+	// recorded: it is the one this operation passes).
+	params := map[string]string{}
+	for k, v := range current.Parameters {
+		params[k] = v
+	}
+	for _, k := range current.NoEchoParameters {
+		if v, ok := opts.Params[k]; ok {
+			params[k] = v
+		}
+	}
+	oldRes, err := templateResources([]byte(current.Template), params, opts.Exports, current.Name, current.StackID, current.Resources, current.CreatedAt, nil)
+	if err != nil {
+		return
+	}
+	byID := func(rs []TemplateResource) map[string]TemplateResource {
+		m := map[string]TemplateResource{}
+		for _, r := range rs {
+			m[r.LogicalID] = r
+		}
+		return m
+	}
+	olds, news := byID(oldRes), byID(newRes)
+	for i := range changes {
+		c := &changes[i]
+		if c.Action != Modify && c.Action != Unchanged { // Unchanged: a companion's change may make it a Modify
+			continue
+		}
+		id := strings.SplitN(c.LogicalID, "/", 2)[0]
+		o, had := olds[id]
+		n, has := news[id]
+		if !had || !has {
+			c.Replacement = "False"
+			continue
+		}
+		c.Replacement, c.Details = replacementOf(n.Type, o.Properties, n.Properties)
+		if c.Action == Modify && c.Replacement != "False" {
+			var props []string
+			for _, d := range c.Details {
+				if d.RequiresRecreation != "Never" {
+					props = append(props, d.Name)
+				}
+			}
+			verb := "replaces"
+			if c.Replacement == "Conditional" {
+				verb = "may replace"
+			}
+			c.Caveats = append(c.Caveats, fmt.Sprintf("changing %s %s it on AWS (a new physical id); open-infra updates it in place, keeping its physical id",
+				strings.Join(props, ", "), verb))
+		}
+	}
+}
+
+// replacementOf is a resource's Replacement for a change of its properties from old to new, and the
+// properties that change, in name order.
+func replacementOf(typ string, old, new map[string]any) (string, []PropertyChange) {
+	names := map[string]bool{}
+	for k := range old {
+		names[k] = true
+	}
+	for k := range new {
+		names[k] = true
+	}
+	var details []PropertyChange
+	replacement := "False"
+	keys := make([]string, 0, len(names))
+	for k := range names {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if specEqual(map[string]any{"v": old[k]}, map[string]any{"v": new[k]}) {
+			continue
+		}
+		rec := "Never"
+		switch updateTypes[typ][k] {
+		case "Immutable":
+			rec, replacement = "Always", "True"
+		case "Conditional":
+			rec = "Conditionally"
+			if replacement == "False" {
+				replacement = "Conditional"
+			}
+		}
+		details = append(details, PropertyChange{Name: k, RequiresRecreation: rec})
+	}
+	return replacement, details
 }
 
 // foldedChanges are the changes of the resources that provision nothing of their own (folded.go) between
@@ -144,7 +262,10 @@ func BuildChangeSet(ctx context.Context, data []byte, opts DeployOptions, ap App
 // one only the current stack has a Remove, and one whose type or resolved properties differ a Modify. A
 // logical id provisioned on either side is not listed here: its provisioned change covers it.
 func foldedChanges(ctx context.Context, current *StackRecord, data []byte, opts DeployOptions, desired []builtResource) []Change {
-	next := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, Template: string(data), Parameters: opts.Params}
+	next := &StackRecord{Name: opts.StackName, Namespace: opts.Namespace, StackID: opts.StackID, Template: string(data), Parameters: opts.Params}
+	if next.StackID == "" && current != nil {
+		next.StackID = current.StackID // an update keeps the stack's StackId
+	}
 	provisioned := map[string]bool{}
 	for _, b := range desired {
 		next.Resources = append(next.Resources, b.res)
