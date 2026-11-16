@@ -86,8 +86,8 @@ func (d *nestedDriver) CreateNested(ctx context.Context, req cfn.NestedStackRequ
 	if plan.Verdict == cfn.Rejected {
 		return cfn.NestedStackResult{StackID: stackID}, fmt.Errorf("template refused (nothing created):\n  - %s", strings.Join(plan.Blockers, "\n  - "))
 	}
-	opts := h.withRequest(h.asCaller(h.stackOpts(ctx, req.Name, req.Parameters, ex, body), d.ap), d.ap, d.req)
-	opts.StackID, opts.ParentID, opts.RootID = stackID, req.ParentID, req.RootID
+	opts := h.withRequest(h.asCaller(h.stackOpts(ctx, req.Name, stackID, req.Parameters, ex, body), d.ap), d.ap, d.req)
+	opts.ParentID, opts.RootID = req.ParentID, req.RootID
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)

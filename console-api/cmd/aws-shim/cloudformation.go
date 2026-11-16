@@ -860,8 +860,7 @@ func (h *cfnDoorway) createStack(w http.ResponseWriter, r *http.Request, ap *imp
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not seed stack record: "+err.Error(), cfnXMLNamespace)
 		return
 	}
-	createOpts := h.withRequest(h.asCaller(h.stackOpts(ctx, name, params, ex, body), ap), ap, r)
-	createOpts.StackID = stackID
+	createOpts := h.withRequest(h.asCaller(h.stackOpts(ctx, name, stackID, params, ex, body), ap), ap, r)
 	createOpts.TerminationProtection = strings.EqualFold(r.PostFormValue("EnableTerminationProtection"), "true")
 	h.runStackOp(name, "CreateStack", "ROLLBACK_COMPLETE", ap, func(bctx context.Context) error {
 		rec, derr := cfn.Deploy(bctx, []byte(body), createOpts, ap)
@@ -925,8 +924,7 @@ func (h *cfnDoorway) updateStack(w http.ResponseWriter, r *http.Request, ap *imp
 		h.claimRefusal(ctx, w, requestID, name, "update", err)
 		return
 	}
-	updateOpts := h.withRequest(h.asCaller(h.stackOpts(ctx, name, params, ex, body), ap), ap, r)
-	updateOpts.StackID = current.StackID
+	updateOpts := h.withRequest(h.asCaller(h.stackOpts(ctx, name, current.StackID, params, ex, body), ap), ap, r)
 	h.runStackOp(name, "UpdateStack", "UPDATE_FAILED", ap, func(bctx context.Context) error {
 		rec, derr := cfn.Update(bctx, []byte(body), updateOpts, ap)
 		if derr == nil {
@@ -1697,12 +1695,11 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		h.claimRefusal(ctx, w, requestID, stack, "update", err)
 		return
 	}
-	execOpts := h.withRequest(h.asCaller(h.stackOpts(ctx, stack, params, ex, body), ap), ap, r)
-	if create {
-		execOpts.StackID = cs.StackID
-	} else {
-		execOpts.StackID = current.StackID
+	execID := cs.StackID
+	if !create {
+		execID = current.StackID
 	}
+	execOpts := h.withRequest(h.asCaller(h.stackOpts(ctx, stack, execID, params, ex, body), ap), ap, r)
 	// The change set's ExecutionStatus follows the operation, as on AWS: EXECUTE_IN_PROGRESS, then
 	// EXECUTE_COMPLETE or EXECUTE_FAILED (an executed change set cannot be executed again).
 	markExecution := func(ctx context.Context, status string) {

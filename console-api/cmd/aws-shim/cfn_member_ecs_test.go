@@ -22,6 +22,7 @@ Resources:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: web
+      TaskRoleArn: arn:aws:iam::` + testMember + `:role/web-task
       ContainerDefinitions: [{ Name: web, Image: nginx, PortMappings: [{ ContainerPort: 80 }] }]
   Service:
     Type: AWS::ECS::Service
@@ -32,11 +33,19 @@ Resources:
 	if code != 200 {
 		t.Fatalf("CreateChangeSet: %d %s", code, body)
 	}
+	_, preview := memberCFNCall(t, h, url.Values{"Action": {"DescribeChangeSet"}, "StackName": {"web"}, "ChangeSetName": {"cs1"}})
 	code, body = memberCFNCall(t, h, url.Values{"Action": {"ExecuteChangeSet"}, "StackName": {"web"}, "ChangeSetName": {"cs1"}})
 	if code != 200 {
 		t.Fatalf("ExecuteChangeSet: %d %s", code, body)
 	}
 	h.ops.drain(20 * time.Second)
+	// What the create reports is what the change set previewed: the role of the stack's own account.
+	_, stacks := memberCFNCall(t, h, url.Values{"Action": {"DescribeStacks"}, "StackName": {"web"}})
+	for what, b := range map[string]string{"the change set": preview, "the stack": stacks} {
+		if strings.Contains(b, "000000000000") {
+			t.Errorf("%s names the management account: %s", what, b)
+		}
+	}
 	_, body = memberCFNCall(t, h, url.Values{"Action": {"DescribeStackResources"}, "StackName": {"web"}})
 	if !strings.Contains(body, "task-definition/web:1") {
 		t.Fatalf("DescribeStackResources lists no task definition: %s", body)

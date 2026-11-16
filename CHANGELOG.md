@@ -16,8 +16,9 @@ the product's public contract.
 
 ### Fixed — a member account's stack names its own account in every resource's physical id
 - A resource that provisions nothing of its own (a task definition, a cluster) was given the management
-  account's id in its physical id (`DescribeStackResources`) in a member account's stack. It now carries the
-  stack's account, as the stack's other resources do.
+  account's id in its physical id (`DescribeStackResources`) in a member account's stack, and the stack's
+  summary (`StackStatusReason`) could name the management account where its change set named the stack's
+  own. Both now carry the stack's account, as the stack's other resources do.
 
 ### Added — ECS `ListTasks`, `DescribeTasks` and `ListTaskDefinitions`; ECR `BatchGetImage`
 - `ListTasks` and `DescribeTasks` list and describe a service's tasks as ECS does (ARN, task definition, the

@@ -36,9 +36,11 @@ import (
 // stackOpts are the engine options for a create or update a request starts: the front door's own, the
 // exports, and the operation's fidelity line (shown by DescribeStacks and the stack's first event). A
 // stack's queue URLs are built on SQS_QUEUE_URL_BASE (the caps), never on the host this request came in on.
-func (h *cfnDoorway) stackOpts(ctx context.Context, name string, params map[string]string, ex stackExports, body string) cfn.DeployOptions {
+func (h *cfnDoorway) stackOpts(ctx context.Context, name, stackID string, params map[string]string, ex stackExports, body string) cfn.DeployOptions {
 	o := h.optsForIn(ctx, name, params, ex)
-	if p, err := cfn.BuildPlanWithCaps([]byte(body), params, ex.values, name, h.caps(ctx)); err == nil {
+	o.StackID = stackID
+	// The summary of the stack instance itself: its StackId is its account, as its resources resolve it.
+	if p, err := cfn.BuildPlanForStack([]byte(body), params, ex.values, name, stackID, h.caps(ctx)); err == nil {
 		o.Fidelity = fidelityLine(p)
 	}
 	return o
