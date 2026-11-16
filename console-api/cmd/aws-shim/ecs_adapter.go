@@ -400,7 +400,7 @@ func (h *ecsDoorway) gateTemplate(ctx context.Context, w http.ResponseWriter, re
 		writeECSError(w, http.StatusBadRequest, "InvalidParameterException", requestID, terr.Error())
 		return nil, false
 	}
-	plan, perr := cfn.BuildPlan(tmpl, nil, appName)
+	plan, perr := cfn.BuildPlanWithCaps(tmpl, nil, nil, appName, h.caps(ctx))
 	if perr != nil {
 		writeECSError(w, http.StatusBadRequest, "InvalidParameterException", requestID, perr.Error())
 		return nil, false

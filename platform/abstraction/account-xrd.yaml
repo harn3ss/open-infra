@@ -190,6 +190,23 @@ spec:
                       minimum: 1
                       maximum: 100000
                       description: "Pods the namespace may run at once (count/pods)."
+                defaultVpc:
+                  type: object
+                  description: >-
+                    The account's default VPC, as AWS gives every account one: 172.31.0.0/16, with a default
+                    subnet in the region's Availability Zone that a task, function or instance lands in when it
+                    names it (DescribeSubnets with default-for-az). Each account's default subnet is a /20 of
+                    its own, one of those AWS gives default subnets; the management account's is 172.31.0.0/20.
+                    CreateAccount chooses it; it cannot change once set.
+                  x-kubernetes-validations:
+                    - rule: "self == oldSelf"
+                      message: "an account's default VPC cannot change once set"
+                  required: [subnetCidr]
+                  properties:
+                    subnetCidr:
+                      type: string
+                      pattern: '^172\.31\.(16|32|48|64|80|96|112|128|144|160|176|192|208|224|240)\.0/20$'
+                      description: "The default subnet, a /20 of 172.31.0.0/16 (172.31.0.0/20 is the management account's)."
                 ses:
                   type: object
                   description: >-

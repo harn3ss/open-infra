@@ -3802,6 +3802,19 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 		default:
 			m.Caveats = append(m.Caveats, "NetworkConfiguration subnet could not be resolved to a kind: Subnet — set the Application's subnet natively to place it in one")
 		}
+		inDefault := false
+		for _, ls := range ctx.caps.DefaultSubnets {
+			inDefault = inDefault || (ls != "" && ls == m.Spec["subnet"])
+		}
+		if avc != nil && inDefault {
+			// A default subnet is public, its traffic to the internet NATed by the node: the task reaches the
+			// internet whatever AssignPublicIp says, and takes no inbound traffic on a public address.
+			if ap, _ := concrete(avc["AssignPublicIp"]); strings.EqualFold(ap, "ENABLED") {
+				m.Caveats = append(m.Caveats, "AssignPublicIp ENABLED: the task reaches the internet from its subnet, but takes no inbound traffic on a public address — expose it with the Application's domain")
+			} else {
+				m.Caveats = append(m.Caveats, "AssignPublicIp DISABLED: the task still reaches the internet (its subnet's traffic is NATed), where on AWS a task without a public address in a subnet with no NAT gateway does not")
+			}
+		}
 		if avc != nil {
 			if sgs, ok := avc["SecurityGroups"].([]any); ok && len(sgs) > 0 {
 				m.Caveats = append(m.Caveats, "NetworkConfiguration SecurityGroups dropped — SECURITY: attach kind: SecurityGroups natively (CFN SG translation is a follow-on); do not assume the isolation implied")
@@ -3835,6 +3848,10 @@ func ecsFirstSubnet(id string, avc map[string]any, ctx *stackCtx) (string, strin
 	if subs, ok := avc["Subnets"].([]any); ok && len(subs) > 0 {
 		if v, ok := concrete(subs[0]); ok && v != "" {
 			if strings.HasPrefix(strings.ToLower(v), "subnet-") {
+				// The account's default subnet, by the id EC2 reports it with (its default VPC's).
+				if ctx != nil && ctx.caps.DefaultSubnets[v] != "" {
+					return ctx.caps.DefaultSubnets[v], ""
+				}
 				return "", "raw"
 			}
 			return v, ""

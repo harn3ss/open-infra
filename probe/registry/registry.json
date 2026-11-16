@@ -526,11 +526,13 @@
         "AWS::EC2"
       ],
       "operations": [
+        "CreateDefaultVpc",
         "CreateFlowLogs",
         "CreateKeyPair",
         "DeleteFlowLogs",
         "DeleteKeyPair",
         "DeleteVolume",
+        "DescribeAccountAttributes",
         "DescribeAddresses",
         "DescribeAvailabilityZones",
         "DescribeFlowLogs",
@@ -1632,7 +1634,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 636,
+    "operations": 638,
     "planOnly": 11,
     "refused": 11,
     "services": 32,

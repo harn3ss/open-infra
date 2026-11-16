@@ -63,6 +63,9 @@ type ecsDoorway struct {
 	// stacks lists the request's account's CloudFormation stack records, where a service or cluster a stack
 	// made is found (ecs_stack.go); nil = none are.
 	stacks func(context.Context) ([]*cfn.StackRecord, error)
+	// defaultSubnets are the request's account's default subnets, id -> cluster subnet, which a service's
+	// NetworkConfiguration may name (ec2_default_vpc.go); nil = none are known.
+	defaultSubnets func(context.Context) map[string]string
 }
 
 func newECSDoorway(cfg *rest.Config, shimDyn dynamic.Interface, cs kubernetes.Interface, authz *dataplaneauthz.Checker, authzNS, account, region, ns string, logger *slog.Logger) (*ecsDoorway, error) {
@@ -436,11 +439,21 @@ func (h *ecsDoorway) clusterObject(ctx context.Context, name, status string) map
 // stack's AWS::AccountId (and every ARN it builds) to the member account. The management account's stack
 // keeps the derived StackId the engine always gave it.
 func (h *ecsDoorway) deployOpts(ctx context.Context, stackName string) cfn.DeployOptions {
-	opts := cfn.DeployOptions{StackName: stackName, Namespace: h.nsFor(ctx), Wait: true, Timeout: cfnWaitTimeout}
+	opts := cfn.DeployOptions{StackName: stackName, Namespace: h.nsFor(ctx), Wait: true, Timeout: cfnWaitTimeout, Caps: h.caps(ctx)}
 	if isMemberRequest(ctx) {
 		opts.StackID = awsidentity.FromContext(ctx).StackID(stackName)
 	}
 	return opts
+}
+
+// caps are what a service's template is planned and deployed with: the account's default subnets, which
+// its NetworkConfiguration may name.
+func (h *ecsDoorway) caps(ctx context.Context) cfn.Capabilities {
+	var c cfn.Capabilities
+	if h.defaultSubnets != nil {
+		c.DefaultSubnets = h.defaultSubnets(ctx)
+	}
+	return c
 }
 
 func (h *ecsDoorway) serviceObject(ctx context.Context, serviceName, cluster, tdRef string, desired, running int, status, createdAt, launchType string) map[string]any {

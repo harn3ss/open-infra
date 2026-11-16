@@ -30,6 +30,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/harn3ss/open-infra/console-api/internal/accounts"
@@ -505,6 +506,15 @@ func (h *organizationsHandler) createAccount(ctx context.Context, w http.Respons
 	if alias := homeNamespaceBase(in.AccountName); aliasRe.MatchString(alias) && len(alias) >= 3 {
 		spec["alias"] = alias
 	}
+	// As AWS makes every account with a default VPC: its default subnet is a /20 of 172.31.0.0/16 of its own
+	// (ec2_default_vpc.go). One create at a time chooses it, so two accounts never take the same one.
+	defaultSubnetMu.Lock()
+	defer defaultSubnetMu.Unlock()
+	if cidr, ok := h.freeDefaultSubnet(ctx); ok {
+		spec["defaultVpc"] = map[string]any{"subnetCidr": cidr}
+	} else {
+		h.logger.Warn("organizations: CreateAccount found no free default subnet (172.31.0.0/16 has 15 for member accounts); the account has no default VPC", "account", id)
+	}
 	car := createRequestID(id)
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "organizations.openinfra.dev/v1",
@@ -523,6 +533,33 @@ func (h *organizationsHandler) createAccount(ctx context.Context, w http.Respons
 	writeOrgJSON(w, requestID, map[string]any{"CreateAccountStatus": map[string]any{
 		"Id": car, "AccountName": in.AccountName, "State": "IN_PROGRESS", "RequestedTimestamp": float64(h.now().Unix()),
 	}})
+}
+
+// defaultSubnetMu serializes choosing a new account's default subnet.
+var defaultSubnetMu sync.Mutex
+
+// freeDefaultSubnet is the first /20 of 172.31.0.0/16 no account's default VPC has taken (172.31.0.0/20 is
+// the management account's).
+func (h *organizationsHandler) freeDefaultSubnet(ctx context.Context) (string, bool) {
+	if h.shimDyn == nil {
+		return "", false
+	}
+	list, err := h.shimDyn.Resource(gvrAccounts).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", false
+	}
+	taken := map[string]bool{}
+	for i := range list.Items {
+		if c, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "defaultVpc", "subnetCidr"); c != "" {
+			taken[c] = true
+		}
+	}
+	for third := 16; third <= 240; third += 16 {
+		if c := fmt.Sprintf("172.31.%d.0/20", third); !taken[c] {
+			return c, true
+		}
+	}
+	return "", false
 }
 
 var createRequestRe = regexp.MustCompile(`^car-([0-9]{12})[0-9a-z]{8}$`)

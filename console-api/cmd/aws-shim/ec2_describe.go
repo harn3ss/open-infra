@@ -748,6 +748,13 @@ func (h *ec2Handler) describeVpcs(ctx context.Context, w http.ResponseWriter, r 
 		items = append(items, xtag("vpcId", u.GetName())+xtag("ownerId", acct)+xtag("state", state)+xtag("cidrBlock", view.CidrBlock)+
 			assoc+"<dhcpOptionsId>default</dhcpOptionsId>"+xtags(view.Tags)+"<instanceTenancy>default</instanceTenancy><isDefault>false</isDefault>")
 	}
+	// The account's default VPC (ec2_default_vpc.go), as AWS lists it with the account's others.
+	if d := h.defaultVPCOf(ctx); d != nil && (len(ids) == 0 || want[d.vpcID()]) {
+		found[d.vpcID()] = true
+		if item, ok := h.defaultVPCItem(d, acct, fs); ok {
+			items = append(items, item)
+		}
+	}
 	for _, id := range ids {
 		if !found[id] {
 			writeEC2Error(w, http.StatusBadRequest, "InvalidVpcID.NotFound", requestID, "The vpc ID '"+id+"' does not exist")
@@ -814,6 +821,13 @@ func (h *ec2Handler) describeSubnets(ctx context.Context, w http.ResponseWriter,
 			xtag("vpcId", vpc)+xtag("cidrBlock", cidr)+"<availableIpAddressCount>"+strconv.FormatInt(usableAddresses(cidr), 10)+"</availableIpAddressCount>"+
 			xtag("availabilityZone", h.zone())+xtag("availabilityZoneId", h.zoneID())+"<defaultForAz>false</defaultForAz>"+
 			xbool("mapPublicIpOnLaunch", !private)+"<assignIpv6AddressOnCreation>false</assignIpv6AddressOnCreation>"+xtags(view.Tags))
+	}
+	// The account's default subnet (ec2_default_vpc.go).
+	if d := h.defaultVPCOf(ctx); d != nil && (len(ids) == 0 || want[d.subnetID()]) {
+		found[d.subnetID()] = true
+		if item, ok := h.defaultSubnetItem(d, acct, fs); ok {
+			items = append(items, item)
+		}
 	}
 	for _, id := range ids {
 		if !found[id] {

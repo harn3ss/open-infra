@@ -321,3 +321,37 @@ func TestECSStack_ListTaskDefinitions(t *testing.T) {
 		t.Errorf("DESC: %v", out)
 	}
 }
+
+// A task in a subnet (its service's NetworkConfiguration) has its network interface, as ECS reports an awsvpc
+// task's: the subnet's id (the default subnet's, as EC2 names it) and the task's private address.
+func TestECSStack_TaskInASubnetHasItsInterface(t *testing.T) {
+	h := ecsStackDoorway(t)
+	h.defaultSubnets = func(context.Context) map[string]string { return map[string]string{"subnet-0abc": "default-vpc"} }
+	cs := h.cs.(*fake.Clientset)
+	if _, err := cs.CoreV1().Pods("open-infra-cfn").Create(context.Background(), &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-stack-service-5f6d8-ccccc", Namespace: "open-infra-cfn", UID: "p3",
+			Labels:      map[string]string{"app.kubernetes.io/name": "web-stack-service"},
+			Annotations: map[string]string{"ovn.kubernetes.io/logical_switch": "default-vpc"}},
+		Spec:   corev1.PodSpec{NodeName: "node-a", Containers: []corev1.Container{{Name: "app", Image: "nginx"}}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: "172.31.0.9"},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_, out := ecsCall(t, h, mgmtDoorCaller(), "DescribeTasks", map[string]any{"cluster": "web-cluster",
+		"tasks": []any{podID("open-infra-cfn", "web-stack-service-5f6d8-ccccc")}})
+	task := out["tasks"].([]any)[0].(map[string]any)
+	att, _ := task["attachments"].([]any)
+	if len(att) != 1 {
+		t.Fatalf("attachments %v", task)
+	}
+	a := att[0].(map[string]any)
+	got := map[string]string{}
+	for _, d := range a["details"].([]any) {
+		m := d.(map[string]any)
+		got[m["name"].(string)] = m["value"].(string)
+	}
+	if a["type"] != "ElasticNetworkInterface" || a["status"] != "ATTACHED" || got["subnetId"] != "subnet-0abc" ||
+		got["privateIPv4Address"] != "172.31.0.9" || !strings.HasPrefix(got["networkInterfaceId"], "eni-") {
+		t.Fatalf("interface %v", a)
+	}
+}

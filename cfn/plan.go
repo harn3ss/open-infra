@@ -150,6 +150,11 @@ type Capabilities struct {
 	// NestedStacks: this environment creates a nested stack (AWS::CloudFormation::Stack) as a stack of its
 	// own (nested_stacks.go). Off (the CLI, which flattens nested stacks first), the type refuses.
 	NestedStacks bool
+	// DefaultSubnets are the stack's account's default subnets (its default VPC's, as EC2's DescribeSubnets
+	// reports them with default-for-az), subnet id -> the cluster subnet a workload in it joins. A template
+	// may name one by its id (an ECS service's NetworkConfiguration), as on AWS. nil (the CLI): a subnet id
+	// is opaque and refuses.
+	DefaultSubnets map[string]string
 }
 
 // underValidatedDomain reports whether host is one of domains or a subdomain of one.

@@ -84,6 +84,7 @@ type ec2Network struct {
 	subnets   []unstructured.Unstructured
 	nats      []unstructured.Unstructured
 	parts     []ec2StackPart
+	def       *defaultVPC // the account's default VPC (nil: none yet)
 }
 
 // network reads the caller's account's VPCs and subnets, with nats its NAT gateways, and with stacks its
@@ -110,6 +111,7 @@ func (h *ec2Handler) network(ctx context.Context, claims iam.Claims, nats, stack
 			return nil, false, err
 		}
 	}
+	n.def = h.defaultVPCOf(ctx)
 	return n, false, nil
 }
 
@@ -208,6 +210,9 @@ func (h *ec2Handler) internetGateways(n *ec2Network) []ec2Gateway {
 			g.atts = append(g.atts, ec2GatewayAttachment{vpc: v.GetName(), state: state})
 		}
 		out = append(out, g)
+	}
+	if n.def != nil {
+		out = append(out, n.def.gateway()) // the default VPC's internet gateway
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].id < out[j].id })
 	return out
@@ -355,6 +360,9 @@ func (h *ec2Handler) routeTables(n *ec2Network) []ec2RouteTable {
 			}
 		}
 		out = append(out, rt)
+	}
+	if n.def != nil {
+		out = append(out, n.def.routeTable()) // the default VPC's main route table: 0.0.0.0/0 to its gateway
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].id < out[j].id })
 	return out
@@ -525,6 +533,9 @@ func (h *ec2Handler) networkACLs(n *ec2Network) []ec2NetworkACL {
 		}
 		out = append(out, ec2NetworkACL{id: shortHashID("acl-", "subnet-network-acl/"+n.ns+"/"+s.GetName(), 17), vpc: vpc,
 			entries: subnetACLEntries(acls), subnets: []string{s.GetName()}})
+	}
+	if n.def != nil {
+		out = append(out, n.def.networkACL()) // the default VPC's default network ACL, its subnet associated
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].id < out[j].id })
 	return out

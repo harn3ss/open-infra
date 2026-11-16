@@ -325,3 +325,33 @@ func readYAMLDocs(t *testing.T, file string) []map[string]any {
 	}
 	return out
 }
+
+// A member account with a default VPC gets its default subnet: a /20 of 172.31.0.0/16 on the cluster network
+// (ovn-cluster), public and NATed to the internet, with AWS's five reserved addresses kept out, bound to no
+// namespace. An account without one renders none; the management account's is a manifest of its own.
+func TestAccount_DefaultVPCSubnet(t *testing.T) {
+	docs := accountDocs(t, map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a"},
+		"defaultVpc": map[string]any{"subnetCidr": "172.31.48.0/20"}}, "000000000000")
+	subs := byKind(docs)["Subnet"]
+	if len(subs) != 1 {
+		t.Fatalf("want one default subnet, got %v", keys(byKind(docs)))
+	}
+	s := subs[0]
+	ex, _ := mget(s, "spec", "excludeIps").([]any)
+	if mstr(s, "metadata", "name") != "default-vpc-912345678901" || mstr(s, "spec", "vpc") != "ovn-cluster" ||
+		mstr(s, "spec", "cidrBlock") != "172.31.48.0/20" || mstr(s, "spec", "gateway") != "172.31.48.1" ||
+		fmt.Sprint(mget(s, "spec", "natOutgoing")) != "true" || fmt.Sprint(mget(s, "spec", "private")) != "false" ||
+		len(ex) != 2 || ex[0] != "172.31.48.1..172.31.48.3" || ex[1] != "172.31.63.255" || mget(s, "spec", "namespaces") != nil ||
+		mstr(s, "metadata", "labels", "openinfra.dev/default-vpc") != "true" {
+		t.Fatalf("default subnet %v", s)
+	}
+	if subs := byKind(accountDocs(t, map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a"}}, "000000000000"))["Subnet"]; len(subs) != 0 {
+		t.Errorf("an account without a default VPC renders a subnet: %v", subs)
+	}
+	mgmt := yamlDoc(t, "../../platform/networking/kube-ovn/default-vpc.yaml", "Subnet", "default-vpc")
+	mustContain(t, "the management account's default subnet", mgmt, "cidrBlock: 172.31.0.0/20", "vpc: ovn-cluster",
+		"natOutgoing: true", "private: false", `"172.31.0.1..172.31.0.3", "172.31.15.255"`)
+	if strings.Contains(mgmt, "namespaces:") {
+		t.Error("the management account's default subnet binds a namespace")
+	}
+}

@@ -106,6 +106,9 @@ var ec2Ops = map[string]ec2Op{
 	"CreateFlowLogs":               {"VpcFlowLog", "create"},
 	"DescribeFlowLogs":             {"VpcFlowLog", "get"},
 	"DeleteFlowLogs":               {"VpcFlowLog", "delete"},
+	// The account's default VPC (ec2_default_vpc.go).
+	"DescribeAccountAttributes": {"Account", "get"},
+	"CreateDefaultVpc":          {"Vpc", "create"},
 }
 
 type ec2Handler struct {
@@ -241,6 +244,10 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.describeSecurityGroups(ctx, w, r, claims, requestID)
 	case "DescribeVpcs":
 		h.describeVpcs(ctx, w, r, claims, requestID)
+	case "DescribeAccountAttributes":
+		h.describeAccountAttributes(ctx, w, r, requestID)
+	case "CreateDefaultVpc":
+		h.createDefaultVpc(ctx, w, requestID)
 	case "DescribeSubnets":
 		h.describeSubnets(ctx, w, r, claims, requestID)
 	case "DescribeImages":
@@ -283,7 +290,7 @@ func ec2StoreOp(op string) bool {
 	switch op {
 	case "DescribeKeyPairs", "ImportKeyPair", "CreateKeyPair", "DeleteKeyPair",
 		"DescribeImages", "DescribeRegions", "DescribeAvailabilityZones", "DescribeAddresses",
-		"CreateFlowLogs", "DescribeFlowLogs", "DeleteFlowLogs":
+		"CreateFlowLogs", "DescribeFlowLogs", "DeleteFlowLogs", "DescribeAccountAttributes", "CreateDefaultVpc":
 		return true
 	}
 	return false

@@ -180,6 +180,8 @@ func (h *cfnDoorway) caps(ctx context.Context) cfn.Capabilities {
 	if ecr, ok := h.services.door("ecr").(*ecrHandler); ok && ecr != nil && c.ECRAPI {
 		c.ECRRepositoryHost = stripScheme(ecr.proxyEndpoint)
 	}
+	// The account's default subnet, which a template may name by its id (ec2_default_vpc.go).
+	c.DefaultSubnets = h.defaultSubnets(ctx)
 	// The EC2 key pairs an instance's KeyName may name (ec2_keypairs.go): the stack's account's, as on AWS.
 	// Unreadable: none are known, and KeyName stays a caveat rather than refusing a key pair that may exist.
 	if h.keyPairs != nil {

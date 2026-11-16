@@ -28,8 +28,9 @@ import (
 )
 
 // defaultClusterCIDRs are the install's pod network, Service network and kube-ovn join subnet (install.sh),
-// and the k3s default pod CIDR. APIGW_ORIGIN_DENY_CIDRS (comma-separated) adds more, e.g. tenant subnets.
-var defaultClusterCIDRs = []string{"10.16.0.0/16", "10.43.0.0/16", "100.64.0.0/16", "10.42.0.0/16"}
+// the k3s default pod CIDR, the Lambda VPC subnet and the accounts' default VPCs (172.31.0.0/16).
+// APIGW_ORIGIN_DENY_CIDRS (comma-separated) adds more, e.g. tenant subnets.
+var defaultClusterCIDRs = []string{"10.16.0.0/16", "10.43.0.0/16", "100.64.0.0/16", "10.42.0.0/16", "10.17.0.0/16", "172.31.0.0/16"}
 
 type originGuard struct {
 	deny []*net.IPNet

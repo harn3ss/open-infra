@@ -563,10 +563,10 @@ spec:
                           - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
                             podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
                       {{- if $spec.expose }}
-                      # LAN clients through the LAN LoadBalancer: anything outside the pod network (10.16.0.0/16)
+                      # LAN clients through the LAN LoadBalancer: anything outside the cluster networks (pods 10.16.0.0/16, Lambda VPC 10.17.0.0/16, default VPCs 172.31.0.0/16)
                       # and the join subnet (100.64.0.0/16), on the served port
                       - from:
-                          - ipBlock: { cidr: 0.0.0.0/0, except: [10.16.0.0/16, 100.64.0.0/16] }
+                          - ipBlock: { cidr: 0.0.0.0/0, except: [10.16.0.0/16, 10.17.0.0/16, 172.31.0.0/16, 100.64.0.0/16] }
                         ports:
                           - { protocol: TCP, port: 8080 }
                       {{- end }}

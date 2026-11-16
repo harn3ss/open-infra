@@ -203,6 +203,25 @@ func (h *ecsDoorway) taskObject(ctx context.Context, t ecsTask, containerName st
 		containers = append(containers, cont)
 	}
 	task["containers"] = containers
+	// A task in a subnet (an awsvpc task's NetworkConfiguration) has its network interface, as ECS reports it:
+	// the subnet's id and the task's private address.
+	if ls := p.Annotations["ovn.kubernetes.io/logical_switch"]; ls != "" {
+		subnet := ls
+		if h.defaultSubnets != nil {
+			for id, sw := range h.defaultSubnets(ctx) {
+				if sw == ls {
+					subnet = id
+				}
+			}
+		}
+		details := []any{map[string]any{"name": "subnetId", "value": subnet},
+			map[string]any{"name": "networkInterfaceId", "value": shortHashID("eni-", "task/"+string(p.UID), 17)}}
+		if ip := p.Status.PodIP; ip != "" {
+			details = append(details, map[string]any{"name": "privateIPv4Address", "value": ip})
+		}
+		task["attachments"] = []any{map[string]any{"id": ecsEventID("eni", string(p.UID)), "type": "ElasticNetworkInterface",
+			"status": "ATTACHED", "details": details}}
+	}
 	return task
 }
 

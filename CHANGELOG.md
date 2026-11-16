@@ -6,6 +6,23 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — every account has a default VPC, as on AWS
+- As AWS gives every account one, each account now has its default VPC: `172.31.0.0/16`, with a default subnet
+  (a `/20` of it), an internet gateway and a main route table sending `0.0.0.0/0` to it. EC2 reports them
+  (`DescribeVpcs` `is-default`, `DescribeSubnets` `default-for-az`), `DescribeAccountAttributes` names the
+  default VPC, and `CreateDefaultVpc` answers `DefaultVpcAlreadyExists`. `CreateAccount` gives a new account
+  its default subnet; each account's is a range of its own. See [docs/aws-shim.md](docs/aws-shim.md).
+- An ECS service's `NetworkConfiguration` may name the default subnet by its id, as on AWS: its tasks run in
+  it, resolve DNS and reach the internet and the platform's AWS endpoints, and `DescribeTasks` reports each
+  task's network interface (the subnet and the task's address).
+- Unlike AWS, the accounts' default subnets share the cluster network (each in its own range) and are kept
+  apart by each account's isolation; a task there takes no inbound traffic on a public address, and there is
+  no default security group yet.
+- Operators: the management account's default subnet is `platform/networking/kube-ovn/default-vpc.yaml`; a
+  member account's is its `kind: Account`'s `spec.defaultVpc.subnetCidr` (set it once on an account created
+  before this). A LAN-published file share's, directory's or model's ports, and API Gateway's HTTP origin
+  check, now also treat the Lambda VPC subnet and the default VPCs as cluster addresses, not LAN clients.
+
 ### Fixed — a change set says when AWS would replace a resource
 - A change set reported every modified resource as `Replacement: False`. As on AWS, it now says whether the
   update replaces the resource (`True`, `Conditional` or `False`) and lists the properties that change

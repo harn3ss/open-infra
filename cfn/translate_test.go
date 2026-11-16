@@ -634,6 +634,43 @@ Resources:
 	}
 }
 
+// The account's default subnet, named by the id EC2 reports it with (its default VPC's), places the service
+// in it, as on AWS: the task joins the default subnet's cluster subnet. AssignPublicIp says what a task there
+// gets: it reaches the internet either way, and takes no inbound traffic on a public address.
+func TestTranslate_ECSService_DefaultSubnet(t *testing.T) {
+	tmpl := func(assign string) string {
+		return `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions: [ { Name: web, Image: web:1, PortMappings: [ { ContainerPort: 80 } ] } ]
+  Svc:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref Task
+      NetworkConfiguration: { AwsvpcConfiguration: { Subnets: [ subnet-0abc ], AssignPublicIp: ` + assign + ` } }
+`
+	}
+	for assign, caveat := range map[string]string{"ENABLED": "takes no inbound traffic on a public address", "DISABLED": "still reaches the internet"} {
+		ctx := ecsCtx(t, tmpl(assign))
+		ctx.caps.DefaultSubnets = map[string]string{"subnet-0abc": "default-vpc-111122223333"}
+		m, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+		if len(fs) != 0 {
+			t.Fatalf("%s: %s", assign, findingsText(fs))
+		}
+		if m.Spec["subnet"] != "default-vpc-111122223333" || !strings.Contains(strings.Join(m.Caveats, "\n"), caveat) {
+			t.Fatalf("%s: subnet %v caveats %v", assign, m.Spec["subnet"], m.Caveats)
+		}
+	}
+	// Another subnet id is still opaque.
+	ctx := ecsCtx(t, tmpl("ENABLED"))
+	ctx.caps.DefaultSubnets = map[string]string{"subnet-0def": "default-vpc-111122223333"}
+	if _, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx); !strings.Contains(findingsText(fs), "raw AWS subnet id") {
+		t.Fatalf("a subnet id that is not the account's default subnet must refuse, got: %s", findingsText(fs))
+	}
+}
+
 // #117 §1: a host-path bind-mount Volume refuses (no safe equivalent), never a silent drop.
 func TestTranslate_ECSService_HostVolumeRefused(t *testing.T) {
 	tmpl := `

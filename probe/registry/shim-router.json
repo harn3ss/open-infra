@@ -262,11 +262,13 @@
     "ec2": {
       "handler": "ec2Handler",
       "operations": [
+        "CreateDefaultVpc",
         "CreateFlowLogs",
         "CreateKeyPair",
         "DeleteFlowLogs",
         "DeleteKeyPair",
         "DeleteVolume",
+        "DescribeAccountAttributes",
         "DescribeAddresses",
         "DescribeAvailabilityZones",
         "DescribeFlowLogs",

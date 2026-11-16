@@ -222,6 +222,40 @@ spec:
                     # (a Role's spec.policies are Policy names, resolved from the library in the management
                     # account's IAM home when this namespace has no Policy of that name).
                     policies: ["aws-administratoraccess"]
+            {{- with $spec.defaultVpc }}
+            {{- $cidr := .subnetCidr }}
+            {{- $third := int (index (splitList "." $cidr) 2) }}
+            {{- $net := printf "172.31.%d" $third }}
+            ---
+            # The account's default subnet (its default VPC, 172.31.0.0/16): a /20 of the cluster network of its
+            # own, which a workload joins by naming it (ovn.kubernetes.io/logical_switch) — the account's
+            # namespaces are not bound to it, so nothing else moves. Public, as AWS's default subnets are, and
+            # its traffic to the internet is NATed by the node. AWS reserves a subnet's first four addresses and
+            # its last, so they are kept out of it here too.
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: default-subnet
+            spec:
+              forProvider:
+                manifest:
+                  apiVersion: kubeovn.io/v1
+                  kind: Subnet
+                  metadata:
+                    name: {{ printf "default-vpc-%s" $acct | toJson }}
+                    labels: { openinfra.dev/default-vpc: "true", openinfra.dev/account-id: {{ $acct | toJson }} }
+                  spec:
+                    protocol: IPv4
+                    vpc: ovn-cluster
+                    cidrBlock: {{ $cidr | toJson }}
+                    gateway: {{ printf "%s.1" $net | toJson }}
+                    excludeIps:
+                      - {{ printf "%s.1..%s.3" $net $net | toJson }}
+                      - {{ printf "172.31.%d.255" (add $third 15) | toJson }}
+                    natOutgoing: true
+                    private: false
+            {{- end }}
             {{- end }}
             ---
             apiVersion: organizations.openinfra.dev/v1

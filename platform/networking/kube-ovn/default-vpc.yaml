@@ -1,0 +1,20 @@
+# The management account's default subnet (its default VPC, 172.31.0.0/16), as AWS gives every account one.
+# A member account's is rendered by its kind: Account (account-composition.yaml, spec.defaultVpc), each a /20
+# of 172.31.0.0/16 of its own; this one is 172.31.0.0/20. A workload joins it by naming it
+# (ovn.kubernetes.io/logical_switch: default-vpc) — no namespace is bound to it, so nothing else moves.
+# Public, as AWS's default subnets are: its traffic to the internet is NATed by the node. AWS reserves a
+# subnet's first four addresses and its last, so they are kept out of it here too. The aws-shim reports it
+# through EC2 (DescribeVpcs is-default, DescribeSubnets default-for-az; ec2_default_vpc.go).
+apiVersion: kubeovn.io/v1
+kind: Subnet
+metadata:
+  name: default-vpc
+  labels: { openinfra.dev/default-vpc: "true" }
+spec:
+  protocol: IPv4
+  vpc: ovn-cluster
+  cidrBlock: 172.31.0.0/20
+  gateway: 172.31.0.1
+  excludeIps: ["172.31.0.1..172.31.0.3", "172.31.15.255"]
+  natOutgoing: true
+  private: false

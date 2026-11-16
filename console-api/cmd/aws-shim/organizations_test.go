@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -275,4 +276,30 @@ func TestOrganizations_EnforceIsIAMPolicyAlone(t *testing.T) {
 	// No policy: denied, though RBAC would allow.
 	w, out = orgCall(t, h, iam.Claims{Sub: "nobody"}, "DescribeOrganization", map[string]any{})
 	wantOrgError(t, w, out, "AccessDeniedException")
+}
+
+// As AWS makes every account with a default VPC, CreateAccount gives a new account its default subnet: the
+// first /20 of 172.31.0.0/16 no account has taken (172.31.0.0/20 is the management account's).
+func TestOrganizations_CreateAccountGivesADefaultVPC(t *testing.T) {
+	h, dyn := orgTestHandler(t, true, nil)
+	h.shimDyn = dyn // the shim reads every account's default subnet with its own client
+	subnetOf := func(name string) string {
+		l, _ := dyn.Resource(gvrAccounts).List(context.Background(), metav1.ListOptions{})
+		for _, a := range l.Items {
+			if a.GetAnnotations()[annAccountName] == name {
+				c, _, _ := unstructured.NestedString(a.Object, "spec", "defaultVpc", "subnetCidr")
+				return c
+			}
+		}
+		return ""
+	}
+	for i, want := range []string{"172.31.16.0/20", "172.31.32.0/20", "172.31.48.0/20"} {
+		name := fmt.Sprintf("Team %d", i)
+		if _, out := orgCall(t, h, orgAdmin, "CreateAccount", map[string]any{"AccountName": name, "Email": fmt.Sprintf("t%d@example.com", i)}); out["CreateAccountStatus"] == nil {
+			t.Fatalf("create %s: %v", name, out)
+		}
+		if got := subnetOf(name); got != want {
+			t.Fatalf("%s's default subnet %q, want %q", name, got, want)
+		}
+	}
 }
