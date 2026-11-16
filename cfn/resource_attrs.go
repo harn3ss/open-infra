@@ -599,8 +599,13 @@ func eipPublicIP(e *attrEnv) (string, bool) {
 	return s, ok
 }
 
+// ecsServiceARN is a service's ARN, service/<cluster>/<name>. Its Cluster may be the cluster's name or its
+// ARN (arn:aws:ecs:…:cluster/<name>), as ECS takes either.
 func ecsServiceARN(e *attrEnv) string {
 	cluster := e.prop("Cluster")
+	if i := strings.LastIndex(cluster, ":cluster/"); i >= 0 {
+		cluster = cluster[i+len(":cluster/"):]
+	}
 	if cluster == "" {
 		cluster = "default"
 	}

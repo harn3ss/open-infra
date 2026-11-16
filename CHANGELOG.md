@@ -6,6 +6,14 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a CloudFormation stack's ECS services and clusters are visible through ECS
+- A service or cluster made by a CloudFormation stack was missing from ECS: `DescribeServices` reported the
+  service `MISSING`, and `ListServices`, `ListClusters` and `DescribeClusters` did not list them. As on AWS,
+  they are now the account's services and clusters like any other, and a service can be created in a
+  stack's cluster. `ListServices` now lists one cluster's services (the `default` cluster when none is
+  named), as ECS does. A stack's service whose `Cluster` names the cluster by its ARN now has the right
+  service ARN. See [docs/aws-shim.md](docs/aws-shim.md).
+
 ### Added — an ECS task's image is pulled with its task execution role
 - A task definition's `executionRoleArn` was ignored: every application's image was pulled with the node's
   own credential. As on ECS, an application's image is now pulled with its execution role: the role must

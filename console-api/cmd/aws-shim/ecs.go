@@ -60,6 +60,9 @@ type ecsDoorway struct {
 	region  string
 	ns      string
 	logger  *slog.Logger
+	// stacks lists the request's account's CloudFormation stack records, where a service or cluster a stack
+	// made is found (ecs_stack.go); nil = none are.
+	stacks func(context.Context) ([]*cfn.StackRecord, error)
 }
 
 func newECSDoorway(cfg *rest.Config, shimDyn dynamic.Interface, cs kubernetes.Interface, authz *dataplaneauthz.Checker, authzNS, account, region, ns string, logger *slog.Logger) (*ecsDoorway, error) {
@@ -371,10 +374,13 @@ func (h *ecsDoorway) describeClusters(ctx context.Context, w http.ResponseWriter
 		for _, c := range h.listClusters(ctx) {
 			clusters = append(clusters, h.clusterObject(ctx, c.ClusterName, c.Status))
 		}
+		for _, cn := range h.stackClusters(ctx) {
+			clusters = append(clusters, h.clusterObject(ctx, cn, "ACTIVE"))
+		}
 	} else {
 		for _, raw := range names {
 			cn := lastSlashSeg(raw)
-			if _, found, _ := h.getCluster(ctx, cn); found && !h.otherAccountsARN(ctx, raw) {
+			if found, _ := h.clusterExists(ctx, cn); found && !h.otherAccountsARN(ctx, raw) {
 				clusters = append(clusters, h.clusterObject(ctx, cn, "ACTIVE"))
 			} else {
 				failures = append(failures, map[string]any{"arn": h.clusterArn(ctx, cn), "reason": "MISSING"})
@@ -388,6 +394,9 @@ func (h *ecsDoorway) listClustersOp(ctx context.Context, w http.ResponseWriter, 
 	arns := []any{}
 	for _, c := range h.listClusters(ctx) {
 		arns = append(arns, h.clusterArn(ctx, c.ClusterName))
+	}
+	for _, cn := range h.stackClusters(ctx) {
+		arns = append(arns, h.clusterArn(ctx, cn))
 	}
 	writeECSJSON(w, requestID, map[string]any{"clusterArns": arns})
 }

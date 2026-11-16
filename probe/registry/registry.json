@@ -95,7 +95,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 16
+      "probe": 17
     },
     "undeployableUses": [
       {
@@ -2951,9 +2951,11 @@
       "signingNames": [
         "ecs"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "cfn-ecs"
+      ],
       "status": "partial",
-      "templateUses": 1,
+      "templateUses": 2,
       "verdict": "ok"
     },
     "AWS::ECS::Service": {
@@ -2973,9 +2975,11 @@
       "signingNames": [
         "ecs"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "cfn-ecs"
+      ],
       "status": "partial",
-      "templateUses": 1,
+      "templateUses": 2,
       "verdict": "ok"
     },
     "AWS::ECS::TaskDefinition": {
@@ -2994,9 +2998,11 @@
       "signingNames": [
         "ecs"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "cfn-ecs"
+      ],
       "status": "partial",
-      "templateUses": 1,
+      "templateUses": 2,
       "verdict": "ok"
     },
     "AWS::EFS::FileSystem": {
@@ -3261,6 +3267,7 @@
       ],
       "stackProbes": [
         "cfn-cfnresponse",
+        "cfn-ecs",
         "cfn-lambda-zip",
         "cfn-structural-reads",
         "iam-passedtoservice",
@@ -3268,7 +3275,7 @@
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 11,
+      "templateUses": 12,
       "verdict": "ok"
     },
     "AWS::IAM::User": {
@@ -3455,9 +3462,11 @@
       "signingNames": [
         "logs"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "cfn-ecs"
+      ],
       "status": "supported",
-      "templateUses": 0,
+      "templateUses": 1,
       "verdict": "ok"
     },
     "AWS::RDS::DBInstance": {

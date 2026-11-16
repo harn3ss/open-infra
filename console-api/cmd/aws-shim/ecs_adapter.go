@@ -130,7 +130,7 @@ func (h *ecsDoorway) createService(ctx context.Context, w http.ResponseWriter, r
 	}
 	cluster := strOrDefault(firstString(body, "cluster"), "default")
 	if cluster != "default" {
-		if _, found, err := h.getCluster(ctx, cluster); err != nil {
+		if found, err := h.clusterExists(ctx, cluster); err != nil {
 			h.internal(w, requestID, err)
 			return
 		} else if !found {
@@ -325,35 +325,19 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 	var services, failures []any
 	for _, raw := range names {
 		svcName := lastSlashSeg(raw)
-		appName := ecsName(svcName)
-		cluster := defCluster
-		tdRef := ""
-		ref, found, _ := h.getServiceRef(ctx, svcName)
-		if found {
-			tdRef = firstString(ref.Body, "taskDefinition")
-			if ref.Cluster != "" {
-				cluster = ref.Cluster
-			}
-		} else {
-			ref = nil
-		}
 		if h.otherAccountsARN(ctx, raw) {
 			failures = append(failures, map[string]any{"arn": raw, "reason": "MISSING"})
 			continue
 		}
-		obj := ecsAppObject(ctx, ap, appName)
-		spec, found, err := ap.GetSpec(ctx, ecsAppAPIVersion, "Application", obj)
+		at := h.locateService(ctx, ap, svcName, requestedCluster(raw, defCluster))
+		cluster, tdRef, createdAt, launchType := at.cluster, at.taskDefinition, at.createdAt, at.launchType
+		spec, found, err := at.ap.GetSpec(ctx, ecsAppAPIVersion, "Application", at.app)
 		if err != nil || !found {
 			failures = append(failures, map[string]any{"arn": h.serviceArn(ctx, cluster, svcName), "reason": "MISSING"})
 			continue
 		}
-		createdAt, launchType := "", ""
-		var history []ecsTaskDefRecord
-		if ref != nil {
-			createdAt, launchType, history = ref.CreatedAt, firstString(ref.Body, "launchType"), ref.History
-		}
 		// The service's tasks, deployments and events are its workload's (ecs_service_state.go).
-		if wl, ok := h.workload(ctx, obj, svcName, launchType, history, tdRef); ok {
+		if wl, ok := h.workload(ctx, at.ap.ns, at.app, svcName, launchType, at.history, tdRef); ok {
 			svc := h.serviceObject(ctx, svcName, cluster, tdRef, wl.desired, wl.running, "ACTIVE", createdAt, launchType)
 			svc["pendingCount"] = wl.pending
 			svc["deployments"] = wl.deployments
@@ -365,7 +349,7 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 		// when its Deployment's replicas are available, so runningCount == desiredCount is an honest report.
 		desired := specScalingMin(spec)
 		running := 0
-		if rdy, _, _ := ap.GetReady(ctx, ecsAppAPIVersion, "Application", obj); rdy {
+		if rdy, _, _ := at.ap.GetReady(ctx, ecsAppAPIVersion, "Application", at.app); rdy {
 			running = desired
 		}
 		svc := h.serviceObject(ctx, svcName, cluster, tdRef, desired, running, "ACTIVE", createdAt, launchType)
@@ -381,13 +365,29 @@ func (h *ecsDoorway) listServices(ctx context.Context, w http.ResponseWriter, re
 		writeECSError(w, http.StatusBadRequest, "AccessDeniedException", requestID, aerr.Error())
 		return
 	}
+	// As on ECS, the services of one cluster (the default cluster when none is named): those created
+	// through ECS and those a CloudFormation stack made (ecs_stack.go).
+	cluster := lastSlashSeg(strOrDefault(firstString(body, "cluster"), "default"))
 	arns := []any{}
+	listed := map[string]bool{}
 	for _, ref := range h.listServiceRefs(ctx) {
+		if strOrDefault(ref.Cluster, "default") != cluster {
+			continue
+		}
 		appName := ecsName(ref.ServiceName)
 		if _, found, _ := ap.GetSpec(ctx, ecsAppAPIVersion, "Application", ecsAppObject(ctx, ap, appName)); !found {
 			continue // the service record outlived its Application (mid-delete) — don't report a dead ARN
 		}
-		arns = append(arns, h.serviceArn(ctx, strOrDefault(ref.Cluster, "default"), ref.ServiceName))
+		listed[ref.ServiceName] = true
+		arns = append(arns, h.serviceArn(ctx, cluster, ref.ServiceName))
+	}
+	services, _ := h.stackECS(ctx)
+	for _, ss := range services {
+		if ss.cluster != cluster || listed[ss.name] {
+			continue
+		}
+		listed[ss.name] = true
+		arns = append(arns, h.serviceArn(ctx, cluster, ss.name))
 	}
 	writeECSJSON(w, requestID, map[string]any{"serviceArns": arns})
 }

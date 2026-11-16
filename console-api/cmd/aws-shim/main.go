@@ -836,6 +836,9 @@ func run(logger *slog.Logger) error {
 		if ecsH, eerr := newECSDoorway(kc.Config, dyn, cs, authzChecker, authzNS, account, region, ecsNS, logger); eerr != nil {
 			logger.Warn("ECS doorway disabled", slog.String("error", eerr.Error()))
 		} else {
+			if cfnDoor != nil { // a service or cluster a stack made is the account's too (ecs_stack.go)
+				ecsH.stacks = (&cloudFrontHandler{cfn: cfnDoor}).stackRecords
+			}
 			services["ecs"] = ecsH
 			logger.Info("ECS front door enabled", slog.String("namespace", ecsNS))
 		}

@@ -301,11 +301,11 @@ func (h *ecsDoorway) keptEvents(ctx context.Context, service string) []ecsEvent 
 	return kept
 }
 
-// workload reads the service's state as ECS reports it. ok is false while the service has no workload yet
-// (its Application has not made its Deployment), when DescribeServices reports from the Application alone.
-func (h *ecsDoorway) workload(ctx context.Context, app, service, launchType string, history []ecsTaskDefRecord,
+// workload reads the state of the service whose Application is app, in ns, as ECS reports it. ok is false
+// while the service has no workload yet (its Application has not made its Deployment), when
+// DescribeServices reports from the Application alone.
+func (h *ecsDoorway) workload(ctx context.Context, ns, app, service, launchType string, history []ecsTaskDefRecord,
 	currentTD string) (ecsWorkload, bool) {
-	ns := h.nsFor(ctx)
 	dep, err := h.cs.AppsV1().Deployments(ns).Get(ctx, app, metav1.GetOptions{})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {

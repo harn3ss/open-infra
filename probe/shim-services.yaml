@@ -84,6 +84,7 @@ services:
     tier: proven
     sigv4: [ecs]
     probes: [ecs, ecs-execution-role]
+    pending: [cfn-ecs]
   - name: EKS
     cell: "`DescribeCluster` → a working `aws eks update-kubeconfig` against the real API server"
     tier: proven

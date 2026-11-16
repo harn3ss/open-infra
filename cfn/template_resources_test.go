@@ -54,3 +54,49 @@ func TestTemplateResources_ResolvesTheStacksRefs(t *testing.T) {
 		t.Errorf("certificate properties = %v", cert.Properties)
 	}
 }
+
+// A stack's ECS service's Ref is its ARN, service/<cluster>/<name>, whether its Cluster names the stack's
+// cluster by its Ref (the name) or its Arn, and the default cluster when it names none; its TaskDefinition
+// resolves to the task definition's ARN. The ECS front door finds a stack's service by them.
+func TestTemplateResources_ECSServiceARN(t *testing.T) {
+	tmpl := []byte(`
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties: { ClusterName: web-cluster }
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: web
+      ContainerDefinitions: [{ Name: web, Image: nginx }]
+  ByName:
+    Type: AWS::ECS::Service
+    Properties: { ServiceName: by-name, Cluster: !Ref Cluster, TaskDefinition: !Ref Task }
+  ByArn:
+    Type: AWS::ECS::Service
+    Properties: { ServiceName: by-arn, Cluster: !GetAtt Cluster.Arn, TaskDefinition: !Ref Task }
+  Default:
+    Type: AWS::ECS::Service
+    Properties: { ServiceName: in-default, TaskDefinition: !Ref Task }
+`)
+	got, err := TemplateResources(tmpl, nil, nil, "fixture", "AWS::ECS::Service", "AWS::ECS::Cluster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]TemplateResource{}
+	for _, r := range got {
+		by[r.LogicalID] = r
+	}
+	if by["Cluster"].Ref != "web-cluster" {
+		t.Errorf("cluster Ref = %q, want its name", by["Cluster"].Ref)
+	}
+	for id, want := range map[string]string{"ByName": ":service/web-cluster/by-name", "ByArn": ":service/web-cluster/by-arn",
+		"Default": ":service/default/in-default"} {
+		if ref := by[id].Ref; !strings.HasPrefix(ref, "arn:aws:ecs:") || !strings.HasSuffix(ref, want) {
+			t.Errorf("%s Ref = %q, want an ARN ending %q", id, ref, want)
+		}
+	}
+	if td, _ := by["ByName"].Properties["TaskDefinition"].(string); !strings.HasSuffix(td, ":task-definition/web:1") {
+		t.Errorf("TaskDefinition = %q, want the task definition's ARN", td)
+	}
+}
