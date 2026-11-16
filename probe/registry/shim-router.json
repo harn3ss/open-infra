@@ -162,8 +162,8 @@
         "apigateway:DeleteRestApi",
         "cloudformation:DeleteStack",
         "cloudformation:DescribeStacks",
+        "cloudformation:ExecuteChangeSet",
         "cloudformation:SignalResource",
-        "cloudformation:UpdateStack",
         "iam:PassRole",
         "lambda:InvokeFunction",
         "s3:GetObject"

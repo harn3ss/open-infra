@@ -1594,11 +1594,13 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		return
 	}
 	create := cs.Type == "CREATE"
-	// An UPDATE change set changes the stack as UpdateStack does, so it needs UpdateStack's verb as well
-	// as ExecuteChangeSet's (checked up front, in serve).
+	// As on AWS, executing a change set is cloudformation:ExecuteChangeSet on the stack, with no dependent
+	// action: a principal allowed it updates the stack without cloudformation:UpdateStack (decided up front,
+	// in serve; here again as the stack's caller). Only a User's coarse RBAC question (legacy) asks for the
+	// update verb an UPDATE change set's changes need.
 	if !create {
 		caller := ap.callerClaims()
-		if allowed, reason := decide(r.Context(), r, h.authz, caller, "cloudformation:UpdateStack", "Stack", stack,
+		if allowed, reason := decide(r.Context(), r, h.authz, caller, "cloudformation:ExecuteChangeSet", "Stack", stack,
 			func() (bool, string) { return h.canDo(r.Context(), caller, "update", stack) }); !allowed {
 			writeQueryError(w, http.StatusForbidden, "AccessDenied", requestID, reason, cfnXMLNamespace)
 			return

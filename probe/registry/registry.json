@@ -300,8 +300,8 @@
       "actions": [
         "cloudformation:DeleteStack",
         "cloudformation:DescribeStacks",
-        "cloudformation:SignalResource",
-        "cloudformation:UpdateStack"
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:SignalResource"
       ],
       "conditional": true,
       "deployableTypes": [

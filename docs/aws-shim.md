@@ -1814,7 +1814,9 @@ front door authorizes the action before it reads or writes any stack record. A U
 RBAC verb, as at every other front door: `get` for the reads (`Describe*`, `List*`, `Get*`,
 `ValidateTemplate`, the drift calls), `create` for `CreateStack`, `CreateChangeSet` and
 `ExecuteChangeSet`, `update` for `UpdateStack` — and for executing an `UPDATE` change set, which changes
-the stack as `UpdateStack` does — and `delete` for `DeleteStack` and `DeleteChangeSet`.
+the stack as `UpdateStack` does — and `delete` for `DeleteStack` and `DeleteChangeSet`. IAM policy asks for
+the action alone, as AWS does: executing a change set, `CREATE` or `UPDATE`, is
+`cloudformation:ExecuteChangeSet` on the stack, with no `cloudformation:UpdateStack` or `CreateStack`.
 Every caller also gets the data-plane check `cloudformation:<Action>` on `Stack::<name>`. For a User that
 check can only tighten what RBAC allows. For an assumed role it is the role's whole authority, and it
 denies by default. An action that names no stack — `ListStacks`, `ListExports`, `ValidateTemplate`, a

@@ -6,6 +6,12 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — executing an `UPDATE` change set is `cloudformation:ExecuteChangeSet` alone
+- Executing a change set that updates an existing stack also demanded `cloudformation:UpdateStack`, so a
+  principal allowed to execute change sets but not to update stacks directly was refused. As on AWS, it is
+  `cloudformation:ExecuteChangeSet` on the stack, with no dependent action, for a `CREATE` change set and an
+  `UPDATE` one alike.
+
 ### Fixed — a CloudFormation stack's ECS services, clusters and task definitions are visible through ECS
 - A service, cluster or task definition made by a CloudFormation stack was missing from ECS:
   `DescribeServices` reported the service `MISSING`, `DescribeTaskDefinition` did not find the task
