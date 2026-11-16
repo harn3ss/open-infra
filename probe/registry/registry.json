@@ -681,8 +681,11 @@
         "DescribeClusters",
         "DescribeServices",
         "DescribeTaskDefinition",
+        "DescribeTasks",
         "ListClusters",
         "ListServices",
+        "ListTaskDefinitions",
+        "ListTasks",
         "RegisterTaskDefinition",
         "RunTask",
         "UpdateService"
@@ -1629,7 +1632,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 633,
+    "operations": 636,
     "planOnly": 11,
     "refused": 11,
     "services": 32,
@@ -2992,7 +2995,8 @@
       "kind": "Application (container)",
       "namespace": "AWS::ECS",
       "readCalls": [
-        "DescribeTaskDefinition"
+        "DescribeTaskDefinition",
+        "ListTaskDefinitions"
       ],
       "service": "ECS",
       "serviceTier": "proven",

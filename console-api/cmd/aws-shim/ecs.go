@@ -148,7 +148,8 @@ func (h *ecsDoorway) applierFor(ctx context.Context, claims iam.Claims) (*impers
 // (Register/Create/Update/Run -> create, Describe/List -> get, Delete/Deregister -> delete).
 func verbForECSOp(op string) (string, bool) {
 	switch op {
-	case "DescribeServices", "ListServices", "DescribeTaskDefinition", "DescribeClusters", "ListClusters":
+	case "DescribeServices", "ListServices", "DescribeTaskDefinition", "DescribeClusters", "ListClusters",
+		"ListTasks", "DescribeTasks", "ListTaskDefinitions":
 		return "get", true
 	case "RegisterTaskDefinition", "CreateService", "UpdateService", "RunTask", "CreateCluster":
 		return "create", true
@@ -243,6 +244,12 @@ func (h *ecsDoorway) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.describeClusters(ctx, w, requestID, body)
 	case "ListClusters":
 		h.listClustersOp(ctx, w, requestID)
+	case "ListTasks":
+		h.listTasks(ctx, w, requestID, body)
+	case "DescribeTasks":
+		h.describeTasks(ctx, w, requestID, claims, body)
+	case "ListTaskDefinitions":
+		h.listTaskDefinitions(ctx, w, requestID, body)
 	case "RunTask":
 		// A one-off task has no long-lived kind: Application form; a fake would be a false green.
 		h.audit(ctx, op, res, "refuse", "no Application form")
@@ -380,16 +387,16 @@ func (h *ecsDoorway) describeClusters(ctx context.Context, w http.ResponseWriter
 	var clusters, failures []any
 	if len(names) == 0 {
 		for _, c := range h.listClusters(ctx) {
-			clusters = append(clusters, h.clusterObject(ctx, c.ClusterName, c.Status))
+			clusters = append(clusters, h.withCounts(ctx, h.clusterObject(ctx, c.ClusterName, c.Status), c.ClusterName))
 		}
 		for _, cn := range h.stackClusters(ctx) {
-			clusters = append(clusters, h.clusterObject(ctx, cn, "ACTIVE"))
+			clusters = append(clusters, h.withCounts(ctx, h.clusterObject(ctx, cn, "ACTIVE"), cn))
 		}
 	} else {
 		for _, raw := range names {
 			cn := lastSlashSeg(raw)
 			if found, _ := h.clusterExists(ctx, cn); found && !h.otherAccountsARN(ctx, raw) {
-				clusters = append(clusters, h.clusterObject(ctx, cn, "ACTIVE"))
+				clusters = append(clusters, h.withCounts(ctx, h.clusterObject(ctx, cn, "ACTIVE"), cn))
 			} else {
 				failures = append(failures, map[string]any{"arn": h.clusterArn(ctx, cn), "reason": "MISSING"})
 			}

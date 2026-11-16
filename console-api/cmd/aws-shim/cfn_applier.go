@@ -107,6 +107,9 @@ func (a *impersonatingApplier) gvrFor(apiVersion, kind string) (schema.GroupVers
 	if err != nil {
 		return schema.GroupVersionResource{}, fmt.Errorf("bad apiVersion %q: %w", apiVersion, err)
 	}
+	if a.mapper == nil {
+		return schema.GroupVersionResource{}, fmt.Errorf("no REST mapping for %s/%s: this applier has no mapper", apiVersion, kind)
+	}
 	m, err := a.mapper.RESTMapping(schema.GroupKind{Group: gv.Group, Kind: kind}, gv.Version)
 	if err != nil {
 		return schema.GroupVersionResource{}, fmt.Errorf("no REST mapping for %s/%s: %w", apiVersion, kind, err)

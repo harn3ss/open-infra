@@ -6,6 +6,19 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — ECS `ListTasks`, `DescribeTasks` and `ListTaskDefinitions`; ECR `BatchGetImage`
+- `ListTasks` and `DescribeTasks` list and describe a service's tasks as ECS does (ARN, task definition, the
+  deployment that started it, status, containers), and `ListTaskDefinitions` lists the account's task
+  definitions, a stack's among them. ECR's `BatchGetImage` returns an image's manifest. See
+  [docs/aws-shim.md](docs/aws-shim.md).
+- A task whose image can't be pulled now says so as ECS does: its container's reason is a
+  `CannotPullContainerError`, and the service's events say it is unable to consistently start tasks. The
+  platform keeps trying the pull in the same task, where ECS stops it and starts another.
+
+### Fixed — `DescribeClusters` counts a cluster's services and tasks
+- `DescribeClusters` reported 0 services and 0 tasks for every cluster. It now reports the cluster's
+  `ACTIVE` services and their running and pending tasks, the same counts `DescribeServices` gives.
+
 ### Fixed — executing an `UPDATE` change set is `cloudformation:ExecuteChangeSet` alone
 - Executing a change set that updates an existing stack also demanded `cloudformation:UpdateStack`, so a
   principal allowed to execute change sets but not to update stacks directly was refused. As on AWS, it is

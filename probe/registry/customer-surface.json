@@ -6893,7 +6893,7 @@
     "ecs": {
       "actions": 1,
       "class": "aws",
-      "operations": 13,
+      "operations": 16,
       "service": "ECS",
       "tier": "proven"
     },

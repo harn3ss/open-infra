@@ -474,7 +474,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | EC2 | `ec2` | proven | 31 |
 | EC2 | `ec2-instance-connect` | proven | 2 |
 | ECR | `ecr` | proven | 37 |
-| ECS | `ecs` | proven | 13 |
+| ECS | `ecs` | proven | 16 |
 | EKS | `eks` | proven | 4 |
 | EventBridge | `events` | proven | 14 |
 | Glue | `glue` | proven | 32 |

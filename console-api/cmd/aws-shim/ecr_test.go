@@ -443,3 +443,46 @@ func TestECR_DeleteRepositoryNotEmptyThenForce(t *testing.T) {
 		t.Fatalf("record should be gone after a forced delete")
 	}
 }
+
+// BatchGetImage returns each image's manifest, as ECR does, by tag or by digest; an image the repository does
+// not hold, or a tag that names another digest, is a failure of its own and the rest are still returned.
+func TestECR_BatchGetImage(t *testing.T) {
+	srv := fakeRegistry("team/app", map[string]string{"v1": "sha256:deadbeef", "v2": "sha256:feedface"})
+	defer srv.Close()
+	h := newECRTestHandler(ecrCS(true, ecrSecret()), srv.URL)
+	if err := h.putRepo(context.Background(), ecrRepoRecord{RepositoryName: "team/app", ImageTagMutability: "MUTABLE", CreatedAt: 1}); err != nil {
+		t.Fatalf("putRepo: %v", err)
+	}
+	w := httptest.NewRecorder()
+	h.serve(w, ecrRequest("BatchGetImage", `{"repositoryName":"team/app","imageIds":[{"imageTag":"v1"},{"imageDigest":"sha256:feedface"},`+
+		`{"imageTag":"gone"},{"imageTag":"v1","imageDigest":"sha256:feedface"}]}`), ecrClaims(), "req-bgi")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Images []struct {
+			RepositoryName string            `json:"repositoryName"`
+			ImageID        map[string]string `json:"imageId"`
+			ImageManifest  string            `json:"imageManifest"`
+		} `json:"images"`
+		Failures []struct {
+			ImageID     map[string]string `json:"imageId"`
+			FailureCode string            `json:"failureCode"`
+		} `json:"failures"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v (%s)", err, w.Body.String())
+	}
+	if len(resp.Images) != 2 || resp.Images[0].ImageID["imageDigest"] != "sha256:deadbeef" || resp.Images[0].ImageID["imageTag"] != "v1" ||
+		resp.Images[1].ImageID["imageDigest"] != "sha256:feedface" || !strings.Contains(resp.Images[0].ImageManifest, `"layers"`) {
+		t.Fatalf("images = %+v", resp.Images)
+	}
+	if len(resp.Failures) != 2 || resp.Failures[0].FailureCode != "ImageNotFound" || resp.Failures[1].FailureCode != "ImageTagDoesNotMatchDigest" {
+		t.Fatalf("failures = %+v", resp.Failures)
+	}
+	w = httptest.NewRecorder()
+	h.serve(w, ecrRequest("BatchGetImage", `{"repositoryName":"nope","imageIds":[{"imageTag":"v1"}]}`), ecrClaims(), "req-bgi2")
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "RepositoryNotFoundException") {
+		t.Fatalf("an unknown repository: %d %s", w.Code, w.Body.String())
+	}
+}

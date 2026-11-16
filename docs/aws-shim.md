@@ -330,7 +330,7 @@ create on its own API's front door):
 | EC2 | `ec2` | 31: CreateFlowLogs, CreateKeyPair, DeleteFlowLogs, DeleteKeyPair, DeleteVolume, DescribeAddresses, DescribeAvailabilityZones, DescribeFlowLogs, DescribeImages, DescribeInstances, DescribeInternetGateways, DescribeKeyPairs, DescribeNetworkAcls, DescribeNetworkInterfaces, DescribeRegions, DescribeRouteTables, DescribeSecurityGroups, DescribeSubnets, DescribeVolumes, DescribeVpcEndpoints, DescribeVpcs, DisableSerialConsoleAccess, EnableSerialConsoleAccess, GetConsoleOutput, GetConsoleScreenshot, GetSerialConsoleAccessStatus, ImportKeyPair, RebootInstances, StartInstances, StopInstances, TerminateInstances | 17 |
 | EC2 | `ec2-instance-connect` | 2: SendSSHPublicKey, SendSerialConsoleSSHPublicKey | 0 |
 | ECR | `ecr` | 37: BatchCheckLayerAvailability, BatchDeleteImage, BatchGetImage, BatchGetImageScanFindings, CompleteLayerUpload, CreatePullThroughCacheRule, CreateRepository, DeleteLifecyclePolicy, DeletePullThroughCacheRule, DeleteRepository, DeleteRepositoryPolicy, DescribeImageScanFindings, DescribeImages, DescribePullThroughCacheRules, DescribeRegistry, DescribeRepositories, GetAuthorizationToken, GetDownloadUrlForLayer, GetLifecyclePolicy, GetLifecyclePolicyPreview, GetRegistryPolicy, GetRepositoryPolicy, InitiateLayerUpload, ListImages, ListTagsForResource, PutImage, PutImageScanningConfiguration, PutImageTagMutability, PutLifecyclePolicy, PutRegistryPolicy, PutReplicationConfiguration, SetRepositoryPolicy, StartImageScan, StartLifecyclePolicyPreview, TagResource, UntagResource, UploadLayerPart | 1 |
-| ECS | `ecs` | 13: CreateCluster, CreateService, DeleteCluster, DeleteService, DeregisterTaskDefinition, DescribeClusters, DescribeServices, DescribeTaskDefinition, ListClusters, ListServices, RegisterTaskDefinition, RunTask, UpdateService | 3 |
+| ECS | `ecs` | 16: CreateCluster, CreateService, DeleteCluster, DeleteService, DeregisterTaskDefinition, DescribeClusters, DescribeServices, DescribeTaskDefinition, DescribeTasks, ListClusters, ListServices, ListTaskDefinitions, ListTasks, RegisterTaskDefinition, RunTask, UpdateService | 3 |
 | EKS | `eks` | 4: DescribeCluster, DescribeNodegroup, ListClusters, ListNodegroups; recognized and refused: AssociateIdentityProviderConfig, CreateCluster, CreateNodegroup, DeleteCluster, DeleteNodegroup, DescribeIdentityProviderConfig, DisassociateIdentityProviderConfig, UpdateAddon, UpdateClusterConfig, UpdateClusterVersion | 0 |
 | SES | `email` | 12: CreateEmailIdentity, DeleteEmailIdentity, GetAccount, GetEmailIdentity, GetIdentityVerificationAttributes, GetSendQuota, GetSendStatistics, ListEmailIdentities, ListIdentities, SendBulkEmail, SendEmail, SendRawEmail; recognized and refused: VerifyDomainIdentity, VerifyEmailIdentity | 0 |
 | EventBridge | `events` | 14: CreateEventBus, DeleteEventBus, DeleteRule, DescribeRule, DisableRule, EnableRule, ListEventBuses, ListRules, ListTargetsByRule, PutEvents, PutRule, PutTargets, RemoveTargets, TestEventPattern | 2 |
@@ -1982,9 +1982,9 @@ minimal CloudFormation template — an `AWS::ECS::Service` plus its referenced `
 the engine's existing `cfn/mapping.go` collation turns into **one** `kind: Application`. `CreateService` →
 `cfn.Deploy`, `UpdateService` → `cfn.Update`, `DeleteService` → `cfn.Destroy`.
 
-Implemented: `RegisterTaskDefinition`/`DescribeTaskDefinition`/`DeregisterTaskDefinition`;
+Implemented: `RegisterTaskDefinition`/`DescribeTaskDefinition`/`DeregisterTaskDefinition`/`ListTaskDefinitions`;
 `CreateService`/`UpdateService`/`DeleteService`/`DescribeServices`/`ListServices`;
-`CreateCluster`/`DeleteCluster`/`DescribeClusters`/`ListClusters`. Services and task definitions are the
+`CreateCluster`/`DeleteCluster`/`DescribeClusters`/`ListClusters`; `ListTasks`/`DescribeTasks`. Services and task definitions are the
 substance; a **cluster is an inert grouping** (the k3s cluster is the cluster, per `cfn/mapping.go`) — its
 records exist only so the cluster verbs report something faithful and a named cluster can be validated at
 `CreateService`. The service's authoritative state is the **live `kind: Application`** (read back for
@@ -2009,6 +2009,18 @@ service, from the Application's workload:
 
   The shim reads the workload with its own read access, once the caller has `ecs:DescribeServices` on the
   service, and only in the caller's account.
+
+**Tasks.** A service's tasks are its Application's pods. `ListTasks` lists them by cluster, service, task
+definition family, launch type and desired status, and `DescribeTasks` describes each as ECS does: its ARN
+(`task/<cluster>/<task id>`, the id its `awslogs` stream carries), its task definition, the deployment that
+started it (`startedBy` `ecs-svc/…`), `group` `service:<name>`, its status (`PROVISIONING`, `PENDING`,
+`RUNNING`, `STOPPING`) and its containers (name, image and digest, status, exit code). `DescribeClusters`
+counts a cluster's `ACTIVE` services and their running and pending tasks, the same counts its services'
+`DescribeServices` give. A task whose image can't be pulled carries ECS's reason on its container
+(`CannotPullContainerError: …`, the registry's answer), and its service's events say it "is unable to
+consistently start tasks successfully". **Unlike ECS**, which stops such a task and starts another, the
+platform keeps trying the pull in the same task (with back-off), so it stays `PENDING` with that reason, and
+runs once the pull succeeds (say, once its execution role may pull).
 
 **A stack's services, clusters and task definitions are the account's too.** As on AWS, a service, cluster
 or task definition a CloudFormation stack creates (`AWS::ECS::Service`, `AWS::ECS::Cluster`,
@@ -2089,7 +2101,9 @@ reachable. `GetAuthorizationToken` hands back a shim-signed credential that iden
 <proxyEndpoint>` and then `docker push`/`docker pull` work against the `proxyEndpoint`.
 
 Implemented: `GetAuthorizationToken`; `CreateRepository`/`DescribeRepositories`/`DeleteRepository`;
-`ListImages`/`DescribeImages`/`BatchDeleteImage`. A repository is a declaration + metadata record (a
+`ListImages`/`DescribeImages`/`BatchGetImage`/`BatchDeleteImage`. `BatchGetImage` returns each image's
+manifest, in a media type the caller accepts (`acceptedMediaTypes`), with ECR's failures for an image the
+repository does not hold (`ImageNotFound`) or a tag that names another digest (`ImageTagDoesNotMatchDigest`). A repository is a declaration + metadata record (a
 shim-owned ConfigMap; the registry auto-creates the repo on first push), so image facts — tags, digests, a
 real config+layers **size** — are answered from the **backing registry's `/v2` API**, never fabricated.
 `DeleteRepository` refuses a non-empty repo without `force` (`RepositoryNotEmptyException`) and with `force`

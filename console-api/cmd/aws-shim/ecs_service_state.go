@@ -342,6 +342,8 @@ func (h *ecsDoorway) workload(ctx context.Context, ns, app, service, launchType 
 	}
 	w := ecsServiceState(service, ns, launchType, dep, rss, recorded, history, currentTD,
 		func(ref string) string { return h.taskDefArnFromRef(ctx, ref) })
+	// A task that can't pull its image: the service is unable to consistently start tasks (ecs_tasks.go).
+	w.events = mergeECSEvents(w.events, pullFailureEvents(service, h.tasksOf(ctx, ecsSvcLoc{name: service, ns: ns, app: app})))
 	kept := h.keptEvents(ctx, service)
 	merged := mergeECSEvents(kept, w.events)
 	if !sameECSEvents(kept, merged) {
@@ -375,4 +377,54 @@ func eventsJSON(evs []ecsEvent) []any {
 		out = append(out, map[string]any{"id": e.ID, "createdAt": e.CreatedAt, "message": e.Message})
 	}
 	return out
+}
+
+// clusterCounts are a cluster's counts as ECS reports them (DescribeClusters): its ACTIVE services, those
+// created through ECS and those a stack made in it, and their tasks running and pending, as each service's
+// DescribeServices counts them (its Deployment's replicas ready, and started but not ready).
+func (h *ecsDoorway) clusterCounts(ctx context.Context, cluster string) (services, running, pending int) {
+	type svc struct{ ns, app string }
+	var in []svc
+	seen := map[string]bool{}
+	byShim := &impersonatingApplier{shim: h.shimDyn, ns: h.nsFor(ctx)} // the doorway's own records alone
+	for _, ref := range h.listServiceRefs(ctx) {
+		if strOrDefault(ref.Cluster, "default") == cluster {
+			seen[ref.ServiceName] = true
+			in = append(in, svc{h.nsFor(ctx), ecsAppObject(ctx, byShim, ecsName(ref.ServiceName))})
+		}
+	}
+	for _, ss := range h.stackECS(ctx).services {
+		if ss.cluster == cluster && !seen[ss.name] {
+			in = append(in, svc{ss.ns, ss.app})
+		}
+	}
+	for _, s := range in {
+		if h.cs == nil {
+			services++
+			continue
+		}
+		dep, err := h.cs.AppsV1().Deployments(s.ns).Get(ctx, s.app, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			services++ // ACTIVE, its workload not made yet
+			continue
+		}
+		if err != nil {
+			h.logger.Warn("ecs DescribeClusters: reading a service's workload", "cluster", cluster, "error", err.Error())
+			services++
+			continue
+		}
+		services++
+		r := int(dep.Status.ReadyReplicas)
+		running += r
+		if p := int(dep.Status.Replicas) - r; p > 0 {
+			pending += p
+		}
+	}
+	return services, running, pending
+}
+
+// withCounts sets a described cluster's service and task counts.
+func (h *ecsDoorway) withCounts(ctx context.Context, cluster map[string]any, name string) map[string]any {
+	cluster["activeServicesCount"], cluster["runningTasksCount"], cluster["pendingTasksCount"] = h.clusterCounts(ctx, name)
+	return cluster
 }

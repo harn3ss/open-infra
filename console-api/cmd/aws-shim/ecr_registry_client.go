@@ -136,6 +136,27 @@ func (c *registryClient) resolveDigest(ctx context.Context, repo, ref string) (d
 	return digest, size, nil
 }
 
+// getManifest reads the manifest a reference (a tag or a digest) names, in one of the media types accept
+// lists: its digest, media type and bytes. found is false when the registry has no such image.
+func (c *registryClient) getManifest(ctx context.Context, repo, ref, accept string) (digest, mediaType string, body []byte, found bool, err error) {
+	resp, err := c.do(ctx, http.MethodGet, "/v2/"+repo+"/manifests/"+ref, accept, repo, "ecr:BatchGetImage")
+	if err != nil {
+		return "", "", nil, false, err
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return "", "", nil, false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", "", nil, false, &registryStatusError{op: "manifests GET", repo: repo, status: resp.StatusCode}
+	}
+	body, err = io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return "", "", nil, false, err
+	}
+	return resp.Header.Get("Docker-Content-Digest"), resp.Header.Get("Content-Type"), body, true, nil
+}
+
 // deleteManifest removes a manifest by digest. A 404 means it is already gone, which is success for a
 // delete (idempotent) — the same stance the KMS crypto-erase reaper takes toward an already-destroyed key.
 func (c *registryClient) deleteManifest(ctx context.Context, repo, digest string) error {

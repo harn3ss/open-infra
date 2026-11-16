@@ -280,6 +280,8 @@ func (h *ecrHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.describeImages(ctx, w, requestID, body)
 	case "BatchDeleteImage":
 		h.batchDeleteImage(ctx, w, requestID, body)
+	case "BatchGetImage":
+		h.batchGetImage(ctx, w, requestID, body)
 	case "PutImageTagMutability":
 		h.putImageTagMutability(ctx, w, requestID, body)
 	default:
@@ -621,6 +623,81 @@ func (h *ecrHandler) describeImages(ctx context.Context, w http.ResponseWriter, 
 	}
 	h.audit(ctx, "DescribeImages", name, "allow", "")
 	writeECRJSON(w, requestID, map[string]any{"imageDetails": details})
+}
+
+// batchGetImage serves BatchGetImage: each image's manifest, as ECR returns it, in one of the media types the
+// caller accepts (acceptedMediaTypes; any the registry serves when it names none). An image the repository
+// does not hold, or a tag that names another digest than the one asked for, is a failure of its own, as on
+// ECR; the others are still returned.
+func (h *ecrHandler) batchGetImage(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
+	name := firstString(body, "repositoryName")
+	ids, _ := body["imageIds"].([]any)
+	if len(ids) == 0 {
+		writeECRError(w, http.StatusBadRequest, "InvalidParameterException", requestID,
+			"1 validation error detected: Value null at 'imageIds' failed to satisfy constraint: Member must not be null")
+		return
+	}
+	if _, found, err := h.getRepo(ctx, name); err != nil {
+		h.internal(w, requestID, err)
+		return
+	} else if !found {
+		writeECRError(w, http.StatusBadRequest, "RepositoryNotFoundException", requestID, repoNotFound(name, h.registryID(ctx)))
+		return
+	}
+	accept := manifestAcceptTypes
+	if mts := stringSlice(body["acceptedMediaTypes"]); len(mts) > 0 {
+		accept = strings.Join(mts, ", ")
+	}
+	path := registryPath(ctx, name)
+	rc, err := h.registry(ctx)
+	if err != nil {
+		h.internal(w, requestID, err)
+		return
+	}
+	images, failures := []any{}, []any{}
+	for _, e := range ids {
+		m, _ := e.(map[string]any)
+		tag, _ := m["imageTag"].(string)
+		digest, _ := m["imageDigest"].(string)
+		ref := digest
+		if ref == "" {
+			ref = tag
+		}
+		if ref == "" {
+			failures = append(failures, ecrFailure(tag, digest, "MissingDigestAndTag", "Missing digest and tag"))
+			continue
+		}
+		got, mediaType, manifest, found, gerr := rc.getManifest(ctx, path, ref, accept)
+		if gerr != nil {
+			h.internal(w, requestID, gerr)
+			return
+		}
+		if !found {
+			failures = append(failures, ecrFailure(tag, digest, "ImageNotFound", "Requested image not found"))
+			continue
+		}
+		if tag != "" && digest != "" {
+			if byTag, _, terr := rc.resolveDigest(ctx, path, tag); terr != nil {
+				h.internal(w, requestID, terr)
+				return
+			} else if byTag != digest {
+				failures = append(failures, ecrFailure(tag, digest, "ImageTagDoesNotMatchDigest", "Invalid digest and tag combination"))
+				continue
+			}
+		}
+		id := map[string]any{"imageDigest": got}
+		if tag != "" {
+			id["imageTag"] = tag
+		}
+		img := map[string]any{"registryId": h.registryID(ctx), "repositoryName": name, "imageId": id,
+			"imageManifest": string(manifest)}
+		if mediaType != "" {
+			img["imageManifestMediaType"] = mediaType
+		}
+		images = append(images, img)
+	}
+	h.audit(ctx, "BatchGetImage", name, "allow", "")
+	writeECRJSON(w, requestID, map[string]any{"images": images, "failures": failures})
 }
 
 func (h *ecrHandler) batchDeleteImage(ctx context.Context, w http.ResponseWriter, requestID string, body map[string]any) {
