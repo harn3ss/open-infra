@@ -689,7 +689,8 @@
       ],
       "probes": [
         "ecs",
-        "ecs-execution-role"
+        "ecs-execution-role",
+        "cfn-ecs"
       ],
       "refused": [],
       "service": "ECS",
