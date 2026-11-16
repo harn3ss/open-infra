@@ -6,8 +6,8 @@
 # logs with the awslogs driver to the stack's log group and names the stack's role with !GetAtt, and a
 # service in the stack's cluster. Then, through the AWS CLI:
 #   - ECS lists the stack's cluster and its service in it (ListClusters, DescribeClusters, ListServices),
-#     and DescribeServices reports the service running its task, with its PRIMARY deployment and the stack's
-#     task definition;
+#     DescribeTaskDefinition describes the stack's task definition, and DescribeServices reports the service
+#     running its task, with its PRIMARY deployment and the stack's task definition;
 #   - CloudWatch Logs reads the container's output from the stack's log group, in the stream
 #     <awslogs-stream-prefix>/<container>/<task id>;
 #   - the service's task is sized as the task definition says (cpu 250m, memory 512Mi) and runs as the
@@ -149,6 +149,10 @@ as "$AAK" "$ASK" ecs list-clusters --query 'clusterArns' | tr '\t' '\n' | grep -
 as "$AAK" "$ASK" ecs list-services --cluster "$CLUSTER" --query 'serviceArns' | tr '\t' '\n' | grep -q ":service/${CLUSTER}/${SERVICE}\$" \
   || fail "ListServices --cluster ${CLUSTER} does not list the stack's service"
 log "  ✓ ListClusters, DescribeClusters and ListServices report the stack's cluster and service"
+td="$(as "$AAK" "$ASK" ecs describe-task-definition --task-definition "$FAMILY" \
+  --query 'taskDefinition.[family,revision,cpu,memory,containerDefinitions[0].logConfiguration.options."awslogs-group"]' 2>/dev/null | tr '\t' ' ')"
+[ "$td" = "${FAMILY} 1 256 512 ${GROUP}" ] || fail "DescribeTaskDefinition of the stack's task definition = '${td}', want '${FAMILY} 1 256 512 ${GROUP}'"
+log "  ✓ DescribeTaskDefinition describes the stack's task definition (${FAMILY}:1, 256 / 512, awslogs ${GROUP})"
 
 st=""
 for _ in $(seq 1 60); do

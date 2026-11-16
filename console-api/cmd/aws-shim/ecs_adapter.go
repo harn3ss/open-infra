@@ -381,8 +381,7 @@ func (h *ecsDoorway) listServices(ctx context.Context, w http.ResponseWriter, re
 		listed[ref.ServiceName] = true
 		arns = append(arns, h.serviceArn(ctx, cluster, ref.ServiceName))
 	}
-	services, _ := h.stackECS(ctx)
-	for _, ss := range services {
+	for _, ss := range h.stackECS(ctx).services {
 		if ss.cluster != cluster || listed[ss.name] {
 			continue
 		}

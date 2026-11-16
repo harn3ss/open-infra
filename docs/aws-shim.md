@@ -2008,11 +2008,12 @@ service, from the Application's workload:
   The shim reads the workload with its own read access, once the caller has `ecs:DescribeServices` on the
   service, and only in the caller's account.
 
-**A stack's services and clusters are the account's too.** As on AWS, a service or cluster a CloudFormation
-stack creates (`AWS::ECS::Service`, `AWS::ECS::Cluster`) is an ECS service or cluster like any other:
-`ListServices` lists the service in its cluster, `DescribeServices` reports it as above (with the stack's
-task definition), `ListClusters` and `DescribeClusters` report the cluster, and `CreateService` can create a
-service in it. `ListServices` lists the services of one cluster, the `default` cluster when none is named,
+**A stack's services, clusters and task definitions are the account's too.** As on AWS, a service, cluster
+or task definition a CloudFormation stack creates (`AWS::ECS::Service`, `AWS::ECS::Cluster`,
+`AWS::ECS::TaskDefinition`) is one like any other: `ListServices` lists the service in its cluster,
+`DescribeServices` reports it as above (with the stack's task definition), `DescribeTaskDefinition` describes
+the task definition, `ListClusters` and `DescribeClusters` report the cluster, and `CreateService` can create
+a service in it. `ListServices` lists the services of one cluster, the `default` cluster when none is named,
 as ECS does. `UpdateService` and `DeleteService` act on services created through the ECS API; change or
 delete a stack's service through its stack.
 

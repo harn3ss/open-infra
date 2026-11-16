@@ -287,6 +287,14 @@ func (h *ecsDoorway) describeTaskDefinition(ctx context.Context, w http.Response
 		h.internal(w, requestID, err)
 		return
 	}
+	if !found && !h.otherAccountsARN(ctx, ref) {
+		// One a CloudFormation stack made is the account's too (ecs_stack.go).
+		if td, ok := h.stackTaskDef(ctx, family, rev); ok {
+			h.audit(ctx, "DescribeTaskDefinition", td.family, "allow", "")
+			writeECSJSON(w, requestID, map[string]any{"taskDefinition": h.taskDefObject(ctx, td.family, td.revision, "ACTIVE", td.body)})
+			return
+		}
+	}
 	if !found || h.otherAccountsARN(ctx, ref) {
 		writeECSError(w, http.StatusBadRequest, "ClientException", requestID, "Unable to describe task definition: "+ref)
 		return

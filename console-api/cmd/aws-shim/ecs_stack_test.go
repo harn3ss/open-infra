@@ -19,7 +19,15 @@ Resources:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: web
-      ContainerDefinitions: [{ Name: web, Image: nginx }]
+      Cpu: "256"
+      Memory: "512"
+      ContainerDefinitions:
+        - Name: web
+          Image: nginx
+          PortMappings: [{ ContainerPort: 80 }]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options: { awslogs-group: /ecs/web, awslogs-stream-prefix: web }
   Service:
     Type: AWS::ECS::Service
     Properties: { ServiceName: web, Cluster: !Ref Cluster, TaskDefinition: !Ref Task, LaunchType: FARGATE }
@@ -124,5 +132,48 @@ func TestECSStack_ServiceARNParts(t *testing.T) {
 	}
 	if got := requestedCluster("web", "prod"); got != "prod" {
 		t.Errorf("a name's cluster is the request's: %q", got)
+	}
+}
+
+// DescribeTaskDefinition describes a task definition a stack made, in the ECS API's form (a log driver's
+// options as written), by family:revision or by its family alone; another family is still not found.
+func TestECSStack_DescribeTaskDefinitionDescribesAStacksTaskDefinition(t *testing.T) {
+	h := ecsStackDoorway(t)
+	for _, ref := range []string{"web", "web:1"} {
+		code, out := ecsCall(t, h, mgmtDoorCaller(), "DescribeTaskDefinition", map[string]any{"taskDefinition": ref})
+		td, _ := out["taskDefinition"].(map[string]any)
+		if code != http.StatusOK || td == nil {
+			t.Fatalf("DescribeTaskDefinition %s = %d %v", ref, code, out)
+		}
+		if td["family"] != "web" || td["revision"] != float64(1) || td["status"] != "ACTIVE" || td["cpu"] != "256" ||
+			td["memory"] != "512" || !strings.HasSuffix(fnStr(td["taskDefinitionArn"]), ":task-definition/web:1") {
+			t.Errorf("%s: %v", ref, td)
+		}
+		cds, _ := td["containerDefinitions"].([]any)
+		c, _ := cds[0].(map[string]any)
+		lc, _ := c["logConfiguration"].(map[string]any)
+		opts, _ := lc["options"].(map[string]any)
+		pm, _ := c["portMappings"].([]any)
+		if c["name"] != "web" || c["image"] != "nginx" || lc["logDriver"] != "awslogs" || opts["awslogs-group"] != "/ecs/web" ||
+			len(pm) != 1 || pm[0].(map[string]any)["containerPort"] != float64(80) {
+			t.Errorf("%s: container %v", ref, c)
+		}
+	}
+	if _, out := ecsCall(t, h, mgmtDoorCaller(), "DescribeTaskDefinition", map[string]any{"taskDefinition": "other"}); jsonErrType(out) != "ClientException" {
+		t.Errorf("a family no stack made: %v", out)
+	}
+	if _, out := ecsCall(t, h, mgmtDoorCaller(), "DescribeTaskDefinition", map[string]any{"taskDefinition": "web:2"}); jsonErrType(out) != "ClientException" {
+		t.Errorf("a revision the stack did not make: %v", out)
+	}
+}
+
+// A stack that rolled back made nothing in ECS.
+func TestECSStack_ARolledBackStackMadeNothing(t *testing.T) {
+	h := ecsStackDoorway(t)
+	recs, _ := h.stacks(context.Background())
+	recs[0].Status = "ROLLBACK_COMPLETE"
+	h.stacks = func(context.Context) ([]*cfn.StackRecord, error) { return recs, nil }
+	if v := h.stackECS(context.Background()); len(v.services)+len(v.clusters)+len(v.taskDefs) != 0 {
+		t.Errorf("a rolled-back stack's ECS resources: %+v", v)
 	}
 }
