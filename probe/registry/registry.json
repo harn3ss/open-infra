@@ -688,7 +688,8 @@
         "UpdateService"
       ],
       "probes": [
-        "ecs"
+        "ecs",
+        "ecs-execution-role"
       ],
       "refused": [],
       "service": "ECS",

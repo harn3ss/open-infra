@@ -83,8 +83,7 @@ services:
     cell: "service + task def → one `kind: Application` (cfn engine), caller-authority via impersonation"
     tier: proven
     sigv4: [ecs]
-    probes: [ecs]
-    pending: [ecs-execution-role]
+    probes: [ecs, ecs-execution-role]
   - name: EKS
     cell: "`DescribeCluster` → a working `aws eks update-kubeconfig` against the real API server"
     tier: proven

@@ -6,6 +6,31 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — an ECS task's image is pulled with its task execution role
+- A task definition's `executionRoleArn` was ignored: every application's image was pulled with the node's
+  own credential. As on ECS, an application's image is now pulled with its execution role: the role must
+  trust `ecs-tasks.amazonaws.com`, the registry decides each repository on that role's policies in the
+  application's account, and a pull the role may not make leaves the task pending (ECS's
+  `CannotPullContainerError`) instead of falling back to the node's credential. Naming the role takes
+  `iam:PassRole`. An application with no execution role pulls as before. In CloudFormation,
+  `ExecutionRoleArn` maps to it. See [docs/iam.md](docs/iam.md).
+- Operators: each node runs the kubelet's ECR credential provider, installed node by node by the
+  `ecr-credential-provider` DaemonSet on nodes labelled `openinfra.dev/ecr-credential-provider=enabled`.
+  Installing restarts the node's k3s or RKE2 service once (containers keep running), and a configuration the
+  kubelet does not come back healthy with is undone.
+
+### Fixed — a CloudFormation ECS task's size, in-stack roles and log group are honoured
+- An `AWS::ECS::TaskDefinition`'s `Cpu` and `Memory` were dropped, so a Fargate task ran at the platform's
+  default size. They now size the task as on Fargate, the essential container taking what the others
+  leave.
+- A `TaskRoleArn` or `ExecutionRoleArn` naming a role the same stack creates (`!GetAtt Role.Arn`) was not
+  resolved. It now is, and a role that does not trust `ecs-tasks.amazonaws.com` is refused, as ECS refuses
+  a role it cannot assume.
+- A container's `awslogs` log configuration was ignored, so its logs went to `/ecs/<application>` and the
+  stack's own log group stayed empty. As on ECS, its logs are now read from the `awslogs-group` it names, in
+  streams `<awslogs-stream-prefix>/<container>/<task id>`. See
+  [docs/cloudformation.md](docs/cloudformation.md).
+
 ### Fixed — ECS `DescribeServices` reports deployments, events and pending tasks
 - `DescribeServices` returned no `deployments` or `events`, and `pendingCount` was always 0, so a service's
   rollout, and a task refused by the account's capacity, could not be seen through ECS. As on ECS, it now
