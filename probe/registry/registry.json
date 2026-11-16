@@ -564,7 +564,8 @@
         "ec2",
         "cfn-structural-reads",
         "ec2-console",
-        "ec2-serial-console"
+        "ec2-serial-console",
+        "ec2-default-vpc"
       ],
       "refused": [],
       "service": "EC2",
@@ -586,7 +587,8 @@
         "ec2",
         "cfn-structural-reads",
         "ec2-console",
-        "ec2-serial-console"
+        "ec2-serial-console",
+        "ec2-default-vpc"
       ],
       "refused": [],
       "service": "EC2",
