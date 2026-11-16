@@ -10,8 +10,13 @@
 #     running its task, with its PRIMARY deployment and the stack's task definition;
 #   - CloudWatch Logs reads the container's output from the stack's log group, in the stream
 #     <awslogs-stream-prefix>/<container>/<task id>;
+#   - ListTasks and DescribeTasks list and describe the service's task (RUNNING, group service:<name>, the
+#     stack's task definition), and DescribeClusters counts the cluster's service and its running task;
 #   - the service's task is sized as the task definition says (cpu 250m, memory 512Mi) and runs as the
 #     stack's task role (the operator's view of its Application);
+#   - an UPDATE change set that resizes the task reports the task definition replaced (Replacement True, Cpu
+#     and Memory RequiresRecreation Always), as AWS's does, and a role allowed cloudformation:ExecuteChangeSet
+#     and denied cloudformation:UpdateStack executes it: executing a change set is ExecuteChangeSet alone;
 #   - a principal with no policy is refused DescribeServices and GetLogEvents with AWS's access-denied error.
 #
 # Exit 0 pass, 1 fail, 42 inconclusive. Needs the aws CLI, kubectl (KUBECONFIG) and curl; reaches the shim at
@@ -37,11 +42,15 @@ curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not r
 
 ADMIN="cfnecs-admin-$SFX"; NOPOL="cfnecs-nopol-$SFX"
 STACK="cfnecs-$SFX"; CLUSTER="cfnecs-$SFX"; SERVICE="cfnecs-$SFX"; FAMILY="cfnecs-$SFX"; GROUP="/probe/cfnecs-$SFX"
-CREATED_KEYS=(); CREATED_USERS=(); MADE_STACK=""
+CREATED_KEYS=(); CREATED_USERS=(); MADE_STACK=""; DEPLOYER="cfnecs-deployer-$SFX"; MADE_ROLE=""
 as() { local ak="$1" sk="$2"; shift 2
   AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" \
     aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text "$@"; }
 cleanup() {
+  if [ -n "$MADE_ROLE" ]; then
+    as "$AAK" "$ASK" iam delete-role-policy --role-name "$DEPLOYER" --policy-name deploy >/dev/null 2>&1
+    as "$AAK" "$ASK" iam delete-role --role-name "$DEPLOYER" >/dev/null 2>&1
+  fi
   if [ -n "$MADE_STACK" ]; then
     as "$AAK" "$ASK" cloudformation delete-stack --stack-name "$STACK" >/dev/null 2>&1
     for _ in $(seq 1 60); do
@@ -167,6 +176,20 @@ case "$st" in
      fail "DescribeServices of the stack's service = '${st}', want running 1, pending 0, PRIMARY, ${FAMILY}:1" ;;
 esac
 
+tasks="$(as "$AAK" "$ASK" ecs list-tasks --cluster "$CLUSTER" --service-name "$SERVICE" --query 'taskArns' 2>/dev/null | tr '\t' '\n' | grep -c ":task/${CLUSTER}/")"
+[ "$tasks" = 1 ] || fail "ListTasks lists ${tasks} tasks of the service, want 1"
+task="$(as "$AAK" "$ASK" ecs list-tasks --cluster "$CLUSTER" --service-name "$SERVICE" --query 'taskArns[0]' 2>/dev/null)"
+dt="$(as "$AAK" "$ASK" ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" \
+  --query 'tasks[0].[lastStatus,group,taskDefinitionArn,containers[0].name]' 2>/dev/null | tr '\t' ' ')"
+case "$dt" in
+  "RUNNING service:${SERVICE} "*":task-definition/${FAMILY}:1 web") ;;
+  *) fail "DescribeTasks of the service's task = '${dt}', want RUNNING service:${SERVICE} ${FAMILY}:1 web" ;;
+esac
+counts="$(as "$AAK" "$ASK" ecs describe-clusters --clusters "$CLUSTER" \
+  --query 'clusters[0].[activeServicesCount,runningTasksCount,pendingTasksCount]' 2>/dev/null | tr '\t' ' ')"
+[ "$counts" = "1 1 0" ] || fail "DescribeClusters counts '${counts}', want 1 service, 1 running task, 0 pending"
+log "  ✓ ListTasks and DescribeTasks report the service's RUNNING task; DescribeClusters counts 1 service, 1 running task"
+
 # --- 3. its container's logs are in the stack's log group ------------------------------------------------
 stream=""; events=""
 for _ in $(seq 1 36); do
@@ -193,7 +216,62 @@ assumed="$(kubectl -n "$STACK_NS" get applications.openinfra.dev "$app" -o jsonp
 [ -n "$role" ] && [ "$assumed" = "$role" ] || fail "the task runs as role '${assumed}', want the stack's task role '${role}'"
 log "  ✓ the task is sized 250m / 512Mi and runs as the stack's task role ${role}"
 
-# --- 5. a principal with no policy is refused ------------------------------------------------------------
+# --- 5. an UPDATE change set: AWS's Replacement, executed with ExecuteChangeSet alone ---------------------
+sed -e 's/Cpu: "256"/Cpu: "512"/' -e 's/Memory: "512"/Memory: "1024"/' "$TMP/template.yaml" > "$TMP/template2.yaml"
+as "$AAK" "$ASK" cloudformation create-change-set --stack-name "$STACK" --change-set-name resize \
+  --template-body "file://$TMP/template2.yaml" --capabilities CAPABILITY_IAM >/dev/null 2>"$TMP/ccs" \
+  || fail "create-change-set refused: $(head -c 300 "$TMP/ccs")"
+cs=""
+for _ in $(seq 1 24); do
+  cs="$(as "$AAK" "$ASK" cloudformation describe-change-set --stack-name "$STACK" --change-set-name resize --output json 2>/dev/null)"
+  [ "$(printf '%s' "$cs" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("Status",""))' 2>/dev/null)" = CREATE_COMPLETE ] && break
+  sleep 5
+done
+rep="$(printf '%s' "$cs" | python3 -c '
+import json, sys
+for c in json.load(sys.stdin).get("Changes", []):
+    rc = c["ResourceChange"]
+    if rc["LogicalResourceId"] == "Task":
+        d = sorted((x["Target"]["Name"], x["Target"]["RequiresRecreation"]) for x in rc.get("Details", []))
+        print(rc["Action"], rc.get("Replacement"), " ".join(n + "=" + r for n, r in d))' 2>/dev/null)"
+[ "$rep" = "Modify True Cpu=Always Memory=Always" ] || fail "the change set reports the task definition as '${rep}', want Modify True Cpu=Always Memory=Always"
+log "  ✓ the change set reports the task definition replaced (Replacement True; Cpu, Memory RequiresRecreation Always)"
+
+ME="$(as "$AAK" "$ASK" sts get-caller-identity --query Arn)"; ACCT="$(as "$AAK" "$ASK" sts get-caller-identity --query Account)"
+as "$AAK" "$ASK" iam create-role --role-name "$DEPLOYER" --assume-role-policy-document \
+  '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"'"$ME"'"},"Action":"sts:AssumeRole"}]}' >/dev/null 2>"$TMP/cr" \
+  || fail "create-role ${DEPLOYER}: $(head -c 300 "$TMP/cr")"
+MADE_ROLE=1
+as "$AAK" "$ASK" iam put-role-policy --role-name "$DEPLOYER" --policy-name deploy --policy-document '{"Version":"2012-10-17","Statement":[
+ {"Effect":"Allow","Action":["cloudformation:ExecuteChangeSet","cloudformation:DescribeChangeSet","cloudformation:DescribeStacks",
+   "cloudformation:DescribeStackEvents","ecs:*","logs:*","iam:GetRole","iam:PassRole"],"Resource":"*"},
+ {"Effect":"Deny","Action":["cloudformation:UpdateStack","cloudformation:CreateStack"],"Resource":"*"}]}' >/dev/null \
+  || fail "put-role-policy ${DEPLOYER}"
+log "waiting 35s for the IAM policy world to load ${DEPLOYER} (ExecuteChangeSet allowed, UpdateStack denied)"
+sleep 35
+read -r RAK RSK RTOK <<<"$(as "$AAK" "$ASK" sts assume-role --role-arn "arn:aws:iam::${ACCT}:role/${DEPLOYER}" --role-session-name probe \
+  --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' 2>"$TMP/ar")"
+[ -n "${RTOK:-}" ] || fail "assume-role ${DEPLOYER}: $(head -c 300 "$TMP/ar")"
+role() { AWS_ACCESS_KEY_ID="$RAK" AWS_SECRET_ACCESS_KEY="$RSK" AWS_SESSION_TOKEN="$RTOK" AWS_REGION="$REGION" \
+  aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text "$@"; }
+if role cloudformation update-stack --stack-name "$STACK" --template-body "file://$TMP/template2.yaml" --capabilities CAPABILITY_IAM >/dev/null 2>"$TMP/us"; then
+  fail "${DEPLOYER} updated the stack directly, though its policy denies cloudformation:UpdateStack"
+fi
+grep -q AccessDenied "$TMP/us" || fail "UpdateStack as ${DEPLOYER} failed without AccessDenied: $(head -c 300 "$TMP/us")"
+role cloudformation execute-change-set --stack-name "$STACK" --change-set-name resize >/dev/null 2>"$TMP/ecs" \
+  || fail "execute-change-set as ${DEPLOYER} (ExecuteChangeSet allowed, UpdateStack denied) refused: $(head -c 400 "$TMP/ecs")"
+status=""
+for _ in $(seq 1 90); do
+  status="$(as "$AAK" "$ASK" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' 2>/dev/null)"
+  case "$status" in UPDATE_COMPLETE|*FAILED|*ROLLBACK*) break ;; esac
+  sleep 5
+done
+[ "$status" = UPDATE_COMPLETE ] || fail "the stack is ${status:-unknown} after executing the change set, not UPDATE_COMPLETE"
+size="$(kubectl -n "$STACK_NS" get applications.openinfra.dev "$app" -o jsonpath='{.spec.cpu} {.spec.memory}')"
+[ "$size" = "500m 1024Mi" ] || fail "after the change set the task is sized '${size}', want 500m 1024Mi"
+log "  ✓ ${DEPLOYER} (UpdateStack denied: AccessDenied) executed the change set: UPDATE_COMPLETE, the task resized to 500m / 1024Mi"
+
+# --- 6. a principal with no policy is refused ------------------------------------------------------------
 denied() { # <what> <command...>: the call must fail with AWS's access-denied error
   local what="$1"; shift
   if as "$NAK" "$NSK" "$@" >/dev/null 2>"$TMP/deny"; then fail "${what} was allowed for a principal with no policy"; fi
@@ -203,4 +281,4 @@ denied "ecs:DescribeServices" ecs describe-services --cluster "$CLUSTER" --servi
 denied "logs:GetLogEvents" logs get-log-events --log-group-name "$GROUP" --log-stream-name "$stream"
 log "  ✓ a principal with no policy is refused DescribeServices and GetLogEvents (AccessDenied)"
 
-printf '\n✓ PASS: a stack-made ECS service is an ECS service: its cluster and service are listed and described, its container logs to the stack'"'"'s log group, it is sized and runs as its task definition says, and a principal with no policy is refused\n'
+printf '\n✓ PASS: a stack-made ECS service is an ECS service: its cluster, service and tasks are listed and described, its container logs to the stack'"'"'s log group, it is sized and runs as its task definition says, a change set reports AWS'"'"'s Replacement and executes with ExecuteChangeSet alone, and a principal with no policy is refused\n'
