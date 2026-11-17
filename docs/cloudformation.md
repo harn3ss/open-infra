@@ -104,7 +104,7 @@ then says so in a line of its own, and `GateSkipped` in `-json` gives the reason
 complete only once it has stabilized: an ECS service (`AWS::ECS::Service`) once it has reached a steady
 state — every desired task running on its current revision, none of an earlier one. A service that never gets
 there (its account's capacity refuses its tasks, say) fails the resource after three hours, as on AWS, and the
-operation rolls back. `--deployment-config '{"mode": "EXPRESS"}'` (`DeploymentConfig.Mode` on `CreateStack`,
+operation rolls back. `--deployment-config '{"Mode": "EXPRESS"}'` (`DeploymentConfig.Mode` on `CreateStack`,
 `UpdateStack` and `CreateChangeSet`; executing a change set applies the mode it was created with) completes
 the operation once each resource's configuration is applied, and the service keeps rolling out in the
 background. `DeploymentConfig.DisableRollback` is not honoured: a failed operation always rolls back.

@@ -10,7 +10,7 @@ the product's public contract.
 - A stack create or update reported an `AWS::ECS::Service` complete as soon as it was applied, though its
   tasks were still starting or could not be placed. As in AWS's default (`STANDARD`) mode, the resource is now
   complete only once the service reaches a steady state; one that never does fails after three hours and the
-  operation rolls back. `--deployment-config '{"mode": "EXPRESS"}'` keeps the old behaviour, as AWS's express
+  operation rolls back. `--deployment-config '{"Mode": "EXPRESS"}'` keeps the old behaviour, as AWS's express
   mode does. See [docs/cloudformation.md](docs/cloudformation.md).
 
 ### Fixed — an image named `<account>.dkr.ecr.<region>.amazonaws.com/…` is pulled from the platform's registry

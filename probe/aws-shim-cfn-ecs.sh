@@ -292,7 +292,7 @@ st="$(as "$AAK" "$ASK" ecs describe-services --cluster "$CLUSTER" --services "$S
 log "  ✓ STANDARD: the update completed only once the service was steady (running 2, pending 0)"
 sed -e 's/DesiredCount: 1/DesiredCount: 3/' "$TMP/template2.yaml" > "$TMP/template4.yaml"
 as "$AAK" "$ASK" cloudformation update-stack --stack-name "$STACK" --template-body "file://$TMP/template4.yaml" --capabilities CAPABILITY_IAM \
-  --deployment-config '{"mode": "EXPRESS"}' >/dev/null 2>"$TMP/u4" || fail "update-stack in EXPRESS mode: $(head -c 300 "$TMP/u4")"
+  --deployment-config '{"Mode": "EXPRESS"}' >/dev/null 2>"$TMP/u4" || fail "update-stack in EXPRESS mode: $(head -c 300 "$TMP/u4")"
 [ "$(stack_wait)" = UPDATE_COMPLETE ] || fail "the EXPRESS update did not complete"
 st=""
 for _ in $(seq 1 40); do
