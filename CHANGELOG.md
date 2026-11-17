@@ -6,6 +6,12 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a policy naming another account's role by its ARN allows assuming it
+- A principal whose policy allowed `sts:AssumeRole` on another account's role by that role's ARN (its account
+  in it, as AWS policies name it) was refused, because the role was evaluated as if it were in the caller's
+  account. As on AWS, the caller's side of an assume is now decided on the role in its own account, with the
+  role's trust as its resource policy: across accounts both must allow it.
+
 ### Added — a default VPC without its internet gateway
 - An operator can give an account a default VPC with its internet gateway removed
   (`spec.defaultVpc.internetGateway: false` on its `kind: Account`), as AWS shows a default VPC whose gateway

@@ -9,6 +9,7 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"github.com/harn3ss/open-infra/policyengine"
 )
 
@@ -97,5 +98,28 @@ func TestAssumeRole_IdentityPolicyRefusalIsAWSs(t *testing.T) {
 	body := w.Body.String()
 	if w.Code != http.StatusForbidden || !strings.Contains(body, "is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::"+testMgmt+":role/delegated") {
 		t.Fatalf("refusal = %d %s", w.Code, body)
+	}
+}
+
+// A caller's policy that names another account's role by its ARN — that account in it, as an AWS policy
+// does — allows the assume where the role's trust names the caller: the role is decided in its own account.
+func TestAssumeRole_CrossAccountPolicyNamingTheRolesARN(t *testing.T) {
+	roleARN := "arn:aws:iam::" + testMgmt + ":role/for-bob"
+	stmts, _, err := iamauthz.CompileDocument(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole","Resource":"` + roleARN + `"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgmtRoles := fakeRoles{"for-bob": {trust: []string{"arn:aws:iam::" + testMember + ":user/bob"}},
+		"for-nobody": {trust: []string{"arn:aws:iam::" + testMember + ":user/carol"}}}
+	bob := iam.Claims{Sub: "bob", Account: testMember}
+	doc := dataplaneauthz.PolicyDoc{Name: "assume-by-arn", AppliesTo: []string{"User::" + memberHome + "/bob"}, Statements: stmts}
+	for arn, want := range map[string]int{roleARN: 200, "arn:aws:iam::" + testMgmt + ":role/for-nobody": 403} {
+		h := &stsHandler{account: testMgmt, minter: testMinter(t), roles: fakeRolesIn{fakeRoles: mgmtRoles, in: fakeRoles{}},
+			accounts: testDirectory(), authz: checkerInMode(t, "enforce", doc), logger: discardLogger()}
+		w := httptest.NewRecorder()
+		h.serve(w, assumeRequest(arn, "s1").WithContext(memberCtx()), bob, "rid")
+		if w.Code != want {
+			t.Errorf("AssumeRole %s = %d, want %d: %s", arn, w.Code, want, w.Body)
+		}
 	}
 }

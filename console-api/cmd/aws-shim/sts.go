@@ -542,10 +542,20 @@ func (h *stsHandler) identityAllows(r *http.Request, claims iam.Claims, mfaCtx *
 	c := claims
 	c.MFA = mfaCtx
 	callerAcct := h.callerAccount(claims)
-	// The caller's policies alone, in its own account: the resource's side is the trust, already decided.
-	// Before IAM policy decides (legacy, shadow) the trust alone decided, so legacy's answer is an allow.
+	// The caller's policies, on the role where it is — in the role's account, so a policy naming the role's
+	// ARN (its account in it) matches it — with the role's trust as its resource policy, as AWS evaluates
+	// an assume: across accounts both must allow it. The trust itself was decided before, conditions and
+	// all. Before IAM policy decides (legacy, shadow) the trust alone decided, so legacy's answer is an allow.
+	opts := []iamauthz.RequestOption{iamauthz.WithResourceAccount(roleAcct)}
+	if callerAcct != roleAcct {
+		stmts, err := iamauthz.TrustStatements(trust, roleAcct)
+		if err != nil {
+			return false, "the role's trust policy does not compile: " + err.Error()
+		}
+		opts = append(opts, iamauthz.WithResourcePolicy(stmts))
+	}
 	d := decision(r.Context(), r, h.authz, c, "sts:AssumeRole", arnType, h.identIn(roleAcct).IAMARN("role/"+roleName),
-		func() (bool, string) { return true, "" }, iamauthz.WithResourceAccount(callerAcct))
+		func() (bool, string) { return true, "" }, opts...)
 	if callerAcct == roleAcct && trustNamesCaller(who, trust) {
 		if d.ExplicitDeny {
 			return false, d.Reason
