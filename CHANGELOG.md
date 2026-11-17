@@ -6,6 +6,13 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — a default VPC without its internet gateway
+- An operator can give an account a default VPC with its internet gateway removed
+  (`spec.defaultVpc.internetGateway: false` on its `kind: Account`), as AWS shows a default VPC whose gateway
+  was deleted: no internet gateway and no `0.0.0.0/0` route through EC2. Its subnet is not NATed, and its
+  network ACL lets traffic leave only for the platform's own networks, so a task there reaches the AWS
+  endpoints and nothing outside the platform. See [docs/aws-shim.md](docs/aws-shim.md).
+
 ### Fixed — a stack waits for its ECS service's steady state, as in CloudFormation's default mode
 - A stack create or update reported an `AWS::ECS::Service` complete as soon as it was applied, though its
   tasks were still starting or could not be placed. As in AWS's default (`STANDARD`) mode, the resource is now

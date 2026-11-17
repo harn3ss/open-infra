@@ -211,8 +211,8 @@ func (h *ec2Handler) internetGateways(n *ec2Network) []ec2Gateway {
 		}
 		out = append(out, g)
 	}
-	if n.def != nil {
-		out = append(out, n.def.gateway()) // the default VPC's internet gateway
+	if n.def != nil && n.def.internet {
+		out = append(out, n.def.gateway()) // the default VPC's internet gateway (none once removed)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].id < out[j].id })
 	return out

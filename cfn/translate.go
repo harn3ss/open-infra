@@ -3834,7 +3834,9 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 		}
 		inDefault := false
 		for _, ls := range ctx.caps.DefaultSubnets {
-			inDefault = inDefault || (ls != "" && ls == m.Spec["subnet"])
+			// one with its internet gateway: the caveats below say what differs from AWS there (a subnet
+			// without one is as on AWS: no route out)
+			inDefault = inDefault || (ls != "" && ls == m.Spec["subnet"] && !ctx.caps.NoInternetSubnets[ls])
 		}
 		if avc != nil && inDefault {
 			// A default subnet is public, its traffic to the internet NATed by the node: the task reaches the

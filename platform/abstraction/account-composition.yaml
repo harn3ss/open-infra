@@ -253,8 +253,22 @@ spec:
                     excludeIps:
                       - {{ printf "%s.1..%s.3" $net $net | toJson }}
                       - {{ printf "172.31.%d.255" (add $third 15) | toJson }}
-                    natOutgoing: true
                     private: false
+                    {{- if eq (printf "%v" .internetGateway) "false" }}
+                    # No internet gateway (spec.defaultVpc.internetGateway false): nothing NATs the subnet's
+                    # traffic out, and its network ACL lets it leave only for the platform's own networks —
+                    # the cluster's services (its AWS endpoints, DNS), its pods, the nodes' join network, and
+                    # the subnet itself — dropping the rest, before any network policy allows it.
+                    natOutgoing: false
+                    acls:
+                      - direction: from-lport
+                        priority: 3000
+                        match: {{ printf "ip4 && ip4.dst != {10.43.0.0/16, 10.16.0.0/16, 100.64.0.0/16, %s}" $cidr | toJson }}
+                        action: drop
+                    {{- else }}
+                    natOutgoing: true
+                    acls: []
+                    {{- end }}
             {{- end }}
             {{- end }}
             ---

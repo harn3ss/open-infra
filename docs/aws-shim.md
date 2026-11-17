@@ -2437,6 +2437,18 @@ task there resolves DNS, reaches the platform's AWS endpoints and reaches the in
 whatever `AssignPublicIp` says), but takes no inbound traffic on a public address. There is no default
 security group yet.
 
+**A default VPC without its internet gateway.** An operator can give an account a default VPC with its
+internet gateway removed (its `kind: Account`'s `spec.defaultVpc.internetGateway: false`), as an AWS account
+whose default VPC's gateway was detached and deleted: `DescribeInternetGateways` lists none for it, and its
+main route table has only its local route. Nothing NATs its subnet out, and the subnet's network ACL drops
+whatever leaves it for anywhere but the platform's own networks — the cluster's services (its AWS endpoints,
+DNS), its pods, the nodes' network and the subnet itself — before any network policy can allow it. A task
+there reaches the AWS endpoints, as through VPC endpoints on AWS, and no address outside the platform,
+whatever `AssignPublicIp` says. It can still resolve public names (the cluster's DNS answers them, as Route 53
+Resolver does in an AWS VPC), and the AWS services that reach the internet themselves (API Gateway HTTP
+integrations, Lambda functions, SNS HTTP subscriptions) do so as on AWS: keep them out of such an account's
+permissions where its tasks must not reach the internet. `probe/aws-shim-ec2-isolated-vpc.sh` proves it.
+
 Key pairs: `ImportKeyPair` (RSA or ED25519, with AWS's fingerprints), `CreateKeyPair` (the private key is
 returned once, never kept), `DescribeKeyPairs` and `DeleteKeyPair`, in the shim's Postgres. An instance's
 `KeyName` carries the named key into its VM's `spec.sshKey`, which cloud-init authorizes for the image's

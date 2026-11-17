@@ -13,7 +13,7 @@ import (
 // kubeovnSubnet is a kube-ovn Subnet (cluster-scoped), Ready with free addresses.
 func kubeovnSubnet(name, cidr string, free int64) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "kubeovn.io/v1", "kind": "Subnet",
-		"metadata": map[string]any{"name": name}, "spec": map[string]any{"cidrBlock": cidr, "vpc": "ovn-cluster"},
+		"metadata": map[string]any{"name": name}, "spec": map[string]any{"cidrBlock": cidr, "vpc": "ovn-cluster", "natOutgoing": true},
 		"status": map[string]any{"v4availableIPs": free, "conditions": []any{map[string]any{"type": "Ready", "status": "True"}}}}}
 }
 
@@ -112,5 +112,27 @@ func TestEC2DefaultVPC_AccountAttributesAndCreateDefaultVpc(t *testing.T) {
 	}
 	if w = ec2CallIn(h, member, ec2Bob, url.Values{"Action": {"DescribeVpcs"}}); strings.Contains(w.Body.String(), "<isDefault>true</isDefault>") {
 		t.Errorf("an account without a default VPC lists one: %s", w.Body.String())
+	}
+}
+
+// A default VPC whose internet gateway was removed (the account's spec.defaultVpc.internetGateway false): EC2
+// lists no internet gateway for it and its main route table has only its local route, as AWS shows one.
+func TestEC2DefaultVPC_WithoutItsInternetGateway(t *testing.T) {
+	h, dyn, _ := structuralFixture(t)
+	sub := kubeovnSubnet("default-vpc", "172.31.0.0/20", 4091)
+	sub.Object["spec"].(map[string]any)["natOutgoing"] = false
+	if _, err := dyn.Resource(kubeovnSubnetGVR).Create(context.Background(), sub, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	d := &defaultVPC{account: "123456789012"}
+	if b := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInternetGateways"}}).Body.String(); strings.Contains(b, d.igwID()) {
+		t.Errorf("a default VPC without its gateway lists one: %s", b)
+	}
+	b := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeRouteTables"}, "Filter.1.Name": {"vpc-id"}, "Filter.1.Value.1": {d.vpcID()}}).Body.String()
+	if !strings.Contains(b, "<destinationCidrBlock>172.31.0.0/16</destinationCidrBlock>") || strings.Contains(b, "0.0.0.0/0") {
+		t.Errorf("its main route table must have only its local route: %s", b)
+	}
+	if b := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeVpcs"}, "Filter.1.Name": {"is-default"}, "Filter.1.Value.1": {"true"}}).Body.String(); !strings.Contains(b, d.vpcID()) {
+		t.Errorf("it is still the default VPC: %s", b)
 	}
 }

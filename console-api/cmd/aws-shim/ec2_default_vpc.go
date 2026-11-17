@@ -33,6 +33,9 @@ type defaultVPC struct {
 	cidr      string // its default subnet's CIDR
 	available int64  // the subnet's free addresses
 	ready     bool
+	// internet: the default VPC has its internet gateway (its subnet is NATed out). false is one whose
+	// gateway was removed (the account's spec.defaultVpc.internetGateway): no gateway, no 0.0.0.0/0 route.
+	internet bool
 }
 
 func (d *defaultVPC) vpcID() string { return shortHashID("vpc-", "default-vpc/"+d.account, 17) }
@@ -88,6 +91,15 @@ func (h *cfnDoorway) defaultSubnets(ctx context.Context) map[string]string {
 	return nil
 }
 
+// defaultSubnetsWithoutInternet are those of them whose VPC has no internet gateway, by cluster subnet
+// (cfn.Capabilities.NoInternetSubnets).
+func (h *cfnDoorway) defaultSubnetsWithoutInternet(ctx context.Context) map[string]bool {
+	if d := h.defaultVPC(ctx); d != nil && !d.internet {
+		return map[string]bool{d.subnet: true}
+	}
+	return nil
+}
+
 // defaultVPCFrom is the default VPC whose subnet is u, of account.
 func defaultVPCFrom(account string, u *unstructured.Unstructured) *defaultVPC {
 	cidr, _, _ := unstructured.NestedString(u.Object, "spec", "cidrBlock")
@@ -95,6 +107,7 @@ func defaultVPCFrom(account string, u *unstructured.Unstructured) *defaultVPC {
 		return nil
 	}
 	d := &defaultVPC{account: account, subnet: u.GetName(), cidr: cidr, available: usableAddresses(cidr)}
+	d.internet, _, _ = unstructured.NestedBool(u.Object, "spec", "natOutgoing")
 	conds, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
 	for _, c := range conds {
 		m, _ := c.(map[string]any)
@@ -156,9 +169,11 @@ func (d *defaultVPC) gateway() ec2Gateway {
 }
 
 func (d *defaultVPC) routeTable() ec2RouteTable {
-	return ec2RouteTable{id: d.rtbID(), vpc: d.vpcID(),
-		routes: []ec2Route{{dest: defaultVPCCidr, gateway: "local", state: "active", origin: "CreateRouteTable"},
-			{dest: "0.0.0.0/0", gateway: d.igwID(), state: "active", origin: "CreateRoute"}},
+	routes := []ec2Route{{dest: defaultVPCCidr, gateway: "local", state: "active", origin: "CreateRouteTable"}}
+	if d.internet { // its route to the internet gateway (none once the gateway is removed)
+		routes = append(routes, ec2Route{dest: "0.0.0.0/0", gateway: d.igwID(), state: "active", origin: "CreateRoute"})
+	}
+	return ec2RouteTable{id: d.rtbID(), vpc: d.vpcID(), routes: routes,
 		assocs: []ec2RouteTableAssoc{{id: shortHashID("rtbassoc-", "main/"+d.rtbID(), 17), main: true}}}
 }
 

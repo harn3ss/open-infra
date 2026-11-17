@@ -355,3 +355,29 @@ func TestAccount_DefaultVPCSubnet(t *testing.T) {
 		t.Error("the management account's default subnet binds a namespace")
 	}
 }
+
+// A default VPC without its internet gateway: nothing NATs its subnet out, and its network ACL drops whatever
+// leaves for anywhere but the platform's own networks and the subnet itself.
+func TestAccount_DefaultVPCWithoutInternetGateway(t *testing.T) {
+	docs := accountDocs(t, map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a"},
+		"defaultVpc": map[string]any{"subnetCidr": "172.31.64.0/20", "internetGateway": false}}, "000000000000")
+	s := byKind(docs)["Subnet"][0]
+	acls, _ := mget(s, "spec", "acls").([]any)
+	if fmt.Sprint(mget(s, "spec", "natOutgoing")) != "false" || len(acls) != 1 {
+		t.Fatalf("an isolated default subnet: %v", s)
+	}
+	a := acls[0].(map[string]any)
+	if a["direction"] != "from-lport" || a["action"] != "drop" ||
+		a["match"] != "ip4 && ip4.dst != {10.43.0.0/16, 10.16.0.0/16, 100.64.0.0/16, 172.31.64.0/20}" {
+		t.Fatalf("its egress ACL: %v", a)
+	}
+	// With its gateway (the default), NATed out and no ACL.
+	s = byKind(accountDocs(t, map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a"},
+		"defaultVpc": map[string]any{"subnetCidr": "172.31.64.0/20"}}, "000000000000"))["Subnet"][0]
+	if fmt.Sprint(mget(s, "spec", "natOutgoing")) != "true" {
+		t.Fatalf("a default subnet with its gateway: %v", s)
+	}
+	if acls, _ := mget(s, "spec", "acls").([]any); len(acls) != 0 {
+		t.Fatalf("a default subnet with its gateway has no ACL: %v", acls)
+	}
+}

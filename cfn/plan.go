@@ -155,6 +155,9 @@ type Capabilities struct {
 	// may name one by its id (an ECS service's NetworkConfiguration), as on AWS. nil (the CLI): a subnet id
 	// is opaque and refuses.
 	DefaultSubnets map[string]string
+	// NoInternetSubnets are those of them, by cluster subnet, whose VPC has no internet gateway: a workload
+	// there reaches only the platform's own networks, as a task in a subnet with no route out does on AWS.
+	NoInternetSubnets map[string]bool
 }
 
 // underValidatedDomain reports whether host is one of domains or a subdomain of one.
