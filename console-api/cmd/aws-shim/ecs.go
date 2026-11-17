@@ -66,6 +66,9 @@ type ecsDoorway struct {
 	// defaultSubnets are the request's account's default subnets, id -> cluster subnet, which a service's
 	// NetworkConfiguration may name (ec2_default_vpc.go); nil = none are known.
 	defaultSubnets func(context.Context) map[string]string
+	// capsOf are what the CloudFormation front door plans and deploys with in the request's account (its
+	// registry, its default subnets); nil = only the default subnets.
+	capsOf func(context.Context) cfn.Capabilities
 }
 
 func newECSDoorway(cfg *rest.Config, shimDyn dynamic.Interface, cs kubernetes.Interface, authz *dataplaneauthz.Checker, authzNS, account, region, ns string, logger *slog.Logger) (*ecsDoorway, error) {
@@ -446,9 +449,12 @@ func (h *ecsDoorway) deployOpts(ctx context.Context, stackName string) cfn.Deplo
 	return opts
 }
 
-// caps are what a service's template is planned and deployed with: the account's default subnets, which
-// its NetworkConfiguration may name.
+// caps are what a service's template is planned and deployed with, as a stack's are: the account's registry
+// (an ECR image is its repository there) and its default subnets, which its NetworkConfiguration may name.
 func (h *ecsDoorway) caps(ctx context.Context) cfn.Capabilities {
+	if h.capsOf != nil {
+		return h.capsOf(ctx) // the account's registry (an ECR image's repository) and default subnets
+	}
 	var c cfn.Capabilities
 	if h.defaultSubnets != nil {
 		c.DefaultSubnets = h.defaultSubnets(ctx)

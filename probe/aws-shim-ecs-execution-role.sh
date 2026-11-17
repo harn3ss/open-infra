@@ -13,6 +13,8 @@
 #   - as ECS reports it, the refused task's container carries a CannotPullContainerError (DescribeTasks) and
 #     the service's events say it is unable to consistently start tasks;
 #   - ECR's BatchGetImage returns the pushed image's manifest;
+#   - the tasks name the image as AWS names the account's registry (<account>.dkr.ecr.<region>.amazonaws.com):
+#     it is that account's repository here, pulled with the execution role, never from AWS;
 #   - a power user (PowerUserAccess has no iam:PassRole) naming the allowed role provisions nothing.
 # A task is decided by the ECR credential provider of the node it lands on; on a node where it is not
 # installed yet the result proves nothing, and the probe says so (exit 42).
@@ -100,7 +102,8 @@ as "$AAK" "$ASK" ecr get-login-password 2>/dev/null | docker login --username AW
   || inconclusive "docker login to ${REGHOST} failed: $(head -c 300 "$TMP/login")"
 docker tag "$SOURCE_IMAGE" "$REGHOST/$REPO:1" && docker push -q "$REGHOST/$REPO:1" >/dev/null 2>"$TMP/push" \
   || fail "docker push failed: $(head -c 300 "$TMP/push")"
-IMAGE="$NODE_REGISTRY/$REPO:1"
+# Tasks name the image as AWS names an account's registry; it is pulled from the platform's, never from AWS.
+IMAGE="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/$REPO:1"
 log "  ✓ pushed; tasks run ${IMAGE}"
 got="$(as "$AAK" "$ASK" ecr batch-get-image --repository-name "$REPO" --image-ids imageTag=1 \
   --query 'images[0].[imageId.imageTag,imageId.imageDigest]' 2>/dev/null | tr '\t' ' ')"
@@ -133,9 +136,13 @@ service() { # <ak> <sk> <service> <role>: register a task definition naming the 
     --container-definitions '[{"name":"app","image":"'"$IMAGE"'","essential":true}]' >/dev/null 2>"$TMP/td" \
     || { echo "register-task-definition: $(head -c 300 "$TMP/td")"; return 1; }
   as "$1" "$2" ecs create-service --service-name "$3" --task-definition "$fam" --desired-count 1 --launch-type FARGATE \
+    --network-configuration "awsvpcConfiguration={subnets=[${SUBNET}],assignPublicIp=ENABLED}" \
     >/dev/null 2>"$TMP/cs" || { echo "create-service: $(head -c 300 "$TMP/cs")"; return 1; }
 }
-log "the administrator runs ${SVC_OK} (execution role may pull) and ${SVC_NONE} (execution role may not)"
+# An awsvpc task's service names where its interface goes, as ECS requires: the account's default subnet.
+SUBNET="$(as "$AAK" "$ASK" ec2 describe-subnets --filters Name=default-for-az,Values=true --query 'Subnets[0].SubnetId' 2>/dev/null)"
+case "$SUBNET" in subnet-*) ;; *) inconclusive "the account has no default subnet to run its tasks in (got '${SUBNET}')" ;; esac
+log "the administrator runs ${SVC_OK} (execution role may pull) and ${SVC_NONE} (execution role may not), in ${SUBNET}"
 service "$AAK" "$ASK" "$SVC_OK" "$ROLE_OK" || fail "$SVC_OK not created"; SERVICES+=("$SVC_OK")
 service "$AAK" "$ASK" "$SVC_NONE" "$ROLE_NONE" || fail "$SVC_NONE not created"; SERVICES+=("$SVC_NONE")
 

@@ -6,6 +6,24 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — an image named `<account>.dkr.ecr.<region>.amazonaws.com/…` is pulled from the platform's registry
+- A task or function naming its image as AWS names an account's private registry was pulled from AWS's ECR,
+  outside the platform, and failed. As on AWS, that name is the account's repository in the platform's
+  registry: it is pulled from there, with the execution role, and never from AWS. Another region's ECR is
+  refused. See [docs/aws-shim.md](docs/aws-shim.md).
+
+### Changed — an `awsvpc` service must name its network, as on AWS
+- A service (ECS `CreateService`, or a stack's `AWS::ECS::Service`) for a task definition with
+  `NetworkMode: awsvpc` and no `NetworkConfiguration` is refused, with ECS's "Network Configuration must be
+  provided when networkMode 'awsvpc' is specified." Name the account's default subnet
+  (`aws ec2 describe-subnets --filters Name=default-for-az,Values=true`).
+
+### Fixed — ECS reports a service's network and a task's size as ECS does
+- `DescribeServices` reports the service's `networkConfiguration`. `DescribeTasks` reports the task's `cpu` and
+  `memory` and its containers' images as its task definition gives them. An earlier deployment whose task never
+  started stays `IN_PROGRESS` rather than `COMPLETED`. Executing a change set reports the same caveats its
+  change set showed.
+
 ### Added — every account has a default VPC, as on AWS
 - As AWS gives every account one, each account now has its default VPC: `172.31.0.0/16`, with a default subnet
   (a `/20` of it), an internet gateway and a main route table sending `0.0.0.0/0` to it. EC2 reports them

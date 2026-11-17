@@ -31,6 +31,8 @@ type ecsStackService struct {
 	taskDefinition string
 	launchType     string
 	createdAt      string // the stack's creation time
+	// network is its NetworkConfiguration in the ECS API's form (nil: none).
+	network map[string]any
 }
 
 // ecsStackTaskDef is a task definition a CloudFormation stack made: its family and revision, and its
@@ -91,6 +93,7 @@ func (h *ecsDoorway) stackECS(ctx context.Context) ecsStackView {
 				}
 				v.services = append(v.services, ecsStackService{name: name, cluster: cluster, app: app, ns: rec.Namespace,
 					taskDefinition: fnStr(tr.Properties["TaskDefinition"]), launchType: fnStr(tr.Properties["LaunchType"]),
+					network:   ecsNetworkConfiguration(tr.Properties["NetworkConfiguration"]),
 					createdAt: rec.CreatedAt})
 			}
 		}
@@ -156,6 +159,20 @@ type ecsServiceAt struct {
 	app, cluster                          string
 	taskDefinition, createdAt, launchType string
 	history                               []ecsTaskDefRecord
+	network                               map[string]any // its networkConfiguration (nil: none)
+}
+
+// ecsNetworkConfiguration is a service's NetworkConfiguration (a stack's property, or the ECS API's own)
+// in the ECS API's form: awsvpcConfiguration with its subnets, security groups and assignPublicIp.
+func ecsNetworkConfiguration(v any) map[string]any {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) == 0 {
+		return nil
+	}
+	if _, cfnForm := m["AwsvpcConfiguration"]; cfnForm {
+		m, _ = cfnToECS(m).(map[string]any)
+	}
+	return m
 }
 
 // locateService finds the service name in cluster: one created through ECS (its record in this front
@@ -166,6 +183,7 @@ func (h *ecsDoorway) locateService(ctx context.Context, ap *impersonatingApplier
 	if ref, found, _ := h.getServiceRef(ctx, name); found {
 		at.taskDefinition, at.createdAt = firstString(ref.Body, "taskDefinition"), ref.CreatedAt
 		at.launchType, at.history = firstString(ref.Body, "launchType"), ref.History
+		at.network = ecsNetworkConfiguration(ref.Body["networkConfiguration"])
 		if ref.Cluster != "" {
 			at.cluster = ref.Cluster
 		}
@@ -176,6 +194,7 @@ func (h *ecsDoorway) locateService(ctx context.Context, ap *impersonatingApplier
 		in.ns = ss.ns
 		at.ap, at.app = &in, ss.app
 		at.taskDefinition, at.createdAt, at.launchType = ss.taskDefinition, ss.createdAt, ss.launchType
+		at.network = ss.network
 	}
 	return at
 }

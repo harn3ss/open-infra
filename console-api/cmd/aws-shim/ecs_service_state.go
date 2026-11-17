@@ -233,8 +233,15 @@ func ecsServiceState(service, ns, launchType string, dep *appsv1.Deployment, rss
 			if rs.Spec.Replicas != nil {
 				desired = int(*rs.Spec.Replicas)
 			}
-			d["status"], d["desiredCount"], d["rolloutState"] = "ACTIVE", desired, "COMPLETED"
-			d["rolloutStateReason"] = "ECS deployment " + id + " completed."
+			// An earlier rollout keeps the state it reached: COMPLETED once nothing of it is waiting to start,
+			// still IN_PROGRESS while a task of it is (one that could not start, say).
+			if pending > 0 {
+				d["status"], d["desiredCount"], d["rolloutState"] = "ACTIVE", desired, "IN_PROGRESS"
+				d["rolloutStateReason"] = "ECS deployment " + id + " in progress."
+			} else {
+				d["status"], d["desiredCount"], d["rolloutState"] = "ACTIVE", desired, "COMPLETED"
+				d["rolloutStateReason"] = "ECS deployment " + id + " completed."
+			}
 			activeLeft = true
 		}
 		w.deployments = append(w.deployments, d)

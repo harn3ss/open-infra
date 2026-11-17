@@ -2014,7 +2014,8 @@ service, from the Application's workload:
 definition family, launch type and desired status, and `DescribeTasks` describes each as ECS does: its ARN
 (`task/<cluster>/<task id>`, the id its `awslogs` stream carries), its task definition, the deployment that
 started it (`startedBy` `ecs-svc/…`), `group` `service:<name>`, its status (`PROVISIONING`, `PENDING`,
-`RUNNING`, `STOPPING`) and its containers (name, image and digest, status, exit code). A task in a subnet
+`RUNNING`, `STOPPING`), its size (`cpu`, `memory`, its task definition's) and its containers (name, image as
+the task definition names it, digest, status, exit code). A task in a subnet
 (its service's `NetworkConfiguration`, such as the account's default subnet by the id `DescribeSubnets`
 gives it) has its network interface, as an `awsvpc` task's is reported: an `ElasticNetworkInterface`
 attachment with the subnet's id and the task's private address. `DescribeClusters`
@@ -2196,6 +2197,14 @@ execution role's ECR credential, so `/ecr/token` decides each repository on that
 application's own account. A pod that is no application's, or an application with no execution role, gets
 no credential from it and is pulled as below. An execution role that may not pull gets a credential the
 registry refuses, so the pull fails rather than fall back to the node's credential.
+
+**An image named the AWS way.** An image named as AWS names an account's private registry —
+`<account>.dkr.ecr.<region>.amazonaws.com/<repository>:<tag>`, in a task definition's container `Image` or a
+Lambda function's `Code.ImageUri` — is that account's repository in this registry, as on AWS: the platform
+pulls it from its own registry under the repository's `repositoryUri` (a member account's repositories under
+its account id), with the execution role, and never asks AWS. Another region's ECR, or such an image deployed
+where no registry serves it (the CLI), is refused rather than pulled from AWS. `DescribeTaskDefinition` and
+`DescribeTasks` report the image as the task definition names it.
 
 **Node pulls.** A function's `code.runtimeImage` in the registry is pulled by the node's container runtime,
 with a credential the node's own identity obtains, as a node's instance role gets its ECR credential on AWS.

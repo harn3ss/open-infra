@@ -138,6 +138,22 @@ func TestECSState_RollingDeployment(t *testing.T) {
 	}
 }
 
+// An earlier rollout whose task never started (it is still waiting) keeps rolloutState IN_PROGRESS, as ECS's
+// does: it never completed. One that did, and is draining, is COMPLETED.
+func TestECSState_ActiveRolloutThatNeverCompleted(t *testing.T) {
+	stuck := testRS("web-old", "rs-old", 1, ecsT0.Add(time.Second), 1, 1, 0) // its task never ready
+	cur := testRS("web-new", "rs-new", 2, ecsT0.Add(time.Hour), 1, 1, 0)
+	w := ecsServiceState("web", "acct", "", testDeployment(1), []appsv1.ReplicaSet{stuck, cur}, nil, nil, "web:2", arnOf)
+	if a := w.deployments[1].(map[string]any); a["status"] != "ACTIVE" || a["rolloutState"] != "IN_PROGRESS" || a["pendingCount"] != 1 {
+		t.Fatalf("an earlier rollout still waiting to start a task = %v", a)
+	}
+	draining := testRS("web-old", "rs-old", 1, ecsT0.Add(time.Second), 0, 1, 1)
+	w = ecsServiceState("web", "acct", "", testDeployment(1), []appsv1.ReplicaSet{draining, cur}, nil, nil, "web:2", arnOf)
+	if a := w.deployments[1].(map[string]any); a["rolloutState"] != "COMPLETED" {
+		t.Fatalf("a draining earlier rollout = %v", a)
+	}
+}
+
 func TestECSState_PlacementReasons(t *testing.T) {
 	for msg, want := range map[string]string{
 		`exceeded quota: q, requested: pods=1, used: pods=6, limited: pods=6`:                                  "You've reached the limit on the number of tasks you can run concurrently",

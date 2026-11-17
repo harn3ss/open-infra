@@ -15,6 +15,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -158,6 +159,24 @@ func (h *ecsDoorway) taskObject(ctx context.Context, t ecsTask, containerName st
 	if p.DeletionTimestamp != nil {
 		task["stoppingAt"] = ecsEpoch(p.DeletionTimestamp.Time)
 	}
+	// Its size and its containers' images are its task definition's, as ECS reports them (the image as the
+	// task definition names it, an ECR image by its AWS name, though the pod pulls it from the platform's).
+	tdBody := h.taskDefBody(ctx, td)
+	for _, k := range []string{"cpu", "memory"} {
+		if v, ok := tdBody[k]; ok && v != nil {
+			task[k] = fmt.Sprint(v)
+		}
+	}
+	tdImages := map[string]string{}
+	if cds, ok := tdBody["containerDefinitions"].([]any); ok {
+		for _, cd := range cds {
+			if m, ok := cd.(map[string]any); ok {
+				if n, img := fnStr(m["name"]), fnStr(m["image"]); n != "" && img != "" {
+					tdImages[n] = img
+				}
+			}
+		}
+	}
 	statuses := map[string]corev1.ContainerStatus{}
 	for _, cs := range p.Status.ContainerStatuses {
 		statuses[cs.Name] = cs
@@ -183,6 +202,9 @@ func (h *ecsDoorway) taskObject(ctx context.Context, t ecsTask, containerName st
 			"name":       name,
 			"image":      c.Image,
 			"lastStatus": cl,
+		}
+		if img := tdImages[name]; img != "" {
+			cont["image"] = img
 		}
 		if d := cs.ImageID; d != "" {
 			if i := strings.LastIndex(d, "@"); i >= 0 {
@@ -385,4 +407,20 @@ func (h *ecsDoorway) listTaskDefinitions(ctx context.Context, w http.ResponseWri
 	}
 	h.audit(ctx, "ListTaskDefinitions", prefix, "allow", "")
 	writeECSJSON(w, requestID, map[string]any{"taskDefinitionArns": arns})
+}
+
+// taskDefBody is the task definition ref names (family:revision or its ARN) in the ECS API's form: one
+// registered through ECS, else one a stack made (nil: neither).
+func (h *ecsDoorway) taskDefBody(ctx context.Context, ref string) map[string]any {
+	fam, rev := parseTaskDef(ref)
+	if fam == "" {
+		return nil
+	}
+	if td, ok, err := h.getTaskDef(ctx, fam, rev); err == nil && ok {
+		return td.Body
+	}
+	if td, ok := h.stackTaskDef(ctx, fam, rev); ok {
+		return td.body
+	}
+	return nil
 }

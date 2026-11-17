@@ -839,6 +839,7 @@ func run(logger *slog.Logger) error {
 			if cfnDoor != nil { // a service or cluster a stack made is the account's too (ecs_stack.go)
 				ecsH.stacks = (&cloudFrontHandler{cfn: cfnDoor}).stackRecords
 				ecsH.defaultSubnets = cfnDoor.defaultSubnets // its default VPC's subnet (ec2_default_vpc.go)
+				ecsH.capsOf = cfnDoor.caps                   // planned and deployed as a stack is (its registry, ecr_image.go)
 			}
 			services["ecs"] = ecsH
 			logger.Info("ECS front door enabled", slog.String("namespace", ecsNS))

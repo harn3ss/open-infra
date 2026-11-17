@@ -76,3 +76,22 @@ func TestCFN_DescribeChangeSetReportsReplacement(t *testing.T) {
 		}
 	}
 }
+
+// Executing a change set reports what the change set showed: the plan's summary, with what only the change
+// set knows (an update AWS would replace, which open-infra makes in place), each once.
+func TestCFN_ExecuteReportsTheChangeSetsCaveats(t *testing.T) {
+	plan := "accepted but not emulated as on AWS (2): Svc: a | Task: b"
+	got := withChangeSetCaveats(plan, []cfn.Change{
+		{LogicalID: "Task", Action: cfn.Modify, Caveats: []string{"b", "changing Cpu replaces it on AWS"}},
+		{LogicalID: "Old", Action: cfn.Remove, Caveats: []string{"gone"}},
+	})
+	if got != "accepted but not emulated as on AWS (3): Svc: a | Task: b | Task: changing Cpu replaces it on AWS" {
+		t.Fatalf("got %q", got)
+	}
+	if got := withChangeSetCaveats("", nil); got != "" {
+		t.Fatalf("nothing to report: %q", got)
+	}
+	if got := withChangeSetCaveats("", []cfn.Change{{LogicalID: "Task", Action: cfn.Modify, Caveats: []string{"x"}}}); got != "accepted but not emulated as on AWS (1): Task: x" {
+		t.Fatalf("only the change set's: %q", got)
+	}
+}

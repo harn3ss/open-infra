@@ -34,7 +34,12 @@ Resources:
             Options: { awslogs-group: /ecs/web, awslogs-stream-prefix: web }
   Service:
     Type: AWS::ECS::Service
-    Properties: { ServiceName: web, Cluster: !Ref Cluster, TaskDefinition: !Ref Task, LaunchType: FARGATE }
+    Properties:
+      ServiceName: web
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref Task
+      LaunchType: FARGATE
+      NetworkConfiguration: { AwsvpcConfiguration: { Subnets: [subnet-0abc], AssignPublicIp: ENABLED } }
   Pending:
     Type: AWS::ECS::Service
     Properties: { ServiceName: not-yet, Cluster: !Ref Cluster, TaskDefinition: !Ref Task }
@@ -84,6 +89,10 @@ func TestECSStack_DescribeServicesFindsAStacksService(t *testing.T) {
 	}
 	if ap.ns != ecsTestNS {
 		t.Error("the caller's applier is not changed")
+	}
+	avc, _ := at.network["awsvpcConfiguration"].(map[string]any)
+	if subs, _ := avc["subnets"].([]any); len(subs) != 1 || subs[0] != "subnet-0abc" || avc["assignPublicIp"] != "ENABLED" {
+		t.Errorf("the stack's service's networkConfiguration, in the ECS API's form: %v", at.network)
 	}
 	if at := h.locateService(context.Background(), ap, "web", "default"); at.app == "web-stack-service" {
 		t.Error("in another cluster the name is not the stack's service")
@@ -273,6 +282,9 @@ func TestECSStack_ListAndDescribeTasks(t *testing.T) {
 	run, pend := by["RUNNING"], by["PENDING"]
 	if run == nil || pend == nil {
 		t.Fatalf("want a RUNNING and a PENDING task: %v", tasks)
+	}
+	if run["cpu"] != "256" || run["memory"] != "512" {
+		t.Errorf("a task's size is its task definition's: cpu %v memory %v", run["cpu"], run["memory"])
 	}
 	if run["group"] != "service:web" || !strings.HasSuffix(fnStr(run["taskDefinitionArn"]), ":task-definition/web:1") ||
 		!strings.HasPrefix(fnStr(run["startedBy"]), "ecs-svc/") || run["desiredStatus"] != "RUNNING" {

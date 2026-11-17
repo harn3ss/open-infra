@@ -671,6 +671,35 @@ Resources:
 	}
 }
 
+// As ECS refuses it, a service for an awsvpc task definition must say where its tasks' interfaces go
+// (NetworkConfiguration); naming the account's default subnet satisfies it.
+func TestTranslate_ECSService_AwsvpcNeedsNetworkConfiguration(t *testing.T) {
+	tmpl := func(nc string) string {
+		return `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ContainerDefinitions: [ { Name: web, Image: web:1, PortMappings: [ { ContainerPort: 80 } ] } ]
+  Svc:
+    Type: AWS::ECS::Service
+    Properties:
+      TaskDefinition: !Ref Task` + nc + "\n"
+	}
+	ctx := ecsCtx(t, tmpl(""))
+	if _, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx); !strings.Contains(findingsText(fs), "Network Configuration must be provided when networkMode 'awsvpc' is specified") {
+		t.Fatalf("an awsvpc service without NetworkConfiguration must refuse as ECS does: %s", findingsText(fs))
+	}
+	ctx = ecsCtx(t, tmpl("\n      NetworkConfiguration: { AwsvpcConfiguration: { Subnets: [ subnet-0abc ] } }"))
+	ctx.caps.DefaultSubnets = map[string]string{"subnet-0abc": "default-vpc"}
+	m, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if len(fs) != 0 || m.Spec["subnet"] != "default-vpc" || strings.Contains(strings.Join(m.Caveats, "\n"), "NetworkMode dropped") {
+		t.Fatalf("with NetworkConfiguration: %s %v %v", findingsText(fs), m.Spec["subnet"], m.Caveats)
+	}
+}
+
 // #117 §1: a host-path bind-mount Volume refuses (no safe equivalent), never a silent drop.
 func TestTranslate_ECSService_HostVolumeRefused(t *testing.T) {
 	tmpl := `

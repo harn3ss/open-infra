@@ -1454,6 +1454,40 @@ func changeSetFidelity(changes []cfn.Change) string {
 	return "open-infra accepts but does not emulate as AWS does (" + strconv.Itoa(len(items)) + "): " + strings.Join(items, " | ")
 }
 
+// withChangeSetCaveats is a stack operation's fidelity summary (fidelityLine's form) with what its change
+// set listed and the plan did not — that open-infra updates in place a resource AWS would replace — so
+// executing a change set reports what the change set showed.
+func withChangeSetCaveats(line string, changes []cfn.Change) string {
+	const head = "accepted but not emulated as on AWS ("
+	var items []string
+	if strings.HasPrefix(line, head) {
+		if i := strings.Index(line, "): "); i >= 0 {
+			items = strings.Split(line[i+len("): "):], " | ")
+		}
+	} else if line != "" {
+		return line
+	}
+	have := map[string]bool{}
+	for _, it := range items {
+		have[it] = true
+	}
+	for _, c := range changes {
+		if c.Action == cfn.Unchanged || c.Action == cfn.Remove {
+			continue
+		}
+		for _, cv := range c.Caveats {
+			if it := c.LogicalID + ": " + cv; !have[it] {
+				have[it] = true
+				items = append(items, it)
+			}
+		}
+	}
+	if len(items) == 0 {
+		return line
+	}
+	return head + strconv.Itoa(len(items)) + "): " + strings.Join(items, " | ")
+}
+
 // fidelityLine renders a plan's fidelity summary for a response field; "" when there is none.
 func fidelityLine(p *cfn.Plan) string {
 	if len(p.Fidelity) == 0 {
@@ -1702,6 +1736,8 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		execID = current.StackID
 	}
 	execOpts := h.withRequest(h.asCaller(h.stackOpts(ctx, stack, execID, params, ex, body), ap), ap, r)
+	// The stack reports what its change set showed (an update's replacement is the change set's to know).
+	execOpts.Fidelity = withChangeSetCaveats(execOpts.Fidelity, cs.Changes)
 	// The change set's ExecutionStatus follows the operation, as on AWS: EXECUTE_IN_PROGRESS, then
 	// EXECUTE_COMPLETE or EXECUTE_FAILED (an executed change set cannot be executed again).
 	markExecution := func(ctx context.Context, status string) {

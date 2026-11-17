@@ -339,6 +339,9 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 		// The service's tasks, deployments and events are its workload's (ecs_service_state.go).
 		if wl, ok := h.workload(ctx, at.ap.ns, at.app, svcName, launchType, at.history, tdRef); ok {
 			svc := h.serviceObject(ctx, svcName, cluster, tdRef, wl.desired, wl.running, "ACTIVE", createdAt, launchType)
+			if at.network != nil {
+				svc["networkConfiguration"] = at.network
+			}
 			svc["pendingCount"] = wl.pending
 			svc["deployments"] = wl.deployments
 			svc["events"] = eventsJSON(wl.events)
@@ -353,6 +356,9 @@ func (h *ecsDoorway) describeServices(ctx context.Context, w http.ResponseWriter
 			running = desired
 		}
 		svc := h.serviceObject(ctx, svcName, cluster, tdRef, desired, running, "ACTIVE", createdAt, launchType)
+		if at.network != nil {
+			svc["networkConfiguration"] = at.network
+		}
 		svc["deployments"], svc["events"] = []any{}, eventsJSON(h.keptEvents(ctx, svcName))
 		services = append(services, svc)
 	}

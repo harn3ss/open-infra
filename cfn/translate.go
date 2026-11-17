@@ -421,7 +421,12 @@ func translateLambdaFunction(id string, props map[string]any, ctx *stackCtx) (*M
 	var caveats []string
 	if pkg, _ := concrete(props["PackageType"]); pkg == "Image" {
 		if img, ok := concrete(code["ImageUri"]); ok && img != "" {
-			spec["image"] = img
+			// An ECR image is the account's repository in the platform's registry (ecr_image.go).
+			if ref, why := ecrImageRef(img, ctx); why != "" {
+				f = append(f, Finding{"Resource " + id, "Code.ImageUri: " + why})
+			} else {
+				spec["image"] = ref
+			}
 		} else {
 			f = append(f, Finding{"Resource " + id, "Lambda Code.ImageUri is required and must be a concrete image reference"})
 		}
@@ -3751,6 +3756,31 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 	}
 	spec, caveats, tdFindings := ecsTaskToApp(tdID, td, primaryName, ctx.account())
 	f = append(f, tdFindings...)
+	// As ECS refuses it: an awsvpc task gets its own network interface, so its service must say where
+	// (NetworkConfiguration) — the account's default subnet, by its id, is always there to name.
+	if mode, _ := concrete(td["NetworkMode"]); mode == "awsvpc" {
+		if _, ok := props["NetworkConfiguration"]; !ok {
+			f = append(f, Finding{"Resource " + id, "Network Configuration must be provided when networkMode 'awsvpc' is specified. (Name the account's default subnet: aws ec2 describe-subnets --filters Name=default-for-az,Values=true.)"})
+		}
+	}
+	// An ECR image is the account's repository in the platform's registry (ecr_image.go): the task pulls it
+	// there, with its execution role, never from AWS.
+	mapImage := func(m map[string]any) {
+		img, _ := m["image"].(string)
+		if ref, why := ecrImageRef(img, ctx); why != "" {
+			f = append(f, Finding{"Resource " + tdID, why})
+		} else if img != "" {
+			m["image"] = ref
+		}
+	}
+	mapImage(spec)
+	if sides, ok := spec["sidecars"].([]any); ok {
+		for _, sc := range sides {
+			if m, ok := sc.(map[string]any); ok {
+				mapImage(m)
+			}
+		}
+	}
 
 	// DesiredCount -> a fixed replica count (ECS Service autoscaling is a separate resource).
 	if dc, ok := props["DesiredCount"]; ok {
@@ -3912,6 +3942,9 @@ func ecsTaskToApp(tdID string, td map[string]any, primaryName, acct string) (map
 	}
 	for _, p := range []string{"NetworkMode", "RequiresCompatibilities", "RuntimePlatform"} {
 		if _, ok := td[p]; ok {
+			if mode, _ := concrete(td[p]); p == "NetworkMode" && mode == "awsvpc" {
+				continue // awsvpc: the service's NetworkConfiguration places the task in its subnet
+			}
 			caveats = append(caveats, "TaskDefinition "+p+" dropped — launch compatibility and network mode don't map")
 		}
 	}
