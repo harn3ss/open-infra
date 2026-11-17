@@ -43,10 +43,13 @@ const cfnFieldManager = "cfn-doorway"
 // principal (authority for every resource op); `shim` is the shim SA's own client, used ONLY for the
 // stack-record ConfigMap. `mapper` resolves apiVersion+Kind -> GVR (+ namespaced scope).
 type impersonatingApplier struct {
-	caller dynamic.Interface
-	shim   dynamic.Interface
-	mapper meta.RESTMapper
-	ns     string
+	// stabilize: the operation runs in CloudFormation's default (STANDARD) mode, where an ECS service is
+	// complete only at a steady state (cfn_stabilize.go); false in EXPRESS mode and outside stack operations.
+	stabilize bool
+	caller    dynamic.Interface
+	shim      dynamic.Interface
+	mapper    meta.RESTMapper
+	ns        string
 	// user/groups are the identity `caller` impersonates — recorded on a stack record while an operation
 	// runs, so an operation interrupted by a front-door restart is rolled back under the SAME authority
 	// (cloudformation_ops.go). Empty for an applier built without an impersonated identity.
@@ -300,6 +303,9 @@ func (a *impersonatingApplier) WaitReady(ctx context.Context, apiVersion, kind, 
 			cond := readyCondition(u.Object)
 			last = fmt.Sprintf("ready=%v condition=%q", ready, cond)
 			if ready || cond == "True" {
+				if a.stabilize && kind == "Application" { // an ECS service: complete at a steady state
+					return a.waitServiceStable(ctx, name, ecsStabilizeTimeout)
+				}
 				return nil
 			}
 		} else {

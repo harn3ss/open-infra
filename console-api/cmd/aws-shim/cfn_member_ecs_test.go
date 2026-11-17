@@ -29,7 +29,7 @@ Resources:
     Properties: { ServiceName: web, TaskDefinition: !Ref Task, DesiredCount: 1 }
 `
 	code, body := memberCFNCall(t, h, url.Values{"Action": {"CreateChangeSet"}, "StackName": {"web"}, "ChangeSetName": {"cs1"},
-		"ChangeSetType": {"CREATE"}, "TemplateBody": {tmpl}})
+		"ChangeSetType": {"CREATE"}, "TemplateBody": {tmpl}, "DeploymentConfig.Mode": {"EXPRESS"}}) // the fake runs no service to stabilize
 	if code != 200 {
 		t.Fatalf("CreateChangeSet: %d %s", code, body)
 	}

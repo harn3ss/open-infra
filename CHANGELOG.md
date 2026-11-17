@@ -6,6 +6,13 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a stack waits for its ECS service's steady state, as in CloudFormation's default mode
+- A stack create or update reported an `AWS::ECS::Service` complete as soon as it was applied, though its
+  tasks were still starting or could not be placed. As in AWS's default (`STANDARD`) mode, the resource is now
+  complete only once the service reaches a steady state; one that never does fails after three hours and the
+  operation rolls back. `--deployment-config '{"mode": "EXPRESS"}'` keeps the old behaviour, as AWS's express
+  mode does. See [docs/cloudformation.md](docs/cloudformation.md).
+
 ### Fixed — an image named `<account>.dkr.ecr.<region>.amazonaws.com/…` is pulled from the platform's registry
 - A task or function naming its image as AWS names an account's private registry was pulled from AWS's ECR,
   outside the platform, and failed. As on AWS, that name is the account's repository in the platform's

@@ -63,7 +63,9 @@ const cfnXMLNamespace = "http://cloudformation.amazonaws.com/doc/2010-05-15/"
 // stack whose Outputs name an instance with an encrypted root waits for that VM to copy its OS image and
 // start (cfn's outputBootWaitCap, 45 minutes), after its resources are in place, with time left to record
 // the result or roll back.
-const cfnAsyncTimeout = 60 * time.Minute
+// cfnAsyncTimeout bounds a stack operation run in the background: long enough for AWS's three hours an ECS
+// service has to stabilize in (cfn_stabilize.go), and its rollback.
+const cfnAsyncTimeout = 3*time.Hour + 30*time.Minute
 const cfnWaitTimeout = 10 * time.Minute
 
 type cfnDoorway struct {
@@ -502,10 +504,24 @@ func (h *cfnDoorway) serveQuery(w http.ResponseWriter, r *http.Request, claims i
 		return
 	}
 	switch action {
-	case "CreateStack":
-		h.createStack(w, r, ap, requestID)
-	case "UpdateStack":
-		h.updateStack(w, r, ap, requestID)
+	case "CreateStack", "UpdateStack", "CreateChangeSet":
+		// DeploymentConfig.Mode: STANDARD (the default) waits for each resource to stabilize, EXPRESS completes
+		// once its configuration is applied (cfn_stabilize.go).
+		mode, ok := deploymentMode(r.PostForm)
+		if !ok {
+			writeQueryError(w, http.StatusBadRequest, "ValidationError", requestID,
+				"1 validation error detected: Value '"+mode+"' at 'deploymentConfig.mode' failed to satisfy constraint: Member must satisfy enum value set: [STANDARD, EXPRESS]", cfnXMLNamespace)
+			return
+		}
+		ap.stabilize = mode == "STANDARD"
+		switch action {
+		case "CreateStack":
+			h.createStack(w, r, ap, requestID)
+		case "UpdateStack":
+			h.updateStack(w, r, ap, requestID)
+		default:
+			h.createChangeSet(w, r, ap, requestID)
+		}
 	case "DeleteStack":
 		h.deleteStack(w, r, ap, requestID)
 	case "DescribeStacks":
@@ -522,8 +538,6 @@ func (h *cfnDoorway) serveQuery(w http.ResponseWriter, r *http.Request, claims i
 		h.getTemplate(w, r, ap, requestID)
 	case "ValidateTemplate":
 		h.validateTemplate(w, r, requestID)
-	case "CreateChangeSet":
-		h.createChangeSet(w, r, ap, requestID)
 	case "DescribeChangeSet":
 		h.describeChangeSet(w, r, ap, requestID)
 	case "ExecuteChangeSet":
@@ -1325,13 +1339,16 @@ type changeSet struct {
 	// StackID is the StackId of the stack the change set is for: the existing stack's, or — a CREATE
 	// change set — the one the stack it creates will have ("" on a change set from before StackIds were
 	// per instance: the derived one).
-	StackID      string            `json:"stackId,omitempty"`
-	Name         string            `json:"name"`
-	TemplateBody string            `json:"templateBody"`
-	Params       map[string]string `json:"params,omitempty"` // never a NoEcho value
-	NoEchoParams []string          `json:"noEchoParams,omitempty"`
-	Type         string            `json:"type"` // CREATE | UPDATE
-	Changes      []cfn.Change      `json:"changes"`
+	StackID string `json:"stackId,omitempty"`
+	// DeploymentMode is the DeploymentConfig.Mode it was created with, which executing it applies ("" =
+	// STANDARD).
+	DeploymentMode string            `json:"deploymentMode,omitempty"`
+	Name           string            `json:"name"`
+	TemplateBody   string            `json:"templateBody"`
+	Params         map[string]string `json:"params,omitempty"` // never a NoEcho value
+	NoEchoParams   []string          `json:"noEchoParams,omitempty"`
+	Type           string            `json:"type"` // CREATE | UPDATE
+	Changes        []cfn.Change      `json:"changes"`
 	// Execution is the change set's ExecutionStatus once ExecuteChangeSet ran it: EXECUTE_IN_PROGRESS,
 	// then EXECUTE_COMPLETE or EXECUTE_FAILED, as on AWS ("" = not executed).
 	Execution string `json:"execution,omitempty"`
@@ -1423,6 +1440,9 @@ func (h *cfnDoorway) createChangeSet(w http.ResponseWriter, r *http.Request, ap 
 	plain, noEchoNames, noEchoValues := cfn.SplitNoEcho([]byte(body), params)
 	rec := &changeSet{StackName: stack, StackID: stackID, Name: csName, TemplateBody: body, Params: plain, NoEchoParams: noEchoNames,
 		Type: csType, Changes: cs.Changes, RoleARN: ap.serviceRole}
+	if !ap.stabilize {
+		rec.DeploymentMode = "EXPRESS"
+	}
 	if err := h.noecho.put(ctx, changeSetCMName(stack, csName), stack, noEchoValues); err != nil {
 		writeQueryError(w, http.StatusInternalServerError, "InternalFailure", requestID, "could not store the NoEcho parameters: "+err.Error(), cfnXMLNamespace)
 		return
@@ -1655,6 +1675,8 @@ func (h *cfnDoorway) executeChangeSet(w http.ResponseWriter, r *http.Request, ap
 		return
 	}
 	create := cs.Type == "CREATE"
+	// Executing a change set applies the deployment mode it was created with, as AWS does.
+	ap.stabilize = cs.DeploymentMode != "EXPRESS"
 	// As on AWS, executing a change set is cloudformation:ExecuteChangeSet on the stack, with no dependent
 	// action: a principal allowed it updates the stack without cloudformation:UpdateStack (decided up front,
 	// in serve; here again as the stack's caller). Only a User's coarse RBAC question (legacy) asks for the

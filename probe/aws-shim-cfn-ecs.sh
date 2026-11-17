@@ -17,6 +17,8 @@
 #   - an UPDATE change set that resizes the task reports the task definition replaced (Replacement True, Cpu
 #     and Memory RequiresRecreation Always), as AWS's does, and a role allowed cloudformation:ExecuteChangeSet
 #     and denied cloudformation:UpdateStack executes it: executing a change set is ExecuteChangeSet alone;
+#   - in CloudFormation's default (STANDARD) mode an update completes only once the service is steady (every
+#     desired task running); in EXPRESS mode (--deployment-config) it completes once applied;
 #   - a principal with no policy is refused DescribeServices and GetLogEvents with AWS's access-denied error.
 #
 # Exit 0 pass, 1 fail, 42 inconclusive. Needs the aws CLI, kubectl (KUBECONFIG) and curl; reaches the shim at
@@ -271,7 +273,37 @@ size="$(kubectl -n "$STACK_NS" get applications.openinfra.dev "$app" -o jsonpath
 [ "$size" = "500m 1024Mi" ] || fail "after the change set the task is sized '${size}', want 500m 1024Mi"
 log "  ✓ ${DEPLOYER} (UpdateStack denied: AccessDenied) executed the change set: UPDATE_COMPLETE, the task resized to 500m / 1024Mi"
 
-# --- 6. a principal with no policy is refused ------------------------------------------------------------
+# --- 6. STANDARD waits for the service's steady state; EXPRESS completes once applied -------------------
+stack_wait() { # <want>: the stack's status once it settles, as UPDATE_COMPLETE or a failure
+  local st=""
+  for _ in $(seq 1 120); do
+    st="$(as "$AAK" "$ASK" cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' 2>/dev/null)"
+    case "$st" in *_COMPLETE|*FAILED) break ;; esac
+    sleep 3
+  done
+  echo "$st"
+}
+sed -e 's/DesiredCount: 1/DesiredCount: 2/' "$TMP/template2.yaml" > "$TMP/template3.yaml"
+as "$AAK" "$ASK" cloudformation update-stack --stack-name "$STACK" --template-body "file://$TMP/template3.yaml" --capabilities CAPABILITY_IAM \
+  >/dev/null 2>"$TMP/u3" || fail "update-stack DesiredCount 2: $(head -c 300 "$TMP/u3")"
+[ "$(stack_wait)" = UPDATE_COMPLETE ] || fail "the DesiredCount 2 update did not complete"
+st="$(as "$AAK" "$ASK" ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --query 'services[0].[runningCount,pendingCount]' 2>/dev/null | tr '\t' ' ')"
+[ "$st" = "2 0" ] || fail "the stack reported UPDATE_COMPLETE with the service at running pending = ${st}: STANDARD mode must wait for its steady state"
+log "  ✓ STANDARD: the update completed only once the service was steady (running 2, pending 0)"
+sed -e 's/DesiredCount: 1/DesiredCount: 3/' "$TMP/template2.yaml" > "$TMP/template4.yaml"
+as "$AAK" "$ASK" cloudformation update-stack --stack-name "$STACK" --template-body "file://$TMP/template4.yaml" --capabilities CAPABILITY_IAM \
+  --deployment-config '{"mode": "EXPRESS"}' >/dev/null 2>"$TMP/u4" || fail "update-stack in EXPRESS mode: $(head -c 300 "$TMP/u4")"
+[ "$(stack_wait)" = UPDATE_COMPLETE ] || fail "the EXPRESS update did not complete"
+st=""
+for _ in $(seq 1 40); do
+  st="$(as "$AAK" "$ASK" ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --query 'services[0].runningCount' 2>/dev/null)"
+  [ "$st" = 3 ] && break
+  sleep 3
+done
+[ "$st" = 3 ] || fail "after the EXPRESS update the service never reached 3 tasks (running ${st})"
+log "  ✓ EXPRESS: the update completed once applied, and the service reached its 3 tasks in the background"
+
+# --- 7. a principal with no policy is refused ------------------------------------------------------------
 denied() { # <what> <command...>: the call must fail with AWS's access-denied error
   local what="$1"; shift
   if as "$NAK" "$NSK" "$@" >/dev/null 2>"$TMP/deny"; then fail "${what} was allowed for a principal with no policy"; fi
