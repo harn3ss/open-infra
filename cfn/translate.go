@@ -3820,6 +3820,16 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 			m.Caveats = append(m.Caveats, p+" dropped — an Application rolls out with the platform's rolling-update defaults")
 		}
 	}
+	// In an account whose default VPC has no internet gateway (its only VPC), a task with no
+	// NetworkConfiguration still runs inside it, as every task runs in a VPC on AWS: in its default subnet, so
+	// it reaches nothing outside the platform either.
+	if _, named := props["NetworkConfiguration"]; !named {
+		for _, ls := range ctx.caps.DefaultSubnets {
+			if ctx.caps.NoInternetSubnets[ls] {
+				m.Spec["subnet"] = ls
+			}
+		}
+	}
 	// NetworkConfiguration: the awsvpc subnet -> place the Application in a kind: Subnet (real OVN
 	// isolation, #120); SecurityGroups stay a caveat (SG -> kind: SecurityGroup is a separate half).
 	if nc, ok := props["NetworkConfiguration"].(map[string]any); ok {

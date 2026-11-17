@@ -2444,7 +2444,8 @@ main route table has only its local route. Nothing NATs its subnet out, and the 
 whatever leaves it for anywhere but the platform's own networks — the cluster's services (its AWS endpoints,
 DNS), its pods, the nodes' network and the subnet itself — before any network policy can allow it. A task
 there reaches the AWS endpoints, as through VPC endpoints on AWS, and no address outside the platform,
-whatever `AssignPublicIp` says. It can still resolve public names (the cluster's DNS answers them, as Route 53
+whatever `AssignPublicIp` says. In such an account an ECS task with no `NetworkConfiguration` runs in the default subnet too, as
+every task runs in a VPC on AWS. It can still resolve public names (the cluster's DNS answers them, as Route 53
 Resolver does in an AWS VPC), and the AWS services that reach the internet themselves (API Gateway HTTP
 integrations, Lambda functions, SNS HTTP subscriptions) do so as on AWS: keep them out of such an account's
 permissions where its tasks must not reach the internet. `probe/aws-shim-ec2-isolated-vpc.sh` proves it.

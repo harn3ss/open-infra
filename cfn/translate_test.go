@@ -700,6 +700,32 @@ Resources:
 	}
 }
 
+// In an account whose default VPC has no internet gateway, a task with no NetworkConfiguration still runs in
+// its default subnet (every task runs in a VPC on AWS); with internet, it is left where it was.
+func TestTranslate_ECSService_NoInternetAccountPlacesEveryTask(t *testing.T) {
+	tmpl := `
+Resources:
+  Task:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions: [ { Name: web, Image: web:1, PortMappings: [ { ContainerPort: 80 } ] } ]
+  Svc:
+    Type: AWS::ECS::Service
+    Properties: { TaskDefinition: !Ref Task }
+`
+	ctx := ecsCtx(t, tmpl)
+	ctx.caps.DefaultSubnets = map[string]string{"subnet-0abc": "default-vpc-111122223333"}
+	ctx.caps.NoInternetSubnets = map[string]bool{"default-vpc-111122223333": true}
+	m, fs := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx)
+	if len(fs) != 0 || m.Spec["subnet"] != "default-vpc-111122223333" {
+		t.Fatalf("a no-internet account's task: %s %v", findingsText(fs), m.Spec["subnet"])
+	}
+	ctx.caps.NoInternetSubnets = nil
+	if m, _ := translateECSService("Svc", ecsResolvedService(t, ctx, "Svc"), ctx); m.Spec["subnet"] != nil {
+		t.Fatalf("with an internet gateway a task with no NetworkConfiguration is not moved: %v", m.Spec["subnet"])
+	}
+}
+
 // #117 §1: a host-path bind-mount Volume refuses (no safe equivalent), never a silent drop.
 func TestTranslate_ECSService_HostVolumeRefused(t *testing.T) {
 	tmpl := `
