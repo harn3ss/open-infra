@@ -2,6 +2,7 @@ package cfn
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -284,4 +285,34 @@ func contains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// A MODIFIED resource that does not become ready (an ECS service that never reaches its steady state, say)
+// fails the update, which rolls back to the prior stack: the resource's prior spec is applied again.
+func TestUpdate_Rollback_WhenAModifiedResourceIsNotReady(t *testing.T) {
+	f := deployInitial(t)
+	f.applied = nil
+	f.notReady = "s-keya" // the modified key never comes ready
+	modified := []byte(`
+Resources:
+  KeyA:
+    Type: AWS::KMS::Key
+    Properties: { Description: a-changed }
+  KeyB:
+    Type: AWS::KMS::Key
+    DependsOn: KeyA
+    Properties: { Description: b }
+`)
+	rec, err := Update(context.Background(), modified, deployOpts(), f)
+	if err == nil {
+		t.Fatal("expected the update to fail")
+	}
+	if rec.Status != "UPDATE_ROLLBACK_COMPLETE" {
+		t.Fatalf("status = %s, want UPDATE_ROLLBACK_COMPLETE", rec.Status)
+	}
+	for _, r := range rec.Resources {
+		if r.LogicalID == "KeyA" && fmt.Sprint(r.Spec["description"]) != "a" {
+			t.Fatalf("the modified key's prior spec must be restored, got %v", r.Spec)
+		}
+	}
 }
