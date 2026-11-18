@@ -258,7 +258,7 @@ handed an `amazonaws.com` URL: an SDK that sends to the `QueueUrl`'s host whatev
 (the JavaScript SDK v2 does) would send an outside caller's signed request and message to AWS. A stack's
 `DescribeStacks` outputs and `ListExports` follow the same rule — a caller that came by
 `cloudformation.<region>.amazonaws.com` (a guest) gets the stack's queue URLs at `sqs.<region>.amazonaws.com`,
-every other caller the shim's own. The registry answers `<account>.dkr.ecr.<region>.amazonaws.com` through
+every other caller at the endpoint it came in by, as `GetQueueUrl` answers it. The registry answers `<account>.dkr.ecr.<region>.amazonaws.com` through
 `ecr-registry-aws`, a third instance of the same registry, whose gate serves TLS (its token realm is this
 shim's in-cluster TLS port).
 
@@ -842,9 +842,10 @@ receive-but-not-delete consumer is a real configuration).
 
 A queue is addressed by its **name**: a `QueueUrl` that names another host or account (the URL a
 CloudFormation stack reports, or one minted through another endpoint of the shim) means the queue of that
-name — queue names are unique here, so any client that reaches the shim can use any URL for it. A stack's
-queue URLs name `SQS_QUEUE_URL_BASE` (default the shim's in-cluster address; set it to a LAN endpoint so a
-client that sends to the URL's own host reaches the shim from there).
+name — queue names are unique here, so any client that reaches the shim can use any URL for it. A queue's
+URL is answered at the endpoint the caller came in by, however the queue was made (`GetQueueUrl`,
+`ListQueues`, a stack's outputs and exports). Inside a stack (a `Ref` handed to a task or function), a
+queue's URL names `SQS_QUEUE_URL_BASE` (default the shim's in-cluster address).
 
 **Queue policies decide the shim's own deliveries.** A queue's `Policy` attribute (`CreateQueue`,
 `SetQueueAttributes`, or a stack's `AWS::SQS::QueuePolicy`) is what lets an SNS topic or an EventBridge rule

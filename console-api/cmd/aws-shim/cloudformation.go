@@ -1098,15 +1098,17 @@ func (h *cfnDoorway) describeStacks(w http.ResponseWriter, r *http.Request, ap *
 	h.writeResult(w, requestID, "DescribeStacks", "<Stacks>"+members.String()+"</Stacks>")
 }
 
-// outputsFor is rec as this caller is answered with it. A stack's queue URLs are built on
-// SQS_QUEUE_URL_BASE, the shim's own address, and kept so: an SDK that sends to the QueueUrl's host
-// (the JavaScript SDKs do — v2 sets the request's endpoint from QueueUrl) ignores AWS_ENDPOINT_URL, so a
-// caller outside a VM guest handed an amazonaws.com URL would send its signed request and message to AWS
-// (the AWS CLI v2 follows its configured endpoint either way). A caller that came in by AWS's own CloudFormation name is a guest,
-// whose resolver sends sqs.<region>.amazonaws.com to this shim — and which may not reach the shim's own
-// address at all — so it is answered with the AWS-form URLs, as the SQS front door answers it.
+// outputsFor is rec as this caller is answered with it. A stack's queue URLs are recorded on
+// SQS_QUEUE_URL_BASE, the shim's own address inside the cluster, and each caller is answered with them at
+// the endpoint it came in by, as the SQS front door answers GetQueueUrl and ListQueues (an SQS queue has one
+// URL for whoever asks): a caller outside the cluster gets a URL it can use, never the cluster-internal one.
+// Never an amazonaws.com URL to a caller that did not come in by an AWS name: an SDK that sends to the
+// QueueUrl's host (the JavaScript SDKs do — v2 sets the request's endpoint from QueueUrl) ignores
+// AWS_ENDPOINT_URL, so it would send that caller's signed request and message to AWS. A caller that came in
+// by AWS's own CloudFormation name is a guest, whose resolver sends sqs.<region>.amazonaws.com to this
+// shim — and which may not reach the shim's own address at all — so it is answered with the AWS-form URLs.
 func (h *cfnDoorway) outputsFor(r *http.Request, rec *cfn.StackRecord) *cfn.StackRecord {
-	if !awsCloudFormationHost(r) || len(rec.Outputs) == 0 {
+	if len(rec.Outputs) == 0 {
 		return rec
 	}
 	out := *rec
@@ -1118,19 +1120,20 @@ func (h *cfnDoorway) outputsFor(r *http.Request, rec *cfn.StackRecord) *cfn.Stac
 	return &out
 }
 
-// queueURLsFor is a stack output or export value as this caller is answered with it: each queue URL on
-// the shim's own base in AWS's form for a caller that came in by AWS's CloudFormation name (outputsFor),
-// the value unchanged for any other.
+// queueURLsFor is a stack output or export value as this caller is answered with it (outputsFor): each
+// queue URL on the shim's own base at the caller's endpoint, in AWS's form for a caller that came in by
+// AWS's CloudFormation name.
 func (h *cfnDoorway) queueURLsFor(r *http.Request, v string) string {
-	if !awsCloudFormationHost(r) {
-		return v
-	}
 	base := strings.TrimRight(h.sqsURLBase, "/")
 	if base == "" {
 		base = defaultQueueURLBase
 	}
+	to := callerEndpoint(r)
+	if awsCloudFormationHost(r) {
+		to = "https://sqs." + h.region + ".amazonaws.com"
+	}
 	account := h.accountFor(r.Context()) // a stack's queue URLs name its account
-	return strings.ReplaceAll(v, base+"/"+account+"/", "https://sqs."+h.region+".amazonaws.com/"+account+"/")
+	return strings.ReplaceAll(v, base+"/"+account+"/", to+"/"+account+"/")
 }
 
 func (h *cfnDoorway) stackMemberXML(rec *cfn.StackRecord) string {

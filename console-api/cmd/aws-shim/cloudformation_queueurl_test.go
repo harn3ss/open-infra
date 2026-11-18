@@ -12,12 +12,13 @@ import (
 	"github.com/harn3ss/open-infra/cfn"
 )
 
-// #350 Y: a stack's queue URLs stay on SQS_QUEUE_URL_BASE (the shim's own address) for every caller but
-// a VM guest. An SDK that sends to the QueueUrl's host — the JavaScript SDK v2 sets the request's
-// endpoint from QueueUrl, whatever endpoint it was given — would send an outside caller's signed request
-// and message to AWS if it were handed an amazonaws.com URL. A guest, which comes in by AWS's own
-// CloudFormation name and resolves sqs.<region>.amazonaws.com to this shim (and may not reach the shim's
-// own address), is answered with the AWS-form URLs, as the SQS front door answers it.
+// A stack's queue URLs are recorded on SQS_QUEUE_URL_BASE (the shim's own address inside the cluster), and
+// each caller is answered with them at the endpoint it came in by, as the SQS front door answers it: a caller
+// outside the cluster gets a URL it can use. Never an amazonaws.com URL to a caller that did not use an AWS
+// name (#350 Y): an SDK that sends to the QueueUrl's host — the JavaScript SDK v2 sets the request's endpoint
+// from QueueUrl, whatever endpoint it was given — would send that caller's signed request and message to
+// AWS. A guest, which comes in by AWS's own CloudFormation name and resolves sqs.<region>.amazonaws.com to
+// this shim (and may not reach the shim's own address), is answered with the AWS-form URLs.
 func TestCFN_QueueURLOutputsFollowTheCallersName(t *testing.T) {
 	h, ap := cfnTestDoorway(t, "")
 	h.sqsURLBase = "https://shim.example:4566"
@@ -49,8 +50,9 @@ func TestCFN_QueueURLOutputsFollowTheCallersName(t *testing.T) {
 	}
 	for _, host := range []string{"aws-shim.open-infra-aws-shim.svc.cluster.local:4566", "shim.example:4566", "192.0.2.7:4566"} {
 		got := describe(host)
-		if got["QueueUrl"] != own || got["Config"] != "queue="+own {
-			t.Errorf("%s: a caller outside a guest gets the shim's queue URL, never an amazonaws.com one: %v", host, got)
+		at := "http://" + host + "/" + h.account + "/jobs"
+		if got["QueueUrl"] != at || got["Config"] != "queue="+at {
+			t.Errorf("%s: a caller gets the queue's URL at its own endpoint, never an amazonaws.com one: %v", host, got)
 		}
 	}
 	awsForm := "https://sqs." + h.region + ".amazonaws.com/" + h.account + "/jobs"
@@ -71,7 +73,7 @@ func TestCFN_QueueURLOutputsFollowTheCallersName(t *testing.T) {
 		h.listExports(rr, req, "req")
 		return rr.Body.String()
 	}
-	if b := exports("shim.example:4566"); !strings.Contains(b, "<Value>"+own+"</Value>") {
+	if b := exports("shim.example:4566"); !strings.Contains(b, "<Value>http://shim.example:4566/"+h.account+"/jobs</Value>") {
 		t.Errorf("ListExports outside a guest:\n%s", b)
 	}
 	if b := exports("cloudformation." + h.region + ".amazonaws.com"); !strings.Contains(b, "<Value>"+awsForm+"</Value>") {

@@ -714,11 +714,17 @@ func (h *sqsHandler) internal(w http.ResponseWriter, requestID string, err error
 
 // queueURLIn is the URL of account's queue name at the caller's own endpoint.
 func (h *sqsHandler) queueURLIn(r *http.Request, account, name string) string {
+	return callerEndpoint(r) + "/" + account + "/" + name
+}
+
+// callerEndpoint is the endpoint the caller came in by: its scheme (https behind a TLS-terminating
+// ingress too) and host.
+func callerEndpoint(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 		scheme = "https"
 	}
-	return scheme + "://" + r.Host + "/" + account + "/" + name
+	return scheme + "://" + r.Host
 }
 
 // queueURLs is the URL a new queue of the management account is recorded under, and the one its creator

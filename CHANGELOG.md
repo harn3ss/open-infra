@@ -10,7 +10,8 @@ the product's public contract.
 - A queue a CloudFormation stack made was reported with the platform's in-cluster address (plain HTTP), and a
   queue made through the SQS API with the creator's endpoint. As an SQS queue has one URL for whoever asks,
   `CreateQueue`, `GetQueueUrl` and `ListQueues` now answer every caller with the queue's URL at the endpoint
-  that caller came in by, however the queue was made.
+  that caller came in by, however the queue was made, and so do a stack's `DescribeStacks` outputs and
+  `ListExports`.
 
 ### Fixed — a default VPC without its internet gateway shows its network ACL's rules
 - `DescribeNetworkAcls` reported such a VPC's ACL with AWS's allow-everything rules, though its subnet allows
