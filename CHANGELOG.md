@@ -6,6 +6,22 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a queue's URL is the same however the queue was made
+- A queue a CloudFormation stack made was reported with the platform's in-cluster address (plain HTTP), and a
+  queue made through the SQS API with the creator's endpoint. As an SQS queue has one URL for whoever asks,
+  `CreateQueue`, `GetQueueUrl` and `ListQueues` now answer every caller with the queue's URL at the endpoint
+  that caller came in by, however the queue was made.
+
+### Fixed — a default VPC without its internet gateway shows its network ACL's rules
+- `DescribeNetworkAcls` reported such a VPC's ACL with AWS's allow-everything rules, though its subnet allows
+  traffic out only to the platform's networks. It now shows those rules: egress allowed to the platform's
+  networks and the subnet, then denied.
+
+### Added — Route 53 Resolver serves accounts' default VPCs
+- The VPC resolver (Route 53 Resolver's DNS Firewall and query logging) answers tasks in an account's default
+  VPC as it answers Lambda functions in a VPC, and `AssociateFirewallRuleGroup` accepts the default VPC's id,
+  so a DNS Firewall rule group associated with it decides what its tasks may resolve.
+
 ### Fixed — a policy naming another account's role by its ARN allows assuming it
 - A principal whose policy allowed `sts:AssumeRole` on another account's role by that role's ARN (its account
   in it, as AWS policies name it) was refused, because the role was evaluated as if it were in the caller's

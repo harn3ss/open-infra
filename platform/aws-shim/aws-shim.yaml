@@ -273,10 +273,12 @@ rules:
     resources: [ips]
     verbs: [get, list, watch]
   # The account's default VPC (ec2_default_vpc.go): its default subnet, read by name (default-vpc, or
-  # default-vpc-<account id>) for EC2's Describe* and for the subnet id a service's NetworkConfiguration names.
+  # default-vpc-<account id>) for EC2's Describe* and for the subnet id a service's NetworkConfiguration names;
+  # and the default subnets listed (labelled openinfra.dev/default-vpc) so the VPC resolver knows which
+  # account's default VPC a query comes from (vpcresolver_default.go).
   - apiGroups: [kubeovn.io]
     resources: [subnets]
-    verbs: [get]
+    verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

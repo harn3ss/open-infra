@@ -751,12 +751,11 @@ func (h *sqsHandler) answerURL(r *http.Request, stored string) string {
 	return h.answerURLIn(r, h.account, stored)
 }
 
-// answerURLIn is the URL account's queue recorded under stored is reported to this caller with: the
-// recorded URL, or, for a caller that came in by an AWS name, the queue's URL at that name (queueURLsIn).
+// answerURLIn is the URL account's queue recorded under stored is reported to this caller with: the queue's
+// URL at the endpoint the caller came in by (https://<its host>/<account>/<name>, or AWS's name for a caller
+// that used one), however the queue was made — through the SQS API or by a stack inside the cluster — as an
+// SQS queue has one URL for whoever asks. The recorded URL is only the queue's key.
 func (h *sqsHandler) answerURLIn(r *http.Request, account, stored string) string {
-	if !awsSQSHost(r) {
-		return stored
-	}
 	return h.queueURLIn(r, account, queueNameFromURL(stored))
 }
 

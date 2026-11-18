@@ -1797,11 +1797,14 @@ func ec2VPCLister(ec2 *ec2Handler) vpcLister {
 		if err != nil || denied {
 			return nil, denied, err
 		}
-		ids := make([]string, 0, len(items))
+		ids := make([]string, 0, len(items)+1)
 		for i := range items {
 			if items[i].GetDeletionTimestamp() == nil {
 				ids = append(ids, items[i].GetName())
 			}
+		}
+		if d := ec2.defaultVPCOf(ctx); d != nil {
+			ids = append(ids, d.vpcID()) // the account's default VPC (ec2_default_vpc.go)
 		}
 		return ids, false, nil
 	}

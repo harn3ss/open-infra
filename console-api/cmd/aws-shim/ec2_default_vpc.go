@@ -178,7 +178,29 @@ func (d *defaultVPC) routeTable() ec2RouteTable {
 }
 
 func (d *defaultVPC) networkACL() ec2NetworkACL {
-	return ec2NetworkACL{id: d.aclID(), vpc: d.vpcID(), isDefault: true, entries: defaultACLEntries(), subnets: []string{d.subnetID()}}
+	entries := defaultACLEntries()
+	if !d.internet {
+		entries = isolatedACLEntries(d.cidr)
+	}
+	return ec2NetworkACL{id: d.aclID(), vpc: d.vpcID(), isDefault: true, entries: entries, subnets: []string{d.subnetID()}}
+}
+
+// platformNetworks are the networks a default VPC without its internet gateway may still reach: the cluster's
+// services (its AWS endpoints, DNS), its pods and the nodes' join network (account-composition.yaml's ACL).
+var platformNetworks = []string{"10.43.0.0/16", "10.16.0.0/16", "100.64.0.0/16"}
+
+// isolatedACLEntries are the network ACL rules a default VPC without its internet gateway has, as its subnet
+// enforces them: egress allowed to the platform's networks and the subnet itself, every other destination
+// denied; ingress as AWS's default ACL allows it (its subnet takes what its security groups admit).
+func isolatedACLEntries(cidr string) []ec2ACLEntry {
+	var out []ec2ACLEntry
+	for i, c := range append(append([]string{}, platformNetworks...), cidr) {
+		out = append(out, ec2ACLEntry{rule: 100 + 10*i, protocol: "-1", action: "allow", cidr: c, egress: true})
+	}
+	out = append(out, ec2ACLEntry{rule: 32767, protocol: "-1", action: "deny", cidr: "0.0.0.0/0", egress: true},
+		ec2ACLEntry{rule: 100, protocol: "-1", action: "allow", cidr: "0.0.0.0/0", egress: false},
+		ec2ACLEntry{rule: 32767, protocol: "-1", action: "deny", cidr: "0.0.0.0/0", egress: false})
+	return out
 }
 
 // --- DescribeAccountAttributes / CreateDefaultVpc ---

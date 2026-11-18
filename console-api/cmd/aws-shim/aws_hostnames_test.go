@@ -81,7 +81,9 @@ func TestS3Decode_ShimNameAndAWSNamesVirtualHosted(t *testing.T) {
 
 // A caller that came by an AWS SQS name gets AWS-shaped queue URLs, but the queue is recorded under the
 // shim's own URL: no other caller is ever handed an amazonaws.com URL (an SDK that sends to the QueueUrl's
-// host would send its credentials and messages to AWS). Every other caller sees exactly what it did.
+// host would send its credentials and messages to AWS). Every other caller is answered at its own endpoint,
+// however the queue was recorded (a stack's queue under the shim's in-cluster URL, say), as an SQS queue has
+// one URL for whoever asks.
 func TestSQS_QueueURLsFollowTheCallersAWSName(t *testing.T) {
 	h := &sqsHandler{account: "000000000000"}
 	req := func(host string, tlsOn bool) *http.Request {
@@ -114,9 +116,11 @@ func TestSQS_QueueURLsFollowTheCallersAWSName(t *testing.T) {
 		if stored != answer || !strings.HasPrefix(stored, "http") || !strings.Contains(stored, r.Host+"/000000000000/jobs") {
 			t.Errorf("%s: recorded %q answered %q, want both the caller's own endpoint", r.Host, stored, answer)
 		}
-		const rec = "https://sqs.us-east-1.amazonaws.com/000000000000/legacy"
-		if got := h.answerURL(r, rec); got != rec {
-			t.Errorf("%s: a recorded URL is reported unchanged to a caller that did not come by an AWS name, got %q", r.Host, got)
+		for _, rec := range []string{"https://sqs.us-east-1.amazonaws.com/000000000000/legacy",
+			defaultQueueURLBase + "/000000000000/legacy"} {
+			if got := h.answerURL(r, rec); !strings.HasSuffix(got, "://"+r.Host+"/000000000000/legacy") {
+				t.Errorf("%s: a queue recorded under %s is answered at the caller's own endpoint, got %q", r.Host, rec, got)
+			}
 		}
 	}
 }
