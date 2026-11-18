@@ -223,9 +223,10 @@ func TestServicesPG_SQSQueue(t *testing.T) {
 	if l, found, _ := f.ap.GetLabels(ctx, cfn.ServiceAPIVersion, cfn.KindSQSQueue, "st-q"); !found || l["cfn.openinfra.dev/stack"] != "st" {
 		t.Fatalf("labels = %v (found %v)", l, found)
 	}
+	// A stack's queue is answered at the caller's endpoint, as one the SQS API made is.
 	code, out := f.callJSON(t, f.sqs.serve, "AmazonSQS.GetQueueUrl", map[string]any{"QueueName": "st-q"})
-	if code != 200 || out["QueueUrl"] != stackURL {
-		t.Fatalf("GetQueueUrl = %d %v", code, out)
+	if code != 200 || out["QueueUrl"] != "http://shim.local:4566/123456789012/st-q" {
+		t.Fatalf("GetQueueUrl = %d %v (recorded under %s)", code, out, stackURL)
 	}
 	// Any host/account in the URL names the same queue.
 	code, out = f.callJSON(t, f.sqs.serve, "AmazonSQS.SendMessage", map[string]any{"QueueUrl": "https://sqs.us-east-1.amazonaws.com/123456789012/st-q", "MessageBody": "hello"})

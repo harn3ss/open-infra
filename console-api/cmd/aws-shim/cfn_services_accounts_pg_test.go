@@ -103,8 +103,9 @@ func TestServicesPG_MemberStackProvisionsInItsAccount(t *testing.T) {
 	if spec, found, _ := mem.GetSpec(mctx, cfn.ServiceAPIVersion, cfn.KindSSMParameter, "/st/p"); !found || spec["value"] != "member" {
 		t.Errorf("the member account's parameter, as its stack reads it: %v", spec)
 	}
-	// The member account's API reaches its own.
-	if code, out := memberDoorCaller().call(t, f.sqs.serve, "AmazonSQS.GetQueueUrl", map[string]any{"QueueName": "st-q"}); code != 200 || out["QueueUrl"] != memberQueue {
+	// The member account's API reaches its own, answered at the caller's endpoint (as every queue is).
+	if code, out := memberDoorCaller().call(t, f.sqs.serve, "AmazonSQS.GetQueueUrl", map[string]any{"QueueName": "st-q"}); code != 200 ||
+		out["QueueUrl"] != "http://shim.local:4566/"+testMember+"/st-q" {
 		t.Errorf("member GetQueueUrl: %d %v", code, out)
 	}
 	// A member account's stack never reaches the management account's key, by id or by alias.
