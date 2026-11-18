@@ -2445,10 +2445,17 @@ whatever leaves it for anywhere but the platform's own networks — the cluster'
 DNS), its pods, the nodes' network and the subnet itself — before any network policy can allow it. A task
 there reaches the AWS endpoints, as through VPC endpoints on AWS, and no address outside the platform,
 whatever `AssignPublicIp` says. In such an account an ECS task with no `NetworkConfiguration` runs in the default subnet too, as
-every task runs in a VPC on AWS. It can still resolve public names (the cluster's DNS answers them, as Route 53
-Resolver does in an AWS VPC), and the AWS services that reach the internet themselves (API Gateway HTTP
-integrations, Lambda functions, SNS HTTP subscriptions) do so as on AWS: keep them out of such an account's
-permissions where its tasks must not reach the internet. `probe/aws-shim-ec2-isolated-vpc.sh` proves it.
+every task runs in a VPC on AWS. The AWS services that reach the internet themselves (API Gateway HTTP integrations, Lambda
+functions, SNS HTTP subscriptions) do so as on AWS: keep them out of such an account's permissions where its
+tasks must not reach the internet.
+
+**DNS in a default VPC.** A task in an account's default VPC uses the VPC resolver as its DNS (Route 53
+Resolver, as every AWS VPC's), so a Route 53 Resolver DNS Firewall rule group associated with the default VPC
+(`aws route53resolver associate-firewall-rule-group --vpc-id <its id>`) decides what its tasks may resolve,
+and its query logging configurations log their queries. In a default VPC without its internet gateway the
+subnet's network ACL also drops DNS to any other server, so the firewall cannot be gone around; with one
+blocking every name but the platform's (`*.cluster.local`), a task there resolves nothing outside the
+platform either. `probe/aws-shim-ec2-isolated-vpc.sh` proves it.
 
 Key pairs: `ImportKeyPair` (RSA or ED25519, with AWS's fingerprints), `CreateKeyPair` (the private key is
 returned once, never kept), `DescribeKeyPairs` and `DeleteKeyPair`, in the shim's Postgres. An instance's

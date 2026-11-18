@@ -363,8 +363,11 @@ func TestAccount_DefaultVPCWithoutInternetGateway(t *testing.T) {
 		"defaultVpc": map[string]any{"subnetCidr": "172.31.64.0/20", "internetGateway": false}}, "000000000000")
 	s := byKind(docs)["Subnet"][0]
 	acls, _ := mget(s, "spec", "acls").([]any)
-	if fmt.Sprint(mget(s, "spec", "natOutgoing")) != "false" || len(acls) != 1 {
+	if fmt.Sprint(mget(s, "spec", "natOutgoing")) != "false" || len(acls) != 2 {
 		t.Fatalf("an isolated default subnet: %v", s)
+	}
+	if d := acls[1].(map[string]any); d["action"] != "drop" || d["match"] != "(udp.dst == 53 || tcp.dst == 53) && ip4.dst != 10.43.0.2" {
+		t.Fatalf("its DNS goes to the VPC resolver alone: %v", d)
 	}
 	a := acls[0].(map[string]any)
 	if a["direction"] != "from-lport" || a["action"] != "drop" ||

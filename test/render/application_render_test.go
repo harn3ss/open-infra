@@ -386,3 +386,26 @@ func TestApplication_ServicePortCollisions(t *testing.T) {
 		t.Error("xrd.yaml must carry the x-kubernetes-validations rule rejecting an additionalPorts entry that takes http or 80/TCP beside spec.port")
 	}
 }
+
+// A task in an account's default VPC uses the VPC resolver (Route 53 Resolver, the vpc-resolver Service's
+// fixed address) as its DNS, with the cluster's search path; a task in any other subnet, or none, keeps the
+// cluster's DNS.
+func TestApplication_DefaultVPCTaskUsesTheVPCResolver(t *testing.T) {
+	tmpl := extractInlineTemplate(t, compositionPath)
+	out := render(t, tmpl, appCtx(map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080, "subnet": "default-vpc-111122223333"}))
+	mustContain(t, "a default-VPC task", out, "dnsPolicy: None", `nameservers: [ "10.43.0.2" ]`,
+		`searches: [ "default.svc.cluster.local", "svc.cluster.local", "cluster.local" ]`)
+	resolver := yamlDoc(t, "../../platform/aws-shim/lambda-vpc.yaml", "Service", "vpc-resolver")
+	if !strings.Contains(resolver, "clusterIP: 10.43.0.2") {
+		t.Fatal("the composition's resolver address must be the vpc-resolver Service's clusterIP")
+	}
+	for _, subnet := range []string{"", "my-subnet"} {
+		spec := map[string]any{"image": "ghcr.io/x/app:latest", "port": 8080}
+		if subnet != "" {
+			spec["subnet"] = subnet
+		}
+		if out := render(t, tmpl, appCtx(spec)); strings.Contains(out, "10.43.0.2") || strings.Contains(out, "dnsPolicy: None") {
+			t.Errorf("subnet %q: only a default-VPC task uses the VPC resolver", subnet)
+		}
+	}
+}

@@ -265,6 +265,17 @@ spec:
                       spec:
                         # enableServiceLinks off: per-Service env overflows execve (E2BIG) in dense namespaces; unused here.
                         enableServiceLinks: false
+                        {{- if hasPrefix "default-vpc" ($spec.subnet | default "") }}
+                        # In an account's default VPC: the VPC resolver is the task's DNS, as Route 53 Resolver is
+                        # every VPC's (the vpc-resolver Service, platform/aws-shim/lambda-vpc.yaml): the DNS Firewall
+                        # rule groups associated with the VPC decide what it may resolve, with the cluster's search
+                        # path (vpcresolver_default.go).
+                        dnsPolicy: None
+                        dnsConfig:
+                          nameservers: [ "10.43.0.2" ]
+                          searches: [ {{ printf "%s.svc.cluster.local" $ns | toJson }}, "svc.cluster.local", "cluster.local" ]
+                          options: [ { name: ndots, value: "5" } ]
+                        {{- end }}
                         {{- if $spec.expose }}
                         # A lan-expose EIP is a kube-ovn distributed FIP, reachable from
                         # the LAN only when the backing pod runs on the external-gateway

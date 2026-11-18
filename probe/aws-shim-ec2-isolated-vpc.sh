@@ -8,6 +8,8 @@
 #   - from inside the task (the operator's view): the platform's AWS endpoint and DNS answer, and a
 #     connection to the internet (example.com, 1.1.1.1, 8.8.8.8) does not get through — the subnet's network
 #     ACL drops whatever leaves for anywhere but the platform's own networks;
+#   - with a Route 53 Resolver DNS Firewall rule group associated with the VPC (list-firewall-rule-group-
+#     associations), the task resolves the platform's names and not example.com, nor through another resolver;
 #   - a principal with no policy is refused DescribeInternetGateways with EC2's access-denied error.
 #
 # Exit 0 pass, 1 fail, 42 inconclusive. Needs the aws CLI, kubectl (KUBECONFIG) and curl; reaches the shim at
@@ -129,6 +131,15 @@ for target in http://example.com/ http://1.1.1.1/ http://8.8.8.8/; do
   fi
 done
 log "  ✓ from the task: the AWS endpoint and its DNS answer; example.com, 1.1.1.1 and 8.8.8.8 are unreachable"
+
+# --- 3b. its DNS Firewall, when one is associated with the VPC (Route 53 Resolver) --------------------------
+assoc="$(mem route53resolver list-firewall-rule-group-associations --vpc-id "$VPC" --query 'length(FirewallRuleGroupAssociations)' 2>/dev/null)"
+if [ -n "$assoc" ] && [ "$assoc" != 0 ]; then
+  inpod nslookup "aws-shim.${SHIM_NS}.svc.cluster.local" >/dev/null 2>&1 || fail "with its DNS Firewall the task cannot resolve the platform's names"
+  if inpod nslookup example.com >/dev/null 2>&1; then fail "the task resolved example.com though its VPC's DNS Firewall blocks it"; fi
+  if inpod nslookup example.com 10.43.0.10 >/dev/null 2>&1; then fail "the task went around its VPC's resolver to the cluster's"; fi
+  log "  ✓ DNS Firewall (${assoc} association(s) on ${VPC}): the platform's names resolve; example.com does not, nor through another resolver"
+fi
 
 # --- 4. a principal with no policy is refused ------------------------------------------------------------
 if as "$NAK" "$NSK" ec2 describe-internet-gateways >/dev/null 2>"$TMP/deny"; then fail "describe-internet-gateways was allowed for a principal with no policy"; fi

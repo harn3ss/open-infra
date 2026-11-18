@@ -20,7 +20,9 @@ the product's public contract.
 ### Added — Route 53 Resolver serves accounts' default VPCs
 - The VPC resolver (Route 53 Resolver's DNS Firewall and query logging) answers tasks in an account's default
   VPC as it answers Lambda functions in a VPC, and `AssociateFirewallRuleGroup` accepts the default VPC's id,
-  so a DNS Firewall rule group associated with it decides what its tasks may resolve.
+  so a DNS Firewall rule group associated with it decides what its tasks may resolve. A task in a default VPC
+  uses the VPC resolver as its DNS; in a default VPC without its internet gateway, DNS to any other server is
+  dropped, so the firewall cannot be gone around.
 
 ### Fixed — a policy naming another account's role by its ARN allows assuming it
 - A principal whose policy allowed `sts:AssumeRole` on another account's role by that role's ARN (its account
