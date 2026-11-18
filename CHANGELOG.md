@@ -14,8 +14,8 @@ the product's public contract.
 
 ### Fixed — a default VPC without its internet gateway shows its network ACL's rules
 - `DescribeNetworkAcls` reported such a VPC's ACL with AWS's allow-everything rules, though its subnet allows
-  traffic out only to the platform's networks. It now shows those rules: egress allowed to the platform's
-  networks and the subnet, then denied.
+  traffic out only to the platform's networks. It now shows those rules: DNS (UDP and TCP 53) allowed only to
+  the VPC resolver, egress allowed to the platform's networks and the subnet, then denied.
 
 ### Added — Route 53 Resolver serves accounts' default VPCs
 - The VPC resolver (Route 53 Resolver's DNS Firewall and query logging) answers tasks in an account's default

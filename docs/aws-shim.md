@@ -2453,9 +2453,12 @@ tasks must not reach the internet.
 Resolver, as every AWS VPC's), so a Route 53 Resolver DNS Firewall rule group associated with the default VPC
 (`aws route53resolver associate-firewall-rule-group --vpc-id <its id>`) decides what its tasks may resolve,
 and its query logging configurations log their queries. In a default VPC without its internet gateway the
-subnet's network ACL also drops DNS to any other server, so the firewall cannot be gone around; with one
-blocking every name but the platform's (`*.cluster.local`), a task there resolves nothing outside the
-platform either. `probe/aws-shim-ec2-isolated-vpc.sh` proves it.
+subnet's network ACL also drops DNS to any other server (`DescribeNetworkAcls` shows it: UDP and TCP 53
+allowed to the VPC resolver, denied anywhere else), so the firewall cannot be gone around. With a rule group
+that allows the platform's names (`*.cluster.local`, and `*.amazonaws.com`, which the VPC resolver answers
+itself: an AWS name the platform serves with its front door, any other with NXDOMAIN, never sent on) and
+blocks every other (`*`), a task there resolves nothing outside the platform either.
+`probe/aws-shim-ec2-isolated-vpc.sh` proves it (`FIREWALL_ALLOWS` names more names the rule group allows).
 
 Key pairs: `ImportKeyPair` (RSA or ED25519, with AWS's fingerprints), `CreateKeyPair` (the private key is
 returned once, never kept), `DescribeKeyPairs` and `DeleteKeyPair`, in the shim's Postgres. An instance's

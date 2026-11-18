@@ -189,11 +189,22 @@ func (d *defaultVPC) networkACL() ec2NetworkACL {
 // services (its AWS endpoints, DNS), its pods and the nodes' join network (account-composition.yaml's ACL).
 var platformNetworks = []string{"10.43.0.0/16", "10.16.0.0/16", "100.64.0.0/16"}
 
+// vpcResolverAddress is the VPC resolver's (Route 53 Resolver's) address, the vpc-resolver Service: the only
+// DNS server a default VPC without its internet gateway may ask (account-composition.yaml's DNS ACL).
+const vpcResolverAddress = "10.43.0.2"
+
 // isolatedACLEntries are the network ACL rules a default VPC without its internet gateway has, as its subnet
-// enforces them: egress allowed to the platform's networks and the subnet itself, every other destination
-// denied; ingress as AWS's default ACL allows it (its subnet takes what its security groups admit).
+// enforces them: DNS (UDP and TCP 53) only to the VPC resolver, so its DNS Firewall cannot be gone around;
+// egress allowed to the platform's networks and the subnet itself, every other destination denied; ingress
+// as AWS's default ACL allows it (its subnet takes what its security groups admit).
 func isolatedACLEntries(cidr string) []ec2ACLEntry {
-	var out []ec2ACLEntry
+	resolver := vpcResolverAddress + "/32"
+	out := []ec2ACLEntry{
+		{rule: 90, protocol: "17", action: "allow", cidr: resolver, egress: true, port: 53},
+		{rule: 91, protocol: "6", action: "allow", cidr: resolver, egress: true, port: 53},
+		{rule: 92, protocol: "17", action: "deny", cidr: "0.0.0.0/0", egress: true, port: 53},
+		{rule: 93, protocol: "6", action: "deny", cidr: "0.0.0.0/0", egress: true, port: 53},
+	}
 	for i, c := range append(append([]string{}, platformNetworks...), cidr) {
 		out = append(out, ec2ACLEntry{rule: 100 + 10*i, protocol: "-1", action: "allow", cidr: c, egress: true})
 	}

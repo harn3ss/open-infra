@@ -135,9 +135,15 @@ func TestEC2DefaultVPC_WithoutItsInternetGateway(t *testing.T) {
 	if b := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeVpcs"}, "Filter.1.Name": {"is-default"}, "Filter.1.Value.1": {"true"}}).Body.String(); !strings.Contains(b, d.vpcID()) {
 		t.Errorf("it is still the default VPC: %s", b)
 	}
-	// Its network ACL shows what its subnet enforces: egress to the platform's networks and itself, then deny.
+	// Its network ACL shows what its subnet enforces: DNS only to the VPC resolver, egress to the platform's
+	// networks and itself, then deny.
 	b = ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeNetworkAcls"}, "Filter.1.Name": {"vpc-id"}, "Filter.1.Value.1": {d.vpcID()}}).Body.String()
-	for _, want := range []string{"<ruleNumber>100</ruleNumber><protocol>-1</protocol><ruleAction>allow</ruleAction><egress>true</egress><cidrBlock>10.43.0.0/16</cidrBlock>",
+	for _, want := range []string{
+		"<ruleNumber>90</ruleNumber><protocol>17</protocol><ruleAction>allow</ruleAction><egress>true</egress><cidrBlock>10.43.0.2/32</cidrBlock><portRange><from>53</from><to>53</to></portRange>",
+		"<ruleNumber>91</ruleNumber><protocol>6</protocol><ruleAction>allow</ruleAction><egress>true</egress><cidrBlock>10.43.0.2/32</cidrBlock><portRange><from>53</from><to>53</to></portRange>",
+		"<ruleNumber>92</ruleNumber><protocol>17</protocol><ruleAction>deny</ruleAction><egress>true</egress><cidrBlock>0.0.0.0/0</cidrBlock><portRange><from>53</from><to>53</to></portRange>",
+		"<ruleNumber>93</ruleNumber><protocol>6</protocol><ruleAction>deny</ruleAction><egress>true</egress><cidrBlock>0.0.0.0/0</cidrBlock><portRange><from>53</from><to>53</to></portRange>",
+		"<ruleNumber>100</ruleNumber><protocol>-1</protocol><ruleAction>allow</ruleAction><egress>true</egress><cidrBlock>10.43.0.0/16</cidrBlock>",
 		"<cidrBlock>172.31.0.0/20</cidrBlock>", "<ruleNumber>32767</ruleNumber><protocol>-1</protocol><ruleAction>deny</ruleAction><egress>true</egress><cidrBlock>0.0.0.0/0</cidrBlock>"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("its network ACL lacks %s: %s", want, b)
