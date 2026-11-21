@@ -11,6 +11,9 @@
 #   - with a Route 53 Resolver DNS Firewall rule group associated with the VPC (list-firewall-rule-group-
 #     associations), the task resolves the platform's names (and FIREWALL_ALLOWS, more names its rule groups
 #     allow, e.g. sqs.us-east-1.amazonaws.com) and not example.com, nor through another resolver;
+#   - with INSTANCE_STEP (default 1; 0 for an account too small for an instance): an AWS::EC2::Instance that
+#     names no subnet launches in the default subnet (DescribeInstances reports it in the default VPC), and
+#     from inside it (SSM Run Command) the platform's AWS endpoint answers and example.com does not;
 #   - a principal with no policy is refused DescribeInternetGateways with EC2's access-denied error.
 #
 # Exit 0 pass, 1 fail, 42 inconclusive. Needs the aws CLI, kubectl (KUBECONFIG) and curl; reaches the shim at
@@ -36,11 +39,15 @@ curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not r
 
 ADMIN="isovpc-admin-$SFX"; NOPOL="isovpc-nopol-$SFX"; SERVICE="isovpc-$SFX"; FAMILY="isovpc-$SFX"
 ACCT="${ACCOUNT_ID:?ACCOUNT_ID: a member account whose default VPC has no internet gateway}"
-CREATED_KEYS=(); CREATED_USERS=(); MADE_SERVICE=""
+CREATED_KEYS=(); CREATED_USERS=(); MADE_SERVICE=""; MADE_STACK=""; ISTACK="isovpc-instance-$SFX"
 as() { local ak="$1" sk="$2"; shift 2
   AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" \
     aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text "$@"; }
 cleanup() {
+  if [ -n "$MADE_STACK" ]; then
+    mem cloudformation delete-stack --stack-name "$ISTACK" >/dev/null 2>&1
+    mem cloudformation wait stack-delete-complete --stack-name "$ISTACK" >/dev/null 2>&1
+  fi
   if [ -n "$MADE_SERVICE" ]; then
     mem ecs delete-service --service "$SERVICE" --force >/dev/null 2>&1
     mem ecs deregister-task-definition --task-definition "$FAMILY:1" >/dev/null 2>&1
@@ -143,6 +150,39 @@ if [ -n "$assoc" ] && [ "$assoc" != 0 ]; then
   if inpod nslookup example.com >/dev/null 2>&1; then fail "the task resolved example.com though its VPC's DNS Firewall blocks it"; fi
   if inpod nslookup example.com 10.43.0.10 >/dev/null 2>&1; then fail "the task went around its VPC's resolver to the cluster's"; fi
   log "  ✓ DNS Firewall (${assoc} association(s) on ${VPC}): the platform's names${FIREWALL_ALLOWS:+ and ${FIREWALL_ALLOWS}} resolve; example.com does not, nor through another resolver"
+fi
+
+# --- 3c. an instance that names no subnet launches in the default subnet, and reaches nothing outside ------
+if [ "${INSTANCE_STEP:-1}" = 1 ]; then
+  AMI="$(mem ec2 describe-images --filters Name=name,Values=ubuntu-24.04 --query 'Images[0].ImageId' 2>/dev/null)"
+  # Its role attaches AmazonSSMManagedInstanceCore, as an instance needs to be managed by Systems Manager on AWS.
+  printf '{"Resources":{"Role":{"Type":"AWS::IAM::Role","Properties":{"AssumeRolePolicyDocument":{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]},"ManagedPolicyArns":["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"]}},"Profile":{"Type":"AWS::IAM::InstanceProfile","Properties":{"Roles":[{"Ref":"Role"}]}},"Probe":{"Type":"AWS::EC2::Instance","Properties":{"ImageId":"%s","InstanceType":"t3.micro","IamInstanceProfile":{"Ref":"Profile"}}}},"Outputs":{"InstanceId":{"Value":{"Ref":"Probe"}}}}' "$AMI" > "$TMP/inst.json"
+  mem cloudformation create-stack --stack-name "$ISTACK" --template-body "file://$TMP/inst.json" --capabilities CAPABILITY_IAM >/dev/null 2>"$TMP/cs" \
+    || fail "create-stack with an instance: $(head -c 300 "$TMP/cs")"
+  MADE_STACK=1
+  mem cloudformation wait stack-create-complete --stack-name "$ISTACK" 2>"$TMP/cs" \
+    || fail "the instance stack did not complete: $(mem cloudformation describe-stacks --stack-name "$ISTACK" --query 'Stacks[0].[StackStatus,StackStatusReason]' 2>&1 | tr '\t\n' '  ')"
+  IID="$(mem cloudformation describe-stacks --stack-name "$ISTACK" --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue | [0]")"
+  read -r ISUB IVPC <<<"$(mem ec2 describe-instances --instance-ids "$IID" --query 'Reservations[0].Instances[0].[SubnetId,VpcId]' 2>/dev/null)"
+  [ "$ISUB/$IVPC" = "$SUBNET/$VPC" ] || fail "an instance that names no subnet is in ${ISUB}/${IVPC}, not the default subnet ${SUBNET}/${VPC}"
+  cat > "$TMP/rc.json" <<'JSON'
+{"commands": [
+  "curl -s -o /dev/null -m 8 -w 'example=%{http_code}\\n' http://example.com/ || echo example=blocked",
+  "curl -s -o /dev/null -m 5 -w 'shim=%{http_code}\\n' https://aws-shim.open-infra-aws-shim.svc.cluster.local:4567/healthz || echo shim=unreachable"
+]}
+JSON
+  OUT=""
+  for _ in $(seq 1 30); do
+    CMD="$(mem ssm send-command --document-name AWS-RunShellScript --instance-ids "$IID" --parameters "file://$TMP/rc.json" \
+      --query Command.CommandId 2>/dev/null)" || { sleep 10; continue; }
+    mem ssm wait command-executed --command-id "$CMD" --instance-id "$IID" 2>/dev/null \
+      && OUT="$(mem ssm get-command-invocation --command-id "$CMD" --instance-id "$IID" --query StandardOutputContent)" && break
+    sleep 10
+  done
+  [ -n "$OUT" ] || fail "no Run Command reached the instance ${IID}"
+  printf '%s\n' "$OUT" | grep -q '^shim=200$' || fail "from the instance the platform's AWS endpoint does not answer: ${OUT}"
+  if printf '%s\n' "$OUT" | grep -qE '^example=[1-9]'; then fail "the instance reached example.com from a default VPC with no internet gateway: ${OUT}"; fi
+  log "  ✓ an instance that names no subnet (${IID}) is in ${SUBNET}; from it the AWS endpoint answers and example.com does not"
 fi
 
 # --- 4. a principal with no policy is refused ------------------------------------------------------------
