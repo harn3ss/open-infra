@@ -71,3 +71,40 @@ func TestVPCResolver_DefaultVPCFirewall(t *testing.T) {
 		t.Errorf("an address in no VPC is refused: %+v", m.Header)
 	}
 }
+
+// An amazonaws.com name the platform does not serve, such as awscli.amazonaws.com (where the AWS CLI is
+// downloaded from): a default VPC with its internet gateway resolves it upstream as any public name, as AWS's
+// resolver does; one without its gateway is answered NXDOMAIN at once and the name is never forwarded. The names
+// of the services the platform serves are the platform's for both.
+func TestVPCResolver_DefaultVPCAWSNamesFollowTheInternetGateway(t *testing.T) {
+	withGateway := defaultSubnetObj("default-vpc-111122223333", "172.31.16.0/20", "111122223333")
+	withGateway.Object["spec"].(map[string]any)["natOutgoing"] = true
+	withoutGateway := defaultSubnetObj("default-vpc-444455556666", "172.31.32.0/20", "444455556666")
+	withoutGateway.Object["spec"].(map[string]any)["natOutgoing"] = false
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{kubeovnSubnetGVR: "SubnetList"}, withGateway, withoutGateway)
+	f := newResolverFixture(t, vpcResolverConfig{})
+	f.res.awsNames = true
+	f.res.clients = eitherClients{f.res.clients, newDefaultVPCSenders(dyn)}
+	open, closed := "172.31.16.4", "172.31.32.4"
+
+	if m := f.ask(t, closed, "awscli.amazonaws.com.", dnsmessage.TypeA, "UDP"); m.Header.RCode != dnsmessage.RCodeNameError ||
+		f.up.asked("awscli.amazonaws.com.") != 0 {
+		t.Errorf("without an internet gateway: %v, forwarded %d times; want NXDOMAIN, never forwarded",
+			m.Header.RCode, f.up.asked("awscli.amazonaws.com."))
+	}
+	if m := f.ask(t, open, "awscli.amazonaws.com.", dnsmessage.TypeA, "UDP"); m.Header.RCode != dnsmessage.RCodeSuccess ||
+		f.up.asked("awscli.amazonaws.com.") != 1 {
+		t.Errorf("with an internet gateway: %v, forwarded %d times; want the public answer",
+			m.Header.RCode, f.up.asked("awscli.amazonaws.com."))
+	}
+	for _, src := range []string{open, closed} {
+		if got := aRecordsOf(f.ask(t, src, "sqs.us-east-1.amazonaws.com.", dnsmessage.TypeA, "UDP")); len(got) != 1 ||
+			got[0] != "sqs.us-east-1.amazonaws.com.=192.0.2.1" {
+			t.Errorf("%s: a served name answered %v, want the platform's address", src, got)
+		}
+	}
+	if n := f.up.asked("sqs.us-east-1.amazonaws.com."); n != 0 {
+		t.Errorf("a served name was forwarded %d times", n)
+	}
+}

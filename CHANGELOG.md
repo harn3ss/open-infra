@@ -28,6 +28,18 @@ the product's public contract.
 - An image holds the instance's root volume only. Each operation is decided by IAM policy on the instance
   or the image's ARN.
 
+### Fixed — an account images an instance whatever storage it has left
+- `CreateImage` no longer charges the account's storage capacity for a second copy of the instance's root
+  volume while the image is made. An account using more than half its storage could not image an instance
+  (the image stayed `pending`). As on AWS, making an image does not count against an account's volume
+  storage.
+
+### Fixed — a default VPC with its internet gateway resolves AWS's other hostnames
+- An instance or task in a default VPC with its internet gateway resolves an `amazonaws.com` name the
+  platform does not serve as any public name, as on AWS (`awscli.amazonaws.com`, where the AWS CLI v2
+  installer is downloaded from, was answered NXDOMAIN). The names of the services the platform serves still
+  resolve to it, and a default VPC without its internet gateway still answers the others NXDOMAIN at once.
+
 ### Fixed — an instance's root disk is copied into a member account
 - A member account's isolation baseline refused the platform's disk copies, so an instance whose root is copied
   from an image (every Windows instance, and one launched from an account image) never got its disk. Each

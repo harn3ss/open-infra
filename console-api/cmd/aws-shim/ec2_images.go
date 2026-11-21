@@ -85,6 +85,7 @@ const (
 	annImageNoReboot      = "openinfra.dev/image-no-reboot"
 	annImageRestart       = "openinfra.dev/image-restart" // "pending": start the source instance once the copy ends; "done"
 	cdiDeleteAfterComplet = "cdi.kubevirt.io/storage.deleteAfterCompletion"
+	cdiUsePopulator       = "cdi.kubevirt.io/storage.usePopulator"
 )
 
 // accountImageIDRe is an image id as AWS writes one (ami- and 8 or 17 hex digits); the platform's are 17.
@@ -350,7 +351,12 @@ func imageRecord(img ec2Image) (map[string]any, map[string]any) {
 	labels := map[string]any{imageLabel: "true", imageOwnerLabel: img.owner}
 	ann := map[string]any{
 		cdiDeleteAfterComplet: "false", // the disk is the image: CDI must never collect it
-		annImageName:          img.name, annImageDescription: img.description, annImageOS: img.os, annImageArch: img.arch,
+		// CDI's direct copy, not its volume populator: the populator stages a whole copy of the instance's root
+		// in the instance's own namespace before moving it here, which the account's storage capacity is charged
+		// for, so an account short of a second root's worth of room could not make an image. An AMI's snapshots
+		// never count against an account's volume storage on AWS.
+		cdiUsePopulator: "false",
+		annImageName:    img.name, annImageDescription: img.description, annImageOS: img.os, annImageArch: img.arch,
 		annImageRootSize: strconv.FormatInt(img.rootGiB, 10), annImageCreated: img.created.UTC().Format("2006-01-02T15:04:05.000Z"),
 		annImageState: "pending", annImageLaunch: strings.Join(img.launch, ","), annImageTags: string(tags),
 	}

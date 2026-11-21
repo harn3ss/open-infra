@@ -5,7 +5,9 @@ package main
 // account's, in its default VPC, so the DNS Firewall rule groups associated with that VPC apply to it and its
 // queries are logged to that VPC's query log configurations. A task in a default subnet sends its DNS here
 // (the Application composition's dnsConfig); in a default VPC without its internet gateway, the subnet's
-// network ACL drops DNS to anywhere else, so the firewall cannot be gone around.
+// network ACL drops DNS to anywhere else, so the firewall cannot be gone around. A default VPC that keeps its
+// internet gateway (the subnet's natOutgoing) is one whose senders reach the internet: an amazonaws.com name the
+// platform does not serve resolves for them as any other public name (vpcresolver.go).
 
 import (
 	"context"
@@ -34,8 +36,9 @@ type defaultVPCSenders struct {
 }
 
 type defaultNet struct {
-	ipnet   *net.IPNet
-	account string
+	ipnet    *net.IPNet
+	account  string
+	internet bool // the subnet has its internet gateway (natOutgoing)
 }
 
 func newDefaultVPCSenders(dyn dynamic.Interface) *defaultVPCSenders {
@@ -52,7 +55,7 @@ func (d *defaultVPCSenders) At(ip string, t time.Time) (vpcInterface, bool) {
 		if n.ipnet.Contains(addr) {
 			v := &defaultVPC{account: n.account}
 			return vpcInterface{IP: ip, Account: n.account, VpcID: v.vpcID(), SubnetID: v.subnetID(),
-				SubnetIDs: []string{v.subnetID()}}, true
+				SubnetIDs: []string{v.subnetID()}, Internet: n.internet}, true
 		}
 	}
 	return vpcInterface{}, false
@@ -96,7 +99,8 @@ func defaultNetsOf(items []unstructured.Unstructured, mgmt string) []defaultNet 
 		if account == "" {
 			continue
 		}
-		out = append(out, defaultNet{ipnet: ipnet, account: account})
+		internet, _, _ := unstructured.NestedBool(u.Object, "spec", "natOutgoing")
+		out = append(out, defaultNet{ipnet: ipnet, account: account, internet: internet})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ipnet.String() < out[j].ipnet.String() })
 	return out

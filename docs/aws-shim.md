@@ -2473,8 +2473,11 @@ and its query logging configurations log their queries. In a default VPC without
 subnet's network ACL also drops DNS to any other server (`DescribeNetworkAcls` shows it: UDP and TCP 53
 allowed to the VPC resolver, denied anywhere else), so the firewall cannot be gone around. With a rule group
 that allows the platform's names (`*.cluster.local`, and `*.amazonaws.com`, which the VPC resolver answers
-itself: an AWS name the platform serves with its front door, any other with NXDOMAIN, never sent on) and
-blocks every other (`*`), a task there resolves nothing outside the platform either.
+itself there: an AWS name the platform serves with its front door, any other with NXDOMAIN, never sent on) and
+blocks every other (`*`), a task there resolves nothing outside the platform either. In a default VPC with its
+internet gateway, an `amazonaws.com` name the platform does not serve (`awscli.amazonaws.com`, where the AWS
+CLI is downloaded from, and the like) resolves as any public name, as on AWS; the names of the services the
+platform serves still resolve to it.
 `probe/aws-shim-ec2-isolated-vpc.sh` proves it (`FIREWALL_ALLOWS` names more names the rule group allows).
 
 **Windows instances.** A Windows instance runs the launch agent (docs/virtual-machines.md), as an EC2 Windows

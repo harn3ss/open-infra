@@ -112,7 +112,8 @@ func TestEC2Images_CreateImage(t *testing.T) {
 	ann, labels := dv.GetAnnotations(), dv.GetLabels()
 	for k, want := range map[string]string{annImageName: "build tools (1.0)", annImageDescription: "compilers and SDKs",
 		annImageOS: "ubuntu-22.04", annImageRootSize: "24", annImageSourceInst: webID, annImageSourceVM: ec2TestNS + "/s-web",
-		annImageRestart: "pending", annImageState: "pending", annImageTags: `{"team":"builds"}`, cdiDeleteAfterComplet: "false"} {
+		annImageRestart: "pending", annImageState: "pending", annImageTags: `{"team":"builds"}`, cdiDeleteAfterComplet: "false",
+		cdiUsePopulator: "false"} {
 		if ann[k] != want {
 			t.Errorf("record %s = %q, want %q", k, ann[k], want)
 		}

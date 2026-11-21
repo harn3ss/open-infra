@@ -59,6 +59,7 @@ type vpcInterface struct {
 	SubnetIDs, SecurityGroupIDs []string
 	ENI                         string
 	MAC                         string    // the interface's MAC address (the IP object's spec.macAddress)
+	Internet                    bool      // its subnet routes to the internet: a default VPC with its internet gateway
 	Attached, Detached          time.Time // Detached is zero while the pod runs
 }
 

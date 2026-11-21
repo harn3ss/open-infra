@@ -360,11 +360,14 @@ func (s *vpcResolver) answer(ctx context.Context, raw []byte, src string, srcPor
 		}
 	}
 	// AWS's own hostnames (#335), after the DNS Firewall as on AWS: the names of the services the platform serves
-	// resolve to its AWS front door, as AWS's resolver answers them with AWS's, and every other amazonaws.com name
-	// is NXDOMAIN at once, so a call to a service the platform does not serve fails fast instead of hanging on
-	// egress that leads nowhere. Neither is sent upstream.
+	// resolve to its AWS front door, as AWS's resolver answers them with AWS's, and neither is sent upstream. Every
+	// other amazonaws.com name is NXDOMAIN at once for a sender with no route out (a VPC function, a default VPC
+	// without its internet gateway), so a call to a service the platform does not serve fails fast instead of
+	// hanging on egress that leads nowhere. A sender that reaches the internet resolves it as any other public
+	// name, as AWS's resolver does: awscli.amazonaws.com, a service's own download hosts, the names AWS gives
+	// its resources.
 	if s.awsNames {
-		if target, sinkhole := awsNameTarget(q.question.Name.String()); target != "" || sinkhole {
+		if target, sinkhole := awsNameTarget(q.question.Name.String()); target != "" || (sinkhole && !in.Internet) {
 			resp := s.awsNameAnswer(ctx, q, target)
 			s.record(in, cfg, q, resp, v.logged())
 			return s.fit(q, pack(resp))
