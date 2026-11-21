@@ -1,6 +1,6 @@
 <#
-OpenInfra launch agent for Windows instances (kind: VirtualMachine): the Windows counterpart of the Linux
-instance metadata agent. It behaves as EC2Launch v2 does for what a workload observes.
+OpenInfra launch agent for Windows instances: the Windows counterpart of the Linux instance metadata
+agent. It behaves as EC2Launch v2 does for what a workload observes.
 
 Windows PowerShell 5.1 (.NET Framework 4.7.2+) on Windows Server 2019, 2022 and 2025. Nothing beyond what
 ships with Windows, and no internet access at runtime.
@@ -16,11 +16,13 @@ Modes:
             task, which runs the stub at every startup. The stub finds the launch CD and runs this script's
             -Run from it, so the agent an instance runs is always the one its launch CD carries. Idempotent.
   -Run      Each boot. Trusts the platform's CAs (and publishes AWS_CA_BUNDLE); brings up instance metadata
-            (IMDSv1 and IMDSv2) on 169.254.169.254:80 in a separate -Serve process; on the first boot of
+            (IMDSv1 and IMDSv2) on 169.254.169.254:80 in a separate -Serve process (a TCP listener on that
+            address alone, so port 80 stays free for the workload); on the first boot of
             this instance id extends C: to the end of its disk; writes "Message: Windows is Ready to use" to
             the serial console; then runs the user data as EC2Launch v2 does (XML <script> and <powershell>
-            blocks, once per instance unless <persist>true</persist>). It then stays running to keep the
-            metadata service up.
+            blocks, once per instance unless <persist>true</persist>; not at all when instance metadata is
+            disabled, as EC2Launch v2 reads it from there). It then stays running to keep the metadata
+            service up.
   -Serve    Internal: the instance metadata service process.
 
 Logs: C:\ProgramData\openinfra\launch\log\agent.log and userdata.log, and the serial console (COM1), which
@@ -86,13 +88,13 @@ $script:OINotFoundBody = (@(
     '</html>'
 ) -join "`n") + "`n"
 
-# What the aws-shim's refusals mean, appended to the error a caller of iam/security-credentials sees.
+# What the platform's refusals mean, appended to the error a caller of iam/security-credentials sees.
 $script:OICredsHints = @{
-    401 = " - the shim did not accept this VM's ServiceAccount token (TokenReview failed, or the ServiceAccount carries no openinfra.dev/instance-role annotation)"
-    403 = ' - the instance role does not trust the vm principal (its spec.trust must include "vm")'
+    401 = " - the instance's identity was not accepted by the platform"
+    403 = " - the instance profile's role does not trust ec2.amazonaws.com"
 }
 $script:OIIdentityHints = @{
-    401 = " - the shim did not accept this VM's ServiceAccount token (TokenReview failed)"
+    401 = " - the instance's identity was not accepted by the platform"
 }
 
 $script:OITimestampPattern = '^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(?:\.\d+)?(Z|[+-]\d\d:?\d\d)?$'
@@ -598,23 +600,24 @@ function Invoke-OIIdentityRefresh {
 }
 
 # ---------------------------------------------------------------------------------------------------------
-# The aws-shim's answers.
+# The platform's answers (the aws-shim's /v1/vm-credentials and /v1/vm-identity).
 # ---------------------------------------------------------------------------------------------------------
 
 function Format-OIShimHttpError {
-    # The error for an aws-shim refusal: its status, the start of its body, and what the status means.
-    param([string]$Url, [int]$Status, [string]$Detail, [hashtable]$Hints)
+    # The error for a refusal from the platform's instance credentials or identity service: its status, the
+    # start of its answer, and what the status means. The service's host is never named.
+    param([string]$Service, [int]$Status, [string]$Detail, [hashtable]$Hints)
     $hint = ''
     if ($null -ne $Hints -and $Hints.ContainsKey($Status)) { $hint = $Hints[$Status] }
     $d = ([string]$Detail).Trim()
     if ($d.Length -gt 300) { $d = $d.Substring(0, 300) }
-    return ('aws-shim {0} answered HTTP {1}: {2}{3}' -f $Url, $Status, $d, $hint)
+    return ("the platform's instance {0} service answered HTTP {1}: {2}{3}" -f $Service, $Status, $d, $hint)
 }
 
 function ConvertFrom-OICredentialsDocument {
     # The body of /v1/vm-credentials -> a fetch result. A failure never quotes the body: it holds secrets.
     param([string]$Body)
-    $bad = 'aws-shim returned an unusable credentials document: '
+    $bad = "the platform's instance credentials service returned an unusable credentials document: "
     try { $d = ConvertFrom-Json -InputObject $Body -ErrorAction Stop }
     catch { return @{ Ok = $false; Message = ($bad + 'not JSON'); Status = $null } }
     $creds = @{}
@@ -631,7 +634,7 @@ function ConvertFrom-OICredentialsDocument {
 function ConvertFrom-OIIdentityDocument {
     # The body of /v1/vm-identity -> a fetch result: the document and its signatures, served as received.
     param([string]$Body)
-    $bad = 'aws-shim returned an unusable identity document: '
+    $bad = "the platform's instance identity service returned an unusable identity document: "
     try { $d = ConvertFrom-Json -InputObject $Body -ErrorAction Stop }
     catch { return @{ Ok = $false; Message = ($bad + 'not JSON'); Status = $null } }
     $signed = @{}
@@ -903,6 +906,106 @@ function Invoke-OIImdsRequest {
         return (Find-OIMetadata $Path $State)
     }
     return (New-OIResponse 405 'text/plain' "Method Not Allowed`n" @{ Allow = 'GET, PUT' })
+}
+
+# ---------------------------------------------------------------------------------------------------------
+# HTTP/1.1 on the metadata socket: requests parsed, responses written. Every response closes its connection.
+# ---------------------------------------------------------------------------------------------------------
+
+$script:OIMaxHeaderBytes = 32768
+$script:OIMaxBodyBytes = 65536
+$script:OILatin1 = [System.Text.Encoding]::GetEncoding(28591)
+$script:OIReasons = @{
+    200 = 'OK'; 400 = 'Bad Request'; 401 = 'Unauthorized'; 403 = 'Forbidden'; 404 = 'Not Found'
+    405 = 'Method Not Allowed'; 500 = 'Internal Server Error'; 503 = 'Service Unavailable'
+}
+
+function ConvertFrom-OIHttpRequest {
+    # The bytes a connection has sent so far -> @{ State = 'incomplete' | 'complete' | 'bad'; Method; Target;
+    # Headers }. A request is complete once its header block, and any body it announces of up to 64 KiB (read
+    # and discarded), have arrived; a larger body is not waited for.
+    param([byte[]]$Bytes)
+    $result = @{ State = 'incomplete'; Method = ''; Target = ''; Headers = @{} }
+    if ($null -eq $Bytes) { return $result }
+    $text = $script:OILatin1.GetString($Bytes)
+    $m = [regex]::Match($text, '\r?\n\r?\n')
+    if (-not $m.Success -or $m.Index -gt $script:OIMaxHeaderBytes) {
+        if ($Bytes.Length -gt $script:OIMaxHeaderBytes) { $result.State = 'bad' }
+        return $result
+    }
+    $lines = $text.Substring(0, $m.Index) -split '\r?\n'
+    $parts = $lines[0] -split ' '
+    if ($parts.Count -ne 3 -or $parts[0] -cnotmatch '^[A-Za-z]+$' -or $parts[1] -eq '' -or $parts[2] -cnotmatch '^HTTP/[0-9]+\.[0-9]+$') {
+        $result.State = 'bad'
+        return $result
+    }
+    $headers = @{}
+    for ($i = 1; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        $c = $line.IndexOf(':')
+        if ($c -le 0 -or $line.Substring(0, $c) -cnotmatch '^[!#$%&''*+.^_`|~0-9A-Za-z-]+$') {
+            $result.State = 'bad'
+            return $result
+        }
+        $name = $line.Substring(0, $c)
+        $value = $line.Substring($c + 1).Trim()
+        if ($headers.ContainsKey($name)) { $headers[$name] = $headers[$name] + ', ' + $value } else { $headers[$name] = $value }
+    }
+    $body = 0
+    $cl = Get-OIHeader $headers 'Content-Length'
+    if ($null -ne $cl) {
+        if ($cl -notmatch '^[0-9]{1,10}$') {
+            $result.State = 'bad'
+            return $result
+        }
+        $body = [long]$cl
+        if ($body -gt $script:OIMaxBodyBytes) { $body = 0 }
+    }
+    if ($Bytes.Length -lt ($m.Index + $m.Length + $body)) { return $result }
+    $result.State = 'complete'
+    $result.Method = $parts[0]
+    $result.Target = $parts[1]
+    $result.Headers = $headers
+    return $result
+}
+
+function ConvertTo-OIHttpResponse {
+    # A router result -> the response's bytes: the status line, EC2's Server header, Date, Content-Type,
+    # Content-Length, the result's own headers and Connection: close. A HEAD response carries no body.
+    param([hashtable]$Result, [string]$Method, [datetime]$Date)
+    $reason = $script:OIReasons[[int]$Result.Status]
+    if (-not $reason) { $reason = 'Unknown' }
+    $body = [byte[]]$Result.Body
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.Append('HTTP/1.1 ' + $Result.Status + ' ' + $reason + "`r`n")
+    [void]$sb.Append("Server: EC2ws`r`n")
+    [void]$sb.Append('Date: ' + $Date.ToUniversalTime().ToString('r', $script:OIInvariant) + "`r`n")
+    [void]$sb.Append('Content-Type: ' + $Result.ContentType + "`r`n")
+    [void]$sb.Append('Content-Length: ' + $body.Length + "`r`n")
+    foreach ($k in (Get-OISortedKeys $Result.Headers)) { [void]$sb.Append($k + ': ' + [string]$Result.Headers[$k] + "`r`n") }
+    [void]$sb.Append("Connection: close`r`n`r`n")
+    $head = $script:OILatin1.GetBytes($sb.ToString())
+    if (([string]$Method).ToUpperInvariant() -eq 'HEAD' -or $body.Length -eq 0) { return , $head }
+    $out = New-Object byte[] ($head.Length + $body.Length)
+    [Array]::Copy($head, 0, $out, 0, $head.Length)
+    [Array]::Copy($body, 0, $out, $head.Length, $body.Length)
+    return , $out
+}
+
+function Get-OIWebFailureText {
+    # Why a request to the platform got no answer, without naming its host.
+    param([string]$Status)
+    switch ($Status) {
+        'NameResolutionFailure' { return 'its name does not resolve' }
+        'ConnectFailure' { return 'the connection was refused or did not complete' }
+        'Timeout' { return 'it did not answer in time' }
+        'ConnectionClosed' { return 'the connection closed before it answered' }
+        'ReceiveFailure' { return 'the connection failed while it answered' }
+        'SendFailure' { return 'the connection failed while the request was sent' }
+        'KeepAliveFailure' { return 'the connection closed before it answered' }
+    }
+    if (-not $Status) { return 'the request failed' }
+    return ('the request failed ({0})' -f $Status)
 }
 
 # ---------------------------------------------------------------------------------------------------------
@@ -1377,7 +1480,8 @@ function Set-OIPlatformTrust {
 }
 
 # ---------------------------------------------------------------------------------------------------------
-# The aws-shim client: TLS only, pinned to the platform root CA, no proxy, no redirects.
+# The platform's instance credentials and identity service (the aws-shim): TLS only, pinned to the platform
+# root CA, no proxy, no redirects.
 # ---------------------------------------------------------------------------------------------------------
 
 function Read-OIResponseBody {
@@ -1387,20 +1491,22 @@ function Read-OIResponseBody {
 }
 
 function Invoke-OIShimGet {
-    # GET Url on the aws-shim with this instance's identity token -> @{ Ok; Body; Status } or a failure.
-    param([string]$Url, [AllowNull()][string]$TokenPath, [object]$Roots, [hashtable]$Hints, [int]$TimeoutMs = 5000)
+    # GET Url on the platform's instance credentials or identity service (Service) with this instance's
+    # identity -> @{ Ok; Body; Status } or a failure. No message names the service's host.
+    param([string]$Url, [AllowNull()][string]$TokenPath, [object]$Roots, [hashtable]$Hints, [string]$Service = 'credentials', [int]$TimeoutMs = 5000)
+    $what = "the platform's instance " + $Service + ' service'
     if (-not ([string]$Url).StartsWith('https://', [System.StringComparison]::OrdinalIgnoreCase)) {
-        return @{ Ok = $false; Status = $null; Message = ("refusing to send the instance identity token to '{0}': the aws-shim is called over TLS only" -f $Url) }
+        return @{ Ok = $false; Status = $null; Message = ("refusing to send the instance's identity to {0} without TLS" -f $what) }
     }
     if ($null -eq $Roots -or $Roots.Count -eq 0) {
-        return @{ Ok = $false; Status = $null; Message = ('no platform root CA to verify the aws-shim with ({0} on the launch CD is missing or not a CA certificate), so nothing is fetched' -f $script:OIPlatformCaName) }
+        return @{ Ok = $false; Status = $null; Message = ('no platform root CA to verify {0} with ({1} on the launch CD is missing or not a CA certificate), so nothing is fetched' -f $what, $script:OIPlatformCaName) }
     }
     if (-not $TokenPath) {
-        return @{ Ok = $false; Status = $null; Message = 'no identity CD (a CD-ROM carrying token and namespace) is attached to this instance, so the aws-shim cannot be called' }
+        return @{ Ok = $false; Status = $null; Message = ("the instance's identity disk is not attached, so {0} cannot be asked" -f $what) }
     }
     try { $token = ([System.IO.File]::ReadAllText($TokenPath)) -replace '\s', '' }
-    catch { return @{ Ok = $false; Status = $null; Message = ('cannot read the instance identity token {0}' -f $TokenPath) } }
-    if (-not $token) { return @{ Ok = $false; Status = $null; Message = ('the instance identity token {0} is empty' -f $TokenPath) } }
+    catch { return @{ Ok = $false; Status = $null; Message = "the instance's identity cannot be read from its identity disk" } }
+    if (-not $token) { return @{ Ok = $false; Status = $null; Message = "the instance's identity on its identity disk is empty" } }
     Initialize-OIRootPin
     $pin = [OpenInfraLaunch.RootPin]::new($Roots)
     try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12 } catch { }
@@ -1420,7 +1526,7 @@ function Invoke-OIShimGet {
         $status = [int]$resp.StatusCode
         $body = Read-OIResponseBody $resp
         if ($status -lt 200 -or $status -gt 299) {
-            return @{ Ok = $false; Status = $status; Message = (Format-OIShimHttpError $Url $status $body $Hints) }
+            return @{ Ok = $false; Status = $status; Message = (Format-OIShimHttpError $Service $status $body $Hints) }
         }
         return @{ Ok = $true; Status = $status; Body = $body }
     } catch {
@@ -1432,15 +1538,17 @@ function Invoke-OIShimGet {
             $detail = ''
             try { $detail = Read-OIResponseBody $er } catch { }
             try { $er.Close() } catch { }
-            return @{ Ok = $false; Status = $status; Message = (Format-OIShimHttpError $Url $status $detail $Hints) }
+            return @{ Ok = $false; Status = $status; Message = (Format-OIShimHttpError $Service $status $detail $Hints) }
         }
         if ($pin.LastFailure) {
-            return @{ Ok = $false; Status = $null; Message = ('the server at {0} is not the aws-shim (TLS verification against the platform root CA failed: {1}); the token was not sent' -f $Url, $pin.LastFailure) }
+            return @{ Ok = $false; Status = $null; Message = ("the server answering as {0} is not the platform (TLS verification against the platform root CA failed: {1}); the instance's identity was not sent" -f $what, $pin.LastFailure) }
         }
-        if ($e -is [System.Net.WebException] -and ($e.Status -eq [System.Net.WebExceptionStatus]::TrustFailure -or $e.Status -eq [System.Net.WebExceptionStatus]::SecureChannelFailure)) {
-            return @{ Ok = $false; Status = $null; Message = ('the TLS handshake with {0} failed ({1}); the token was not sent' -f $Url, $e.Message) }
+        $webStatus = ''
+        if ($e -is [System.Net.WebException]) { $webStatus = [string]$e.Status }
+        if ($webStatus -eq 'TrustFailure' -or $webStatus -eq 'SecureChannelFailure') {
+            return @{ Ok = $false; Status = $null; Message = ("the TLS handshake with {0} failed; the instance's identity was not sent" -f $what) }
         }
-        return @{ Ok = $false; Status = $null; Message = ('cannot reach the aws-shim at {0}: {1}' -f $Url, $e.Message) }
+        return @{ Ok = $false; Status = $null; Message = ('cannot reach {0}: {1}' -f $what, (Get-OIWebFailureText $webStatus)) }
     } finally {
         if ($null -ne $resp) { try { $resp.Close() } catch { } }
     }
@@ -1448,14 +1556,14 @@ function Invoke-OIShimGet {
 
 function Get-OIShimCredentials {
     param([hashtable]$Cache)
-    $r = Invoke-OIShimGet -Url $Cache.Url -TokenPath (Get-OIIdentityTokenPath) -Roots $Cache.Roots -Hints $script:OICredsHints
+    $r = Invoke-OIShimGet -Url $Cache.Url -TokenPath (Get-OIIdentityTokenPath) -Roots $Cache.Roots -Hints $script:OICredsHints -Service 'credentials'
     if (-not $r.Ok) { return $r }
     return (ConvertFrom-OICredentialsDocument $r.Body)
 }
 
 function Get-OIShimIdentity {
     param([hashtable]$Cache)
-    $r = Invoke-OIShimGet -Url $Cache.Url -TokenPath (Get-OIIdentityTokenPath) -Roots $Cache.Roots -Hints $script:OIIdentityHints
+    $r = Invoke-OIShimGet -Url $Cache.Url -TokenPath (Get-OIIdentityTokenPath) -Roots $Cache.Roots -Hints $script:OIIdentityHints -Service 'identity'
     if (-not $r.Ok) { return $r }
     return (ConvertFrom-OIIdentityDocument $r.Body)
 }
@@ -1530,8 +1638,9 @@ function Test-OIImdsAddressPresent {
 }
 
 function Set-OIImdsFirewallRule {
-    # Lets the instance's containers reach the metadata service (the instance's own connections are
-    # loopback, which the firewall does not filter). Other hosts are refused by the service itself.
+    # Lets the instance's containers reach the metadata service: their connections arrive on a virtual
+    # adapter, which the firewall filters (the instance's own are loopback, which it does not). Other hosts
+    # are refused by the service itself.
     try {
         if (-not (Get-NetFirewallRule -Name $script:OIFirewallRuleName -ErrorAction SilentlyContinue)) {
             New-NetFirewallRule -Name $script:OIFirewallRuleName -DisplayName 'OpenInfra instance metadata (169.254.169.254:80)' -Direction Inbound -Protocol TCP -LocalAddress $script:OIImdsAddress -LocalPort 80 -Action Allow -Profile Any -ErrorAction Stop | Out-Null
@@ -1581,7 +1690,157 @@ function Set-OIImdsAddress {
     return $true
 }
 
-function Start-OIListener {
+function Start-OITcpListener {
+    # A TCP listener on Address:Port -> @{ Listener; InUse; Message }. It does not take the port exclusively,
+    # so a workload can still bind 0.0.0.0:80 while 169.254.169.254:80, the more specific address, keeps the
+    # metadata traffic, as on EC2. InUse: the port is already held exclusively, by the HTTP Server API when
+    # IIS runs.
+    param([string]$Address = $script:OIImdsAddress, [int]$Port = 80, [int]$Attempts = 15)
+    $message = ''
+    $inUse = 0
+    for ($i = 0; $i -lt $Attempts; $i++) {
+        $l = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Parse($Address)), $Port
+        try {
+            try { $l.ExclusiveAddressUse = $false } catch { }
+            $l.Start(128)
+            return @{ Listener = $l; InUse = $false; Message = '' }
+        } catch {
+            $e = $_.Exception
+            while ($null -ne $e -and -not ($e -is [System.Net.Sockets.SocketException]) -and $null -ne $e.InnerException) { $e = $e.InnerException }
+            $message = $e.Message
+            try { $l.Stop() } catch { }
+            if ($e -is [System.Net.Sockets.SocketException] -and ($e.SocketErrorCode -eq [System.Net.Sockets.SocketError]::AddressAlreadyInUse -or $e.SocketErrorCode -eq [System.Net.Sockets.SocketError]::AccessDenied)) {
+                $inUse++
+                if ($inUse -ge 3) { return @{ Listener = $null; InUse = $true; Message = $message } }
+            }
+            if ($i -lt $Attempts - 1) { Start-Sleep -Seconds 2 }
+        }
+    }
+    return @{ Listener = $null; InUse = $false; Message = $message }
+}
+
+function Close-OIConnection {
+    param([hashtable]$Conn)
+    $Conn.Closed = $true
+    try { $Conn.Socket.Close() } catch { }
+    try { $Conn.Data.Dispose() } catch { }
+}
+
+function Send-OITcpResponse {
+    param([hashtable]$Conn, [hashtable]$Result, [string]$Method, [int]$Ttl)
+    try {
+        # The IMDSv2 token response leaves with the PUT response hop limit as its IP TTL, so each router on its
+        # way (a container's NAT, a bridge the instance routes for) takes one off, as on EC2.
+        if ($Ttl -gt 0) { $Conn.Socket.Ttl = [int16]$Ttl }
+        $bytes = ConvertTo-OIHttpResponse $Result $Method (Get-Date)
+        $off = 0
+        while ($off -lt $bytes.Length) { $off += $Conn.Socket.Send($bytes, $off, $bytes.Length - $off, [System.Net.Sockets.SocketFlags]::None) }
+        $Conn.Socket.Shutdown([System.Net.Sockets.SocketShutdown]::Send)
+    } catch { }
+    Close-OIConnection $Conn
+}
+
+function Add-OIConnection {
+    # Accept one connection. Another host gets no answer: its connection is closed unread.
+    param($Listener, [System.Collections.Generic.List[hashtable]]$Connections, [hashtable]$State)
+    $sock = $Listener.AcceptSocket()
+    if ($Connections.Count -ge 64) {
+        try { $sock.Close() } catch { }
+        return
+    }
+    $remote = ''
+    try { $remote = [string]$sock.RemoteEndPoint.Address } catch { }
+    $f = $State.Facts
+    $verdict = Get-OIImdsAdmission $remote $f.LocalAddresses $f.ContainerNetworks 'GET' 64
+    if ($verdict -eq 'refuse' -and ((Get-OIMonoNow) - $f.Taken) -gt 2) {
+        $State.Facts = Get-OIHostFacts  # perhaps an address this instance has just gained
+        $f = $State.Facts
+        $verdict = Get-OIImdsAdmission $remote $f.LocalAddresses $f.ContainerNetworks 'GET' 64
+    }
+    if ($verdict -ne 'serve') {
+        try { $sock.Close() } catch { }
+        return
+    }
+    $sock.NoDelay = $true
+    $sock.SendTimeout = 2000
+    $Connections.Add(@{ Socket = $sock; Remote = $remote; Data = (New-Object System.IO.MemoryStream); Deadline = ((Get-OIMonoNow) + 10); Closed = $false })
+}
+
+function Receive-OIConnection {
+    # Read what a connection sent; once its request is complete, answer it and close the connection.
+    param([hashtable]$Conn, [hashtable]$State)
+    $buf = New-Object byte[] 8192
+    $n = 0
+    try { $n = $Conn.Socket.Receive($buf) } catch { $n = 0 }
+    if ($n -le 0) {
+        Close-OIConnection $Conn
+        return
+    }
+    $Conn.Data.Write($buf, 0, $n)
+    $req = ConvertFrom-OIHttpRequest $Conn.Data.ToArray()
+    if ($req.State -eq 'incomplete') {
+        if ($Conn.Data.Length -gt ($script:OIMaxHeaderBytes + $script:OIMaxBodyBytes)) { Close-OIConnection $Conn }
+        return
+    }
+    if ($req.State -eq 'bad') {
+        Send-OITcpResponse $Conn (New-OIResponse 400 'text/plain' "Bad Request`n") 'GET' 0
+        return
+    }
+    $hop = [int]$State.Config.imds.hopLimit
+    $f = $State.Facts
+    if ((Get-OIImdsAdmission $Conn.Remote $f.LocalAddresses $f.ContainerNetworks $req.Method $hop) -ne 'serve') {
+        # A token request from a container beyond the hop limit: as on EC2, no answer reaches it.
+        Close-OIConnection $Conn
+        return
+    }
+    $State.UtcNow = Get-OIUtcNow
+    $State.MonoNow = Get-OIMonoNow
+    $r = Invoke-OIImdsRequest $req.Method (Get-OIRequestPath $req.Target) $req.Headers $State
+    $ttl = 0
+    if ($req.Method -eq 'PUT' -and $r.Status -eq 200) { $ttl = $hop }
+    Send-OITcpResponse $Conn $r $req.Method $ttl
+}
+
+function Invoke-OIServeTcp {
+    # The metadata service's loop: one thread, many connections (select), each answered once and closed, the
+    # caches refreshed in between. Iterations > 0, or Until returning $true, ends it (for tests).
+    param($Listener, [hashtable]$State, [int]$Iterations = 0, [int]$WaitMicroseconds = 500000, [scriptblock]$Until = $null)
+    $conns = New-Object 'System.Collections.Generic.List[hashtable]'
+    $lastTick = Get-OIMonoNow
+    $turn = 0
+    while ($Iterations -le 0 -or $turn -lt $Iterations) {
+        if ($null -ne $Until -and (& $Until)) { break }
+        $turn++
+        try {
+            $read = New-Object System.Collections.ArrayList
+            [void]$read.Add($Listener.Server)
+            foreach ($c in $conns) { [void]$read.Add($c.Socket) }
+            [System.Net.Sockets.Socket]::Select($read, $null, $null, $WaitMicroseconds)
+            foreach ($c in @($conns)) {
+                if (-not $c.Closed -and $read.Contains($c.Socket)) { Receive-OIConnection $c $State }
+            }
+            while ($Listener.Pending()) { Add-OIConnection $Listener $conns $State }
+            $now = Get-OIMonoNow
+            $keep = New-Object 'System.Collections.Generic.List[hashtable]'
+            foreach ($c in $conns) {
+                if (-not $c.Closed -and $now -gt $c.Deadline) { Close-OIConnection $c }
+                if (-not $c.Closed) { $keep.Add($c) }
+            }
+            $conns = $keep
+        } catch {
+            Write-OILog ('Instance metadata service: {0}' -f $_.Exception.Message)
+            Start-Sleep -Milliseconds 200
+        }
+        if ((Get-OIMonoNow) - $lastTick -ge 1) {
+            Invoke-OIServeTick $State
+            $lastTick = Get-OIMonoNow
+        }
+    }
+    foreach ($c in $conns) { Close-OIConnection $c }
+}
+
+function Start-OIHttpSysListener {
+    # The fallback when port 80 is already held by the HTTP Server API (IIS): it shares the port by host name.
     $last = ''
     for ($i = 0; $i -lt 15; $i++) {
         $l = New-Object System.Net.HttpListener
@@ -1596,7 +1855,7 @@ function Start-OIListener {
             Start-Sleep -Seconds 2
         }
     }
-    Write-OILog -Console ('The instance metadata service could not listen on {0}: {1}' -f $script:OIImdsPrefix, $last)
+    Write-OILog -Console ('The instance metadata service could not listen through the HTTP Server API: {0}' -f $last)
     return $null
 }
 
@@ -1628,7 +1887,7 @@ function Invoke-OIServeRequest {
         $f = $State.Facts
         $verdict = Get-OIImdsAdmission $remote $f.LocalAddresses $f.ContainerNetworks $method $hop
         if ($verdict -eq 'refuse' -and ((Get-OIMonoNow) - $f.Taken) -gt 2) {
-            $State.Facts = Get-OIHostFacts  # perhaps an address this instance has just gained
+            $State.Facts = Get-OIHostFacts
             $f = $State.Facts
             $verdict = Get-OIImdsAdmission $remote $f.LocalAddresses $f.ContainerNetworks $method $hop
         }
@@ -1644,6 +1903,34 @@ function Invoke-OIServeRequest {
         Send-OIResponse $resp $r
     } catch {
         try { $resp.Abort() } catch { }
+    }
+}
+
+function Invoke-OIServeHttpSys {
+    param($Listener, [hashtable]$State)
+    $lastTick = Get-OIMonoNow
+    while ($true) {
+        try {
+            $ar = $Listener.BeginGetContext($null, $null)
+            while (-not $ar.AsyncWaitHandle.WaitOne(1000)) {
+                Invoke-OIServeTick $State
+                $lastTick = Get-OIMonoNow
+            }
+            $ctx = $Listener.EndGetContext($ar)
+            Invoke-OIServeRequest $ctx $State
+            if ((Get-OIMonoNow) - $lastTick -ge 1) {
+                Invoke-OIServeTick $State
+                $lastTick = Get-OIMonoNow
+            }
+        } catch {
+            Write-OILog ('Instance metadata service: {0}' -f $_.Exception.Message)
+            Start-Sleep -Seconds 1
+            if (-not $Listener.IsListening) {
+                try { $Listener.Close() } catch { }
+                $Listener = Start-OIHttpSysListener
+                if ($null -eq $Listener) { return 1 }
+            }
+        }
     }
 }
 
@@ -1677,85 +1964,90 @@ function Invoke-OIServeTick {
     }
 }
 
-function Invoke-OIServe {
-    $here = Split-Path -Parent $PSCommandPath
-    $cfg = Read-OILaunchConfig $here
-    if (-not $cfg.imds.enabled) { return 0 }
+function New-OIServeState {
+    # The metadata service's state, from the launch CD.
+    param([string]$LaunchDir, [hashtable]$Config)
     $roots = $null
-    $ca = Read-OICaFile (Join-Path $here $script:OIPlatformCaName)
+    $ca = Read-OICaFile (Join-Path $LaunchDir $script:OIPlatformCaName)
     if ($ca.Ok) { $roots = New-OICertificateCollection $ca.Certificates }
-    elseif ($cfg.role -or $cfg.identityUrl) { Write-OILog ('{0}: {1}' -f $script:OIPlatformCaName, $ca.Message) }
+    elseif ($Config.role -or $Config.identityUrl) { Write-OILog ('{0}: {1}' -f $script:OIPlatformCaName, $ca.Message) }
     $userData = $null
-    $udPath = Join-Path $here $script:OIUserDataName
+    $udPath = Join-Path $LaunchDir $script:OIUserDataName
     if ([System.IO.File]::Exists($udPath)) { $userData = [System.IO.File]::ReadAllBytes($udPath) }
     $state = @{
-        Config = $cfg; TokenKey = (New-OIRandomBytes 32); Creds = $null; Identity = $null; UserData = $userData
+        Config = $Config; TokenKey = (New-OIRandomBytes 32); Creds = $null; Identity = $null; UserData = $userData
         Facts = (Get-OIHostFacts); UtcNow = (Get-OIUtcNow); MonoNow = (Get-OIMonoNow)
     }
-    if ($cfg.role) {
+    if ($Config.role) {
         $c = New-OICredentialCache { param($cache) Get-OIShimCredentials $cache }
-        $c.Url = $cfg.credentialsUrl
+        $c.Url = $Config.credentialsUrl
         $c.Roots = $roots
         $state.Creds = $c
     }
-    if ($cfg.identityUrl) {
+    if ($Config.identityUrl) {
         $i = New-OIIdentityCache { param($cache) Get-OIShimIdentity $cache }
-        $i.Url = $cfg.identityUrl
+        $i.Url = $Config.identityUrl
         $i.Roots = $roots
         $state.Identity = $i
     }
-    $listener = Start-OIListener
-    if ($null -eq $listener) { return 1 }
-    Write-OILog -Console ('Instance metadata service on {0}:80 (httpTokens={1}, hop limit {2})' -f $script:OIImdsAddress, $cfg.imds.httpTokens, $cfg.imds.hopLimit)
-    if ($null -ne $state.Creds) {
-        # Warm the cache, so the first SDK call is answered at once.
-        Write-OILog ('Instance role {0}; credentials from {1}' -f $cfg.role, $cfg.credentialsUrl)
+    return $state
+}
+
+function Start-OIServeCaches {
+    # Warm the credentials (so the first SDK call is answered at once) and fetch the signed identity document.
+    param([hashtable]$State)
+    $cfg = $State.Config
+    if ($null -ne $State.Creds) {
+        Write-OILog ('Instance profile role {0}: its credentials come from the platform' -f $cfg.role)
         $deadline = (Get-OIMonoNow) + 10
         while ($true) {
-            $r = Update-OICredentialCache $state.Creds (Get-OIUtcNow)
+            $r = Update-OICredentialCache $State.Creds (Get-OIUtcNow)
             if ($r.Ok) {
-                Write-OICredentialRefreshLog $state.Creds $r
+                Write-OICredentialRefreshLog $State.Creds $r
                 break
             }
             if ((Get-OIMonoNow) + 2 -gt $deadline) {
                 Write-OILog ('Starting without credentials ({0}); retrying in the background' -f $r.Message)
-                $state.Creds.NextAttempt = (Get-OIUtcNow) + 5
+                $State.Creds.NextAttempt = (Get-OIUtcNow) + 5
                 break
             }
             Start-Sleep -Seconds 2
         }
     } else {
-        Write-OILog 'No instance role: iam/ metadata is not served'
+        Write-OILog 'No instance profile: iam/ metadata is not served'
     }
-    if ($null -ne $state.Identity) {
-        $r = Invoke-OIIdentityRefresh $state.Identity (Get-OIMonoNow)
-        if ($r.Ok) { Write-OILog ('Signed instance identity document from {0}' -f $cfg.identityUrl) }
+    if ($null -ne $State.Identity) {
+        $r = Invoke-OIIdentityRefresh $State.Identity (Get-OIMonoNow)
+        if ($r.Ok) { Write-OILog 'Signed instance identity document received' }
         else { Write-OILog ('Serving the unsigned identity document until the signed one arrives: {0}' -f $r.Message) }
     }
-    $lastTick = Get-OIMonoNow
-    while ($true) {
-        try {
-            $ar = $listener.BeginGetContext($null, $null)
-            while (-not $ar.AsyncWaitHandle.WaitOne(1000)) {
-                Invoke-OIServeTick $state
-                $lastTick = Get-OIMonoNow
-            }
-            $ctx = $listener.EndGetContext($ar)
-            Invoke-OIServeRequest $ctx $state
-            if ((Get-OIMonoNow) - $lastTick -ge 1) {
-                Invoke-OIServeTick $state
-                $lastTick = Get-OIMonoNow
-            }
-        } catch {
-            Write-OILog ('Instance metadata service: {0}' -f $_.Exception.Message)
-            Start-Sleep -Seconds 1
-            if (-not $listener.IsListening) {
-                try { $listener.Close() } catch { }
-                $listener = Start-OIListener
-                if ($null -eq $listener) { return 1 }
-            }
-        }
+}
+
+function Invoke-OIServe {
+    $here = Split-Path -Parent $PSCommandPath
+    $cfg = Read-OILaunchConfig $here
+    if (-not $cfg.imds.enabled) { return 0 }
+    $state = New-OIServeState $here $cfg
+    $options = 'httpTokens={0}, hop limit {1}' -f $cfg.imds.httpTokens, $cfg.imds.hopLimit
+    $tcp = Start-OITcpListener
+    if ($null -ne $tcp.Listener) {
+        Write-OILog -Console ('Instance metadata service on {0}:80 ({1})' -f $script:OIImdsAddress, $options)
+        Start-OIServeCaches $state
+        Invoke-OIServeTcp $tcp.Listener $state
+        return 1
     }
+    if (-not $tcp.InUse) {
+        Write-OILog -Console ('The instance metadata service could not listen on {0}:80: {1}' -f $script:OIImdsAddress, $tcp.Message)
+        return 1
+    }
+    # Port 80 is held exclusively, by the HTTP Server API when IIS runs: serve through it, sharing the port by
+    # host name. The token response's IP TTL cannot be set there; a container's token request is still refused
+    # at hop limit 1.
+    $listener = Start-OIHttpSysListener
+    if ($null -eq $listener) { return 1 }
+    Write-OILog -Console ('Instance metadata service on {0}:80 through the HTTP Server API, which holds port 80 ({1})' -f $script:OIImdsAddress, $options)
+    Start-OIServeCaches $state
+    return (Invoke-OIServeHttpSys $listener $state)
 }
 
 function Stop-OIStaleServe {
@@ -2012,8 +2304,13 @@ function Invoke-OIRun {
     }
     Write-OILog -Console 'Message: Windows is Ready to use'
     $plan = @{ Tasks = @() }
-    try { $plan = Get-OIUserDataTasks $here $inst }
-    catch { Write-OILog -Console ('Reading the user data failed: {0}' -f $_.Exception.Message) }
+    if ($cfg.imds.enabled) {
+        try { $plan = Get-OIUserDataTasks $here $inst }
+        catch { Write-OILog -Console ('Reading the user data failed: {0}' -f $_.Exception.Message) }
+    } else {
+        # EC2Launch v2 reads user data from instance metadata, so with it disabled user data does not run.
+        Write-OILog -Console 'User data was not run: instance metadata is disabled (HttpEndpoint disabled), and user data is read from it'
+    }
     return (Invoke-OISupervisor $plan.Tasks $serve $cfg)
 }
 

@@ -76,6 +76,19 @@ if ($raw -match 'utf8NoBOM') { $bad.Add('utf8NoBOM encoding name') }
 Check ($bad.Count -eq 0) ('no PowerShell 7-only parameters or variables: ' + ($bad -join '; '))
 Check (-not $raw.Contains('{' + '{') -and -not $raw.Contains('}' + '}')) 'the agent contains no Go template delimiters'
 
+# What a customer reads (IMDS bodies, the console, the logs) is in AWS's terms: no string the agent writes
+# names Kubernetes or the platform's internals. Exempt: the identity disk's file name and the C# source.
+$forbidden = @('ServiceAccount', 'Kubernetes', 'KubeVirt', 'kubectl', 'namespace', 'annotation', 'kind:', 'TokenReview', 'aws-shim', 'cluster.local', 'openinfra.dev/')
+$words = New-Object System.Collections.Generic.List[string]
+foreach ($sa in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] -or $n -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true)) {
+    $v = [string]$sa.Value
+    if ($v -ceq 'namespace' -or $v.StartsWith('using System;')) { continue }
+    foreach ($w in $forbidden) {
+        if ($v.IndexOf($w, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $words.Add(('line {0}: {1}' -f $sa.Extent.StartLineNumber, $w)) }
+    }
+}
+Check ($words.Count -eq 0) ('customer-visible text is in AWS terms: ' + ($words -join '; '))
+
 # --------------------------------------------------------------------------------------------------------
 # Load the agent: dot-sourcing defines its functions and runs nothing.
 # --------------------------------------------------------------------------------------------------------
@@ -443,15 +456,18 @@ $ic.Answer = @{ Ok = $true; Signed = @{ document = '{}'; signature = 's'; pkcs7 
 Check ($ic.Expires -eq 130) 'a document is kept at least a minute'
 
 # --------------------------------------------------------------------------------------------------------
-# The aws-shim's answers.
+# The platform's answers.
 # --------------------------------------------------------------------------------------------------------
 
-$m = Format-OIShimHttpError 'https://aws-shim.example.test:4567/v1/vm-credentials' 403 "role not assumable by this instance`n" $script:OICredsHints
-Check-Equal $m 'aws-shim https://aws-shim.example.test:4567/v1/vm-credentials answered HTTP 403: role not assumable by this instance - the instance role does not trust the vm principal (its spec.trust must include "vm")' 'a 403 explains the trust policy'
-$m = Format-OIShimHttpError 'https://x/' 401 'unauthorized' $script:OICredsHints
-Check ($m.EndsWith('openinfra.dev/instance-role annotation)')) 'a 401 explains the token'
-$m = Format-OIShimHttpError 'https://x/' 500 ('e' * 400) $script:OICredsHints
-Check ($m.Length -eq ('aws-shim https://x/ answered HTTP 500: '.Length + 300)) 'the detail is capped at 300 characters'
+$m = Format-OIShimHttpError 'credentials' 403 "role not assumable by this instance`n" $script:OICredsHints
+Check-Equal $m "the platform's instance credentials service answered HTTP 403: role not assumable by this instance - the instance profile's role does not trust ec2.amazonaws.com" 'a 403 explains the trust policy, in AWS terms'
+$m = Format-OIShimHttpError 'identity' 401 'unauthorized' $script:OIIdentityHints
+Check-Equal $m "the platform's instance identity service answered HTTP 401: unauthorized - the instance's identity was not accepted by the platform" 'a 401 explains the identity, in AWS terms'
+$m = Format-OIShimHttpError 'credentials' 500 ('e' * 400) $script:OICredsHints
+Check ($m.Length -eq ("the platform's instance credentials service answered HTTP 500: ".Length + 300)) 'the detail is capped at 300 characters'
+Check-Equal (Get-OIWebFailureText 'NameResolutionFailure') 'its name does not resolve' 'a failure is described without the host'
+Check-Equal (Get-OIWebFailureText 'ProtocolError') 'the request failed (ProtocolError)' 'an unlisted failure'
+Check-Equal (Get-OIWebFailureText '') 'the request failed' 'no failure status'
 
 $good = '{"AccessKeyId":"ASIAEXAMPLEKEYID0001","SecretAccessKey":"example-secret-key","Token":"example-session-token","Expiration":"2026-11-20T11:00:00Z"}'
 $r = ConvertFrom-OICredentialsDocument $good
@@ -472,7 +488,7 @@ $tokenFile = Join-Path ([System.IO.Path]::GetTempPath()) ('oi-token-' + [guid]::
 [System.IO.File]::WriteAllText($tokenFile, "header.payload.signature`n")
 try {
     $r = Invoke-OIShimGet -Url 'http://aws-shim.example.test:4567/v1/vm-credentials' -TokenPath $tokenFile -Roots $null -Hints @{}
-    Check (-not $r.Ok -and $r.Message.Contains('over TLS only')) 'the token is never sent over plain HTTP'
+    Check (-not $r.Ok -and $r.Message.Contains('without TLS') -and -not $r.Message.Contains('example.test')) 'the identity is never sent over plain HTTP, and the host is not named'
     $r = Invoke-OIShimGet -Url 'https://aws-shim.example.test:4567/v1/vm-credentials' -TokenPath $tokenFile -Roots $null -Hints @{}
     Check (-not $r.Ok -and $r.Message.Contains('no platform root CA')) 'nothing is fetched without the platform root CA'
 } finally {
@@ -562,6 +578,101 @@ $p = Test-Pin @($rootA) $leafA @() $mismatch
 Check (-not $p.Ok -and $p.Failure.Contains('does not name the host')) 'a certificate for another host name is refused'
 $p = Test-Pin @() $leafA @() $none
 Check (-not $p.Ok) 'no pinned root: refused'
+
+# --------------------------------------------------------------------------------------------------------
+# HTTP on the metadata socket.
+# --------------------------------------------------------------------------------------------------------
+
+function Get-AsciiBytes {
+    param([string]$Text)
+    return , ([System.Text.Encoding]::ASCII.GetBytes($Text))
+}
+$req = ConvertFrom-OIHttpRequest (Get-AsciiBytes "GET /latest/meta-data/ HTTP/1.1`r`nHost: 169.254.169.254`r`nX-aws-ec2-metadata-token: abc`r`n`r`n")
+Check ($req.State -eq 'complete' -and $req.Method -ceq 'GET' -and $req.Target -ceq '/latest/meta-data/') 'a GET request'
+Check-Equal (Get-OIHeader $req.Headers 'x-aws-ec2-metadata-token') 'abc' 'request header names are case-insensitive'
+Check ((ConvertFrom-OIHttpRequest (Get-AsciiBytes "GET / HTTP/1.1`r`nHost: x`r`n")).State -eq 'incomplete') 'headers still arriving'
+Check ((ConvertFrom-OIHttpRequest (Get-AsciiBytes "GET / HTTP/1.0`n`n")).State -eq 'complete') 'bare LF line ends'
+$putHead = "PUT /latest/api/token HTTP/1.1`r`nX-aws-ec2-metadata-token-ttl-seconds: 60`r`nContent-Length: 4`r`n`r`n"
+Check ((ConvertFrom-OIHttpRequest (Get-AsciiBytes ($putHead + 'ab'))).State -eq 'incomplete') 'a body still arriving'
+Check ((ConvertFrom-OIHttpRequest (Get-AsciiBytes ($putHead + 'abcd'))).State -eq 'complete') 'a request with its body'
+Check ((ConvertFrom-OIHttpRequest (Get-AsciiBytes "PUT /latest/api/token HTTP/1.1`r`nContent-Length: 0`r`n`r`n")).State -eq 'complete') 'Content-Length: 0'
+Check ((ConvertFrom-OIHttpRequest (Get-AsciiBytes "PUT / HTTP/1.1`r`nContent-Length: 999999`r`n`r`n")).State -eq 'complete') 'a large body is not waited for'
+$dup = ConvertFrom-OIHttpRequest (Get-AsciiBytes "GET / HTTP/1.1`r`nX-A: 1`r`nx-a: 2`r`n`r`n")
+Check-Equal (Get-OIHeader $dup.Headers 'X-A') '1, 2' 'repeated headers are joined'
+$malformed = @(
+    "GET /`r`n`r`n", "GET / HTTP/1.1 extra`r`n`r`n", "GET / FTP/1.0`r`n`r`n", "G@T / HTTP/1.1`r`n`r`n",
+    "GET / HTTP/1.1`r`nNoColon`r`n`r`n", "GET / HTTP/1.1`r`nBad Name: x`r`n`r`n",
+    "GET / HTTP/1.1`r`nContent-Length: -1`r`n`r`n", "GET / HTTP/1.1`r`nContent-Length: 1`r`nContent-Length: 1`r`n`r`n"
+)
+foreach ($badReq in $malformed) {
+    Check ((ConvertFrom-OIHttpRequest (Get-AsciiBytes $badReq)).State -eq 'bad') ('a malformed request is refused: ' + ($badReq -replace "`r`n", '\r\n'))
+}
+Check ((ConvertFrom-OIHttpRequest (Get-AsciiBytes ("GET / HTTP/1.1`r`nX: " + ('a' * 40000)))).State -eq 'bad') 'an oversized header block is refused'
+
+$date = New-Object System.DateTime 2026, 11, 20, 10, 0, 0, ([System.DateTimeKind]::Utc)
+$hdr = @{}
+$hdr['X-aws-ec2-metadata-token-ttl-seconds'] = '60'
+$wire = [System.Text.Encoding]::ASCII.GetString((ConvertTo-OIHttpResponse (New-OIResponse 200 'text/plain' 'TOKEN' $hdr) 'PUT' $date))
+Check-Equal $wire ("HTTP/1.1 200 OK`r`nServer: EC2ws`r`nDate: Fri, 20 Nov 2026 10:00:00 GMT`r`nContent-Type: text/plain`r`nContent-Length: 5`r`nX-aws-ec2-metadata-token-ttl-seconds: 60`r`nConnection: close`r`n`r`nTOKEN") 'a token response on the wire'
+$wire = [System.Text.Encoding]::ASCII.GetString((ConvertTo-OIHttpResponse (New-OIResponse 200 'text/plain' 'i-0123') 'HEAD' $date))
+Check ($wire.EndsWith("Content-Length: 6`r`nConnection: close`r`n`r`n")) 'HEAD: the length, no body'
+$wire = [System.Text.Encoding]::ASCII.GetString((ConvertTo-OIHttpResponse (New-OIResponse 405 'text/plain' "Method Not Allowed`n" @{ Allow = 'GET, PUT' }) 'POST' $date))
+Check ($wire.StartsWith("HTTP/1.1 405 Method Not Allowed`r`n") -and $wire.Contains("`r`nAllow: GET, PUT`r`n")) 'a 405 with its Allow header'
+
+# The TCP server end to end: the client runs in a thread job, the server loop here until the client is done.
+$tcp = Start-OITcpListener -Address '127.0.0.1' -Port 0 -Attempts 1
+Check ($null -ne $tcp.Listener) ('a TCP listener starts: ' + $tcp.Message)
+$port = $tcp.Listener.LocalEndpoint.Port
+$ts = New-TestState
+$ts.Facts.LocalAddresses = @('127.0.0.1')
+$ts.Facts.ContainerNetworks = @()
+$ts.Facts.Taken = Get-OIMonoNow
+$clientScript = {
+    param([int]$Port, [string[]]$Chunks, [int]$PauseMs)
+    $client = New-Object System.Net.Sockets.TcpClient
+    $client.Connect('127.0.0.1', $Port)
+    $client.ReceiveTimeout = 5000
+    $stream = $client.GetStream()
+    $first = $true
+    foreach ($chunk in $Chunks) {
+        if (-not $first) { Start-Sleep -Milliseconds $PauseMs }
+        $first = $false
+        $b = [System.Text.Encoding]::ASCII.GetBytes($chunk)
+        $stream.Write($b, 0, $b.Length)
+        $stream.Flush()
+    }
+    $ms = New-Object System.IO.MemoryStream
+    $buf = New-Object byte[] 4096
+    try {
+        while ($true) {
+            $n = $stream.Read($buf, 0, $buf.Length)
+            if ($n -le 0) { break }
+            $ms.Write($buf, 0, $n)
+        }
+    } catch { }
+    $client.Close()
+    [System.Text.Encoding]::UTF8.GetString($ms.ToArray())
+}
+function Invoke-TcpExchange {
+    param([string[]]$Chunks, [int]$PauseMs = 0)
+    $job = Start-ThreadJob -ScriptBlock $clientScript -ArgumentList $port, $Chunks, $PauseMs
+    Invoke-OIServeTcp $tcp.Listener $ts -Iterations 100 -WaitMicroseconds 100000 -Until { $job.State -ne 'Running' -and $job.State -ne 'NotStarted' }
+    return [string](Receive-Job -Job $job -Wait -AutoRemoveJob)
+}
+$out = Invoke-TcpExchange @("PUT /latest/api/token HTTP/1.1`r`nHost: 169.254.169.254`r`nX-aws-ec2-metadata-token-ttl-seconds: 60`r`nContent-Length: 0`r`n`r`n")
+Check ($out.StartsWith("HTTP/1.1 200 OK`r`n") -and $out.Contains("`r`nX-aws-ec2-metadata-token-ttl-seconds: 60`r`n") -and $out.Contains("`r`nServer: EC2ws`r`n")) ('the TCP server issues a token: ' + ($out -replace "`r`n", '\r\n'))
+$wireToken = ($out -split "`r`n`r`n", 2)[1]
+Check (Test-OIImdsToken $ts.TokenKey (Get-OIMonoNow) $wireToken) 'the token from the wire is valid'
+$out = Invoke-TcpExchange @("GET /latest/meta-data/instance-id HTTP/1.1`r`nHost: 169.254.169.254`r`nX-aws-ec2-metadata-", ("token: " + $wireToken + "`r`n`r`n")) 300
+Check ($out.StartsWith("HTTP/1.1 200 OK`r`n") -and $out.EndsWith("`r`n`r`ni-0123456789abcdef0")) ('a request split across reads is answered: ' + ($out -replace "`r`n", '\r\n'))
+$out = Invoke-TcpExchange @("GET /latest/meta-data/instance-id HTTP/1.1`r`nX-aws-ec2-metadata-token: forged`r`n`r`n")
+Check ($out.StartsWith("HTTP/1.1 401 Unauthorized`r`n")) 'the TCP server refuses a forged token'
+$out = Invoke-TcpExchange @("HELLO`r`n`r`n")
+Check ($out.StartsWith("HTTP/1.1 400 Bad Request`r`n")) 'the TCP server refuses a malformed request'
+$tcp.Listener.Stop()
+
+$r = Invoke-OIShimGet -Url 'https://aws-shim.example.test:4567/v1/vm-identity' -TokenPath '' -Roots (New-OICertificateCollection @($rootA)) -Hints @{} -Service 'identity'
+Check-Equal $r.Message "the instance's identity disk is not attached, so the platform's instance identity service cannot be asked" 'no identity disk'
 
 # --------------------------------------------------------------------------------------------------------
 # Who may use the metadata service.
