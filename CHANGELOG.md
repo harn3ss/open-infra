@@ -6,6 +6,19 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — IAM instance profiles made through the IAM API
+- `CreateInstanceProfile`, `AddRoleToInstanceProfile`, `RemoveRoleFromInstanceProfile` and
+  `DeleteInstanceProfile` manage an account's instance profiles as AWS does: a profile has a name, a path,
+  tags and at most one role (a second is `LimitExceeded`); a name the account already has is
+  `EntityAlreadyExists`; a profile with a role, and a role a profile holds, are not deleted
+  (`DeleteConflict`). Each is authorized on the profile's ARN, and adding a role needs `iam:PassRole` on it.
+  `GetInstanceProfile`, `ListInstanceProfiles` and `ListInstanceProfilesForRole` list these beside the
+  profiles CloudFormation stacks hold. A member account's profiles are its own.
+- An `AWS::EC2::Instance` whose `IamInstanceProfile` names one of these profiles, by name or ARN, launches
+  with the profile's role, and its guest gets that role's credentials from instance metadata. A profile the
+  account does not have refuses the stack, as EC2 refuses an invalid instance profile name, where before the
+  instance launched with no role.
+
 ### Added — EC2 DescribeInstanceTypes
 - `DescribeInstanceTypes` reports the instance types an instance can be launched as, with their vCPUs and
   memory, selected by name or by EC2's filters and paged as EC2 pages them; a type that does not exist is

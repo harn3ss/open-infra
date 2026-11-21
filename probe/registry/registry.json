@@ -95,7 +95,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 17
+      "probe": 18
     },
     "undeployableUses": [
       {
@@ -880,6 +880,7 @@
         "AWS::IAM"
       ],
       "operations": [
+        "AddRoleToInstanceProfile",
         "AddUserToGroup",
         "AttachGroupPolicy",
         "AttachRolePolicy",
@@ -887,6 +888,7 @@
         "ChangePassword",
         "CreateAccessKey",
         "CreateGroup",
+        "CreateInstanceProfile",
         "CreateLoginProfile",
         "CreatePolicy",
         "CreatePolicyVersion",
@@ -898,6 +900,7 @@
         "DeleteAccountPasswordPolicy",
         "DeleteGroup",
         "DeleteGroupPolicy",
+        "DeleteInstanceProfile",
         "DeleteLoginProfile",
         "DeletePolicy",
         "DeletePolicyVersion",
@@ -947,6 +950,7 @@
         "PutRolePolicy",
         "PutUserPermissionsBoundary",
         "PutUserPolicy",
+        "RemoveRoleFromInstanceProfile",
         "RemoveUserFromGroup",
         "ResyncMFADevice",
         "SetDefaultPolicyVersion",
@@ -1639,7 +1643,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 639,
+    "operations": 643,
     "planOnly": 11,
     "refused": 11,
     "services": 32,
@@ -2465,11 +2469,12 @@
       ],
       "stackProbes": [
         "cfn-securitygroup",
+        "ec2-isolated-vpc",
         "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 4,
+      "templateUses": 5,
       "verdict": "ok"
     },
     "AWS::EC2::InternetGateway": {
@@ -3208,11 +3213,12 @@
       ],
       "stackProbes": [
         "cfn-structural-reads",
+        "ec2-isolated-vpc",
         "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 4,
+      "templateUses": 5,
       "verdict": "ok"
     },
     "AWS::IAM::ManagedPolicy": {
@@ -3283,12 +3289,13 @@
         "cfn-ecs",
         "cfn-lambda-zip",
         "cfn-structural-reads",
+        "ec2-isolated-vpc",
         "iam-passedtoservice",
         "lambda-timeout",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 12,
+      "templateUses": 13,
       "verdict": "ok"
     },
     "AWS::IAM::User": {

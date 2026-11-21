@@ -1586,16 +1586,10 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		cav = append(cav, "the instance attaches no SecurityGroup, so it gets the stack's default kind: SecurityGroup \""+defaultSG.Name+"\" — as a VPC's default group, it admits inbound only from its own members (so nothing on the LAN reaches the instance's published address) and all outbound")
 	}
 
-	// IamInstanceProfile -> spec.instanceRole: follow the profile to its in-stack AWS::IAM::Role and
-	// bind the VM to that kind: Role (the guest gets its credentials from instance metadata, no static
-	// keys). An out-of-stack profile/arn can't be resolved to a kind: Role here — caveat, don't guess.
-	if _, present := props["IamInstanceProfile"]; present {
-		if role, ok := resolveInstanceRole(id, ctx); ok {
-			spec["instanceRole"] = role
-		} else {
-			cav = append(cav, "IamInstanceProfile could not be resolved to an in-stack AWS::IAM::Role — set spec.instanceRole to the kind: Role the VM should assume (it must trust the vm principal)")
-		}
-	}
+	// IamInstanceProfile -> spec.instanceRole: the profile's role, an in-stack AWS::IAM::Role or the role of
+	// a profile the account made with the IAM API (the guest gets its credentials from instance metadata,
+	// no static keys) — translate_instanceprofile.go.
+	f, cav = ec2InstanceProfile(id, props, ctx, spec, f, cav)
 
 	// MetadataOptions -> spec.metadataOptions: the in-guest instance metadata service (169.254.169.254).
 	if raw, present := props["MetadataOptions"]; present {

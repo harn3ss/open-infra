@@ -164,8 +164,9 @@ spec:
                 instanceRole:
                   type: string
                   description: >-
-                    Name of a kind: Role (in this namespace) this VM assumes for aws-shim access — the
-                    EC2 instance-profile / IAM-role analog. The VM obtains short-lived, rotating
+                    Name of a kind: Role this VM assumes for aws-shim access — the EC2 instance-profile /
+                    IAM-role analog: the Role in this namespace, else the one in the account's IAM home
+                    (where the IAM API makes roles, an instance profile's role). The VM obtains short-lived, rotating
                     credentials for this role from the instance metadata service at boot (no static keys
                     on disk), exactly as an EC2 instance does via its instance profile. The named Role
                     MUST trust the VM service principal (spec.trust including "vm"); a Role that does not

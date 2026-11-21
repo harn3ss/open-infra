@@ -58,6 +58,9 @@ type iamHandler struct {
 	// cfn is the CloudFormation front door, whose stack records hold the instance profiles a stack made
 	// (iam_instanceprofile.go); nil = none.
 	cfn *cfnDoorway
+	// profiles keeps the instance profiles made with the IAM API (iam_instanceprofile_store.go); nil = this
+	// shim keeps none (CreateInstanceProfile answers a service failure).
+	profiles *iamProfileStore
 }
 
 func newIAMHandler(cs kubernetes.Interface, dyn dynamic.Interface, keys *awskeys.Store, authz *dataplaneauthz.Checker, usersNS, account, region string, logger *slog.Logger) *iamHandler {
@@ -79,9 +82,13 @@ func verbForIAMOp(op string) (verb, resource string, ok bool) {
 		return "create", "roles", true
 	case "GetRole", "ListRoles", "ListAttachedRolePolicies", "ListRolePolicies", "GetRolePolicy":
 		return "get", "roles", true
-	// A stack's instance profiles (iam_instanceprofile.go): a profile is a container of roles.
+	// Instance profiles (iam_instanceprofile.go): a profile is a container of roles.
 	case "GetInstanceProfile", "ListInstanceProfiles", "ListInstanceProfilesForRole":
 		return "get", "roles", true
+	case "CreateInstanceProfile", "AddRoleToInstanceProfile", "RemoveRoleFromInstanceProfile":
+		return "create", "roles", true
+	case "DeleteInstanceProfile":
+		return "delete", "roles", true
 	case "DeleteRole", "DeleteRolePolicy":
 		return "delete", "roles", true
 	case "CreatePolicy", "CreatePolicyVersion", "SetDefaultPolicyVersion":
@@ -415,6 +422,14 @@ func (h *iamHandler) getRole(ctx context.Context, w http.ResponseWriter, r *http
 func (h *iamHandler) deleteRole(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
 	sc := h.scope(ctx)
 	name := r.PostFormValue("RoleName")
+	// A role an instance profile holds is not deleted until it is removed from the profile, as on AWS.
+	if inUse, err := h.roleInAProfile(ctx, name); err != nil {
+		h.internal(w, requestID, err)
+		return
+	} else if inUse {
+		h.conflict(w, requestID, "DeleteConflict", "Cannot delete entity, must remove roles from instance profile first.")
+		return
+	}
 	if err := h.dyn.Resource(gvrRoles).Namespace(sc.ns).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
 		h.noSuchEntity(w, requestID, "Role "+name+" not found.")
 		return

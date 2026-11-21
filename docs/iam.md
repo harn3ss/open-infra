@@ -276,7 +276,9 @@ aws sts assume-role --role-arn arn:aws:iam::<account>:role/deployer --role-sessi
   whose condition the platform cannot evaluate (such as `sts:ExternalId`) allows no one.
 - Sessions last up to the role's `MaxSessionDuration` (1 hour by default, at most 12).
 - **Instance roles:** a virtual machine's role (`IamInstanceProfile` in a stack, the VM's role in the
-  console) gives the guest credentials through the instance metadata service, as on EC2.
+  console) gives the guest credentials through the instance metadata service, as on EC2. An instance
+  profile made with the IAM API (`aws iam create-instance-profile`, `add-role-to-instance-profile`) carries
+  its one role to the instances a stack launches with it; adding the role needs `iam:PassRole` on it.
 - **Execution roles:** a function's role (`spec.role`, a Lambda function's `Role` in a stack), trusting
   `lambda.amazonaws.com`, gives the function's code the role's credentials, as on Lambda
   ([execution role](serverless.md#execution-role)).

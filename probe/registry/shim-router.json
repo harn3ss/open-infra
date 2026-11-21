@@ -516,6 +516,7 @@
     "iam": {
       "handler": "iamHandler",
       "operations": [
+        "AddRoleToInstanceProfile",
         "AddUserToGroup",
         "AttachGroupPolicy",
         "AttachRolePolicy",
@@ -523,6 +524,7 @@
         "ChangePassword",
         "CreateAccessKey",
         "CreateGroup",
+        "CreateInstanceProfile",
         "CreateLoginProfile",
         "CreatePolicy",
         "CreatePolicyVersion",
@@ -534,6 +536,7 @@
         "DeleteAccountPasswordPolicy",
         "DeleteGroup",
         "DeleteGroupPolicy",
+        "DeleteInstanceProfile",
         "DeleteLoginProfile",
         "DeletePolicy",
         "DeletePolicyVersion",
@@ -583,6 +586,7 @@
         "PutRolePolicy",
         "PutUserPermissionsBoundary",
         "PutUserPolicy",
+        "RemoveRoleFromInstanceProfile",
         "RemoveUserFromGroup",
         "ResyncMFADevice",
         "SetDefaultPolicyVersion",

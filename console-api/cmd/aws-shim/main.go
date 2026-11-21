@@ -191,6 +191,7 @@ func run(logger *slog.Logger) error {
 	var cognitoSt *cognitoStore
 	var cfnSvcOwners *cfnServiceOwners
 	var ec2KeySt *ec2KeyStore
+	var iamProfileSt *iamProfileStore
 	var ec2FlowSt *ec2FlowLogStore
 	var sharedPG *sql.DB // the shared store's pool (the flow-log delivery worker's advisory lock)
 	var r53rSt *r53rStore
@@ -295,6 +296,12 @@ func run(logger *slog.Logger) error {
 			if serr := ec2KeySt.ensureSchema(context.Background()); serr != nil {
 				return fmt.Errorf("EC2 key-pair schema init failed: %w", serr)
 			}
+			// IAM instance profiles made with the IAM API (iam_instanceprofile_store.go): an instance's
+			// IamInstanceProfile carries one's role into its VM's spec.instanceRole.
+			iamProfileSt = &iamProfileStore{db: db}
+			if serr := iamProfileSt.ensureSchema(context.Background()); serr != nil {
+				return fmt.Errorf("IAM instance-profile schema init failed: %w", serr)
+			}
 			// EC2 VPC Flow Logs (ec2_flowlogs.go), delivered into the CloudWatch Logs store above.
 			ec2FlowSt = &ec2FlowLogStore{db: db}
 			if serr := ec2FlowSt.ensureSchema(context.Background()); serr != nil {
@@ -316,7 +323,7 @@ func run(logger *slog.Logger) error {
 				degradedPG["shared"] = sqsURI // a schema error stays degraded: a restart would only repeat it
 			}
 			sqsSt, snsSt, kmsSt, secretsSt, ebSt, cwlSt, ssmSt, apigwSt, apigwV1St, cwSt, kinesisSt, ddbStreamSt, cognitoSt = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
-			cfnSvcOwners, ec2KeySt, ec2FlowSt, sharedPG, r53rSt = nil, nil, nil, nil, nil
+			cfnSvcOwners, ec2KeySt, ec2FlowSt, sharedPG, r53rSt, iamProfileSt = nil, nil, nil, nil, nil, nil
 		}
 	}
 
@@ -637,6 +644,7 @@ func run(logger *slog.Logger) error {
 	var iamH *iamHandler
 	if dyn != nil {
 		iamH = newIAMHandler(cs, dyn, awskeys.NewStore(cs, keysNS), authzChecker, usersNS, account, region, logger)
+		iamH.profiles = iamProfileSt // instance profiles made with the IAM API; nil = none kept
 	}
 	// Cognito user pools: real RS256 JWT-issuing pools. The signing key is persisted in a Secret (so tokens
 	// survive a restart); the pool issuer/JWKS is served by this shim so the API Gateway JWT authorizer (#169)
@@ -804,6 +812,9 @@ func run(logger *slog.Logger) error {
 			if ec2KeySt != nil {
 				cfnH.keyPairs = ec2KeySt.publicKeys
 			}
+			if iamProfileSt != nil { // an instance's IamInstanceProfile naming a profile made with the IAM API
+				cfnH.instanceProfiles = iamProfileSt.forStacks
+			}
 			// SSM Run Command targets these instances (ssm_runcommand.go); their agents poll below.
 			ssmH.ec2 = ec2H
 			// Route 53 Resolver's associations and firewall configurations name these VPCs.
@@ -812,7 +823,7 @@ func run(logger *slog.Logger) error {
 			// ACM (acm.*): the reads of a stack's certificates — its distribution's site TLS, issued by
 			// cert-manager (acm.go).
 			services["acm"] = newACMHandler(cfnH, logger)
-			// IAM's instance profiles are a stack's, read from its template (iam_instanceprofile.go).
+			// IAM's instance profiles include a stack's, read from its template (iam_instanceprofile.go).
 			if iamH != nil {
 				iamH.cfn = cfnH
 			}
@@ -998,6 +1009,8 @@ func run(logger *slog.Logger) error {
 			minter:   stsMinter,
 			ttl:      awssts.DefaultDuration,
 			logger:   logger,
+			// An instance role made with the IAM API (an instance profile's) is in the IAM home.
+			rolesHome: rolesNS,
 		}
 		logger.Info("VM workload credentials enabled: VMs with spec.instanceRole get rotating credentials (in-guest instance metadata)")
 		// SSM Run Command's agent channel (vmcommands.go): the account namespace's VMs whose role allows

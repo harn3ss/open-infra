@@ -10,6 +10,7 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/awssts"
 	authnv1 "k8s.io/api/authentication/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -52,6 +53,10 @@ type vmCredsHandler struct {
 	// accounts says which account a VM's namespace belongs to (the accounts directory); nil: every VM is
 	// the management account's, as before accounts.
 	accounts vmAccounts
+	// rolesHome is the management account's IAM home (ROLES_NAMESPACE), where the IAM API makes roles: an
+	// instance role its VM's namespace does not have is found there (a member account's, in its home).
+	// "": only the VM's namespace.
+	rolesHome string
 }
 
 // vmAccounts is what the VM paths (credentials, the Run Command agent channel, the identity document) ask
@@ -132,7 +137,17 @@ func (h *vmCredsHandler) serve(w http.ResponseWriter, r *http.Request, requestID
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	groups, ok := h.trust.vmTrusted(r.Context(), id.namespace, id.role)
+	// A member account's VM assumes its role in that account (the token records it), so the instance's AWS
+	// calls act in its own account, as on AWS; a suspended account's instance gets none.
+	acct, home := vmMemberAccount(h.accounts, id.namespace)
+	if acct != "" && h.accounts.Suspended(acct) {
+		http.Error(w, "the instance's account is suspended", http.StatusForbidden)
+		return
+	}
+	if acct == "" {
+		home = h.rolesHome
+	}
+	groups, roleNS, ok := instanceRoleOf(r.Context(), h.trust, id.namespace, home, id.role)
 	if !ok {
 		if h.logger != nil {
 			h.logger.Warn("vm credential request denied: role not vm-trusted",
@@ -141,16 +156,12 @@ func (h *vmCredsHandler) serve(w http.ResponseWriter, r *http.Request, requestID
 		http.Error(w, "role not assumable by this instance", http.StatusForbidden)
 		return
 	}
-	// The session names the Role's namespace: a VM's role lives in the VM's namespace, so it is a
-	// different principal from a same-named Role anywhere else. A member account's VM assumes its role in
-	// that account (the token records it), so the instance's AWS calls act in its own account, as on AWS; a
-	// suspended account's instance gets none.
-	acct, _ := vmMemberAccount(h.accounts, id.namespace)
-	if acct != "" && h.accounts.Suspended(acct) {
-		http.Error(w, "the instance's account is suspended", http.StatusForbidden)
-		return
+	// The session names the Role's namespace: a role in the VM's namespace is a different principal from a
+	// same-named Role anywhere else; the management account's IAM home is the session's default.
+	if acct == "" && roleNS == h.rolesHome {
+		roleNS = ""
 	}
-	akid, sk, tok, exp, err := h.minter.MintInAccount(acct, id.namespace, id.role, groups, id.vmName, id.caller, h.ttl)
+	akid, sk, tok, exp, err := h.minter.MintInAccount(acct, roleNS, id.role, groups, id.vmName, id.caller, h.ttl)
 	if err != nil {
 		http.Error(w, "could not mint credentials", http.StatusInternalServerError)
 		return
@@ -301,4 +312,35 @@ func (c *k8sRoleTrustChecker) vmTrusted(ctx context.Context, namespace, role str
 		}
 	}
 	return nil, false
+}
+
+// hasRole reports whether namespace has a kind: Role named role. A role that cannot be read counts as there,
+// so a read error never sends the lookup on to another namespace.
+func (c *k8sRoleTrustChecker) hasRole(ctx context.Context, namespace, role string) bool {
+	_, err := c.dyn.Resource(roleGVR).Namespace(namespace).Get(ctx, role, metav1.GetOptions{})
+	return !apierrors.IsNotFound(err)
+}
+
+// roleLocator tells a namespace's role from one it does not have (k8sRoleTrustChecker).
+type roleLocator interface {
+	hasRole(ctx context.Context, namespace, role string) bool
+}
+
+// instanceRoleOf finds a VM's instance role, and whether it is instance-assumable: the kind: Role in the VM's
+// own namespace (where a stack makes the role it launches its instance with), else, when that namespace has
+// no role of the name, the one in the account's IAM home, where the IAM API makes roles (an instance
+// profile's role) — as a function's or an application's role is found (service_role.go). roleNS is the
+// namespace the role is in.
+func instanceRoleOf(ctx context.Context, t roleTrustChecker, vmNS, home, role string) (groups []string, roleNS string, ok bool) {
+	if groups, ok = t.vmTrusted(ctx, vmNS, role); ok {
+		return groups, vmNS, true
+	}
+	if home == "" || home == vmNS {
+		return nil, "", false
+	}
+	if l, can := t.(roleLocator); !can || l.hasRole(ctx, vmNS, role) {
+		return nil, "", false // the VM's own namespace's role is the one it names, and it does not trust the instance
+	}
+	groups, ok = t.vmTrusted(ctx, home, role)
+	return groups, home, ok
 }

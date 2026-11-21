@@ -49,6 +49,9 @@ var dynamicResourceTypes = map[string][]string{
 	"rds.go":                 {"DBInstance", "DBSnapshot"},
 	"cfn_services.go":        {"Queue", "Topic", "Parameter", "Key", "ElasticIp", "Repository", "EventBus", "LogGroup", "Secret", "Namespace", "Function"},
 	"cfn_services_doors.go":  {"Secret", "LogGroup", "Rule", "EventBus", "Repository", "Namespace"},
+
+	// An instance profile's writes are authorized on its ARN (authorizeProfile: arnType).
+	"iam_instanceprofile_write.go": {"ARN"},
 }
 
 // dynamicServices are the services of checks whose action is a variable, per file.

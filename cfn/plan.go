@@ -147,6 +147,13 @@ type Capabilities struct {
 	// a KeyName it does not hold refuses, as AWS's InvalidKeyPair.NotFound. nil (the CLI, or a shim without
 	// the key-pair store): KeyName is a caveat and no key is injected.
 	KeyPairs map[string]string
+	// InstanceProfiles are the IAM instance profiles of the stack's account made through the IAM API (the
+	// aws-shim's CreateInstanceProfile / AddRoleToInstanceProfile), by lower-cased name (IAM names are
+	// unique without regard to case). An instance's IamInstanceProfile naming one by its name or ARN binds
+	// the profile's role on the VM (spec.instanceRole), and one naming a profile the account does not have
+	// refuses, as EC2 refuses an invalid IAM instance profile name. nil (the CLI, or a shim without the
+	// profile store): a profile from outside the stack is a caveat and the instance gets no role.
+	InstanceProfiles map[string]InstanceProfile
 	// NestedStacks: this environment creates a nested stack (AWS::CloudFormation::Stack) as a stack of its
 	// own (nested_stacks.go). Off (the CLI, which flattens nested stacks first), the type refuses.
 	NestedStacks bool
@@ -158,6 +165,13 @@ type Capabilities struct {
 	// NoInternetSubnets are those of them, by cluster subnet, whose VPC has no internet gateway: a workload
 	// there reaches only the platform's own networks, as a task in a subnet with no route out does on AWS.
 	NoInternetSubnets map[string]bool
+}
+
+// InstanceProfile is an IAM instance profile of the stack's account (Capabilities.InstanceProfiles).
+type InstanceProfile struct {
+	Name string // its name, as it was created
+	Path string // its IAM path ("/" when it has none)
+	Role string // the kind: Role its role is; "" for a profile with no role
 }
 
 // underValidatedDomain reports whether host is one of domains or a subdomain of one.

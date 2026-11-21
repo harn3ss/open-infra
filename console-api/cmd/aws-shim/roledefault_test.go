@@ -367,6 +367,14 @@ func roleDoorCases() []roleDoorCase {
 				h.authz = a
 				return serveWith(h, formOp(url.Values{"Action": {"ListInstanceProfiles"}}), c)
 			}},
+		// A profile is made on its ARN. No profile store here: an authorized call ends at "not configured".
+		{door: "iam", op: "CreateInstanceProfile", action: "iam:CreateInstanceProfile", resType: "ARN",
+			resName: "arn:aws:iam::000000000000:instance-profile/web", denyCode: "AccessDenied",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h, _ := profileFixture(t)
+				h.authz = a
+				return serveWith(h, formOp(url.Values{"Action": {"CreateInstanceProfile"}, "InstanceProfileName": {"web"}}), c)
+			}},
 		// --- EC2: a VPC's structure, read from its kinds and its stacks' templates ---
 		{door: "ec2", op: "DescribeRouteTables", action: "ec2:DescribeRouteTables", resType: "RouteTable", denyCode: "UnauthorizedOperation",
 			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {

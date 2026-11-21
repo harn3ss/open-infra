@@ -478,7 +478,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | EKS | `eks` | proven | 4 |
 | EventBridge | `events` | proven | 14 |
 | Glue | `glue` | proven | 32 |
-| IAM | `iam` | proven | 77 |
+| IAM | `iam` | proven | 81 |
 | KMS | `kms` | proven | 23 |
 | Kinesis Data Streams | `kinesis` | proven | 12 |
 | Lambda | `lambda` | proven | 15 |

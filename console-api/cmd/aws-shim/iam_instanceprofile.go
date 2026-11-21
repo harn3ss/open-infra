@@ -1,22 +1,33 @@
-// The IAM front door's instance-profile reads: GetInstanceProfile, ListInstanceProfiles and
+// The IAM front door's instance profiles: CreateInstanceProfile, DeleteInstanceProfile,
+// AddRoleToInstanceProfile, RemoveRoleFromInstanceProfile, GetInstanceProfile, ListInstanceProfiles and
 // ListInstanceProfilesForRole.
 //
-// An instance profile provisions nothing on open-infra: a stack's AWS::IAM::InstanceProfile only carries
-// an instance's IamInstanceProfile through to its role, which binds directly on the VM (kind:
-// VirtualMachine spec.instanceRole). So a profile is read from its stack's recorded template, as the
-// stack resolved it (cfn.TemplateResourcesOf), while the stack holds it: its name is its Ref (the id the
-// stack's DescribeStackResources lists it by), its path and tags the template's, its ARN
-// arn:aws:iam::<account>:instance-profile<path><name> (the stack's Fn::GetAtt Arn), its id an AIPA… id
-// derived from the stack and logical id, its create date the stack's, and its roles each in-stack
-// AWS::IAM::Role it names as the stack resolved that role (its Ref, path, Fn::GetAtt Arn and RoleId, its
-// trust policy).
+// An instance profile is the container that carries a role to an instance. On open-infra the role binds
+// directly on the instance's VM (kind: VirtualMachine spec.instanceRole), so a profile is where an instance
+// finds its role. An account's profiles are of two makings:
 //
-// Authorization, as AWS evaluates it: iam:GetInstanceProfile on the profile's ARN (with its path), iam:
-// ListInstanceProfiles on arn:aws:iam::<account>:instance-profile<PathPrefix>*, iam:
-// ListInstanceProfilesForRole on the role. In legacy the IAM front door's coarse RBAC check (get on its
-// roles) comes first, and a profile is read only by a caller that may read its stack, as
-// DescribeStackResources needs (a profile belongs to its stack and to nothing else); a list leaves out the
-// profiles of stacks the caller may not read. In enforce IAM policy alone decides.
+//   - made with the IAM API (CreateInstanceProfile), kept in the shim's Postgres (iam_instanceprofile_store.go):
+//     its name and path as given, an AIPA… id, its create date, its tags, and at most one role, a kind: Role
+//     of the account (AddRoleToInstanceProfile), as on AWS. A stack's instance names it by its name or ARN,
+//     and its role binds on the VM (cfn/translate_instanceprofile.go).
+//   - made by a stack's AWS::IAM::InstanceProfile, read from the stack's recorded template, as the stack
+//     resolved it (cfn.TemplateResourcesOf), while the stack holds it: its name is its Ref (the id the stack's
+//     DescribeStackResources lists it by), its path and tags the template's, its id an AIPA… id derived from
+//     the stack and logical id, its create date the stack's, and its roles each in-stack AWS::IAM::Role it
+//     names as the stack resolved that role (its Ref, path, Fn::GetAtt Arn and RoleId, its trust policy). It
+//     is the stack's: the IAM API reads it, and changes it only through its stack (UnmodifiableEntity).
+//
+// Either's ARN is arn:aws:iam::<account>:instance-profile<path><name> (a stack's is its Fn::GetAtt Arn). The
+// reads list both, by name; a name is the account's once, without regard to case.
+//
+// Authorization, as AWS evaluates it: iam:<Action> on the profile's ARN (with its path),
+// iam:ListInstanceProfiles on arn:aws:iam::<account>:instance-profile<PathPrefix>*,
+// iam:ListInstanceProfilesForRole on the role. CreateInstanceProfile with tags also needs
+// iam:TagInstanceProfile, and AddRoleToInstanceProfile needs iam:PassRole on the role (passed to
+// ec2.amazonaws.com), as AWS requires. In legacy the IAM front door's coarse RBAC check (get on its roles for
+// a read, create or delete for a write) comes first, and a stack's profile is read only by a caller that may
+// read its stack, as DescribeStackResources needs; a list leaves out the profiles of stacks the caller may
+// not read. In enforce IAM policy alone decides.
 package main
 
 import (
@@ -34,6 +45,7 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 const (
@@ -41,19 +53,25 @@ const (
 	cfnIAMRoleType         = "AWS::IAM::Role"
 )
 
-// iamInstanceProfileOp reports whether op is one of the instance-profile reads (authorized here, not by
+// instanceProfileService is the service a profile's role is passed to (iam:PassedToService): EC2, to whose
+// instances the profile carries it.
+const instanceProfileService = "ec2.amazonaws.com"
+
+// iamInstanceProfileOp reports whether op is one of the instance-profile operations (authorized here, not by
 // serve's per-entity gate: their resource is the profile, or the role a profile lists).
 func iamInstanceProfileOp(op string) bool {
 	switch op {
-	case "GetInstanceProfile", "ListInstanceProfiles", "ListInstanceProfilesForRole":
+	case "GetInstanceProfile", "ListInstanceProfiles", "ListInstanceProfilesForRole",
+		"CreateInstanceProfile", "DeleteInstanceProfile", "AddRoleToInstanceProfile", "RemoveRoleFromInstanceProfile":
 		return true
 	}
 	return false
 }
 
-// iamInstanceProfile is a stack's instance profile.
+// iamInstanceProfile is an instance profile of the caller's account: one a stack holds (rec), or one made
+// with the IAM API (rec nil).
 type iamInstanceProfile struct {
-	rec         *cfn.StackRecord
+	rec         *cfn.StackRecord // the stack that holds it; nil for one made with the IAM API
 	logicalID   string
 	name, path  string
 	arn, id     string
@@ -97,8 +115,63 @@ func iamTime(ts ...string) string {
 	return time.Unix(0, 0).UTC().Format(time.RFC3339)
 }
 
-// instanceProfiles are the instance profiles of the caller's account's stacks that hold them, by name.
+// instanceProfiles are the instance profiles of the caller's account, by name: those made with the IAM API
+// and those its stacks hold.
 func (h *iamHandler) instanceProfiles(ctx context.Context) ([]iamInstanceProfile, error) {
+	out, err := h.stackInstanceProfiles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if h.profiles != nil {
+		stored, err := h.profiles.list(ctx, h.profileAccount(ctx))
+		if err != nil {
+			return nil, err
+		}
+		for _, sp := range stored {
+			out = append(out, h.apiInstanceProfile(ctx, sp))
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out, nil
+}
+
+// profileAccount is the profile store's account column for the caller's account ("" for the management
+// account's): the scope its other IAM entities are in.
+func (h *iamHandler) profileAccount(ctx context.Context) string { return h.keyAccount(h.scope(ctx)) }
+
+// apiInstanceProfile is a profile made with the IAM API as IAM describes it, its role as GetRole does.
+func (h *iamHandler) apiInstanceProfile(ctx context.Context, sp storedInstanceProfile) iamInstanceProfile {
+	acct := callerAccount(ctx)
+	created := sp.Created.UTC().Format(time.RFC3339)
+	p := iamInstanceProfile{name: sp.Name, path: iamPathOf(sp.Path), id: sp.ID, created: created, tags: sp.Tags, roleNameSet: map[string]bool{}}
+	p.arn = "arn:aws:iam::" + acct + ":instance-profile" + p.path + p.name
+	if sp.Role != "" {
+		role := iamProfileRole{name: sp.Role, path: "/", id: roleID(sp.Role), created: created, arn: "arn:aws:iam::" + acct + ":role/" + sp.Role}
+		if u, ok := h.accountRole(ctx, sp.Role); ok {
+			if ts := u.GetCreationTimestamp(); !ts.IsZero() {
+				role.created = ts.UTC().Format(time.RFC3339)
+			}
+			role.trust = h.trustDocument(h.scope(ctx), u)
+		}
+		p.roles = append(p.roles, role)
+		p.roleNameSet[strings.ToLower(sp.Role)] = true
+	}
+	return p
+}
+
+// accountRole is the caller's account's kind: Role of name, as GetRole finds it, else the object of its
+// lower-cased name (a role's object is its AWS name lower-cased).
+func (h *iamHandler) accountRole(ctx context.Context, name string) (*unstructured.Unstructured, bool) {
+	ns := h.scope(ctx).ns
+	u, err := h.dyn.Resource(gvrRoles).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil && strings.ToLower(name) != name {
+		u, err = h.dyn.Resource(gvrRoles).Namespace(ns).Get(ctx, strings.ToLower(name), metav1.GetOptions{})
+	}
+	return u, err == nil
+}
+
+// stackInstanceProfiles are the instance profiles of the caller's account's stacks that hold them.
+func (h *iamHandler) stackInstanceProfiles(ctx context.Context) ([]iamInstanceProfile, error) {
 	if h.cfn == nil || h.cfn.shimDyn == nil {
 		return nil, nil // no CloudFormation front door: no stack has made a profile
 	}
@@ -143,7 +216,6 @@ func (h *iamHandler) instanceProfiles(ctx context.Context) ([]iamInstanceProfile
 			out = append(out, p)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out, nil
 }
 
@@ -161,6 +233,12 @@ func (h *iamHandler) serveInstanceProfile(ctx context.Context, w http.ResponseWr
 		h.getInstanceProfile(ctx, w, r, requestID, claims)
 	case "ListInstanceProfiles", "ListInstanceProfilesForRole":
 		h.listInstanceProfiles(ctx, w, r, op, requestID, claims)
+	case "CreateInstanceProfile":
+		h.createInstanceProfile(ctx, w, r, requestID, claims)
+	case "DeleteInstanceProfile":
+		h.deleteInstanceProfile(ctx, w, r, requestID, claims)
+	case "AddRoleToInstanceProfile", "RemoveRoleFromInstanceProfile":
+		h.instanceProfileRole(ctx, w, r, op, requestID, claims)
 	}
 }
 
@@ -189,7 +267,7 @@ func (h *iamHandler) getInstanceProfile(ctx context.Context, w http.ResponseWrit
 			"iam:GetInstanceProfile", arnType, arn)(); !ok {
 			return false, why
 		}
-		if p != nil {
+		if p != nil && p.rec != nil {
 			return h.cfn.canDo(ctx, claims, "get", p.rec.Name)
 		}
 		return true, ""
@@ -263,7 +341,7 @@ func (h *iamHandler) listInstanceProfiles(ctx context.Context, w http.ResponseWr
 		if op == "ListInstanceProfiles" && !strings.HasPrefix(p.path, prefix) {
 			continue
 		}
-		if !enforce {
+		if !enforce && p.rec != nil {
 			ok, seen := readable[p.rec.Name]
 			if !seen {
 				ok, _ = h.cfn.canDo(ctx, claims, "get", p.rec.Name)

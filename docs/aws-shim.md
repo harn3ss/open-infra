@@ -335,7 +335,7 @@ create on its own API's front door):
 | SES | `email` | 12: CreateEmailIdentity, DeleteEmailIdentity, GetAccount, GetEmailIdentity, GetIdentityVerificationAttributes, GetSendQuota, GetSendStatistics, ListEmailIdentities, ListIdentities, SendBulkEmail, SendEmail, SendRawEmail; recognized and refused: VerifyDomainIdentity, VerifyEmailIdentity | 0 |
 | EventBridge | `events` | 14: CreateEventBus, DeleteEventBus, DeleteRule, DescribeRule, DisableRule, EnableRule, ListEventBuses, ListRules, ListTargetsByRule, PutEvents, PutRule, PutTargets, RemoveTargets, TestEventPattern | 2 |
 | Glue | `glue` | 32: BatchCreatePartition, BatchDeletePartition, BatchStopJobRun, BatchUpdatePartition, CreateCrawler, CreateDatabase, CreateJob, CreatePartition, CreateTable, DeleteCrawler, DeleteDatabase, DeleteJob, DeletePartition, DeleteTable, GetCrawler, GetCrawlers, GetDatabase, GetDatabases, GetJob, GetJobRun, GetJobRuns, GetJobs, GetPartitions, GetTable, GetTables, StartCrawler, StartJobRun, StopCrawler, UpdateCrawler, UpdateJob, UpdatePartition, UpdateTable | 0 |
-| IAM | `iam` | 77: AddUserToGroup, AttachGroupPolicy, AttachRolePolicy, AttachUserPolicy, ChangePassword, CreateAccessKey, CreateGroup, CreateLoginProfile, CreatePolicy, CreatePolicyVersion, CreateRole, CreateUser, CreateVirtualMFADevice, DeactivateMFADevice, DeleteAccessKey, DeleteAccountPasswordPolicy, DeleteGroup, DeleteGroupPolicy, DeleteLoginProfile, DeletePolicy, DeletePolicyVersion, DeleteRole, DeleteRolePermissionsBoundary, DeleteRolePolicy, DeleteUser, DeleteUserPermissionsBoundary, DeleteUserPolicy, DeleteVirtualMFADevice, DetachGroupPolicy, DetachRolePolicy, DetachUserPolicy, EnableMFADevice, GetAccountAuthorizationDetails, GetAccountPasswordPolicy, GetGroup, GetGroupPolicy, GetInstanceProfile, GetLoginProfile, GetPolicy, GetPolicyVersion, GetRole, GetRolePolicy, GetUser, GetUserPolicy, ListAccessKeys, ListAttachedGroupPolicies, ListAttachedRolePolicies, ListAttachedUserPolicies, ListGroupPolicies, ListGroups, ListGroupsForUser, ListInstanceProfiles, ListInstanceProfilesForRole, ListMFADeviceTags, ListMFADevices, ListPolicies, ListPolicyVersions, ListRolePolicies, ListRoles, ListUserPolicies, ListUsers, ListVirtualMFADevices, PutGroupPolicy, PutRolePermissionsBoundary, PutRolePolicy, PutUserPermissionsBoundary, PutUserPolicy, RemoveUserFromGroup, ResyncMFADevice, SetDefaultPolicyVersion, SimulatePrincipalPolicy, TagMFADevice, TagUser, UntagMFADevice, UpdateAccessKey, UpdateAccountPasswordPolicy, UpdateLoginProfile; authorizes `iam:PassRole` | 5 |
+| IAM | `iam` | 81: AddRoleToInstanceProfile, AddUserToGroup, AttachGroupPolicy, AttachRolePolicy, AttachUserPolicy, ChangePassword, CreateAccessKey, CreateGroup, CreateInstanceProfile, CreateLoginProfile, CreatePolicy, CreatePolicyVersion, CreateRole, CreateUser, CreateVirtualMFADevice, DeactivateMFADevice, DeleteAccessKey, DeleteAccountPasswordPolicy, DeleteGroup, DeleteGroupPolicy, DeleteInstanceProfile, DeleteLoginProfile, DeletePolicy, DeletePolicyVersion, DeleteRole, DeleteRolePermissionsBoundary, DeleteRolePolicy, DeleteUser, DeleteUserPermissionsBoundary, DeleteUserPolicy, DeleteVirtualMFADevice, DetachGroupPolicy, DetachRolePolicy, DetachUserPolicy, EnableMFADevice, GetAccountAuthorizationDetails, GetAccountPasswordPolicy, GetGroup, GetGroupPolicy, GetInstanceProfile, GetLoginProfile, GetPolicy, GetPolicyVersion, GetRole, GetRolePolicy, GetUser, GetUserPolicy, ListAccessKeys, ListAttachedGroupPolicies, ListAttachedRolePolicies, ListAttachedUserPolicies, ListGroupPolicies, ListGroups, ListGroupsForUser, ListInstanceProfiles, ListInstanceProfilesForRole, ListMFADeviceTags, ListMFADevices, ListPolicies, ListPolicyVersions, ListRolePolicies, ListRoles, ListUserPolicies, ListUsers, ListVirtualMFADevices, PutGroupPolicy, PutRolePermissionsBoundary, PutRolePolicy, PutUserPermissionsBoundary, PutUserPolicy, RemoveRoleFromInstanceProfile, RemoveUserFromGroup, ResyncMFADevice, SetDefaultPolicyVersion, SimulatePrincipalPolicy, TagMFADevice, TagUser, UntagMFADevice, UpdateAccessKey, UpdateAccountPasswordPolicy, UpdateLoginProfile; authorizes `iam:PassRole` | 5 |
 | Kinesis Data Streams | `kinesis` | 12: CreateStream, DecreaseStreamRetentionPeriod, DeleteStream, DescribeStream, DescribeStreamSummary, GetRecords, GetShardIterator, IncreaseStreamRetentionPeriod, ListShards, ListStreams, PutRecord, PutRecords | 0 |
 | KMS | `kms` | 23: CancelKeyDeletion, CreateAlias, CreateKey, Decrypt, DeleteAlias, DescribeKey, DisableKey, DisableKeyRotation, EnableKey, EnableKeyRotation, Encrypt, GenerateDataKey, GenerateDataKeyWithoutPlaintext, GenerateRandom, GetKeyPolicy, GetKeyRotationStatus, ListAliases, ListKeyPolicies, ListKeys, PutKeyPolicy, ReEncrypt, ScheduleKeyDeletion, UpdateAlias; authorizes `kms:ReEncryptFrom`, `kms:ReEncryptTo` | 2 |
 | Lambda | `lambda` | 15: CreateAlias, CreateFunction, DeleteAlias, DeleteFunction, GetAlias, GetFunction, GetFunctionConfiguration, GetPolicy, ListAliases, ListFunctions, ListVersionsByFunction, PublishVersion, UpdateAlias, UpdateFunctionCode, UpdateFunctionConfiguration; authorizes `lambda:InvokeFunction` | 2 |
@@ -1601,15 +1601,25 @@ verbs, login profiles and the account password policy, virtual MFA devices (`Cre
 `ListVirtualMFADevices`, `Tag`/`Untag`/`ListMFADeviceTags`; [iam.md](iam.md#multi-factor-authentication-mfa)),
 and `SimulatePrincipalPolicy`.
 
-Instance profiles: `GetInstanceProfile`, `ListInstanceProfiles` and `ListInstanceProfilesForRole` read a
-stack's `AWS::IAM::InstanceProfile` from its recorded template (a profile provisions nothing: the instance's
-role binds directly on its VM). Its name is its `Ref` (the stack's `PhysicalResourceId` for it), its ARN
-`arn:aws:iam::<account>:instance-profile<path><name>` (the stack's `Fn::GetAtt Arn`), its id an `AIPA…` id,
-its create date the stack's, and its roles each in-stack role it names as the stack made it (path, ARN,
-`RoleId`, trust policy). Authorized as AWS does, on the profile's ARN with its path (`ListInstanceProfiles` on
-`instance-profile<PathPrefix>*`, `ListInstanceProfilesForRole` on the role); in legacy a profile is read only
-by a caller that may read its stack. An unknown profile, or a role with no profile and no `kind: Role`, is
-`NoSuchEntity`.
+Instance profiles: `CreateInstanceProfile` (`InstanceProfileName`, `Path`, `Tags`), `AddRoleToInstanceProfile`,
+`RemoveRoleFromInstanceProfile`, `DeleteInstanceProfile`, `GetInstanceProfile`, `ListInstanceProfiles` and
+`ListInstanceProfilesForRole`, in the caller's account (a member account's profiles are its own). A profile
+holds at most one role, a role of its account: a second is `LimitExceeded` (`Cannot exceed quota for
+InstanceSessionsPerInstanceProfile: 1`), an unknown role or profile `NoSuchEntity`, a name the account already
+has (in any case) `EntityAlreadyExists`. While a profile has its role, neither the profile nor the role is
+deleted (`DeleteConflict`), as on AWS. A profile's ARN is `arn:aws:iam::<account>:instance-profile<path><name>`
+and its id an `AIPA…` id; its roles are listed as `GetRole` describes them (path, ARN, `RoleId`, trust policy).
+The reads also list each stack's `AWS::IAM::InstanceProfile`, read from the stack's recorded template: its name
+its `Ref` (the stack's `PhysicalResourceId` for it), its ARN the stack's `Fn::GetAtt Arn`, its create date the
+stack's, its roles each in-stack role it names. A stack's profile is changed only through its stack
+(`UnmodifiableEntity`). A profile provisions nothing of its own: an instance launched with one gets its role on
+its VM, and a CloudFormation `AWS::EC2::Instance` names one by name or ARN
+([cloudformation.md](cloudformation.md)). Each operation is authorized as AWS does, on the profile's ARN with
+its path (`ListInstanceProfiles` on `instance-profile<PathPrefix>*`, `ListInstanceProfilesForRole` on the role);
+`CreateInstanceProfile` with tags also needs `iam:TagInstanceProfile`, and `AddRoleToInstanceProfile` needs
+`iam:PassRole` on the role besides. In legacy a stack's profile is read only by a caller that may read its
+stack. The profiles made through the API are kept in the shim's Postgres store; without it,
+`CreateInstanceProfile` answers a service failure and the reads list the stacks' profiles alone.
 
 **What each call writes is what the console and CloudFormation write**, so one object has one shape whoever
 made it: `CreatePolicy` stores the AWS document as written on `spec.document` (a mixed-case `PolicyName` is

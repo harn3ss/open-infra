@@ -157,6 +157,9 @@ type cfnDoorway struct {
 	// keyPairs reads the EC2 key pairs (name -> public key) an instance's KeyName may name (ec2_keypairs.go);
 	// nil = this shim keeps none.
 	keyPairs func(context.Context) (map[string]string, error)
+	// instanceProfiles reads the instance profiles made with the IAM API (lower-cased name -> its path and
+	// role) an instance's IamInstanceProfile may name (iam_instanceprofile_store.go); nil = this shim keeps none.
+	instanceProfiles func(context.Context) (map[string]cfn.InstanceProfile, error)
 	// accounts is the organization's accounts directory: the home of a member account whose stack is worked
 	// on without a request (recovery, a WaitConditionHandle signal —
 	// cfn_accounts.go). nil = a member account's stack is worked on only by its own requests.
@@ -195,6 +198,19 @@ func (h *cfnDoorway) caps(ctx context.Context) cfn.Capabilities {
 			c.KeyPairs = kp
 		} else if h.logger != nil {
 			h.logger.Warn("cloudformation: reading the EC2 key pairs failed", "error", err.Error())
+		}
+	}
+	// The instance profiles an instance's IamInstanceProfile may name (iam_instanceprofile_store.go): the
+	// stack's account's, as on AWS. Unreadable: none are known, and a profile from outside the stack stays a
+	// caveat rather than refusing one that may exist.
+	if h.instanceProfiles != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		ip, err := h.instanceProfiles(ctx)
+		cancel()
+		if err == nil {
+			c.InstanceProfiles = ip
+		} else if h.logger != nil {
+			h.logger.Warn("cloudformation: reading the IAM instance profiles failed", "error", err.Error())
 		}
 	}
 	return c

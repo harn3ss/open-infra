@@ -187,7 +187,12 @@ func (h *vmCommandsHandler) identify(ctx context.Context, token string) (vmAgent
 			return vmAgent{}, http.StatusForbidden, "the instance's account is suspended"
 		}
 	}
-	groups, ok := h.trust.vmTrusted(ctx, id.namespace, id.role)
+	// The role is the VM namespace's, else its account's IAM home's (as /v1/vm-credentials finds it).
+	roleHome := acctHome
+	if acct == "" {
+		roleHome = h.home
+	}
+	groups, roleNS, ok := instanceRoleOf(ctx, h.trust, id.namespace, roleHome, id.role)
 	if !ok {
 		return vmAgent{}, http.StatusForbidden, "the instance role does not trust the vm principal (its spec.trust must include \"vm\")"
 	}
@@ -213,7 +218,7 @@ func (h *vmCommandsHandler) identify(ctx context.Context, token string) (vmAgent
 	a := vmAgent{instanceID: inst, namespace: id.namespace, vmName: id.vmName, role: id.role, account: acct, accountHome: acctHome,
 		expires: now.Add(h.cacheTTL),
 		claims: iam.Claims{Sub: "assumed-role/" + id.role + "/" + id.vmName, Groups: groups,
-			AssumedRole: dataplaneauthz.QualifiedName(home, id.namespace, id.role), Account: acct}}
+			AssumedRole: dataplaneauthz.QualifiedName(home, roleNS, id.role), Account: acct}}
 	h.mu.Lock()
 	if h.cache == nil {
 		h.cache = map[string]vmAgent{}

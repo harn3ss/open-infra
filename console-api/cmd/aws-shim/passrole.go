@@ -6,6 +6,7 @@ import (
 
 	"github.com/harn3ss/open-infra/console-api/internal/dataplaneauthz"
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
+	"github.com/harn3ss/open-infra/console-api/internal/iamauthz"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -43,9 +44,10 @@ func passRoleVerbFor(service string) string { return passRoleVerb + ":" + servic
 // a role to Lambda and to nothing else. In legacy a User needs the RBAC verb (iam.CanDo, a
 // SubjectAccessReview as the caller: passrole, or passrole:<service>) and is then subject to any data-plane
 // policy that governs iam for it; an assumed role is checked closed: its policies must allow iam:PassRole
-// on the Role (default deny).
+// on the Role (default deny). opts are the evaluator's (the IAM front door names a member account's role as
+// its own account's).
 func callerMayPassRole(ctx context.Context, cs kubernetes.Interface, authz *dataplaneauthz.Checker, claims iam.Claims,
-	roleNS, role, service string, r *http.Request) (bool, string) {
+	roleNS, role, service string, r *http.Request, opts ...iamauthz.RequestOption) (bool, string) {
 	if cs == nil && claims.AssumedRole == "" {
 		return false, "iam:PassRole cannot be checked on this shim"
 	}
@@ -64,7 +66,7 @@ func callerMayPassRole(ctx context.Context, cs kubernetes.Interface, authz *data
 			return false, why
 		}
 		return true, ""
-	}); !ok {
+	}, opts...); !ok {
 		return false, "not authorized to perform iam:PassRole on role " + role + ": " + reason
 	}
 	return true, ""

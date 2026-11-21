@@ -13,6 +13,10 @@
 #   - SimulatePrincipalPolicy agrees in both directions and reports an explicit Deny as explicitDeny (forbid fidelity)
 #   - CreateAccessKey yields a key that genuinely AUTHENTICATES through the shim
 #   - Update/DeleteAccessKey naming one user and ANOTHER user's key id is NoSuchEntity (the key is untouched)
+#   - an instance profile's life: CreateInstanceProfile (AIPA id, ARN with its path), EntityAlreadyExists,
+#     AddRoleToInstanceProfile (a second role is LimitExceeded), Get/ListInstanceProfilesForRole, DeleteConflict
+#     for the profile and its role while it has the role, RemoveRoleFromInstanceProfile, DeleteInstanceProfile;
+#     and a user with no policy is DENIED Create/AddRoleTo/DeleteInstanceProfile (AccessDenied)
 # and the NEGATIVES:
 #   - a valid key ID with a WRONG secret on a management call → SignatureDoesNotMatch
 #   - a NotAction policy is ACCEPTED (translated to the Cedar complement — "any action except these")
@@ -41,16 +45,24 @@ command -v aws     >/dev/null || inconclusive "the aws CLI is required"
 command -v kubectl >/dev/null || inconclusive "kubectl is required"
 curl -fsS -m 5 "${ENDPOINT}/healthz" >/dev/null 2>&1 || inconclusive "shim not reachable at ${ENDPOINT}"
 
-CREATED_KEYS=(); CREATED_USERS=(); CREATED_ROLES=(); CREATED_POLICIES=(); CREATED_BUCKETS=()
+CREATED_KEYS=(); CREATED_USERS=(); CREATED_ROLES=(); CREATED_POLICIES=(); CREATED_BUCKETS=(); CREATED_PROFILES=()
 AAK=""; ASK=""
 iam() { local ak="$1" sk="$2"; shift 2; AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager --output text iam "$@"; }
 cleanup() {
+  # an instance profile holds its role from deletion: empty and delete the profiles first
+  for p in "${CREATED_PROFILES[@]:-}"; do
+    [ -n "$p" ] || continue
+    for r in $(iam "$AAK" "$ASK" get-instance-profile --instance-profile-name "$p" --query 'InstanceProfile.Roles[].RoleName' 2>/dev/null || true); do
+      iam "$AAK" "$ASK" remove-role-from-instance-profile --instance-profile-name "$p" --role-name "$r" >/dev/null 2>&1 || true
+    done
+    iam "$AAK" "$ASK" delete-instance-profile --instance-profile-name "$p" >/dev/null 2>&1 || true
+  done
   for r in "${CREATED_ROLES[@]:-}";    do [ -n "$r" ] && iam "$AAK" "$ASK" delete-role --role-name "$r" >/dev/null 2>&1 || true; done
   for p in "${CREATED_POLICIES[@]:-}"; do [ -n "$p" ] && iam "$AAK" "$ASK" delete-policy --policy-arn "arn:aws:iam::${ACCOUNT}:policy/$p" >/dev/null 2>&1 || true; done
   for u in "${CREATED_USERS[@]:-}";    do [ -n "$u" ] && kubectl -n "$USERS_NS" delete user.iam.openinfra.dev "$u" --ignore-not-found >/dev/null 2>&1 || true; done
   for k in "${CREATED_KEYS[@]:-}";     do [ -n "$k" ] && kubectl -n "$SHIM_NS" delete secret "$k" --ignore-not-found >/dev/null 2>&1 || true; done
   # role/policy CRDs the shim created (belt-and-suspenders if the API delete raced)
-  kubectl -n "$USERS_NS" delete role.iam.openinfra.dev "iam-probe-role-$SFX" --ignore-not-found >/dev/null 2>&1 || true
+  kubectl -n "$USERS_NS" delete role.iam.openinfra.dev "iam-probe-role-$SFX" "iam-probe-iprole-$SFX" --ignore-not-found >/dev/null 2>&1 || true
   kubectl -n "$USERS_NS" delete policy.iam.openinfra.dev "iam-probe-pol-$SFX" "iam-probe-deny-$SFX" "role-iam-probe-role-$SFX-"* --ignore-not-found >/dev/null 2>&1 || true
   if [ -n "${MINIO_USER:-}" ]; then
     for b in "${CREATED_BUCKETS[@]:-}"; do
@@ -252,6 +264,73 @@ rm -f "$PWD/.iam_mm"
 CID="$(AWS_ACCESS_KEY_ID="$NAK" AWS_SECRET_ACCESS_KEY="$NSK" AWS_REGION="$REGION" aws --endpoint-url "$ENDPOINT" --no-cli-pager sts get-caller-identity --query Arn --output text 2>/dev/null || true)"
 grep -q "$APPUSER" <<<"$CID" || fail "${APPUSER}'s key stopped authenticating after the refused mismatched calls"
 log "    ✓ an access-key op acts only on the named user's own key"
+
+# --- 6c. Instance profiles: made, given a role, read, held, emptied, deleted; and DENIED -------
+PROF="iam-probe-ip-$SFX"; IPROLE="iam-probe-iprole-$SFX"; IPROLE2="iam-probe-iprole2-$SFX"
+EC2TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+log "create-role ${IPROLE}, ${IPROLE2} (trust: ec2.amazonaws.com) + create-instance-profile ${PROF} under /probe/"
+for r in "$IPROLE" "$IPROLE2"; do
+  iam "$AAK" "$ASK" create-role --role-name "$r" --assume-role-policy-document "$EC2TRUST" >/dev/null 2>&1 || fail "create-role $r failed"
+  CREATED_ROLES+=("$r")
+done
+IPOUT="$(iam "$AAK" "$ASK" create-instance-profile --instance-profile-name "$PROF" --path /probe/ \
+  --query 'InstanceProfile.[Arn,InstanceProfileId]' 2>"$PWD/.iam_ip")" || fail "create-instance-profile failed: $(cat "$PWD/.iam_ip" 2>/dev/null)"
+CREATED_PROFILES+=("$PROF")
+read -r IPARN IPID <<<"$IPOUT"
+[[ "$IPARN" =~ ^arn:aws:iam::[^:]+:instance-profile/probe/${PROF}$ ]] || fail "the profile's ARN is '$IPARN' (want its account, path and name)"
+[[ "$IPID" =~ ^AIPA[A-Z0-9]{17}$ ]] || fail "the profile's id is '$IPID' (want AIPA and 17 characters)"
+if iam "$AAK" "$ASK" create-instance-profile --instance-profile-name "$PROF" >/dev/null 2>"$PWD/.iam_ip"; then
+  fail "a second profile of the same name was made"
+fi
+grep -q 'EntityAlreadyExists' "$PWD/.iam_ip" || fail "a duplicate profile was refused with the wrong error: $(cat "$PWD/.iam_ip")"
+log "    ✓ made with its ARN and AIPA id; a duplicate name is EntityAlreadyExists"
+
+log "DENY: ${APPUSER} (no policy) may not create, give a role to, or delete an instance profile"
+for args in "create-instance-profile --instance-profile-name iam-probe-ipdeny-$SFX" \
+            "add-role-to-instance-profile --instance-profile-name $PROF --role-name $IPROLE" \
+            "delete-instance-profile --instance-profile-name $PROF"; do
+  # shellcheck disable=SC2086 # the arguments are split on purpose
+  if iam "$NAK" "$NSK" $args >/dev/null 2>"$PWD/.iam_ipd"; then
+    fail "a user with no policy was allowed: iam $args"
+  fi
+  grep -q 'AccessDenied' "$PWD/.iam_ipd" || fail "iam $args was refused with the wrong error: $(cat "$PWD/.iam_ipd")"
+done
+rm -f "$PWD/.iam_ipd"
+[ "$(iam "$AAK" "$ASK" get-instance-profile --instance-profile-name "$PROF" --query 'length(InstanceProfile.Roles)' 2>/dev/null)" = "0" ] \
+  || fail "a refused call changed ${PROF}"
+log "    ✓ denied with AccessDenied, and the profile is unchanged"
+
+log "add-role-to-instance-profile ${IPROLE}; a second role is LimitExceeded"
+iam "$AAK" "$ASK" add-role-to-instance-profile --instance-profile-name "$PROF" --role-name "$IPROLE" >/dev/null 2>"$PWD/.iam_ip" \
+  || fail "add-role-to-instance-profile failed: $(cat "$PWD/.iam_ip")"
+if iam "$AAK" "$ASK" add-role-to-instance-profile --instance-profile-name "$PROF" --role-name "$IPROLE2" >/dev/null 2>"$PWD/.iam_ip"; then
+  fail "a profile was given a second role"
+fi
+grep -q 'LimitExceeded' "$PWD/.iam_ip" || fail "a second role was refused with the wrong error: $(cat "$PWD/.iam_ip")"
+[ "$(iam "$AAK" "$ASK" get-instance-profile --instance-profile-name "$PROF" --query 'InstanceProfile.Roles[0].RoleName')" = "$IPROLE" ] \
+  || fail "get-instance-profile does not list ${IPROLE}"
+iam "$AAK" "$ASK" list-instance-profiles-for-role --role-name "$IPROLE" --query 'InstanceProfiles[].InstanceProfileName' | grep -qw "$PROF" \
+  || fail "list-instance-profiles-for-role ${IPROLE} does not list ${PROF}"
+log "    ✓ one role, read back by get-instance-profile and list-instance-profiles-for-role"
+
+log "while ${PROF} has ${IPROLE}, neither is deleted (DeleteConflict)"
+if iam "$AAK" "$ASK" delete-instance-profile --instance-profile-name "$PROF" >/dev/null 2>"$PWD/.iam_ip"; then
+  fail "a profile with a role was deleted"
+fi
+grep -q 'DeleteConflict' "$PWD/.iam_ip" || fail "deleting a profile with a role was refused with the wrong error: $(cat "$PWD/.iam_ip")"
+if iam "$AAK" "$ASK" delete-role --role-name "$IPROLE" >/dev/null 2>"$PWD/.iam_ip"; then
+  fail "a role an instance profile holds was deleted"
+fi
+grep -q 'DeleteConflict' "$PWD/.iam_ip" || fail "deleting a profile's role was refused with the wrong error: $(cat "$PWD/.iam_ip")"
+iam "$AAK" "$ASK" remove-role-from-instance-profile --instance-profile-name "$PROF" --role-name "$IPROLE" >/dev/null 2>&1 \
+  || fail "remove-role-from-instance-profile failed"
+iam "$AAK" "$ASK" delete-instance-profile --instance-profile-name "$PROF" >/dev/null 2>&1 || fail "delete-instance-profile failed"
+if iam "$AAK" "$ASK" get-instance-profile --instance-profile-name "$PROF" >/dev/null 2>"$PWD/.iam_ip"; then
+  fail "a deleted profile is still read"
+fi
+grep -q 'NoSuchEntity' "$PWD/.iam_ip" || fail "a deleted profile was answered with the wrong error: $(cat "$PWD/.iam_ip")"
+rm -f "$PWD/.iam_ip"
+log "    ✓ DeleteConflict while held; emptied, deleted, then NoSuchEntity"
 
 # --- 7a. Negative: wrong secret ---------------------------------------------------------------
 log "negative: a valid key ID with a WRONG secret must be rejected"
