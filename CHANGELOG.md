@@ -28,6 +28,11 @@ the product's public contract.
 - An image holds the instance's root volume only. Each operation is decided by IAM policy on the instance
   or the image's ARN.
 
+### Fixed — an instance's root disk is copied into a member account
+- A member account's isolation baseline refused the platform's disk copies, so an instance whose root is copied
+  from an image (every Windows instance, and one launched from an account image) never got its disk. Each
+  account namespace now admits CDI's copies from `openinfra-images`, to its upload pods only.
+
 ### Fixed — an instance that shuts itself down stays stopped
 - A VM that shut itself down was started again. It now stops and stays stopped, as EC2's instance-initiated
   shutdown stops an instance: `DescribeInstances` reports it `stopped` with the state reason

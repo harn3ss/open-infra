@@ -130,10 +130,29 @@ func TestAccount_MemberGetsBaselineQuotasAndAccessRole(t *testing.T) {
 	docs := accountDocs(t, map[string]any{"accountId": "912345678901",
 		"namespaces": []any{"team-a", "team-a-data"}}, "000000000000")
 	k := byKind(docs)
-	if len(k["Namespace"]) != 2 || len(k["NetworkPolicy"]) != 2 || len(k["ConfigMap"]) != 1 || len(k["Role"]) != 1 {
+	if len(k["Namespace"]) != 2 || len(k["NetworkPolicy"]) != 4 || len(k["ConfigMap"]) != 1 || len(k["Role"]) != 1 {
 		t.Fatalf("member account renders %v", keys(k))
 	}
+	// Per namespace: the isolation baseline, and the platform's disk copies (CDI's upload pods take a disk
+	// from openinfra-images' clone sources, on the upload port, and nothing else).
+	var baselines []map[string]any
 	for _, np := range k["NetworkPolicy"] {
+		if mstr(np, "metadata", "name") != "openinfra-disk-copies" {
+			baselines = append(baselines, np)
+			continue
+		}
+		in := mget(np, "spec", "ingress").([]any)[0].(map[string]any)
+		peer := in["from"].([]any)[0].(map[string]any)
+		if mstr(np, "spec", "podSelector", "matchLabels", "cdi.kubevirt.io") != "cdi-upload-server" ||
+			mstr(peer, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "openinfra-images" ||
+			mstr(peer, "podSelector", "matchLabels", "cdi.kubevirt.io") != "cdi-clone-source" || len(in["ports"].([]any)) != 1 {
+			t.Errorf("the disk-copies policy admits only openinfra-images' clone sources to CDI's upload pods: %v", np)
+		}
+	}
+	if len(baselines) != 2 {
+		t.Fatalf("one isolation baseline per namespace, got %d", len(baselines))
+	}
+	for _, np := range baselines {
 		from := mget(np, "spec", "ingress").([]any)[0].(map[string]any)["from"].([]any)
 		sameAccount := false
 		for _, peer := range from {
