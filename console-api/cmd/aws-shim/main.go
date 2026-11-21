@@ -1385,6 +1385,10 @@ func newRouter(logger *slog.Logger, auth *authenticator, jwt *jwtAuthenticator, 
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	// The admission webhook that serves a Windows instance's metadata from its pod (not an AWS request path;
+	// the API server calls it, over TLS only: plaintextVMCredsGuard).
+	r.Post(instanceMetadataWebhookPath, newInstanceMetadataWebhook().serve)
+
 	// The ECR Docker-registry token endpoint (not an AWS-SDK path): the registry redirects docker
 	// here, which authenticates the caller credential (Basic auth) and mints a per-repo-scoped
 	// registry token. Authentication is the credential itself, so it's not behind the SigV4 layer.

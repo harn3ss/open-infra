@@ -130,11 +130,13 @@ func newInternalTLSServer(handler http.Handler, logger *slog.Logger) *http.Serve
 // token is never accepted in clear text. allow re-enables plaintext (VM_CREDS_ALLOW_PLAINTEXT=true) for a
 // guest whose agent predates the TLS port. The Run Command channel (/v1/vm-commands) is TLS-only whatever
 // allow says: every agent that uses it calls the TLS port. So is the identity document (/v1/vm-identity),
-// which the same agents fetch with the same token.
+// which the same agents fetch with the same token, and the instance metadata admission webhook, which the
+// API server calls over TLS only.
 func plaintextVMCredsGuard(next http.Handler, allow bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil {
-			if p := path.Clean("/" + r.URL.Path); isVMCommandsPath(p) || p == vmIdentityPath || (!allow && p == vmCredsPath) {
+			if p := path.Clean("/" + r.URL.Path); isVMCommandsPath(p) || p == vmIdentityPath || p == instanceMetadataWebhookPath ||
+				(!allow && p == vmCredsPath) {
 				http.NotFound(w, r)
 				return
 			}
