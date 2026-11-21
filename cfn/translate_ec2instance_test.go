@@ -358,3 +358,53 @@ func TestTranslate_EC2Instance_MetadataOptionsInvalidRefuses(t *testing.T) {
 		t.Errorf("a non-object MetadataOptions must refuse")
 	}
 }
+
+// An instance names the account's default subnet by the id EC2 reports it with (SubnetId, or its primary
+// network interface's), and lands in it; another raw subnet id stays opaque.
+func TestTranslate_EC2Instance_DefaultSubnet(t *testing.T) {
+	for _, net := range []string{
+		"      SubnetId: subnet-0abc\n",
+		"      NetworkInterfaces: [ { DeviceIndex: \"0\", SubnetId: subnet-0abc } ]\n",
+	} {
+		ctx := ecsCtx(t, "Resources:\n  Web:\n    Type: AWS::EC2::Instance\n    Properties:\n      ImageId: ubuntu-24.04\n      InstanceType: t3.micro\n"+net)
+		ctx.caps.DefaultSubnets = map[string]string{"subnet-0abc": "default-vpc-111122223333"}
+		m, fs := translateEC2Instance("Web", resolvedProps(t, ctx, "Web"), ctx)
+		if len(fs) != 0 || m.Spec["subnet"] != "default-vpc-111122223333" {
+			t.Fatalf("%q: %s %v", net, findingsText(fs), m.Spec["subnet"])
+		}
+	}
+	ctx := ecsCtx(t, "Resources:\n  Web:\n    Type: AWS::EC2::Instance\n    Properties:\n      ImageId: ubuntu-24.04\n      SubnetId: subnet-0def\n")
+	ctx.caps.DefaultSubnets = map[string]string{"subnet-0abc": "default-vpc-111122223333"}
+	if _, fs := translateEC2Instance("Web", resolvedProps(t, ctx, "Web"), ctx); !strings.Contains(findingsText(fs), "raw AWS subnet id") {
+		t.Fatalf("a subnet id that is not the account's default subnet must refuse: %s", findingsText(fs))
+	}
+}
+
+// In an account whose default VPC has no internet gateway, an instance that names no subnet launches in its
+// default subnet, as EC2 launches one in the default VPC, and a public address there is not exposed; with
+// an internet gateway, an instance that names no subnet is left where it was.
+func TestTranslate_EC2Instance_NoInternetAccountPlacesEveryInstance(t *testing.T) {
+	tmpl := `
+Resources:
+  Web:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: windows-server-2022
+      InstanceType: c5.2xlarge
+      NetworkInterfaces: [ { DeviceIndex: "0", AssociatePublicIpAddress: true } ]
+`
+	ctx := ecsCtx(t, tmpl)
+	ctx.caps.DefaultSubnets = map[string]string{"subnet-0abc": "default-vpc-111122223333"}
+	ctx.caps.NoInternetSubnets = map[string]bool{"default-vpc-111122223333": true}
+	m, fs := translateEC2Instance("Web", resolvedProps(t, ctx, "Web"), ctx)
+	if len(fs) != 0 || m.Spec["subnet"] != "default-vpc-111122223333" {
+		t.Fatalf("a no-internet account's instance: %s %v", findingsText(fs), m.Spec["subnet"])
+	}
+	if m.Spec["expose"] != nil || !strings.Contains(strings.Join(m.Caveats, "\n"), "no internet gateway") {
+		t.Fatalf("a public address in a VPC with no internet gateway is not exposed: %v %v", m.Spec["expose"], m.Caveats)
+	}
+	ctx.caps.NoInternetSubnets = nil
+	if m, _ := translateEC2Instance("Web", resolvedProps(t, ctx, "Web"), ctx); m.Spec["subnet"] != nil || m.Spec["expose"] != true {
+		t.Fatalf("with an internet gateway the instance is not moved and keeps its public address: %v %v", m.Spec["subnet"], m.Spec["expose"])
+	}
+}

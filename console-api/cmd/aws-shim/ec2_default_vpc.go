@@ -9,13 +9,15 @@ package main
 // Its subnet is a /20 of 172.31.0.0/16 on the cluster network, each account's its own: the management
 // account's kube-ovn subnet default-vpc (172.31.0.0/20, platform/networking/kube-ovn/default-vpc.yaml), a
 // member account's default-vpc-<account id> (its kind: Account's spec.defaultVpc). A workload joins it by
-// naming the subnet's id (an ECS service's NetworkConfiguration): nothing else is placed in it. Its ids are
-// derived from the account, so they are stable and AWS-shaped.
+// naming the subnet's id (an ECS service's NetworkConfiguration, an EC2 instance's SubnetId) and, in a default
+// VPC without its internet gateway, every ECS task and every instance that names no subnet runs in it; nothing
+// else is placed in it. Its ids are derived from the account, so they are stable and AWS-shaped.
 
 import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -59,6 +61,18 @@ func defaultSubnetName(ctx context.Context) string {
 		return "default-vpc-" + callerAccount(ctx)
 	}
 	return "default-vpc"
+}
+
+// defaultVPCOfSubnet is the default VPC whose default subnet is the kube-ovn subnet name (nil: name is not a
+// default subnet): default-vpc is the management account's (mgmt), default-vpc-<account> a member account's.
+func defaultVPCOfSubnet(name, mgmt string) *defaultVPC {
+	switch {
+	case name == "default-vpc":
+		return &defaultVPC{account: mgmt, subnet: name}
+	case strings.HasPrefix(name, "default-vpc-"):
+		return &defaultVPC{account: strings.TrimPrefix(name, "default-vpc-"), subnet: name}
+	}
+	return nil
 }
 
 // defaultVPCOf reads the default VPC of the account a request acts in (nil: it has none yet). It is read with

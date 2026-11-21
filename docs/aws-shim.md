@@ -2446,11 +2446,16 @@ whatever leaves it for anywhere but the platform's own networks — the cluster'
 DNS), its pods, the nodes' network and the subnet itself — before any network policy can allow it. A task
 there reaches the AWS endpoints, as through VPC endpoints on AWS, and no address outside the platform,
 whatever `AssignPublicIp` says. In such an account an ECS task with no `NetworkConfiguration` runs in the default subnet too, as
-every task runs in a VPC on AWS. The AWS services that reach the internet themselves (API Gateway HTTP integrations, Lambda
+every task runs in a VPC on AWS, and so does an EC2 instance that names no subnet, as EC2 launches one in the
+default VPC (a public address there reaches nothing, so the instance is not exposed). The AWS services that reach the internet themselves (API Gateway HTTP integrations, Lambda
 functions, SNS HTTP subscriptions) do so as on AWS: keep them out of such an account's permissions where its
 tasks must not reach the internet.
 
-**DNS in a default VPC.** A task in an account's default VPC uses the VPC resolver as its DNS (Route 53
+**Instances in a default VPC.** An `AWS::EC2::Instance` names its account's default subnet by the id EC2
+reports it with (`SubnetId`, or its primary network interface's) and launches in it; `DescribeInstances`
+reports it there, by the default VPC's and subnet's ids.
+
+**DNS in a default VPC.** A task or instance in an account's default VPC uses the VPC resolver as its DNS (Route 53
 Resolver, as every AWS VPC's), so a Route 53 Resolver DNS Firewall rule group associated with the default VPC
 (`aws route53resolver associate-firewall-rule-group --vpc-id <its id>`) decides what its tasks may resolve,
 and its query logging configurations log their queries. In a default VPC without its internet gateway the

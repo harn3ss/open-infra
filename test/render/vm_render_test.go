@@ -777,3 +777,24 @@ func TestVM_CloudConfig_DefaultUserFirst(t *testing.T) {
 		t.Errorf("the key pair's key must also go to the default user (top-level ssh_authorized_keys):\n%s", grepCtx(out, "ssh_authorized_keys"))
 	}
 }
+
+// A VM in an account's default subnet resolves through the VPC resolver (Route 53 Resolver), Linux and
+// Windows alike, so the DNS Firewall associated with the default VPC applies and, in a default VPC without its
+// internet gateway, DNS survives the subnet's network ACL; a VM elsewhere keeps its DNS as before.
+func TestVM_DefaultSubnet_UsesTheVPCResolver(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	for _, os := range []string{"ubuntu-24.04", "windows-server-2022"} {
+		out := render(t, tmpl, vmCtxFW(os, map[string]any{"subnet": "default-vpc-111122223333"}))
+		if !strings.Contains(out, `nameservers: [ "10.43.0.2" ]`) || !strings.Contains(out, `dnsPolicy: "None"`) {
+			t.Errorf("%s in a default subnet must use the VPC resolver:\n%s", os, grepCtx(out, "dnsPolicy"))
+		}
+		if !strings.Contains(out, `ovn.kubernetes.io/logical_switch: "default-vpc-111122223333"`) {
+			t.Errorf("%s must be placed in its default subnet:\n%s", os, grepCtx(out, "logical_switch"))
+		}
+	}
+	for _, os := range []string{"ubuntu-24.04", "windows-server-2022"} {
+		if out := render(t, tmpl, vmCtxFW(os, map[string]any{"subnet": "app-subnet"})); strings.Contains(out, "10.43.0.2") {
+			t.Errorf("%s outside a default subnet keeps its DNS:\n%s", os, grepCtx(out, "dnsPolicy"))
+		}
+	}
+}

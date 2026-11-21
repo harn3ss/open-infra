@@ -6,6 +6,13 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — EC2 instances in an account's default VPC
+- An `AWS::EC2::Instance` names its account's default subnet by its EC2 id (`SubnetId`, or its primary
+  network interface's) and launches in it, resolving through the VPC resolver; `DescribeInstances` reports it in
+  the default VPC. In an account whose default VPC has no internet gateway, an instance that names no subnet
+  launches in the default subnet, as EC2 launches one in the default VPC, and is not exposed on a public
+  address.
+
 ### Fixed — a queue's URL is the same however the queue was made
 - A queue a CloudFormation stack made was reported with the platform's in-cluster address (plain HTTP), and a
   queue made through the SQS API with the creator's endpoint. As an SQS queue has one URL for whoever asks,

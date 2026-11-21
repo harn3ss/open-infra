@@ -1024,6 +1024,10 @@ func resolveSubnetRef(id, prop string, props map[string]any, ctx *stackCtx) (str
 	}
 	if v, ok := concrete(props[prop]); ok && v != "" {
 		if strings.HasPrefix(strings.ToLower(v), "subnet-") {
+			// The account's default subnet, by the id EC2 reports it with (its default VPC's).
+			if ctx != nil && ctx.caps.DefaultSubnets[v] != "" {
+				return ctx.caps.DefaultSubnets[v], ""
+			}
 			return "", "raw"
 		}
 		return v, ""
@@ -1493,7 +1497,9 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 								spec["subnet"] = ctx.name(t)
 							}
 						} else if s, ok := concrete(sref); ok && s != "" {
-							if strings.HasPrefix(strings.ToLower(s), "subnet-") {
+							if ctx != nil && ctx.caps.DefaultSubnets[s] != "" {
+								spec["subnet"] = ctx.caps.DefaultSubnets[s] // the account's default subnet, by its EC2 id
+							} else if strings.HasPrefix(strings.ToLower(s), "subnet-") {
 								f = append(f, Finding{"Resource " + id, "NetworkInterfaces[0].SubnetId is a raw AWS subnet id (opaque) — name a kind: Subnet or reference an in-stack AWS::EC2::Subnet"})
 							} else {
 								spec["subnet"] = s
@@ -1524,6 +1530,24 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 					cav = append(cav, "only the primary NetworkInterface (DeviceIndex 0) is mapped; additional interfaces were dropped")
 				}
 			}
+		}
+	}
+	// In an account whose default VPC has no internet gateway (its only VPC), an instance that names no subnet
+	// still launches inside it, as EC2 launches one in the default subnet of the default VPC: so it reaches
+	// nothing outside the platform either.
+	if _, named := spec["subnet"]; !named && ctx != nil {
+		for _, ls := range ctx.caps.DefaultSubnets {
+			if ctx.caps.NoInternetSubnets[ls] {
+				spec["subnet"] = ls
+			}
+		}
+	}
+	// A public address in a subnet whose VPC has no internet gateway reaches nothing, as on AWS: the instance
+	// is not exposed.
+	if ls, _ := spec["subnet"].(string); ls != "" && ctx != nil && ctx.caps.NoInternetSubnets[ls] {
+		if exp, _ := spec["expose"].(bool); exp {
+			delete(spec, "expose")
+			cav = append(cav, "AssociatePublicIpAddress: the instance's subnet is in a VPC with no internet gateway, so a public address reaches nothing; it is not exposed")
 		}
 	}
 	var requires []Requirement

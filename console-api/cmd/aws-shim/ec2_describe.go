@@ -109,7 +109,9 @@ func (h *ec2Handler) instanceOf(ctx context.Context, u *unstructured.Unstructure
 		in.stateReason = p
 	}
 	in.instanceType = claimInstanceType(u)
-	if in.subnet != "" {
+	if d := defaultVPCOfSubnet(in.subnet, h.account()); d != nil {
+		in.subnet, in.vpc = d.subnetID(), d.vpcID() // in its account's default VPC, by EC2's ids
+	} else if in.subnet != "" {
 		in.vpc = subnetVPC[in.subnet]
 	}
 	if gs, ok := spec["securityGroups"].([]any); ok {

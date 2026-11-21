@@ -490,7 +490,19 @@ spec:
                                     - { key: openinfra.dev/disk-class, operator: In, values: [nvme, sata-ssd] }
                                     {{- end }}
                         {{- end }}
-                        {{- if and $guestNameserver $metadataAgent }}
+                        {{- if hasPrefix "default-vpc" ($spec.subnet | default "") }}
+                        # In an account's default VPC: the VPC resolver (Route 53 Resolver, the vpc-resolver
+                        # Service), as every AWS VPC's, Linux and Windows alike. KubeVirt's DHCP hands it to the
+                        # guest. It answers AWS's names of the services the aws-shim serves with the platform, as
+                        # the guest resolver does, after the DNS Firewall rule groups associated with the VPC; in
+                        # a default VPC without its internet gateway the subnet's network ACL drops DNS to any
+                        # other server. Takes effect at the VM's next start.
+                        dnsPolicy: "None"
+                        dnsConfig:
+                          nameservers: [ "10.43.0.2" ]
+                          searches: [{{ printf "%s.svc.cluster.local" $ns | toJson }}, svc.cluster.local, cluster.local]
+                          options: [{ name: ndots, value: "5" }]
+                        {{- else if and $guestNameserver $metadataAgent }}
                         # The guest resolver (platform/aws-shim/guest-aws-endpoints.yaml). KubeVirt's DHCP
                         # hands the guest its launcher pod's DNS, so inside the guest AWS's names of the
                         # services the aws-shim serves resolve to the platform; every other name gets the

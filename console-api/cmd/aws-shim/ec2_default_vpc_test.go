@@ -153,3 +153,18 @@ func TestEC2DefaultVPC_WithoutItsInternetGateway(t *testing.T) {
 		t.Errorf("its network ACL must not allow all egress: %s", b)
 	}
 }
+
+// An instance in its account's default subnet is reported in its default VPC, by EC2's ids, and its subnet-id
+// and vpc-id filters select it.
+func TestEC2DefaultVPC_InstanceInItsDefaultSubnet(t *testing.T) {
+	h, _ := ec2Fixture(t, ec2Obj("VirtualMachine", "s-build", map[string]any{"os": "windows-server-2022", "subnet": "default-vpc"},
+		map[string]any{"powerState": "Running", "instanceId": "i-0aaaaaaaaaaaaaaa1"}, nil))
+	d := &defaultVPC{account: "123456789012"}
+	w := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstances"}})
+	mustHave(t, "an instance in the default subnet", w.Body.String(),
+		[]string{"<subnetId>" + d.subnetID() + "</subnetId>", "<vpcId>" + d.vpcID() + "</vpcId>"}, []string{"<subnetId>default-vpc</subnetId>"})
+	w = ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstances"}, "Filter.1.Name": {"subnet-id"}, "Filter.1.Value.1": {d.subnetID()}})
+	mustHave(t, "subnet-id filter", w.Body.String(), []string{"i-0aaaaaaaaaaaaaaa1"}, nil)
+	w = ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstances"}, "Filter.1.Name": {"vpc-id"}, "Filter.1.Value.1": {d.vpcID()}})
+	mustHave(t, "vpc-id filter", w.Body.String(), []string{"i-0aaaaaaaaaaaaaaa1"}, nil)
+}
