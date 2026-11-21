@@ -390,7 +390,10 @@ spec:
                       openinfra.dev/os: {{ $spec.os }}
                   spec:
                     {{- /* An encrypted root boots only once the OS image has been copied onto it. */}}
-                    runStrategy: {{ if and $running $rootReady }}Always{{ else }}Halted{{ end }}
+                    {{- /* Running: RerunOnFailure — restarted after a crash, but an instance that shuts itself
+                           down stays stopped, as EC2's instance-initiated shutdown stops one (the aws-shim's
+                           StartInstances asks KubeVirt to start it again). */}}
+                    runStrategy: {{ if and $running $rootReady }}RerunOnFailure{{ else }}Halted{{ end }}
                     {{- /* Root DV when not adopting; data-disk DVs always. Render the key if either
                            exists so an adopted-root VM can still get fresh data disks. */}}
                     {{- if or $rootDV $cdiDisks }}

@@ -105,7 +105,7 @@ func TestVMBases_DefaultRootIsALocalCopy(t *testing.T) {
 	// Once populated: no source, no copy, the VM runs.
 	done := render(t, tmpl, withStatus(vmBaseCtx("ubuntu-24.04", nil), map[string]any{"rootSource": "base", "rootPopulated": true,
 		"rootBase": map[string]any{"image": "openinfra-ubuntu-24-04-aaaaaaaaaaaa", "ha": "x-ha", "reader": "x-reader", "size": "4Gi"}}))
-	if docNamed(done, "root-image") != "" || docNamed(done, "root-populate") != "" || !strings.Contains(done, "runStrategy: Always") {
+	if docNamed(done, "root-image") != "" || docNamed(done, "root-populate") != "" || !strings.Contains(done, "runStrategy: RerunOnFailure") {
 		t.Errorf("a populated root keeps no source or copy, and the VM runs")
 	}
 }
@@ -119,7 +119,7 @@ func TestVMBases_HARootIsAThinVolume(t *testing.T) {
 			t.Errorf("an HA root is a thin live-migratable volume on the base (%q):\n%s", want, root)
 		}
 	}
-	if docNamed(out, "root-image") != "" || !strings.Contains(out, "runStrategy: Always") {
+	if docNamed(out, "root-image") != "" || !strings.Contains(out, "runStrategy: RerunOnFailure") {
 		t.Errorf("an HA root needs no copy: the VM starts at once")
 	}
 }

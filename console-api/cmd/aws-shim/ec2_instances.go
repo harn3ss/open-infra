@@ -148,7 +148,12 @@ func (h *ec2Handler) instanceStateOp(ctx context.Context, w http.ResponseWriter,
 				change.curCode, change.curState = 64, "stopping"
 			}
 		case "StartInstances":
-			if in.state == "stopped" {
+			switch {
+			case in.state == "stopped" && in.shutdownBy == "guest":
+				// It shut itself down (its spec still says running): KubeVirt starts it again on request.
+				aerr = h.startStopped(ctx, ap, ns, name)
+				change.curCode, change.curState = 0, "pending"
+			case in.state == "stopped":
 				aerr = h.setRunning(ctx, ap, ns, name, true)
 				change.curCode, change.curState = 0, "pending"
 			}
@@ -233,3 +238,26 @@ func (h *ec2Handler) reboot(ctx context.Context, ap *impersonatingApplier, ns, n
 }
 
 var errNoRestart = apierrors.NewServiceUnavailable("the shim cannot restart virtual machines (no cluster client)")
+
+// startAnnotation records a StartInstances of an instance that shut itself down, on its claim.
+const startAnnotation = "openinfra.dev/start-requested-at"
+
+// startStopped starts VM ns/name, which shut itself down while its spec still says running (EC2's
+// instance-initiated shutdown stops an instance): the request is recorded on the claim as the caller (which
+// proves the caller may change the instance), then the shim asks KubeVirt to start the VM.
+func (h *ec2Handler) startStopped(ctx context.Context, ap *impersonatingApplier, ns, name string) error {
+	patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]any{
+		startAnnotation: time.Now().UTC().Format(time.RFC3339)}}})
+	if _, err := ap.caller.Resource(vmClaimGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		return err
+	}
+	if h.startVM != nil {
+		return h.startVM(ctx, ns, name)
+	}
+	if h.door.cs == nil {
+		return errNoRestart
+	}
+	return h.door.cs.CoreV1().RESTClient().Put().
+		AbsPath("/apis/subresources.kubevirt.io/v1/namespaces/" + ns + "/virtualmachines/" + name + "/start").
+		Body([]byte("{}")).Do(ctx).Error()
+}

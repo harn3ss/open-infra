@@ -2498,7 +2498,12 @@ with `VolumeInUse` while a VM still has it and for a VM's own disk.
 
 Instance state: `StopInstances` and `StartInstances` stop and start a VM with its disks kept, as an
 EBS-backed instance (`stopping` / `pending` in the answer, then `stopped` / `running`); stopping a stopped
-instance or starting a running one is EC2's no-op. `RebootInstances` restarts a running VM in place.
+instance or starting a running one is EC2's no-op. An instance that shuts itself down (a `shutdown` or
+`poweroff` inside it) stops and stays stopped, as EC2's instance-initiated shutdown stops one
+(`InstanceInitiatedShutdownBehavior` `stop`, the default; `terminate` is refused), and `DescribeInstances`
+gives its state reason `Client.InstanceInitiatedShutdown` (one stopped by `StopInstances`,
+`Client.UserInitiatedShutdown`); `StartInstances` starts it again. `RebootInstances` restarts a running VM in
+place.
 `TerminateInstances` deletes the VM (`shutting-down`), its root and data disks with it and its attached
 volumes kept, and is refused with `OperationNotPermitted` while the instance's `DisableApiTermination` is
 set. An instance a stack made can be terminated, as on AWS; the stack then drifts. Every named instance is

@@ -140,7 +140,7 @@ func TestVM_EncryptedRoot_AfterTheCopy(t *testing.T) {
 	for name, ctx := range map[string]map[string]any{"copy pod succeeded": viaJob, "status kept": viaStatus} {
 		out := render(t, tmpl, ctx)
 		by := manifestsByKind(t, out)
-		if got := digMap(by["VirtualMachine"][0], "spec")["runStrategy"]; got != "Always" {
+		if got := digMap(by["VirtualMachine"][0], "spec")["runStrategy"]; got != "RerunOnFailure" {
 			t.Errorf("%s: the VM must run once the image is on the encrypted root, got %v", name, got)
 		}
 		if strings.Contains(out, "myvm-root-image") || strings.Contains(out, "myvm-root-populate") {

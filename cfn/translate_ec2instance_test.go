@@ -414,7 +414,7 @@ Resources:
 func TestTranslate_EC2Instance_WindowsUserData(t *testing.T) {
 	for ud, caveat := range map[string]bool{
 		"<powershell>\nWrite-Output hi\n</powershell>\n<persist>true</persist>": false,
-		"<script>echo hi</script>": false,
+		"<script>echo hi</script>":                      false,
 		"version: 1.0\ntasks:\n- task: executeScript\n": true,
 	} {
 		m, fs := translateEC2Instance("Win", map[string]any{"ImageId": "windows-server-2022", "InstanceType": "c5.2xlarge",
@@ -425,5 +425,16 @@ func TestTranslate_EC2Instance_WindowsUserData(t *testing.T) {
 		if got := strings.Contains(strings.Join(m.Caveats, "\n"), "runs EC2Launch v2's XML-tagged format only"); got != caveat {
 			t.Errorf("%q: caveat %v, want %v (%v)", ud, got, caveat, m.Caveats)
 		}
+	}
+}
+
+// InstanceInitiatedShutdownBehavior: stop (EC2's default) is what an instance that shuts itself down does;
+// terminate is refused rather than silently stopping.
+func TestTranslate_EC2Instance_InstanceInitiatedShutdownBehavior(t *testing.T) {
+	if _, fs := translateEC2Instance("Web", map[string]any{"ImageId": "ubuntu-24.04", "InstanceInitiatedShutdownBehavior": "stop"}, nil); len(fs) != 0 {
+		t.Fatalf("stop: %s", findingsText(fs))
+	}
+	if _, fs := translateEC2Instance("Web", map[string]any{"ImageId": "ubuntu-24.04", "InstanceInitiatedShutdownBehavior": "terminate"}, nil); !strings.Contains(findingsText(fs), "InstanceInitiatedShutdownBehavior terminate is not supported") {
+		t.Fatalf("terminate must refuse: %s", findingsText(fs))
 	}
 }

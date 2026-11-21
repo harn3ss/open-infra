@@ -31,7 +31,10 @@ type ec2Disk struct {
 
 // ec2Instance is a kind: VirtualMachine as EC2 describes it.
 type ec2Instance struct {
-	id, name, os, imageID, state, stateReason          string
+	id, name, os, imageID, state, stateReason string
+	// shutdownBy says who stopped a stopped instance: "guest" (it shut itself down, its spec still running:
+	// EC2's instance-initiated shutdown, which stops it), "user" (StopInstances), or "".
+	shutdownBy                                         string
 	code                                               int
 	privateIP, publicIP, instanceType, keyName, subnet string
 	vpc, role, arch                                    string
@@ -107,6 +110,9 @@ func (h *ec2Handler) instanceOf(ctx context.Context, u *unstructured.Unstructure
 	in.code, in.state = ec2State(str(st, "powerState"), running, u.GetDeletionTimestamp() != nil)
 	if p := str(st, "powerState"); in.state == "pending" && strings.HasPrefix(p, "Err") {
 		in.stateReason = p
+	}
+	if in.state == "stopped" {
+		in.shutdownBy = map[bool]string{true: "guest", false: "user"}[running]
 	}
 	in.instanceType = claimInstanceType(u)
 	if d := defaultVPCOfSubnet(in.subnet, h.account()); d != nil {
@@ -303,8 +309,13 @@ func (h *ec2Handler) instanceXML(in ec2Instance, account string) string {
 		pdns = awsidentity.PrivateDNSName(in.privateIP, region)
 	}
 	b.WriteString("<privateDnsName>" + xesc(pdns) + "</privateDnsName><dnsName>" + xesc(awsidentity.Current().PublicDNSName(in.publicIP)) + "</dnsName>")
-	if in.stateReason != "" {
+	switch {
+	case in.stateReason != "":
 		b.WriteString("<stateReason><code>Server.InternalError</code><message>Server.InternalError: the VM reports " + xesc(in.stateReason) + "</message></stateReason>")
+	case in.shutdownBy == "guest":
+		b.WriteString("<stateReason><code>Client.InstanceInitiatedShutdown</code><message>Client.InstanceInitiatedShutdown: Instance initiated shutdown</message></stateReason>")
+	case in.shutdownBy == "user":
+		b.WriteString("<stateReason><code>Client.UserInitiatedShutdown</code><message>Client.UserInitiatedShutdown: User initiated shutdown</message></stateReason>")
 	}
 	b.WriteString(xtag("keyName", in.keyName) + "<amiLaunchIndex>0</amiLaunchIndex><productCodes/>" + xtag("instanceType", in.instanceType))
 	b.WriteString(xtag("launchTime", ec2Time(in.launch)))

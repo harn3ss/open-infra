@@ -6,6 +6,12 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — an instance that shuts itself down stays stopped
+- A VM that shut itself down was started again. It now stops and stays stopped, as EC2's instance-initiated
+  shutdown stops an instance: `DescribeInstances` reports it `stopped` with the state reason
+  `Client.InstanceInitiatedShutdown`, and `StartInstances` starts it again. A stack's
+  `InstanceInitiatedShutdownBehavior` `stop` is accepted; `terminate` is refused.
+
 ### Added — Windows instances run a launch agent, as EC2 Windows AMIs run EC2Launch v2
 - A Windows instance installs the open-infra launch agent on its first boot. It serves EC2 instance metadata
   (IMDSv1 and IMDSv2) at `169.254.169.254` with the instance role's credentials, trusts the platform's CAs,

@@ -199,3 +199,38 @@ func TestEC2_InstanceStateAuthorization(t *testing.T) {
 		t.Errorf("the caller's RBAC refusing the change must refuse it: %d %s", w.Code, w.Body.String())
 	}
 }
+
+// An instance that shut itself down (its spec still running, its VM stopped) is stopped, as EC2's
+// instance-initiated shutdown stops one, with EC2's state reason; StartInstances records the request on the
+// claim as the caller and asks KubeVirt to start it again. One stopped by StopInstances says so.
+func TestEC2_InstanceInitiatedShutdown(t *testing.T) {
+	guest := ec2Obj("VirtualMachine", "s-build", map[string]any{"os": "windows-server-2022", "running": true},
+		map[string]any{"instanceId": "i-0aaaaaaaaaaaaaaa2", "powerState": "Stopped"}, nil)
+	h, dyn := ec2Fixture(t, guest, ec2Stopped())
+	var started []string
+	h.startVM = func(_ context.Context, ns, name string) error { started = append(started, ns+"/"+name); return nil }
+	b := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstances"}, "InstanceId.1": {"i-0aaaaaaaaaaaaaaa2"}}).Body.String()
+	mustHave(t, "a guest-stopped instance", b, []string{"<name>stopped</name>", "<code>Client.InstanceInitiatedShutdown</code>",
+		"Client.InstanceInitiatedShutdown: Instance initiated shutdown"}, nil)
+	b = ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstances"}, "InstanceId.1": {"i-0fedcba9876543210"}}).Body.String()
+	mustHave(t, "a user-stopped instance", b, []string{"<code>Client.UserInitiatedShutdown</code>"}, []string{"InstanceInitiatedShutdown"})
+
+	w := ec2Call(h, ec2Alice, url.Values{"Action": {"StartInstances"}, "InstanceId.1": {"i-0aaaaaaaaaaaaaaa2"}})
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "<currentState><code>0</code><name>pending</name></currentState>") {
+		t.Fatalf("StartInstances of a guest-stopped instance: %d %s", w.Code, w.Body.String())
+	}
+	if len(started) != 1 || started[0] != ec2TestNS+"/s-build" {
+		t.Errorf("KubeVirt must be asked once to start the VM: %v", started)
+	}
+	u, _ := dyn.Resource(vmClaimGVR).Namespace(ec2TestNS).Get(t.Context(), "s-build", metav1.GetOptions{})
+	if _, err := time.Parse(time.RFC3339, u.GetAnnotations()[startAnnotation]); err != nil {
+		t.Errorf("the start must be recorded on the claim: %v", u.GetAnnotations())
+	}
+	// A user-stopped instance starts by its spec, as before: KubeVirt is not asked.
+	if w = ec2Call(h, ec2Alice, url.Values{"Action": {"StartInstances"}, "InstanceId.1": {"i-0fedcba9876543210"}}); w.Code != 200 || len(started) != 1 {
+		t.Errorf("a user-stopped instance: %d %s (starts %v)", w.Code, w.Body.String(), started)
+	}
+	if running, _ := claimRunning(t, dyn, "s-db"); !running {
+		t.Error("a user-stopped instance's claim must be set running")
+	}
+}

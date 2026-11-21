@@ -1175,10 +1175,16 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		"SubnetId": true, "NetworkInterfaces": true, "Tags": true, "AvailabilityZone": true,
 		"Monitoring": true, "EbsOptimized": true, "IamInstanceProfile": true,
 		"PrivateIpAddress": true, "SourceDestCheck": true, "DisableApiTermination": true,
-		"MetadataOptions": true,
+		"MetadataOptions": true, "InstanceInitiatedShutdownBehavior": true,
 	}
 	var f []Finding
 	var cav []string
+	// An instance that shuts itself down stops, EC2's default; terminate is not offered.
+	if raw, present := props["InstanceInitiatedShutdownBehavior"]; present {
+		if v, ok := concrete(raw); !ok || v != "stop" {
+			f = append(f, Finding{"Resource " + id, fmt.Sprintf("InstanceInitiatedShutdownBehavior %v is not supported: an instance that shuts itself down stops (stop, EC2's default); terminate its stack, or the instance, to delete it", raw)})
+		}
+	}
 	vmNeedDefaultKey := false // #347 Phase 1.7: an encrypted data disk with no KmsKeyId used the default key
 	var keptVols []*Manifest  // data volumes that outlive the instance (DeleteOnTermination: false)
 	var keptAttach []any      // ... and their spec.volumes entries

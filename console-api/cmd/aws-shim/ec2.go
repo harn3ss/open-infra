@@ -118,10 +118,12 @@ type ec2Handler struct {
 	logger *slog.Logger
 	// restartVM restarts a VM in place (RebootInstances); nil: KubeVirt's restart subresource, as the shim.
 	restartVM func(ctx context.Context, namespace, name string) error
-	flowLogs  *ec2FlowLogStore // nil: the flow-log store is not configured (flow log operations answer so)
-	vpc       *vpcInterfaces   // the Lambda VPC subnet's interfaces (nil: no function is in a VPC)
-	fns       *fnLocator       // the namespaces an account keeps its functions in
-	rolesNS   string           // the IAM home, where the management account's roles are (iam:PassRole)
+	// startVM starts a VM that shut itself down (StartInstances); nil: KubeVirt's start subresource, as the shim.
+	startVM  func(ctx context.Context, namespace, name string) error
+	flowLogs *ec2FlowLogStore // nil: the flow-log store is not configured (flow log operations answer so)
+	vpc      *vpcInterfaces   // the Lambda VPC subnet's interfaces (nil: no function is in a VPC)
+	fns      *fnLocator       // the namespaces an account keeps its functions in
+	rolesNS  string           // the IAM home, where the management account's roles are (iam:PassRole)
 	// consoleOutput and consoleScreenshot read an instance's console (GetConsoleOutput,
 	// GetConsoleScreenshot); nil: internal/vmconsole, as the shim.
 	consoleOutput     func(ctx context.Context, namespace, name string) ([]byte, error)

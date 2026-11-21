@@ -55,3 +55,15 @@ func TestVM_StatusPowerState(t *testing.T) {
 		t.Errorf("the virtualmachine Object must be watched")
 	}
 }
+
+// A running VM restarts after a crash but stays stopped when the guest shuts itself down (RerunOnFailure), as
+// EC2's instance-initiated shutdown stops an instance; a stopped one is Halted.
+func TestVM_RunStrategy_InstanceInitiatedShutdownStops(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	if out := render(t, tmpl, vmCtx("ubuntu-24.04", "")); !strings.Contains(out, "runStrategy: RerunOnFailure") {
+		t.Errorf("a running VM must be RerunOnFailure:\n%s", grepCtx(out, "runStrategy"))
+	}
+	if out := render(t, tmpl, vmCtxFW("ubuntu-24.04", map[string]any{"running": false})); !strings.Contains(out, "runStrategy: Halted") {
+		t.Errorf("a stopped VM must be Halted:\n%s", grepCtx(out, "runStrategy"))
+	}
+}

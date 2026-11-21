@@ -230,6 +230,11 @@ rules:
   - apiGroups: [subresources.kubevirt.io]
     resources: [virtualmachines/restart]
     verbs: [update]
+  # EC2 StartInstances of an instance that shut itself down (its spec still says running): KubeVirt's start
+  # subresource, only once the start is recorded on its claim with the CALLER's own authority.
+  - apiGroups: [subresources.kubevirt.io]
+    resources: [virtualmachines/start]
+    verbs: [update]
   # EC2 GetConsoleOutput and GetConsoleScreenshot (ec2_console.go, internal/vmconsole): only once the
   # caller has ec2:GetConsoleOutput / ec2:GetConsoleScreenshot on the instance and the shim has found it in
   # the caller's account. The serial output is the guest-console-log container's log in the VM's

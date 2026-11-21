@@ -29,6 +29,9 @@ type AWSView struct {
 	// DisableApiTermination is an instance's termination protection: the aws-shim's TerminateInstances
 	// refuses the instance while it is set (OperationNotPermitted), as EC2 does.
 	DisableApiTermination bool `json:"disableApiTermination,omitempty"`
+	// InstanceInitiatedShutdownBehavior is what an instance does when it shuts itself down (stop, the only
+	// behaviour offered, and EC2's default).
+	InstanceInitiatedShutdownBehavior string `json:"instanceInitiatedShutdownBehavior,omitempty"`
 }
 
 // ParseAWSView reads an object's AWSViewAnnotation (the zero view when it has none or it does not parse).
@@ -42,7 +45,7 @@ func ParseAWSView(annotations map[string]string) AWSView {
 
 // awsViewProps are, per EC2 type, the properties its view keeps (each under its AWSView field).
 var awsViewProps = map[string][]string{
-	"AWS::EC2::Instance":      {"InstanceType", "KeyName", "DisableApiTermination"},
+	"AWS::EC2::Instance":      {"InstanceType", "KeyName", "DisableApiTermination", "InstanceInitiatedShutdownBehavior"},
 	"AWS::EC2::Volume":        {"VolumeType"},
 	"AWS::EC2::SecurityGroup": {"GroupName", "GroupDescription"},
 	"AWS::EC2::VPC":           {"CidrBlock"},
@@ -109,10 +112,13 @@ func awsViewJSON(typ, id string, props map[string]any, ctx *stackCtx) string {
 			v.CidrBlock = s
 		case "DisableApiTermination":
 			v.DisableApiTermination = strings.EqualFold(s, "true")
+		case "InstanceInitiatedShutdownBehavior":
+			v.InstanceInitiatedShutdownBehavior = s
 		}
 	}
 	if len(v.Tags) == 0 && v.InstanceType == "" && v.KeyName == "" && v.GroupName == "" &&
-		v.GroupDescription == "" && v.CidrBlock == "" && v.VolumeType == "" && !v.DisableApiTermination {
+		v.GroupDescription == "" && v.CidrBlock == "" && v.VolumeType == "" && !v.DisableApiTermination &&
+		v.InstanceInitiatedShutdownBehavior == "" {
 		return ""
 	}
 	b, err := json.Marshal(v)
