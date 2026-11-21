@@ -98,7 +98,7 @@ func (h *ec2Handler) instanceOf(ctx context.Context, u *unstructured.Unstructure
 	if in.os == "" {
 		in.os = "ubuntu-24.04"
 	}
-	in.imageID = imageIDForOS(in.os)
+	in.imageID = imageInstanceID(u, in.os) // the account image it was launched from, else its catalog OS's
 	in.windows = strings.HasPrefix(in.os, "windows-")
 	if a := u.GetAnnotations()["openinfra.dev/arch"]; a == "arm64" {
 		in.arch = "arm64"
@@ -110,6 +110,11 @@ func (h *ec2Handler) instanceOf(ctx context.Context, u *unstructured.Unstructure
 	in.code, in.state = ec2State(str(st, "powerState"), running, u.GetDeletionTimestamp() != nil)
 	if p := str(st, "powerState"); in.state == "pending" && strings.HasPrefix(p, "Err") {
 		in.stateReason = p
+	}
+	// An instance launching from an account image waits, with no root disk, until its account may launch the
+	// image and the image is available (vm-composition.yaml): it is pending, not stopped.
+	if launched, _ := st["imageLaunched"].(bool); str(spec, "imageId") != "" && !launched && running && u.GetDeletionTimestamp() == nil {
+		in.code, in.state = 0, "pending"
 	}
 	if in.state == "stopped" {
 		in.shutdownBy = map[bool]string{true: "guest", false: "user"}[running]
@@ -851,66 +856,7 @@ func (h *ec2Handler) describeSubnets(ctx context.Context, w http.ResponseWriter,
 	writeEC2(w, requestID, "DescribeSubnets", xset("subnetSet", items))
 }
 
-// --- images, regions, zones ---
-
-// describeImages lists the OS catalog: public images the platform publishes, the same in every account, so
-// their owner is the install's own account whoever asks (as a public AMI's owner is its publisher's).
-func (h *ec2Handler) describeImages(w http.ResponseWriter, r *http.Request, requestID string) {
-	fs := ec2Filters(r.Form)
-	if msg, ok := checkFilters(fs, []string{"image-id", "name", "state", "architecture", "platform", "platform-details", "owner-alias",
-		"owner-id", "is-public", "image-type", "root-device-type", "root-device-name", "virtualization-type", "hypervisor", "description"}); !ok {
-		writeEC2Error(w, http.StatusBadRequest, "InvalidParameterValue", requestID, msg)
-		return
-	}
-	ids := ec2List(r.Form, "ImageId")
-	for _, id := range ids {
-		if !strings.HasPrefix(id, "ami-") {
-			writeEC2Error(w, http.StatusBadRequest, "InvalidAMIID.Malformed", requestID, "Invalid id: \""+id+"\" (expecting \"ami-...\")")
-			return
-		}
-	}
-	owners := ec2List(r.Form, "Owner")
-	want, found := setOf(ids), map[string]bool{}
-	var items []string
-	for _, os := range cfn.CatalogOSes() {
-		id := imageIDForOS(os)
-		if len(ids) > 0 && !want[id] {
-			continue
-		}
-		found[id] = true
-		if len(owners) > 0 && !setOf(owners)["openinfra"] {
-			continue // the catalog's images are the platform's (owner alias openinfra), not self/amazon/an account's
-		}
-		platform, details := "", "Linux/UNIX"
-		if strings.HasPrefix(os, "windows-") {
-			platform, details = "windows", "Windows"
-		}
-		desc := "open-infra catalog image " + os
-		rec := ec2Record{fields: map[string][]string{"image-id": {id}, "name": {os}, "state": {"available"}, "architecture": {"x86_64"},
-			"platform": {platform}, "platform-details": {details}, "owner-alias": {"openinfra"}, "owner-id": {h.account()},
-			"is-public": {"true"}, "image-type": {"machine"}, "root-device-type": {"ebs"}, "root-device-name": {"/dev/sda1"},
-			"virtualization-type": {"hvm"}, "hypervisor": {"xen"}, "description": {desc}}}
-		if !rec.matches(fs) {
-			continue
-		}
-		item := xtag("imageId", id) + xtag("imageLocation", "openinfra/"+os) + "<imageState>available</imageState>" + xtag("imageOwnerId", h.account()) +
-			"<isPublic>true</isPublic><architecture>x86_64</architecture><imageType>machine</imageType>"
-		if platform != "" {
-			item += xtag("platform", platform)
-		}
-		item += xtag("platformDetails", details) + xtag("imageOwnerAlias", "openinfra") + xtag("name", os) + xtag("description", desc) +
-			"<rootDeviceType>ebs</rootDeviceType><rootDeviceName>/dev/sda1</rootDeviceName><blockDeviceMapping/><virtualizationType>hvm</virtualizationType>" +
-			"<hypervisor>xen</hypervisor><enaSupport>true</enaSupport>"
-		items = append(items, item)
-	}
-	for _, id := range ids {
-		if !found[id] {
-			writeEC2Error(w, http.StatusBadRequest, "InvalidAMIID.NotFound", requestID, "The image id '["+id+"]' does not exist")
-			return
-		}
-	}
-	writeEC2(w, requestID, "DescribeImages", xset("imagesSet", items))
-}
+// --- regions, zones (images: ec2_images.go) ---
 
 func (h *ec2Handler) describeRegions(w http.ResponseWriter, r *http.Request, requestID string) {
 	fs := ec2Filters(r.Form)

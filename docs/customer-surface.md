@@ -24,11 +24,11 @@ by `probe/shimgen.py`), and CI fails when a capability a customer can reach has 
 | Capability | AWS-shaped | Platform extra (own API) | Operator-only | Removed | Total |
 |---|---|---|---|---|---|
 | Resource types (claim kinds) | 54 | 2 | 1 | 0 | 57 |
-| Resource properties (spec fields) | 371 | 25 | 0 | 0 | 396 |
+| Resource properties (spec fields) | 372 | 25 | 0 | 0 | 397 |
 | Console API routes | 122 | 1 | 1 | 0 | 124 |
 | Console screens | 158 | 4 | 3 | 0 | 165 |
 | AWS APIs (signing names) | 35 | 0 | 0 | 0 | 35 |
-| **All** | **740** | **32** | **5** | **0** | **777** |
+| **All** | **741** | **32** | **5** | **0** | **778** |
 
 11 of the console routes need no authorization (sign-in, sign-out, who-am-I, the console's own configuration), as AWS's sign-in and console metadata need none. 2 platform extras and 14 properties in Kubernetes vocabulary await the operator's ruling (below).
 <!-- END shimgen:surface-summary -->
@@ -228,7 +228,7 @@ Changing a property is its own AWS action where AWS has one (a function's code i
 | `TuningJob` | 6 | maxParallel, maxTrials, metricRegex, objective, parameters, training → `sagemaker:CreateHyperParameterTuningJob` |
 | `User` | 9 | displayName, email, inlinePolicies, source → `iam:UpdateUser`; disabled → `iam:UpdateLoginProfile`; groups → `iam:AddUserToGroup`, `iam:RemoveUserFromGroup`; passwordSecretRef → `iam:UpdateLoginProfile`; permissionBoundary → `iam:PutUserPermissionsBoundary`; policies → `iam:AttachUserPolicy`, `iam:DetachUserPolicy` |
 | `UserPool` | 6 | clientId, hostname, realm, registrationAllowed, size, storageClass → `cognito-idp:UpdateUserPool` |
-| `VirtualMachine` | 22 | cpu, cpuModel, dataDisks, diskSize, existingRootClaim, expose, firmware, highAvailability, memory, metadataOptions, network, os, ports, rootDisk, securityGroups, sshKey, subnet, userData → `ec2:ModifyInstanceAttribute`; elasticIp → `ec2:AssociateAddress`; instanceRole → `ec2:AssociateIamInstanceProfile`; running → `ec2:StartInstances`, `ec2:StopInstances`; volumes → `ec2:AttachVolume`, `ec2:DetachVolume` |
+| `VirtualMachine` | 23 | cpu, cpuModel, dataDisks, diskSize, existingRootClaim, expose, firmware, highAvailability, imageId, memory, metadataOptions, network, os, ports, rootDisk, securityGroups, sshKey, subnet, userData → `ec2:ModifyInstanceAttribute`; elasticIp → `ec2:AssociateAddress`; instanceRole → `ec2:AssociateIamInstanceProfile`; running → `ec2:StartInstances`, `ec2:StopInstances`; volumes → `ec2:AttachVolume`, `ec2:DetachVolume` |
 | `VmImage` | 5 | diskSize, existingGoldenClaim, os, sourceUrl, storageClass → `ec2:ModifyImageAttribute` |
 | `Volume` | 6 | encrypted, encryptionKey, migratable, mode, size, source → `ec2:ModifyVolume` |
 | `Vpc` | 3 | namespaces, peerings, routes → `ec2:ModifyVpcAttribute` |
@@ -471,7 +471,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | Cognito | `cognito-idp` | proven | 20 |
 | DynamoDB | `dynamodb` | proven | 19 |
 | DynamoDB | `dynamodbstreams` | proven | 4 |
-| EC2 | `ec2` | proven | 34 |
+| EC2 | `ec2` | proven | 40 |
 | EC2 | `ec2-instance-connect` | proven | 2 |
 | ECR | `ecr` | proven | 37 |
 | ECS | `ecs` | proven | 16 |

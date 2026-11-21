@@ -505,7 +505,7 @@ func identityFieldsOf(vm *boundVM, account, region string) identityFields {
 		AccountID:        account,
 		Architecture:     arch,
 		AvailabilityZone: region + "a",
-		ImageID:          imageIDForOS(osName),
+		ImageID:          imageInstanceID(vm.claim, osName),
 		InstanceID:       vm.instanceID,
 		InstanceType:     claimInstanceType(vm.claim),
 		PendingTime:      vm.xr.GetCreationTimestamp().UTC().Format("2006-01-02T15:04:05Z"),

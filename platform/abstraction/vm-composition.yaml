@@ -125,8 +125,11 @@ spec:
                    headroom (bump it if a future golden rebuild grows past 100Gi). A Windows instance that runs
                    the launch agent takes a larger diskSize (an AWS::EC2::Instance's root VolumeSize): the
                    agent extends C: to the disk on its first boot, as EC2Launch v2 does. An earlier Windows
-                   instance keeps its fixed 100Gi. Linux keeps the user's diskSize — cloud-init grows the
-                   rootfs to fit. */}}
+                   instance keeps its fixed 100Gi. An instance launched from an account image (spec.imageId) is
+                   cloned from the image's disk, so its root is diskSize — which the CloudFormation translator sets
+                   to at least the image's size — and never below that same 100Gi. Linux keeps the user's
+                   diskSize — cloud-init grows the rootfs to fit. */}}
+            {{- $imageId := $spec.imageId | default "" }}
             {{- if $isWin }}
             {{-   $winGi := 0 }}
             {{-   if hasSuffix "Gi" $disk }}{{- $winGi = int (trimSuffix "Gi" $disk) }}
@@ -186,10 +189,10 @@ spec:
             {{- if not $rootSource }}
             {{-   if or (index $obsAll "root-base") (eq $obsImgKind "PersistentVolumeClaim") }}{{ $rootSource = "base" }}
             {{-   else if index $obsAll "virtualmachine" }}{{ $rootSource = "image" }}
-            {{-   else if and $baseRec.backingImage (not $isWin) (not $adopt) (or (eq $vmArch "") (eq $vmArch "amd64")) }}{{ $rootSource = "base" }}
+            {{-   else if and $baseRec.backingImage (not $isWin) (not $adopt) (not $imageId) (or (eq $vmArch "") (eq $vmArch "amd64")) }}{{ $rootSource = "base" }}
             {{-   else }}{{ $rootSource = "image" }}{{ end }}
             {{- end }}
-            {{- $fromBase := and (eq $rootSource "base") (not $isWin) (not $adopt) }}
+            {{- $fromBase := and (eq $rootSource "base") (not $isWin) (not $adopt) (not $imageId) }}
             {{- $rb := $xrStatus.rootBase | default dict }}
             {{- if and $fromBase (not $rb.reader) }}
             {{-   $rb = dict "image" ($baseRec.backingImage | default "") "ha" ($baseRec.haStorageClass | default "") "reader" ($baseRec.readerStorageClass | default "") "size" ($baseRec.size | default "4Gi") }}
@@ -203,8 +206,44 @@ spec:
             {{- $imgDone := false }}
             {{- $img := index $obsAll "root-image" }}
             {{- if $img }}{{ with $img.resource.status }}{{ with .atProvider }}{{ with .manifest }}{{ with .status }}{{ if or (eq (.phase | default "") "Succeeded") (and $fromBase (eq (.phase | default "") "Bound")) }}{{ $imgDone = true }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}
-            {{- $rootReady := or (not $needsCopy) $rootPopulated }}
-            {{- $rootDV := and (not $adopt) (not $rootEnc) (not $fromBase) }}
+            {{- /* An account image (spec.imageId, the aws-shim's CreateImage / CopyImage): the root is cloned from
+                   the image's disk in openinfra-images, a DataVolume named by the image id whose labels and
+                   annotations are the image's EC2 record (console-api/cmd/aws-shim/ec2_images.go). As EC2's
+                   RunInstances does, the instance launches only when its account may launch the image — it
+                   owns it, or the image's launch permission names its account or all — and the image is
+                   available (its copy Succeeded). Both are observed, never managed: the image, and the VM's
+                   namespace, whose openinfra.dev/account-id label is its account (an unlabelled namespace is
+                   the management account's, the install's). Until then the VM has no root disk and stays
+                   stopped. Once launched (status.imageLaunched, kept; or a root already made from it) neither
+                   is read again, so deregistering or unsharing the image never touches the instance. */}}
+            {{- $imageLaunched := false }}
+            {{- if $imageId }}
+            {{-   if or ($xrStatus.imageLaunched | default false) $rootPopulated (index $obsAll "root-image") }}{{ $imageLaunched = true }}{{ end }}
+            {{-   with index $obsAll "virtualmachine" }}{{ with .resource.spec }}{{ with .forProvider }}{{ with .manifest }}{{ with .spec }}{{ range $t := (.dataVolumeTemplates | default list) }}{{ with $t.metadata }}{{ if eq (.name | default "") (printf "%s-root" $name) }}{{ $imageLaunched = true }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}{{ end }}
+            {{-   if not $imageLaunched }}
+            {{-     $imgOwner := "" }}{{- $imgLaunch := "" }}{{- $imgPhase := "" }}{{- $imgState := "" }}{{- $imgSeen := false }}
+            {{-     with index $obsAll "account-image" }}{{ with .resource.status }}{{ with .atProvider }}{{ with .manifest }}
+            {{-       $imgSeen = true }}
+            {{-       with .metadata }}
+            {{-         $imgOwner = index (.labels | default dict) "openinfra.dev/image-owner" | default "" }}
+            {{-         $imgLaunch = index (.annotations | default dict) "openinfra.dev/image-launch-permission" | default "" }}
+            {{-         $imgState = index (.annotations | default dict) "openinfra.dev/image-state" | default "" }}
+            {{-       end }}
+            {{-       with .status }}{{ $imgPhase = .phase | default "" }}{{ end }}
+            {{-     end }}{{ end }}{{ end }}{{ end }}
+            {{-     $nsAcct := "" }}
+            {{-     with index $obsAll "account-image-namespace" }}{{ with .resource.status }}{{ with .atProvider }}{{ with .manifest }}
+            {{-       $nsAcct = index $envCfg "awsAccountId" | default "000000000000" }}
+            {{-       with .metadata }}{{ with .labels }}{{ with index . "openinfra.dev/account-id" }}{{ $nsAcct = . }}{{ end }}{{ end }}{{ end }}
+            {{-     end }}{{ end }}{{ end }}{{ end }}
+            {{-     $perm := splitList "," $imgLaunch }}
+            {{-     $mayLaunch := and $nsAcct $imgOwner (or (eq $imgOwner $nsAcct) (has $nsAcct $perm) (has "all" $perm)) }}
+            {{-     if and $imgSeen $mayLaunch (eq $imgPhase "Succeeded") (ne $imgState "failed") }}{{ $imageLaunched = true }}{{ end }}
+            {{-   end }}
+            {{- end }}
+            {{- $imageWaits := and $imageId (not $imageLaunched) }}
+            {{- $rootReady := and (or (not $needsCopy) $rootPopulated) (not $imageWaits) }}
+            {{- $rootDV := and (not $adopt) (not $rootEnc) (not $fromBase) (not $imageWaits) }}
             {{- /* Instance identity: the kind: Role this VM assumes (spec.instanceRole). The VM carries a
                    per-VM ServiceAccount token (a projected disk, copied ROOT-ONLY to
                    /run/openinfra-identity/token at boot). The in-guest metadata agent presents it to the
@@ -305,7 +344,8 @@ spec:
             {{- /* What the guest cannot observe, rendered into the agent's config. Region and account are the
                    install's AWS identity (the openinfra-aws-identity EnvironmentConfig — the aws-shim reads the
                    same values), so the identity document matches the ARNs the shim reports; the instance id is
-                   stable for the life of this VM (derived from its UID) and the image id from its catalog OS. */}}
+                   stable for the life of this VM (derived from its UID) and the image id the account image it
+                   was launched from (spec.imageId), else its catalog OS's. */}}
             {{- $imdsRegion := index $envCfg "awsRegion" | default "us-east-1" }}
             {{- $imdsAccount := index $envCfg "awsAccountId" | default "000000000000" }}
             {{- $userDataFile := "" }}{{- if $spec.userData }}{{- $userDataFile = "/opt/openinfra-userdata" }}{{- end }}
@@ -315,7 +355,7 @@ spec:
             {{- $instanceId := printf "i-%s" (printf "%s-instance" .observed.composite.resource.metadata.uid | sha256sum | trunc 17) }}
             {{- $agentCfg := dict
                   "instanceId" $instanceId
-                  "imageId" (printf "ami-%s" (printf "%s-image" $spec.os | sha256sum | trunc 17))
+                  "imageId" ($imageId | default (printf "ami-%s" (printf "%s-image" $spec.os | sha256sum | trunc 17)))
                   "region" $imdsRegion
                   "availabilityZone" (printf "%sa" $imdsRegion)
                   "accountId" $imdsAccount
@@ -361,7 +401,7 @@ spec:
             {{- if and $adopt (not $fwMode) }}
             {{-   fail "EC2 instance: an imported root disk (existingRootClaim) needs its boot mode, as EC2's BootMode (firmware.mode: bios or uefi): a migrated disk's boot mode cannot be guessed, and a UEFI-installed disk (GPT/ESP) will not boot under BIOS. Set it from the source instance's boot mode." }}
             {{- end }}
-            {{- if and $isWin (not $adopt) (eq $fwMode "uefi") }}
+            {{- if and $isWin (not $adopt) (not $imageId) (eq $fwMode "uefi") }}
             {{-   fail "EC2 instance: UEFI boot mode (firmware.mode: uefi) on a new Windows Server instance: the Windows Server images boot BIOS (MBR), so it would not boot. Import a UEFI disk as the root disk (existingRootClaim), or build a UEFI image." }}
             {{- end }}
             {{- $fwMode = $fwMode | default "bios" }}
@@ -418,7 +458,12 @@ spec:
                                 storage: {{ $disk | toJson }}
                             storageClassName: {{ if $ha }}longhorn-migratable{{ else }}local-path{{ end }}
                           source:
-                            {{- if $isWin }}
+                            {{- if $imageId }}
+                            # Clone the account image's disk (the aws-shim's CreateImage / CopyImage).
+                            pvc:
+                              namespace: openinfra-images
+                              name: {{ $imageId | toJson }}
+                            {{- else if $isWin }}
                             # Clone the per-version golden image (build via kind: VmImage).
                             pvc:
                               namespace: openinfra-images
@@ -825,7 +870,7 @@ spec:
                     {{- end }}
                     resources: { requests: { storage: {{ $disk | toJson }} } }
             {{- end }}
-            {{- if and $needsCopy (not $rootPopulated) }}
+            {{- if and $needsCopy (not $rootPopulated) (not $imageWaits) }}
             ---
             # --- Until the copy is done: the OS image — a thin volume on the OS image cache's base, or else
             #     imported by CDI onto a TEMPORARY unencrypted disk
@@ -884,7 +929,11 @@ spec:
                       resources: { requests: { storage: {{ $disk | toJson }} } }
                       storageClassName: longhorn
                     source:
-                      {{- if $isWin }}
+                      {{- if $imageId }}
+                      pvc:
+                        namespace: openinfra-images
+                        name: {{ $imageId | toJson }}
+                      {{- else if $isWin }}
                       pvc:
                         namespace: openinfra-images
                         name: {{ $spec.os }}-golden
@@ -5918,6 +5967,38 @@ spec:
             {{-   $powerState = (.printableStatus | default "") }}
             {{-   range $c := (.conditions | default list) }}{{- if and (eq ($c.type | default "") "RestartRequired") (eq (printf "%v" ($c.status | default "")) "True") }}{{- $restartRequired = true }}{{- end }}{{- end }}
             {{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
+            {{- if $imageWaits }}
+            ---
+            # --- Until an instance launches from its account image (spec.imageId): the image's record and the
+            #     VM's namespace, observed (never managed), to decide whether the VM's account may launch the
+            #     image and whether it is available (see $imageLaunched). Dropped once the instance launches. ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: account-image
+            spec:
+              managementPolicies: ["Observe"]
+              watch: true
+              forProvider:
+                manifest:
+                  apiVersion: cdi.kubevirt.io/v1beta1
+                  kind: DataVolume
+                  metadata: { name: {{ $imageId | toJson }}, namespace: openinfra-images }
+            ---
+            apiVersion: kubernetes.crossplane.io/v1alpha2
+            kind: Object
+            metadata:
+              annotations:
+                gotemplating.fn.crossplane.io/composition-resource-name: account-image-namespace
+            spec:
+              managementPolicies: ["Observe"]
+              forProvider:
+                manifest:
+                  apiVersion: v1
+                  kind: Namespace
+                  metadata: { name: {{ $ns | toJson }} }
+            {{- end }}
             ---
             # Observe the running instance (never managed): its address is the VM's status.ip. Absent while the
             # VM is stopped, so it never holds the claim NotReady.
@@ -5951,6 +6032,10 @@ spec:
               {{- end }}
               {{- /* Kept once set: how the VM's root was made, and from which base. */}}
               rootSource: {{ $rootSource | quote }}
+              {{- if $imageId }}
+              {{- /* Kept once set: an instance launched from its image never reads the image again. */}}
+              imageLaunched: {{ $imageLaunched }}
+              {{- end }}
               {{- if $fromBase }}
               rootBase: { image: {{ $rb.image | quote }}, ha: {{ $rb.ha | quote }}, reader: {{ $rb.reader | quote }}, size: {{ $rb.size | quote }} }
               {{- end }}

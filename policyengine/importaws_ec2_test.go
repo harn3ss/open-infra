@@ -19,6 +19,8 @@ func TestImportAWS_EC2AndRunCommandResources(t *testing.T) {
 		"arn:aws:ec2:us-east-1:123456789012:vpc-flow-log/fl-0123456789abcdef0": "VpcFlowLog::fl-0123456789abcdef0",
 		"arn:aws:ec2:us-east-1:123456789012:network-interface/eni-0123456789a": "NetworkInterface::eni-0123456789a",
 		"arn:aws:ssm:us-east-1:123456789012:parameter/app/db":                  "Parameter::app/db",
+		"arn:aws:ec2:us-east-1::image/ami-0123456789abcdef0":                   "Image::ami-0123456789abcdef0",
+		"arn:aws:ec2:*::image/*":                                               "Image::*",
 	} {
 		got, ok := arnToResource(arn)
 		if !ok || !strings.HasPrefix(got, strings.SplitN(want, "::", 2)[0]+"::") || strings.TrimSuffix(got, "*") != strings.TrimSuffix(want, "*") {

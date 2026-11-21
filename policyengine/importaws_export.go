@@ -151,6 +151,8 @@ func ResourceARN(res string) (string, bool) {
 		return arn("ec2", "vpc-flow-log/"+id)
 	case "NetworkInterface":
 		return arn("ec2", "network-interface/"+id)
+	case "Image":
+		return "arn:aws:ec2:*::image/" + id, true // an image's ARN names no account, as AWS's
 	case "Api":
 		return "arn:aws:apigateway:*::/restapis/" + id, true
 	case "Role":

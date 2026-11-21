@@ -838,6 +838,73 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# EC2 CreateImage (ec2_images.go) of the management account's instances, in the stack namespace, once IAM
+# has decided ec2:CreateImage on the instance: its root disk is read for its size and volume mode (get, by
+# name), the instance is stopped while the disk is copied and started again after (a patch of its claim's
+# spec.running, nothing else), and the copy is a CDI clone of the disk into the image namespace, which CDI
+# authorizes as create on datavolumes/source in the disk's namespace. A member account's are its
+# service-linked role's.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-ec2-image-sources
+  namespace: open-infra-cfn
+rules:
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get]
+  - apiGroups: [openinfra.dev]
+    resources: [virtualmachines]
+    verbs: [patch]
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes/source]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-ec2-image-sources
+  namespace: open-infra-cfn
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-ec2-image-sources }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
+# EC2 images (ec2_images.go): an account's image is a CDI DataVolume in the platform's image namespace,
+# named by its ami- id, whose labels and annotations are the image's EC2 record. The shim makes one once IAM
+# has decided CreateImage or CopyImage (a copy of an instance's root disk, or of another image's disk —
+# CDI's datavolumes/source here), lists and reads them for DescribeImages and an instance's ImageId, records
+# its state and launch permission on it (patch), and deletes it on DeregisterImage (its disk with it). It
+# lists only the account images (a label selector); the catalog's disks here are never written. The
+# instances launched from an image read it themselves (vm-composition.yaml observes it).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-ec2-images
+  namespace: openinfra-images
+rules:
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes]
+    verbs: [get, list, watch, create, patch, delete]
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes/source]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-ec2-images
+  namespace: openinfra-images
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-ec2-images }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # ACM (acm.go): a stack's certificate is its distribution's site TLS, issued by cert-manager as the
 # Certificate staticsite-<site>-tls in the stack namespace. DescribeCertificate reads that Certificate's
 # status, and GetCertificate the issued certificate and chain from its CertificateRequest's status — read
@@ -1674,6 +1741,18 @@ rules:
   - apiGroups: [openinfra.dev]
     resources: [virtualmachines, volumes, securitygroups, vpcs, subnets, vpcendpoints, natgateways]
     verbs: [get, list]
+  # EC2 CreateImage of a member account's instance, as for the management account's (aws-shim-ec2-reads): its
+  # root disk read, the instance stopped and started again around the copy, and the disk cloned into the
+  # image namespace (CDI's datavolumes/source in the disk's namespace).
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get]
+  - apiGroups: [openinfra.dev]
+    resources: [virtualmachines]
+    verbs: [patch]
+  - apiGroups: [cdi.kubevirt.io]
+    resources: [datavolumes/source]
+    verbs: [create]
   # The account's Elastic IP allocations are holder Services in its home: EC2's DescribeAddresses lists
   # them (ec2_describe.go); CloudFormation holds a member account's stack's AWS::EC2::EIP allocation as one
   # (cfn_addresses.go) — reads it by name, creates it after checking the caller may allocate it, and on

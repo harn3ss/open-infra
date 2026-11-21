@@ -14,8 +14,9 @@
 //     subresource.
 //
 // Every instance is checked before any is changed: an unknown id is InvalidInstanceID.NotFound, one in a
-// state the operation cannot leave is IncorrectInstanceState, and nothing is changed. DryRun answers
-// DryRunOperation once the request would be authorized.
+// state the operation cannot leave is IncorrectInstanceState (as is starting one whose disk is being copied
+// into an image), and nothing is changed. DryRun answers DryRunOperation once the request would be
+// authorized.
 package main
 
 import (
@@ -121,6 +122,15 @@ func (h *ec2Handler) instanceStateOp(ctx context.Context, w http.ResponseWriter,
 			writeEC2Error(w, http.StatusBadRequest, "OperationNotPermitted", requestID,
 				"The instance '"+id+"' may not be terminated. Modify its 'disableApiTermination' instance attribute and try again.")
 			return
+		}
+		// Its disk is being copied into an image (ec2_images.go): a disk in use cannot be copied whole, so
+		// the instance starts once the image is made.
+		if op == "StartInstances" && byID[id].state == "stopped" {
+			if ami := h.imageInProgress(ctx, id); ami != "" {
+				writeEC2Error(w, http.StatusBadRequest, "IncorrectInstanceState", requestID,
+					"The instance '"+id+"' is not in a state from which it can be started: its image "+ami+" is being created.")
+				return
+			}
 		}
 	}
 	if r.Form.Get("DryRun") == "true" {

@@ -77,6 +77,12 @@ rules:
     # power: the provider already creates Deployments, StatefulSets, DaemonSets and Jobs.
     resources: [services, configmaps, secrets, serviceaccounts, resourcequotas, limitranges, persistentvolumeclaims, pods]
     verbs: [get, list, watch, create, update, patch, delete]
+  # namespaces, read only: an instance launched from an account's EC2 image observes its own namespace (its
+  # openinfra.dev/account-id label is its account) to decide whether that account may launch the image
+  # (vm-composition.yaml, account-image-namespace). Never written.
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch]
   - apiGroups: [apps]
     resources: [deployments, statefulsets, daemonsets]
     verbs: [get, list, watch, create, update, patch, delete]

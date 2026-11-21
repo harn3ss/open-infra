@@ -95,7 +95,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 18
+      "probe": 19
     },
     "undeployableUses": [
       {
@@ -499,6 +499,7 @@
     },
     "ec2": {
       "actions": [
+        "ec2:CreateTags",
         "ec2:DeleteFlowLogs"
       ],
       "conditional": true,
@@ -526,16 +527,20 @@
         "AWS::EC2"
       ],
       "operations": [
+        "CopyImage",
         "CreateDefaultVpc",
         "CreateFlowLogs",
+        "CreateImage",
         "CreateKeyPair",
         "DeleteFlowLogs",
         "DeleteKeyPair",
         "DeleteVolume",
+        "DeregisterImage",
         "DescribeAccountAttributes",
         "DescribeAddresses",
         "DescribeAvailabilityZones",
         "DescribeFlowLogs",
+        "DescribeImageAttribute",
         "DescribeImages",
         "DescribeInstanceTypes",
         "DescribeInstances",
@@ -556,7 +561,9 @@
         "GetConsoleScreenshot",
         "GetSerialConsoleAccessStatus",
         "ImportKeyPair",
+        "ModifyImageAttribute",
         "RebootInstances",
+        "ResetImageAttribute",
         "StartInstances",
         "StopInstances",
         "TerminateInstances"
@@ -1643,7 +1650,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 643,
+    "operations": 649,
     "planOnly": 11,
     "refused": 11,
     "services": 32,
@@ -2469,12 +2476,13 @@
       ],
       "stackProbes": [
         "cfn-securitygroup",
+        "ec2-images",
         "ec2-isolated-vpc",
         "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 5,
+      "templateUses": 6,
       "verdict": "ok"
     },
     "AWS::EC2::InternetGateway": {
@@ -3213,12 +3221,13 @@
       ],
       "stackProbes": [
         "cfn-structural-reads",
+        "ec2-images",
         "ec2-isolated-vpc",
         "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 5,
+      "templateUses": 6,
       "verdict": "ok"
     },
     "AWS::IAM::ManagedPolicy": {
@@ -3289,13 +3298,14 @@
         "cfn-ecs",
         "cfn-lambda-zip",
         "cfn-structural-reads",
+        "ec2-images",
         "ec2-isolated-vpc",
         "iam-passedtoservice",
         "lambda-timeout",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 13,
+      "templateUses": 14,
       "verdict": "ok"
     },
     "AWS::IAM::User": {

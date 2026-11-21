@@ -45,7 +45,10 @@ var SupportedActions = map[string]map[string]bool{
 		"DescribeInternetGateways": true, "DescribeRouteTables": true, "DescribeNetworkAcls": true, "DescribeVpcEndpoints": true,
 		"DescribeNetworkInterfaces": true, "CreateFlowLogs": true, "DescribeFlowLogs": true, "DeleteFlowLogs": true,
 		"GetConsoleOutput": true, "GetConsoleScreenshot": true,
-		"GetSerialConsoleAccessStatus": true, "EnableSerialConsoleAccess": true, "DisableSerialConsoleAccess": true},
+		"GetSerialConsoleAccessStatus": true, "EnableSerialConsoleAccess": true, "DisableSerialConsoleAccess": true,
+		// An account's images: made from an instance or copied, shared, described and deregistered.
+		"CreateImage": true, "CopyImage": true, "DeregisterImage": true, "ModifyImageAttribute": true,
+		"DescribeImageAttribute": true, "ResetImageAttribute": true, "CreateTags": true},
 	// ec2-instance-connect: EC2 Serial Console's key push, on the instance's ec2 ARN (SendSSHPublicKey is not
 	// served, so the service as a whole does not import).
 	"ec2-instance-connect": {"SendSerialConsoleSSHPublicKey": true},
@@ -573,10 +576,11 @@ func arnToResource(arn string) (string, bool) {
 			}
 		}
 	case "ec2": // arn:aws:ec2:<r>:<acct>:<type>/<id>: Elastic IP allocations, and the EC2 front door's resources
+		// (an image's names no account, as AWS's: arn:aws:ec2:<r>::image/<ami-id>)
 		for _, m := range []struct{ prefix, typ string }{
 			{"elastic-ip/", "ElasticIp"}, {"instance/", "Instance"}, {"volume/", "Volume"},
 			{"key-pair/", "KeyPair"}, {"security-group/", "SecurityGroup"},
-			{"vpc-flow-log/", "VpcFlowLog"}, {"network-interface/", "NetworkInterface"},
+			{"vpc-flow-log/", "VpcFlowLog"}, {"network-interface/", "NetworkInterface"}, {"image/", "Image"},
 		} {
 			if r, ok := cut(m.prefix, m.typ); ok {
 				return r, true

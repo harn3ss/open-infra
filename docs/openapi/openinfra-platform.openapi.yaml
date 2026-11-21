@@ -9779,6 +9779,19 @@ components:
               description: "Boot from an existing root PVC instead of cloning a fresh disk from the OS image \u2014 used to\
                 \ migrate or restore a VM onto a pre-populated disk (e.g. one cloned onto Longhorn). When set, no root DataVolume\
                 \ is provisioned."
+            imageId:
+              type: string
+              pattern: ^ami-[0-9a-f]{17}$
+              description: 'Launch from an account''s EC2 image (one made with the aws-shim''s CreateImage or CopyImage) instead
+                of the catalog image of os: the root disk is cloned from the image''s disk, and os names the OS the image''s
+                instance ran (which decides Windows or Linux). The instance launches only if its account may launch the image
+                (it owns it, or the image''s launch permission names its account or all) and the image is available; until
+                then the VM stays stopped with no root disk. The root is diskSize (at least the image''s size; a Windows root
+                at least 100Gi). Immutable: an instance keeps the root it was launched with, and keeps running when the image
+                is later deregistered.'
+              x-kubernetes-validations:
+              - rule: self == oldSelf
+                message: 'spec.imageId is immutable: an instance keeps the image it was launched from'
             cpuModel:
               type: string
               description: "Guest CPU model to require (KubeVirt domain.cpu.model). Empty (default) uses host-model \u2014\
@@ -9829,6 +9842,11 @@ components:
               type: boolean
               description: 'The root disk holds the OS image: set once the copy onto it has completed (an encrypted root,
                 or one made from the OS image cache), and kept, so the image is never copied over the disk again.'
+            imageLaunched:
+              type: boolean
+              description: 'The VM''s root disk is being, or was, cloned from its spec.imageId: set once the image was found
+                available and launchable by the VM''s account, and kept, so a later change to the image (deregistered, no
+                longer shared) never changes a launched instance.'
             rootSource:
               type: string
               description: "How the root disk was made: \"base\" (from the platform's OS image cache \u2014 a thin volume\

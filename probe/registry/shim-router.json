@@ -262,16 +262,20 @@
     "ec2": {
       "handler": "ec2Handler",
       "operations": [
+        "CopyImage",
         "CreateDefaultVpc",
         "CreateFlowLogs",
+        "CreateImage",
         "CreateKeyPair",
         "DeleteFlowLogs",
         "DeleteKeyPair",
         "DeleteVolume",
+        "DeregisterImage",
         "DescribeAccountAttributes",
         "DescribeAddresses",
         "DescribeAvailabilityZones",
         "DescribeFlowLogs",
+        "DescribeImageAttribute",
         "DescribeImages",
         "DescribeInstanceTypes",
         "DescribeInstances",
@@ -292,12 +296,15 @@
         "GetConsoleScreenshot",
         "GetSerialConsoleAccessStatus",
         "ImportKeyPair",
+        "ModifyImageAttribute",
         "RebootInstances",
+        "ResetImageAttribute",
         "StartInstances",
         "StopInstances",
         "TerminateInstances"
       ],
       "actions": [
+        "ec2:CreateTags",
         "ec2:DeleteFlowLogs",
         "iam:PassRole"
       ],

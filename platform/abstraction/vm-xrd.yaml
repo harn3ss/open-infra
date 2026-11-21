@@ -213,6 +213,21 @@ spec:
                 running:  { type: boolean, default: true, description: "Power state. Default true = running; false stops the VM (mapped to KubeVirt runStrategy Halted) while retaining its disk. The console's Start/Stop button flips this." }
                 highAvailability: { type: boolean, default: false, description: "Node-independent storage and live migration. Default false = root disk on local-path NVMe (faster, but pinned to one node). true provisions the root disk on Longhorn (replicated, migratable RWX block) and sets evictionStrategy: LiveMigrate, so the VM survives a node loss (reschedule + reboot) and live-migrates off a drained node with zero downtime. See cpuModel for cross-CPU portability." }
                 existingRootClaim: { type: string, description: "Boot from an existing root PVC instead of cloning a fresh disk from the OS image — used to migrate or restore a VM onto a pre-populated disk (e.g. one cloned onto Longhorn). When set, no root DataVolume is provisioned." }
+                imageId:
+                  type: string
+                  pattern: "^ami-[0-9a-f]{17}$"
+                  description: >-
+                    Launch from an account's EC2 image (one made with the aws-shim's CreateImage or CopyImage)
+                    instead of the catalog image of os: the root disk is cloned from the image's disk, and os
+                    names the OS the image's instance ran (which decides Windows or Linux). The instance
+                    launches only if its account may launch the image (it owns it, or the image's launch
+                    permission names its account or all) and the image is available; until then the VM stays
+                    stopped with no root disk. The root is diskSize (at least the image's size; a Windows root
+                    at least 100Gi). Immutable: an instance keeps the root it was launched with, and keeps
+                    running when the image is later deregistered.
+                  x-kubernetes-validations:
+                    - rule: "self == oldSelf"
+                      message: "spec.imageId is immutable: an instance keeps the image it was launched from"
                 cpuModel: { type: string, description: "Guest CPU model to require (KubeVirt domain.cpu.model). Empty (default) uses host-model — best performance, but pins the VM to its node's exact CPU. For live migration or node-loss recovery across heterogeneous CPUs, set the newest model common to all nodes (e.g. Broadwell-noTSX). HA VMs fall back to Nehalem when this is unset." }
                 firmware:
                   type: object
@@ -250,6 +265,12 @@ spec:
                 rootPopulated:
                   type: boolean
                   description: "The root disk holds the OS image: set once the copy onto it has completed (an encrypted root, or one made from the OS image cache), and kept, so the image is never copied over the disk again."
+                imageLaunched:
+                  type: boolean
+                  description: >-
+                    The VM's root disk is being, or was, cloned from its spec.imageId: set once the image was
+                    found available and launchable by the VM's account, and kept, so a later change to the
+                    image (deregistered, no longer shared) never changes a launched instance.
                 rootSource:
                   type: string
                   description: >-

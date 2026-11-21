@@ -160,6 +160,9 @@ type cfnDoorway struct {
 	// instanceProfiles reads the instance profiles made with the IAM API (lower-cased name -> its path and
 	// role) an instance's IamInstanceProfile may name (iam_instanceprofile_store.go); nil = this shim keeps none.
 	instanceProfiles func(context.Context) (map[string]cfn.InstanceProfile, error)
+	// images reads the EC2 images (image id -> its OS, state and size) the request's account may launch, which
+	// an instance's ImageId may name (ec2_images.go); nil = this shim keeps none.
+	images func(context.Context) (map[string]cfn.AccountImage, error)
 	// accounts is the organization's accounts directory: the home of a member account whose stack is worked
 	// on without a request (recovery, a WaitConditionHandle signal —
 	// cfn_accounts.go). nil = a member account's stack is worked on only by its own requests.
@@ -211,6 +214,19 @@ func (h *cfnDoorway) caps(ctx context.Context) cfn.Capabilities {
 			c.InstanceProfiles = ip
 		} else if h.logger != nil {
 			h.logger.Warn("cloudformation: reading the IAM instance profiles failed", "error", err.Error())
+		}
+	}
+	// The EC2 images an instance's ImageId may name (ec2_images.go): the stack's account's own, those shared
+	// with it, and public ones, as on AWS. Unreadable: none are known, and an image id refuses as opaque
+	// rather than as one that does not exist.
+	if h.images != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		imgs, err := h.images(ctx)
+		cancel()
+		if err == nil {
+			c.Images = imgs
+		} else if h.logger != nil {
+			h.logger.Warn("cloudformation: reading the EC2 images failed", "error", err.Error())
 		}
 	}
 	return c

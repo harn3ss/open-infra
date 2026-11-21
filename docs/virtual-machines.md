@@ -54,6 +54,28 @@ The catalog lives in two places that must stay in sync: the XRD enum
 (`platform/abstraction/vm-composition.yaml`). The console mirrors it in
 `ui/src/features/vms/vm-shared.ts`.
 
+### Account images (`imageId`)
+
+Beside the catalog, an account makes images of its own instances with EC2's `CreateImage` (and copies them
+with `CopyImage`), shares them with other accounts by launch permission, and launches from them — through
+CloudFormation (`AWS::EC2::Instance` `ImageId: ami-…`) or `spec.imageId` (see
+[aws-shim.md](aws-shim.md), EC2 → Images). An image is a disk in `openinfra-images` named by its `ami-` id,
+copied from the instance's root disk; its EC2 record (owner, name, launch permission, …) is on that disk.
+
+```yaml
+spec:
+  os: windows-server-2022        # the OS the image's instance ran
+  imageId: ami-0123456789abcdef0 # the root is cloned from this image's disk
+  diskSize: 106Gi                # at least the image's size (Windows: at least 100Gi)
+```
+
+The instance launches only once its account may launch the image — it owns it, or the image's launch
+permission names its account or `all` — and the image is `available`: until then the VM has no root disk and
+stays stopped (`status.imageLaunched` false). Once launched it never reads the image again, so deregistering
+or unsharing the image leaves it running. `imageId` is immutable. An image holds the root disk only (not the
+instance's data disks), and is no snapshot: deregistering it deletes its disk. Taking an image of a running
+instance stops it while its disk is copied (the copy needs the disk unused) and starts it again after.
+
 > **Architecture:** this catalog is **x86 (amd64)**. VMs therefore do not run on **arm64** nodes
 > even though KubeVirt itself is arm64-capable — an arm64 host cannot boot an x86 guest. On an
 > arm64-only cluster a `VirtualMachine` claim is refused at admission. See
@@ -258,7 +280,7 @@ or without an `instanceRole`. It answers the paths SDKs and lift-and-shift scrip
 | Path (under `/latest/`) | Value |
 |---|---|
 | `api/token` (`PUT`) | IMDSv2 session token (`X-aws-ec2-metadata-token-ttl-seconds`: 1–21600) |
-| `meta-data/instance-id`, `ami-id` | stable EC2-shaped ids (`i-…` from the VM's UID, `ami-…` from its catalog OS); the VM reports the same instance id as `status.instanceId`, and CloudFormation's `Ref`, the aws-shim's EC2 API and SSM Run Command name the instance by it |
+| `meta-data/instance-id`, `ami-id` | stable EC2-shaped ids (`i-…` from the VM's UID, `ami-…` the account image it was launched from, else its catalog OS's); the VM reports the same instance id as `status.instanceId`, and CloudFormation's `Ref`, the aws-shim's EC2 API and SSM Run Command name the instance by it |
 | `meta-data/placement/region`, `placement/availability-zone` | `us-east-1`, `us-east-1a` (the aws-shim's region) |
 | `meta-data/local-ipv4`, `mac`, `hostname`, `local-hostname`, `network/interfaces/macs/…` | the guest's primary interface |
 | `meta-data/security-groups` | the VM's `securityGroups` |

@@ -23,8 +23,9 @@
 // which an instance's KeyName carries into its VM's spec.sshKey, and DeleteVolume, for a volume an
 // instance kept (DeleteOnTermination: false), refused with AWS's VolumeInUse while a VM still has it; and
 // the instance state operations StartInstances, StopInstances, RebootInstances and TerminateInstances
-// (ec2_instances.go). Launching instances stays CloudFormation's (an unserved operation answers
-// NotImplemented in EC2's error shape).
+// (ec2_instances.go); and an account's images — CreateImage, CopyImage, DeregisterImage and their
+// attributes, which DescribeImages lists beside the catalog (ec2_images.go). Launching instances stays
+// CloudFormation's (an unserved operation answers NotImplemented in EC2's error shape).
 //
 // Authorization, as AWS evaluates it: ec2:<Action> on the resource (Instance::<id>, Volume::<id>,
 // KeyPair::<name>; a Describe on "*"), additive for a User and the whole, default-deny authority for an
@@ -36,7 +37,9 @@
 // namespace, as they always were; a member account's are in its home namespace, its key pairs are its own
 // (the same name may be a key pair in both), and the OwnerId and ARNs of what it is answered name it. A
 // member account never sees, changes or deletes another account's. The catalog's images are the
-// platform's in every account (their owner is the install's account, as a public AMI's is its publisher's).
+// platform's in every account (their owner is the install's account, as a public AMI's is its publisher's);
+// an account's own images are its own, and another account sees one only once its launch permission names
+// that account (ec2_images.go).
 package main
 
 import (
@@ -110,6 +113,14 @@ var ec2Ops = map[string]ec2Op{
 	// The account's default VPC (ec2_default_vpc.go).
 	"DescribeAccountAttributes": {"Account", "get"},
 	"CreateDefaultVpc":          {"Vpc", "create"},
+	// An account's images (ec2_images.go): made from the instance it images, copied to a new image, and
+	// each attribute operation on the image itself.
+	"CreateImage":            {"Instance", "create"},
+	"CopyImage":              {"Image", "create"},
+	"DeregisterImage":        {"Image", "delete"},
+	"DescribeImageAttribute": {"Image", "get"},
+	"ModifyImageAttribute":   {"Image", "update"},
+	"ResetImageAttribute":    {"Image", "update"},
 }
 
 type ec2Handler struct {
@@ -131,6 +142,9 @@ type ec2Handler struct {
 	// settingsNS is the shim's own namespace, where account settings are kept (EC2 Serial Console access:
 	// internal/serialconsole); empty: not configured.
 	settingsNS string
+	// imagesNS is the platform's image namespace, where account images' disks are kept (ec2_images.go);
+	// empty: account images are not served (DescribeImages lists the catalog alone).
+	imagesNS string
 }
 
 func newEC2Handler(door *cfnDoorway, keys *ec2KeyStore, logger *slog.Logger) *ec2Handler {
@@ -254,7 +268,19 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 	case "DescribeSubnets":
 		h.describeSubnets(ctx, w, r, claims, requestID)
 	case "DescribeImages":
-		h.describeImages(w, r, requestID)
+		h.describeImages(ctx, w, r, requestID)
+	case "CreateImage":
+		h.createImage(ctx, w, r, claims, requestID)
+	case "CopyImage":
+		h.copyImage(ctx, w, r, claims, requestID)
+	case "DeregisterImage":
+		h.deregisterImage(ctx, w, r, requestID)
+	case "DescribeImageAttribute":
+		h.describeImageAttribute(ctx, w, r, requestID)
+	case "ModifyImageAttribute":
+		h.modifyImageAttribute(ctx, w, r, requestID)
+	case "ResetImageAttribute":
+		h.resetImageAttribute(ctx, w, r, requestID)
 	case "DescribeRegions":
 		h.describeRegions(w, r, requestID)
 	case "DescribeAvailabilityZones":
@@ -298,7 +324,7 @@ func ec2StoreOp(op string) bool {
 		"CreateFlowLogs", "DescribeFlowLogs", "DeleteFlowLogs", "DescribeAccountAttributes", "CreateDefaultVpc":
 		return true
 	}
-	return false
+	return ec2ImageOp(op) // an image is kept in the platform's image namespace, by the shim
 }
 
 // ec2ScopeName is the one resource an operation authorizes against ("" for a Describe: AWS evaluates
@@ -316,8 +342,12 @@ func ec2ScopeName(op string, form url.Values) string {
 		return form.Get("VolumeId")
 	case "DeleteFlowLogs":
 		return form.Get("FlowLogId.1") // each other one is authorized before anything is deleted (deleteFlowLogs)
+	case "CreateImage":
+		return form.Get("InstanceId") // the instance it images; tags are ec2:CreateTags on the new image (createImage)
+	case "DeregisterImage", "DescribeImageAttribute", "ModifyImageAttribute", "ResetImageAttribute":
+		return form.Get("ImageId")
 	}
-	return ""
+	return "" // CopyImage: the new image, whose id is not known yet (image/*)
 }
 
 func (h *ec2Handler) audit(ctx context.Context, op, res, reason string) {

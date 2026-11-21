@@ -46,6 +46,7 @@ func ec2Fixture(t *testing.T, objs ...runtime.Object) (*ec2Handler, *dynamicfake
 	lists := map[schema.GroupVersionResource]string{
 		vmClaimGVR: "VirtualMachineList", vmXRGVR: "XVirtualMachineList", volumeGVR: "VolumeList",
 		securityGroupGVR: "SecurityGroupList", vpcGVR: "VpcList", subnetGVR: "SubnetList", serviceGVR: "ServiceList",
+		dataVolumeGVR: "DataVolumeList",
 	}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), lists, objs...)
 	door := &cfnDoorway{shimDyn: dyn, ns: ec2TestNS, account: "123456789012", region: "us-east-1", cs: csWithSAR(true), authzNS: "authz",

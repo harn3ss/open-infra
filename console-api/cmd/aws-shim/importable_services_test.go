@@ -111,6 +111,7 @@ var exampleArn = map[string]string{
 	"ElasticIp": "arn:aws:ec2:us-east-1:1:elastic-ip/e", "EventBus": "arn:aws:events:us-east-1:1:event-bus/b",
 	"Rule": "arn:aws:events:us-east-1:1:rule/b/r", "VpcFlowLog": "arn:aws:ec2:us-east-1:1:vpc-flow-log/fl-1",
 	"NetworkInterface":             "arn:aws:ec2:us-east-1:1:network-interface/eni-1",
+	"Image":                        "arn:aws:ec2:us-east-1::image/ami-1",
 	"FirewallDomainList":           "arn:aws:route53resolver:us-east-1:1:firewall-domain-list/rslvr-fdl-1",
 	"FirewallRuleGroup":            "arn:aws:route53resolver:us-east-1:1:firewall-rule-group/rslvr-frg-1",
 	"FirewallRuleGroupAssociation": "arn:aws:route53resolver:us-east-1:1:firewall-rule-group-association/rslvr-frgassoc-1",

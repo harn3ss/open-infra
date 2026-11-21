@@ -3356,6 +3356,15 @@
       "how": "update",
       "kind": "VirtualMachine"
     },
+    "VirtualMachine.imageId": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "imageId",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
     "VirtualMachine.instanceRole": {
       "actions": [
         "ec2:AssociateIamInstanceProfile"
@@ -6870,9 +6879,9 @@
       "tier": "proven"
     },
     "ec2": {
-      "actions": 2,
+      "actions": 3,
       "class": "aws",
-      "operations": 34,
+      "operations": 40,
       "service": "EC2",
       "tier": "proven"
     },
@@ -7054,11 +7063,11 @@
   },
   "summary": {
     "fields": {
-      "aws": 371,
+      "aws": 372,
       "extra": 25,
       "operator": 0,
       "removed": 0,
-      "total": 396
+      "total": 397
     },
     "kinds": {
       "aws": 54,

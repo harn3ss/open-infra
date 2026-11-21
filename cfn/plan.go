@@ -165,6 +165,21 @@ type Capabilities struct {
 	// NoInternetSubnets are those of them, by cluster subnet, whose VPC has no internet gateway: a workload
 	// there reaches only the platform's own networks, as a task in a subnet with no route out does on AWS.
 	NoInternetSubnets map[string]bool
+	// Images are the EC2 images the stack's account may launch, by image id: those it made (the aws-shim's
+	// CreateImage and CopyImage), those another account shared with it (a launch permission naming it), and
+	// public ones. An instance's ImageId naming one launches from it (spec.imageId, on the image's OS); an
+	// ami- id that is neither one of them nor a catalog image refuses as EC2's InvalidAMIID.NotFound, and an
+	// image not yet available refuses as unavailable. nil (the CLI, or a shim without the image store): a raw
+	// ami- id that is not a catalog image refuses as opaque.
+	Images map[string]AccountImage
+}
+
+// AccountImage is an EC2 image an account made (Capabilities.Images).
+type AccountImage struct {
+	OS       string // the catalog OS its instance ran, which decides Windows or Linux
+	State    string // pending | available | failed
+	RootGiB  int    // its root volume's size in GiB: an instance launched from it has at least this
+	BootMode string // "uefi", or "" for BIOS
 }
 
 // InstanceProfile is an IAM instance profile of the stack's account (Capabilities.InstanceProfiles).

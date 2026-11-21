@@ -427,6 +427,22 @@ func roleDoorCases() []roleDoorCase {
 				h.settingsNS, h.door.authz = testSettingsNS, a
 				return ec2Call(h, c, url.Values{"Action": {"EnableSerialConsoleAccess"}})
 			}},
+		// --- EC2: an account's images — made from the instance they image, each attribute operation on the
+		// image's ARN (no root disk or image here: an authorized call ends at EC2's own error, after the gate) ---
+		{door: "ec2", op: "CreateImage", action: "ec2:CreateImage", resType: "Instance", resName: webID, denyCode: "UnauthorizedOperation",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h, _ := ec2Fixture(t, ec2Web())
+				h.imagesNS, h.door.authz = testImagesNS, a
+				return ec2Call(h, c, url.Values{"Action": {"CreateImage"}, "InstanceId": {webID}, "Name": {"door-image"}})
+			}},
+		{door: "ec2", op: "ModifyImageAttribute", action: "ec2:ModifyImageAttribute", resType: "Image", resName: "ami-0123456789abcdef0",
+			denyCode: "UnauthorizedOperation",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				h, _ := ec2Fixture(t)
+				h.imagesNS, h.door.authz = testImagesNS, a
+				return ec2Call(h, c, url.Values{"Action": {"ModifyImageAttribute"}, "ImageId": {"ami-0123456789abcdef0"},
+					"LaunchPermission.Add.1.UserId": {"444455556666"}})
+			}},
 		{door: "ec2-instance-connect", op: "SendSerialConsoleSSHPublicKey", action: "ec2-instance-connect:SendSerialConsoleSSHPublicKey",
 			resType: "Instance", resName: webID, denyCode: "AccessDeniedException",
 			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {

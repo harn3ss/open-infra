@@ -45,7 +45,7 @@ var (
 	opNameRe = regexp.MustCompile(`^(Abort|Add|Admin|Allocate|Assume|Associate|Attach|Batch|Cancel|Change|Complete|Confirm|Copy|` +
 		`Create|Deactivate|Decrease|Delete|Deregister|Describe|Detach|Detect|Disable|Disassociate|Enable|Encrypt|Decrypt|Execute|Filter|` +
 		`Forgot|Generate|Get|Global|Head|Import|Increase|Initiate|Invoke|Label|List|Modify|Publish|Purge|Put|Re|Reboot|Receive|` +
-		`Query|Register|Release|Remove|Request|Resend|Respond|Restore|Resync|Rotate|Run|Scan|Schedule|Send|Set|Sign|Signal|Simulate|Start|Stop|` +
+		`Query|Register|Release|Remove|Request|Resend|Respond|Reset|Restore|Resync|Rotate|Run|Scan|Schedule|Send|Set|Sign|Signal|Simulate|Start|Stop|` +
 		`Subscribe|Tag|Terminate|Test|Transact|Unsubscribe|Untag|Update|Upload|Validate|Verify)([A-Z0-9][A-Za-z0-9]*)?$`)
 	// refuseCallRe names a call that answers an error, and refuseTextRe the words of a refusal: a case whose
 	// body is nothing but such calls (and returns), saying the operation is not supported, recognizes its

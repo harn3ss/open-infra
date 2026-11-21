@@ -1007,6 +1007,20 @@ func resolveEC2Image(imageID string) (os, reason string) {
 	return "", "unknown"
 }
 
+// ec2CatalogImage maps an ImageId naming the catalog (an OS, a catalog image's id, or a public image's SSM
+// path) onto spec.os; anything else refuses, naming what the catalog has.
+func ec2CatalogImage(id, imageID string, spec map[string]any) []Finding {
+	switch os, reason := resolveEC2Image(imageID); {
+	case os != "":
+		spec["os"] = os
+		return nil
+	case reason == "ami":
+		return []Finding{{"Resource " + id, "ImageId " + imageID + " is a raw AMI id — an opaque, region/time-specific pointer into Amazon's catalog that open-infra cannot decode. Name a catalog OS instead: " + strings.Join(ec2CatalogOSes, ", ")}}
+	default:
+		return []Finding{{"Resource " + id, "ImageId " + imageID + " matches no catalog OS or recognized public image SSM-parameter path. Available catalog OSes: " + strings.Join(ec2CatalogOSes, ", ")}}
+	}
+}
+
 // resolveSubnetRef maps an AWS subnet reference to an open-infra kind: Subnet name (#120). Like an
 // AMI, a raw subnet- id is opaque and refuses; a !Ref to an in-stack AWS::EC2::Subnet uses that
 // resource's name (AWS::EC2::Subnet translation, Phase 3, provisions the matching kind: Subnet); a
@@ -1193,15 +1207,16 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 
 	spec := map[string]any{}
 
-	// --- ImageId -> a catalog OS (the honest substitution) ---
+	// --- ImageId -> one of the account's images (translate_ec2image.go), or a catalog OS (the honest
+	// substitution) ---
+	var accountImage *AccountImage
+	accountImageID := ""
 	if imageID, ok := concrete(props["ImageId"]); ok && imageID != "" {
-		switch os, reason := resolveEC2Image(imageID); {
-		case os != "":
-			spec["os"] = os
-		case reason == "ami":
-			f = append(f, Finding{"Resource " + id, "ImageId " + imageID + " is a raw AMI id — an opaque, region/time-specific pointer into Amazon's catalog that open-infra cannot decode. Name a catalog OS instead: " + strings.Join(ec2CatalogOSes, ", ")})
-		default:
-			f = append(f, Finding{"Resource " + id, "ImageId " + imageID + " matches no catalog OS or recognized public image SSM-parameter path. Available catalog OSes: " + strings.Join(ec2CatalogOSes, ", ")})
+		if img, af, handled := ec2AccountImage(id, imageID, ctx, spec); handled {
+			f = append(f, af...)
+			accountImage, accountImageID = img, imageID
+		} else {
+			f = append(f, ec2CatalogImage(id, imageID, spec)...)
 		}
 	} else if _, present := props["ImageId"]; present {
 		f = append(f, Finding{"Resource " + id, "ImageId could not be resolved (an unresolvable intrinsic) — name a catalog OS literally: " + strings.Join(ec2CatalogOSes, ", ")})
@@ -1460,6 +1475,11 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 		if mappedExtraDevName {
 			cav = append(cav, "DEVICE NAMES: the disks are virtio devices (/dev/vd*); the guest gets the AWS names as udev aliases of the right disk — the Nitro names (/dev/nvme0n1 the root, /dev/nvme1n1… the data disks in mapping order, then attached volumes, with their partitions) and each mapping's DeviceName with its sd/xvd twin (/dev/sdf and /dev/xvdf) — so a UserData script that formats/mounts by those paths runs unchanged. Tools that read the kernel name (lsblk, /proc/mounts) show /dev/vd*.")
 		}
+	}
+
+	// An instance launched from an account image: its root holds the image (translate_ec2image.go).
+	if accountImage != nil {
+		f = append(f, ec2ImageRootSize(id, accountImageID, spec, *accountImage)...)
 	}
 
 	// SubnetId -> place the VM in a kind: Subnet with real OVN isolation (#120). A raw subnet- id is

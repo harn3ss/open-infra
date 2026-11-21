@@ -749,6 +749,7 @@ func run(logger *slog.Logger) error {
 	ssmH.bus = cmdBus
 	// EC2 flow logs' delivery (ec2_flowlogs_delivery.go), started below once the signal context exists.
 	var flowLogWorker *flowLogDelivery
+	var imageWorker *ec2Handler // finishes what each account image waits for (ec2_images.go)
 	if dyn != nil {
 		cfnNS := ident.StackNamespace // CFN_NAMESPACE: the StackId and AWS::StackId are both derived from it
 		if cfnH, cerr := newCFNDoorway(kc.Config, dyn, account, region, cfnNS, svcSuffix, logger); cerr != nil {
@@ -784,6 +785,16 @@ func run(logger *slog.Logger) error {
 			// Lambda's network interfaces and VPC Flow Logs (ec2_network_interfaces.go, ec2_flowlogs.go).
 			ec2H.flowLogs, ec2H.vpc, ec2H.fns, ec2H.rolesNS = ec2FlowSt, vpcIfaces, fns, rolesNS
 			ec2H.settingsNS = keysNS // EC2 Serial Console access, per account (ec2_serial_access.go)
+			// An account's images: disks in the platform's image namespace, each with its EC2 record
+			// (ec2_images.go); an instance's ImageId may name one the stack's account may launch.
+			ec2H.imagesNS = getenv("EC2_IMAGES_NAMESPACE", defaultImagesNS)
+			if ec2H.imagesNS == "off" {
+				ec2H.imagesNS = ""
+			}
+			if ec2H.imagesOn() {
+				cfnH.images = ec2H.launchableImages
+				imageWorker = ec2H
+			}
 			services["ec2"] = ec2H
 			// EC2 Serial Console: EC2 Instance Connect's SendSerialConsoleSSHPublicKey pushes a key for 60
 			// seconds (ec2_instance_connect.go), and the SSH gateway lets it in to the instance's serial
@@ -1166,6 +1177,11 @@ func run(logger *slog.Logger) error {
 	}
 	if flowLogWorker != nil {
 		go flowLogWorker.Run(ctx) // VPC Flow Logs' delivery, on the replica holding its lock; exits with ctx
+	}
+	if imageWorker != nil {
+		// An image's state once its disk is copied, and the instance CreateImage stopped started again — read
+		// from the images' own records, so a restart resumes them; exits with ctx.
+		go imageWorker.runImageReconciler(ctx, 15*time.Second)
 	}
 	// The VPC resolver (vpcresolver.go): the DNS server of Lambda functions in a VPC — Route 53 Resolver's DNS
 	// Firewall and query logging, forwarding what it lets through to the platform's resolver. Served while

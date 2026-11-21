@@ -6,6 +6,28 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — EC2 images an account makes, shares and launches from
+- `CreateImage` makes an image of an instance's root volume: it answers the `ami-` id at once, `pending`,
+  stops a running instance while its volume is copied and starts it again once the image is `available`
+  (with `NoReboot` the instance is not stopped, and the image waits until it is). Names are unique in the
+  account and follow AWS's rules; tagging the image needs `ec2:CreateTags` on it.
+- `DescribeImages` lists an account's own images, those shared with it and public ones beside the catalog,
+  in AWS's shape (owner, `isPublic`, Windows or Linux platform details, creation date, root volume size,
+  source instance, tags), with `Owner`, `ExecutableBy`, AWS's filters and paging.
+- `ModifyImageAttribute` shares an image with other accounts or makes it public (`launchPermission`) and
+  sets its description; `DescribeImageAttribute` and `ResetImageAttribute` read and reset them. Only the
+  owner changes or reads an image's attributes (`AuthFailure` for an account it is shared with), and an
+  account it is not shared with does not see it (`InvalidAMIID.NotFound`).
+- `CopyImage` copies an image the account may launch into a new image of its own; `DeregisterImage` deletes
+  one (its disk with it: no snapshot remains), and instances launched from it keep running.
+- An `AWS::EC2::Instance` whose `ImageId` is an image its account may launch launches from it, on the image's
+  OS, Windows or Linux, with a root volume at least the image's size; `DescribeInstances` and the instance's
+  metadata report that image. An image the account may not launch, or one not yet available, fails the stack
+  in EC2's words. The instance clones its root only once its account's launch permission is confirmed,
+  whichever way it is created.
+- An image holds the instance's root volume only. Each operation is decided by IAM policy on the instance
+  or the image's ARN.
+
 ### Fixed — an instance that shuts itself down stays stopped
 - A VM that shut itself down was started again. It now stops and stays stopped, as EC2's instance-initiated
   shutdown stops an instance: `DescribeInstances` reports it `stopped` with the state reason
