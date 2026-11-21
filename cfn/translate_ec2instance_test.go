@@ -408,3 +408,22 @@ Resources:
 		t.Fatalf("with an internet gateway the instance is not moved and keeps its public address: %v %v", m.Spec["subnet"], m.Spec["expose"])
 	}
 }
+
+// A Windows instance's user data reaches it as written (no shell line in front): the launch agent runs its
+// <powershell>/<script> blocks; anything else is served but not run, and says so.
+func TestTranslate_EC2Instance_WindowsUserData(t *testing.T) {
+	for ud, caveat := range map[string]bool{
+		"<powershell>\nWrite-Output hi\n</powershell>\n<persist>true</persist>": false,
+		"<script>echo hi</script>": false,
+		"version: 1.0\ntasks:\n- task: executeScript\n": true,
+	} {
+		m, fs := translateEC2Instance("Win", map[string]any{"ImageId": "windows-server-2022", "InstanceType": "c5.2xlarge",
+			"UserData": base64.StdEncoding.EncodeToString([]byte(ud))}, nil)
+		if len(fs) != 0 || m.Spec["userData"] != ud {
+			t.Fatalf("%q: %s %q", ud, findingsText(fs), m.Spec["userData"])
+		}
+		if got := strings.Contains(strings.Join(m.Caveats, "\n"), "runs EC2Launch v2's XML-tagged format only"); got != caveat {
+			t.Errorf("%q: caveat %v, want %v (%v)", ud, got, caveat, m.Caveats)
+		}
+	}
+}

@@ -9644,10 +9644,12 @@ components:
                 login is a generated password stored in the connection secret (<name>-vm).
             userData:
               type: string
-              description: "First-boot user data (the EC2 UserData equivalent), Linux only. A shell script (starting with\
-                \ #!) is written to disk and run once at first boot, AFTER the base cloud-init (user/ssh/qemu-guest-agent)\
-                \ \u2014 so the VM stays reachable. Ignored on Windows. A full #cloud-config document is not accepted here\
-                \ (it can't be safely merged with the base config)."
+              description: "First-boot user data (the EC2 UserData equivalent), served at the instance metadata's user-data.\
+                \ Linux: a shell script (starting with #!) is written to disk and run once at first boot, AFTER the base cloud-init\
+                \ (user/ssh/qemu-guest-agent) \u2014 so the VM stays reachable; a full #cloud-config document is not accepted\
+                \ here (it can't be safely merged with the base config). Windows: the launch agent runs it as EC2Launch v2\
+                \ runs the XML-tagged format \u2014 its <script> and <powershell> blocks, as LocalSystem, once per instance\
+                \ unless it carries <persist>true</persist>."
             expose:
               type: boolean
               default: false
@@ -9716,8 +9718,8 @@ components:
                 \ A Linux guest serves EC2 instance metadata (IMDSv1 and IMDSv2) at http://169.254.169.254: instance id, region\
                 \ and availability zone, local IPv4, user-data, the instance identity document and, with instanceRole, the\
                 \ role's rotating credentials \u2014 where the AWS SDKs, the aws CLI and cloud tooling look for it, including\
-                \ from containers inside the guest. Omitted = the defaults below. Windows guests have no metadata service\
-                \ (these settings are ignored)."
+                \ from containers inside the guest. Omitted = the defaults below. A Windows guest's launch agent serves the\
+                \ same at the same address (a Windows instance launched before the launch agent existed has none)."
               properties:
                 httpEndpoint:
                   type: string

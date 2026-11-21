@@ -1222,7 +1222,15 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	if ud, ok := concrete(props["UserData"]); ok && ud != "" {
 		if dec, err := base64.StdEncoding.DecodeString(strings.TrimSpace(ud)); err == nil {
 			s := strings.TrimSpace(string(dec))
+			os, _ := spec["os"].(string)
 			switch {
+			case strings.HasPrefix(os, "windows-"):
+				// A Windows instance's user data, as written: its instance metadata serves it, and the launch
+				// agent runs EC2Launch v2's XML-tagged scripts in it (<script>, <powershell>).
+				spec["userData"] = string(dec)
+				if !strings.Contains(s, "<powershell>") && !strings.Contains(s, "<script>") {
+					cav = append(cav, "UserData has no <powershell> or <script> block: the Windows launch agent runs EC2Launch v2's XML-tagged format only (not its YAML format or untagged text), so nothing in it runs at boot; the instance's metadata still serves it")
+				}
 			case strings.HasPrefix(s, "#cloud-config"):
 				cav = append(cav, "UserData is a #cloud-config document — open-infra can't safely merge it with the base VM cloud-init; it was NOT applied. Supply a #! script (run at first boot) or configure the VM natively")
 			case strings.HasPrefix(s, "#!"):

@@ -224,7 +224,30 @@ on the two endpoints the AWS SDKs read:
   know the container-credentials provider pick it up, with no token variable and no readable token
   file. It is served only with `httpTokens: optional` (it is a plain GET, i.e. IMDSv1-equivalent).
 
-Linux guests only; a Windows VM has no instance metadata service.
+A Windows guest gets the same from its launch agent (below); a Windows instance launched before the launch
+agent existed has no instance metadata service.
+
+## Windows instances: the launch agent
+
+A Windows instance runs the open-infra launch agent, as an EC2 Windows AMI runs EC2Launch v2. Windows Setup
+installs it from the instance's launch CD on its first boot, as a startup task that runs at every boot as
+LocalSystem. It:
+
+- serves EC2 instance metadata (IMDSv1 and IMDSv2) at `http://169.254.169.254`, with the instance role's
+  rotating credentials when the instance has one, so the AWS CLI, the AWS Tools for PowerShell and the SDKs
+  find them as on EC2;
+- trusts the platform root CA and the AWS endpoints CA (the machine's root store), and points `AWS_CA_BUNDLE`
+  at a bundle of the machine's roots for SDKs that carry their own;
+- extends the root partition to the disk's size on the instance's first boot;
+- runs the instance's user data in EC2Launch v2's XML-tagged format: `<script>` (cmd) and `<powershell>`
+  blocks, as LocalSystem, once per instance unless it carries `<persist>true</persist>`, with its output in
+  `C:\ProgramData\openinfra\launch\log\userdata.log`. EC2Launch v2's YAML format is not run;
+- writes its progress to the serial console, so `aws ec2 get-console-output` shows it, ending with
+  `Message: Windows is Ready to use`.
+
+An image made from such an instance carries the agent, and an instance launched from it counts its own first
+boot. A Windows instance launched before the agent existed, or booted from a migrated disk, keeps what its
+image had.
 
 ## Instance metadata (`metadataOptions`) — EC2 IMDS at 169.254.169.254
 
@@ -828,7 +851,8 @@ The `VmImage` Composition (`platform/abstraction/vmimage-composition.yaml`):
 1. CDI imports the official eval ISO (a verified Microsoft `fwlink`) + virtio-win.
 2. A **sysprep ConfigMap** carries the unattended answer file (per-version edition
    + virtio driver path; FirstLogonCommands install virtio guest tools +
-   **cloudbase-init** + RDP, then `sysprep /generalize /shutdown`).
+   RDP, then `sysprep /generalize /shutdown`). The launch agent is not in the golden: each instance
+   installs it from its own launch CD on first boot.
 3. An **installer VM** (`runStrategy: Once`) writes the golden disk and powers off
    after sysprep. The disk survives as `<os>-golden` in `openinfra-images`.
 

@@ -2476,6 +2476,12 @@ itself: an AWS name the platform serves with its front door, any other with NXDO
 blocks every other (`*`), a task there resolves nothing outside the platform either.
 `probe/aws-shim-ec2-isolated-vpc.sh` proves it (`FIREWALL_ALLOWS` names more names the rule group allows).
 
+**Windows instances.** A Windows instance runs the launch agent (docs/virtual-machines.md), as an EC2 Windows
+AMI runs EC2Launch v2: its instance metadata and role credentials at `169.254.169.254`, its user data's
+`<script>` and `<powershell>` blocks run once (or at every boot with `<persist>true</persist>`), and its
+progress on the serial console that `GetConsoleOutput` returns. The images are Microsoft's evaluation media,
+not licence-included as AWS's are.
+
 **Instance types.** `DescribeInstanceTypes` reports the types an instance can be launched as (an
 `AWS::EC2::Instance`'s `InstanceType`), with the vCPUs and memory it gets; select them by `InstanceType` or by
 EC2's filters (`instance-type`, `vcpu-info.default-vcpus`, `memory-info.size-in-mib`, and the others), paged

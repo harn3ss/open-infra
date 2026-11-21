@@ -6,6 +6,16 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — Windows instances run a launch agent, as EC2 Windows AMIs run EC2Launch v2
+- A Windows instance installs the open-infra launch agent on its first boot. It serves EC2 instance metadata
+  (IMDSv1 and IMDSv2) at `169.254.169.254` with the instance role's credentials, trusts the platform's CAs,
+  extends the root partition, runs the instance's user data in EC2Launch v2's XML-tagged format (`<script>`,
+  `<powershell>`, `<persist>`), and writes its progress to the serial console (`GetConsoleOutput`).
+- An `AWS::EC2::Instance` on a Windows image keeps its `UserData` as written (it was given a Linux shell
+  line), and says when it holds no format the agent runs.
+- Windows instances in an account's default VPC resolve through the VPC resolver, and others through the guest
+  resolver, as Linux guests do. Windows instances launched before the agent existed are unchanged.
+
 ### Added — IAM instance profiles made through the IAM API
 - `CreateInstanceProfile`, `AddRoleToInstanceProfile`, `RemoveRoleFromInstanceProfile` and
   `DeleteInstanceProfile` manage an account's instance profiles as AWS does: a profile has a name, a path,

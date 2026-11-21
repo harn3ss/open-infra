@@ -2,7 +2,7 @@
 #   - CDI imports the Microsoft eval ISO (from a verified fwlink) + virtio-win,
 #   - a sysprep ConfigMap carries the unattended answer file (per-version edition
 #     + virtio driver path; FirstLogonCommands install virtio guest tools +
-#     cloudbase-init + RDP, then sysprep /generalize /shutdown),
+#     RDP, then sysprep /generalize /shutdown),
 #   - an installer VM (runStrategy: Once, so it stops after sysprep) writes the
 #     golden disk, which survives as <os>-golden in openinfra-images.
 #
@@ -127,7 +127,7 @@ spec:
             ---
             # --- Sysprep ConfigMap: the unattended answer file (KubeVirt mounts it
             #     as the autounattend CD). Edition + virtio driver path per version.
-            #     FirstLogonCommands do virtio tools + cloudbase-init + RDP + sysprep. ---
+            #     FirstLogonCommands do virtio tools + RDP + sysprep. ---
             apiVersion: kubernetes.crossplane.io/v1alpha2
             kind: Object
             metadata:

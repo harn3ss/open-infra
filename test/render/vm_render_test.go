@@ -403,9 +403,13 @@ func TestVM_PlatformCA_FromEnvironment(t *testing.T) {
 		t.Errorf("without a CA the agent still looks for it at %s, got %#v %#v", caPath, cfg["caFile"], cfg["trustPlatformCA"])
 	}
 
-	win := render(t, tmpl, withPlatformCA(vmCtx("windows-server-2022", "")))
-	if strings.Contains(win, "BEGIN CERTIFICATE") {
-		t.Errorf("Windows guests run no metadata agent and get no CA file")
+	// A Windows guest gets the CA on its launch CD (the launch agent trusts it); one launched before the agent
+	// existed gets none.
+	if win := render(t, tmpl, withPlatformCA(vmCtx("windows-server-2022", ""))); !strings.Contains(win, "platform-root-ca.pem:") {
+		t.Errorf("a Windows guest running the launch agent gets the platform root CA on its launch CD")
+	}
+	if old := render(t, tmpl, withPlatformCA(launchedOn(vmCtx("windows-server-2022", ""), "2026-01-01T00:00:00Z"))); strings.Contains(old, "BEGIN CERTIFICATE") {
+		t.Errorf("an earlier Windows guest runs no agent and gets no CA file")
 	}
 
 	// The composition reads the CA through an Optional environment step (no aws-shim = no config, no error).
@@ -577,8 +581,9 @@ func TestVM_AWSCABundleEnv(t *testing.T) {
 	check("metadata disabled", render(t, tmpl, vmCtxFW("centos-stream-9", map[string]any{
 		"instanceRole": "app-role", "metadataOptions": map[string]any{"httpEndpoint": "disabled"},
 	})), false)
-	if win := render(t, tmpl, vmCtxFW("windows-server-2022", map[string]any{"instanceRole": "app-role"})); strings.Contains(win, "AWS_CA_BUNDLE") {
-		t.Errorf("a Windows VM must not render the CA bundle env")
+	// (A Windows VM's launch agent sets AWS_CA_BUNDLE itself; the Linux guest's env file is not rendered.)
+	if win := render(t, tmpl, vmCtxFW("windows-server-2022", map[string]any{"instanceRole": "app-role"})); strings.Contains(win, "AWS_CA_BUNDLE=/etc/openinfra") {
+		t.Errorf("a Windows VM must not render the Linux guest's CA bundle env")
 	}
 }
 

@@ -136,7 +136,7 @@ spec:
                 sshKey:   { type: string, pattern: "^[^\r\n\u0085\u2028\u2029]*$", description: "SSH public key (one line) injected via cloud-init on first boot (Linux only). If omitted, the only login is a generated password stored in the connection secret (<name>-vm)." }
                 userData:
                   type: string
-                  description: "First-boot user data (the EC2 UserData equivalent), Linux only. A shell script (starting with #!) is written to disk and run once at first boot, AFTER the base cloud-init (user/ssh/qemu-guest-agent) — so the VM stays reachable. Ignored on Windows. A full #cloud-config document is not accepted here (it can't be safely merged with the base config)."
+                  description: "First-boot user data (the EC2 UserData equivalent), served at the instance metadata's user-data. Linux: a shell script (starting with #!) is written to disk and run once at first boot, AFTER the base cloud-init (user/ssh/qemu-guest-agent) — so the VM stays reachable; a full #cloud-config document is not accepted here (it can't be safely merged with the base config). Windows: the launch agent runs it as EC2Launch v2 runs the XML-tagged format — its <script> and <powershell> blocks, as LocalSystem, once per instance unless it carries <persist>true</persist>."
                 expose:   { type: boolean, default: false, description: "Give the VM a LAN IP (MetalLB LoadBalancer) carrying its access port — SSH 22 (Linux) or RDP 3389 (Windows). Default false: reach it without one through the platform instead (Fleet Manager Remote Desktop for Windows, the EC2 serial console, or a port-forward). Setting any entry in ports also implies this." }
                 elasticIp:
                   type: object
@@ -180,7 +180,8 @@ spec:
                     IPv4, user-data, the instance identity document and, with instanceRole, the role's
                     rotating credentials — where the AWS SDKs, the aws CLI and cloud tooling look for
                     it, including from containers inside the guest. Omitted = the defaults below.
-                    Windows guests have no metadata service (these settings are ignored).
+                    A Windows guest's launch agent serves the same at the same address (a Windows
+                    instance launched before the launch agent existed has none).
                   properties:
                     httpEndpoint:
                       type: string

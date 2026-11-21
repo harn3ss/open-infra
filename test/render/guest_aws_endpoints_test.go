@@ -444,9 +444,14 @@ func TestVM_GuestResolverAndAWSEndpointsCA(t *testing.T) {
 		t.Errorf("without a guest resolver or CA nothing changes:\n%s", grepCtx(without, "dnsPolicy"))
 	}
 
+	// A Windows guest that runs the launch agent resolves through the guest resolver too; one launched before
+	// the agent existed keeps the cluster DNS.
 	win := render(t, tmpl, withGuestEnv(vmCtx("windows-server-2022", ""), env))
-	if strings.Contains(win, "dnsPolicy") {
-		t.Errorf("Windows guests keep the cluster DNS:\n%s", grepCtx(win, "dnsPolicy"))
+	if !strings.Contains(win, "dnsPolicy") {
+		t.Errorf("a Windows guest running the launch agent uses the guest resolver:\n%s", grepCtx(win, "dnsPolicy"))
+	}
+	if old := render(t, tmpl, withGuestEnv(launchedOn(vmCtx("windows-server-2022", ""), "2026-01-01T00:00:00Z"), env)); strings.Contains(old, "dnsPolicy") {
+		t.Errorf("an earlier Windows guest keeps the cluster DNS:\n%s", grepCtx(old, "dnsPolicy"))
 	}
 
 	raw := mustRead(t, vmComposition)
