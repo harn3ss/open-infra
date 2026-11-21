@@ -574,7 +574,8 @@
         "ec2-console",
         "ec2-serial-console",
         "ec2-default-vpc",
-        "ec2-isolated-vpc"
+        "ec2-isolated-vpc",
+        "ec2-images"
       ],
       "refused": [],
       "service": "EC2",
@@ -598,7 +599,8 @@
         "ec2-console",
         "ec2-serial-console",
         "ec2-default-vpc",
-        "ec2-isolated-vpc"
+        "ec2-isolated-vpc",
+        "ec2-images"
       ],
       "refused": [],
       "service": "EC2",
