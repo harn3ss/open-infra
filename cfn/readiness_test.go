@@ -374,9 +374,10 @@ Resources:
 		"InstanceLimitExceeded":        "You have requested more instances than your current instance limit allows",
 		"InsufficientInstanceCapacity": "We currently do not have sufficient capacity",
 	} {
-		f := &fakeApplier{statusFn: func(string) (map[string]any, bool) {
+		// A refused VM never becomes ready: its readiness wait would run to the timeout.
+		f := neverReady{&fakeApplier{statusFn: func(string) (map[string]any, bool) {
 			return map[string]any{"powerState": "Provisioning", "launchRefused": code}, true
-		}}
+		}}}
 		opts := deployOpts()
 		opts.Timeout = time.Minute
 		start := time.Now()
@@ -403,5 +404,21 @@ Resources:
 	launchRefusedGrace = time.Second
 	if rec, err := Deploy(context.Background(), []byte(tmpl), deployOpts(), clears); err != nil || rec.Status != "CREATE_COMPLETE" {
 		t.Fatalf("a refusal that clears must not fail the create: %v", err)
+	}
+}
+
+// neverReady is a fakeApplier whose instances never become ready: WaitReady blocks until its timeout or its
+// context ends, as it does for a VM whose launch is refused.
+type neverReady struct{ *fakeApplier }
+
+func (n neverReady) WaitReady(ctx context.Context, apiVersion, kind, name string, timeout time.Duration) error {
+	if kind != "VirtualMachine" {
+		return n.fakeApplier.WaitReady(ctx, apiVersion, kind, name, timeout)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(timeout):
+		return errFake(kind + "/" + name + " not ready within " + timeout.String())
 	}
 }

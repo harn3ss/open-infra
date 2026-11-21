@@ -12,6 +12,7 @@ package cfn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -95,7 +96,11 @@ func resourceWait(ctx context.Context, opts DeployOptions, ap Applier, b builtRe
 		return waitForSignals(ctx, opts, *b.signals, b.res.LogicalID)
 	}
 	if opts.Wait && hasReadiness(b.res) {
-		if err := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); err != nil {
+		if err := waitReadyOrRefused(ctx, opts, ap, b.res); err != nil {
+			var refused *LaunchRefusedError
+			if errors.As(err, &refused) {
+				return nil, err
+			}
 			return nil, fmt.Errorf("%s/%s did not become ready: %w", b.res.Kind, b.res.Name, err)
 		}
 		if err := waitInstanceRunning(ctx, opts, ap, b.res); err != nil {
@@ -106,6 +111,36 @@ func resourceWait(ctx context.Context, opts DeployOptions, ap Applier, b builtRe
 		return waitForSignals(ctx, opts, *b.signals, b.res.LogicalID)
 	}
 	return nil, nil
+}
+
+// waitReadyOrRefused waits for r to be ready (Applier.WaitReady) and, for a stack's instance whose status
+// the Applier reads, fails it meanwhile once its launch stays refused (status.launchRefused): a VM whose
+// disk or pod its account's capacity refuses never becomes ready, so the refusal is watched for while the
+// readiness wait runs, not after it.
+func waitReadyOrRefused(ctx context.Context, opts DeployOptions, ap Applier, r StackResource) error {
+	sr, ok := ap.(StatusReader)
+	if !isStackVM(r) || !ok {
+		return ap.WaitReady(ctx, r.APIVersion, r.Kind, r.Name, opts.Timeout)
+	}
+	wctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ready := make(chan error, 1)
+	go func() { ready <- ap.WaitReady(wctx, r.APIVersion, r.Kind, r.Name, opts.Timeout) }()
+	var refused refusalTracker
+	for {
+		select {
+		case err := <-ready:
+			return err
+		case <-time.After(restartPollInterval):
+		}
+		if st, found, err := sr.GetStatus(ctx, r.APIVersion, r.Kind, r.Name); err == nil && found {
+			if rerr := refused.observe(st); rerr != nil {
+				cancel()
+				<-ready
+				return rerr
+			}
+		}
+	}
 }
 
 // settleWaits runs the waits of set together (resourceWait). done is called, on the caller's goroutine,

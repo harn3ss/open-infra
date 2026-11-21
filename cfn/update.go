@@ -15,6 +15,7 @@ package cfn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -240,8 +241,12 @@ func Update(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 			continue
 		}
 		if opts.Wait && hasReadiness(b.res) {
-			if err := ap.WaitReady(ctx, b.res.APIVersion, b.res.Kind, b.res.Name, opts.Timeout); err != nil {
+			if err := waitReadyOrRefused(ctx, opts, ap, b.res); err != nil {
 				event(b.res, verb+"_FAILED", err.Error())
+				var refused *LaunchRefusedError
+				if errors.As(err, &refused) {
+					return rollback(err)
+				}
 				return rollback(fmt.Errorf("%s/%s did not become ready: %w", b.res.Kind, b.res.Name, err))
 			}
 		}
