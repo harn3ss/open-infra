@@ -178,6 +178,6 @@ want 'PROBE before-rule user: reached' "a local user did not reach the metadata 
 want 'PROBE after-rule user: refused' "AWS's documented firewall rule did not keep the local user from the metadata service"
 want "PROBE after-rule system: instance ${IID} key ASIA" "LocalSystem lost the metadata service under the rule for one local user"
 log "  ✓ metadata is served outside the instance: LocalSystem gets the role's credentials over IMDSv2"
-log "  ✓ a local user reaches it until the documented -LocalUser outbound rule, then is refused; LocalSystem still is not"
+log "  ✓ a local user reaches it until the documented -LocalUser outbound rule, then is refused, while LocalSystem is still served"
 
 printf '✓ PASS — a Windows instance'"'"'s metadata is served outside it, so the Windows Firewall rule AWS documents for a local user applies, and a principal with no policy is refused its console.\n'
