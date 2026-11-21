@@ -95,7 +95,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 19
+      "probe": 20
     },
     "undeployableUses": [
       {
@@ -575,7 +575,8 @@
         "ec2-serial-console",
         "ec2-default-vpc",
         "ec2-isolated-vpc",
-        "ec2-images"
+        "ec2-images",
+        "ec2-windows-metadata"
       ],
       "refused": [],
       "service": "EC2",
@@ -600,7 +601,8 @@
         "ec2-serial-console",
         "ec2-default-vpc",
         "ec2-isolated-vpc",
-        "ec2-images"
+        "ec2-images",
+        "ec2-windows-metadata"
       ],
       "refused": [],
       "service": "EC2",
@@ -2483,11 +2485,12 @@
         "cfn-securitygroup",
         "ec2-images",
         "ec2-isolated-vpc",
+        "ec2-windows-metadata",
         "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 6,
+      "templateUses": 7,
       "verdict": "ok"
     },
     "AWS::EC2::InternetGateway": {
@@ -3228,11 +3231,12 @@
         "cfn-structural-reads",
         "ec2-images",
         "ec2-isolated-vpc",
+        "ec2-windows-metadata",
         "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 6,
+      "templateUses": 7,
       "verdict": "ok"
     },
     "AWS::IAM::ManagedPolicy": {
@@ -3305,12 +3309,13 @@
         "cfn-structural-reads",
         "ec2-images",
         "ec2-isolated-vpc",
+        "ec2-windows-metadata",
         "iam-passedtoservice",
         "lambda-timeout",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 14,
+      "templateUses": 15,
       "verdict": "ok"
     },
     "AWS::IAM::User": {

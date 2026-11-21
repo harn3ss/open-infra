@@ -633,13 +633,18 @@ func TestVM_UserDataGetsAWSEnv(t *testing.T) {
 	}
 }
 
-// Windows guests are untouched: no cloud-init, so no metadata agent and no token disk.
+// Windows guests get none of the Linux guest's wiring: no cloud-init, so no in-guest metadata agent and no
+// token disk. Their metadata is served from their pod, by the agent their metadata Secret carries
+// (vm_instance_metadata_test.go), which is not the guest's.
 func TestVM_MetadataAgent_WindowsUnaffected(t *testing.T) {
 	tmpl := extractInlineTemplate(t, vmComposition)
 	out := render(t, tmpl, vmCtxFW("windows-server-2022", map[string]any{
 		"instanceRole":    "app-role",
 		"metadataOptions": map[string]any{"httpTokens": "required"},
 	}))
+	if pod := docWith(out, "composition-resource-name: instance-metadata"); pod != "" {
+		out = strings.Replace(out, pod, "", 1)
+	}
 	for _, absent := range []string{"metadata-agent", "openinfra-metadata", "SATOKEN", "AWS_CONTAINER", "cloudinit"} {
 		if strings.Contains(out, absent) {
 			t.Errorf("a Windows VM must not render %q; got:\n%s", absent, grepCtx(out, absent))

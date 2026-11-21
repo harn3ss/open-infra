@@ -256,7 +256,7 @@ function ConvertTo-OILaunchConfig {
     $cfg = @{
         instanceId = ''; imageId = ''; instanceType = ''; region = 'us-east-1'; availabilityZone = ''
         accountId = ''; launchTime = ''; role = ''; credentialsUrl = ''; identityUrl = ''
-        securityGroups = @(); imds = @{ enabled = $true; httpTokens = 'optional'; hopLimit = 1 }
+        securityGroups = @(); imds = @{ enabled = $true; httpTokens = 'optional'; hopLimit = 1; outside = $false }
         warnings = (New-Object System.Collections.Generic.List[string])
     }
     foreach ($k in @('instanceId', 'imageId', 'instanceType', 'region', 'availabilityZone', 'accountId', 'launchTime', 'role', 'credentialsUrl', 'identityUrl')) {
@@ -273,6 +273,8 @@ function ConvertTo-OILaunchConfig {
     if ($null -ne $imds) {
         $en = Get-OIField $imds 'enabled'
         if ($null -ne $en) { $cfg.imds.enabled = [bool]$en }
+        $out = Get-OIField $imds 'outside'
+        if ($null -ne $out) { $cfg.imds.outside = [bool]$out }
         $tok = Get-OIField $imds 'httpTokens'
         if ($null -ne $tok) { $cfg.imds.httpTokens = [string]$tok }
         $hop = Get-OIField $imds 'hopLimit'
@@ -1328,6 +1330,9 @@ namespace OpenInfraLaunch
         [DllImport("setupapi.dll", SetLastError = true)]
         private static extern bool SetupDiDestroyDeviceInfoList(IntPtr deviceInfoSet);
 
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "SetupDiOpenDeviceInfoW")]
+        private static extern bool SetupDiOpenDeviceInfo(IntPtr deviceInfoSet, string deviceInstanceId, IntPtr hwndParent, int openFlags, ref SP_DEVINFO_DATA deviceInfoData);
+
         [DllImport("newdev.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "UpdateDriverForPlugAndPlayDevicesW")]
         private static extern bool UpdateDriverForPlugAndPlayDevices(IntPtr hwndParent, string hardwareId, string fullInfPath, int installFlags, out bool rebootRequired);
 
@@ -1371,6 +1376,36 @@ namespace OpenInfraLaunch
                     int error = Marshal.GetLastWin32Error();
                     SetupDiCallClassInstaller(DIF_REMOVE, set, ref data);
                     return "UpdateDriverForPlugAndPlayDevices failed (error " + error + ")";
+                }
+                return null;
+            }
+            finally
+            {
+                SetupDiDestroyDeviceInfoList(set);
+            }
+        }
+
+        // Removes the device with the instance id, as "devcon remove @<instance id>" does. Returns null on
+        // success, else why it failed.
+        public static string Remove(string instanceId)
+        {
+            Guid netClass = new Guid("4d36e972-e325-11ce-bfc1-08002be10318");
+            IntPtr set = SetupDiCreateDeviceInfoList(ref netClass, IntPtr.Zero);
+            if (set == new IntPtr(-1))
+            {
+                return "SetupDiCreateDeviceInfoList failed (error " + Marshal.GetLastWin32Error() + ")";
+            }
+            try
+            {
+                SP_DEVINFO_DATA data = new SP_DEVINFO_DATA();
+                data.cbSize = Marshal.SizeOf(typeof(SP_DEVINFO_DATA));
+                if (!SetupDiOpenDeviceInfo(set, instanceId, IntPtr.Zero, 0, ref data))
+                {
+                    return "SetupDiOpenDeviceInfo failed (error " + Marshal.GetLastWin32Error() + ")";
+                }
+                if (!SetupDiCallClassInstaller(DIF_REMOVE, set, ref data))
+                {
+                    return "SetupDiCallClassInstaller(DIF_REMOVE) failed (error " + Marshal.GetLastWin32Error() + ")";
                 }
                 return null;
             }
@@ -1814,12 +1849,12 @@ function Remove-OIStrayImdsAddress {
     # 169.254.169.254 belongs on the metadata adapter alone. An earlier agent put it on the instance's NIC,
     # which turned that NIC's DHCP off: remove it there, and when the NIC is left with no IPv4 address and DHCP
     # off, turn DHCP back on.
-    param([int]$KeepIndex = -1)
+    param([int]$KeepIndex = -1, [string]$Why = 'it belongs on the instance metadata adapter')
     foreach ($e in @(Get-NetIPAddress -AddressFamily IPv4 -IPAddress $script:OIImdsAddress -ErrorAction SilentlyContinue)) {
         $idx = [int]$e.InterfaceIndex
         if ($idx -eq $KeepIndex) { continue }
         Remove-NetIPAddress -InputObject $e -Confirm:$false -ErrorAction SilentlyContinue
-        Write-OILog -Console ('Removed 169.254.169.254 from interface {0} ({1}): it belongs on the instance metadata adapter' -f $idx, $e.InterfaceAlias)
+        Write-OILog -Console ('Removed 169.254.169.254 from interface {0} ({1}): {2}' -f $idx, $e.InterfaceAlias, $Why)
         $left = @(Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $idx -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -ne $script:OIImdsAddress })
         $ipif = Get-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $idx -ErrorAction SilentlyContinue
         if ($left.Count -eq 0 -and $null -ne $ipif -and [string]$ipif.Dhcp -eq 'Disabled') {
@@ -1947,6 +1982,111 @@ function Set-OIImdsAddress {
         Write-OILog -Console ('Instance metadata address: {0} failed: {1}' -f $step, $_.Exception.Message)
         Write-OIInterfaceState
         return $false
+    }
+}
+
+# ---------------------------------------------------------------------------------------------------------
+# Instance metadata outside the instance (launch-config imds.outside): the platform serves it from the
+# instance's pod, reached through the instance's network adapter. The agent routes 169.254.169.254 through
+# the adapter's default gateway, as EC2Launch routes it on EC2, and removes the metadata adapter an earlier
+# agent made (an instance from before, or an image of one), so no request for it stays inside the instance.
+# ---------------------------------------------------------------------------------------------------------
+
+function Select-OIDefaultRoute {
+    # The default route instance metadata goes through: among the IPv4 default routes (@{ InterfaceIndex;
+    # NextHop; Metric }), the one with a gateway and the lowest metric. -> that route, or $null.
+    param([object[]]$Routes)
+    $best = $null
+    foreach ($r in @($Routes)) {
+        if ($null -eq $r -or -not $r.NextHop -or [string]$r.NextHop -eq '0.0.0.0') { continue }
+        if ($null -eq $best -or [int]$r.Metric -lt [int]$best.Metric) { $best = $r }
+    }
+    return $best
+}
+
+function Get-OIMetadataRouteChanges {
+    # The changes that leave 169.254.169.254/32 routed through Gateway (@{ InterfaceIndex; NextHop }) alone,
+    # given the routes to it there are (@{ InterfaceIndex; NextHop; Route }). -> @{ Remove = routes; Add = bool }.
+    param([object[]]$Existing, $Gateway)
+    $remove = New-Object System.Collections.Generic.List[object]
+    $have = $false
+    foreach ($r in @($Existing)) {
+        if ($null -eq $r) { continue }
+        if (-not $have -and [int]$r.InterfaceIndex -eq [int]$Gateway.InterfaceIndex -and [string]$r.NextHop -eq [string]$Gateway.NextHop) {
+            $have = $true
+        } else {
+            $remove.Add($r)
+        }
+    }
+    return @{ Remove = $remove.ToArray(); Add = (-not $have) }
+}
+
+function Set-OIMetadataRoute {
+    # 169.254.169.254/32 through the instance's default gateway. -> $true when the route is in place; $false
+    # (logged unless -Quiet) when the instance has no default gateway yet, or the route could not be added.
+    param([switch]$Quiet)
+    try {
+        $defaults = New-Object System.Collections.Generic.List[object]
+        foreach ($d in @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)) {
+            $ifm = Get-NetIPInterface -InterfaceIndex $d.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+            $m = [int]$d.RouteMetric
+            if ($null -ne $ifm) { $m += [int]$ifm.InterfaceMetric }
+            $defaults.Add(@{ InterfaceIndex = [int]$d.InterfaceIndex; NextHop = [string]$d.NextHop; Metric = $m })
+        }
+        $gw = Select-OIDefaultRoute $defaults.ToArray()
+        if ($null -eq $gw) { throw 'the instance has no default gateway yet' }
+        $existing = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix ($script:OIImdsAddress + '/32') -ErrorAction SilentlyContinue |
+            ForEach-Object { @{ InterfaceIndex = [int]$_.InterfaceIndex; NextHop = [string]$_.NextHop; Route = $_ } })
+        $plan = Get-OIMetadataRouteChanges $existing $gw
+        foreach ($r in $plan.Remove) { Remove-NetRoute -InputObject $r.Route -Confirm:$false -ErrorAction SilentlyContinue }
+        if ($plan.Add) {
+            New-NetRoute -AddressFamily IPv4 -DestinationPrefix ($script:OIImdsAddress + '/32') -InterfaceIndex $gw.InterfaceIndex -NextHop $gw.NextHop -RouteMetric 15 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null
+            Write-OILog -Console ('Instance metadata (169.254.169.254) is routed through the gateway {0} (interface {1})' -f $gw.NextHop, $gw.InterfaceIndex)
+        }
+        return $true
+    } catch {
+        if (-not $Quiet) {
+            Write-OILog -Console ('Routing instance metadata through the gateway failed: {0}' -f $_.Exception.Message)
+            Write-OIInterfaceState
+        }
+        return $false
+    }
+}
+
+function Wait-OIMetadataRoute {
+    # Set-OIMetadataRoute, retried until the instance has its default gateway (DHCP), for up to TimeoutSeconds.
+    param([int]$TimeoutSeconds)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Set-OIMetadataRoute -Quiet) { return $true }
+        Start-Sleep -Seconds 2
+    }
+    return (Set-OIMetadataRoute)
+}
+
+function Remove-OIMetadataAdapter {
+    # The metadata adapter an earlier agent made (an instance from before instance metadata moved outside it,
+    # or one launched from an image of such an instance): its address, the adapter itself and its firewall
+    # rule are removed, and 169.254.169.254 is taken off every interface, so a request for it leaves the
+    # instance. A customer's own loopback adapter is never touched (Select-OIMetadataAdapter).
+    try {
+        Remove-OIStrayImdsAddress -1 'instance metadata is served outside the instance'
+        $known = Get-OIKnownAdapterDevice
+        $adapter = Select-OIMetadataAdapter (Get-OINetworkAdapters) $null $known
+        if ($null -ne $adapter -and $adapter.Device) {
+            Initialize-OINative
+            $failure = [OpenInfraLaunch.LoopbackAdapter]::Remove($adapter.Device)
+            if ($failure) {
+                Write-OILog -Console ('The instance metadata adapter "{0}" was not removed ({1}); disabling it' -f $adapter.Name, $failure)
+                Disable-NetAdapter -Name $adapter.Name -Confirm:$false -ErrorAction SilentlyContinue
+            } else {
+                Write-OILog -Console ('Removed the instance metadata adapter "{0}": instance metadata is served outside the instance' -f $adapter.Name)
+            }
+        }
+        if ([System.IO.File]::Exists($script:OIAdapterDevicePath)) { Remove-Item -LiteralPath $script:OIAdapterDevicePath -Force -ErrorAction SilentlyContinue }
+        Remove-NetFirewallRule -Name $script:OIFirewallRuleName -ErrorAction SilentlyContinue
+    } catch {
+        Write-OILog -Console ('Removing the instance metadata adapter failed: {0}' -f $_.Exception.Message)
     }
 }
 
@@ -2505,14 +2645,15 @@ function Start-OIUserDataTask {
 
 function Invoke-OISupervisor {
     # Runs the user data tasks one after the other, and keeps the metadata service (process and address) up.
-    # Returns when there is nothing left to do: never while instance metadata is enabled.
+    # Returns when there is nothing left to do: never while this agent serves instance metadata itself.
     param([object[]]$Tasks, $Serve, [hashtable]$Config)
     $pending = New-Object System.Collections.Queue
     foreach ($t in @($Tasks)) { if ($null -ne $t) { $pending.Enqueue($t) } }
     $current = $null
     $restartAt = $null
     $retry = 30
-    if ($Config.imds.enabled -and $null -eq $Serve) { $restartAt = (Get-Date).AddSeconds($retry) }
+    $local = $Config.imds.enabled -and -not $Config.imds.outside  # the metadata service is this agent's to keep up
+    if ($local -and $null -eq $Serve) { $restartAt = (Get-Date).AddSeconds($retry) }
     $nextAddressCheck = (Get-Date).AddSeconds(30)
     while ($true) {
         try {
@@ -2532,7 +2673,7 @@ function Invoke-OISupervisor {
                 Remove-Item -LiteralPath $current.File -Force -ErrorAction SilentlyContinue
                 $current = $null
             }
-            if ($Config.imds.enabled) {
+            if ($local) {
                 if ($null -ne $Serve -and $Serve.HasExited) {
                     Write-OILog -Console ('The instance metadata service exited (code {0}); restarting it' -f $Serve.ExitCode)
                     $Serve = $null
@@ -2583,7 +2724,19 @@ function Invoke-OIRun {
     try { Set-OIPlatformTrust $here }
     catch { Write-OILog -Console ('Trusting the platform CAs failed: {0}' -f $_.Exception.Message) }
     $serve = $null
-    if ($cfg.imds.enabled) {
+    if ($cfg.imds.enabled -and $cfg.imds.outside) {
+        Stop-OIStaleServe
+        Remove-OIMetadataAdapter
+        if (Wait-OIMetadataRoute 120) {
+            $ready = Wait-OIImdsReady 120 $null
+            if ($ready.Ok) {
+                Write-OILog -Console 'Instance metadata is answering at http://169.254.169.254/ (served outside the instance)'
+            } else {
+                Write-OILog -Console ('Instance metadata did not answer within 2 minutes ({0}); continuing' -f $ready.Message)
+                Write-OIInterfaceState
+            }
+        }
+    } elseif ($cfg.imds.enabled) {
         Stop-OIStaleServe
         $ok = $false
         try { $ok = Set-OIImdsAddress }

@@ -255,9 +255,13 @@ A Windows instance runs the open-infra launch agent, as an EC2 Windows AMI runs 
 installs it from the instance's launch CD on its first boot, as a startup task that runs at every boot as
 LocalSystem. It:
 
-- serves EC2 instance metadata (IMDSv1 and IMDSv2) at `http://169.254.169.254`, with the instance role's
+- routes `169.254.169.254` through the instance's default gateway, as EC2Launch v2 does. EC2 instance
+  metadata (IMDSv1 and IMDSv2) is served there from outside the instance, as on EC2, with the instance role's
   rotating credentials when the instance has one, so the AWS CLI, the AWS Tools for PowerShell and the SDKs
-  find them as on EC2;
+  find them as on EC2. A request for it leaves the instance through its network adapter, so Windows Firewall
+  filters it: AWS's documented way to keep a local user from the metadata service, an outbound rule such as
+  `New-NetFirewallRule -Direction Outbound -Action Block -Protocol TCP -RemoteAddress 169.254.169.254
+  -RemotePort 80 -LocalUser <the user's SDDL>`, applies;
 - trusts the platform root CA and the AWS endpoints CA (the machine's root store), and points `AWS_CA_BUNDLE`
   at a bundle of the machine's roots for SDKs that carry their own;
 - extends the root partition to the disk's size on the instance's first boot, so a root volume larger than the
@@ -271,6 +275,14 @@ LocalSystem. It:
 An image made from such an instance carries the agent, and an instance launched from it counts its own first
 boot. A Windows instance launched before the agent existed, or booted from a migrated disk, keeps what its
 image had.
+
+**Where instance metadata is served.** The platform serves a Windows instance's metadata from a container
+in the instance's own pod, on `169.254.169.254:80`, outside the guest (an admission webhook of the aws-shim
+adds it to the pod; `platform/aws-shim/instance-metadata-webhook.yaml`). It is the same metadata agent a
+Linux guest runs, with the instance's metadata options (`httpTokens`, the hop limit), its user data and the
+instance role's credentials. An instance whose agent served metadata inside the guest, on a loopback adapter
+named "OpenInfra Metadata" (instances launched on 2026-11-21 before this change, and images made from
+them), has that adapter removed at its next start.
 
 ## Instance metadata (`metadataOptions`) — EC2 IMDS at 169.254.169.254
 

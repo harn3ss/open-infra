@@ -28,6 +28,14 @@ the product's public contract.
 - An image holds the instance's root volume only. Each operation is decided by IAM policy on the instance
   or the image's ARN.
 
+### Changed — a Windows instance's metadata is served outside the instance
+- As on EC2, instance metadata is served from outside a Windows instance: a container in the instance's
+  pod answers `169.254.169.254`, and the launch agent routes it through the instance's default gateway, as
+  EC2Launch v2 does. A request for it leaves the instance through its network adapter, so a Windows
+  Firewall outbound rule with `-LocalUser`, AWS's documented way to keep a local user from the metadata
+  service, now applies. It had no effect while the agent served metadata inside the instance, on a
+  loopback adapter; that adapter is removed at an instance's next start.
+
 ### Fixed — a stack update that restarts an instance starts it again
 - A stack update that changes what an instance reads only when it starts (its `UserData`, its
   `InstanceType`) could leave the instance stopped and roll the stack back. A start asked for while the

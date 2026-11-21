@@ -148,6 +148,8 @@ Check ((ConvertTo-OILaunchConfig @{ imds = @{ hopLimit = 2 } }).imds.hopLimit -e
 $c = ConvertTo-OILaunchConfig @{ imds = @{ httpTokens = 'Required' } }
 Check ($c.imds.httpTokens -ceq 'required' -and $c.warnings.Count -eq 1) 'an unknown httpTokens value means required'
 Check (-not (ConvertTo-OILaunchConfig @{ imds = @{ enabled = $false } }).imds.enabled) 'metadata can be disabled'
+Check (-not (ConvertTo-OILaunchConfig @{}).imds.outside) 'the agent serves instance metadata itself unless the platform serves it outside'
+Check ((ConvertTo-OILaunchConfig @{ imds = @{ outside = $true } }).imds.outside) 'imds.outside: the platform serves instance metadata outside the instance'
 $json = '{"instanceId":"i-0123456789abcdef0","region":"eu-west-1","launchTime":"2026-11-20T10:00:00Z","role":"","securityGroups":[],"imds":{"enabled":true,"httpTokens":"required","hopLimit":2}}'
 $c = ConvertTo-OILaunchConfig (ConvertFrom-Json $json)
 Check-Equal $c.launchTime '2026-11-20T10:00:00Z' 'launchTime keeps its RFC 3339 text even where ConvertFrom-Json makes it a date'
@@ -767,5 +769,28 @@ Check ($x.Task.Principals.Principal.UserId -eq 'S-1-5-18' -and $x.Task.Principal
 Check ($x.Task.Settings.ExecutionTimeLimit -eq 'PT0S' -and $x.Task.Settings.RestartOnFailure.Count -eq '999') 'no time limit, restarted on failure'
 Check-Equal $x.Task.Actions.Exec.Arguments '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\ProgramData\openinfra\launch\launch-stub.ps1"' 'the task runs the stub'
 Check-Equal $x.Task.RegistrationInfo.URI '\OpenInfra Launch' 'the task name'
+
+# --------------------------------------------------------------------------------------------------------
+# Instance metadata outside the instance: 169.254.169.254 routed through the default gateway, as EC2Launch does.
+# --------------------------------------------------------------------------------------------------------
+
+$nicRoute = @{ InterfaceIndex = 4; NextHop = '10.0.2.1'; Metric = 25 }
+$secondNic = @{ InterfaceIndex = 7; NextHop = '192.0.2.1'; Metric = 40 }
+$onLink = @{ InterfaceIndex = 9; NextHop = '0.0.0.0'; Metric = 1 }
+Check-Equal (Select-OIDefaultRoute @($secondNic, $nicRoute)).InterfaceIndex 4 'the default route with the lowest metric'
+Check-Equal (Select-OIDefaultRoute @($onLink, $nicRoute)).NextHop '10.0.2.1' 'a default route with no gateway is not the way out'
+Check ($null -eq (Select-OIDefaultRoute @($onLink))) 'no gateway yet (DHCP): no route'
+Check ($null -eq (Select-OIDefaultRoute @())) 'no default route: no route'
+
+$gw = @{ InterfaceIndex = 4; NextHop = '10.0.2.1' }
+$plan = Get-OIMetadataRouteChanges @() $gw
+Check ($plan.Add -and $plan.Remove.Count -eq 0) 'no route yet: it is added'
+$plan = Get-OIMetadataRouteChanges @(@{ InterfaceIndex = 4; NextHop = '10.0.2.1'; Route = 'r1' }) $gw
+Check ((-not $plan.Add) -and $plan.Remove.Count -eq 0) 'the route in place is kept as it is'
+$plan = Get-OIMetadataRouteChanges @(@{ InterfaceIndex = 12; NextHop = '0.0.0.0'; Route = 'adapter' }, @{ InterfaceIndex = 4; NextHop = '10.0.2.9'; Route = 'stale' }) $gw
+Check ($plan.Add -and $plan.Remove.Count -eq 2) 'a route to the old metadata adapter and one through another gateway are removed, the right one added'
+$plan = Get-OIMetadataRouteChanges @(@{ InterfaceIndex = 4; NextHop = '10.0.2.1'; Route = 'a' }, @{ InterfaceIndex = 4; NextHop = '10.0.2.1'; Route = 'dup' }) $gw
+Check ((-not $plan.Add) -and $plan.Remove.Count -eq 1 -and $plan.Remove[0].Route -eq 'dup') 'a duplicate route is removed'
+Check ($null -ne ('OpenInfraLaunch.LoopbackAdapter' -as [type]).GetMethod('Remove')) 'the metadata adapter can be removed (DIF_REMOVE)'
 
 Write-Host ('ok: {0} checks passed' -f $script:passed)

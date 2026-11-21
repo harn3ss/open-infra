@@ -1,0 +1,50 @@
+# Instance metadata outside the guest: the admission webhook that serves a Windows instance's metadata from
+# its own pod, as EC2 serves it from outside the instance.
+#
+# A Windows instance's KubeVirt launcher pod carries openinfra.dev/instance-metadata=pod (the VM template's
+# label, vm-composition.yaml $imdsOutside). The aws-shim answers this webhook (instance_metadata_webhook.go)
+# with a patch that adds, to that pod only:
+#   - an init container that puts 169.254.169.254/32 on the pod's loopback (NET_ADMIN and nothing else);
+#   - the metadata container: the metadata agent the Linux guests run, as the launcher's non-root user with no
+#     capability, on 169.254.169.254:80 (the pod's net.ipv4.ip_unprivileged_port_start lets it bind port 80);
+#   - its volume: the VM's <name>-metadata Secret (the agent and its configuration), the instance's user data
+#     and the platform root CA (<name>-launch), and the VM's ServiceAccount token, which /v1/vm-credentials
+#     exchanges for the instance role's credentials.
+# The guest reaches it through its network adapter and default gateway (the launch agent routes
+# 169.254.169.254 there, as EC2Launch does), so a request leaves the guest through its NIC, where Windows
+# Firewall filters it: the outbound rule AWS documents for keeping a local user from the metadata service
+# (New-NetFirewallRule -RemoteAddress 169.254.169.254 -LocalUser ...) applies.
+#
+# Only pods with that label are sent here (objectSelector), so failurePolicy Fail holds back a Windows
+# instance's start while the aws-shim cannot answer, and nothing else: an instance never starts without its
+# metadata service. The CA bundle is the aws-shim internal certificate's, injected by cert-manager.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: openinfra-instance-metadata
+  labels: { app.kubernetes.io/part-of: aws-shim }
+  annotations:
+    cert-manager.io/inject-ca-from: open-infra-aws-shim/aws-shim-internal-tls
+webhooks:
+  - name: instance-metadata.openinfra.dev
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    reinvocationPolicy: Never
+    timeoutSeconds: 10
+    objectSelector:
+      matchLabels:
+        kubevirt.io: virt-launcher
+        openinfra.dev/instance-metadata: pod
+    rules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [pods]
+        scope: Namespaced
+    clientConfig:
+      service:
+        namespace: open-infra-aws-shim
+        name: aws-shim
+        port: 4567
+        path: /v1/admission/instance-metadata
