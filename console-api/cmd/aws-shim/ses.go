@@ -100,12 +100,12 @@ func (h *sesHandler) relayExists(ctx context.Context) bool {
 
 func (h *sesHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
 	if r != nil && isSESv2(r) {
-		sesV2Error(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+		sesV2Error(w, authStatus(r, http.StatusForbidden), authCode(r, "SignatureDoesNotMatch"), requestID,
 			authMessage(r, "The request signature we calculated does not match the signature you provided."))
 		return
 	}
-	writeQueryError(w, http.StatusForbidden, "SignatureDoesNotMatch", requestID,
-		"The request signature we calculated does not match the signature you provided.", sesXMLNamespace)
+	writeQueryError(w, authStatus(r, http.StatusForbidden), authCode(r, "SignatureDoesNotMatch"), requestID,
+		authMessage(r, "The request signature we calculated does not match the signature you provided."), sesXMLNamespace)
 }
 
 func (h *sesHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {

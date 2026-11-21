@@ -95,7 +95,10 @@ The shim does **not** get its own notion of who-you-are-and-what-you-can-do. The
    up the key's secret and **recomputes and constant-time-compares the signature**. A caller who
    merely *names* a valid key but cannot reproduce its signature is rejected — exactly as AWS
    returns `SignatureDoesNotMatch`. Because SigV4 signs the method, path, headers, and payload
-   hash, a passing signature also proves the request was not tampered with in flight.
+   hash, a passing signature also proves the request was not tampered with in flight. If the
+   shim cannot read the key or its owner at that moment (the cluster's API briefly unreachable),
+   it answers `ServiceUnavailable` (HTTP 503) in the service's own format, which SDKs retry, as
+   AWS answers a moment it cannot serve; it never calls the signature wrong for it.
 2. **Resolve the principal.** The access key's owner is resolved to its owning `kind: User` and
    that user's **current** groups — fresh on every request, so revoking a group takes effect
    immediately without touching the key.

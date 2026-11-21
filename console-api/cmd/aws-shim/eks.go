@@ -92,7 +92,7 @@ func writeEKSJSON(w http.ResponseWriter, status int, requestID string, obj any) 
 
 func (h *eksHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
 	// AWS surfaces a SigV4 mismatch as InvalidSignatureException before the service sees it.
-	writeEKSError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+	writeEKSError(w, authStatus(r, http.StatusForbidden), authCode(r, "InvalidSignatureException"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

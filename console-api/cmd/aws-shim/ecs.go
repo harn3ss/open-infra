@@ -102,7 +102,7 @@ func writeECSJSON(w http.ResponseWriter, requestID string, obj any) {
 }
 
 func (h *ecsDoorway) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeECSError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+	writeECSError(w, authStatus(r, http.StatusForbidden), authCode(r, "InvalidSignatureException"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

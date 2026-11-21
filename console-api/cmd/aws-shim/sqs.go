@@ -90,7 +90,7 @@ func writeSQSJSON(w http.ResponseWriter, requestID string, obj any) {
 }
 
 func (h *sqsHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeSQSError(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+	writeSQSError(w, authStatus(r, http.StatusForbidden), authCode(r, "SignatureDoesNotMatch"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

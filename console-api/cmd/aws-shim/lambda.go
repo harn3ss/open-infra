@@ -96,7 +96,7 @@ func newLambdaHandler(cs kubernetes.Interface, fnNS, svcSuffix string, async *as
 }
 
 func (h *lambdaHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeLambdaError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+	writeLambdaError(w, authStatus(r, http.StatusForbidden), authCode(r, "InvalidSignatureException"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

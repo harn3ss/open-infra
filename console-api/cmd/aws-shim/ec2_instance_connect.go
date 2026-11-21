@@ -115,7 +115,7 @@ func writeEICError(w http.ResponseWriter, code, requestID, message string) {
 func (h *eicHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
 	w.Header().Set("Content-Type", eicContentType)
 	w.Header().Set("x-amzn-RequestId", requestID)
-	w.WriteHeader(http.StatusForbidden)
+	w.WriteHeader(authStatus(r, http.StatusForbidden))
 	_ = json.NewEncoder(w).Encode(map[string]string{"__type": authCode(r, "InvalidSignatureException"),
 		"Message": authMessage(r, "The request signature we calculated does not match the signature you provided.")})
 }

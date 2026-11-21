@@ -28,6 +28,70 @@ var errAuth = errors.New("aws-shim: authentication failed")
 // not already hold (the session's secret). Each service writes it in its dialect (authCode, authMessage).
 var errExpiredToken = errors.New("aws-shim: the security token included in the request is expired")
 
+// errAuthUnavailable is the failure answered when what verifies a request could not be read just now (the
+// cluster API briefly unreachable, as while the control plane restarts): not a verdict on the caller's key
+// or signature. AWS answers such a moment ServiceUnavailable (HTTP 503), which an SDK retries;
+// SignatureDoesNotMatch would tell it the request itself was wrong, and it would not retry. Every key,
+// valid or not, gets the same answer in that moment, so it tells a prober nothing.
+var errAuthUnavailable = errors.New("aws-shim: the request could not be authenticated just now")
+
+type authUnavailableKey struct{}
+
+// withAuthUnavailable marks r as refused because it could not be verified just now, for its service's
+// authFailure.
+func withAuthUnavailable(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), authUnavailableKey{}, true))
+}
+
+func authUnavailable(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	v, _ := r.Context().Value(authUnavailableKey{}).(bool)
+	return v
+}
+
+// authStatus is a service's authentication-failure HTTP status for r: 503 when r could not be verified
+// just now, the service's own otherwise.
+func authStatus(r *http.Request, status int) int {
+	if authUnavailable(r) {
+		return http.StatusServiceUnavailable
+	}
+	return status
+}
+
+// lookupTrouble records, for one request's authentication, that a read it needed failed for a reason other
+// than the thing's absence (noteLookupTrouble).
+type lookupTrouble struct{ failed bool }
+
+type lookupTroubleKey struct{}
+
+// noteLookupTrouble records on ctx's authentication that a read it needed (an access key, its owner)
+// failed for a reason other than the thing's absence. Outside an authentication it does nothing.
+func noteLookupTrouble(ctx context.Context) {
+	if t, ok := ctx.Value(lookupTroubleKey{}).(*lookupTrouble); ok {
+		t.failed = true
+	}
+}
+
+// checkedKeyLookuper is a keyLookuper that also says when a lookup failed for a reason other than the
+// key's absence (satisfied by *awskeys.Store).
+type checkedKeyLookuper interface {
+	LookupErr(ctx context.Context, accessKeyID string) (awskeys.Key, bool, error)
+}
+
+// lookupKey resolves an access key, noting on ctx a lookup that could not be made just now.
+func (a *authenticator) lookupKey(ctx context.Context, accessKeyID string) (awskeys.Key, bool) {
+	if c, ok := a.keys.(checkedKeyLookuper); ok {
+		key, found, err := c.LookupErr(ctx, accessKeyID)
+		if err != nil {
+			noteLookupTrouble(ctx)
+		}
+		return key, found
+	}
+	return a.keys.Lookup(ctx, accessKeyID)
+}
+
 type expiredTokenKey struct{}
 
 // withExpiredToken marks r as refused for an expired session token, for its service's authFailure.
@@ -47,6 +111,12 @@ func expiredToken(r *http.Request) bool {
 // token had expired (ExpiredTokenException where the service's code is an ...Exception, else
 // ExpiredToken), the service's own code otherwise.
 func authCode(r *http.Request, code string) string {
+	if authUnavailable(r) {
+		if strings.HasSuffix(code, "Exception") {
+			return "ServiceUnavailableException"
+		}
+		return "ServiceUnavailable"
+	}
 	if !expiredToken(r) {
 		return code
 	}
@@ -58,6 +128,9 @@ func authCode(r *http.Request, code string) string {
 
 // authMessage is the failure's message: AWS's for an expired session token, the service's own otherwise.
 func authMessage(r *http.Request, msg string) string {
+	if authUnavailable(r) {
+		return "The request has failed due to a temporary failure of the server."
+	}
 	if expiredToken(r) {
 		return "The security token included in the request is expired"
 	}
@@ -218,6 +291,17 @@ func sessionMFA(sess awssts.Session) *iam.MFAContext {
 // by the handler against the specific action — keeping "who you are" strictly separate from "what
 // you may do", and ensuring the authorization check runs against the very identity that was proven.
 func (a *authenticator) authenticate(ctx context.Context, r *http.Request) (iam.Claims, error) {
+	trouble := &lookupTrouble{}
+	claims, err := a.verify(context.WithValue(ctx, lookupTroubleKey{}, trouble), r)
+	if errors.Is(err, errAuth) && trouble.failed {
+		// Refused only because a read it needed could not be made just now: not the caller's fault.
+		return iam.Claims{}, errAuthUnavailable
+	}
+	return claims, err
+}
+
+// verify is authenticate's work: errAuth for any reason the request does not authenticate.
+func (a *authenticator) verify(ctx context.Context, r *http.Request) (iam.Claims, error) {
 	// Presigned URL (query-string SigV4): no Authorization header — the credential and signature
 	// ride in the query (X-Amz-Algorithm=AWS4-HMAC-SHA256). A browser fetching a presigned GET/PUT
 	// has no AWS headers to header-sign, so this is the only path by which those requests can
@@ -255,7 +339,7 @@ func (a *authenticator) authenticate(ctx context.Context, r *http.Request) (iam.
 		}
 		return claims, nil
 	}
-	key, ok := a.keys.Lookup(ctx, cred.AccessKeyID)
+	key, ok := a.lookupKey(ctx, cred.AccessKeyID)
 	if !ok {
 		return iam.Claims{}, errAuth
 	}
@@ -301,7 +385,7 @@ func (a *authenticator) authenticatePresigned(ctx context.Context, r *http.Reque
 		}
 		return claims, nil
 	}
-	key, ok := a.keys.Lookup(ctx, p.AccessKeyID)
+	key, ok := a.lookupKey(ctx, p.AccessKeyID)
 	if !ok {
 		return iam.Claims{}, errAuth
 	}

@@ -152,12 +152,15 @@ func newEC2Handler(door *cfnDoorway, keys *ec2KeyStore, logger *slog.Logger) *ec
 }
 
 func (h *ec2Handler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeEC2Error(w, http.StatusUnauthorized, ec2AuthCode(r), requestID, authMessage(r, "AWS was not able to validate the provided access credentials"))
+	writeEC2Error(w, authStatus(r, http.StatusUnauthorized), ec2AuthCode(r), requestID, authMessage(r, "AWS was not able to validate the provided access credentials"))
 }
 
 // ec2AuthCode is EC2's authentication-failure code: ExpiredToken for an expired session token, as AWS
 // answers it, else AuthFailure.
 func ec2AuthCode(r *http.Request) string {
+	if authUnavailable(r) {
+		return "ServiceUnavailable"
+	}
 	if expiredToken(r) {
 		return "ExpiredToken"
 	}

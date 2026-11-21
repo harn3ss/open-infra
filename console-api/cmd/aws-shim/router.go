@@ -203,6 +203,12 @@ func (rt *serviceRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, errExpiredToken) {
 			r = withExpiredToken(r) // answered ExpiredToken, in the service's dialect (auth.go)
 		}
+		if errors.Is(err, errAuthUnavailable) {
+			// Answered ServiceUnavailable, which the caller's SDK retries (auth.go).
+			r = withAuthUnavailable(r)
+			rt.logger.Warn("aws-shim: a request could not be authenticated just now (its key or owner could not be read)",
+				"service", cred.Service, "requestId", requestID)
+		}
 		svc.authFailure(w, r, requestID)
 		return
 	}

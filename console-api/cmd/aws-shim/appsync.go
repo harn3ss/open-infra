@@ -116,7 +116,7 @@ func (s restAPIStore) Update(ctx context.Context, ns, name string, obj map[strin
 }
 
 func (h *appsyncHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeAppsyncError(w, http.StatusUnauthorized, authCode(r, "UnauthorizedException"), requestID,
+	writeAppsyncError(w, authStatus(r, http.StatusUnauthorized), authCode(r, "UnauthorizedException"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

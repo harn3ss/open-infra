@@ -161,7 +161,7 @@ func writeDynamoJSON(w http.ResponseWriter, requestID string, obj any) {
 }
 
 func (h *dynamoHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeDynamoError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+	writeDynamoError(w, authStatus(r, http.StatusForbidden), authCode(r, "InvalidSignatureException"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

@@ -32,6 +32,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -98,26 +99,37 @@ func SecretName(accessKeyID string) string {
 // missing key is indistinguishable from a bad one to the caller — the shim maps both to a signature
 // mismatch, so an attacker can't enumerate valid key IDs by probing.
 func (s *Store) Lookup(ctx context.Context, accessKeyID string) (Key, bool) {
+	k, ok, _ := s.LookupErr(ctx, accessKeyID)
+	return k, ok
+}
+
+// LookupErr is Lookup that also returns the error when the key could not be read for a reason other than
+// its absence (the cluster API unreachable): ok=false with err non-nil. The shim answers such a request
+// ServiceUnavailable, as AWS does, rather than calling the caller's signature wrong.
+func (s *Store) LookupErr(ctx context.Context, accessKeyID string) (Key, bool, error) {
 	if accessKeyID == "" {
-		return Key{}, false
+		return Key{}, false, nil
 	}
 	sec, err := s.cs.CoreV1().Secrets(s.ns).Get(ctx, SecretName(accessKeyID), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return Key{}, false, nil
+	}
 	if err != nil {
-		return Key{}, false
+		return Key{}, false, err
 	}
 	if strings.EqualFold(string(sec.Data[dataDisabled]), "true") {
-		return Key{}, false
+		return Key{}, false, nil
 	}
 	// Collision guard: the Secret name is a hash, so confirm the stored ID is the one asked for.
 	if string(sec.Data[dataAccessKeyID]) != accessKeyID {
-		return Key{}, false
+		return Key{}, false, nil
 	}
 	secret := string(sec.Data[dataSecretKey])
 	if secret == "" {
-		return Key{}, false
+		return Key{}, false, nil
 	}
 	return Key{AccessKeyID: accessKeyID, SecretKey: secret, Owner: string(sec.Data[dataOwner]),
-		Account: string(sec.Data[dataAccount])}, true
+		Account: string(sec.Data[dataAccount])}, true, nil
 }
 
 // Put creates or updates the Secret for a key (used by the console when minting/importing a key).

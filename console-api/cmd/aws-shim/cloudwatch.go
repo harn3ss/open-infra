@@ -105,7 +105,7 @@ func newCWHandler(cs kubernetes.Interface, authzNS, account, region string, stor
 }
 
 func (h *cwHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeCWError(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+	writeCWError(w, authStatus(r, http.StatusForbidden), authCode(r, "SignatureDoesNotMatch"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."), cwXMLNamespace)
 }
 

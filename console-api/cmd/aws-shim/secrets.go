@@ -91,7 +91,7 @@ func writeSMJSON(w http.ResponseWriter, requestID string, obj any) {
 }
 
 func (h *secretsHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeSMError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+	writeSMError(w, authStatus(r, http.StatusForbidden), authCode(r, "InvalidSignatureException"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

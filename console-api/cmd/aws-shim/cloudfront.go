@@ -124,7 +124,7 @@ func newInvalidationID() string {
 }
 
 func (h *cloudFrontHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeCFError(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+	writeCFError(w, authStatus(r, http.StatusForbidden), authCode(r, "SignatureDoesNotMatch"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

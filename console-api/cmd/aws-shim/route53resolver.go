@@ -98,7 +98,7 @@ func writeR53RJSON(w http.ResponseWriter, requestID string, obj any) {
 }
 
 func (h *r53rHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeR53RError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+	writeR53RError(w, authStatus(r, http.StatusForbidden), authCode(r, "InvalidSignatureException"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

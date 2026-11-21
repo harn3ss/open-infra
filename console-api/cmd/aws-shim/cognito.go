@@ -74,7 +74,7 @@ func writeCognitoJSON(w http.ResponseWriter, requestID string, obj any) {
 }
 
 func (h *cognitoHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeCognitoError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+	writeCognitoError(w, authStatus(r, http.StatusForbidden), authCode(r, "InvalidSignatureException"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

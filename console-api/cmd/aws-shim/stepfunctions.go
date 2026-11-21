@@ -146,7 +146,7 @@ func writeSFNJSON(w http.ResponseWriter, requestID string, obj any) {
 }
 
 func (h *sfnHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeSFNError(w, http.StatusForbidden, authCode(r, "AccessDeniedException"), requestID,
+	writeSFNError(w, authStatus(r, http.StatusForbidden), authCode(r, "AccessDeniedException"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

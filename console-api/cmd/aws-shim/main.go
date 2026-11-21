@@ -48,6 +48,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/metadata"
@@ -1443,6 +1444,9 @@ func newOwnerResolver(cs kubernetes.Interface, ns string) ownerResolver {
 		path := "/apis/iam.openinfra.dev/v1/namespaces/" + ns + "/users/" + owner
 		raw, err := rc.Get().AbsPath(path).DoRaw(ctx)
 		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				noteLookupTrouble(ctx) // not read just now: the request is answered ServiceUnavailable (auth.go)
+			}
 			return nil, false
 		}
 		var u struct {

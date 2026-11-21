@@ -602,7 +602,7 @@ func lastSegment(res string) string {
 
 func (h *stsHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
 	// STS's dialect: a query-protocol <ErrorResponse> with the SignatureDoesNotMatch code.
-	writeQueryError(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+	writeQueryError(w, authStatus(r, http.StatusForbidden), authCode(r, "SignatureDoesNotMatch"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."), stsXMLNamespace)
 }
 

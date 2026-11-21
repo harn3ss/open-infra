@@ -40,7 +40,7 @@ func newDDBStreamsHandler(cs kubernetes.Interface, authzNS, account, region stri
 }
 
 func (h *ddbStreamsHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeStreamsError(w, http.StatusForbidden, authCode(r, "InvalidSignatureException"), requestID,
+	writeStreamsError(w, authStatus(r, http.StatusForbidden), authCode(r, "InvalidSignatureException"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."))
 }
 

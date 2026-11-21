@@ -55,6 +55,7 @@ var s3Errors = map[string]s3ErrorInfo{
 	"OperationAborted":        {http.StatusConflict, "A conflicting conditional operation is currently in progress against this resource. Please try again."},
 	"InvalidBucketName":       {http.StatusBadRequest, "The specified bucket is not valid."},
 	"InternalError":           {http.StatusInternalServerError, "We encountered an internal error. Please try again."},
+	"ServiceUnavailable":      {http.StatusServiceUnavailable, "Service is unable to handle request."},
 	// Multipart upload and copy (MinIO answers these codes; they pass through as S3's own).
 	"NoSuchUpload":              {http.StatusNotFound, "The specified multipart upload does not exist. The upload ID might be invalid, or the multipart upload might have been aborted or completed."},
 	"InvalidPart":               {http.StatusBadRequest, "One or more of the specified parts could not be found. The part might not have been uploaded, or the specified entity tag might not have matched the part's entity tag."},

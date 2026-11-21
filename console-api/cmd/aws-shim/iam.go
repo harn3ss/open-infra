@@ -68,7 +68,7 @@ func newIAMHandler(cs kubernetes.Interface, dyn dynamic.Interface, keys *awskeys
 }
 
 func (h *iamHandler) authFailure(w http.ResponseWriter, r *http.Request, requestID string) {
-	writeQueryError(w, http.StatusForbidden, authCode(r, "SignatureDoesNotMatch"), requestID,
+	writeQueryError(w, authStatus(r, http.StatusForbidden), authCode(r, "SignatureDoesNotMatch"), requestID,
 		authMessage(r, "The request signature we calculated does not match the signature you provided."), iamXMLNamespace)
 }
 
