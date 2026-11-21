@@ -68,7 +68,7 @@ spec:
                     - windows-server-2025  # windows
                 cpu:      { type: integer, default: 2, minimum: 1, description: "Number of vCPU cores (KubeVirt domain.cpu.cores). Default 2." }
                 memory:   { type: string, default: "2Gi", description: "Guest RAM, e.g. 2Gi or 4Gi. Default 2Gi." }
-                diskSize: { type: string, default: "20Gi", description: "Root disk size, retained across reboots and stop/start. Default 20Gi. Linux grows its rootfs to fit via cloud-init; Windows ignores this and uses a fixed 100Gi root (a generalized image's C: can't be reliably auto-grown)." }
+                diskSize: { type: string, default: "20Gi", description: "Root disk size, retained across reboots and stop/start. Default 20Gi. Linux grows its rootfs to fit via cloud-init; a Windows root is at least 100Gi, and its launch agent extends C: to a larger one on the instance's first boot (a Windows instance launched before the launch agent existed has a fixed 100Gi root)." }
                 rootDisk:
                   type: object
                   description: >-

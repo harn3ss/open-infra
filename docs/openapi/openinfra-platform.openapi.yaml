@@ -9552,8 +9552,8 @@ components:
               type: string
               default: 20Gi
               description: 'Root disk size, retained across reboots and stop/start. Default 20Gi. Linux grows its rootfs to
-                fit via cloud-init; Windows ignores this and uses a fixed 100Gi root (a generalized image''s C: can''t be
-                reliably auto-grown).'
+                fit via cloud-init; a Windows root is at least 100Gi, and its launch agent extends C: to a larger one on the
+                instance''s first boot (a Windows instance launched before the launch agent existed has a fixed 100Gi root).'
             rootDisk:
               type: object
               description: 'How the root disk is stored. Omitted: an unencrypted disk on the storage policy highAvailability

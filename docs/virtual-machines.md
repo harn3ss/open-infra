@@ -238,7 +238,8 @@ LocalSystem. It:
   find them as on EC2;
 - trusts the platform root CA and the AWS endpoints CA (the machine's root store), and points `AWS_CA_BUNDLE`
   at a bundle of the machine's roots for SDKs that carry their own;
-- extends the root partition to the disk's size on the instance's first boot;
+- extends the root partition to the disk's size on the instance's first boot, so a root volume larger than the
+  image's 100 GiB (an `AWS::EC2::Instance`'s root `VolumeSize`) is usable at once;
 - runs the instance's user data in EC2Launch v2's XML-tagged format: `<script>` (cmd) and `<powershell>`
   blocks, as LocalSystem, once per instance unless it carries `<persist>true</persist>`, with its output in
   `C:\ProgramData\openinfra\launch\log\userdata.log`. EC2Launch v2's YAML format is not run;

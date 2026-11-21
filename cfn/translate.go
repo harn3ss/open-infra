@@ -1354,6 +1354,11 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 				}
 				if vs, has := ebs["VolumeSize"]; has {
 					spec["diskSize"] = fmt.Sprintf("%dGi", toInt(vs))
+					// A Windows image's root is 100 GiB: a smaller root volume is refused, as EC2 refuses a volume
+					// smaller than its image's snapshot.
+					if os, _ := spec["os"].(string); strings.HasPrefix(os, "windows-") && toInt(vs) < 100 {
+						f = append(f, Finding{"Resource " + id, fmt.Sprintf("Volume of size %dGB is smaller than the image's root volume, expect size >= 100GB (BlockDeviceMappings[%d])", toInt(vs), i)})
+					}
 				}
 				for _, p := range []string{"VolumeType", "Iops", "Throughput"} {
 					if _, ok := ebs[p]; ok {

@@ -438,3 +438,18 @@ func TestTranslate_EC2Instance_InstanceInitiatedShutdownBehavior(t *testing.T) {
 		t.Fatalf("terminate must refuse: %s", findingsText(fs))
 	}
 }
+
+// A Windows instance's root VolumeSize is its root disk's size when it is at least the image's 100 GiB; a
+// smaller one is refused, as EC2 refuses a volume smaller than its image's snapshot.
+func TestTranslate_EC2Instance_WindowsRootVolumeSize(t *testing.T) {
+	bdm := func(size int) []any {
+		return []any{map[string]any{"DeviceName": "/dev/sda1", "Ebs": map[string]any{"VolumeSize": size}}}
+	}
+	m, fs := translateEC2Instance("Win", map[string]any{"ImageId": "windows-server-2022", "BlockDeviceMappings": bdm(200)}, nil)
+	if len(fs) != 0 || m.Spec["diskSize"] != "200Gi" {
+		t.Fatalf("200 GiB: %s %v", findingsText(fs), m.Spec["diskSize"])
+	}
+	if _, fs := translateEC2Instance("Win", map[string]any{"ImageId": "windows-server-2022", "BlockDeviceMappings": bdm(50)}, nil); !strings.Contains(findingsText(fs), "Volume of size 50GB is smaller than the image's root volume") {
+		t.Fatalf("50 GiB must refuse: %s", findingsText(fs))
+	}
+}

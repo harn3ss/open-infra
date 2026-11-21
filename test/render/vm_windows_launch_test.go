@@ -72,3 +72,30 @@ func TestVM_WindowsLaunchAgent_EmbedsTheAgent(t *testing.T) {
 		t.Fatal("windows-launch-agent.ps1 must not contain {{ or }} (the composition is a Go template)")
 	}
 }
+
+// A Windows instance running the launch agent takes a root larger than 100Gi (the agent extends C: to it);
+// a smaller request, or an instance launched before the agent existed, gets the fixed 100Gi.
+func TestVM_WindowsRootDiskSize(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	size := func(ctx map[string]any) string {
+		out := render(t, tmpl, ctx)
+		for _, want := range []string{"100Gi", "200Gi"} {
+			if strings.Contains(out, "storage: "+want) || strings.Contains(out, `storage: "`+want+`"`) {
+				return want
+			}
+		}
+		t.Logf("%s", grepCtx(out, "Gi"))
+		return ""
+	}
+	for want, ctx := range map[string]map[string]any{
+		"200Gi": vmCtxFW("windows-server-2022", map[string]any{"diskSize": "200Gi"}),
+		"100Gi": vmCtxFW("windows-server-2022", map[string]any{"diskSize": "20Gi"}),
+	} {
+		if got := size(ctx); got != want {
+			t.Errorf("want a %s root, got %q", want, got)
+		}
+	}
+	if got := size(launchedOn(vmCtxFW("windows-server-2022", map[string]any{"diskSize": "200Gi"}), "2026-01-01T00:00:00Z")); got != "100Gi" {
+		t.Errorf("an earlier Windows instance keeps its 100Gi root, got %q", got)
+	}
+}

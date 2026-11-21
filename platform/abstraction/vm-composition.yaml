@@ -119,17 +119,21 @@ spec:
             {{- if eq $isHolder "true" }}{{- with .status }}{{- with .loadBalancer }}{{- with .ingress }}{{- if gt (len .) 0 }}{{- $eipAddr = ((index . 0).ip | default "") }}{{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
             {{- end }}{{- end }}{{- end }}{{- end }}
             {{- end }}
-            {{- /* Windows root disk is FIXED and NOT user-selectable: a generalized
-                   image's C: can't be reliably auto-grown, so a larger root would only
-                   strand unallocated space. Extra Windows storage is added as separate
-                   attachable volumes (EBS-style, issue #53). Linux keeps the user's
-                   diskSize — cloud-init grows the rootfs to fit.
-                   CRITICAL: this MUST be >= the golden image PVC's size — CDI refuses to
-                   clone a source into a smaller target (ErrIncompatiblePVC) and the DV
-                   wedges in CloneScheduled forever. The windows-*-golden images are
-                   ~95.4Gi, so 100Gi clears them with headroom. Bump this if a future
-                   golden rebuild grows past 100Gi. */}}
-            {{- if $isWin }}{{- $disk = "100Gi" }}{{- end }}
+            {{- /* Windows root disk: at least 100Gi, which MUST be >= the golden image PVC's size — CDI
+                   refuses to clone a source into a smaller target (ErrIncompatiblePVC) and the DV wedges in
+                   CloneScheduled forever. The windows-*-golden images are ~95.4Gi, so 100Gi clears them with
+                   headroom (bump it if a future golden rebuild grows past 100Gi). A Windows instance that runs
+                   the launch agent takes a larger diskSize (an AWS::EC2::Instance's root VolumeSize): the
+                   agent extends C: to the disk on its first boot, as EC2Launch v2 does. An earlier Windows
+                   instance keeps its fixed 100Gi. Linux keeps the user's diskSize — cloud-init grows the
+                   rootfs to fit. */}}
+            {{- if $isWin }}
+            {{-   $winGi := 0 }}
+            {{-   if hasSuffix "Gi" $disk }}{{- $winGi = int (trimSuffix "Gi" $disk) }}
+            {{-   else if hasSuffix "Ti" $disk }}{{- $winGi = mul (int (trimSuffix "Ti" $disk)) 1024 }}{{- end }}
+            {{-   if and (gt $winGi 100) (ge (.observed.composite.resource.metadata.creationTimestamp | default "9999") "2026-11-21") }}{{- $disk = printf "%dGi" $winGi }}
+            {{-   else }}{{- $disk = "100Gi" }}{{- end }}
+            {{- end }}
             {{- $bridge := eq ($spec.network | default "masquerade") "bridge" }}
             {{- /* macvtap: supported direct-LAN mode — a second NIC on a macvtap device
                    over the parent LAN NIC. Unlike bridge (macvlan can't be a KubeVirt
