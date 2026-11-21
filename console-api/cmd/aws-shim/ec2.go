@@ -82,6 +82,7 @@ var ec2Ops = map[string]ec2Op{
 	"DescribeImages":            {"Image", "get"},
 	"DescribeRegions":           {"Region", "get"},
 	"DescribeAvailabilityZones": {"AvailabilityZone", "get"},
+	"DescribeInstanceTypes":     {"InstanceType", "get"},
 	"DescribeAddresses":         {"ElasticIp", "get"},
 	"DescribeInternetGateways":  {"InternetGateway", "get"},
 	"DescribeRouteTables":       {"RouteTable", "get"},
@@ -256,6 +257,8 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.describeRegions(w, r, requestID)
 	case "DescribeAvailabilityZones":
 		h.describeAvailabilityZones(w, r, requestID)
+	case "DescribeInstanceTypes":
+		h.describeInstanceTypes(w, r, requestID)
 	case "DescribeAddresses":
 		h.describeAddresses(ctx, w, r, claims, requestID)
 	case "DescribeInternetGateways":
@@ -289,7 +292,7 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 func ec2StoreOp(op string) bool {
 	switch op {
 	case "DescribeKeyPairs", "ImportKeyPair", "CreateKeyPair", "DeleteKeyPair",
-		"DescribeImages", "DescribeRegions", "DescribeAvailabilityZones", "DescribeAddresses",
+		"DescribeImages", "DescribeRegions", "DescribeAvailabilityZones", "DescribeInstanceTypes", "DescribeAddresses",
 		"CreateFlowLogs", "DescribeFlowLogs", "DeleteFlowLogs", "DescribeAccountAttributes", "CreateDefaultVpc":
 		return true
 	}

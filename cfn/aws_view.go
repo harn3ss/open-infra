@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -185,4 +186,35 @@ func InstanceTypeForShape(cpu int, memory string) string {
 func InstanceTypeShape(instanceType string) (cpu int, memory string, ok bool) {
 	s, ok := ec2InstanceTypes[strings.ToLower(instanceType)]
 	return s.cpu, s.mem, ok
+}
+
+// InstanceTypeInfo is an EC2 instance type an AWS::EC2::Instance may name: its vCPUs and memory, as the
+// VirtualMachine it launches is sized (EC2's DescribeInstanceTypes reports them).
+type InstanceTypeInfo struct {
+	Name      string
+	VCPUs     int
+	MemoryMiB int64
+}
+
+// InstanceTypes are the instance types an instance may be launched as, sorted by name.
+func InstanceTypes() []InstanceTypeInfo {
+	out := make([]InstanceTypeInfo, 0, len(ec2InstanceTypes))
+	for name, s := range ec2InstanceTypes {
+		out = append(out, InstanceTypeInfo{Name: name, VCPUs: s.cpu, MemoryMiB: memoryMiB(s.mem)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// memoryMiB is a Kubernetes memory size in Mi or Gi, in MiB.
+func memoryMiB(q string) int64 {
+	switch {
+	case strings.HasSuffix(q, "Gi"):
+		n, _ := strconv.ParseInt(strings.TrimSuffix(q, "Gi"), 10, 64)
+		return n * 1024
+	case strings.HasSuffix(q, "Mi"):
+		n, _ := strconv.ParseInt(strings.TrimSuffix(q, "Mi"), 10, 64)
+		return n
+	}
+	return 0
 }

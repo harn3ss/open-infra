@@ -6,6 +6,11 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — EC2 DescribeInstanceTypes
+- `DescribeInstanceTypes` reports the instance types an instance can be launched as, with their vCPUs and
+  memory, selected by name or by EC2's filters and paged as EC2 pages them; a type that does not exist is
+  `InvalidInstanceType`.
+
 ### Added — EC2 instances in an account's default VPC
 - An `AWS::EC2::Instance` names its account's default subnet by its EC2 id (`SubnetId`, or its primary
   network interface's) and launches in it, resolving through the VPC resolver; `DescribeInstances` reports it in

@@ -5,6 +5,8 @@
 # depend on, over real round-trips:
 #   - DescribeRegions / DescribeAvailabilityZones answer the install's one region and zone
 #   - DescribeImages lists the OS catalog, each by the ami- id a guest's instance metadata reports
+#   - DescribeInstanceTypes reports a type's vCPUs and memory (c5.2xlarge: 8 vCPUs, 16384 MiB), selects by
+#     filter, and a type that does not exist is InvalidInstanceType
 #   - DescribeInstances / DescribeVolumes / DescribeSecurityGroups / DescribeVpcs / DescribeSubnets answer
 #     in AWS's shape (the CLI parses them), and every instance id is AWS-shaped (i- and 17 hex digits)
 #   - ImportKeyPair (an ed25519 key made here) reports AWS's SHA-256 fingerprint, DescribeKeyPairs finds it
@@ -14,7 +16,7 @@
 #   - a valid key ID with a WRONG secret is rejected (AuthFailure)
 #   - an instance id that does not exist is InvalidInstanceID.NotFound; a name is InvalidInstanceID.Malformed
 #   - a principal whose data-plane policy denies ec2:DeleteKeyPair on the key is refused
-#     (UnauthorizedOperation) and the key stays
+#     (UnauthorizedOperation) and the key stays, and one denied ec2:DescribeInstanceTypes is refused it
 #   - an operation the shim does not serve (RunInstances) and a service it does not front answer
 #     NotImplemented in their own error shape — the CLI names the code, never "Unknown"
 #
@@ -93,6 +95,7 @@ spec:
     statements:
       - { effect: Allow, actions: ["ec2:*"], resources: ["*"] }
       - { effect: Deny,  actions: ["ec2:DeleteKeyPair"], resources: ["KeyPair::${KEY}"] }
+      - { effect: Deny,  actions: ["ec2:DescribeInstanceTypes"], resources: ["*"] }
 YAML
 CREATED_POLICIES+=("ec2-nodel-$SFX")
 log "  waiting ~35s for the data-plane policy loader to pick it up..."
@@ -110,6 +113,17 @@ log "describe-regions / describe-availability-zones / describe-images"
 IMG="$(as "$WAK" "$WSK" ec2 describe-images --filters Name=name,Values=ubuntu-24.04 --query 'Images[0].ImageId')" || fail "describe-images failed"
 WANT_IMG="ami-$(printf '%s' "ubuntu-24.04-image" | sha256sum | cut -c1-17)"
 [ "$IMG" = "$WANT_IMG" ] || fail "the catalog's ubuntu-24.04 is $IMG, want the guest's ami-id $WANT_IMG"
+
+log "describe-instance-types reports a type's vCPUs and memory; an unknown type is InvalidInstanceType"
+[ "$(as "$WAK" "$WSK" ec2 describe-instance-types --instance-types c5.2xlarge --query 'InstanceTypes[0].[VCpuInfo.DefaultVCpus,MemoryInfo.SizeInMiB]' | tr '\t' ' ')" = "8 16384" ] \
+  || fail "describe-instance-types c5.2xlarge is not 8 vCPUs / 16384 MiB"
+[ "$(as "$WAK" "$WSK" ec2 describe-instance-types --filters Name=instance-type,Values='t3.*' Name=vcpu-info.default-vcpus,Values=2 Name=memory-info.size-in-mib,Values=1024 --query 'InstanceTypes[].InstanceType')" = "t3.micro" ] \
+  || fail "describe-instance-types did not select t3.micro by filter"
+if as "$WAK" "$WSK" ec2 describe-instance-types --instance-types x9.huge >/dev/null 2>"$TMP/it"; then fail "an unknown instance type was described"; fi
+grep -q "InvalidInstanceType" "$TMP/it" || fail "an unknown instance type gave the wrong error: $(cat "$TMP/it")"
+if as "$DAK" "$DSK" ec2 describe-instance-types >/dev/null 2>"$TMP/itd"; then fail "a principal denied ec2:DescribeInstanceTypes was answered"; fi
+grep -q "UnauthorizedOperation" "$TMP/itd" || fail "a denied DescribeInstanceTypes gave the wrong error: $(cat "$TMP/itd")"
+log "  ✓ c5.2xlarge 8 vCPUs / 16384 MiB; filters select; x9.huge InvalidInstanceType; a denied principal refused"
 
 # --- 4. the account's resources, in AWS's shape -----------------------------------------------
 log "describe-instances / volumes / security-groups / vpcs / subnets parse"

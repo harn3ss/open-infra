@@ -273,6 +273,7 @@
         "DescribeAvailabilityZones",
         "DescribeFlowLogs",
         "DescribeImages",
+        "DescribeInstanceTypes",
         "DescribeInstances",
         "DescribeInternetGateways",
         "DescribeKeyPairs",

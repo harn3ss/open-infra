@@ -537,6 +537,7 @@
         "DescribeAvailabilityZones",
         "DescribeFlowLogs",
         "DescribeImages",
+        "DescribeInstanceTypes",
         "DescribeInstances",
         "DescribeInternetGateways",
         "DescribeKeyPairs",
@@ -1638,7 +1639,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 638,
+    "operations": 639,
     "planOnly": 11,
     "refused": 11,
     "services": 32,
@@ -2454,6 +2455,7 @@
       "kind": "VirtualMachine",
       "namespace": "AWS::EC2",
       "readCalls": [
+        "DescribeInstanceTypes",
         "DescribeInstances"
       ],
       "service": "EC2",
