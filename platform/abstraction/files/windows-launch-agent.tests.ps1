@@ -554,7 +554,7 @@ $bundle = New-OICaBundle @($rootA.RawData, $rootB.RawData) @($rootB.RawData, $in
 $bundleCerts = ConvertFrom-OIPemCertificates $bundle
 Check ($bundleCerts.Count -eq 3 -and [Convert]::ToBase64String($bundleCerts[2]) -eq [Convert]::ToBase64String($interA.RawData)) 'the CA bundle: the store, then the platform CAs it lacks, each once'
 
-Initialize-OIRootPin
+Initialize-OINative
 $none = [System.Net.Security.SslPolicyErrors]::None
 $chainErrors = [System.Net.Security.SslPolicyErrors]::RemoteCertificateChainErrors
 $mismatch = [System.Net.Security.SslPolicyErrors]::RemoteCertificateNameMismatch
@@ -620,6 +620,8 @@ $wire = [System.Text.Encoding]::ASCII.GetString((ConvertTo-OIHttpResponse (New-O
 Check ($wire.StartsWith("HTTP/1.1 405 Method Not Allowed`r`n") -and $wire.Contains("`r`nAllow: GET, PUT`r`n")) 'a 405 with its Allow header'
 
 # The TCP server end to end: the client runs in a thread job, the server loop here until the client is done.
+# The first thread job of a process loads the ThreadJob module, which can hold this thread for seconds: warm it.
+[void](Start-ThreadJob -ScriptBlock { 1 } | Receive-Job -Wait -AutoRemoveJob)
 $tcp = Start-OITcpListener -Address '127.0.0.1' -Port 0 -Attempts 1
 Check ($null -ne $tcp.Listener) ('a TCP listener starts: ' + $tcp.Message)
 $port = $tcp.Listener.LocalEndpoint.Port
@@ -631,7 +633,7 @@ $clientScript = {
     param([int]$Port, [string[]]$Chunks, [int]$PauseMs)
     $client = New-Object System.Net.Sockets.TcpClient
     $client.Connect('127.0.0.1', $Port)
-    $client.ReceiveTimeout = 5000
+    $client.ReceiveTimeout = 30000
     $stream = $client.GetStream()
     $first = $true
     foreach ($chunk in $Chunks) {
@@ -643,20 +645,23 @@ $clientScript = {
     }
     $ms = New-Object System.IO.MemoryStream
     $buf = New-Object byte[] 4096
+    $failure = ''
     try {
         while ($true) {
             $n = $stream.Read($buf, 0, $buf.Length)
             if ($n -le 0) { break }
             $ms.Write($buf, 0, $n)
         }
-    } catch { }
+    } catch { $failure = $_.Exception.Message }
     $client.Close()
+    if ($ms.Length -eq 0) { return ('(no response: ' + $failure + ')') }
     [System.Text.Encoding]::UTF8.GetString($ms.ToArray())
 }
 function Invoke-TcpExchange {
     param([string[]]$Chunks, [int]$PauseMs = 0)
     $job = Start-ThreadJob -ScriptBlock $clientScript -ArgumentList $port, $Chunks, $PauseMs
-    Invoke-OIServeTcp $tcp.Listener $ts -Iterations 100 -WaitMicroseconds 100000 -Until { $job.State -ne 'Running' -and $job.State -ne 'NotStarted' }
+    # The job's state is read once per check: read twice, it can change in between.
+    Invoke-OIServeTcp $tcp.Listener $ts -Iterations 600 -WaitMicroseconds 100000 -Until { @('Completed', 'Failed', 'Stopped') -contains [string]$job.State }
     return [string](Receive-Job -Job $job -Wait -AutoRemoveJob)
 }
 $out = Invoke-TcpExchange @("PUT /latest/api/token HTTP/1.1`r`nHost: 169.254.169.254`r`nX-aws-ec2-metadata-token-ttl-seconds: 60`r`nContent-Length: 0`r`n`r`n")
@@ -666,10 +671,26 @@ Check (Test-OIImdsToken $ts.TokenKey (Get-OIMonoNow) $wireToken) 'the token from
 $out = Invoke-TcpExchange @("GET /latest/meta-data/instance-id HTTP/1.1`r`nHost: 169.254.169.254`r`nX-aws-ec2-metadata-", ("token: " + $wireToken + "`r`n`r`n")) 300
 Check ($out.StartsWith("HTTP/1.1 200 OK`r`n") -and $out.EndsWith("`r`n`r`ni-0123456789abcdef0")) ('a request split across reads is answered: ' + ($out -replace "`r`n", '\r\n'))
 $out = Invoke-TcpExchange @("GET /latest/meta-data/instance-id HTTP/1.1`r`nX-aws-ec2-metadata-token: forged`r`n`r`n")
-Check ($out.StartsWith("HTTP/1.1 401 Unauthorized`r`n")) 'the TCP server refuses a forged token'
+Check ($out.StartsWith("HTTP/1.1 401 Unauthorized`r`n")) ('the TCP server refuses a forged token: ' + $out)
 $out = Invoke-TcpExchange @("HELLO`r`n`r`n")
-Check ($out.StartsWith("HTTP/1.1 400 Bad Request`r`n")) 'the TCP server refuses a malformed request'
+Check ($out.StartsWith("HTTP/1.1 400 Bad Request`r`n")) ('the TCP server refuses a malformed request: ' + $out)
+
+# The self-check, from a client of the same kind the agent runs, against the real server.
+$selfCheck = {
+    param([string]$Agent, [int]$Port)
+    . $Agent
+    Test-OIImdsAnswers -Address '127.0.0.1' -Port $Port
+}
+$job = Start-ThreadJob -ScriptBlock $selfCheck -ArgumentList $agentPath, $port
+Invoke-OIServeTcp $tcp.Listener $ts -Iterations 600 -WaitMicroseconds 100000 -Until { @('Completed', 'Failed', 'Stopped') -contains [string]$job.State }
+$check = Receive-Job -Job $job -Wait -AutoRemoveJob
+Check ($check.Ok) ('the self-check connects, gets a token and the instance id: ' + $check.Message)
 $tcp.Listener.Stop()
+$check = Test-OIImdsAnswers -Address '127.0.0.1' -Port $port
+Check (-not $check.Ok -and $check.Message.Length -gt 0) ('a self-check with nothing listening fails with the reason: ' + $check.Message)
+$p = ConvertFrom-OIHttpResponseText "HTTP/1.1 200 OK`r`nContent-Length: 2`r`n`r`nok"
+Check ($p.Status -eq 200 -and $p.Body -ceq 'ok') 'a response is read back'
+Check ((ConvertFrom-OIHttpResponseText 'garbage').Status -eq 0) 'a non-HTTP answer'
 
 $r = Invoke-OIShimGet -Url 'https://aws-shim.example.test:4567/v1/vm-identity' -TokenPath '' -Roots (New-OICertificateCollection @($rootA)) -Hints @{} -Service 'identity'
 Check-Equal $r.Message "the instance's identity disk is not attached, so the platform's instance identity service cannot be asked" 'no identity disk'
@@ -688,6 +709,7 @@ Check-Equal (Get-OIImdsAdmission '127.0.0.1' $localAddrs $nets 'PUT' 1) 'serve' 
 Check-Equal (Get-OIImdsAdmission '10.0.2.2' $localAddrs $nets 'PUT' 1) 'serve' 'this instance'
 Check-Equal (Get-OIImdsAdmission '169.254.169.254' $localAddrs $nets 'GET' 1) 'serve' 'the metadata address itself'
 Check-Equal (Get-OIImdsAdmission '::1' $localAddrs $nets 'GET' 1) 'serve' 'IPv6 loopback'
+Check-Equal (Get-OIImdsAdmission '169.254.169.254' @() @() 'PUT' 1) 'serve' 'a connection from the instance to its metadata adapter, sourced from 169.254.169.254, even before the facts list it'
 Check-Equal (Get-OIImdsAdmission '172.20.3.7' $localAddrs $nets 'GET' 1) 'serve' 'a container (IMDSv1 GET, one hop)'
 Check-Equal (Get-OIImdsAdmission '172.20.3.7' $localAddrs $nets 'PUT' 1) 'drop' 'a container token request beyond hop limit 1'
 Check-Equal (Get-OIImdsAdmission '172.20.3.7' $localAddrs $nets 'PUT' 2) 'serve' 'a container token request within hop limit 2'
@@ -695,6 +717,39 @@ Check-Equal (Get-OIImdsAdmission '10.0.2.1' $localAddrs $nets 'GET' 64) 'refuse'
 Check-Equal (Get-OIImdsAdmission '192.0.2.50' $localAddrs $nets 'GET' 64) 'refuse' 'a LAN neighbour is refused'
 Check-Equal (Get-OIImdsAdmission 'fe80::1' $localAddrs $nets 'GET' 64) 'refuse' 'link-local IPv6'
 Check-Equal (Get-OIImdsAdmission 'not-an-ip' $localAddrs $nets 'GET' 64) 'refuse' 'garbage'
+
+# --------------------------------------------------------------------------------------------------------
+# The metadata adapter.
+# --------------------------------------------------------------------------------------------------------
+
+$nic = @{ Name = 'Ethernet'; InterfaceIndex = 6; Loopback = $false; Device = 'PCI\VEN_1AF4&DEV_1041\3&1'; Status = 'Up' }
+$customerLoop = @{ Name = 'Lab Loopback'; InterfaceIndex = 9; Loopback = $true; Device = 'ROOT\NET\0000'; Status = 'Up' }
+$ours = @{ Name = 'OpenInfra Metadata'; InterfaceIndex = 12; Loopback = $true; Device = 'ROOT\NET\0001'; Status = 'Up' }
+$fresh = @{ Name = 'Ethernet 2'; InterfaceIndex = 14; Loopback = $true; Device = 'ROOT\NET\0001'; Status = 'Up' }
+$fakeNamed = @{ Name = 'OpenInfra Metadata'; InterfaceIndex = 7; Loopback = $false; Device = 'PCI\VEN_1AF4&DEV_1041\3&2'; Status = 'Up' }
+Check ((Select-OIMetadataAdapter @($nic, $customerLoop, $ours) $null).InterfaceIndex -eq 12) 'the metadata adapter is found by name and hardware id'
+Check ($null -eq (Select-OIMetadataAdapter @($nic, $customerLoop) $null)) 'a customer''s loopback adapter is not taken'
+Check ($null -eq (Select-OIMetadataAdapter @($nic, $fakeNamed) $null)) 'a NIC that carries the name is not the metadata adapter'
+Check ((Select-OIMetadataAdapter @($nic, $customerLoop, $fresh) @('ROOT\NET\0000')).InterfaceIndex -eq 14) 'the loopback adapter just created is found'
+Check ((Select-OIMetadataAdapter @($nic, $fresh) @()).InterfaceIndex -eq 14) 'the first loopback adapter just created is found'
+Check ($null -eq (Select-OIMetadataAdapter @($nic, $customerLoop) @('ROOT\NET\0000'))) 'no new loopback adapter yet'
+Check ((Select-OIMetadataAdapter @($nic, $customerLoop, $fresh) $null 'ROOT\NET\0001').InterfaceIndex -eq 14) 'the adapter this agent recorded is found again, renamed or not'
+Check ($null -eq (Select-OIMetadataAdapter @($nic, $customerLoop) $null 'ROOT\NET\0001')) 'a recorded adapter that is gone is not replaced by the customer''s'
+
+$ifs = @(
+    [pscustomobject]@{ InterfaceAlias = 'Ethernet'; InterfaceIndex = 6; ConnectionState = 'Connected'; Dhcp = 'Enabled'; InterfaceMetric = 15 },
+    [pscustomobject]@{ InterfaceAlias = 'OpenInfra Metadata'; InterfaceIndex = 12; ConnectionState = 'Connected'; Dhcp = 'Disabled'; InterfaceMetric = 9999 }
+)
+$addrs = @(
+    [pscustomobject]@{ InterfaceIndex = 6; IPAddress = '10.0.2.2'; PrefixLength = 24; AddressState = 'Preferred' },
+    [pscustomobject]@{ InterfaceIndex = 12; IPAddress = '169.254.169.254'; PrefixLength = 32; AddressState = 'Preferred' }
+)
+$routes = @([pscustomobject]@{ InterfaceIndex = 6; DestinationPrefix = '0.0.0.0/0'; NextHop = '10.0.2.1' })
+$state = Format-OIInterfaceState $ifs $addrs $routes
+Check-Equal $state[0] 'Interface Ethernet (index 6): Connected, DHCP Enabled, metric 15, addresses 10.0.2.2/24 Preferred; default route via 10.0.2.1' 'the NIC''s state line'
+Check-Equal $state[1] 'Interface OpenInfra Metadata (index 12): Connected, DHCP Disabled, metric 9999, addresses 169.254.169.254/32 Preferred' 'the metadata adapter''s state line'
+Check-Equal (Format-OIInterfaceState @([pscustomobject]@{ InterfaceAlias = 'Ethernet'; InterfaceIndex = 6; ConnectionState = 'Disconnected'; Dhcp = 'Disabled'; InterfaceMetric = 15 }) @() @())[0] 'Interface Ethernet (index 6): Disconnected, DHCP Disabled, metric 15, addresses none' 'an interface with no address'
+Check ($null -ne ('OpenInfraLaunch.LoopbackAdapter' -as [type])) 'the loopback adapter installer compiles'
 
 # --------------------------------------------------------------------------------------------------------
 # What -Install writes.

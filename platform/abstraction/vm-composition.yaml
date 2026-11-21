@@ -1224,7 +1224,9 @@ spec:
                                   -Run from it, so the agent an instance runs is always the one its launch CD carries. Idempotent.
                         -Run      Each boot. Trusts the platform's CAs (and publishes AWS_CA_BUNDLE); brings up instance metadata
                                   (IMDSv1 and IMDSv2) on 169.254.169.254:80 in a separate -Serve process (a TCP listener on that
-                                  address alone, so port 80 stays free for the workload); on the first boot of
+                                  address alone, so port 80 stays free for the workload; the address is on the agent's own
+                                  loopback adapter, "OpenInfra Metadata", and the instance's NICs are never changed), checks
+                                  from the instance that it answers; on the first boot of
                                   this instance id extends C: to the end of its disk; writes "Message: Windows is Ready to use" to
                                   the serial console; then runs the user data as EC2Launch v2 does (XML <script> and <powershell>
                                   blocks, once per instance unless <persist>true</persist>; not at all when instance metadata is
@@ -1267,6 +1269,10 @@ spec:
                       $script:OIImdsAddress = '169.254.169.254'
                       $script:OIImdsPrefix = 'http://169.254.169.254:80/'
                       $script:OIFirewallRuleName = 'OpenInfra-InstanceMetadata-In'
+                      $script:OIMetadataAdapterName = 'OpenInfra Metadata'
+                      $script:OILoopbackHardwareId = '*MSLOOP'
+                      $script:OIAdapterDevicePath = 'C:\ProgramData\openinfra\launch\metadata-adapter.txt'
+                      $script:OILoopbackBefore = $null
                       $script:OITokenHeader = 'X-aws-ec2-metadata-token'
                       $script:OITokenTtlHeader = 'X-aws-ec2-metadata-token-ttl-seconds'
                       $script:OIMaxTokenTtl = 21600
@@ -1622,6 +1628,7 @@ spec:
                           if ([System.Net.IPAddress]::IsLoopback($ip)) { return 'serve' }
                           $n = ConvertTo-OIIPv4Number $Remote
                           if ($null -eq $n) { return 'refuse' }
+                          if ($n -eq (ConvertTo-OIIPv4Number $script:OIImdsAddress)) { return 'serve' }
                           foreach ($a in @($LocalAddresses)) {
                               if ($null -ne $a -and (ConvertTo-OIIPv4Number $a) -eq $n) { return 'serve' }
                           }
@@ -2386,15 +2393,19 @@ spec:
                       }
 
                       # ---------------------------------------------------------------------------------------------------------
+                      # Native helpers, compiled on first use: TLS to the aws-shim pinned to the platform root CA, and the
+                      # metadata adapter's creation.
+                      #
                       # TLS to the aws-shim, pinned to the platform root CA: the server must chain to a certificate of
                       # platform-root-ca.pem (no other root is accepted, whatever the machine trusts) and its certificate must name
                       # the host. The identity token is written only after that handshake verifies.
                       # ---------------------------------------------------------------------------------------------------------
 
-                      $script:OIRootPinSource = @'
+                      $script:OINativeSource = @'
                       using System;
                       using System.Net;
                       using System.Net.Security;
+                      using System.Runtime.InteropServices;
                       using System.Security.Cryptography.X509Certificates;
 
                       namespace OpenInfraLaunch
@@ -2497,12 +2508,91 @@ spec:
                                   }
                               }
                           }
+
+                          public static class LoopbackAdapter
+                          {
+                              [StructLayout(LayoutKind.Sequential)]
+                              private struct SP_DEVINFO_DATA
+                              {
+                                  public int cbSize;
+                                  public Guid ClassGuid;
+                                  public int DevInst;
+                                  public IntPtr Reserved;
+                              }
+
+                              [DllImport("setupapi.dll", SetLastError = true)]
+                              private static extern IntPtr SetupDiCreateDeviceInfoList(ref Guid classGuid, IntPtr hwndParent);
+
+                              [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "SetupDiCreateDeviceInfoW")]
+                              private static extern bool SetupDiCreateDeviceInfo(IntPtr deviceInfoSet, string deviceName, ref Guid classGuid, string deviceDescription, IntPtr hwndParent, int creationFlags, ref SP_DEVINFO_DATA deviceInfoData);
+
+                              [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "SetupDiSetDeviceRegistryPropertyW")]
+                              private static extern bool SetupDiSetDeviceRegistryProperty(IntPtr deviceInfoSet, ref SP_DEVINFO_DATA deviceInfoData, int property, byte[] propertyBuffer, int propertyBufferSize);
+
+                              [DllImport("setupapi.dll", SetLastError = true)]
+                              private static extern bool SetupDiCallClassInstaller(int installFunction, IntPtr deviceInfoSet, ref SP_DEVINFO_DATA deviceInfoData);
+
+                              [DllImport("setupapi.dll", SetLastError = true)]
+                              private static extern bool SetupDiDestroyDeviceInfoList(IntPtr deviceInfoSet);
+
+                              [DllImport("newdev.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "UpdateDriverForPlugAndPlayDevicesW")]
+                              private static extern bool UpdateDriverForPlugAndPlayDevices(IntPtr hwndParent, string hardwareId, string fullInfPath, int installFlags, out bool rebootRequired);
+
+                              private const int DICD_GENERATE_ID = 1;
+                              private const int SPDRP_HARDWAREID = 1;
+                              private const int DIF_REMOVE = 5;
+                              private const int DIF_REGISTERDEVICE = 0x19;
+                              private const int INSTALLFLAG_FORCE = 1;
+
+                              // Creates a root-enumerated network device with the hardware id and installs the inf's driver on it,
+                              // as "devcon install <inf> <hardware id>" does. Returns null on success, else why it failed (the
+                              // half-made device is removed).
+                              public static string Install(string infPath, string hardwareId)
+                              {
+                                  Guid netClass = new Guid("4d36e972-e325-11ce-bfc1-08002be10318");
+                                  IntPtr set = SetupDiCreateDeviceInfoList(ref netClass, IntPtr.Zero);
+                                  if (set == new IntPtr(-1))
+                                  {
+                                      return "SetupDiCreateDeviceInfoList failed (error " + Marshal.GetLastWin32Error() + ")";
+                                  }
+                                  try
+                                  {
+                                      SP_DEVINFO_DATA data = new SP_DEVINFO_DATA();
+                                      data.cbSize = Marshal.SizeOf(typeof(SP_DEVINFO_DATA));
+                                      if (!SetupDiCreateDeviceInfo(set, "Net", ref netClass, null, IntPtr.Zero, DICD_GENERATE_ID, ref data))
+                                      {
+                                          return "SetupDiCreateDeviceInfo failed (error " + Marshal.GetLastWin32Error() + ")";
+                                      }
+                                      byte[] ids = System.Text.Encoding.Unicode.GetBytes(hardwareId + "\0\0");
+                                      if (!SetupDiSetDeviceRegistryProperty(set, ref data, SPDRP_HARDWAREID, ids, ids.Length))
+                                      {
+                                          return "SetupDiSetDeviceRegistryProperty failed (error " + Marshal.GetLastWin32Error() + ")";
+                                      }
+                                      if (!SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set, ref data))
+                                      {
+                                          return "SetupDiCallClassInstaller(DIF_REGISTERDEVICE) failed (error " + Marshal.GetLastWin32Error() + ")";
+                                      }
+                                      bool reboot;
+                                      if (!UpdateDriverForPlugAndPlayDevices(IntPtr.Zero, hardwareId, infPath, INSTALLFLAG_FORCE, out reboot))
+                                      {
+                                          int error = Marshal.GetLastWin32Error();
+                                          SetupDiCallClassInstaller(DIF_REMOVE, set, ref data);
+                                          return "UpdateDriverForPlugAndPlayDevices failed (error " + error + ")";
+                                      }
+                                      return null;
+                                  }
+                                  finally
+                                  {
+                                      SetupDiDestroyDeviceInfoList(set);
+                                  }
+                              }
+                          }
                       }
                       '@
 
-                      function Initialize-OIRootPin {
+                      function Initialize-OINative {
                           if (-not ('OpenInfraLaunch.RootPin' -as [type])) {
-                              Add-Type -TypeDefinition $script:OIRootPinSource -Language CSharp
+                              Add-Type -TypeDefinition $script:OINativeSource -Language CSharp
                           }
                       }
 
@@ -2714,7 +2804,7 @@ spec:
                           try { $token = ([System.IO.File]::ReadAllText($TokenPath)) -replace '\s', '' }
                           catch { return @{ Ok = $false; Status = $null; Message = "the instance's identity cannot be read from its identity disk" } }
                           if (-not $token) { return @{ Ok = $false; Status = $null; Message = "the instance's identity on its identity disk is empty" } }
-                          Initialize-OIRootPin
+                          Initialize-OINative
                           $pin = [OpenInfraLaunch.RootPin]::new($Roots)
                           try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12 } catch { }
                           $req = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($Url)
@@ -2857,44 +2947,214 @@ spec:
                           }
                       }
 
-                      function Set-OIImdsAddress {
-                          # 169.254.169.254/32 on the interface holding the default route (not persistent, never a source
-                          # address). Waits up to TimeoutSeconds for the network to come up.
-                          param([int]$TimeoutSeconds = 120)
-                          $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-                          $route = $null
-                          while ($true) {
-                              $route = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
-                                  Sort-Object -Property @{ Expression = { [int]$_.RouteMetric + [int]$_.InterfaceMetric } } |
-                                  Select-Object -First 1
-                              if ($null -ne $route) { break }
-                              if ((Get-Date) -gt $deadline) {
-                                  Write-OILog -Console 'No default route: the instance metadata address 169.254.169.254 was not added'
-                                  return $false
+                      function Select-OIMetadataAdapter {
+                          # The instance metadata adapter among the network adapters (@{ Name; InterfaceIndex; Loopback; Device }):
+                          # the loopback adapter named "OpenInfra Metadata"; else the loopback device this agent recorded as its own
+                          # (KnownDevice); else, given the loopback devices there were before this agent created one (BeforeDevices;
+                          # $null: it created none), the loopback adapter that is new. A customer's own loopback adapter is never
+                          # taken.
+                          param([object[]]$Adapters, $BeforeDevices = $null, [string]$KnownDevice = '')
+                          foreach ($a in @($Adapters)) {
+                              if ($null -ne $a -and $a.Loopback -and [string]$a.Name -eq $script:OIMetadataAdapterName) { return $a }
+                          }
+                          if ($KnownDevice) {
+                              foreach ($a in @($Adapters)) {
+                                  if ($null -ne $a -and $a.Loopback -and [string]$a.Device -eq $KnownDevice) { return $a }
                               }
+                          }
+                          if ($null -eq $BeforeDevices) { return $null }
+                          $before = @{}
+                          foreach ($d in @($BeforeDevices)) { if ($d) { $before[[string]$d] = $true } }
+                          foreach ($a in @($Adapters)) {
+                              if ($null -ne $a -and $a.Loopback -and -not $before.ContainsKey([string]$a.Device)) { return $a }
+                          }
+                          return $null
+                      }
+
+                      function Get-OIKnownAdapterDevice {
+                          try {
+                              if ([System.IO.File]::Exists($script:OIAdapterDevicePath)) { return ([System.IO.File]::ReadAllText($script:OIAdapterDevicePath)).Trim() }
+                          } catch { }
+                          return ''
+                      }
+
+                      function Get-OINetworkAdapters {
+                          # The network adapters, each marked when it is a Microsoft KM-TEST Loopback Adapter (hardware id *MSLOOP).
+                          $loop = @{}
+                          foreach ($d in @(Get-CimInstance -ClassName Win32_PnPEntity -Filter "PNPClass = 'Net'" -ErrorAction SilentlyContinue)) {
+                              if (@($d.HardwareID) -contains $script:OILoopbackHardwareId) { $loop[[string]$d.PNPDeviceID] = $true }
+                          }
+                          $out = New-Object System.Collections.Generic.List[object]
+                          foreach ($a in @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue)) {
+                              $out.Add(@{ Name = [string]$a.Name; InterfaceIndex = [int]$a.InterfaceIndex; Loopback = $loop.ContainsKey([string]$a.PnPDeviceID); Device = [string]$a.PnPDeviceID; Status = [string]$a.Status })
+                          }
+                          return , $out.ToArray()
+                      }
+
+                      function Get-OILoopbackDevices {
+                          $ids = New-Object System.Collections.Generic.List[string]
+                          foreach ($a in (Get-OINetworkAdapters)) { if ($a.Loopback) { $ids.Add($a.Device) } }
+                          return , $ids.ToArray()
+                      }
+
+                      function New-OIMetadataAdapter {
+                          # Create a Microsoft KM-TEST Loopback Adapter (the inbox netloop.inf), as "devcon install netloop.inf
+                          # *MSLOOP" does, and wait for it to appear. -> the adapter, or throws.
+                          $inf = Join-Path $env:SystemRoot 'INF\netloop.inf'
+                          if (-not [System.IO.File]::Exists($inf)) { throw ('{0} is missing, so no loopback adapter can be created' -f $inf) }
+                          $before = Get-OILoopbackDevices
+                          $script:OILoopbackBefore = $before  # one creation per process: later calls look for this one
+                          Initialize-OINative
+                          Write-OILog -Console ('Creating the instance metadata adapter "{0}" (Microsoft KM-TEST Loopback Adapter)' -f $script:OIMetadataAdapterName)
+                          $failure = [OpenInfraLaunch.LoopbackAdapter]::Install($inf, $script:OILoopbackHardwareId)
+                          if ($failure) { throw ('the loopback adapter was not created: ' + $failure) }
+                          $deadline = (Get-Date).AddSeconds(60)
+                          while ((Get-Date) -lt $deadline) {
+                              $a = Select-OIMetadataAdapter (Get-OINetworkAdapters) $before (Get-OIKnownAdapterDevice)
+                              if ($null -ne $a) { return $a }
                               Start-Sleep -Seconds 2
                           }
-                          $ifIndex = [int]$route.InterfaceIndex
-                          $have = $false
+                          throw 'the loopback adapter was created but did not appear as a network adapter within a minute'
+                      }
+
+                      function Remove-OIStrayImdsAddress {
+                          # 169.254.169.254 belongs on the metadata adapter alone. An earlier agent put it on the instance's NIC,
+                          # which turned that NIC's DHCP off: remove it there, and when the NIC is left with no IPv4 address and DHCP
+                          # off, turn DHCP back on.
+                          param([int]$KeepIndex = -1)
                           foreach ($e in @(Get-NetIPAddress -AddressFamily IPv4 -IPAddress $script:OIImdsAddress -ErrorAction SilentlyContinue)) {
-                              if ([int]$e.InterfaceIndex -eq $ifIndex) { $have = $true }
-                              else { Remove-NetIPAddress -InputObject $e -Confirm:$false -ErrorAction SilentlyContinue }
+                              $idx = [int]$e.InterfaceIndex
+                              if ($idx -eq $KeepIndex) { continue }
+                              Remove-NetIPAddress -InputObject $e -Confirm:$false -ErrorAction SilentlyContinue
+                              Write-OILog -Console ('Removed 169.254.169.254 from interface {0} ({1}): it belongs on the instance metadata adapter' -f $idx, $e.InterfaceAlias)
+                              $left = @(Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $idx -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -ne $script:OIImdsAddress })
+                              $ipif = Get-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $idx -ErrorAction SilentlyContinue
+                              if ($left.Count -eq 0 -and $null -ne $ipif -and [string]$ipif.Dhcp -eq 'Disabled') {
+                                  Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -Dhcp Enabled -ErrorAction SilentlyContinue
+                                  Write-OILog -Console ('Interface {0} ({1}) had no address left: DHCP is on again' -f $idx, $e.InterfaceAlias)
+                              }
                           }
-                          if (-not $have) {
-                              try {
-                                  New-NetIPAddress -InterfaceIndex $ifIndex -IPAddress $script:OIImdsAddress -PrefixLength 32 -PolicyStore ActiveStore -SkipAsSource $true -ErrorAction Stop | Out-Null
-                              } catch {
-                                  $first = $_.Exception.Message
-                                  $out = & netsh.exe interface ipv4 add address ('name=' + $ifIndex) ('address=' + $script:OIImdsAddress) 'mask=255.255.255.255' 'store=active' 'skipassource=true' 2>&1 | Out-String
-                                  if ($LASTEXITCODE -ne 0) {
-                                      Write-OILog -Console ('Adding the instance metadata address 169.254.169.254 failed: {0} {1}' -f $first, $out.Trim())
-                                      return $false
+                      }
+
+                      function Format-OIInterfaceState {
+                          # One line per IPv4 interface: alias, index, connection state, DHCP, metric, addresses with their state,
+                          # and its default routes. Takes what Get-NetIPInterface, Get-NetIPAddress and Get-NetRoute report.
+                          param([object[]]$Interfaces, [object[]]$Addresses, [object[]]$Routes)
+                          $lines = New-Object System.Collections.Generic.List[string]
+                          foreach ($i in @($Interfaces)) {
+                              if ($null -eq $i) { continue }
+                              $idx = [int]$i.InterfaceIndex
+                              $addrs = New-Object System.Collections.Generic.List[string]
+                              foreach ($a in @($Addresses)) {
+                                  if ($null -ne $a -and [int]$a.InterfaceIndex -eq $idx) { $addrs.Add(('{0}/{1} {2}' -f $a.IPAddress, $a.PrefixLength, $a.AddressState)) }
+                              }
+                              $gws = New-Object System.Collections.Generic.List[string]
+                              foreach ($r in @($Routes)) {
+                                  if ($null -ne $r -and [int]$r.InterfaceIndex -eq $idx -and [string]$r.DestinationPrefix -eq '0.0.0.0/0') { $gws.Add([string]$r.NextHop) }
+                              }
+                              $list = 'none'
+                              if ($addrs.Count -gt 0) { $list = $addrs -join ', ' }
+                              $line = 'Interface {0} (index {1}): {2}, DHCP {3}, metric {4}, addresses {5}' -f $i.InterfaceAlias, $idx, $i.ConnectionState, $i.Dhcp, $i.InterfaceMetric, $list
+                              if ($gws.Count -gt 0) { $line += '; default route via ' + ($gws -join ', ') }
+                              $lines.Add($line)
+                          }
+                          return , $lines.ToArray()
+                      }
+
+                      function Write-OIInterfaceState {
+                          # The interfaces' state, to the console: what to look at when instance metadata is not reachable.
+                          try {
+                              $ifs = @(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction Stop)
+                              $addrs = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+                              $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
+                              foreach ($line in (Format-OIInterfaceState $ifs $addrs $routes)) { Write-OILog -Console $line }
+                          } catch {
+                              Write-OILog -Console ('The interfaces could not be listed: {0}' -f $_.Exception.Message)
+                          }
+                      }
+
+                      function Set-OIImdsAddress {
+                          # 169.254.169.254/32 on the instance's own metadata adapter: a Microsoft KM-TEST Loopback Adapter named
+                          # "OpenInfra Metadata", created once (it stays, also in an image made from the instance; its device id is
+                          # recorded so it is found again), with that static address alone, no DHCP, no gateway, a high metric and
+                          # no DNS registration. The instance's NICs are never changed. On any failure the reason and the
+                          # interfaces' state go to the console. -> $true when the address is in place.
+                          $step = 'finding the metadata adapter'
+                          try {
+                              $known = Get-OIKnownAdapterDevice
+                              $adapter = Select-OIMetadataAdapter (Get-OINetworkAdapters) $script:OILoopbackBefore $known
+                              $keep = -1
+                              if ($null -ne $adapter) { $keep = [int]$adapter.InterfaceIndex }
+                              $step = 'removing 169.254.169.254 from other interfaces'
+                              Remove-OIStrayImdsAddress $keep
+                              if ($null -eq $adapter) {
+                                  if ($null -ne $script:OILoopbackBefore) { throw 'the loopback adapter created earlier has not appeared' }
+                                  $step = 'creating the metadata adapter'
+                                  $adapter = New-OIMetadataAdapter
+                              }
+                              if ($adapter.Device -and $adapter.Device -ne $known) {
+                                  [System.IO.File]::WriteAllText($script:OIAdapterDevicePath, $adapter.Device, [System.Text.Encoding]::ASCII)
+                              }
+                              $idx = [int]$adapter.InterfaceIndex
+                              if ($adapter.Name -ne $script:OIMetadataAdapterName) {
+                                  $step = 'naming the metadata adapter'
+                                  for ($i = 1; $true; $i++) {
+                                      try {
+                                          Rename-NetAdapter -Name $adapter.Name -NewName $script:OIMetadataAdapterName -ErrorAction Stop
+                                          break
+                                      } catch {
+                                          if ($i -ge 5) { throw }
+                                          Start-Sleep -Seconds 2
+                                      }
                                   }
                               }
-                              Write-OILog ('Added 169.254.169.254/32 to interface {0} ({1})' -f $ifIndex, $route.InterfaceAlias)
+                              if ($adapter.Status -eq 'Disabled') {
+                                  $step = 'enabling the metadata adapter'
+                                  Enable-NetAdapter -Name $script:OIMetadataAdapterName -Confirm:$false -ErrorAction Stop
+                              }
+                              $step = 'waiting for the metadata adapter''s IPv4 interface'
+                              $deadline = (Get-Date).AddSeconds(30)
+                              while ($null -eq (Get-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
+                                  if ((Get-Date) -gt $deadline) { throw 'the metadata adapter has no IPv4 interface' }
+                                  Start-Sleep -Seconds 1
+                              }
+                              $step = 'configuring the metadata adapter'
+                              Set-NetIPInterface -InterfaceIndex $idx -AddressFamily IPv4 -Dhcp Disabled -InterfaceMetric 9999 -ErrorAction Stop
+                              Set-DnsClient -InterfaceIndex $idx -RegisterThisConnectionsAddress $false -ErrorAction SilentlyContinue
+                              foreach ($r in @(Get-NetRoute -AddressFamily IPv4 -InterfaceIndex $idx -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)) {
+                                  Remove-NetRoute -InputObject $r -Confirm:$false -ErrorAction SilentlyContinue
+                              }
+                              $have = $false
+                              foreach ($a in @(Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $idx -ErrorAction SilentlyContinue)) {
+                                  if ($a.IPAddress -eq $script:OIImdsAddress -and [int]$a.PrefixLength -eq 32) {
+                                      $have = $true
+                                      if ($a.SkipAsSource) { Set-NetIPAddress -InputObject $a -SkipAsSource $false -ErrorAction SilentlyContinue }
+                                  } else {
+                                      Remove-NetIPAddress -InputObject $a -Confirm:$false -ErrorAction SilentlyContinue
+                                  }
+                              }
+                              if (-not $have) {
+                                  $step = 'adding 169.254.169.254/32 to the metadata adapter'
+                                  # Not SkipAsSource: the instance's own requests to 169.254.169.254 are sourced from it, so they
+                                  # work before DHCP has given the NIC an address; strong-host sending keeps it off the NICs' traffic.
+                                  New-NetIPAddress -InterfaceIndex $idx -IPAddress $script:OIImdsAddress -PrefixLength 32 -ErrorAction Stop | Out-Null
+                                  Write-OILog ('Added 169.254.169.254/32 to the instance metadata adapter (interface {0})' -f $idx)
+                              }
+                              $step = 'waiting for 169.254.169.254 to be usable'
+                              $deadline = (Get-Date).AddSeconds(15)
+                              while ($true) {
+                                  $a = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $idx -IPAddress $script:OIImdsAddress -ErrorAction SilentlyContinue
+                                  if ($null -ne $a -and [string]$a.AddressState -eq 'Preferred') { break }
+                                  if ((Get-Date) -gt $deadline) { throw ('169.254.169.254 is {0} on the metadata adapter' -f $(if ($null -eq $a) { 'missing' } else { [string]$a.AddressState })) }
+                                  Start-Sleep -Milliseconds 500
+                              }
+                              Set-OIImdsFirewallRule
+                              return $true
+                          } catch {
+                              Write-OILog -Console ('Instance metadata address: {0} failed: {1}' -f $step, $_.Exception.Message)
+                              Write-OIInterfaceState
+                              return $false
                           }
-                          Set-OIImdsFirewallRule
-                          return $true
                       }
 
                       function Start-OITcpListener {
@@ -3282,45 +3542,76 @@ spec:
                           return $p
                       }
 
-                      function Invoke-OIImdsProbe {
-                          param([string]$Method, [string]$Path, [hashtable]$Headers)
-                          $req = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create('http://' + $script:OIImdsAddress + $Path)
-                          $req.Method = $Method
-                          $req.Proxy = $null
-                          $req.Timeout = 3000
-                          $req.ReadWriteTimeout = 3000
-                          $req.KeepAlive = $false
-                          foreach ($k in $Headers.Keys) { $req.Headers.Add([string]$k, [string]$Headers[$k]) }
-                          if ($Method -eq 'PUT') { $req.ContentLength = 0 }
-                          $resp = $req.GetResponse()
-                          try { return @{ Status = [int]$resp.StatusCode; Body = (Read-OIResponseBody $resp) } } finally { $resp.Close() }
+                      function ConvertFrom-OIHttpResponseText {
+                          # A response as received -> @{ Status (0 when it is not HTTP); Body }.
+                          param([string]$Text)
+                          $m = [regex]::Match([string]$Text, '^HTTP/[0-9]+\.[0-9]+ ([0-9]{3})')
+                          if (-not $m.Success) { return @{ Status = 0; Body = '' } }
+                          $body = ''
+                          $i = $Text.IndexOf("`r`n`r`n")
+                          if ($i -ge 0) { $body = $Text.Substring($i + 4) }
+                          return @{ Status = [int]$m.Groups[1].Value; Body = $body }
+                      }
+
+                      function Invoke-OIImdsRawRequest {
+                          # One request over a plain TCP connection from this instance -> the response text. Throws with the socket's
+                          # reason when it cannot connect or gets no answer.
+                          param([string]$Request, [string]$Address = $script:OIImdsAddress, [int]$Port = 80, [int]$TimeoutMs = 3000)
+                          $client = New-Object System.Net.Sockets.TcpClient
+                          try {
+                              $ar = $client.BeginConnect($Address, $Port, $null, $null)
+                              if (-not $ar.AsyncWaitHandle.WaitOne($TimeoutMs)) { throw ('connecting to {0}:{1} timed out' -f $Address, $Port) }
+                              $client.EndConnect($ar)
+                              $client.ReceiveTimeout = $TimeoutMs
+                              $client.SendTimeout = $TimeoutMs
+                              $stream = $client.GetStream()
+                              $bytes = [System.Text.Encoding]::ASCII.GetBytes($Request)
+                              $stream.Write($bytes, 0, $bytes.Length)
+                              $ms = New-Object System.IO.MemoryStream
+                              $buf = New-Object byte[] 4096
+                              while ($true) {
+                                  $n = $stream.Read($buf, 0, $buf.Length)
+                                  if ($n -le 0) { break }
+                                  $ms.Write($buf, 0, $n)
+                              }
+                              return $script:OILatin1.GetString($ms.ToArray())
+                          } finally {
+                              $client.Close()
+                          }
                       }
 
                       function Test-OIImdsAnswers {
+                          # The self-check: from this instance, connect to 169.254.169.254:80, get a token, and GET the instance id.
+                          # -> @{ Ok; Message }.
+                          param([string]$Address = $script:OIImdsAddress, [int]$Port = 80)
                           try {
-                              $h = @{}
-                              try {
-                                  $ttl = @{}
-                                  $ttl[$script:OITokenTtlHeader] = '60'
-                                  $t = Invoke-OIImdsProbe 'PUT' '/latest/api/token' $ttl
-                                  if ($t.Status -eq 200) { $h[$script:OITokenHeader] = $t.Body }
-                              } catch { }
-                              $r = Invoke-OIImdsProbe 'GET' '/latest/meta-data/instance-id' $h
-                              return ($r.Status -eq 200)
+                              $tokenHeader = ''
+                              $put = ConvertFrom-OIHttpResponseText (Invoke-OIImdsRawRequest ("PUT /latest/api/token HTTP/1.1`r`nHost: 169.254.169.254`r`nX-aws-ec2-metadata-token-ttl-seconds: 60`r`nContent-Length: 0`r`n`r`n") $Address $Port)
+                              if ($put.Status -eq 200) { $tokenHeader = $script:OITokenHeader + ': ' + $put.Body + "`r`n" }
+                              $get = ConvertFrom-OIHttpResponseText (Invoke-OIImdsRawRequest ("GET /latest/meta-data/instance-id HTTP/1.1`r`nHost: 169.254.169.254`r`n" + $tokenHeader + "`r`n") $Address $Port)
+                              if ($get.Status -eq 200) { return @{ Ok = $true; Message = '' } }
+                              return @{ Ok = $false; Message = ('GET /latest/meta-data/instance-id answered HTTP {0} (token request: HTTP {1})' -f $get.Status, $put.Status) }
                           } catch {
-                              return $false
+                              $e = $_.Exception
+                              while ($null -ne $e.InnerException -and -not ($e -is [System.Net.Sockets.SocketException])) { $e = $e.InnerException }
+                              return @{ Ok = $false; Message = $e.Message }
                           }
                       }
 
                       function Wait-OIImdsReady {
+                          # -> @{ Ok; Message }: the self-check passed, or why it did not within TimeoutSeconds.
                           param([int]$TimeoutSeconds, $Process)
                           $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+                          $last = @{ Ok = $false; Message = 'no answer' }
                           while ((Get-Date) -lt $deadline) {
-                              if (Test-OIImdsAnswers) { return $true }
-                              if ($null -ne $Process -and $Process.HasExited) { return $false }
+                              $last = Test-OIImdsAnswers
+                              if ($last.Ok) { return $last }
+                              if ($null -ne $Process -and $Process.HasExited) {
+                                  return @{ Ok = $false; Message = ('the instance metadata service process exited (code {0}); last check: {1}' -f $Process.ExitCode, $last.Message) }
+                              }
                               Start-Sleep -Seconds 1
                           }
-                          return $false
+                          return $last
                       }
 
                       # ---------------------------------------------------------------------------------------------------------
@@ -3427,7 +3718,8 @@ spec:
                           foreach ($t in @($Tasks)) { if ($null -ne $t) { $pending.Enqueue($t) } }
                           $current = $null
                           $restartAt = $null
-                          if ($Config.imds.enabled -and $null -eq $Serve) { $restartAt = (Get-Date).AddSeconds(30) }
+                          $retry = 30
+                          if ($Config.imds.enabled -and $null -eq $Serve) { $restartAt = (Get-Date).AddSeconds($retry) }
                           $nextAddressCheck = (Get-Date).AddSeconds(30)
                           while ($true) {
                               try {
@@ -3455,14 +3747,22 @@ spec:
                                       }
                                       if ($null -eq $Serve -and $null -ne $restartAt -and (Get-Date) -ge $restartAt) {
                                           $restartAt = $null
-                                          if (Set-OIImdsAddress -TimeoutSeconds 5) { $Serve = Start-OIServeProcess }
-                                          else { $restartAt = (Get-Date).AddSeconds(30) }
+                                          if (Set-OIImdsAddress) {
+                                              $Serve = Start-OIServeProcess
+                                              $retry = 30
+                                          } else {
+                                              $retry = [Math]::Min($retry * 2, 600)
+                                              $restartAt = (Get-Date).AddSeconds($retry)
+                                          }
                                       }
-                                      if ((Get-Date) -ge $nextAddressCheck) {
+                                      if ($null -ne $Serve -and (Get-Date) -ge $nextAddressCheck) {
                                           $nextAddressCheck = (Get-Date).AddSeconds(30)
                                           if (-not (Test-OIImdsAddressPresent)) {
                                               Write-OILog 'The instance metadata address 169.254.169.254 is gone; adding it again'
-                                              [void](Set-OIImdsAddress -TimeoutSeconds 5)
+                                              if (-not (Set-OIImdsAddress)) {
+                                                  $retry = [Math]::Min($retry * 2, 600)
+                                                  $nextAddressCheck = (Get-Date).AddSeconds($retry)
+                                              }
                                           }
                                       }
                                   } elseif ($null -eq $current -and $pending.Count -eq 0) {
@@ -3497,8 +3797,13 @@ spec:
                               catch { Write-OILog -Console ('Adding the instance metadata address failed: {0}' -f $_.Exception.Message) }
                               if ($ok) {
                                   $serve = Start-OIServeProcess
-                                  if (Wait-OIImdsReady 120 $serve) { Write-OILog -Console 'Instance metadata is answering at http://169.254.169.254/' }
-                                  else { Write-OILog -Console 'Instance metadata did not answer within 2 minutes; continuing' }
+                                  $ready = Wait-OIImdsReady 120 $serve
+                                  if ($ready.Ok) {
+                                      Write-OILog -Console 'Instance metadata is answering at http://169.254.169.254/'
+                                  } else {
+                                      Write-OILog -Console ('Instance metadata did not answer within 2 minutes ({0}); continuing' -f $ready.Message)
+                                      Write-OIInterfaceState
+                                  }
                               }
                           } else {
                               Write-OILog -Console 'Instance metadata is disabled (metadata options: HttpEndpoint disabled)'
