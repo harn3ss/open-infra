@@ -79,6 +79,14 @@ func (p *powerApplier) SetRunning(_ context.Context, _, kind, name string, runni
 	return nil
 }
 
+// StartStopped starts a stopped VM, as KubeVirt's start request does.
+func (p *powerApplier) StartStopped(_ context.Context, _, kind, name string) error {
+	if kind+"/"+name == webKey && p.state == "Stopped" && !p.neverStops {
+		p.state, p.countdown = "Starting", p.startAfter
+	}
+	return nil
+}
+
 func (p *powerApplier) status(key string) (map[string]any, bool) {
 	if key != webKey {
 		return nil, false
@@ -297,11 +305,88 @@ func TestRecover_InterruptedRestartStartsTheInstance(t *testing.T) {
 	if out.Status != "UPDATE_ROLLBACK_COMPLETE" || len(out.Restarting) != 0 {
 		t.Fatalf("status = %s, restarting = %v; want UPDATE_ROLLBACK_COMPLETE with none left", out.Status, out.Restarting)
 	}
-	if p.state != "Running" || !p.calls[len(p.calls)-1] {
+	if p.state != "Running" {
 		t.Fatalf("the instance is %s (calls %v), want it running", p.state, p.calls)
 	}
 	if got := p.runningSpec["memory"]; got != "2Gi" {
 		t.Fatalf("the recovered VM runs with memory %v, want the prior 2Gi", got)
+	}
+}
+
+// selfStopped is a powerApplier whose VM shut itself down: it is Stopped while its spec still says running.
+// As on KubeVirt, setting spec.running false and straight back to true is a change it never acts on, so
+// only a start request (StartStopped, as StartInstances makes) starts it.
+type selfStopped struct {
+	*powerApplier
+	starts int
+}
+
+func (s *selfStopped) SetRunning(_ context.Context, _, kind, name string, running bool) error {
+	s.calls = append(s.calls, running)
+	if spec := s.liveSpecs[kind+"/"+name]; spec != nil {
+		spec["running"] = running
+	}
+	return nil
+}
+
+func (s *selfStopped) StartStopped(_ context.Context, _, kind, name string) error {
+	if kind+"/"+name == webKey && s.state == "Stopped" {
+		s.starts++
+		s.state, s.countdown = "Starting", s.startAfter
+	}
+	return nil
+}
+
+func shutItselfDown(t *testing.T) *selfStopped {
+	t.Helper()
+	p := newPowerApplier()
+	deployResize(t, p)
+	p.state = "Stopped" // the guest shut down; its claim still says running
+	p.liveSpecs[webKey]["running"] = true
+	return &selfStopped{powerApplier: p}
+}
+
+// An instance that shut itself down is started on its new UserData by the update that changes it, as AWS
+// stops (already stopped), changes and starts it, and the update completes.
+func TestUpdate_SelfStoppedInstanceStartsOnItsNewUserData(t *testing.T) {
+	fastRestart(t)
+	s := shutItselfDown(t)
+	opts := withParams(deployOpts(), "Script", "#!/bin/bash\necho two")
+	opts.Timeout = 2 * time.Second
+	rec, err := Update(context.Background(), []byte(resizeTmpl), opts, s)
+	if err != nil || rec.Status != "UPDATE_COMPLETE" {
+		t.Fatalf("update: %v (%v)", err, rec)
+	}
+	if s.starts != 1 || len(s.calls) != 0 {
+		t.Fatalf("starts = %d, SetRunning calls = %v: want one start request and no spec.running flip", s.starts, s.calls)
+	}
+	if s.state != "Running" || s.restartRequired {
+		t.Fatalf("the VM is %s with restartRequired=%v, want Running on its new spec", s.state, s.restartRequired)
+	}
+	if ud, _ := s.runningSpec["userData"].(string); !strings.Contains(ud, "echo two") {
+		t.Fatalf("the VM started with userData %q, want the new script", ud)
+	}
+}
+
+// An update of such an instance interrupted mid-restart rolls back to its prior UserData and starts it:
+// UPDATE_ROLLBACK_COMPLETE, as on AWS, not UPDATE_ROLLBACK_FAILED.
+func TestRecover_SelfStoppedInstanceRollsBackComplete(t *testing.T) {
+	fastRestart(t)
+	s := shutItselfDown(t)
+	rec := *s.stored
+	rec.Status = "UPDATE_IN_PROGRESS"
+	rec.Restarting = []string{"Web"}
+	s.stored = &rec
+	s.liveSpecs[webKey]["userData"] = "#!/bin/bash\necho two"
+	out, err := RecoverInterrupted(context.Background(), deployOpts(), s, "the front door lost contact with the cluster")
+	if err != nil || out.Status != "UPDATE_ROLLBACK_COMPLETE" {
+		t.Fatalf("recover: %v (%v)", err, out)
+	}
+	if s.starts != 1 || s.state != "Running" {
+		t.Fatalf("starts = %d, state %s: want the instance started on its prior spec", s.starts, s.state)
+	}
+	if ud, _ := s.runningSpec["userData"].(string); strings.Contains(ud, "echo two") {
+		t.Fatalf("the recovered VM runs userData %q, want the prior script", ud)
 	}
 }
 
@@ -322,4 +407,36 @@ func TestRestartFields(t *testing.T) {
 			t.Errorf("%s: restartFields = %q, want %q", c.name, got, c.want)
 		}
 	}
+}
+
+// A start the account's limits refuse fails the update with EC2's error, as StartInstances refuses it.
+func TestUpdate_RefusedStartFailsWithEC2sError(t *testing.T) {
+	fastRestart(t)
+	prev := launchRefusedGrace
+	launchRefusedGrace = 10 * time.Millisecond
+	t.Cleanup(func() { launchRefusedGrace = prev })
+	s := shutItselfDown(t)
+	refusing := &refusedStart{selfStopped: s}
+	s.statusFn = refusing.status
+	opts := withParams(deployOpts(), "Script", "#!/bin/bash\necho two")
+	opts.Timeout = 2 * time.Second
+	rec, err := Update(context.Background(), []byte(resizeTmpl), opts, refusing)
+	if err == nil || !strings.Contains(err.Error(), "Error Code: VcpuLimitExceeded") || strings.Contains(err.Error(), "did not start") {
+		t.Fatalf("want the update to fail with EC2's VcpuLimitExceeded, got %v", err)
+	}
+	if rec == nil || !hasEventReason(rec, "You have requested more vCPU capacity") {
+		t.Fatalf("the instance's event must carry EC2's reason: %+v", rec)
+	}
+}
+
+// refusedStart is a selfStopped VM whose start its account's capacity refuses.
+type refusedStart struct{ *selfStopped }
+
+func (r *refusedStart) status(key string) (map[string]any, bool) {
+	st, ok := r.powerApplier.status(key)
+	if ok && st["powerState"] != "Running" && r.starts > 0 {
+		st["powerState"], st["launchRefused"] = "Starting", "VcpuLimitExceeded"
+		r.countdown = 1 << 30 // never starts
+	}
+	return st, ok
 }

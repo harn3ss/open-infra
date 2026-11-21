@@ -60,6 +60,57 @@ func TestVM_StatusPowerState(t *testing.T) {
 	}
 }
 
+// status.launchRefused is the EC2 error a VM's launch is refused with, from the conditions KubeVirt reports
+// (their text as KubeVirt writes it): the account's capacity refusing its launcher pod or its root disk, or no
+// node with room for it. Anything else refuses nothing.
+func TestVM_StatusLaunchRefused(t *testing.T) {
+	tmpl := extractInlineTemplate(t, "../../platform/abstraction/vm-composition.yaml")
+	withConds := func(printable string, conds ...map[string]any) map[string]any {
+		cs := make([]any, len(conds))
+		for i, c := range conds {
+			cs[i] = c
+		}
+		ctx := vmCtx("ubuntu-24.04", "")
+		ctx["observed"].(map[string]any)["resources"] = map[string]any{
+			"virtualmachine": map[string]any{"resource": map[string]any{"status": map[string]any{"atProvider": map[string]any{
+				"manifest": map[string]any{"status": map[string]any{"printableStatus": printable, "conditions": cs}},
+			}}}},
+		}
+		return ctx
+	}
+	podRefused := func(quota string) map[string]any {
+		return map[string]any{"type": "Synchronized", "status": "False", "reason": "FailedCreate",
+			"message": `failed to create virtual machine pod: pods "virt-launcher-myvm-mx885" is forbidden: exceeded quota: ` + quota +
+				`, requested: requests.memory=17515223040, used: requests.memory=17515223040, limited: requests.memory=17Gi`}
+	}
+	cases := []struct {
+		name, want string
+		ctx        map[string]any
+	}{
+		{"memory capacity", "VcpuLimitExceeded", withConds("Starting", podRefused("account-capacity-memory"))},
+		{"cpu capacity", "VcpuLimitExceeded", withConds("Starting", podRefused("account-capacity-cpu"))},
+		{"gpu capacity", "VcpuLimitExceeded", withConds("Starting", podRefused("account-capacity-gpu"))},
+		{"pod budget", "InstanceLimitExceeded", withConds("Starting", podRefused("account-capacity-pods"))},
+		{"storage capacity", "VolumeLimitExceeded", withConds("Provisioning", map[string]any{"type": "Failure", "status": "True", "reason": "FailedCreate",
+			"message": `Error encountered while creating DataVolumes: DataVolume myvm-root importer is not running due to an error: persistentvolumeclaims "myvm-root" is forbidden: exceeded quota: account-capacity-storage, requested: requests.storage=120Gi, used: requests.storage=127474629346, limited: requests.storage=200Gi`})},
+		{"no node with room", "InsufficientInstanceCapacity", withConds("ErrorUnschedulable", map[string]any{"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
+			"message": "0/7 nodes are available: 1 node(s) had untolerated taint, 6 Insufficient memory. preemption: 0/7 nodes are available"})},
+		{"unschedulable for another reason", "", withConds("ErrorUnschedulable", map[string]any{"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
+			"message": "0/7 nodes are available: 7 node(s) didn't match PersistentVolume's node affinity."})},
+		{"a quota that is not the account's capacity", "", withConds("Starting", podRefused("someone-elses-quota"))},
+		{"a refusal that has cleared", "", withConds("Running", map[string]any{"type": "Synchronized", "status": "True", "reason": "FailedCreate",
+			"message": "exceeded quota: account-capacity-memory"})},
+		{"running", "", withConds("Running", map[string]any{"type": "Ready", "status": "True"})},
+	}
+	for _, c := range cases {
+		out := render(t, tmpl, c.ctx)
+		doc := out[strings.Index(out, "kind: XVirtualMachine"):]
+		if want := `launchRefused: "` + c.want + `"`; !strings.Contains(doc, want) {
+			t.Errorf("%s: want %s in the composite status; got:\n%s", c.name, want, grepCtx(doc, "launchRefused"))
+		}
+	}
+}
+
 // A running VM restarts after a crash but stays stopped when the guest shuts itself down (RerunOnFailure), as
 // EC2's instance-initiated shutdown stops an instance; a stopped one is Halted.
 func TestVM_RunStrategy_InstanceInitiatedShutdownStops(t *testing.T) {

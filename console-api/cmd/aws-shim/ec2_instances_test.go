@@ -13,9 +13,11 @@ import (
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/policyengine"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -232,5 +234,37 @@ func TestEC2_InstanceInitiatedShutdown(t *testing.T) {
 	}
 	if running, _ := claimRunning(t, dyn, "s-db"); !running {
 		t.Error("a user-stopped instance's claim must be set running")
+	}
+}
+
+// A stack update that must start an instance which shut itself down asks for it as StartInstances does
+// (cfn.Starter): the request is recorded on the claim via the caller, then KubeVirt is asked to start the VM.
+// Setting spec.running, already true, would change nothing KubeVirt acts on.
+func TestCFNApplier_StartStoppedAsksKubeVirtAsStartInstancesDoes(t *testing.T) {
+	guest := ec2Obj("VirtualMachine", "s-build", map[string]any{"os": "windows-server-2022", "running": true},
+		map[string]any{"instanceId": "i-0aaaaaaaaaaaaaaa2", "powerState": "Stopped"}, nil)
+	h, dyn := ec2Fixture(t, guest)
+	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{{Group: "openinfra.dev", Version: "v1"}})
+	mapper.Add(schema.GroupVersionKind{Group: "openinfra.dev", Version: "v1", Kind: "VirtualMachine"}, meta.RESTScopeNamespace)
+	var started []string
+	ap := &impersonatingApplier{caller: dyn, shim: dyn, mapper: mapper, ns: ec2TestNS, door: h.door,
+		startVM: func(_ context.Context, ns, name string) error { started = append(started, ns+"/"+name); return nil }}
+	var _ cfn.Starter = ap
+	if err := ap.StartStopped(t.Context(), "openinfra.dev/v1", "VirtualMachine", "s-build"); err != nil {
+		t.Fatalf("StartStopped: %v", err)
+	}
+	if len(started) != 1 || started[0] != ec2TestNS+"/s-build" {
+		t.Fatalf("KubeVirt must be asked once to start the VM: %v", started)
+	}
+	u, _ := dyn.Resource(vmClaimGVR).Namespace(ec2TestNS).Get(t.Context(), "s-build", metav1.GetOptions{})
+	if _, err := time.Parse(time.RFC3339, u.GetAnnotations()[startAnnotation]); err != nil {
+		t.Errorf("the start must be recorded on the claim: %v", u.GetAnnotations())
+	}
+	// The caller's refusal to change the instance refuses the start: KubeVirt is not asked.
+	dyn.PrependReactor("patch", "virtualmachines", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(vmClaimGVR.GroupResource(), "s-build", errors.New("RBAC"))
+	})
+	if err := ap.StartStopped(t.Context(), "openinfra.dev/v1", "VirtualMachine", "s-build"); err == nil || len(started) != 1 {
+		t.Errorf("a caller who may not change the instance must not start it: %v (starts %v)", err, started)
 	}
 }

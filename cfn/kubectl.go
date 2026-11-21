@@ -156,6 +156,20 @@ func (k kubectlApplier) SetRunning(ctx context.Context, apiVersion, kind, name s
 		"--field-manager", "cfn-power", "-p", fmt.Sprintf(`{"spec":{"running":%t}}`, running))
 }
 
+// StartStopped starts a kind: VirtualMachine that shut itself down (Starter): its spec already says running,
+// so KubeVirt is asked to start the VM it composes (its start subresource, as `virtctl start` does).
+func (k kubectlApplier) StartStopped(ctx context.Context, apiVersion, kind, name string) error {
+	if kind != "VirtualMachine" {
+		return fmt.Errorf("%s/%s is not a virtual machine", kind, name)
+	}
+	ns := k.namespace
+	if ns == "" {
+		ns = "default"
+	}
+	return k.run(ctx, []byte("{}"), "replace", "--raw",
+		"/apis/subresources.kubevirt.io/v1/namespaces/"+ns+"/virtualmachines/"+name+"/start", "-f", "-")
+}
+
 func (k kubectlApplier) GetStatus(ctx context.Context, apiVersion, kind, name string) (map[string]any, bool, error) {
 	out, err := k.runOut(ctx, "get", resourceArg(apiVersion, kind), name, "--ignore-not-found", "-o", "json")
 	if err != nil {

@@ -264,10 +264,16 @@ func (h *ec2Handler) startStopped(ctx context.Context, ap *impersonatingApplier,
 	if h.startVM != nil {
 		return h.startVM(ctx, ns, name)
 	}
-	if h.door.cs == nil {
+	return kubevirtStart(ctx, h.door, ns, name)
+}
+
+// kubevirtStart asks KubeVirt, as the shim, to start VM ns/name (its start subresource): how an instance
+// that shut itself down is started, by StartInstances and by a stack update that must start it.
+func kubevirtStart(ctx context.Context, door *cfnDoorway, ns, name string) error {
+	if door == nil || door.cs == nil {
 		return errNoRestart
 	}
-	return h.door.cs.CoreV1().RESTClient().Put().
+	return door.cs.CoreV1().RESTClient().Put().
 		AbsPath("/apis/subresources.kubevirt.io/v1/namespaces/" + ns + "/virtualmachines/" + name + "/start").
 		Body([]byte("{}")).Do(ctx).Error()
 }

@@ -8297,7 +8297,7 @@ spec:
             {{- /* The VM's power state and whether it runs an earlier spec, from the KubeVirt VirtualMachine
                    (its printableStatus and RestartRequired condition): how a CloudFormation update that
                    changes the instance's size stops and starts it and knows when it runs at the new size. */}}
-            {{- $powerState := "" }}{{- $restartRequired := false }}
+            {{- $powerState := "" }}{{- $restartRequired := false }}{{- $launchRefused := "" }}
             {{- $kvObs := index ($.observed.resources | default dict) "virtualmachine" }}
             {{- if $kvObs }}{{- with $kvObs.resource.status }}{{- with .atProvider }}{{- with .manifest }}{{- with .status }}
             {{-   $powerState = (.printableStatus | default "") }}
@@ -8308,6 +8308,20 @@ spec:
                      update's stop and start, StartInstances and CreateImage all wait for it. */}}
             {{-   if and (eq $powerState "Stopped") (.created | default false) }}{{ $powerState = "Stopping" }}{{ end }}
             {{-   range $c := (.conditions | default list) }}{{- if and (eq ($c.type | default "") "RestartRequired") (eq (printf "%v" ($c.status | default "")) "True") }}{{- $restartRequired = true }}{{- end }}{{- end }}
+            {{- /* The EC2 error the VM's launch is refused with (status.launchRefused): KubeVirt reports a launcher pod
+                     its account's capacity refuses as Synchronized=False and a root disk it refuses as Failure=True,
+                     both FailedCreate with the quota's name; a pod no node has room for, as PodScheduled=False,
+                     Unschedulable, Insufficient cpu/memory/GPU. AWS refuses such a launch at once with
+                     VcpuLimitExceeded, VolumeLimitExceeded, InstanceLimitExceeded or InsufficientInstanceCapacity. */}}
+            {{-   range $c := (.conditions | default list) }}
+            {{-     $ct := ($c.type | default "") }}{{- $cs := printf "%v" ($c.status | default "") }}{{- $cm := ($c.message | default "") }}
+            {{-     if and (eq ($c.reason | default "") "FailedCreate") (regexMatch "exceeded quota: account-capacity-" $cm) (or (and (eq $ct "Synchronized") (eq $cs "False")) (and (eq $ct "Failure") (eq $cs "True"))) }}
+            {{-       $q := regexReplaceAll "(?s)^.*exceeded quota: account-capacity-([a-z]+).*$" $cm "${1}" }}
+            {{-       if eq $q "storage" }}{{ $launchRefused = "VolumeLimitExceeded" }}{{ else if eq $q "pods" }}{{ $launchRefused = "InstanceLimitExceeded" }}{{ else }}{{ $launchRefused = "VcpuLimitExceeded" }}{{ end }}
+            {{-     else if and (eq $ct "PodScheduled") (eq $cs "False") (eq ($c.reason | default "") "Unschedulable") (regexMatch "Insufficient (cpu|memory|nvidia)" $cm) }}
+            {{-       $launchRefused = "InsufficientInstanceCapacity" }}
+            {{-     end }}
+            {{-   end }}
             {{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
             {{- if $imageWaits }}
             ---
@@ -8368,6 +8382,7 @@ spec:
               ip: {{ $privIp | quote }}
               powerState: {{ $powerState | quote }}
               restartRequired: {{ $restartRequired }}
+              launchRefused: {{ $launchRefused | quote }}
               {{- if $needsCopy }}
               {{- /* Kept once set: the copy onto the root is done exactly once. */}}
               rootPopulated: {{ $rootPopulated }}

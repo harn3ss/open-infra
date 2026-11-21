@@ -65,6 +65,9 @@ type impersonatingApplier struct {
 	// claims is the caller's identity as the front door authenticated it, for the data-plane checks on
 	// the steps that act with the shim's authority (cfn_authz.go); nil = derived from user/groups.
 	claims *iam.Claims
+	// startVM starts a VM that shut itself down (StartStopped); nil: KubeVirt's start subresource, as the
+	// shim.
+	startVM func(ctx context.Context, namespace, name string) error
 	// svc + door route the service kinds (a stack's queues, topics, parameters, keys — cfn.IsServiceKind)
 	// to the shim's own AWS API stores, checked as those front doors check them (cfn_services.go). nil
 	// svc = this applier cannot provision them (it refuses).
@@ -442,6 +445,27 @@ func (a *impersonatingApplier) SetRunning(ctx context.Context, apiVersion, kind,
 		return fmt.Errorf("set %s/%s running=%t: %w", kind, name, running, err)
 	}
 	return nil
+}
+
+// StartStopped starts a kind: VirtualMachine that shut itself down (cfn.Starter), as StartInstances starts
+// it (ec2_instances.go): the request is recorded on the claim via the CALLER, which proves the caller may
+// change the instance, then the shim asks KubeVirt to start the VM. Its spec already says running, so a
+// stack update that must start it on a new spec (new UserData) does so this way.
+func (a *impersonatingApplier) StartStopped(ctx context.Context, apiVersion, kind, name string) error {
+	gvr, err := a.gvrFor(apiVersion, kind)
+	if err != nil {
+		return err
+	}
+	patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]any{
+		startAnnotation: time.Now().UTC().Format(time.RFC3339)}}})
+	if _, err := a.caller.Resource(gvr).Namespace(a.ns).Patch(ctx, name, types.MergePatchType, patch,
+		metav1.PatchOptions{FieldManager: cfnFieldManager + "-power"}); err != nil {
+		return fmt.Errorf("start %s/%s: %w", kind, name, err)
+	}
+	if a.startVM != nil {
+		return a.startVM(ctx, a.ns, name)
+	}
+	return kubevirtStart(ctx, a.door, a.ns, name)
 }
 
 // GetLabels reads a live resource's metadata.labels via the CALLER (cfn.LabelReader) — how recovery checks

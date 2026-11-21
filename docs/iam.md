@@ -682,9 +682,10 @@ spec:
 - An unset limit is not enforced, and an account without `capacity` is unchanged. Changing a limit
   changes its quota, and removing it removes the quota. The account's namespaces carry each limit as a
   label, `none` when it is unset.
-- What the tenant sees at a limit is the workload not starting (a function throttled, an instance that
-  stays pending, a task that doesn't run), with the quota refusal in the platform's events. The AWS API
-  doesn't yet refuse the request itself with AWS's limit errors.
+- What the tenant sees at a limit is the workload not starting. A stack's instance fails within a minute
+  with EC2's error: `VcpuLimitExceeded` at the `cpu`, `memory` or `gpus` limit, `VolumeLimitExceeded` at
+  `storage`, `InstanceLimitExceeded` at `pods`. A function is throttled and a task doesn't run. The EC2
+  API's own `StartInstances` doesn't yet refuse the request itself: the instance stays `pending`.
 - Requires the `compliance` component (Kyverno). Without it the labels are set but nothing is enforced.
 
 ## See also

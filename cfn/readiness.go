@@ -164,6 +164,67 @@ var vmErrorStates = map[string]bool{
 // vmErrorGrace is how long a VM may stay in an error state before its instance fails.
 var vmErrorGrace = 3 * time.Minute
 
+// launchRefusedGrace is how long a VM's launch may stay refused (status.launchRefused) before its instance
+// fails with that refusal: AWS refuses such a launch at once; the grace only rides out a refusal that clears
+// by itself (a restarted instance's earlier launcher still being torn down, still counted).
+var launchRefusedGrace = 45 * time.Second
+
+// launchRefusals are the EC2 errors a launch is refused with, as AWS writes them: the account's limits
+// (HTTP 400) and a lack of capacity (HTTP 500).
+var launchRefusals = map[string]struct {
+	status  int
+	message string
+}{
+	"VcpuLimitExceeded": {400, "You have requested more vCPU capacity than your current vCPU limit allows for the instance bucket that " +
+		"the specified instance type belongs to. Please visit http://aws.amazon.com/contact-us/ec2-request to request an adjustment to this limit."},
+	"VolumeLimitExceeded": {400, "You have exceeded your maximum storage limit in this region. Please contact AWS Support to request an " +
+		"Elastic Block Store service limit increase."},
+	"InstanceLimitExceeded": {400, "You have requested more instances than your current instance limit allows for the specified instance " +
+		"type. Please visit http://aws.amazon.com/contact-us/ec2-request to request an adjustment to this limit."},
+	"InsufficientInstanceCapacity": {500, "We currently do not have sufficient capacity in the Availability Zone you requested. Our system " +
+		"will be working on provisioning additional capacity."},
+}
+
+// launchRefusal is the EC2 error a VM's launch is refused with (its status.launchRefused), "" when none.
+func launchRefusal(st map[string]any) string {
+	code, _ := st["launchRefused"].(string)
+	if _, known := launchRefusals[code]; !known {
+		return ""
+	}
+	return code
+}
+
+// LaunchRefusedError is an instance's failure for a launch EC2 refuses (Code), as CloudFormation reports
+// EC2's refusal of an AWS::EC2::Instance.
+type LaunchRefusedError struct{ Code string }
+
+func (e *LaunchRefusedError) Error() string {
+	r := launchRefusals[e.Code]
+	return fmt.Sprintf("%s (Service: AmazonEC2; Status Code: %d; Error Code: %s; Proxy: null)", r.message, r.status, e.Code)
+}
+
+func launchRefusedError(code string) error { return &LaunchRefusedError{Code: code} }
+
+// refusalTracker fails a wait whose VM stays refused for launchRefusedGrace.
+type refusalTracker struct {
+	code  string
+	since time.Time
+}
+
+// observe records st's refusal and returns the instance's failure once it has lasted launchRefusedGrace.
+func (t *refusalTracker) observe(st map[string]any) error {
+	code := launchRefusal(st)
+	switch {
+	case code == "":
+		t.code = ""
+	case code != t.code:
+		t.code, t.since = code, time.Now()
+	case time.Since(t.since) >= launchRefusedGrace:
+		return launchRefusedError(code)
+	}
+	return nil
+}
+
 // waitInstanceRunning holds an instance (a stack's kind: VirtualMachine) until its VM runs: on AWS an
 // instance is complete once it is running, and one that cannot start fails its stack. It waits up to the
 // operation's -timeout (at most restartWaitDefault) — or, while its disks are still being made (Provisioning:
@@ -199,6 +260,7 @@ func waitInstanceRunning(ctx context.Context, opts DeployOptions, ap Applier, r 
 	}
 	encRoot := encryptedRoot(r)
 	last, errSince, errState := "no status yet", time.Time{}, ""
+	var refused refusalTracker
 	for {
 		st, found, err := sr.GetStatus(ctx, r.APIVersion, r.Kind, r.Name)
 		copying := false
@@ -214,6 +276,11 @@ func waitInstanceRunning(ctx context.Context, opts DeployOptions, ap Applier, r 
 			}
 			if ps == "Running" {
 				return nil
+			}
+			// A launch the account's limits or the platform's capacity refuse fails, as on AWS, even while
+			// its disks would otherwise still be being made.
+			if err := refused.observe(st); err != nil {
+				return err
 			}
 			copying = (encRoot && !boolField(st, "rootPopulated")) || ps == "Provisioning"
 			if ps == "" {

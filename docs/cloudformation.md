@@ -40,8 +40,10 @@ the template either — the guest's environment names the shim
   started, as AWS does for an update with "some interruptions": the update completes once
   the instance runs on the new spec, and keeps its private address. A change a running
   instance takes live (its security groups, its public address and ports) restarts nothing.
-  A stopped instance stays stopped; the change applies when it next starts. If the update
-  then fails, its rollback restarts the instance onto its prior spec.
+  An instance stopped with `StopInstances` or the console stays stopped; the change applies
+  when it next starts. One that shut itself down (`shutdown` from inside it) is started on
+  the new spec. If the update then fails, its rollback restarts the instance onto its prior
+  spec, and the stack ends `UPDATE_ROLLBACK_COMPLETE`.
 - **`cfn destroy`** tears a stack down in reverse dependency order, honoring
   `DeletionPolicy`.
 
@@ -589,7 +591,11 @@ Stack "tickets" is CREATE_COMPLETE (2 resources).
    `UserData` signals it is created. An `AWS::EC2::Instance` is complete once its VM is
    running, as on AWS: one whose VM never starts fails the stack at the timeout, and one whose
    VM stays in an error state (`ErrorUnschedulable`, an image that cannot be pulled) fails it
-   after three minutes.
+   after three minutes. An instance whose launch its account's capacity or the platform's
+   refuses fails within a minute with EC2's error, as AWS refuses such a launch:
+   `VcpuLimitExceeded` (the account's CPU, memory or GPUs), `VolumeLimitExceeded` (its
+   storage), `InstanceLimitExceeded` (its pod budget) or `InsufficientInstanceCapacity` (no
+   node has room for it). A restart that is refused fails the update the same way.
    The `cfn` CLI keeps the record as a `cfn-stack-<name>` ConfigMap in the target namespace.
    The aws-shim front door keeps it as a Secret in the shim's own namespace, readable only by
    the shim and cluster admins, because the record holds every resource's resolved properties,

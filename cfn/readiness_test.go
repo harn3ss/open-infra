@@ -353,3 +353,55 @@ Resources:
 		t.Fatalf("past the boot cap the create fails, saying why: %v", err)
 	}
 }
+
+// An instance whose launch the account's limits refuse (status.launchRefused) fails with EC2's error as AWS
+// refuses it, even while its disks would otherwise still be being made: its stack rolls back with the reason,
+// instead of waiting out the boot cap.
+func TestReadiness_RefusedLaunchFailsWithEC2sError(t *testing.T) {
+	fastVMWaits(t, time.Minute)
+	prev := launchRefusedGrace
+	launchRefusedGrace = 20 * time.Millisecond
+	t.Cleanup(func() { launchRefusedGrace = prev })
+	tmpl := `
+Resources:
+  Web:
+    Type: AWS::EC2::Instance
+    Properties: { ImageId: windows-server-2022, InstanceType: c5.2xlarge }
+`
+	for code, want := range map[string]string{
+		"VcpuLimitExceeded":            "You have requested more vCPU capacity than your current vCPU limit allows",
+		"VolumeLimitExceeded":          "You have exceeded your maximum storage limit in this region",
+		"InstanceLimitExceeded":        "You have requested more instances than your current instance limit allows",
+		"InsufficientInstanceCapacity": "We currently do not have sufficient capacity",
+	} {
+		f := &fakeApplier{statusFn: func(string) (map[string]any, bool) {
+			return map[string]any{"powerState": "Provisioning", "launchRefused": code}, true
+		}}
+		opts := deployOpts()
+		opts.Timeout = time.Minute
+		start := time.Now()
+		rec, err := Deploy(context.Background(), []byte(tmpl), opts, f)
+		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "Error Code: "+code) {
+			t.Fatalf("%s: want the create to fail with EC2's error, got %v", code, err)
+		}
+		if time.Since(start) > 5*time.Second {
+			t.Fatalf("%s: a refused launch must fail at once (took %s)", code, time.Since(start))
+		}
+		if rec == nil || rec.Status != "ROLLBACK_COMPLETE" || !hasEventReason(rec, "Error Code: "+code) {
+			t.Fatalf("%s: the stack must roll back with the instance's reason: %+v", code, rec)
+		}
+	}
+	// A refusal that clears within the grace (a restarted instance's earlier launcher still counted) is waited out.
+	reads := 0
+	clears := &fakeApplier{statusFn: func(string) (map[string]any, bool) {
+		reads++
+		if reads < 3 {
+			return map[string]any{"powerState": "Starting", "launchRefused": "VcpuLimitExceeded"}, true
+		}
+		return map[string]any{"powerState": "Running", "launchRefused": ""}, true
+	}}
+	launchRefusedGrace = time.Second
+	if rec, err := Deploy(context.Background(), []byte(tmpl), deployOpts(), clears); err != nil || rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("a refusal that clears must not fail the create: %v", err)
+	}
+}

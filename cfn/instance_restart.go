@@ -12,6 +12,7 @@ package cfn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -22,6 +23,14 @@ import (
 // spec.running, as the console's Start/Stop does, with the same authority as every other step.
 type PowerSetter interface {
 	SetRunning(ctx context.Context, apiVersion, kind, name string, running bool) error
+}
+
+// Starter is an optional Applier capability: start a kind: VirtualMachine that shut itself down, as EC2's
+// StartInstances starts it. Such a VM is stopped while its spec still says running (an instance-initiated
+// shutdown stops an instance), so setting spec.running changes nothing KubeVirt acts on: it is started on
+// request instead.
+type Starter interface {
+	StartStopped(ctx context.Context, apiVersion, kind, name string) error
 }
 
 // liveVMFields are the kind: VirtualMachine spec fields a running VM takes without a restart: its
@@ -74,7 +83,7 @@ func restartReason(fields []string) string {
 
 // restartInstance stops a running kind: VirtualMachine and starts it again, returning once it runs on its
 // current spec. A VM that is stopped (spec.running false) is left stopped: the change applies when it is
-// next started, as on AWS.
+// next started, as on AWS. A VM that shut itself down (spec.running still true) is started on its new spec.
 func restartInstance(ctx context.Context, opts DeployOptions, ap Applier, r StackResource) error {
 	ps, okP := ap.(PowerSetter)
 	sr, okS := ap.(StatusReader)
@@ -95,6 +104,22 @@ func restartInstance(ctx context.Context, opts DeployOptions, ap Applier, r Stac
 	if wait <= 0 || wait > restartWaitDefault {
 		wait = restartWaitDefault
 	}
+	onNewSpec := func(st map[string]any) bool {
+		return powerState(st) == "Running" && !boolField(st, "restartRequired")
+	}
+	// An instance that shut itself down is already stopped, and its spec still says running: stopping it
+	// is a no-op, and setting spec.running false and straight back to true is a change KubeVirt never
+	// sees, so it would stay stopped. It is started as StartInstances starts it, on its new spec.
+	if st, found, err := sr.GetStatus(ctx, r.APIVersion, r.Kind, r.Name); err == nil && found && powerState(st) == "Stopped" {
+		starter, ok := ap.(Starter)
+		if !ok {
+			return fmt.Errorf("%s/%s shut itself down, and this environment cannot start it", r.Kind, r.Name)
+		}
+		if err := starter.StartStopped(ctx, r.APIVersion, r.Kind, r.Name); err != nil {
+			return fmt.Errorf("starting %s/%s: %w", r.Kind, r.Name, err)
+		}
+		return startedOnNewSpec(waitPower(ctx, sr, r, wait, encryptedRoot(r), onNewSpec), r)
+	}
 	if err := ps.SetRunning(ctx, r.APIVersion, r.Kind, r.Name, false); err != nil {
 		return fmt.Errorf("stopping %s/%s: %w", r.Kind, r.Name, err)
 	}
@@ -108,12 +133,20 @@ func restartInstance(ctx context.Context, opts DeployOptions, ap Applier, r Stac
 	if err := ps.SetRunning(ctx, r.APIVersion, r.Kind, r.Name, true); err != nil {
 		return fmt.Errorf("starting %s/%s: %w", r.Kind, r.Name, err)
 	}
-	if err := waitPower(ctx, sr, r, wait, encryptedRoot(r), func(st map[string]any) bool {
-		return powerState(st) == "Running" && !boolField(st, "restartRequired")
-	}); err != nil {
-		return fmt.Errorf("%s/%s did not start on its new spec: %w", r.Kind, r.Name, err)
+	return startedOnNewSpec(waitPower(ctx, sr, r, wait, encryptedRoot(r), onNewSpec), r)
+}
+
+// startedOnNewSpec is a restart's outcome from its wait for the instance to run: a start EC2 refuses is
+// reported as EC2 reports it; any other failure says the instance did not start on its new spec.
+func startedOnNewSpec(err error, r StackResource) error {
+	var refused *LaunchRefusedError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &refused):
+		return err
 	}
-	return nil
+	return fmt.Errorf("%s/%s did not start on its new spec: %w", r.Kind, r.Name, err)
 }
 
 // waitPower polls the VM's status until done reports true, for up to wait — or, for an encrypted root
@@ -132,6 +165,7 @@ func waitPower(ctx context.Context, sr StatusReader, r StackResource, wait time.
 		}
 	}
 	last := "no status yet"
+	var refused refusalTracker
 	for {
 		st, found, err := sr.GetStatus(ctx, r.APIVersion, r.Kind, r.Name)
 		copying := false
@@ -143,6 +177,10 @@ func waitPower(ctx context.Context, sr StatusReader, r StackResource, wait time.
 		default:
 			if done(st) {
 				return nil
+			}
+			// A start the account's limits or the platform's capacity refuse fails, as StartInstances does.
+			if err := refused.observe(st); err != nil {
+				return err
 			}
 			last = fmt.Sprintf("state %q, restart required %v", powerState(st), boolField(st, "restartRequired"))
 			copying = encRoot && !boolField(st, "rootPopulated")

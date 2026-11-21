@@ -6,6 +6,27 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — a stack update starts an instance that shut itself down
+- A stack update that changed the `UserData` or `InstanceType` of an instance that had shut itself down
+  left it stopped and rolled back, and the rollback failed the same way (`UPDATE_ROLLBACK_FAILED`). Such an
+  instance is stopped while its spec still says running, so stopping and starting it by its spec changed
+  nothing. The update now starts it as `StartInstances` does, on the new spec, and its rollback ends
+  `UPDATE_ROLLBACK_COMPLETE`. The `cfn` CLI does the same.
+
+### Fixed — an instance its account's limits refuse fails at once, with EC2's error
+- An `AWS::EC2::Instance` beyond its account's capacity waited, for hours when its root disk was refused,
+  instead of failing. It now fails within a minute with EC2's error, and its stack rolls back with that
+  reason: `VcpuLimitExceeded` (the account's CPU, memory or GPUs), `VolumeLimitExceeded` (its storage),
+  `InstanceLimitExceeded` (its pod budget), or `InsufficientInstanceCapacity` when no node has room. A
+  stack update whose restart is refused fails the same way. `kind: VirtualMachine` reports the refusal as
+  `status.launchRefused`.
+
+### Fixed — a request the platform cannot verify just then is retried, not refused
+- While the cluster's API was briefly unreachable (a control-plane restart), the aws-shim answered
+  correctly signed requests `SignatureDoesNotMatch`, which SDKs do not retry. It now answers
+  `ServiceUnavailable` (HTTP 503) in each service's format, which they do, as AWS answers such a moment.
+  A key that does not exist and a wrong signature are still refused alike.
+
 ### Added — EC2 images an account makes, shares and launches from
 - `CreateImage` makes an image of an instance's root volume: it answers the `ami-` id at once, `pending`,
   stops a running instance while its volume is copied and starts it again once the image is `available`

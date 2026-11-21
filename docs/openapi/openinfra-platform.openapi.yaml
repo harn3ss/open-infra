@@ -9872,6 +9872,12 @@ components:
               type: string
               description: 'The VM''s state as KubeVirt reports it (its printableStatus): Running, Stopped, Starting, Stopping,
                 Provisioning, or an error state such as ErrorUnschedulable. Empty until first reported.'
+            launchRefused:
+              type: string
+              description: 'The EC2 error the VM''s launch or start is refused with while the platform will not run it: VcpuLimitExceeded
+                (its account''s CPU, memory or GPU capacity), VolumeLimitExceeded (its account''s storage capacity), InstanceLimitExceeded
+                (its account''s pod budget) or InsufficientInstanceCapacity (no node has room for it). Empty otherwise. A
+                stack''s instance that stays refused fails with it, as an instance AWS cannot launch does.'
             restartRequired:
               type: boolean
               description: "The running VM was started from an earlier spec: a change it reads only when it starts (its CPU\
