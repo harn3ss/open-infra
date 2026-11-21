@@ -95,7 +95,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 20
+      "probe": 21
     },
     "undeployableUses": [
       {
@@ -576,7 +576,8 @@
         "ec2-default-vpc",
         "ec2-isolated-vpc",
         "ec2-images",
-        "ec2-windows-metadata"
+        "ec2-windows-metadata",
+        "ec2-launch-limits"
       ],
       "refused": [],
       "service": "EC2",
@@ -602,7 +603,8 @@
         "ec2-default-vpc",
         "ec2-isolated-vpc",
         "ec2-images",
-        "ec2-windows-metadata"
+        "ec2-windows-metadata",
+        "ec2-launch-limits"
       ],
       "refused": [],
       "service": "EC2",
@@ -2485,12 +2487,13 @@
         "cfn-securitygroup",
         "ec2-images",
         "ec2-isolated-vpc",
+        "ec2-launch-limits",
         "ec2-windows-metadata",
         "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 7,
+      "templateUses": 9,
       "verdict": "ok"
     },
     "AWS::EC2::InternetGateway": {
