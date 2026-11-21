@@ -17,6 +17,8 @@ the product's public contract.
   (IMDSv1 and IMDSv2) at `169.254.169.254` with the instance role's credentials, trusts the platform's CAs,
   extends the root partition, runs the instance's user data in EC2Launch v2's XML-tagged format (`<script>`,
   `<powershell>`, `<persist>`), and writes its progress to the serial console (`GetConsoleOutput`).
+- A stack waits for an instance whose disks are still being made from its image (a Windows root is a full copy
+  of its 100 GiB image) up to 45 minutes, rather than failing it at the operation's timeout.
 - A Windows instance's root volume takes its `VolumeSize` when it is at least the image's 100 GiB (the agent
   extends C: to it); a smaller one is refused, as EC2 refuses a volume smaller than its image's snapshot.
 - An `AWS::EC2::Instance` on a Windows image keeps its `UserData` as written (it was given a Linux shell

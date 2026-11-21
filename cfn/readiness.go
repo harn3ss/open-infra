@@ -166,8 +166,9 @@ var vmErrorGrace = 3 * time.Minute
 
 // waitInstanceRunning holds an instance (a stack's kind: VirtualMachine) until its VM runs: on AWS an
 // instance is complete once it is running, and one that cannot start fails its stack. It waits up to the
-// operation's -timeout (at most restartWaitDefault) — or, while an encrypted root is still being copied
-// (the VM starts only once the copy is done), up to outputBootWaitCap — and fails sooner when the VM stays
+// operation's -timeout (at most restartWaitDefault) — or, while its disks are still being made (Provisioning:
+// its root cloned from its image, a Windows one a full copy of a 100 GiB image) or an encrypted root is still
+// being copied (the VM starts only once the copy is done), up to outputBootWaitCap — and fails sooner when the VM stays
 // in a state it will not run from. A VM whose status does not report its power state (an environment
 // whose composition predates it), or an Applier that cannot read status, is not waited for.
 func waitInstanceRunning(ctx context.Context, opts DeployOptions, ap Applier, r StackResource) error {
@@ -214,13 +215,16 @@ func waitInstanceRunning(ctx context.Context, opts DeployOptions, ap Applier, r 
 			if ps == "Running" {
 				return nil
 			}
-			copying = encRoot && !boolField(st, "rootPopulated")
+			copying = (encRoot && !boolField(st, "rootPopulated")) || ps == "Provisioning"
 			if ps == "" {
 				ps = "not reported yet"
 			}
 			last = "state " + ps
-			if copying {
+			switch {
+			case encRoot && !boolField(st, "rootPopulated"):
 				last += ", its encrypted root still being copied"
+			case ps == "Provisioning":
+				last += ", its disks still being made from its image"
 			}
 			if vmErrorStates[ps] && !copying {
 				if errState != ps {

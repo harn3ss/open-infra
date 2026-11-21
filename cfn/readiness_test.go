@@ -319,3 +319,37 @@ func TestAncestorsFollowFoldedResources(t *testing.T) {
 		t.Fatalf("a resource is not its own ancestor: %v", got)
 	}
 }
+
+// An instance whose disks are still being made from its image (KubeVirt's Provisioning: a Windows root is a full
+// copy of a 100 GiB image) is waited for past the operation's timeout, up to the boot cap, and completes once its
+// VM runs; past the cap it fails, saying why.
+func TestReadiness_ProvisioningInstanceWaitsForItsDisks(t *testing.T) {
+	tmpl := `
+Resources:
+  Web:
+    Type: AWS::EC2::Instance
+    Properties: { ImageId: windows-server-2022, InstanceType: c5.2xlarge }
+`
+	prev := outputBootWaitCap
+	outputBootWaitCap = 8 * time.Second
+	t.Cleanup(func() { outputBootWaitCap = prev })
+	reads := 0
+	slow := &fakeApplier{statusFn: func(key string) (map[string]any, bool) {
+		reads++
+		if reads < 3 {
+			return map[string]any{"powerState": "Provisioning"}, true
+		}
+		return map[string]any{"powerState": "Running", "instanceId": "i-0123456789abcdef0"}, true
+	}}
+	opts := deployOpts()
+	opts.Timeout = 50 * time.Millisecond
+	if rec, err := Deploy(context.Background(), []byte(tmpl), opts, slow); err != nil || rec.Status != "CREATE_COMPLETE" {
+		t.Fatalf("an instance still provisioning past the timeout completes once it runs: %v", err)
+	}
+	stuck := &fakeApplier{statusFn: func(key string) (map[string]any, bool) {
+		return map[string]any{"powerState": "Provisioning"}, true
+	}}
+	if _, err := Deploy(context.Background(), []byte(tmpl), opts, stuck); err == nil || !strings.Contains(err.Error(), "its disks still being made from its image") {
+		t.Fatalf("past the boot cap the create fails, saying why: %v", err)
+	}
+}
