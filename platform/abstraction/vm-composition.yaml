@@ -16,7 +16,9 @@ metadata:
   name: vm
   annotations:
     argocd.argoproj.io/sync-wave: "3"
-    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    # Server-side apply: this composition (it embeds the Linux metadata agent and the Windows launch agent) is
+    # larger than the 256 KiB a client-side apply's last-applied-configuration annotation may hold.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true,ServerSideApply=true
 spec:
   compositeTypeRef:
     apiVersion: openinfra.dev/v1
