@@ -6,6 +6,12 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — logs are deleted after the log store's 7-day retention
+- The log store (Loki) was configured for 7 days of retention but never deleted anything. Its compactor
+  enforces retention, and it was not switched on, so logs were kept until the disk filled. The compactor
+  now deletes logs older than 7 days. That is the `retentionInDays` CloudWatch Logs reports and the
+  retention the docs describe.
+
 ### Fixed — a stack update starts an instance that shut itself down
 - A stack update that changed the `UserData` or `InstanceType` of an instance that had shut itself down
   left it stopped and rolled back, and the rollback failed the same way (`UPDATE_ROLLBACK_FAILED`). Such an

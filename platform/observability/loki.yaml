@@ -36,6 +36,12 @@ spec:
                   period: 24h
           limits_config:
             retention_period: 168h   # 7 days
+          # Retention is enforced by the compactor alone: without retention_enabled, retention_period
+          # deletes nothing and every log is kept until the disk fills.
+          compactor:
+            retention_enabled: true
+            delete_request_store: filesystem
+            working_directory: /var/loki/compactor
           # Ruler: turn distinctive log lines into Alertmanager alerts (#36: DataFlow schema drift).
           # Rules are mounted from the loki-alerting-rules ConfigMap at /rules/fake (tenant "fake",
           # since auth_enabled: false). rule_path is scratch space the ruler needs to be writable.
