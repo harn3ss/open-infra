@@ -102,6 +102,12 @@ func decodeTarget(method, bucket, key string, q url.Values) (s3op, bool) {
 			return s3op{kind: "delete-bucket-ownership-controls", bucket: bucket, write: true}, true
 		case sub == "policy" && method == http.MethodGet:
 			return s3op{kind: "get-bucket-policy", bucket: bucket}, true
+		case sub == "publicAccessBlock" && method == http.MethodGet:
+			return s3op{kind: "get-public-access-block", bucket: bucket}, true
+		case sub == "publicAccessBlock" && method == http.MethodPut:
+			return s3op{kind: "put-public-access-block", bucket: bucket, write: true}, true
+		case sub == "publicAccessBlock" && method == http.MethodDelete:
+			return s3op{kind: "delete-public-access-block", bucket: bucket, write: true}, true
 		case sub == "uploads" && method == http.MethodGet:
 			return s3op{kind: "list-multipart-uploads", bucket: bucket}, true
 		case sub == "delete" && method == http.MethodPost: // DeleteObjects: the keys are in the body
@@ -176,6 +182,10 @@ func (op s3op) action() string {
 		return "s3:PutBucketOwnershipControls"
 	case "get-bucket-policy":
 		return "s3:GetBucketPolicy"
+	case "get-public-access-block":
+		return "s3:GetBucketPublicAccessBlock"
+	case "put-public-access-block", "delete-public-access-block": // AWS authorizes the delete as the put
+		return "s3:PutBucketPublicAccessBlock"
 	case "get-object-tagging":
 		if op.versionID != "" {
 			return "s3:GetObjectVersionTagging"

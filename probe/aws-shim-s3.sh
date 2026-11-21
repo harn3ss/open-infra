@@ -353,6 +353,13 @@ awss3 "$WAK" "$WSK" rm "s3://${BUCKET}/rm/" --recursive >"$WORK/rm.out" 2>&1 || 
 LEFT="$(awsq "$WAK" "$WSK" list-objects-v2 --bucket "$BUCKET" --prefix rm/ --query 'length(Contents || `[]`)' --output text 2>&1 || true)"
 [ "$LEFT" = 0 ] || fail "aws s3 rm --recursive left keys under rm/: $LEFT"
 log "  ✓ the prefix is empty"
+log "aws s3 rm removes one key"
+awsq "$WAK" "$WSK" put-object --bucket "$BUCKET" --key rm/one.txt --body "$WORK/in.txt" >/dev/null || fail "put-object rm/one.txt failed"
+awss3 "$WAK" "$WSK" rm "s3://${BUCKET}/rm/one.txt" >"$WORK/rm1.out" 2>&1 || fail "aws s3 rm of one key failed: $(cat "$WORK/rm1.out")"
+if awsq "$WAK" "$WSK" head-object --bucket "$BUCKET" --key rm/one.txt >/dev/null 2>&1; then
+  fail "rm/one.txt still exists after aws s3 rm"
+fi
+log "  ✓ the key is gone"
 
 # --- 7. Pre-signed GET URL (query-string SigV4): the browser-download path --------------------
 # The app hands pre-signed GetObject URLs to the user's browser — a plain HTTP client with NO AWS
@@ -400,6 +407,23 @@ fi
 ERR="$(awsq "$WAK" "$WSK" get-bucket-policy --bucket "$MB_BUCKET" 2>&1 >/dev/null || true)"
 printf '%s' "$ERR" | grep -q NoSuchBucketPolicy || fail "get-bucket-policy of a bucket with no policy: want NoSuchBucketPolicy, got: $ERR"
 log "  ✓ get-bucket-policy of a bucket with no policy is NoSuchBucketPolicy"
+# Block Public Access: a bucket with no public policy has every setting on (AWS's default for a new bucket);
+# blocking everything is accepted, loosening is refused with the reason, and a reader may not change it.
+log "Block Public Access on the new bucket"
+PAB="$(awsq "$WAK" "$WSK" get-public-access-block --bucket "$MB_BUCKET" \
+  --query '[PublicAccessBlockConfiguration.BlockPublicAcls,PublicAccessBlockConfiguration.IgnorePublicAcls,PublicAccessBlockConfiguration.BlockPublicPolicy,PublicAccessBlockConfiguration.RestrictPublicBuckets]' \
+  --output text 2>&1 || true)"
+[ "$(printf '%s' "$PAB" | tr -s '[:space:]' ' ' | sed 's/ $//')" = "True True True True" ] \
+  || fail "get-public-access-block of a new bucket: want all four true, got: $PAB"
+ALL_ON='BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true'
+awsq "$WAK" "$WSK" put-public-access-block --bucket "$MB_BUCKET" --public-access-block-configuration "$ALL_ON" \
+  >/dev/null 2>"$WORK/pab.err" || fail "put-public-access-block blocking everything failed: $(cat "$WORK/pab.err")"
+ERR="$(awsq "$WAK" "$WSK" put-public-access-block --bucket "$MB_BUCKET" \
+  --public-access-block-configuration 'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=false,RestrictPublicBuckets=false' 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q NotImplemented || fail "loosening public access: want NotImplemented with the reason, got: $ERR"
+ERR="$(awsq "$RAK" "$RSK" put-public-access-block --bucket "$MB_BUCKET" --public-access-block-configuration "$ALL_ON" 2>&1 >/dev/null || true)"
+printf '%s' "$ERR" | grep -q AccessDenied || fail "a reader's put-public-access-block: want AccessDenied, got: $ERR"
+log "  ✓ all four settings on; blocking everything is accepted, loosening refused; a reader's change is AccessDenied"
 # A bucket whose kind: Bucket carries spec.policy (PROBE_POLICY_BUCKET, optional) answers that document.
 if [ -n "${PROBE_POLICY_BUCKET:-}" ]; then
   awsq "$WAK" "$WSK" get-bucket-policy --bucket "$PROBE_POLICY_BUCKET" --query Policy --output text >"$WORK/pol.json" 2>&1 \

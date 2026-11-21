@@ -208,3 +208,49 @@ func TestParseAuthorization(t *testing.T) {
 		}
 	})
 }
+
+// TestVerify_ContentLengthAProxyDropped: the AWS CLI's CRT signer signs "content-length: 0" on a
+// DeleteObject, and a reverse proxy in Go (the platform's ingress) forwards the DELETE without that
+// header. The request still verifies, with the length the server read. A request whose body length
+// differs from the signed one still fails, and so does one that is chunked (its length unknown).
+func TestVerify_ContentLengthAProxyDropped(t *testing.T) {
+	signed := func() (*http.Request, Credential) {
+		req := newReq(t, "DELETE", "https://examplebucket.s3.amazonaws.com/runs/1/test.txt", map[string]string{
+			"Content-Length":       "0",
+			"X-Amz-Content-Sha256": emptyStringSHA256,
+			"X-Amz-Date":           "20130524T000000Z",
+		})
+		req.Host = "examplebucket.s3.amazonaws.com"
+		cred := Credential{AccessKeyID: "AKIAIOSFODNN7EXAMPLE", Date: "20130524", Region: "us-east-1", Service: "s3",
+			SignedHeaders: []string{"content-length", "host", "x-amz-content-sha256", "x-amz-date"}}
+		cred.Signature = signForTest(req, cred, exampleSecret)
+		return req, cred
+	}
+
+	req, cred := signed()
+	req.Header.Del("Content-Length") // as the proxy forwards it
+	req.ContentLength = 0
+	if err := Verify(req, cred, exampleSecret); err != nil {
+		t.Fatalf("a bodyless DELETE whose signed Content-Length: 0 a proxy dropped must verify, got: %v", err)
+	}
+
+	req, cred = signed()
+	req.Header.Del("Content-Length")
+	req.ContentLength = 12 // a body the signature did not cover
+	if err := Verify(req, cred, exampleSecret); !errors.Is(err, ErrSignatureMismatch) {
+		t.Fatalf("a body of another length must not verify, got: %v", err)
+	}
+
+	req, cred = signed()
+	req.Header.Del("Content-Length")
+	req.ContentLength = -1 // chunked: the length is unknown and never filled in
+	if err := Verify(req, cred, exampleSecret); !errors.Is(err, ErrSignatureMismatch) {
+		t.Fatalf("a chunked request must not verify against a signed Content-Length, got: %v", err)
+	}
+
+	req, cred = signed() // the header as sent is still what counts
+	req.Header.Set("Content-Length", "7")
+	if err := Verify(req, cred, exampleSecret); !errors.Is(err, ErrSignatureMismatch) {
+		t.Fatalf("a changed Content-Length must not verify, got: %v", err)
+	}
+}

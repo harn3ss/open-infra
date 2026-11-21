@@ -485,7 +485,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | Organizations | `organizations` | proven | 7 |
 | RDS | `rds` | proven | 9 |
 | Route 53 Resolver | `route53resolver` | proven | 33 |
-| S3 | `s3` | proven | 33 |
+| S3 | `s3` | proven | 36 |
 | SES | `email` | proven | 12 |
 | SES | `ses` | proven | 12 |
 | SNS | `sns` | proven | 27 |

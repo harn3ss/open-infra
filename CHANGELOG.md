@@ -28,6 +28,25 @@ the product's public contract.
 - An image holds the instance's root volume only. Each operation is decided by IAM policy on the instance
   or the image's ARN.
 
+### Fixed — a stack update that restarts an instance starts it again
+- A stack update that changes what an instance reads only when it starts (its `UserData`, its
+  `InstanceType`) could leave the instance stopped and roll the stack back. A start asked for while the
+  stopped instance's last run was still being torn down was lost. The instance is now `stopping` until it
+  has fully stopped, as on EC2, so the update, `StartInstances` (which refuses a `stopping` instance with
+  `IncorrectInstanceState`, as EC2 does) and `CreateImage` wait for it.
+
+### Added — S3 Block Public Access on a bucket
+- `GetPublicAccessBlock` answers a bucket's configuration: all four settings on for a bucket without a
+  public policy, AWS's default for a new bucket. `PutPublicAccessBlock` accepts that configuration and
+  refuses one that would change it, with the reason, as does `DeletePublicAccessBlock`. Authorized as
+  `s3:GetBucketPublicAccessBlock` and `s3:PutBucketPublicAccessBlock` on the bucket.
+
+### Fixed — `aws s3 rm` through the platform's ingress
+- AWS CLI 2.40's `aws s3 rm` of one key failed with `SignatureDoesNotMatch` through the platform's
+  endpoint: the CLI signs `Content-Length: 0` on the DELETE, and the ingress forwards it without that
+  header. A signed `Content-Length` a request arrives without is now the length the server read, which is
+  0 only for a request with no body.
+
 ### Fixed — an account images an instance whatever storage it has left
 - `CreateImage` no longer charges the account's storage capacity for a second copy of the instance's root
   volume while the image is made. An account using more than half its storage could not image an instance

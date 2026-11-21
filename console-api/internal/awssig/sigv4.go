@@ -204,11 +204,20 @@ func canonicalRequest(req *http.Request, cred Credential, payloadHash string) st
 // canonicalHeaderValue returns the value of a signed header, canonicalized: leading/trailing
 // whitespace trimmed and internal runs of whitespace collapsed to a single space. The Host
 // header is taken from req.Host (net/http keeps it out of req.Header).
+//
+// A signed Content-Length the request arrived without is the length the server read: a reverse
+// proxy in Go (Traefik, the platform's ingress) never forwards "Content-Length: 0" on a request that
+// has no body and does not usually carry one (DELETE, GET), and the AWS CLI's CRT signer signs that
+// header on DeleteObject. Only a request with no body at all has a length of 0 here: one with a body
+// carries its length or is chunked (-1, never filled in), so a body cannot hide behind the gap.
 func canonicalHeaderValue(req *http.Request, name string) string {
 	var raw string
-	if name == "host" {
+	switch {
+	case name == "host":
 		raw = req.Host
-	} else {
+	case name == "content-length" && len(req.Header.Values(name)) == 0 && req.ContentLength >= 0:
+		raw = strconv.FormatInt(req.ContentLength, 10)
+	default:
 		raw = strings.Join(req.Header.Values(name), ",")
 	}
 	return strings.Join(strings.Fields(raw), " ")

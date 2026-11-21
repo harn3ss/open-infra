@@ -7000,7 +7000,7 @@
     "s3": {
       "actions": 1,
       "class": "aws",
-      "operations": 33,
+      "operations": 36,
       "service": "S3",
       "tier": "proven"
     },

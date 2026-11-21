@@ -854,6 +854,7 @@
         "DeleteObject",
         "DeleteObjectTagging",
         "DeleteObjects",
+        "DeletePublicAccessBlock",
         "GetBucketEncryption",
         "GetBucketLocation",
         "GetBucketOwnershipControls",
@@ -862,6 +863,7 @@
         "GetBucketVersioning",
         "GetObject",
         "GetObjectTagging",
+        "GetPublicAccessBlock",
         "HeadBucket",
         "HeadObject",
         "ListBuckets",
@@ -874,6 +876,7 @@
         "PutBucketVersioning",
         "PutObject",
         "PutObjectTagging",
+        "PutPublicAccessBlock",
         "UploadPart",
         "UploadPartCopy"
       ],

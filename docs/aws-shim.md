@@ -344,7 +344,7 @@ create on its own API's front door):
 | Organizations | `organizations` | 7: CreateAccount, DescribeAccount, DescribeCreateAccountStatus, DescribeOrganization, ListAccounts, ListAccountsForParent, ListRoots | 0 |
 | RDS | `rds` | 9: CreateDBInstance, CreateDBSnapshot, DeleteDBInstance, DeleteDBSnapshot, DescribeDBInstances, DescribeDBSnapshots, ModifyDBInstance, RebootDBInstance, RestoreDBInstanceFromDBSnapshot; recognized and refused: AddTagsToResource, CreateDBInstanceReadReplica, ListTagsForResource, RemoveTagsFromResource, RestoreDBInstanceToPointInTime | 1 |
 | Route 53 Resolver | `route53resolver` | 33: AssociateFirewallRuleGroup, AssociateResolverQueryLogConfig, CreateFirewallDomainList, CreateFirewallRule, CreateFirewallRuleGroup, CreateResolverQueryLogConfig, DeleteFirewallDomainList, DeleteFirewallRule, DeleteFirewallRuleGroup, DeleteResolverQueryLogConfig, DisassociateFirewallRuleGroup, DisassociateResolverQueryLogConfig, GetFirewallConfig, GetFirewallDomainList, GetFirewallRuleGroup, GetFirewallRuleGroupAssociation, GetResolverQueryLogConfig, GetResolverQueryLogConfigAssociation, ListFirewallConfigs, ListFirewallDomainLists, ListFirewallDomains, ListFirewallRuleGroupAssociations, ListFirewallRuleGroups, ListFirewallRules, ListResolverQueryLogConfigAssociations, ListResolverQueryLogConfigs, ListTagsForResource, TagResource, UntagResource, UpdateFirewallConfig, UpdateFirewallDomains, UpdateFirewallRule, UpdateFirewallRuleGroupAssociation; recognized and refused: ImportFirewallDomains, ListFirewallRuleTypes | 0 |
-| S3 | `s3` | 33: AbortMultipartUpload, CompleteMultipartUpload, CopyObject, CreateBucket, CreateMultipartUpload, DeleteBucket, DeleteBucketOwnershipControls, DeleteBucketTagging, DeleteObject, DeleteObjectTagging, DeleteObjects, GetBucketEncryption, GetBucketLocation, GetBucketOwnershipControls, GetBucketPolicy, GetBucketTagging, GetBucketVersioning, GetObject, GetObjectTagging, HeadBucket, HeadObject, ListBuckets, ListMultipartUploads, ListObjectVersions, ListObjects, ListParts, PutBucketOwnershipControls, PutBucketTagging, PutBucketVersioning, PutObject, PutObjectTagging, UploadPart, UploadPartCopy | 2 |
+| S3 | `s3` | 36: AbortMultipartUpload, CompleteMultipartUpload, CopyObject, CreateBucket, CreateMultipartUpload, DeleteBucket, DeleteBucketOwnershipControls, DeleteBucketTagging, DeleteObject, DeleteObjectTagging, DeleteObjects, DeletePublicAccessBlock, GetBucketEncryption, GetBucketLocation, GetBucketOwnershipControls, GetBucketPolicy, GetBucketTagging, GetBucketVersioning, GetObject, GetObjectTagging, GetPublicAccessBlock, HeadBucket, HeadObject, ListBuckets, ListMultipartUploads, ListObjectVersions, ListObjects, ListParts, PutBucketOwnershipControls, PutBucketTagging, PutBucketVersioning, PutObject, PutObjectTagging, PutPublicAccessBlock, UploadPart, UploadPartCopy | 2 |
 | Secrets Manager | `secretsmanager` | 13: CreateSecret, DeleteSecret, DescribeSecret, GetRandomPassword, GetSecretValue, ListSecretVersionIds, ListSecrets, PutSecretValue, RestoreSecret, TagResource, UntagResource, UpdateSecret, UpdateSecretVersionStage; recognized and refused: CancelRotateSecret, RotateSecret | 1 |
 | Service Quotas | `servicequotas` | 9: GetAWSDefaultServiceQuota, GetRequestedServiceQuotaChange, GetServiceQuota, ListAWSDefaultServiceQuotas, ListRequestedServiceQuotaChangeHistory, ListRequestedServiceQuotaChangeHistoryByQuota, ListServiceQuotas, ListServices, RequestServiceQuotaIncrease | 0 |
 | SES | `ses` | 12: CreateEmailIdentity, DeleteEmailIdentity, GetAccount, GetEmailIdentity, GetIdentityVerificationAttributes, GetSendQuota, GetSendStatistics, ListEmailIdentities, ListIdentities, SendBulkEmail, SendEmail, SendRawEmail; recognized and refused: VerifyDomainIdentity, VerifyEmailIdentity | 0 |
@@ -391,9 +391,16 @@ key is `MalformedXML`.
 on S3, so a bucket created with versioning (`kind: Bucket` `versioning: true`, or CloudFormation
 `VersioningConfiguration: Enabled`) shows it through the API. `GetBucketTagging` / `PutBucketTagging` /
 `DeleteBucketTagging` (a bucket with no tags is `NoSuchTagSet`), `GetBucketLocation` (empty, i.e.
-us-east-1) and `GetBucketOwnershipControls` (`BucketOwnerEnforced`) are served too. Each is authorized as
+us-east-1) and `GetBucketOwnershipControls` (`BucketOwnerEnforced`) are served too. Block Public Access
+(`GetPublicAccessBlock` / `PutPublicAccessBlock` / `DeletePublicAccessBlock`) answers the bucket's own
+configuration: a bucket here has no ACLs and is public only through a bucket policy the platform applies
+(a `kind: Bucket`'s `spec.policy`, or a stack's `AWS::S3::BucketPolicy`) that allows any principal, so a
+bucket without one has all four settings on, AWS's default for a new bucket, and one with one has its ACLs
+blocked but its policy public. `PutPublicAccessBlock` accepts that configuration; one that would change
+it is refused (`NotImplemented`, with the reason), never accepted and then ignored, and so is
+`DeletePublicAccessBlock`. Each is authorized as
 its AWS action (`s3:GetBucketVersioning`, `s3:ListBucketVersions`, `s3:GetObjectVersion`,
-`s3:PutBucketTagging` …). Any other sub-resource (`?acl`, `?policy`, `?lifecycle`, object tagging
+`s3:PutBucketTagging`, `s3:GetBucketPublicAccessBlock`, `s3:PutBucketPublicAccessBlock` …). Any other sub-resource (`?acl`, `?policy`, `?lifecycle`, object tagging
 writes …) is `NotImplemented` rather than being answered as a listing or an object read.
 
 **`CreateBucket`.** `aws s3 mb` / `CreateBucket` makes a `kind: Bucket` claim, so a bucket made through the

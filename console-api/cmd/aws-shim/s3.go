@@ -68,7 +68,7 @@ type s3op struct {
 	// "delete-objects" (DeleteObjects, s3deleteobjects.go), or a bucket
 	// operation: "create-bucket", "delete-bucket", "get-/put-bucket-versioning", "list-object-versions",
 	// "get-/put-/delete-bucket-tagging", "get-bucket-location", "get-bucket-encryption", "get-bucket-policy"
-	// (s3bucket.go).
+	// (s3bucket.go), "get-/put-/delete-public-access-block" (s3publicaccessblock.go).
 	kind      string
 	bucket    string
 	key       string
@@ -177,6 +177,12 @@ func (h *s3Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cla
 		h.deleteBucketOwnershipControls(w, r, op, requestID)
 	case "get-bucket-policy":
 		h.getBucketPolicy(w, r, op, requestID)
+	case "get-public-access-block":
+		h.getPublicAccessBlock(w, r, op, requestID)
+	case "put-public-access-block":
+		h.putPublicAccessBlock(w, r, op, requestID)
+	case "delete-public-access-block":
+		h.deletePublicAccessBlock(w, r, op, requestID)
 	case "get-object-tagging":
 		h.getObjectTagging(w, r, op, requestID)
 	case "put-object-tagging":

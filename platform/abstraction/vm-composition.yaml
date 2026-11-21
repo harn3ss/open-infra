@@ -6270,6 +6270,12 @@ spec:
             {{- $kvObs := index ($.observed.resources | default dict) "virtualmachine" }}
             {{- if $kvObs }}{{- with $kvObs.resource.status }}{{- with .atProvider }}{{- with .manifest }}{{- with .status }}
             {{-   $powerState = (.printableStatus | default "") }}
+            {{- /* KubeVirt reports Stopped as soon as the guest is down, while its VirtualMachineInstance is still
+                     being deleted (status.created). A start asked for in that window is lost: KubeVirt records the
+                     running strategy against the instance on its way out and starts nothing once it is gone. So
+                     until it is gone the instance is stopping, as EC2's is until it has fully stopped, and a stack
+                     update's stop and start, StartInstances and CreateImage all wait for it. */}}
+            {{-   if and (eq $powerState "Stopped") (.created | default false) }}{{ $powerState = "Stopping" }}{{ end }}
             {{-   range $c := (.conditions | default list) }}{{- if and (eq ($c.type | default "") "RestartRequired") (eq (printf "%v" ($c.status | default "")) "True") }}{{- $restartRequired = true }}{{- end }}{{- end }}
             {{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
             {{- if $imageWaits }}

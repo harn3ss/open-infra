@@ -41,6 +41,10 @@ func TestVM_StatusPowerState(t *testing.T) {
 		{"a cleared condition", observedVM(map[string]any{"printableStatus": "Running",
 			"conditions": []any{map[string]any{"type": "RestartRequired", "status": "False"}}}), `powerState: "Running"`, "restartRequired: false"},
 		{"stopped", observedVM(map[string]any{"printableStatus": "Stopped"}), `powerState: "Stopped"`, "restartRequired: false"},
+		{"stopped, its instance gone", observedVM(map[string]any{"printableStatus": "Stopped", "created": false}), `powerState: "Stopped"`, "restartRequired: false"},
+		// The guest is down but its VirtualMachineInstance is still being deleted: a start asked for now
+		// would be lost, so the instance is still stopping.
+		{"stopped, its instance not yet gone", observedVM(map[string]any{"printableStatus": "Stopped", "created": true}), `powerState: "Stopping"`, "restartRequired: false"},
 	}
 	for _, c := range cases {
 		got := statusDoc(render(t, tmpl, c.ctx))
