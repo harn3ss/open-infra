@@ -102,6 +102,21 @@ func TestVM_StatusLaunchRefused(t *testing.T) {
 			"message": "exceeded quota: account-capacity-memory"})},
 		{"running", "", withConds("Running", map[string]any{"type": "Ready", "status": "True"})},
 	}
+	// A root the composition makes itself (copied from the OS image cache), its Object refused by the
+	// account's storage capacity.
+	baseRoot := vmCtx("ubuntu-24.04", "")
+	baseRoot["observed"].(map[string]any)["resources"] = map[string]any{
+		"root-base": map[string]any{"resource": map[string]any{"status": map[string]any{"conditions": []any{
+			map[string]any{"type": "Synced", "status": "False", "reason": "ReconcileError",
+				"message": `create failed: cannot create object: persistentvolumeclaims "myvm-root" is forbidden: exceeded quota: account-capacity-storage, requested: requests.storage=20Gi, used: requests.storage=0, limited: requests.storage=15Gi`},
+		}}}},
+		"root-other": map[string]any{"resource": map[string]any{"status": map[string]any{"conditions": []any{
+			map[string]any{"type": "Synced", "status": "True", "reason": "ReconcileSuccess"}}}}},
+	}
+	cases = append(cases, struct {
+		name, want string
+		ctx        map[string]any
+	}{"a disk the composition makes, refused by storage capacity", "VolumeLimitExceeded", baseRoot})
 	for _, c := range cases {
 		out := render(t, tmpl, c.ctx)
 		doc := out[strings.Index(out, "kind: XVirtualMachine"):]

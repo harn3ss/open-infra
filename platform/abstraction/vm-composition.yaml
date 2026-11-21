@@ -8297,7 +8297,7 @@ spec:
             {{- /* The VM's power state and whether it runs an earlier spec, from the KubeVirt VirtualMachine
                    (its printableStatus and RestartRequired condition): how a CloudFormation update that
                    changes the instance's size stops and starts it and knows when it runs at the new size. */}}
-            {{- $powerState := "" }}{{- $restartRequired := false }}{{- $launchRefused := "" }}
+            {{- $powerState := "" }}{{- $restartRequired := false }}{{- $launchRefused := "" }}{{- $refusedQuota := "" }}
             {{- $kvObs := index ($.observed.resources | default dict) "virtualmachine" }}
             {{- if $kvObs }}{{- with $kvObs.resource.status }}{{- with .atProvider }}{{- with .manifest }}{{- with .status }}
             {{-   $powerState = (.printableStatus | default "") }}
@@ -8316,13 +8316,25 @@ spec:
             {{-   range $c := (.conditions | default list) }}
             {{-     $ct := ($c.type | default "") }}{{- $cs := printf "%v" ($c.status | default "") }}{{- $cm := ($c.message | default "") }}
             {{-     if and (eq ($c.reason | default "") "FailedCreate") (regexMatch "exceeded quota: account-capacity-" $cm) (or (and (eq $ct "Synchronized") (eq $cs "False")) (and (eq $ct "Failure") (eq $cs "True"))) }}
-            {{-       $q := regexReplaceAll "(?s)^.*exceeded quota: account-capacity-([a-z]+).*$" $cm "${1}" }}
-            {{-       if eq $q "storage" }}{{ $launchRefused = "VolumeLimitExceeded" }}{{ else if eq $q "pods" }}{{ $launchRefused = "InstanceLimitExceeded" }}{{ else }}{{ $launchRefused = "VcpuLimitExceeded" }}{{ end }}
+            {{-       $refusedQuota = regexReplaceAll "(?s)^.*exceeded quota: account-capacity-([a-z]+).*$" $cm "${1}" }}
             {{-     else if and (eq $ct "PodScheduled") (eq $cs "False") (eq ($c.reason | default "") "Unschedulable") (regexMatch "Insufficient (cpu|memory|nvidia)" $cm) }}
             {{-       $launchRefused = "InsufficientInstanceCapacity" }}
             {{-     end }}
             {{-   end }}
             {{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
+            {{- /* A disk the composition makes itself (a root copied from the OS image cache or onto an encrypted
+                   volume, a data disk) that its account's capacity refuses: its Object cannot create it. */}}
+            {{- range $rn, $ro := ($.observed.resources | default dict) }}
+            {{-   with $ro.resource }}{{ with .status }}{{ range $c := (.conditions | default list) }}
+            {{-     if and (eq ($c.type | default "") "Synced") (eq (printf "%v" ($c.status | default "")) "False") (regexMatch "exceeded quota: account-capacity-" ($c.message | default "")) }}
+            {{-       $refusedQuota = regexReplaceAll "(?s)^.*exceeded quota: account-capacity-([a-z]+).*$" $c.message "${1}" }}
+            {{-     end }}
+            {{-   end }}{{ end }}{{ end }}
+            {{- end }}
+            {{- if eq $refusedQuota "storage" }}{{ $launchRefused = "VolumeLimitExceeded" }}
+            {{- else if eq $refusedQuota "pods" }}{{ $launchRefused = "InstanceLimitExceeded" }}
+            {{- else if ne $refusedQuota "" }}{{ $launchRefused = "VcpuLimitExceeded" }}
+            {{- end }}
             {{- if $imageWaits }}
             ---
             # --- Until an instance launches from its account image (spec.imageId): the image's record and the
