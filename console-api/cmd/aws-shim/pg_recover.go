@@ -3,11 +3,16 @@ package main
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"io"
 	"log/slog"
+	"net"
 	"os"
 	"syscall"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // A backing Postgres the shim started without (unreachable at start) leaves the services it holds
@@ -21,6 +26,33 @@ import (
 // errPGUnreachable marks a start that failed because the Postgres did not answer (the case a restart, once
 // it answers, fixes), not because its schema could not be set up.
 var errPGUnreachable = errors.New("the Postgres is unreachable")
+
+// pgUnreachable reports whether a start failed because the Postgres did not answer, so a restart once it
+// answers fixes it. That is a failed ping (errPGUnreachable), and also a connection lost after the ping, while
+// the schema was being set up: a Postgres that is shutting down (its node drained) answers the ping and then
+// refuses the next connection. Without this, that start was taken for a schema error and the services stayed
+// unconfigured until someone restarted the shim. An error the database returns about the schema itself (a
+// permission, a syntax error) is not unreachability.
+func pgUnreachable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errPGUnreachable) || errors.Is(err, driver.ErrBadConn) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return true
+	}
+	var pe *pq.Error
+	if errors.As(err, &pe) {
+		switch pe.Code.Class() {
+		case "08", "57": // connection exception; operator intervention (shutdown, cannot connect now)
+			return true
+		}
+	}
+	return false
+}
 
 // pgRecoverEvery is how often an unreachable backing Postgres is tried again.
 const pgRecoverEvery = 15 * time.Second

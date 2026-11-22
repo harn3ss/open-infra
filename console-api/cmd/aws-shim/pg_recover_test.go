@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // A shim that started without its Postgres restarts once the Postgres answers, and only then: the
@@ -64,5 +69,35 @@ func TestErrPGUnreachable_MarksOnlyUnreachability(t *testing.T) {
 	}
 	if errors.Is(fmt.Errorf("SQS schema init failed: %w", errors.New("permission denied")), errPGUnreachable) {
 		t.Error("a schema error must not be marked")
+	}
+}
+
+// A connection lost while the schema is set up is unreachability too: a Postgres shutting down on a drained
+// node answers the ping and refuses the next connection. The shim must restart once it answers again, not
+// stay degraded as it does for an error the database returns about the schema.
+func TestPGUnreachable_ConnectionLostDuringSchema(t *testing.T) {
+	refused := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")}
+	for name, err := range map[string]error{
+		"a failed ping":                   fmt.Errorf("unreachable: %w (%w)", errors.New("x"), errPGUnreachable),
+		"refused during the schema":       fmt.Errorf("SQS schema init failed: %w", refused),
+		"the database shutting down":      fmt.Errorf("SNS schema init failed: %w", &pq.Error{Code: "57P01"}),
+		"cannot connect now":              fmt.Errorf("KMS schema init failed: %w", &pq.Error{Code: "57P03"}),
+		"a connection failure":            fmt.Errorf("SSM schema init failed: %w", &pq.Error{Code: "08006"}),
+		"a bad connection":                fmt.Errorf("EventBridge schema init failed: %w", driver.ErrBadConn),
+		"the connection closed mid-query": fmt.Errorf("Kinesis schema init failed: %w", io.ErrUnexpectedEOF),
+	} {
+		if !pgUnreachable(err) {
+			t.Errorf("%s: not taken for unreachability", name)
+		}
+	}
+	for name, err := range map[string]error{
+		"no error":             nil,
+		"a permission error":   fmt.Errorf("SQS schema init failed: %w", &pq.Error{Code: "42501"}),
+		"a syntax error":       fmt.Errorf("SQS schema init failed: %w", &pq.Error{Code: "42601"}),
+		"a plain schema error": fmt.Errorf("SQS schema init failed: %w", errors.New("permission denied")),
+	} {
+		if pgUnreachable(err) {
+			t.Errorf("%s: taken for unreachability", name)
+		}
 	}
 }

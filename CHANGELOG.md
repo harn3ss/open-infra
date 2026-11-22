@@ -6,6 +6,16 @@ the product's public contract.
 
 ## Unreleased
 
+### Fixed — the AWS endpoint recovers when its database goes away during start-up
+- When the AWS endpoint starts while its shared Postgres is unavailable, it serves the services that need that
+  database as "not configured", then restarts itself once the database answers. A database that was shutting
+  down could answer the endpoint's first check and then refuse the next connection, during schema set-up.
+  The endpoint took that for a schema error and never restarted. SQS, SNS, KMS, Secrets Manager,
+  EventBridge, CloudWatch Logs, SSM, API Gateway, CloudWatch, Kinesis, DynamoDB Streams, Cognito and the
+  VPC resolver stayed down until someone restarted it. Without the VPC resolver, instances in a VPC with no
+  internet gateway could not resolve names or get their instance-role credentials. A connection lost during
+  schema set-up now counts as an unreachable database, so the endpoint restarts once the database is back.
+
 ### Added — IAM `UpdateAssumeRolePolicy`
 - A role's trust policy can be replaced after the role is made, with IAM's `UpdateAssumeRolePolicy`. The new
   document is kept as written: `GetRole` returns it, and `AssumeRole` evaluates its conditions (an

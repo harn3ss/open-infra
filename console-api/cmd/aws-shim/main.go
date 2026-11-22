@@ -320,7 +320,7 @@ func run(logger *slog.Logger) error {
 		}()
 		if initErr != nil {
 			logger.Warn("shared SQS/SNS/KMS/SecretsManager/EventBridge/CloudWatchLogs/SSM/APIGateway/CloudWatch/Kinesis/DynamoDBStreams/Cognito/Route53Resolver Postgres unavailable — those services answer 501 until it is reachable, then the shim restarts; the shim + Cedar enforcement stay up", slog.String("err", initErr.Error()))
-			if errors.Is(initErr, errPGUnreachable) {
+			if pgUnreachable(initErr) {
 				degradedPG["shared"] = sqsURI // a schema error stays degraded: a restart would only repeat it
 			}
 			sqsSt, snsSt, kmsSt, secretsSt, ebSt, cwlSt, ssmSt, apigwSt, apigwV1St, cwSt, kinesisSt, ddbStreamSt, cognitoSt = nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
