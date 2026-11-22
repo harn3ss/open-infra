@@ -594,6 +594,17 @@ func buildManifests(data []byte, opts DeployOptions) ([]builtResource, error) {
 	ctx := &stackCtx{template: t, resolver: r, caps: opts.Caps, namer: namer, signalURL: opts.SignalURL}
 	r.staticRef = func(id string) (string, bool) { return inStackRef(id, ctx) }
 	r.staticAtt = func(id, attr string) (string, bool) { return serviceAtt(id, attr, ctx) }
+	if opts.status != nil && len(opts.prior) > 0 {
+		// An update: an instance's UserData that embeds another instance's address gets it from an instance
+		// the stack already holds (one the update adds has none yet, and the instance embedding it refuses).
+		prior := opts.prior
+		held := map[string]bool{}
+		for _, p := range prior {
+			held[p.LogicalID] = true
+		}
+		r.instanceAttr = instanceAttrHook(context.Background(), opts.status, ctx, opts.Namespace,
+			func() []StackResource { return prior }, func(id string) bool { return held[id] })
+	}
 	if needsSignals(t) && opts.Signals == nil {
 		return nil, fmt.Errorf("the stack waits for resource signals (a CreationPolicy ResourceSignal or a WaitCondition), and this deploy path cannot receive them — deploy it through the aws-shim CloudFormation front door")
 	}
@@ -757,8 +768,9 @@ func Deploy(ctx context.Context, data []byte, opts DeployOptions, ap Applier) (*
 	// build-all-then-apply path below, unchanged — the new path is additive and never touches the common case.
 	// A nested stack (nested_stacks.go) is created at its point in the order too: its Outputs feed later
 	// resources' Fn::GetAtt. So is an Elastic IP allocation whose address a resource embeds.
+	// So is an instance whose address (Fn::GetAtt PrivateIp, say) another instance's UserData embeds.
 	if pt, perr := Parse(data); perr == nil && (hasCustomResources(pt) || hasAPIGatewayRestV1(pt) || hasNestedStacks(pt) ||
-		(opts.Caps.EC2AddressAPI && embedsEIPAddress(pt))) {
+		(opts.Caps.EC2AddressAPI && embedsEIPAddress(pt)) || embedsInstanceAttr(pt)) {
 		return deployInterleaved(ctx, data, opts, ap)
 	}
 
@@ -956,6 +968,58 @@ func embedsEIPAddress(t *Template) bool {
 	return false
 }
 
+// embedsInstanceAttr reports whether an instance's UserData embeds another in-stack instance's Ref or
+// Fn::GetAtt (its PrivateIp, say) — such a stack is created interleaved, so that instance is created, and
+// its address known, before the instance that embeds it is translated (resolver.instanceAttr).
+func embedsInstanceAttr(t *Template) bool {
+	for id, res := range t.Resources {
+		if res.Type != "AWS::EC2::Instance" || res.Properties["UserData"] == nil {
+			continue
+		}
+		if instanceEmbedded(t, id, res.Properties["UserData"]) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// instanceEmbedded is the in-stack instance other than self whose Ref or attribute v refers to ("" for none).
+func instanceEmbedded(t *Template, self string, v any) string {
+	r := newResolver(t, map[string]any{}, nil, map[string]any{})
+	r.resolve(v)
+	var ids []string
+	for ref := range r.refs {
+		if ref != self && t.Resources[ref].Type == "AWS::EC2::Instance" {
+			ids = append(ids, ref)
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
+}
+
+// instanceAttrHook is a resolver's instanceAttr: an in-stack instance's Ref or attribute, read from its live
+// status, for the instances exists admits (created, and complete).
+func instanceAttrHook(ctx context.Context, sr StatusReader, sctx *stackCtx, namespace string, resources func() []StackResource,
+	exists func(id string) bool) func(string, string) (any, bool) {
+	return func(id, attr string) (any, bool) {
+		if !exists(id) {
+			return nil, false
+		}
+		d := &deployedAttrs{ctx: ctx, sr: sr, sctx: sctx, namespace: namespace,
+			byID: map[string]StackResource{}, status: map[string]map[string]any{}, booting: map[string]vmBoot{}}
+		for _, r := range resources() {
+			d.byID[r.LogicalID] = r
+		}
+		if _, ok := d.byID[id]; !ok {
+			return nil, false
+		}
+		return d.lookup(id, attr)
+	}
+}
+
 // addressWaitCap bounds how long a create waits for an Elastic IP allocation's address before translating
 // a resource that embeds it (the address is usually assigned within seconds).
 const addressWaitCap = 5 * time.Minute
@@ -1105,6 +1169,13 @@ func deployInterleaved(ctx context.Context, data []byte, opts DeployOptions, ap 
 			}
 		}
 		return err
+	}
+
+	// An instance whose UserData embeds another's address (Fn::GetAtt PrivateIp) is translated once that
+	// instance, created before it, is complete: the address is read from it, as AWS fills it in.
+	if sr, ok := ap.(StatusReader); ok {
+		r.instanceAttr = instanceAttrHook(ctx, sr, sctx, opts.Namespace, func() []StackResource { return rec.Resources },
+			func(id string) bool { return completed[id] })
 	}
 
 	seen := objectSet{}

@@ -21,6 +21,14 @@ the product's public contract.
   available to containers. An account's `capacity.gpus` now also limits its GPU instances' cards, counted
   separately from its pods' GPUs.
 
+### Fixed — an instance's UserData can carry another instance's address
+- A CloudFormation instance whose UserData embeds another instance of the same stack (`Fn::GetAtt
+  Server.PrivateIp`, or `${Server.PrivateIp}` in `Fn::Sub`) booted without its UserData. The stack still
+  completed, with only a warning. Now the stack is created in order, as on AWS: the other instance is created
+  first, and its address is filled in. An update can embed an instance the stack already holds. An update
+  that adds the instance and embeds it in the same operation is refused, rather than booting an instance
+  without its script.
+
 ### Fixed — the AWS endpoint recovers when its database goes away during start-up
 - When the AWS endpoint starts while its shared Postgres is unavailable, it serves the services that need that
   database as "not configured", then restarts itself once the database answers. A database that was shutting

@@ -64,6 +64,11 @@ type resolver struct {
 	// its allocation — set where a stack's resources are created after the allocations they embed
 	// (eipAddressAtCreate: the interleaved create, and an update of a stack that holds them). Nil elsewhere.
 	addressOf func(id string) (string, bool)
+	// instanceAttr resolves an in-stack instance's Ref and Fn::GetAtt (its i- id, PrivateIp, …) from the
+	// instance itself once it exists — set where a resource is created after the instances it embeds (the
+	// interleaved create, for an instance already complete; an update, for the instances the stack holds),
+	// so an instance's UserData can carry another's address, as on AWS. Nil elsewhere (a plan or change set).
+	instanceAttr func(id, attr string) (any, bool)
 }
 
 func newResolver(t *Template, params, exports, pseudo map[string]any) *resolver {
@@ -275,6 +280,11 @@ func (r *resolver) ref(name string) any {
 				return v
 			}
 		}
+		if res.Type == "AWS::EC2::Instance" && r.instanceAttr != nil {
+			if v, ok := r.instanceAttr(name, ""); ok {
+				return v
+			}
+		}
 		if r.staticRef != nil && !r.staticRefBusy[name] {
 			if r.staticRefBusy == nil {
 				r.staticRefBusy = map[string]bool{}
@@ -346,6 +356,11 @@ func (r *resolver) getAtt(arg any) any {
 		}
 		if res.Type == "AWS::EC2::EIP" && attr == "PublicIp" && r.addressOf != nil {
 			if v, ok := r.addressOf(id); ok {
+				return v
+			}
+		}
+		if res.Type == "AWS::EC2::Instance" && r.instanceAttr != nil {
+			if v, ok := r.instanceAttr(id, attr); ok {
 				return v
 			}
 		}

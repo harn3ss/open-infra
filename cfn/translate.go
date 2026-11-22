@@ -1283,6 +1283,14 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 				// A plan or change set: the create fills the address in (the EIP's allocation is created first).
 				cav = append(cav, "UserData embeds Elastic IP "+eip+"'s address: the EIP is allocated before this instance is created, and the address is filled in then, as on AWS")
 			}
+		} else if inst := embeddedInstance(ctx, id, raw["UserData"]); inst != "" {
+			if ctx.resolver != nil && ctx.resolver.instanceAttr != nil {
+				// The create or update could not read the instance: never boot this one without its script.
+				f = append(f, Finding{"Resource " + id, "UserData embeds instance " + inst + "'s address (or another of its attributes), which is not known when this instance is created: a create fills it in once " + inst + " is created, and an update can embed only an instance the stack already holds (add " + inst + " in one update, and embed it in the next)"})
+			} else {
+				// A plan or change set: the create makes that instance first and fills its address in.
+				cav = append(cav, "UserData embeds instance "+inst+"'s address: "+inst+" is created first, and the address is filled in when this instance is created, as on AWS")
+			}
 		} else {
 			cav = append(cav, "UserData could not be statically resolved (Fn::Sub/Fn::Base64 over references) — it was NOT applied; provide literal user data or configure the VM natively")
 		}
@@ -6267,4 +6275,13 @@ func mapAt(v any, path ...string) (map[string]any, bool) {
 	}
 	m, ok := v.(map[string]any)
 	return m, ok
+}
+
+// embeddedInstance is the in-stack instance (other than id) whose Ref or attribute instance id's raw UserData
+// embeds, "" for none (or no stack to look in).
+func embeddedInstance(ctx *stackCtx, id string, raw any) string {
+	if ctx == nil || ctx.template == nil || raw == nil {
+		return ""
+	}
+	return instanceEmbedded(ctx.template, id, raw)
 }

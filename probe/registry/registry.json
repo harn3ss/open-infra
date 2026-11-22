@@ -577,7 +577,8 @@
         "ec2-isolated-vpc",
         "ec2-images",
         "ec2-windows-metadata",
-        "ec2-launch-limits"
+        "ec2-launch-limits",
+        "ec2-gpu"
       ],
       "refused": [],
       "service": "EC2",
@@ -604,7 +605,8 @@
         "ec2-isolated-vpc",
         "ec2-images",
         "ec2-windows-metadata",
-        "ec2-launch-limits"
+        "ec2-launch-limits",
+        "ec2-gpu"
       ],
       "refused": [],
       "service": "EC2",
