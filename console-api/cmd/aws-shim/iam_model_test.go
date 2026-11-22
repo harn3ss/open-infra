@@ -439,3 +439,52 @@ func between(s, a, b string) string {
 	}
 	return s
 }
+
+// UpdateAssumeRolePolicy replaces a role's trust policy as AWS does: the document is kept as written (GetRole
+// returns it, and AssumeRole evaluates its conditions from it) and its principals become spec.trust, exactly
+// as CreateRole would write them. A role that does not exist is NoSuchEntity, a document that is not a trust
+// policy is MalformedPolicyDocument, and a caller without iam:UpdateAssumeRolePolicy is AccessDenied, with
+// the trust unchanged.
+func TestIAM_UpdateAssumeRolePolicy(t *testing.T) {
+	h, dyn := iamWorld(t)
+	before := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::` + testMgmt + `:user/alice"},"Action":"sts:AssumeRole"}]}`
+	after := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::` + testMgmt + `:user/bob"},"Action":"sts:AssumeRole","Condition":{"IpAddress":{"aws:SourceIp":"198.51.100.7/32"}}}]}`
+	call(t, h, nil, iamAdmin, 200, "Action", "CreateRole", "RoleName", "app", "AssumeRolePolicyDocument", before)
+	call(t, h, nil, iamAdmin, 200, "Action", "CreateRole", "RoleName", "ref", "AssumeRolePolicyDocument", after)
+
+	if w := call(t, h, nil, iamAdmin, 200, "Action", "UpdateAssumeRolePolicy", "RoleName", "app", "PolicyDocument", after); !strings.Contains(w.Body.String(), "<UpdateAssumeRolePolicyResponse") {
+		t.Errorf("response: %s", w.Body.String())
+	}
+	u := object(t, dyn, roleEntity, iamHome, "app")
+	if got := u.GetAnnotations()[assumeRolePolicyAnnotation]; got != after {
+		t.Errorf("the trust document kept is %s, want the new one as written", got)
+	}
+	got, _, _ := unstructured.NestedStringSlice(u.Object, "spec", "trust")
+	want, _, _ := unstructured.NestedStringSlice(object(t, dyn, roleEntity, iamHome, "ref").Object, "spec", "trust")
+	if strings.Join(got, ",") != strings.Join(want, ",") || len(got) == 0 {
+		t.Errorf("spec.trust = %v, want %v (what CreateRole writes for the same document)", got, want)
+	}
+	if w := call(t, h, nil, iamAdmin, 200, "Action", "GetRole", "RoleName", "app"); !strings.Contains(w.Body.String(), "198.51.100.7") || strings.Contains(w.Body.String(), "alice") {
+		t.Errorf("GetRole must return the new trust policy: %s", w.Body.String())
+	}
+
+	if w := call(t, h, nil, iamAdmin, 404, "Action", "UpdateAssumeRolePolicy", "RoleName", "missing", "PolicyDocument", after); !strings.Contains(w.Body.String(), "<Code>NoSuchEntity</Code>") {
+		t.Errorf("missing role: %s", w.Body.String())
+	}
+	for _, bad := range []string{`not json`, `{"Version":"2012-10-17"}`} {
+		if w := call(t, h, nil, iamAdmin, 400, "Action", "UpdateAssumeRolePolicy", "RoleName", "app", "PolicyDocument", bad); !strings.Contains(w.Body.String(), "<Code>MalformedPolicyDocument</Code>") {
+			t.Errorf("%s: %s", bad, w.Body.String())
+		}
+	}
+	call(t, h, nil, iamAdmin, 400, "Action", "UpdateAssumeRolePolicy", "RoleName", "app")
+
+	// Refused before anything changes: an assumed role with no policy (IAM policy decides).
+	h.authz = checkerFor()
+	role := iam.Claims{Sub: "assumed-role/r/s", AssumedRole: "r"}
+	if w := call(t, h, nil, role, 403, "Action", "UpdateAssumeRolePolicy", "RoleName", "app", "PolicyDocument", before); !strings.Contains(w.Body.String(), "<Code>AccessDenied</Code>") {
+		t.Errorf("an assumed role with no policy: %s", w.Body.String())
+	}
+	if got := object(t, dyn, roleEntity, iamHome, "app").GetAnnotations()[assumeRolePolicyAnnotation]; got != after {
+		t.Errorf("a refused call changed the trust policy to %s", got)
+	}
+}

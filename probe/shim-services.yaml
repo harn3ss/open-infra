@@ -53,7 +53,7 @@ services:
     cell: "roles/policies/users → AWS policy JSON → Cedar"
     tier: proven
     sigv4: [iam]
-    probes: [iam, iam-timecond, iam-username-like, iam-login-profile, iam-mfa, iam-passedtoservice, iam-sourceip]
+    probes: [iam, iam-timecond, iam-username-like, iam-login-profile, iam-mfa, iam-passedtoservice, iam-sourceip, iam-update-trust]
   - name: KMS
     cell: "→ OpenBao Transit"
     tier: proven

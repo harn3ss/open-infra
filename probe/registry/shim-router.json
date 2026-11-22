@@ -603,6 +603,7 @@
         "UntagMFADevice",
         "UpdateAccessKey",
         "UpdateAccountPasswordPolicy",
+        "UpdateAssumeRolePolicy",
         "UpdateLoginProfile"
       ],
       "actions": [

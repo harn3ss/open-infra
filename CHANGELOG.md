@@ -6,6 +6,14 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — IAM `UpdateAssumeRolePolicy`
+- A role's trust policy can be replaced after the role is made, with IAM's `UpdateAssumeRolePolicy`. The new
+  document is kept as written: `GetRole` returns it, and `AssumeRole` evaluates its conditions (an
+  `aws:SourceIp` range, for example) from then on. A caller needs `iam:UpdateAssumeRolePolicy` on the role
+  and is refused with `AccessDenied` without it. A missing role is `NoSuchEntity`, and a document that is not
+  a trust policy is `MalformedPolicyDocument`. Before this, the only way to change a role's trust through the
+  AWS API was to delete the role and make it again.
+
 ### Fixed — logs are deleted after the log store's 7-day retention
 - The log store (Loki) was configured for 7 days of retention but never deleted anything. Its compactor
   enforces retention, and it was not switched on, so logs were kept until the disk filled. The compactor

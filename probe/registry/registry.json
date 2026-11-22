@@ -973,6 +973,7 @@
         "UntagMFADevice",
         "UpdateAccessKey",
         "UpdateAccountPasswordPolicy",
+        "UpdateAssumeRolePolicy",
         "UpdateLoginProfile"
       ],
       "probes": [
@@ -982,7 +983,8 @@
         "iam-login-profile",
         "iam-mfa",
         "iam-passedtoservice",
-        "iam-sourceip"
+        "iam-sourceip",
+        "iam-update-trust"
       ],
       "refused": [],
       "service": "IAM",
@@ -1659,7 +1661,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 652,
+    "operations": 653,
     "planOnly": 11,
     "refused": 11,
     "services": 32,

@@ -78,7 +78,7 @@ func (h *iamHandler) authFailure(w http.ResponseWriter, r *http.Request, request
 func verbForIAMOp(op string) (verb, resource string, ok bool) {
 	switch op {
 	case "CreateRole", "PutRolePolicy", "AttachRolePolicy", "DetachRolePolicy",
-		"PutRolePermissionsBoundary", "DeleteRolePermissionsBoundary":
+		"PutRolePermissionsBoundary", "DeleteRolePermissionsBoundary", "UpdateAssumeRolePolicy":
 		return "create", "roles", true
 	case "GetRole", "ListRoles", "ListAttachedRolePolicies", "ListRolePolicies", "GetRolePolicy":
 		return "get", "roles", true
@@ -252,6 +252,8 @@ func (h *iamHandler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.createRole(ctx, w, r, requestID)
 	case "GetRole":
 		h.getRole(ctx, w, r, requestID)
+	case "UpdateAssumeRolePolicy":
+		h.updateAssumeRolePolicy(ctx, w, r, requestID)
 	case "DeleteRole":
 		h.deleteRole(ctx, w, r, requestID)
 	case "ListRoles":
@@ -417,6 +419,38 @@ func (h *iamHandler) getRole(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 	h.writeResult(w, requestID, "GetRole", "<Role>"+h.roleXML(ctx, name, h.trustDocument(sc, u))+h.boundaryXML(ctx, sc, u)+"</Role>")
+}
+
+// updateAssumeRolePolicy replaces a role's trust policy, as AWS's UpdateAssumeRolePolicy does. The document
+// is kept as written, as CreateRole keeps it: GetRole returns it and AssumeRole evaluates its conditions.
+// The principals it trusts become the role's spec.trust.
+func (h *iamHandler) updateAssumeRolePolicy(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {
+	sc := h.scope(ctx)
+	v, err := required(r, "RoleName", "PolicyDocument")
+	if err != nil {
+		h.fail(w, requestID, err)
+		return
+	}
+	trust, err := parseTrustPolicy(v[1], sc.account)
+	if err != nil {
+		h.malformed(w, requestID, "PolicyDocument: "+err.Error())
+		return
+	}
+	err = h.mutate(ctx, roleEntity, sc.ns, v[0], func(u *unstructured.Unstructured) error {
+		ann := u.GetAnnotations()
+		if ann == nil {
+			ann = map[string]string{}
+		}
+		ann[assumeRolePolicyAnnotation] = v[1]
+		u.SetAnnotations(ann)
+		return unstructured.SetNestedField(u.Object, toAny(trust), "spec", "trust")
+	})
+	if err != nil {
+		h.fail(w, requestID, err)
+		return
+	}
+	h.audit(ctx, "UpdateAssumeRolePolicy", v[0], "allow", "")
+	h.writeResult(w, requestID, "UpdateAssumeRolePolicy", "")
 }
 
 func (h *iamHandler) deleteRole(ctx context.Context, w http.ResponseWriter, r *http.Request, requestID string) {

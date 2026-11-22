@@ -6937,7 +6937,7 @@
     "iam": {
       "actions": 4,
       "class": "aws",
-      "operations": 81,
+      "operations": 82,
       "service": "IAM",
       "tier": "proven"
     },
