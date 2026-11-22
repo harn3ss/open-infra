@@ -4,6 +4,9 @@ open-infra schedules GPU workloads and offers a Bedrock-like managed-inference
 service: declare `kind: Model` and get a GPU-backed, OpenAI-compatible endpoint
 gated by an API key — the same intent→infrastructure flow as `kind: Application`.
 
+A GPU card can instead be handed whole to GPU instances (EC2 `g4dn.xlarge`), which run its driver in the
+guest: see [GPU instances: operator guide](gpu-instances.md). Such a card is not available to containers.
+
 ## 1. GPU host prerequisites (per GPU node)
 
 GPUs are exposed to Kubernetes by the in-cluster **NVIDIA device plugin**

@@ -82,9 +82,9 @@ export const VIRTUALMACHINE_CREATE: CreateKindSpec = {
   sizing: {
     title: "Instance type",
     description:
-      "Pick an EC2-style instance type (vCPU / RAM). The root disk size is set separately below, like an EC2 root volume.",
+      "Pick an EC2-style instance type (vCPU / RAM, and a GPU for g4dn). The root disk size is set separately below, like an EC2 root volume.",
     groups: EC2_INSTANCE_TYPES,
-    fields: ["cpu", "memory"],
+    fields: ["cpu", "memory", "gpus"],
     defaultLabel: "Default (2 vCPU, 2 GiB)",
   },
   uiSchema: {

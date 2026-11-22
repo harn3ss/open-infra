@@ -95,6 +95,8 @@ func TestVM_StatusLaunchRefused(t *testing.T) {
 			"message": `Error encountered while creating DataVolumes: DataVolume myvm-root importer is not running due to an error: persistentvolumeclaims "myvm-root" is forbidden: exceeded quota: account-capacity-storage, requested: requests.storage=120Gi, used: requests.storage=127474629346, limited: requests.storage=200Gi`})},
 		{"no node with room", "InsufficientInstanceCapacity", withConds("ErrorUnschedulable", map[string]any{"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
 			"message": "0/7 nodes are available: 1 node(s) had untolerated taint, 6 Insufficient memory. preemption: 0/7 nodes are available"})},
+		{"every GPU instance card in use", "InsufficientInstanceCapacity", withConds("ErrorUnschedulable", map[string]any{"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
+			"message": "0/8 nodes are available: 1 Insufficient openinfra.dev/instance-gpu, 7 node(s) didn't match Pod's node affinity/selector. preemption: 0/8 nodes are available"})},
 		{"unschedulable for another reason", "", withConds("ErrorUnschedulable", map[string]any{"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
 			"message": "0/7 nodes are available: 7 node(s) didn't match PersistentVolume's node affinity."})},
 		{"a quota that is not the account's capacity", "", withConds("Starting", podRefused("someone-elses-quota"))},

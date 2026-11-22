@@ -44,6 +44,8 @@ spec:
                   message: "spec.rootDisk.encrypted requires spec.rootDisk.encryptionKey (the kind: EncryptionKey that keys the disk)"
                 - rule: "!has(self.rootDisk) || !self.rootDisk.encrypted || (!self.highAvailability && !has(self.existingRootClaim))"
                   message: "an encrypted root disk cannot be combined with highAvailability (there is no encrypted, live-migratable storage class) or existingRootClaim (an adopted disk is booted as it is)"
+                - rule: "!has(self.gpus) || self.gpus == 0 || !self.highAvailability"
+                  message: "a GPU instance (spec.gpus) cannot be highAvailability: a GPU given whole to an instance cannot live-migrate with it"
                 # How the root disk is stored is fixed at creation: switching it would replace the disk.
                 - rule: "has(self.rootDisk) == has(oldSelf.rootDisk) && (!has(self.rootDisk) || self.rootDisk == oldSelf.rootDisk)"
                   message: "spec.rootDisk is immutable: changing the root disk's encryption would replace the disk"
@@ -68,6 +70,7 @@ spec:
                     - windows-server-2025  # windows
                 cpu:      { type: integer, default: 2, minimum: 1, description: "Number of vCPU cores (KubeVirt domain.cpu.cores). Default 2." }
                 memory:   { type: string, default: "2Gi", description: "Guest RAM, e.g. 2Gi or 4Gi. Default 2Gi." }
+                gpus:     { type: integer, minimum: 0, maximum: 8, description: "GPUs given to the instance whole, as a GPU instance type's are (g4dn.xlarge: one): each a physical card on a node that offers GPU instances, passed through to the guest, which runs the card's own driver. Counted against its account's GPU capacity, and launched only while a card is free (InsufficientInstanceCapacity otherwise). Not with highAvailability: the card cannot live-migrate. Default 0. Takes effect when the instance next starts." }
                 diskSize: { type: string, default: "20Gi", description: "Root disk size, retained across reboots and stop/start. Default 20Gi. Linux grows its rootfs to fit via cloud-init; a Windows root is at least 100Gi, and its launch agent extends C: to a larger one on the instance's first boot (a Windows instance launched before the launch agent existed has a fixed 100Gi root)." }
                 rootDisk:
                   type: object

@@ -95,7 +95,7 @@
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 21
+      "probe": 23
     },
     "undeployableUses": [
       {
@@ -2487,15 +2487,17 @@
       ],
       "stackProbes": [
         "cfn-securitygroup",
+        "ec2-gpu",
         "ec2-images",
         "ec2-isolated-vpc",
         "ec2-launch-limits",
+        "ec2-sg-udp",
         "ec2-windows-metadata",
         "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 9,
+      "templateUses": 13,
       "verdict": "ok"
     },
     "AWS::EC2::InternetGateway": {
@@ -2664,10 +2666,11 @@
       "stackProbes": [
         "cfn-api",
         "cfn-securitygroup",
+        "ec2-sg-udp",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 4,
+      "templateUses": 6,
       "verdict": "ok"
     },
     "AWS::EC2::SecurityGroupEgress": {
@@ -2707,9 +2710,11 @@
       "signingNames": [
         "ec2"
       ],
-      "stackProbes": [],
+      "stackProbes": [
+        "ec2-sg-udp"
+      ],
       "status": "partial",
-      "templateUses": 0,
+      "templateUses": 1,
       "verdict": "ok"
     },
     "AWS::EC2::Subnet": {

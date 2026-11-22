@@ -3347,6 +3347,15 @@
       "how": "update",
       "kind": "VirtualMachine"
     },
+    "VirtualMachine.gpus": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "gpus",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
     "VirtualMachine.highAvailability": {
       "actions": [
         "ec2:ModifyInstanceAttribute"
@@ -7063,11 +7072,11 @@
   },
   "summary": {
     "fields": {
-      "aws": 372,
+      "aws": 373,
       "extra": 25,
       "operator": 0,
       "removed": 0,
-      "total": 397
+      "total": 398
     },
     "kinds": {
       "aws": 54,

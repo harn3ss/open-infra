@@ -5,7 +5,9 @@
 # Set on the account, never by hand: kind: Account spec.capacity labels each of the account's namespaces
 #     openinfra.dev/capacity-cpu      requests.cpu             (e.g. "16")
 #     openinfra.dev/capacity-memory   requests.memory          (e.g. "64Gi")
-#     openinfra.dev/capacity-gpu      requests.nvidia.com/gpu  (e.g. "1")
+#     openinfra.dev/capacity-gpu      requests.nvidia.com/gpu  (e.g. "1"), and the same number of GPU
+#                                     instances' cards, requests.openinfra.dev/instance-gpu (a quota counts
+#                                     each resource on its own, so each kind gets the limit)
 #     openinfra.dev/capacity-storage  requests.storage         (e.g. "500Gi")
 #     openinfra.dev/capacity-pods     count/pods               (e.g. "200")
 # Every label is always present on a member account's namespace; "none" means that limit is unset, and the
@@ -50,8 +52,9 @@ metadata:
     policies.kyverno.io/title: Account capacity
     policies.kyverno.io/category: Tenancy / resource governance
     policies.kyverno.io/description: >-
-      Generates native ResourceQuotas (requests.cpu, requests.memory, requests.nvidia.com/gpu,
-      requests.storage, count/pods) into each namespace an account's spec.capacity labels, bounding what
+      Generates native ResourceQuotas (requests.cpu, requests.memory, requests.nvidia.com/gpu and
+      requests.openinfra.dev/instance-gpu, requests.storage, count/pods) into each namespace an account's
+      spec.capacity labels, bounding what
       one account may reserve on the shared cluster.
     # kyverno.io is a CRD from the opt-in compliance component: skip the dry-run so a fresh/DR sync doesn't
     # deadlock before the CRD exists, and apply after Kyverno (wave 1).
@@ -127,6 +130,7 @@ spec:
           spec:
             hard:
               requests.nvidia.com/gpu: "{{request.object.metadata.labels.\"openinfra.dev/capacity-gpu\"}}"
+              requests.openinfra.dev/instance-gpu: "{{request.object.metadata.labels.\"openinfra.dev/capacity-gpu\"}}"
     - name: capacity-storage
       match:
         any:

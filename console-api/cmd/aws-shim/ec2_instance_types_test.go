@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
 	"github.com/harn3ss/open-infra/console-api/internal/iam"
 	"github.com/harn3ss/open-infra/policyengine"
 )
@@ -44,6 +46,37 @@ func TestEC2_DescribeInstanceTypes(t *testing.T) {
 	next = next[:strings.Index(next, "</nextToken>")]
 	if p2 := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstanceTypes"}, "MaxResults": {"5"}, "NextToken": {next}}).Body.String(); strings.Count(p2, "<instanceType>") != 5 || p2 == page {
 		t.Errorf("the next page: %s", p2)
+	}
+}
+
+// A GPU instance type is listed only where the installation offers GPU instances, with the installation's
+// card as its GpuInfo; elsewhere it does not exist, as a type outside a Region does not.
+func TestEC2_DescribeInstanceTypes_GPU(t *testing.T) {
+	h, _ := ec2Fixture(t)
+	w := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstanceTypes"}, "InstanceType.1": {"g4dn.xlarge"}})
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "InvalidInstanceType") {
+		t.Errorf("no GPU instances here: g4dn.xlarge does not exist: %d %s", w.Code, w.Body.String())
+	}
+	if b := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstanceTypes"}}).Body.String(); strings.Contains(b, "g4dn") || strings.Contains(b, "<gpuInfo>") {
+		t.Errorf("no GPU instances here: none listed: %s", b)
+	}
+
+	h.gpu = instanceGPU{name: "T4", manufacturer: "NVIDIA", memoryMiB: 16384}
+	b := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstanceTypes"}, "InstanceType.1": {"g4dn.xlarge"}}).Body.String()
+	mustHave(t, "g4dn.xlarge", b, []string{"<instanceType>g4dn.xlarge</instanceType>", "<defaultVCpus>4</defaultVCpus>",
+		"<gpuInfo><gpus><item><name>T4</name><manufacturer>NVIDIA</manufacturer><count>1</count><memoryInfo><sizeInMiB>16384</sizeInMiB></memoryInfo></item></gpus><totalGpuMemoryInMiB>16384</totalGpuMemoryInMiB></gpuInfo>"}, nil)
+	if b := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstanceTypes"}, "InstanceType.1": {"t3.xlarge"}}).Body.String(); strings.Contains(b, "<gpuInfo>") {
+		t.Errorf("t3.xlarge has no GPU: %s", b)
+	}
+
+	// An instance of that shape reports its type: the GPU makes it a g4dn.xlarge, not a t3.xlarge.
+	vm := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"cpu": int64(4), "memory": "16Gi", "gpus": int64(1)}}}
+	if got := claimInstanceType(vm); got != "g4dn.xlarge" {
+		t.Errorf("a 4 vCPU / 16Gi / 1 GPU instance is a g4dn.xlarge, got %q", got)
+	}
+	unstructured.RemoveNestedField(vm.Object, "spec", "gpus")
+	if got := claimInstanceType(vm); got != "t3.xlarge" {
+		t.Errorf("without its GPU it is a t3.xlarge, got %q", got)
 	}
 }
 

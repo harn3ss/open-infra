@@ -654,6 +654,28 @@ else
   RUN "$KUBECTL apply -f https://github.com/kubevirt/containerized-data-importer/releases/download/${CDI_VERSION}/cdi-operator.yaml"
   RUN "$KUBECTL apply -f https://github.com/kubevirt/containerized-data-importer/releases/download/${CDI_VERSION}/cdi-cr.yaml"
   RUN "$KUBECTL -n kubevirt wait --for=condition=Available kubevirt/kubevirt --timeout=300s || true"
+  # GPU instances (g4dn.xlarge): a GPU card handed whole to an instance by PCI passthrough instead of to
+  # containers. KubeVirt offers each card matching gpuInstances.pciVendorSelector, on a node where it is bound
+  # to vfio-pci at boot (scripts/gpu-instance-host.sh), as openinfra.dev/instance-gpu; the aws-shim's
+  # DescribeInstanceTypes reports the card from the openinfra-gpu-instances ConfigMap. Restart the aws-shim
+  # after changing it. See docs/gpu-instances.md.
+  GPU_SEL="$(yget gpuInstances.pciVendorSelector)"
+  if [ -n "$GPU_SEL" ]; then
+    GPU_NAME="$(yget gpuInstances.name)"; GPU_MAKER="$(yget gpuInstances.manufacturer)"; GPU_MIB="$(yget gpuInstances.memoryMiB)"
+    printf '%s' "$GPU_SEL" | grep -Eq '^[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}$' || DIE "gpuInstances.pciVendorSelector must be the card's vendor:device from lspci -nn (e.g. 10DE:1EB8), got '$GPU_SEL'"
+    printf '%s' "$GPU_NAME$GPU_MAKER" | grep -Eq '^[A-Za-z0-9 ._-]+$' || DIE "gpuInstances.name and manufacturer are required (letters, digits, spaces, . _ -)"
+    printf '%s' "$GPU_MIB" | grep -Eq '^[0-9]*$' || DIE "gpuInstances.memoryMiB must be a whole number of MiB"
+    LOG "GPU instances: PCI device ${GPU_SEL} (${GPU_MAKER} ${GPU_NAME}) offered to instances as openinfra.dev/instance-gpu"
+    RUN "$KUBECTL patch kubevirt kubevirt -n kubevirt --type=merge -p '{\"spec\":{\"configuration\":{\"permittedHostDevices\":{\"pciHostDevices\":[{\"pciVendorSelector\":\"${GPU_SEL}\",\"resourceName\":\"openinfra.dev/instance-gpu\"}]}}}}'"
+    if [ "$DRY_RUN" = 1 ]; then
+      printf '  + apply ConfigMap/openinfra-gpu-instances (%s %s, %s MiB)\n' "$GPU_MAKER" "$GPU_NAME" "$GPU_MIB"
+    else
+      $KUBECTL create namespace open-infra-aws-shim --dry-run=client -o yaml | $KUBECTL apply -f - >/dev/null
+      $KUBECTL -n open-infra-aws-shim create configmap openinfra-gpu-instances \
+        --from-literal=GPU_INSTANCE_GPU_NAME="$GPU_NAME" --from-literal=GPU_INSTANCE_GPU_MANUFACTURER="$GPU_MAKER" \
+        --from-literal=GPU_INSTANCE_GPU_MEMORY_MIB="$GPU_MIB" --dry-run=client -o yaml | $KUBECTL apply -f -
+    fi
+  fi
   # Holds the golden Windows image (cloned per-VM). Created empty; see docs.
   RUN "$KUBECTL create namespace openinfra-images --dry-run=client -o yaml | $KUBECTL apply -f -"
 fi

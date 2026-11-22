@@ -6,6 +6,21 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — GPU instances (`g4dn.xlarge`)
+- An instance can have a whole GPU of its own, as an EC2 G instance does. `InstanceType: g4dn.xlarge`
+  (4 vCPUs, 16 GiB, one GPU) in a CloudFormation stack, or `gpus: 1` on a virtual machine, gives the instance
+  one of the GPU cards the operator has set aside for GPU instances. The card is passed through to the
+  guest, which runs the card's own driver. `DescribeInstanceTypes` names the installation's card in
+  `GpuInfo` (its name, manufacturer and memory; on AWS a g4dn's is a T4), and lists the type only where a
+  card is set aside. The console's instance-type picker offers it.
+- A launch past the account's GPU limit fails with `VcpuLimitExceeded`. A launch while every card is in use
+  fails with `InsufficientInstanceCapacity`. A stack's instance fails with the same error and the stack
+  rolls back, as on AWS. A GPU instance cannot be highly available: a card cannot live-migrate.
+- Operators set a card aside with `scripts/gpu-instance-host.sh` on its node and `gpuInstances` in
+  `config.yaml` ([GPU instances: operator guide](docs/gpu-instances.md)). Such a card is no longer
+  available to containers. An account's `capacity.gpus` now also limits its GPU instances' cards, counted
+  separately from its pods' GPUs.
+
 ### Fixed — the AWS endpoint recovers when its database goes away during start-up
 - When the AWS endpoint starts while its shared Postgres is unavailable, it serves the services that need that
   database as "not configured", then restarts itself once the database answers. A database that was shutting

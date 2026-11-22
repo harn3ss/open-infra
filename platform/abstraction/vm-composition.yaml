@@ -72,6 +72,7 @@ spec:
             {{- $envCfg := index (.context | default dict) "apiextensions.crossplane.io/environment" | default dict }}
             {{- $cpu := $spec.cpu | default 2 }}
             {{- $memory := $spec.memory | default "2Gi" }}
+            {{- $gpus := int ($spec.gpus | default 0) }}
             {{- $disk := $spec.diskSize | default "20Gi" }}
             {{- /* running defaults true; explicit hasKey check because Sprig
                    `default` treats boolean false as empty (would force true). */}}
@@ -146,6 +147,7 @@ spec:
             {{- $lan := or $bridge $macvtap }}
             {{- /* highAvailability: root disk on Longhorn (migratable RWX block) + live migration */}}
             {{- $ha := $spec.highAvailability | default false }}
+            {{- if and (gt $gpus 0) $ha }}{{ fail "EC2 instance: a GPU instance (gpus) cannot be combined with high availability (live migration): a GPU given whole to an instance cannot move with it" }}{{ end }}
             {{- /* adopt an existing root PVC (migration/restore) instead of cloning the image */}}
             {{- $adopt := $spec.existingRootClaim | default "" }}
             {{- /* An encrypted root disk (spec.rootDisk.encrypted, the EC2 root BlockDeviceMapping
@@ -715,6 +717,16 @@ spec:
                                   name: macvtap
                               {{- end }}
                             networkInterfaceMultiqueue: true
+                            {{- if gt $gpus 0 }}
+                            # A GPU instance's GPUs (spec.gpus): whole cards on a node that offers GPU instances
+                            # (KubeVirt's permitted host devices, openinfra.dev/instance-gpu), passed through to the
+                            # guest, which runs the card's own driver, as a G instance's GPU is its own.
+                            gpus:
+                              {{- range $i := until $gpus }}
+                              - name: gpu{{ add $i 1 }}
+                                deviceName: openinfra.dev/instance-gpu
+                              {{- end }}
+                            {{- end }}
                         networks:
                           - name: default
                             pod: {}
@@ -8311,13 +8323,14 @@ spec:
             {{- /* The EC2 error the VM's launch is refused with (status.launchRefused): KubeVirt reports a launcher pod
                      its account's capacity refuses as Synchronized=False and a root disk it refuses as Failure=True,
                      both FailedCreate with the quota's name; a pod no node has room for, as PodScheduled=False,
-                     Unschedulable, Insufficient cpu/memory/GPU. AWS refuses such a launch at once with
+                     Unschedulable, Insufficient cpu/memory/GPU (a GPU instance's card among them: every card is in
+                     use). AWS refuses such a launch at once with
                      VcpuLimitExceeded, VolumeLimitExceeded, InstanceLimitExceeded or InsufficientInstanceCapacity. */}}
             {{-   range $c := (.conditions | default list) }}
             {{-     $ct := ($c.type | default "") }}{{- $cs := printf "%v" ($c.status | default "") }}{{- $cm := ($c.message | default "") }}
             {{-     if and (eq ($c.reason | default "") "FailedCreate") (regexMatch "exceeded quota: account-capacity-" $cm) (or (and (eq $ct "Synchronized") (eq $cs "False")) (and (eq $ct "Failure") (eq $cs "True"))) }}
             {{-       $refusedQuota = regexReplaceAll "(?s)^.*exceeded quota: account-capacity-([a-z]+).*$" $cm "${1}" }}
-            {{-     else if and (eq $ct "PodScheduled") (eq $cs "False") (eq ($c.reason | default "") "Unschedulable") (regexMatch "Insufficient (cpu|memory|nvidia)" $cm) }}
+            {{-     else if and (eq $ct "PodScheduled") (eq $cs "False") (eq ($c.reason | default "") "Unschedulable") (regexMatch "Insufficient (cpu|memory|nvidia|openinfra.dev/instance-gpu)" $cm) }}
             {{-       $launchRefused = "InsufficientInstanceCapacity" }}
             {{-     end }}
             {{-   end }}

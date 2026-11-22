@@ -1,14 +1,16 @@
 package main
 
 // DescribeInstanceTypes: the instance types an instance can be launched as here (an AWS::EC2::Instance's
-// InstanceType; cfn's table), with the vCPUs and memory the instance gets, as EC2 reports them. Only what
-// holds for the platform's instances is reported: every type is current-generation x86_64 on EBS-backed HVM,
-// on demand; the t2 family is Xen with one thread per core and BIOS boot, the others Nitro with two threads per
-// core and BIOS or UEFI boot. GPU, network and storage figures that the platform does not provide are left
-// out rather than invented.
+// InstanceType; cfn's table), with the vCPUs, memory and GPUs the instance gets, as EC2 reports them. Only
+// what holds for the platform's instances is reported: every type is current-generation x86_64 on EBS-backed
+// HVM, on demand; the t2 family is Xen with one thread per core and BIOS boot, the others Nitro with two
+// threads per core and BIOS or UEFI boot. A GPU instance type's GPU is the installation's own card (its
+// instanceGPU), and the GPU types are listed only where the installation offers GPU instances. Network and
+// storage figures that the platform does not provide are left out rather than invented.
 
 import (
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -27,7 +29,13 @@ func (h *ec2Handler) describeInstanceTypes(w http.ResponseWriter, r *http.Reques
 		writeEC2Error(w, http.StatusBadRequest, "InvalidParameterValue", requestID, msg)
 		return
 	}
-	types := cfn.InstanceTypes()
+	var types []cfn.InstanceTypeInfo
+	for _, t := range cfn.InstanceTypes() {
+		if t.GPUs > 0 && !h.gpu.offered() {
+			continue // no GPU instances here: the type is not offered, as one outside a Region is not
+		}
+		types = append(types, t)
+	}
 	known := make(map[string]bool, len(types))
 	for _, t := range types {
 		known[t.Name] = true
@@ -50,12 +58,31 @@ func (h *ec2Handler) describeInstanceTypes(w http.ResponseWriter, r *http.Reques
 		if len(want) > 0 && !want[t.Name] {
 			continue
 		}
-		it := instanceTypeOf(t)
+		it := instanceTypeOf(t, h.gpu)
 		if it.record().matches(fs) {
 			items = append(items, it.xml())
 		}
 	}
 	writePage(w, r, requestID, "DescribeInstanceTypes", "instanceTypeSet", items, 5, 100)
+}
+
+// instanceGPU is the card a GPU instance type's instance is given here: the installation's, which its
+// operator names (install.sh writes config.yaml's virtualization.gpuInstances into the shim's optional
+// openinfra-gpu-instances ConfigMap). Unnamed, the installation offers no GPU instances.
+type instanceGPU struct {
+	name, manufacturer string
+	memoryMiB          int64
+}
+
+func (g instanceGPU) offered() bool { return g.name != "" }
+
+// instanceGPUFromEnv is the installation's GPU instance card: GPU_INSTANCE_GPU_NAME (as EC2 names a GPU,
+// e.g. "T4"), GPU_INSTANCE_GPU_MANUFACTURER and GPU_INSTANCE_GPU_MEMORY_MIB.
+func instanceGPUFromEnv() instanceGPU {
+	g := instanceGPU{name: strings.TrimSpace(os.Getenv("GPU_INSTANCE_GPU_NAME")),
+		manufacturer: strings.TrimSpace(os.Getenv("GPU_INSTANCE_GPU_MANUFACTURER"))}
+	g.memoryMiB, _ = strconv.ParseInt(strings.TrimSpace(os.Getenv("GPU_INSTANCE_GPU_MEMORY_MIB")), 10, 64)
+	return g
 }
 
 // ec2InstanceType is one instance type as EC2 describes it.
@@ -67,15 +94,20 @@ type ec2InstanceType struct {
 	burstable, freeTier   bool
 	bootModes             []string
 	nvme, ebsOptimized    string
+	gpus                  int
+	gpu                   instanceGPU
 }
 
-func instanceTypeOf(t cfn.InstanceTypeInfo) ec2InstanceType {
+func instanceTypeOf(t cfn.InstanceTypeInfo, gpu instanceGPU) ec2InstanceType {
 	family := t.Name
 	if i := strings.IndexByte(family, '.'); i > 0 {
 		family = family[:i]
 	}
 	it := ec2InstanceType{name: t.Name, vcpus: t.VCPUs, memoryMiB: t.MemoryMiB, burstable: strings.HasPrefix(family, "t"),
-		freeTier: t.Name == "t2.micro" || t.Name == "t3.micro"}
+		freeTier: t.Name == "t2.micro" || t.Name == "t3.micro", gpus: t.GPUs}
+	if t.GPUs > 0 {
+		it.gpu = gpu
+	}
 	if family == "t2" {
 		// Xen: one thread per core, BIOS boot, no NVMe or EBS optimization.
 		it.hypervisor, it.cores, it.threads = "xen", t.VCPUs, 1
@@ -117,6 +149,7 @@ func (it ec2InstanceType) xml() string {
 		"<vCpuInfo><defaultVCpus>" + strconv.Itoa(it.vcpus) + "</defaultVCpus><defaultCores>" + strconv.Itoa(it.cores) +
 		"</defaultCores><defaultThreadsPerCore>" + strconv.Itoa(it.threads) + "</defaultThreadsPerCore></vCpuInfo>" +
 		"<memoryInfo><sizeInMiB>" + strconv.FormatInt(it.memoryMiB, 10) + "</sizeInMiB></memoryInfo>" +
+		it.gpuInfoXML() +
 		"<instanceStorageSupported>false</instanceStorageSupported>" +
 		"<ebsInfo><ebsOptimizedSupport>" + it.ebsOptimized + "</ebsOptimizedSupport><encryptionSupport>supported</encryptionSupport>" +
 		"<nvmeSupport>" + it.nvme + "</nvmeSupport></ebsInfo>" +
@@ -126,4 +159,23 @@ func (it ec2InstanceType) xml() string {
 	}
 	s.WriteString("</supportedBootModes>")
 	return s.String()
+}
+
+// gpuInfoXML is a GPU instance type's GpuInfo: its GPUs, each the installation's card ("" for a type with none).
+func (it ec2InstanceType) gpuInfoXML() string {
+	if it.gpus == 0 || !it.gpu.offered() {
+		return ""
+	}
+	n := strconv.Itoa(it.gpus)
+	gpu := xtag("name", it.gpu.name)
+	if it.gpu.manufacturer != "" {
+		gpu += xtag("manufacturer", it.gpu.manufacturer)
+	}
+	gpu += "<count>" + n + "</count>"
+	total := ""
+	if it.gpu.memoryMiB > 0 {
+		gpu += "<memoryInfo><sizeInMiB>" + strconv.FormatInt(it.gpu.memoryMiB, 10) + "</sizeInMiB></memoryInfo>"
+		total = "<totalGpuMemoryInMiB>" + strconv.FormatInt(it.gpu.memoryMiB*int64(it.gpus), 10) + "</totalGpuMemoryInMiB>"
+	}
+	return "<gpuInfo><gpus><item>" + gpu + "</item></gpus>" + total + "</gpuInfo>"
 }

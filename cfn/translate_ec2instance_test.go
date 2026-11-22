@@ -206,6 +206,37 @@ func TestTranslate_EC2Instance_OutOfCatalogRefusesWithHelp(t *testing.T) {
 	}
 }
 
+// A GPU instance type is its vCPUs and memory and its GPU, given whole to the instance (spec.gpus); its AWS
+// view names it again, and a type without a GPU asks for none.
+func TestTranslate_EC2Instance_GPUInstanceType(t *testing.T) {
+	m, fs := translateEC2Instance("Render", map[string]any{"ImageId": "windows-server-2022", "InstanceType": "g4dn.xlarge"}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("a g4dn.xlarge instance must translate cleanly: %s", findingsText(fs))
+	}
+	if m.Spec["cpu"] != 4 || m.Spec["memory"] != "16Gi" || m.Spec["gpus"] != 1 {
+		t.Fatalf("g4dn.xlarge should map to 4 vCPU / 16Gi / 1 GPU: %#v", m.Spec)
+	}
+	m, _ = translateEC2Instance("Web", map[string]any{"ImageId": "ubuntu-24.04", "InstanceType": "t3.xlarge"}, nil)
+	if _, ok := m.Spec["gpus"]; ok {
+		t.Fatalf("t3.xlarge has no GPU: %#v", m.Spec)
+	}
+	if got := InstanceTypeForShape(4, "16Gi", 1); got != "g4dn.xlarge" {
+		t.Errorf("a 4 vCPU / 16Gi / 1 GPU shape is g4dn.xlarge, got %q", got)
+	}
+	if got := InstanceTypeForShape(4, "16Gi", 0); got != "t3.xlarge" {
+		t.Errorf("a 4 vCPU / 16Gi shape without a GPU is t3.xlarge, got %q", got)
+	}
+	var g4 *InstanceTypeInfo
+	for _, it := range InstanceTypes() {
+		if it.Name == "g4dn.xlarge" {
+			g4 = &it
+		}
+	}
+	if g4 == nil || g4.GPUs != 1 || g4.VCPUs != 4 || g4.MemoryMiB != 16384 {
+		t.Errorf("InstanceTypes reports g4dn.xlarge with its GPU: %+v", g4)
+	}
+}
+
 // An unknown InstanceType is a caveat (VM uses defaults), not a block — consistent with RDS #114.
 func TestTranslate_EC2Instance_UnknownInstanceTypeCaveat(t *testing.T) {
 	m, fs := translateEC2Instance("Web", map[string]any{

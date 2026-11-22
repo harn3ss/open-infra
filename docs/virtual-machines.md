@@ -600,6 +600,34 @@ the VM stays stopped until then (a few minutes on a 20Gi root), and `status.root
 the copy is done so it never runs again. The temporary disk and the copy pod are deleted after the copy. An encrypted root is RWO, so it cannot be combined with `highAvailability` (no live migration)
 or `existingRootClaim`, and `rootDisk` is fixed at creation.
 
+## GPU instances (`g4dn.xlarge`)
+
+A GPU instance has a whole GPU to itself, as an EC2 G instance does. Launch an `AWS::EC2::Instance` with
+`InstanceType: g4dn.xlarge` (4 vCPUs, 16 GiB, one GPU), or give a `kind: VirtualMachine` `cpu: 4`,
+`memory: 16Gi` and `gpus: 1`.
+
+- **The GPU is the installation's card.** On AWS a g4dn's GPU is an NVIDIA T4. Here it is the card the
+  operator set aside for GPU instances, and `aws ec2 describe-instance-types --instance-types g4dn.xlarge`
+  names it in `GpuInfo` (its name, manufacturer and memory). An installation with no such card does not list
+  the type.
+- **Install the card's driver in the guest**, as on AWS: the manufacturer's ordinary driver for that card
+  (for an NVIDIA GeForce card, NVIDIA's GeForce driver). The card is passed through to the guest, so the
+  guest's driver talks to it directly.
+- **Display.** Windows sees two display adapters: a basic one, which the console screenshot captures, and the
+  GPU. The GPU drives a desktop only while a display, or a dummy display plug, is connected to one of the
+  card's outputs; otherwise install a virtual display driver in the guest. A Remote Desktop session
+  (Fleet Manager Remote Desktop included) draws through its own virtual display rather than the GPU unless
+  the guest's policy "Use hardware graphics adapters for all Remote Desktop Services sessions" is on.
+- **One instance per card.** A launch while every card is in use fails with
+  `InsufficientInstanceCapacity`, and one past the account's GPU limit with `VcpuLimitExceeded`. A
+  CloudFormation stack's instance fails with the same error, as on AWS.
+- **No live migration.** A GPU instance cannot be `highAvailability` (refused when it is created). When its
+  node is taken down for maintenance the instance stops; start it again once the node is back.
+- **Not modelled:** g4dn's local NVMe instance store, and GPU instance sizes other than `g4dn.xlarge`.
+
+The operator sets a card aside for GPU instances as [GPU instances: operator guide](gpu-instances.md)
+describes.
+
 ## Access
 
 - **Linux** — SSH as `openinfra`. Your `sshKey` is installed via cloud-init; a

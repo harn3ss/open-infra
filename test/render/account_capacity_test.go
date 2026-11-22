@@ -2,6 +2,7 @@ package render
 
 import (
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -10,11 +11,12 @@ import (
 // namespaces. The composition labels every namespace with each limit set; the compliance component's
 // account-capacity policy turns each label into a ResourceQuota.
 
-// Each label the composition writes, the ResourceQuota key the policy must turn it into.
+// Each label the composition writes, the ResourceQuota keys the policy must turn it into (sorted, joined by
+// a space): the GPU limit bounds both a pod's GPUs and a GPU instance's cards, each counted on its own.
 var capacityLabels = map[string]string{
 	"openinfra.dev/capacity-cpu":     "requests.cpu",
 	"openinfra.dev/capacity-memory":  "requests.memory",
-	"openinfra.dev/capacity-gpu":     "requests.nvidia.com/gpu",
+	"openinfra.dev/capacity-gpu":     "requests.nvidia.com/gpu requests.openinfra.dev/instance-gpu",
 	"openinfra.dev/capacity-storage": "requests.storage",
 	"openinfra.dev/capacity-pods":    "count/pods",
 }
@@ -139,15 +141,18 @@ func TestAccountCapacityPolicy_MatchesTheComposition(t *testing.T) {
 		switch mstr(gen, "kind") {
 		case "ResourceQuota":
 			hard, _ := mget(gen, "data", "spec", "hard").(map[string]any)
-			if len(keys) != 1 || len(hard) != 1 {
-				t.Fatalf("rule %s: one label, one quota key; got %v %v", mstr(rule, "name"), keys, hard)
+			if len(keys) != 1 || len(hard) == 0 {
+				t.Fatalf("rule %s: one label, its quota keys; got %v %v", mstr(rule, "name"), keys, hard)
 			}
+			var qs []string
 			for q, v := range hard {
-				quotas[keys[0]] = q
+				qs = append(qs, q)
 				if !strings.Contains(v.(string), keys[0]) {
 					t.Errorf("rule %s: %s must take its value from label %s, got %v", mstr(rule, "name"), q, keys[0], v)
 				}
 			}
+			sort.Strings(qs)
+			quotas[keys[0]] = strings.Join(qs, " ")
 		case "LimitRange":
 			for _, k := range keys {
 				defaults[k] = true

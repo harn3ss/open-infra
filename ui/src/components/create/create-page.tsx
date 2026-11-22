@@ -115,6 +115,7 @@ export function CreatePage(cfg: CreatePageConfig) {
     if (v.cpu != null) parts.push(`${v.cpu} vCPU`);
     if (v.memory != null) parts.push(`${v.memory} memory`);
     if (typeof v.gpu === "number") parts.push(v.gpu > 0 ? `${v.gpu} GPU (${v.gpuTier ?? "default class"})` : "no GPU");
+    if (typeof v.gpus === "number" && v.gpus > 0) parts.push(`${v.gpus} GPU`);
     return parts.length ? `Requests ${parts.join(", ")}.` : "";
   }, [sizingValues]);
 

@@ -145,6 +145,8 @@ type ec2Handler struct {
 	// imagesNS is the platform's image namespace, where account images' disks are kept (ec2_images.go);
 	// empty: account images are not served (DescribeImages lists the catalog alone).
 	imagesNS string
+	// gpu is the card a GPU instance is given here (ec2_instance_types.go); unnamed: no GPU instances.
+	gpu instanceGPU
 }
 
 func newEC2Handler(door *cfnDoorway, keys *ec2KeyStore, logger *slog.Logger) *ec2Handler {

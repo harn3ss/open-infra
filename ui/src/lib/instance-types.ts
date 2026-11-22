@@ -50,10 +50,16 @@ export function matchInstanceType(
   spec: Record<string, unknown> | undefined | null,
 ): InstanceType | undefined {
   if (!spec) return undefined;
+  // A VM's GPUs (spec.gpus) are part of its type: a GPU instance is its g4dn type, never the t3 or m5 type
+  // of the same cpu and memory, and a VM without GPUs is never a g4dn.
+  const gpus = (v: unknown) => Number(v ?? 0);
   for (const g of groups) {
     for (const t of g.types) {
       const keys = Object.keys(t.values);
-      if (keys.every((k) => spec[k] !== undefined && spec[k] !== null && String(spec[k]) === String(t.values[k]))) {
+      if (
+        gpus(spec["gpus"]) === gpus(t.values["gpus"]) &&
+        keys.every((k) => spec[k] !== undefined && spec[k] !== null && String(spec[k]) === String(t.values[k]))
+      ) {
         return t;
       }
     }
@@ -100,6 +106,14 @@ export const EC2_INSTANCE_TYPES: InstanceTypeGroup[] = [
       { id: "r5.large", label: "r5.large — 2 vCPU, 16 GiB", values: { cpu: 2, memory: "16Gi" } },
       { id: "r5.xlarge", label: "r5.xlarge — 4 vCPU, 32 GiB", values: { cpu: 4, memory: "32Gi" } },
       { id: "r5.2xlarge", label: "r5.2xlarge — 8 vCPU, 64 GiB", values: { cpu: 8, memory: "64Gi" } },
+    ],
+  },
+  {
+    // One whole GPU, the installation's card (DescribeInstanceTypes names it); offered where the operator
+    // has set a card aside for GPU instances.
+    label: "Accelerated computing (g4dn)",
+    types: [
+      { id: "g4dn.xlarge", label: "g4dn.xlarge — 4 vCPU, 16 GiB, 1 GPU", values: { cpu: 4, memory: "16Gi", gpus: 1 } },
     ],
   },
 ];
