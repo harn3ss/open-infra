@@ -560,6 +560,17 @@ if [ "$(yget components.openbao)" = "true" ]; then
 fi
 
 # ── 2a-edge. traefik as a host-network edge (networking.traefik.hostNetwork) ──
+# Elastic Load Balancing: the MetalLB pool network load balancers take their addresses from
+# (networking.loadBalancers.addressPool), written into the aws-shim's optional openinfra-load-balancers
+# ConfigMap (ELB_ADDRESS_POOL). Unset => MetalLB's default pool.
+ELB_POOL="$(yget networking.loadBalancers.addressPool)"
+if [ -n "$ELB_POOL" ]; then
+  printf '%s' "$ELB_POOL" | grep -Eq '^[a-z0-9]([-a-z0-9.]{0,61}[a-z0-9])?$' || DIE "networking.loadBalancers.addressPool must be a MetalLB IPAddressPool name, got '$ELB_POOL'"
+  LOG "network load balancers take their addresses from pool $ELB_POOL"
+  RUN "$KUBECTL create namespace open-infra-aws-shim --dry-run=client -o yaml | $KUBECTL apply -f -"
+  RUN "$KUBECTL -n open-infra-aws-shim create configmap openinfra-load-balancers --from-literal=ELB_ADDRESS_POOL=$ELB_POOL --dry-run=client -o yaml | $KUBECTL apply -f -"
+fi
+
 # The routed-ingress shape (an AWS ALB): traefik runs on the host network, so a LAN
 # request is answered by the node it reached, with no overlay DNAT on the way in and
 # no natOutgoing SNAT on the reply (kube-ovn's cross-node LoadBalancer return path is

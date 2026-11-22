@@ -6922,6 +6922,13 @@
       "service": "EKS",
       "tier": "proven"
     },
+    "elasticloadbalancing": {
+      "actions": 0,
+      "class": "aws",
+      "operations": 17,
+      "service": "Elastic Load Balancing",
+      "tier": "gated"
+    },
     "email": {
       "actions": 6,
       "class": "aws",
@@ -7103,11 +7110,11 @@
       "total": 165
     },
     "services": {
-      "aws": 35,
+      "aws": 36,
       "extra": 0,
       "operator": 0,
       "removed": 0,
-      "total": 35
+      "total": 36
     }
   }
 }

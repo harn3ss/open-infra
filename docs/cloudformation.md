@@ -254,8 +254,8 @@ per-type registry, the exceptions to the front-door gate and the breadth gaps ar
 | `AWS::ECR` | 1 | 0 | 0 | `ecr` |
 | `AWS::ECS` | 3 | 0 | 0 | `ecs` |
 | `AWS::EFS` | 0 | 1 | 0 | none |
-| `AWS::ElasticLoadBalancing` | 0 | 0 | 1 | none |
-| `AWS::ElasticLoadBalancingV2` | 0 | 0 | 4 | none |
+| `AWS::ElasticLoadBalancing` | 0 | 0 | 1 | `elasticloadbalancing` |
+| `AWS::ElasticLoadBalancingV2` | 0 | 0 | 4 | `elasticloadbalancing` |
 | `AWS::Events` | 2 | 0 | 0 | `events` |
 | `AWS::IAM` | 5 | 1 | 0 | `iam` |
 | `AWS::KMS` | 2 | 0 | 0 | `kms` |

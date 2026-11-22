@@ -6,6 +6,24 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — network load balancers (Elastic Load Balancing)
+- The Elastic Load Balancing API serves Network Load Balancers in front of EC2 instances (`aws elbv2`):
+  load balancers, instance target groups, TCP, UDP and TCP_UDP listeners, target registration and health,
+  and tags. As on AWS with instance targets, the client's own address reaches the instance, so its security
+  groups decide which clients get in. An instance whose VPC has no internet gateway answers a load
+  balancer's clients and still cannot start a connection out.
+- A load balancer is internet-facing (reachable from the network the installation's load-balancer addresses
+  are on) and is placed in a public subnet of the account's default VPC. Operators can now give a default VPC
+  without its internet gateway a public subnet for its load balancers (`spec.defaultVpc.publicSubnet` on the
+  account). EC2 lists the subnet, its route table to an internet gateway, and the gateway, while the default
+  subnet keeps no route to it.
+- IAM decides each action on the resource's ARN as AWS writes it (`loadbalancer/net/<name>/<id>`,
+  `targetgroup/<name>/<id>`, `listener/net/…`), `Describe*` on `"*"`, and `AddTags` for tags given at
+  creation. Application, Gateway and internal load balancers, load balancer security groups, TLS and IP
+  targets are refused, saying so. Health checks are not sent: a target is healthy while its instance runs.
+  CloudFormation does not create load balancers yet. See [Elastic Load Balancing](docs/elastic-load-balancing.md)
+  and its [operator guide](docs/elastic-load-balancing-operator.md) (`networking.loadBalancers.addressPool`).
+
 ### Added — GPU instances (`g4dn.xlarge`)
 - An instance can have a whole GPU of its own, as an EC2 G instance does. `InstanceType: g4dn.xlarge`
   (4 vCPUs, 16 GiB, one GPU) in a CloudFormation stack, or `gpus: 1` on a virtual machine, gives the instance

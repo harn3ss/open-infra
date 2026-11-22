@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 )
 
@@ -698,6 +701,18 @@ func roleDoorCases() []roleDoorCase {
 				h.authz = a
 				return serveWith(h, jsonOp(serviceQuotasTargetPrefix+"ListServices", `{}`), c)
 			}},
+		// --- Elastic Load Balancing: a Describe on "*", a delete on the load balancer's ARN (one that does not
+		// exist: an authorized delete of it succeeds, as on AWS) ---
+		{door: "elasticloadbalancing", op: "DescribeLoadBalancers", action: "elasticloadbalancing:DescribeLoadBalancers", resType: arnType, denyCode: "AccessDenied",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(elbRoleFixture(t, a), formOp(url.Values{"Action": {"DescribeLoadBalancers"}}), c)
+			}},
+		{door: "elasticloadbalancing", op: "DeleteLoadBalancer", action: "elasticloadbalancing:DeleteLoadBalancer", resType: arnType,
+			resName: "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/edge/0123456789abcdef", denyCode: "AccessDenied",
+			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
+				return serveWith(elbRoleFixture(t, a), formOp(url.Values{"Action": {"DeleteLoadBalancer"},
+					"LoadBalancerArn": {"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/net/edge/0123456789abcdef"}}), c)
+			}},
 		{door: "servicequotas", op: "RequestServiceQuotaIncrease", action: "servicequotas:RequestServiceQuotaIncrease", resType: "Quota", resName: "lambda/L-B99A9384", denyCode: "AccessDeniedException",
 			call: func(t *testing.T, a *dataplaneauthz.Checker, c iam.Claims) *httptest.ResponseRecorder {
 				h, _ := sqTestHandler(t, true)
@@ -828,4 +843,12 @@ func TestSTS_GetCallerIdentityNeedsNoPolicy(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "assumed-role/"+ecrTestRole) {
 		t.Fatalf("GetCallerIdentity for a role session: status %d body %s", w.Code, w.Body.String())
 	}
+}
+
+// elbRoleFixture is the Elastic Load Balancing front door over the EC2 fixture, deciding with a.
+func elbRoleFixture(t *testing.T, a *dataplaneauthz.Checker) *elbHandler {
+	t.Helper()
+	ec2H, _ := ec2Fixture(t)
+	ec2H.door.authz = a
+	return newELBHandler(ec2H, fake.NewSimpleClientset(), "shim-ns", "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 }

@@ -325,6 +325,35 @@ subjects:
     name: aws-shim
     namespace: open-infra-aws-shim
 ---
+# Elastic Load Balancing (elbv2.go): each network load balancer is a LoadBalancer Service in this namespace,
+# without a selector, and the EndpointSlices the shim writes from its targets' addresses (its records are
+# Secrets here, under aws-shim-keys). Scoped to this namespace: the shim writes no Service or EndpointSlice
+# in an account's namespace, and an EndpointSlice here reaches an instance only at the address IAM let a
+# RegisterTargets name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aws-shim-elbv2
+  namespace: open-infra-aws-shim
+rules:
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aws-shim-elbv2
+  namespace: open-infra-aws-shim
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: aws-shim-elbv2 }
+subjects:
+  - kind: ServiceAccount
+    name: aws-shim
+    namespace: open-infra-aws-shim
+---
 # kind: EmailSender's credential setup (abstraction/emailsender-composition.yaml): one Job per claim, in
 # this namespace, mints the claim's IAM user's access key — an iam-ak-<id> Secret holding the key and the
 # SES SMTP password derived from it, owned by the claim's composite so it goes with the claim. Create only:
@@ -1498,6 +1527,10 @@ spec:
             # virtualization.gpuInstances: GPU_INSTANCE_GPU_NAME, GPU_INSTANCE_GPU_MANUFACTURER,
             # GPU_INSTANCE_GPU_MEMORY_MIB. Absent = the installation offers no GPU instances.
             - configMapRef: { name: openinfra-gpu-instances, optional: true }
+            # The address pool network load balancers take their addresses from (ELB_ADDRESS_POOL, a MetalLB
+            # IPAddressPool), in an optional ConfigMap `openinfra-load-balancers` that install.sh writes from
+            # config.yaml's networking.loadBalancers.addressPool. Absent = MetalLB's default pool.
+            - configMapRef: { name: openinfra-load-balancers, optional: true }
             # How far IAM policy decides (IAM_AUTHZ legacy|shadow|enforce), set by the IAM cutover
             # (scripts/iam-cutover.sh) in an optional ConfigMap `openinfra-iam` kept out of git — so ArgoCD's
             # self-heal never undoes a cutover step, and absent means legacy.

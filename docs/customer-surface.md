@@ -27,8 +27,8 @@ by `probe/shimgen.py`), and CI fails when a capability a customer can reach has 
 | Resource properties (spec fields) | 373 | 25 | 0 | 0 | 398 |
 | Console API routes | 122 | 1 | 1 | 0 | 124 |
 | Console screens | 158 | 4 | 3 | 0 | 165 |
-| AWS APIs (signing names) | 35 | 0 | 0 | 0 | 35 |
-| **All** | **742** | **32** | **5** | **0** | **779** |
+| AWS APIs (signing names) | 36 | 0 | 0 | 0 | 36 |
+| **All** | **743** | **32** | **5** | **0** | **780** |
 
 11 of the console routes need no authorization (sign-in, sign-out, who-am-I, the console's own configuration), as AWS's sign-in and console metadata need none. 2 platform extras and 14 properties in Kubernetes vocabulary await the operator's ruling (below).
 <!-- END shimgen:surface-summary -->
@@ -476,6 +476,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | ECR | `ecr` | proven | 37 |
 | ECS | `ecs` | proven | 16 |
 | EKS | `eks` | proven | 4 |
+| Elastic Load Balancing | `elasticloadbalancing` | gated | 17 |
 | EventBridge | `events` | proven | 14 |
 | Glue | `glue` | proven | 32 |
 | IAM | `iam` | proven | 82 |

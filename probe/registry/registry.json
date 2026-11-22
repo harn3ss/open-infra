@@ -91,11 +91,33 @@
           "athena"
         ],
         "templateUses": 0
+      },
+      {
+        "exampleApps": 0,
+        "knownTypes": [
+          "AWS::ElasticLoadBalancing::LoadBalancer",
+          "AWS::ElasticLoadBalancingV2::Listener",
+          "AWS::ElasticLoadBalancingV2::ListenerRule",
+          "AWS::ElasticLoadBalancingV2::LoadBalancer",
+          "AWS::ElasticLoadBalancingV2::TargetGroup"
+        ],
+        "namespaces": [
+          "AWS::ElasticLoadBalancing",
+          "AWS::ElasticLoadBalancingV2"
+        ],
+        "operations": 17,
+        "probes": 0,
+        "rank": 7,
+        "service": "Elastic Load Balancing",
+        "signingNames": [
+          "elasticloadbalancing"
+        ],
+        "templateUses": 0
       }
     ],
     "sources": {
       "cfn/testdata": 9,
-      "probe": 23
+      "probe": 24
     },
     "undeployableUses": [
       {
@@ -753,6 +775,39 @@
       ],
       "service": "EKS",
       "tier": "proven"
+    },
+    "elasticloadbalancing": {
+      "actions": [],
+      "conditional": true,
+      "deployableTypes": [],
+      "handler": "elbHandler",
+      "namespaces": [
+        "AWS::ElasticLoadBalancing",
+        "AWS::ElasticLoadBalancingV2"
+      ],
+      "operations": [
+        "AddTags",
+        "CreateListener",
+        "CreateLoadBalancer",
+        "CreateTargetGroup",
+        "DeleteListener",
+        "DeleteLoadBalancer",
+        "DeleteTargetGroup",
+        "DeregisterTargets",
+        "DescribeListeners",
+        "DescribeLoadBalancerAttributes",
+        "DescribeLoadBalancers",
+        "DescribeTags",
+        "DescribeTargetGroupAttributes",
+        "DescribeTargetGroups",
+        "DescribeTargetHealth",
+        "RegisterTargets",
+        "RemoveTags"
+      ],
+      "probes": [],
+      "refused": [],
+      "service": "Elastic Load Balancing",
+      "tier": "gated"
     },
     "email": {
       "actions": [
@@ -1663,11 +1718,11 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 653,
+    "operations": 670,
     "planOnly": 11,
     "refused": 11,
-    "services": 32,
-    "signingNames": 35,
+    "services": 33,
+    "signingNames": 36,
     "violations": 0
   },
   "types": {
@@ -2495,11 +2550,12 @@
         "ec2-launch-limits",
         "ec2-sg-udp",
         "ec2-windows-metadata",
+        "elbv2-nlb",
         "iam-passedtoservice",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 13,
+      "templateUses": 14,
       "verdict": "ok"
     },
     "AWS::EC2::InternetGateway": {
@@ -2669,10 +2725,11 @@
         "cfn-api",
         "cfn-securitygroup",
         "ec2-sg-udp",
+        "elbv2-nlb",
         "ssm-runcommand"
       ],
       "status": "partial",
-      "templateUses": 6,
+      "templateUses": 7,
       "verdict": "ok"
     },
     "AWS::EC2::SecurityGroupEgress": {
@@ -3071,12 +3128,17 @@
     "AWS::ElasticLoadBalancing::LoadBalancer": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "elasticloadbalancing"
+      ],
       "kind": "",
       "namespace": "AWS::ElasticLoadBalancing",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeLoadBalancerAttributes",
+        "DescribeLoadBalancers"
+      ],
+      "service": "Elastic Load Balancing",
+      "serviceTier": "gated",
       "signingNames": [
         "elasticloadbalancing"
       ],
@@ -3088,12 +3150,16 @@
     "AWS::ElasticLoadBalancingV2::Listener": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "elasticloadbalancing"
+      ],
       "kind": "",
       "namespace": "AWS::ElasticLoadBalancingV2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeListeners"
+      ],
+      "service": "Elastic Load Balancing",
+      "serviceTier": "gated",
       "signingNames": [
         "elasticloadbalancing"
       ],
@@ -3105,12 +3171,14 @@
     "AWS::ElasticLoadBalancingV2::ListenerRule": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "elasticloadbalancing"
+      ],
       "kind": "",
       "namespace": "AWS::ElasticLoadBalancingV2",
       "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "service": "Elastic Load Balancing",
+      "serviceTier": "gated",
       "signingNames": [
         "elasticloadbalancing"
       ],
@@ -3122,12 +3190,17 @@
     "AWS::ElasticLoadBalancingV2::LoadBalancer": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "elasticloadbalancing"
+      ],
       "kind": "",
       "namespace": "AWS::ElasticLoadBalancingV2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeLoadBalancerAttributes",
+        "DescribeLoadBalancers"
+      ],
+      "service": "Elastic Load Balancing",
+      "serviceTier": "gated",
       "signingNames": [
         "elasticloadbalancing"
       ],
@@ -3139,12 +3212,17 @@
     "AWS::ElasticLoadBalancingV2::TargetGroup": {
       "deployable": false,
       "flattened": false,
-      "frontDoor": [],
+      "frontDoor": [
+        "elasticloadbalancing"
+      ],
       "kind": "",
       "namespace": "AWS::ElasticLoadBalancingV2",
-      "readCalls": [],
-      "service": null,
-      "serviceTier": null,
+      "readCalls": [
+        "DescribeTargetGroupAttributes",
+        "DescribeTargetGroups"
+      ],
+      "service": "Elastic Load Balancing",
+      "serviceTier": "gated",
       "signingNames": [
         "elasticloadbalancing"
       ],

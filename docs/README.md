@@ -21,7 +21,7 @@ short *Operators* note; skip it unless you run the platform.
 |---|---|
 | Identity and access | [Console sign-in](auth.md) · [IAM](iam.md) · [Policy engine](policy-engine.md) · [Cognito-fronted AppSync auth](auth-migration.md) |
 | Compute | [Virtual machines (EC2)](virtual-machines.md) · [Auto Scaling groups](auto-scaling-groups.md) · [Functions (Lambda)](serverless.md) · [Scheduled jobs](scheduled-jobs.md) · [Workflows (Step Functions)](state-machines.md) |
-| Networking and delivery | [Security groups](security-groups.md) · [Static sites (CloudFront)](static-sites.md) · [API Gateway coverage](api-gateway-coverage.md) · [Email (SES)](email.md) |
+| Networking and delivery | [Security groups](security-groups.md) · [Network load balancers (ELB)](elastic-load-balancing.md) · [Static sites (CloudFront)](static-sites.md) · [API Gateway coverage](api-gateway-coverage.md) · [Email (SES)](email.md) |
 | Data | [Databases (RDS)](databases.md) · [Streaming](streaming.md) · [Data flows](dataflow.md) · [Query (Athena + Glue)](query.md) · [Replication](replication.md) · [Migrations (DMS)](migrations.md) · [Lineage](lineage.md) · [Data classification](data-classification.md) |
 | Storage and protection | [Snapshots](snapshots.md) · [Backup](backup.md) · [Encryption (KMS)](encryption.md) · [Crypto-erase](destruction.md) · [Private CA](certificate-authority.md) · [Parameters (SSM)](parameters.md) |
 | Machine learning | [GPU and managed inference](gpu.md) · [Training jobs](training-jobs.md) · [Tuning jobs](tuning-jobs.md) · [Processing jobs](processing-jobs.md) · [Batch transform](batch-transform.md) · [Model registry](model-registry.md) · [Model monitoring](model-monitor.md) · [Feature store](feature-store.md) |

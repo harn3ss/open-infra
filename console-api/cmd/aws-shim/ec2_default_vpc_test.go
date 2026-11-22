@@ -168,3 +168,60 @@ func TestEC2DefaultVPC_InstanceInItsDefaultSubnet(t *testing.T) {
 	w = ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstances"}, "Filter.1.Name": {"vpc-id"}, "Filter.1.Value.1": {d.vpcID()}})
 	mustHave(t, "vpc-id filter", w.Body.String(), []string{"i-0aaaaaaaaaaaaaaa1"}, nil)
 }
+
+// A member account's default VPC without its internet gateway, with a public subnet (its kind: Account's
+// spec.defaultVpc.publicSubnet): EC2 lists the public subnet beside the default one, an internet gateway
+// attached to the VPC, the public subnet's route table sending 0.0.0.0/0 to it and the main route table (the
+// default subnet's) still without, and the default subnet's network ACL keeping it inside the platform while
+// the default ACL, allowing everything, is the public subnet's.
+func TestEC2DefaultVPC_PublicSubnetForLoadBalancers(t *testing.T) {
+	h, dyn, _ := structuralFixture(t)
+	h.door.authz = doorAccountsAuthz(t)
+	ctx := context.Background()
+	sub := kubeovnSubnet("default-vpc-"+testMember, "172.31.16.0/20", 4090)
+	sub.Object["spec"].(map[string]any)["natOutgoing"] = false
+	if _, err := dyn.Resource(kubeovnSubnetGVR).Create(ctx, sub, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	acct := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "organizations.openinfra.dev/v1", "kind": "Account",
+		"metadata": map[string]any{"name": testMember},
+		"spec": map[string]any{"defaultVpc": map[string]any{"subnetCidr": "172.31.16.0/20", "internetGateway": false,
+			"publicSubnet": map[string]any{"subnetCidr": "172.31.240.0/24"}}}}}
+	if _, err := h.door.shimDyn.Resource(gvrAccounts).Create(ctx, acct, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	member := memberCtx()
+	d := &defaultVPC{account: testMember}
+
+	b := ec2CallIn(h, member, ec2Bob, url.Values{"Action": {"DescribeSubnets"}}).Body.String()
+	mustHave(t, "the public subnet", b, []string{"<subnetId>" + d.publicSubnetID() + "</subnetId>", "<cidrBlock>172.31.240.0/24</cidrBlock>",
+		"<availableIpAddressCount>251</availableIpAddressCount>", "<subnetId>" + d.subnetID() + "</subnetId>"}, nil)
+	b = ec2CallIn(h, member, ec2Bob, url.Values{"Action": {"DescribeSubnets"}, "SubnetId.1": {d.publicSubnetID()}}).Body.String()
+	mustHave(t, "the public subnet by id", b, []string{"<defaultForAz>false</defaultForAz>", "<mapPublicIpOnLaunch>false</mapPublicIpOnLaunch>"},
+		[]string{"<subnetId>" + d.subnetID() + "</subnetId>"})
+
+	b = ec2CallIn(h, member, ec2Bob, url.Values{"Action": {"DescribeInternetGateways"}}).Body.String()
+	mustHave(t, "the gateway the public subnet attaches", b, []string{d.igwID(), d.vpcID()}, nil)
+
+	b = ec2CallIn(h, member, ec2Bob, url.Values{"Action": {"DescribeRouteTables"}, "Filter.1.Name": {"association.subnet-id"},
+		"Filter.1.Value.1": {d.publicSubnetID()}}).Body.String()
+	mustHave(t, "the public subnet's route table", b, []string{d.publicRtbID(), "<destinationCidrBlock>0.0.0.0/0</destinationCidrBlock><gatewayId>" + d.igwID()}, []string{"<routeTableId>" + d.rtbID() + "</routeTableId>"})
+	b = ec2CallIn(h, member, ec2Bob, url.Values{"Action": {"DescribeRouteTables"}, "RouteTableId.1": {d.rtbID()}}).Body.String()
+	if !strings.Contains(b, "<main>true</main>") || strings.Contains(b, "0.0.0.0/0") {
+		t.Errorf("the main route table (the default subnet's) must keep no route to the gateway: %s", b)
+	}
+
+	b = ec2CallIn(h, member, ec2Bob, url.Values{"Action": {"DescribeNetworkAcls"}, "NetworkAclId.1": {d.isolatedACLID()}}).Body.String()
+	mustHave(t, "the default subnet's ACL", b, []string{"<subnetId>" + d.subnetID() + "</subnetId>", "<cidrBlock>10.43.0.2/32</cidrBlock>",
+		"<default>false</default>"}, []string{d.publicSubnetID()})
+	b = ec2CallIn(h, member, ec2Bob, url.Values{"Action": {"DescribeNetworkAcls"}, "NetworkAclId.1": {d.aclID()}}).Body.String()
+	mustHave(t, "the default ACL, the public subnet's", b, []string{"<subnetId>" + d.publicSubnetID() + "</subnetId>", "<default>true</default>"},
+		[]string{"<subnetId>" + d.subnetID() + "</subnetId>", "10.43.0.2/32"})
+
+	// A CIDR that cannot be a public subnet of the VPC is none.
+	for _, bad := range []string{"10.0.0.0/24", "172.31.16.0/24", "172.31.240.1/24", "172.31.0.0/30", "nonsense"} {
+		if got := publicSubnetCIDR(bad, "172.31.16.0/20"); got != "" {
+			t.Errorf("publicSubnetCIDR(%q) = %q, want none", bad, got)
+		}
+	}
+}

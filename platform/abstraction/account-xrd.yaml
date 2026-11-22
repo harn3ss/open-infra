@@ -216,6 +216,23 @@ spec:
                         traffic may leave only for the platform's own networks (its AWS endpoints, DNS, the
                         cluster's services), enforced by the subnet's network ACL; EC2 then lists no internet
                         gateway for it and its route table no 0.0.0.0/0.
+                    publicSubnet:
+                      type: object
+                      description: >-
+                        A public subnet of the default VPC, for the account's internet-facing load balancers
+                        (Elastic Load Balancing): its route table sends 0.0.0.0/0 to the VPC's internet gateway.
+                        With internetGateway false, it attaches an internet gateway to the VPC for itself
+                        alone: the default subnet keeps its route table with no route to it, so its instances
+                        still reach nothing outside the platform and answer only the traffic a load balancer
+                        brings them. The subnet holds the load balancers alone (no instance is launched in
+                        it); their addresses are the installation's load-balancer addresses, reachable from
+                        the network the platform's addresses are on.
+                      required: [subnetCidr]
+                      properties:
+                        subnetCidr:
+                          type: string
+                          pattern: '^172\.31\.([0-9]{1,3})\.([0-9]{1,3})/(1[6-9]|2[0-8])$'
+                          description: "The public subnet's CIDR: inside 172.31.0.0/16 and outside the default subnet (e.g. 172.31.240.0/24)."
                 ses:
                   type: object
                   description: >-

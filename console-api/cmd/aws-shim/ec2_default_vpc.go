@@ -12,10 +12,18 @@ package main
 // naming the subnet's id (an ECS service's NetworkConfiguration, an EC2 instance's SubnetId) and, in a default
 // VPC without its internet gateway, every ECS task and every instance that names no subnet runs in it; nothing
 // else is placed in it. Its ids are derived from the account, so they are stable and AWS-shaped.
+//
+// A member account's default VPC may also have a public subnet (its kind: Account's
+// spec.defaultVpc.publicSubnet): a second subnet whose route table sends 0.0.0.0/0 to the VPC's internet
+// gateway, where the account's internet-facing load balancers are placed (elbv2.go). In a default VPC without
+// its internet gateway, the public subnet attaches one for itself alone: the default subnet keeps its route
+// table with no route to it, so the instances there still reach nothing outside the platform. The public
+// subnet holds no instances (none is launched into it here); its addresses are the load balancers'.
 
 import (
 	"context"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -38,6 +46,9 @@ type defaultVPC struct {
 	// internet: the default VPC has its internet gateway (its subnet is NATed out). false is one whose
 	// gateway was removed (the account's spec.defaultVpc.internetGateway): no gateway, no 0.0.0.0/0 route.
 	internet bool
+	// public is the CIDR of its public subnet ("" when it has none): the account's
+	// spec.defaultVpc.publicSubnet, for its internet-facing load balancers.
+	public string
 }
 
 func (d *defaultVPC) vpcID() string { return shortHashID("vpc-", "default-vpc/"+d.account, 17) }
@@ -47,6 +58,28 @@ func (d *defaultVPC) subnetID() string {
 func (d *defaultVPC) igwID() string { return shortHashID("igw-", "default-igw/"+d.account, 17) }
 func (d *defaultVPC) rtbID() string { return shortHashID("rtb-", "default-route-table/"+d.account, 17) }
 func (d *defaultVPC) aclID() string { return shortHashID("acl-", "default-network-acl/"+d.account, 17) }
+
+// The public subnet's ids: the subnet, its route table, and (in a VPC without its internet gateway) the
+// network ACL the default subnet keeps once the default ACL is the public subnet's.
+func (d *defaultVPC) publicSubnetID() string {
+	return shortHashID("subnet-", "public-subnet/"+d.account, 17)
+}
+func (d *defaultVPC) publicRtbID() string {
+	return shortHashID("rtb-", "public-route-table/"+d.account, 17)
+}
+func (d *defaultVPC) isolatedACLID() string {
+	return shortHashID("acl-", "isolated-network-acl/"+d.account, 17)
+}
+
+// hasGateway reports whether an internet gateway is attached to the default VPC: its own (internet), or
+// the one its public subnet routes to.
+func (d *defaultVPC) hasGateway() bool { return d.internet || d.public != "" }
+
+// isPublicSubnet reports whether subnet (a subnet id) routes 0.0.0.0/0 to the VPC's internet gateway: the
+// default subnet while the VPC has its own gateway, the public subnet always.
+func (d *defaultVPC) isPublicSubnet(subnet string) bool {
+	return (subnet == d.subnetID() && d.internet) || (d.public != "" && subnet == d.publicSubnetID())
+}
 
 func (d *defaultVPC) state() string {
 	if d.ready {
@@ -93,7 +126,32 @@ func (h *cfnDoorway) defaultVPC(ctx context.Context) *defaultVPC {
 	if err != nil {
 		return nil
 	}
-	return defaultVPCFrom(h.accountFor(ctx), u)
+	d := defaultVPCFrom(h.accountFor(ctx), u)
+	if d != nil && isMemberRequest(ctx) {
+		// Its public subnet, from the member account's kind: Account (spec.defaultVpc.publicSubnet).
+		if a, aerr := h.shimDyn.Resource(gvrAccounts).Get(ctx, callerAccount(ctx), metav1.GetOptions{}); aerr == nil {
+			cidr, _, _ := unstructured.NestedString(a.Object, "spec", "defaultVpc", "publicSubnet", "subnetCidr")
+			d.public = publicSubnetCIDR(cidr, d.cidr)
+		}
+	}
+	return d
+}
+
+// publicSubnetCIDR is cidr as a default VPC's public subnet ("" if it cannot be one): a CIDR inside
+// 172.31.0.0/16 that does not overlap the default subnet (def).
+func publicSubnetCIDR(cidr, def string) string {
+	p, err := netip.ParsePrefix(strings.TrimSpace(cidr))
+	if err != nil || !p.Addr().Is4() || p != p.Masked() || p.Bits() < 16 || p.Bits() > 28 {
+		return ""
+	}
+	vpc := netip.MustParsePrefix(defaultVPCCidr)
+	if !vpc.Contains(p.Addr()) {
+		return ""
+	}
+	if d, derr := netip.ParsePrefix(def); derr == nil && d.Overlaps(p) {
+		return ""
+	}
+	return p.String()
 }
 
 // defaultSubnets are the request's account's default subnets, as a template names them (subnet id) -> the
@@ -172,6 +230,25 @@ func (h *ec2Handler) defaultSubnetItem(d *defaultVPC, acct string, fs []ec2Filte
 		"<mapPublicIpOnLaunch>true</mapPublicIpOnLaunch><assignIpv6AddressOnCreation>false</assignIpv6AddressOnCreation>", true
 }
 
+// publicSubnetItem is the default VPC's public subnet, as DescribeSubnets lists a subnet the account made:
+// not the default for its zone, and no public address mapped on launch (a load balancer's address is its own).
+func (h *ec2Handler) publicSubnetItem(d *defaultVPC, acct string, fs []ec2Filter) (string, bool) {
+	id := d.publicSubnetID()
+	arn := "arn:aws:ec2:" + h.region() + ":" + acct + ":subnet/" + id
+	rec := ec2Record{fields: map[string][]string{"subnet-id": {id}, "vpc-id": {d.vpcID()}, "cidr-block": {d.public},
+		"cidr": {d.public}, "cidrBlock": {d.public}, "availability-zone": {h.zone()}, "availabilityZone": {h.zone()},
+		"state": {d.state()}, "default-for-az": {"false"}, "defaultForAz": {"false"}, "map-public-ip-on-launch": {"false"},
+		"owner-id": {acct}, "subnet-arn": {arn}}}
+	if !rec.matches(fs) {
+		return "", false
+	}
+	return xtag("subnetId", id) + xtag("subnetArn", arn) + xtag("state", d.state()) + xtag("ownerId", acct) +
+		xtag("vpcId", d.vpcID()) + xtag("cidrBlock", d.public) +
+		"<availableIpAddressCount>" + strconv.FormatInt(usableAddresses(d.public), 10) + "</availableIpAddressCount>" +
+		xtag("availabilityZone", h.zone()) + xtag("availabilityZoneId", h.zoneID()) + "<defaultForAz>false</defaultForAz>" +
+		"<mapPublicIpOnLaunch>false</mapPublicIpOnLaunch><assignIpv6AddressOnCreation>false</assignIpv6AddressOnCreation>", true
+}
+
 // --- the structural describes: its internet gateway, main route table and default network ACL ---
 
 func (d *defaultVPC) gateway() ec2Gateway {
@@ -191,12 +268,38 @@ func (d *defaultVPC) routeTable() ec2RouteTable {
 		assocs: []ec2RouteTableAssoc{{id: shortHashID("rtbassoc-", "main/"+d.rtbID(), 17), main: true}}}
 }
 
-func (d *defaultVPC) networkACL() ec2NetworkACL {
-	entries := defaultACLEntries()
-	if !d.internet {
-		entries = isolatedACLEntries(d.cidr)
+// publicRouteTable is the route table of the public subnet of a default VPC without its own internet gateway
+// (nil otherwise: with its gateway, the main route table already sends 0.0.0.0/0 there, and the public
+// subnet keeps it): the local route, and 0.0.0.0/0 to the gateway the subnet attaches.
+func (d *defaultVPC) publicRouteTable() *ec2RouteTable {
+	if d.public == "" || d.internet {
+		return nil
 	}
-	return ec2NetworkACL{id: d.aclID(), vpc: d.vpcID(), isDefault: true, entries: entries, subnets: []string{d.subnetID()}}
+	return &ec2RouteTable{id: d.publicRtbID(), vpc: d.vpcID(), routes: []ec2Route{
+		{dest: defaultVPCCidr, gateway: "local", state: "active", origin: "CreateRouteTable"},
+		{dest: "0.0.0.0/0", gateway: d.igwID(), state: "active", origin: "CreateRoute"}},
+		assocs: []ec2RouteTableAssoc{{id: shortHashID("rtbassoc-", "public/"+d.publicRtbID(), 17), subnet: d.publicSubnetID()}}}
+}
+
+// networkACLs are the default VPC's network ACLs: its default ACL, its subnets associated. In a default VPC
+// without its internet gateway the default subnet's ACL keeps it inside the platform; with a public subnet
+// too, that ACL is one of its own and the default ACL (allowing everything, as AWS creates it) is the
+// public subnet's.
+func (d *defaultVPC) networkACLs() []ec2NetworkACL {
+	switch {
+	case d.internet:
+		subnets := []string{d.subnetID()}
+		if d.public != "" {
+			subnets = append(subnets, d.publicSubnetID())
+		}
+		return []ec2NetworkACL{{id: d.aclID(), vpc: d.vpcID(), isDefault: true, entries: defaultACLEntries(), subnets: subnets}}
+	case d.public == "":
+		return []ec2NetworkACL{{id: d.aclID(), vpc: d.vpcID(), isDefault: true, entries: isolatedACLEntries(d.cidr), subnets: []string{d.subnetID()}}}
+	}
+	return []ec2NetworkACL{
+		{id: d.aclID(), vpc: d.vpcID(), isDefault: true, entries: defaultACLEntries(), subnets: []string{d.publicSubnetID()}},
+		{id: d.isolatedACLID(), vpc: d.vpcID(), entries: isolatedACLEntries(d.cidr), subnets: []string{d.subnetID()}},
+	}
 }
 
 // platformNetworks are the networks a default VPC without its internet gateway may still reach: the cluster's

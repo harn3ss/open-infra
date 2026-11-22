@@ -832,6 +832,13 @@ groups under **Security groups** — there's no separate "publish a port" contro
 > becomes a listener). The guest must actually be listening on the port. For a *full*
 > LAN host (every port, a real DHCP IP), use `network: macvtap` instead.
 
+### Behind a network load balancer
+
+To reach an instance through a load balancer, as with an AWS Network Load Balancer (TCP, UDP or TCP_UDP
+listeners, the client's own address passed to the instance so its security groups decide), see
+[Elastic Load Balancing](elastic-load-balancing.md). That works for an instance whose VPC has no internet
+gateway too: it answers the load balancer's clients and starts nothing itself.
+
 ### Enabling direct-LAN (macvtap) mode
 
 Direct-LAN mode needs Multus (a cluster CNI change), so it's opt-in — but it's a

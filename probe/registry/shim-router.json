@@ -426,6 +426,29 @@
         "iam:PassRole"
       ]
     },
+    "elasticloadbalancing": {
+      "handler": "elbHandler",
+      "operations": [
+        "AddTags",
+        "CreateListener",
+        "CreateLoadBalancer",
+        "CreateTargetGroup",
+        "DeleteListener",
+        "DeleteLoadBalancer",
+        "DeleteTargetGroup",
+        "DeregisterTargets",
+        "DescribeListeners",
+        "DescribeLoadBalancerAttributes",
+        "DescribeLoadBalancers",
+        "DescribeTags",
+        "DescribeTargetGroupAttributes",
+        "DescribeTargetGroups",
+        "DescribeTargetHealth",
+        "RegisterTargets",
+        "RemoveTags"
+      ],
+      "conditional": true
+    },
     "email": {
       "handler": "sesHandler",
       "operations": [

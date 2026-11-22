@@ -841,10 +841,19 @@ func (h *ec2Handler) describeSubnets(ctx context.Context, w http.ResponseWriter,
 			xbool("mapPublicIpOnLaunch", !private)+"<assignIpv6AddressOnCreation>false</assignIpv6AddressOnCreation>"+xtags(view.Tags))
 	}
 	// The account's default subnet (ec2_default_vpc.go).
-	if d := h.defaultVPCOf(ctx); d != nil && (len(ids) == 0 || want[d.subnetID()]) {
-		found[d.subnetID()] = true
-		if item, ok := h.defaultSubnetItem(d, acct, fs); ok {
-			items = append(items, item)
+	if d := h.defaultVPCOf(ctx); d != nil {
+		if len(ids) == 0 || want[d.subnetID()] {
+			found[d.subnetID()] = true
+			if item, ok := h.defaultSubnetItem(d, acct, fs); ok {
+				items = append(items, item)
+			}
+		}
+		// Its public subnet, for its internet-facing load balancers.
+		if d.public != "" && (len(ids) == 0 || want[d.publicSubnetID()]) {
+			found[d.publicSubnetID()] = true
+			if item, ok := h.publicSubnetItem(d, acct, fs); ok {
+				items = append(items, item)
+			}
 		}
 	}
 	for _, id := range ids {

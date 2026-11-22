@@ -750,6 +750,7 @@ func run(logger *slog.Logger) error {
 	ssmH.bus = cmdBus
 	// EC2 flow logs' delivery (ec2_flowlogs_delivery.go), started below once the signal context exists.
 	var flowLogWorker *flowLogDelivery
+	var elbWorker *elbHandler   // keeps network load balancers' endpoints current (elbv2_dataplane.go)
 	var imageWorker *ec2Handler // finishes what each account image waits for (ec2_images.go)
 	if dyn != nil {
 		cfnNS := ident.StackNamespace // CFN_NAMESPACE: the StackId and AWS::StackId are both derived from it
@@ -798,6 +799,12 @@ func run(logger *slog.Logger) error {
 				imageWorker = ec2H
 			}
 			services["ec2"] = ec2H
+			// Elastic Load Balancing (elasticloadbalancing.*): network load balancers in front of these
+			// instances (elbv2.go), kept in the shim's namespace beside the stack records, their addresses from
+			// the installation's load-balancer pool (ELB_ADDRESS_POOL, the openinfra-load-balancers ConfigMap).
+			elbH := newELBHandler(ec2H, cs, keysNS, getenv("ELB_ADDRESS_POOL", ""), logger)
+			services["elasticloadbalancing"] = elbH
+			elbWorker = elbH
 			// EC2 Serial Console: EC2 Instance Connect's SendSerialConsoleSSHPublicKey pushes a key for 60
 			// seconds (ec2_instance_connect.go), and the SSH gateway lets it in to the instance's serial
 			// console (serial_console_gateway.go), on SERIAL_CONSOLE_LISTEN_ADDR.
@@ -1176,6 +1183,9 @@ func run(logger *slog.Logger) error {
 	}
 	if vpcIfaces != nil {
 		go vpcIfaces.Run(ctx) // follows the Lambda VPC subnet's addresses; exits when ctx is cancelled
+	}
+	if elbWorker != nil {
+		go elbWorker.run(ctx, 20*time.Second) // network load balancers follow their targets; exits with ctx
 	}
 	if flowLogWorker != nil {
 		go flowLogWorker.Run(ctx) // VPC Flow Logs' delivery, on the replica holding its lock; exits with ctx

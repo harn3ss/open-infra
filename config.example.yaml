@@ -86,6 +86,12 @@ networking:
     lbPool: ""                 # MetalLB IPAddressPool for traefik-lb (blank => MetalLB's default)
     lbIP: ""                   # pin traefik-lb's address (blank => MetalLB picks one)
 
+  # Elastic Load Balancing's network load balancers (docs/elastic-load-balancing.md) take their addresses
+  # from this MetalLB IPAddressPool: a routed range clients reach (e.g. the pool traefik-lb uses). Blank =>
+  # MetalLB's default pool. install.sh writes it into the aws-shim's openinfra-load-balancers ConfigMap.
+  loadBalancers:
+    addressPool: ""
+
   # The domain Knative Functions advertise their URLs on (<fn>.<ns>.<domain>) when kourier is
   # published by its own load balancer (routed ingress; ignored while lanExpose.enabled is true,
   # which sets <kourierIP>.sslip.io itself). Use <that load balancer's IP>.sslip.io, or a DNS zone

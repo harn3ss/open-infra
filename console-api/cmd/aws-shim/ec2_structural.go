@@ -211,8 +211,8 @@ func (h *ec2Handler) internetGateways(n *ec2Network) []ec2Gateway {
 		}
 		out = append(out, g)
 	}
-	if n.def != nil && n.def.internet {
-		out = append(out, n.def.gateway()) // the default VPC's internet gateway (none once removed)
+	if n.def != nil && n.def.hasGateway() {
+		out = append(out, n.def.gateway()) // the default VPC's internet gateway (none once removed, unless its public subnet has one)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].id < out[j].id })
 	return out
@@ -363,6 +363,9 @@ func (h *ec2Handler) routeTables(n *ec2Network) []ec2RouteTable {
 	}
 	if n.def != nil {
 		out = append(out, n.def.routeTable()) // the default VPC's main route table: 0.0.0.0/0 to its gateway
+		if pub := n.def.publicRouteTable(); pub != nil {
+			out = append(out, *pub) // its public subnet's: 0.0.0.0/0 to the gateway that subnet attaches
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].id < out[j].id })
 	return out
@@ -535,7 +538,7 @@ func (h *ec2Handler) networkACLs(n *ec2Network) []ec2NetworkACL {
 			entries: subnetACLEntries(acls), subnets: []string{s.GetName()}})
 	}
 	if n.def != nil {
-		out = append(out, n.def.networkACL()) // the default VPC's default network ACL, its subnet associated
+		out = append(out, n.def.networkACLs()...) // the default VPC's network ACLs, its subnets associated
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].id < out[j].id })
 	return out

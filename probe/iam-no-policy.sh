@@ -75,6 +75,7 @@ declare -A CALL=(
   [ecr]="ecr describe-repositories"
   [ecs]="ecs list-clusters"
   [eks]="eks list-clusters"
+  [elasticloadbalancing]="elbv2 describe-load-balancers"
   [email]="sesv2 list-email-identities"
   [events]="events list-event-buses"
   [glue]="glue get-databases"

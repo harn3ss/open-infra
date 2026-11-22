@@ -32,6 +32,11 @@ var notImportable = map[string]string{
 	// (arn:aws:organizations::<management>:account/o-…/<id>) an imported organizations statement is refused
 	// (never widened), and a native data-plane policy grants it.
 	"organizations": "the management account's front door; its ARN forms are not mapped by the importer yet, so imported statements refuse",
+	// Elastic Load Balancing (elbv2.go) decides on each resource's ARN as AWS writes it (arnType): an IAM
+	// policy keeps an ARN the importer does not map as written, matched with AWS's wildcards, so IAM policy
+	// grants it faithfully; the data-plane importer maps no ELB ARN to a platform kind, so an imported
+	// data-plane statement for it refuses (never widened).
+	"elasticloadbalancing": "decided on the resource's ARN as written; the data-plane importer maps no ELB ARN, so imported statements refuse",
 }
 
 // dynamicResourceTypes are the resource types of the checks whose type is a variable, per file (read from
@@ -40,6 +45,7 @@ var dynamicResourceTypes = map[string][]string{
 	"iam.go":                 {"Role", "User", "Policy", "ARN"},
 	"iam_instanceprofile.go": {"ARN", "Role"},
 	"sts.go":                 {"ARN"},
+	"elbv2.go":               {"ARN"}, // every check is on the resource's ARN ("" for a Describe's "*")
 	"cloudfront_read.go":     {"CachePolicy", "OriginRequestPolicy", "ResponseHeadersPolicy", "OriginAccessControl", "OriginAccessIdentity"},
 	"glue.go":                {"Database", "Table"},
 	"athena.go":              {"WorkGroup", "Table"},
@@ -57,8 +63,9 @@ var dynamicResourceTypes = map[string][]string{
 // dynamicServices are the services of checks whose action is a variable, per file.
 var dynamicServices = map[string][]string{
 	"acm.go":             {"acm"},
-	"athena.go":          {"glue"},       // the per-table checks: glue:GetTable / glue:UpdateTable
-	"cloudwatch.go":      {"cloudwatch"}, // decideAlarm: an alarm op on one named alarm
+	"elbv2.go":           {"elasticloadbalancing"}, // allow: elasticloadbalancing:<op>, and AddTags for tags at creation
+	"athena.go":          {"glue"},                 // the per-table checks: glue:GetTable / glue:UpdateTable
+	"cloudwatch.go":      {"cloudwatch"},           // decideAlarm: an alarm op on one named alarm
 	"ecr_token.go":       {"ecr"},
 	"dynamo.go":          {"dynamodb"},
 	"kms.go":             {"kms"},
