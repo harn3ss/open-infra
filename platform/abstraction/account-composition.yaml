@@ -468,30 +468,32 @@ spec:
         operations: ["CREATE", "UPDATE"]
         resources: ["virtualmachines"]
   matchConditions:
-    - name: in-a-default-vpc-without-internet-gateway
+    # Only an instance with a public address is examined. (A match condition sees the request and the
+    # object alone: the namespace is read in the variables below.)
+    - name: has-a-public-address
+      expression: >-
+        has(object.spec) && ((has(object.spec.expose) && object.spec.expose == true) ||
+        (has(object.spec.ports) && size(object.spec.ports) > 0) || has(object.spec.elasticIp))
+  variables:
+    - name: noInternetGateway
       expression: >-
         namespaceObject != null && has(namespaceObject.metadata.labels) &&
         'openinfra.dev/internet-gateway' in namespaceObject.metadata.labels &&
         namespaceObject.metadata.labels['openinfra.dev/internet-gateway'] == 'false'
-  variables:
     - name: account
       expression: >-
-        'openinfra.dev/account-id' in namespaceObject.metadata.labels ?
+        variables.noInternetGateway && 'openinfra.dev/account-id' in namespaceObject.metadata.labels ?
         namespaceObject.metadata.labels['openinfra.dev/account-id'] : ''
     - name: inDefaultSubnet
       expression: >-
         !has(object.spec.subnet) || object.spec.subnet == '' || object.spec.subnet == 'default-vpc-' + variables.account
-    - name: addressed
-      expression: >-
-        (has(object.spec.expose) && object.spec.expose == true) ||
-        (has(object.spec.ports) && size(object.spec.ports) > 0) || has(object.spec.elasticIp)
     - name: hadAddress
       expression: >-
         oldObject != null && has(oldObject.spec) &&
         ((has(oldObject.spec.expose) && oldObject.spec.expose == true) ||
         (has(oldObject.spec.ports) && size(oldObject.spec.ports) > 0) || has(oldObject.spec.elasticIp))
   validations:
-    - expression: "!variables.inDefaultSubnet || !variables.addressed || variables.hadAddress"
+    - expression: "!variables.noInternetGateway || !variables.inDefaultSubnet || variables.hadAddress"
       messageExpression: >-
         'Gateway.NotAttached: the default VPC of account ' + variables.account + ' is not attached to any
         internet gateway, so instance ' + object.metadata.name + ' cannot have a public address

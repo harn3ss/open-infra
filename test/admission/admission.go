@@ -105,7 +105,24 @@ var env = func() *cel.Env {
 	return e
 }()
 
-func eval(expr string, act map[string]any) (any, error) {
+// matchEnv is what a matchCondition sees: the request and the objects, as the API server gives it. A
+// matchCondition naming namespaceObject or variables fails to compile here, as it is never true there (the
+// API server admits such a request unexamined).
+var matchEnv = func() *cel.Env {
+	e, err := cel.NewEnv(
+		cel.Variable("request", cel.DynType),
+		cel.Variable("object", cel.DynType),
+		cel.Variable("oldObject", cel.DynType),
+	)
+	if err != nil {
+		panic(err)
+	}
+	return e
+}()
+
+func eval(expr string, act map[string]any) (any, error) { return evalIn(env, expr, act) }
+
+func evalIn(env *cel.Env, expr string, act map[string]any) (any, error) {
 	ast, iss := env.Compile(expr)
 	if iss.Err() != nil {
 		return nil, fmt.Errorf("compile %q: %w", expr, iss.Err())
@@ -141,7 +158,7 @@ func (p *Policy) Admit(r Request) (Verdict, error) {
 		"variables":       vars,
 	}
 	for _, m := range p.Spec.MatchConditions {
-		v, err := eval(m.Expression, act)
+		v, err := evalIn(matchEnv, m.Expression, map[string]any{"request": act["request"], "object": act["object"], "oldObject": act["oldObject"]})
 		if err != nil {
 			return Verdict{}, fmt.Errorf("matchCondition %s: %w", m.Name, err)
 		}
