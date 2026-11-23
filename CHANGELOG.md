@@ -6,6 +6,53 @@ the product's public contract.
 
 ## Unreleased
 
+## v4.0.0 — 2026-11-22
+
+v4.0.0 makes every account behave like an AWS account. IAM is now the only authority: the AWS APIs, the
+console and its resource API all ask one evaluator for an IAM action on an ARN, and member accounts no
+longer reach the platform's Kubernetes objects at all. Every account gets AWS's network: a default VPC
+(`172.31.0.0/16`), optionally without its internet gateway and isolated from the internet, with Route 53
+Resolver and its DNS Firewall, Lambda functions in a VPC, and network load balancers in front of
+instances. EC2 goes deep: images an account makes and shares, GPU instances, Windows instances with an
+EC2Launch v2-style agent, Fleet Manager Remote Desktop, the EC2 Serial Console, and a per-account capacity
+ceiling. The Lambda API creates and changes functions, with versions, aliases and AWS's runtime
+deprecation dates. The platform's keys move to OpenBao. This is a major version because some of these
+changes break existing setups; the next section lists each one and what to do.
+
+### Upgrading from v3.3.0 — what changes for you
+- **Member accounts get no Kubernetes access.** The console's resource API and watch stream refuse the
+  platform's own objects (Secrets, pods and their logs and exec, ServiceAccount tokens, RBAC, nodes,
+  namespaces) to every principal of a member account, whatever its policies. A member account's
+  `AdministratorAccess` used to reach its own namespaces' raw objects; use the AWS APIs and the console's
+  service pages instead. See [docs/customer-surface.md](docs/customer-surface.md) for everything a
+  customer can reach.
+- **`AssumeRole` asks the caller's own policy where AWS does.** A role whose trust names only an account
+  (`arn:aws:iam::<account>:root`) is assumed only by a principal whose own policy allows `sts:AssumeRole`
+  on it. Give those users that permission.
+- **Temporary access and groups are IAM policies.** `kind: Grant` attaches IAM policies
+  (`spec.policies`) for its window, and `kind: Group` holds policies only. A Grant or Group naming
+  `spec.clusterRole` is refused at admission; attach the managed policy the refusal names instead.
+- **The platform's keys live in OpenBao.** The `encryption` component needs `components.openbao`. Move an
+  existing install's keys from Vault with [`scripts/vault-to-openbao.sh`](scripts/vault-to-openbao.sh):
+  every key, version and ciphertext stays as it was, keys are unavailable for a few minutes during the
+  switch, and Vault keeps a sealed copy as the rollback.
+- **Email is sent only as an authenticated identity.** The platform relay takes mail from the aws-shim
+  alone. Apps that sent to the relay unauthenticated must sign in to the SES SMTP interface with SES SMTP
+  credentials (a `kind: EmailSender` mints them).
+- **An ECS service with `NetworkMode: awsvpc` must name its network.** A service without a
+  `NetworkConfiguration` is refused, with ECS's message. Name the account's default subnet.
+- **A CloudFormation security group with no inbound rules denies inbound,** as on AWS. Such a group used
+  to leave its members open inbound.
+- **Lambda runtimes follow AWS's dates.** From a runtime's block-create date, the Lambda API and
+  CloudFormation refuse a new function on it; from its block-update date, a change that keeps it.
+  Functions already on it are invoked as before.
+- **A Windows instance's metadata is served from outside the instance,** as on EC2. The old loopback
+  adapter is removed at the instance's next start, and a Windows Firewall outbound rule now applies to
+  metadata requests.
+- **Opening an instance in the console no longer publishes its ports.** An instance's public address
+  carries its own ports, set at launch or by its CloudFormation stack; security group rules added later
+  no longer publish ports through the console.
+
 ### Added — network load balancers (Elastic Load Balancing)
 - The Elastic Load Balancing API serves Network Load Balancers in front of EC2 instances (`aws elbv2`):
   load balancers, instance target groups, TCP, UDP and TCP_UDP listeners, target registration and health,
