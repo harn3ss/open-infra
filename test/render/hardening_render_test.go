@@ -124,3 +124,32 @@ func TestSetupRoles_SecretReadsPinnedByName(t *testing.T) {
 		}
 	}
 }
+
+// KEDA reads Secrets in its own namespace alone: keda.yaml keeps the chart's cluster-wide Secret rule off
+// (restrict.secret), and keda-rbac.yaml grants the operator's read of Secrets in the keda namespace, as a
+// Role there and nothing cluster-wide, bound to the operator's ServiceAccount alone.
+func TestKEDA_SecretReadsOnlyInItsOwnNamespace(t *testing.T) {
+	if v := mustRead(t, "../../platform/resilience/keda.yaml"); !strings.Contains(v, "restrict:\n              secret: true") {
+		t.Fatal("keda.yaml must keep permissions.operator.restrict.secret: true (the chart's cluster-wide Secret read off)")
+	}
+	roles := 0
+	for _, doc := range splitDocs(mustRead(t, "../../platform/resilience/keda-rbac.yaml")) {
+		switch {
+		case strings.Contains(doc, "\nkind: ClusterRole"), strings.HasPrefix(strings.TrimSpace(doc), "kind: ClusterRole"):
+			t.Errorf("keda-rbac.yaml grants nothing cluster-wide:\n%s", doc)
+		case strings.Contains(doc, "\nkind: Role\n"):
+			roles++
+			if !strings.Contains(doc, "\n  namespace: keda\n") {
+				t.Errorf("the operator's Secret Role is in the keda namespace:\n%s", doc)
+			}
+		case strings.Contains(doc, "\nkind: RoleBinding\n"):
+			if !strings.Contains(doc, "\n  namespace: keda\n") || strings.Count(doc, "- kind:") != 1 ||
+				!strings.Contains(doc, "- kind: ServiceAccount\n    name: keda-operator\n    namespace: keda") {
+				t.Errorf("the Role is bound to the keda-operator ServiceAccount alone, in the keda namespace:\n%s", doc)
+			}
+		}
+	}
+	if roles != 1 {
+		t.Errorf("want the one Role, got %d", roles)
+	}
+}

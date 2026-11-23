@@ -1,0 +1,43 @@
+# The KEDA operator's read of Secrets in its own namespace, owned here because the chart has no setting for it.
+#
+# keda.yaml sets permissions.operator.restrict.secret, which drops the chart's cluster-wide get/list/watch on
+# Secrets (the root CA's key was in its reach). KEDA 2.15.1 then reads Secrets from its own namespace alone
+# (KEDA_RESTRICT_SECRET_ACCESS: its webhook certificate, and the Secrets a ClusterTriggerAuthentication names),
+# but it still lists and watches them there at start, and the chart's restricted RBAC grants only get on its
+# certificate Secret: the operator fails "failed to wait Secrets cache synced" and never starts. This Role
+# grants that read in the keda namespace and nowhere else.
+#
+# The namespace is declared so a fresh install can create this before the keda Application (sync-wave 1)
+# installs the chart; Prune=false keeps it if this file is ever removed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keda
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openinfra-keda-operator-secrets
+  namespace: keda
+  labels: { app.kubernetes.io/part-of: keda-operator }
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openinfra-keda-operator-secrets
+  namespace: keda
+  labels: { app.kubernetes.io/part-of: keda-operator }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: openinfra-keda-operator-secrets
+subjects:
+  - kind: ServiceAccount
+    name: keda-operator
+    namespace: keda
