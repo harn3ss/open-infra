@@ -384,7 +384,7 @@ export function VmDetailPage() {
                 </DetailRow>
               ) : null}
               <DetailRow label="Public IPv4 address">
-                {spec?.expose ? (
+                {spec?.expose || (spec?.ports?.length ?? 0) > 0 ? (
                   lanIp ? (
                     <code className="text-xs">
                       {lanIp}:{port}
@@ -394,7 +394,7 @@ export function VmDetailPage() {
                   )
                 ) : (
                   <span className="text-xs text-muted-foreground">
-                    none — expose the instance or associate an Elastic IP to reach it from your network
+                    none — reach it from your network through a network load balancer, or associate an Elastic IP in a VPC with an internet gateway
                   </span>
                 )}
               </DetailRow>
@@ -405,13 +405,11 @@ export function VmDetailPage() {
         <TabsContent value="network" className="pt-4">
           <VmNetworkTab
             namespace={namespace}
-            vmName={name}
-            ports={spec?.ports ?? []}
-            securityGroups={spec?.securityGroups ?? []}
+            spec={spec}
             lanIp={lanIp}
+            privateIp={ip}
             accessPort={port}
             accessLabel={isWin ? "RDP" : "SSH"}
-            onChange={() => void refetch()}
           />
         </TabsContent>
 

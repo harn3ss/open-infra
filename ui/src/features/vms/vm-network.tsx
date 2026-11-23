@@ -1,149 +1,106 @@
-import { useEffect, useMemo, useRef } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMemo } from "react";
 import { DetailRow } from "@/components/common/detail-row";
 import { Badge } from "@/components/ui/badge";
 import { useK8sWatch } from "@/hooks/use-k8s-watch";
-import { k8sGet, k8sReplace } from "@/lib/api";
 import { openinfraPaths } from "@/lib/k8s-paths";
-import type { SecurityGroup, VirtualMachine } from "@/types/k8s";
-
-type Port = { port: number; protocol?: string };
-
-const sig = (ps: Port[]) =>
-  [...ps]
-    .map((p) => `${p.port}/${p.protocol ?? "TCP"}`)
-    .sort()
-    .join(",");
+import { publicPorts, reachability } from "@/lib/vm-reachability";
+import type { SecurityGroup, VirtualMachineSpec } from "@/types/k8s";
 
 /**
- * Network tab. The VM's reachable LAN ports are NOT edited here directly — they
- * are *derived from the attached security groups*. Opening a port means adding an
- * inbound rule to a security group (on the Security Groups page); the LB listener
- * (spec.ports) then follows automatically. This keeps access control in one place
- * (security groups) instead of an out-of-band "publish port" control.
+ * Network tab: the instance's addresses, the ports its public IPv4 address carries, and who its security
+ * groups admit to each. It only reads. The ports are the instance's own (set at launch, or by its
+ * CloudFormation stack from the security groups of an instance with an Elastic IP or a public address in
+ * a VPC with an internet gateway); a security group rule never gives an instance a public address, as on
+ * AWS. A test (src/lib/vm-reachability.test.ts) holds this file to reading only.
  */
 export function VmNetworkTab({
   namespace,
-  vmName,
-  ports,
-  securityGroups,
+  spec,
   lanIp,
+  privateIp,
   accessPort,
   accessLabel,
-  onChange,
 }: {
   namespace: string;
-  vmName: string;
-  ports: Port[];
-  securityGroups: string[];
+  spec?: VirtualMachineSpec;
   lanIp?: string;
+  privateIp?: string;
   accessPort: string;
   accessLabel: string;
-  onChange: () => void;
 }) {
-  const vmPath = openinfraPaths.virtualmachine(namespace, vmName);
   const accessPortNum = Number(accessPort) || 0;
+  const groupNames = spec?.securityGroups ?? [];
 
-  const { items: sgs } = useK8sWatch<SecurityGroup>(openinfraPaths.securitygroups(namespace));
-  const sgByName = useMemo(
-    () => new Map(sgs.map((s) => [s.metadata.name ?? "", s])),
-    [sgs],
-  );
+  const { items: sgs, isLoading: sgsLoading } = useK8sWatch<SecurityGroup>(openinfraPaths.securitygroups(namespace));
+  const sgByName = useMemo(() => new Map(sgs.map((s) => [s.metadata.name ?? "", s])), [sgs]);
 
-  // Ports to publish on the LB = the specific inbound ports across the attached
-  // SGs (the base access port is published by the composition itself).
-  const allLoaded = securityGroups.every((n) => sgByName.has(n));
-  const derived = useMemo(() => {
-    const map = new Map<string, { port: number; protocol: string; sg: string }>();
-    for (const n of securityGroups) {
-      const sg = sgByName.get(n);
-      for (const rule of sg?.spec?.ingress ?? []) {
-        const protocol = rule.protocol === "UDP" ? "UDP" : "TCP";
-        for (const p of rule.ports ?? []) {
-          if (!p) continue;
-          if (p === accessPortNum && protocol === "TCP") continue; // base access port
-          map.set(`${p}/${protocol}`, { port: p, protocol, sg: n });
-        }
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => a.port - b.port);
-  }, [securityGroups, sgByName, accessPortNum]);
-
-  const syncPorts = useMutation({
-    mutationFn: async (next: Port[]) => {
-      const cur = await k8sGet<VirtualMachine>(vmPath);
-      return k8sReplace<VirtualMachine>(vmPath, {
-        ...cur,
-        spec: { ...(cur.spec ?? {}), ports: next },
-      } as VirtualMachine);
-    },
-    onSuccess: () => onChange(),
-  });
-
-  // Keep the published LB ports (spec.ports) aligned with what the security groups
-  // allow. Runs only once the attached SGs have loaded, and only on real drift.
-  const desired: Port[] = derived.map((d) => ({ port: d.port, protocol: d.protocol }));
-  const lastSynced = useRef<string | null>(null);
-  useEffect(() => {
-    if (!allLoaded) return;
-    const want = sig(desired);
-    if (sig(ports) === want) {
-      lastSynced.current = want;
-      return;
-    }
-    if (lastSynced.current === want) return; // already pushed this set; await refetch
-    lastSynced.current = want;
-    syncPorts.mutate(desired);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allLoaded, sig(desired), sig(ports)]);
+  const ports = publicPorts(spec, accessPortNum);
+  const reach = reachability(ports, accessPortNum, groupNames, sgByName);
 
   return (
     <div className="space-y-4 max-w-2xl">
-      <DetailRow label="LAN IP">
-        {lanIp ? (
-          <code className="text-xs">{lanIp}</code>
+      <DetailRow label="Public IPv4 address">
+        {ports.length ? (
+          lanIp ? (
+            <code className="text-xs">{lanIp}</code>
+          ) : (
+            <span className="text-xs text-muted-foreground">pending…</span>
+          )
         ) : (
-          <span className="text-muted-foreground text-sm">
-            none yet — attach a security group that allows inbound traffic
+          <span className="text-sm text-muted-foreground">
+            none — reach the instance from your network through a network load balancer, or associate an
+            Elastic IP in a VPC with an internet gateway
           </span>
         )}
       </DetailRow>
+      <DetailRow label="Private IPv4 address">
+        {privateIp ? <code className="text-xs">{privateIp}</code> : <span className="text-sm text-muted-foreground">—</span>}
+      </DetailRow>
 
-      <div>
-        <div className="mb-2 text-sm font-medium">Reachable ports</div>
-        <div className="divide-y rounded-md border">
-          {/* The access port (SSH/RDP) is always published by the platform. */}
-          <div className="flex items-center gap-3 px-3 py-2 text-sm">
-            <code className="w-24">{accessPort}/TCP</code>
-            <span className="text-muted-foreground">{accessLabel}</span>
-            {lanIp && (
-              <span className="ml-auto text-xs text-muted-foreground">{lanIp}:{accessPort}</span>
-            )}
+      {ports.length > 0 && (
+        <div>
+          <div className="mb-2 text-sm font-medium">Ports on the public address</div>
+          <div className="divide-y rounded-md border">
+            {reach.map((r) => (
+              <div key={`${r.port}/${r.protocol}`} className="flex flex-wrap items-center gap-3 px-3 py-2 text-sm">
+                <code className="w-24">
+                  {r.port}/{r.protocol}
+                </code>
+                {r.access && <span className="text-muted-foreground">{accessLabel}</span>}
+                <span className="text-xs text-muted-foreground">
+                  {sgsLoading && !r.open ? (
+                    "…"
+                  ) : r.open ? (
+                    "any source"
+                  ) : r.sources.length ? (
+                    r.sources.map((s, i) => (
+                      <span key={i} className="mr-2 inline-flex items-center gap-1">
+                        <code>{s.cidr}</code>
+                        <span>via</span>
+                        <Badge variant="outline" className="font-mono text-[10px]">
+                          {s.group}
+                        </Badge>
+                      </span>
+                    ))
+                  ) : (
+                    "no inbound rule allows a source on this port"
+                  )}
+                </span>
+                {lanIp && (
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {lanIp}:{r.port}
+                  </span>
+                )}
+              </div>
+            ))}
           </div>
-          {derived.map((d) => (
-            <div key={`${d.port}-${d.protocol}`} className="flex items-center gap-3 px-3 py-2 text-sm">
-              <code className="w-24">{d.port}/{d.protocol}</code>
-              <span className="text-xs text-muted-foreground">
-                via <Badge variant="outline" className="font-mono text-[10px]">{d.sg}</Badge>
-              </span>
-              {lanIp && (
-                <span className="ml-auto text-xs text-muted-foreground">{lanIp}:{d.port}</span>
-              )}
-            </div>
-          ))}
-          {!derived.length && (
-            <div className="px-3 py-2 text-xs text-muted-foreground">
-              Only {accessLabel} is reachable. Open more ports by adding inbound rules to a
-              security group below.
-            </div>
-          )}
+          <p className="mt-2 text-xs text-muted-foreground">
+            Who may reach each port is decided by the inbound rules of the instance's security groups (the{" "}
+            <strong>Security</strong> tab) with an address-range source. A rule whose source is a security
+            group admits that group's members over the private network, not the public address.
+          </p>
         </div>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Ports are controlled by the attached security groups — manage them on the{" "}
-          <strong>Security</strong> tab. Add an inbound rule (e.g. <code>HTTP</code>) to a
-          group and the LAN listener follows automatically.
-        </p>
-      </div>
+      )}
     </div>
   );
 }

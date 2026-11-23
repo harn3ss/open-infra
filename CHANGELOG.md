@@ -25,6 +25,16 @@ the product's public contract.
   and its [operator guide](docs/elastic-load-balancing-operator.md) (`networking.loadBalancers.addressPool`).
   Proven live by `probe/aws-shim-elbv2-nlb.sh` through the AWS CLI, from LAN clients outside the cluster.
 
+### Fixed — opening an instance in the console no longer publishes its ports
+- The console's instance **Network** tab used to rewrite the instance's published ports from its security
+  groups whenever it was opened. That gave an instance a public address because someone looked at it, even
+  in a VPC without an internet gateway, and published ports admitted only to a security group's own members.
+  The tab now only reads. It shows the public and private addresses, the ports the public address carries,
+  and the address ranges each port admits. As on AWS, a security group rule never gives an instance a public
+  address: CloudFormation publishes the ports of an instance with an Elastic IP, or a public address in a VPC
+  with an internet gateway, from its rules with an address-range source, and otherwise the instance's own
+  `spec.ports` decide.
+
 ### Added — GPU instances (`g4dn.xlarge`)
 - An instance can have a whole GPU of its own, as an EC2 G instance does. `InstanceType: g4dn.xlarge`
   (4 vCPUs, 16 GiB, one GPU) in a CloudFormation stack, or `gpus: 1` on a virtual machine, gives the instance

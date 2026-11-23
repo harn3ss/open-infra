@@ -818,19 +818,25 @@ connects through to a new Windows instance's Remote Desktop service and is recor
 
 ### Opening extra ports (masquerade)
 
-A masquerade VM is reachable on its access port (SSH 22 / RDP 3389) plus whatever
-its **security groups** allow — exposure follows the firewall, so there's a single
-place to manage access (see [security-groups.md](security-groups.md)). To expose a
-web server on 80, add an inbound `HTTP` rule to a `SecurityGroup` attached to the VM;
-the platform publishes the matching LAN listener automatically (same MetalLB LAN IP
-as SSH/RDP, no bridge needed). In the console this is the VM's **Network** tab: the
-**Reachable ports** list is read-only and follows the rules, and you attach/edit
-groups under **Security groups** — there's no separate "publish a port" control.
+An exposed masquerade VM's public IPv4 address (its LAN address, from `spec.expose`, `spec.ports` or an
+Elastic IP) carries its access port (SSH 22 / RDP 3389) and the ports in `spec.ports`, on the same address
+(no bridge needed). Its **security groups** decide who may use each port: an inbound rule with an address
+range as its source admits clients in that range, and a rule whose source is a security group admits only
+that group's members, over the private network (see [security-groups.md](security-groups.md)). As on AWS, a
+security group rule never gives an instance a public address.
 
-> Under the hood the LoadBalancer's listeners live in `spec.ports`; the console keeps
-> that list in sync with the attached security groups (each specific inbound port
-> becomes a listener). The guest must actually be listening on the port. For a *full*
-> LAN host (every port, a real DHCP IP), use `network: macvtap` instead.
+- **CloudFormation** sets `spec.ports` for an instance with an Elastic IP, or a public address in a VPC with
+  an internet gateway: each inbound rule of its in-stack security groups with a `CidrIp` source publishes its
+  port ([CloudFormation](cloudformation.md), `AWS::EC2::EIP`). In a VPC without an internet gateway it
+  publishes nothing.
+- **Otherwise** list the ports in `spec.ports` yourself (the console's create page, under *Networking*).
+
+In the console the VM's **Network** tab shows the public and private addresses, the ports on the public
+address and the address ranges each port admits. It only reads: opening it changes nothing.
+
+> The guest must actually be listening on the port. For a *full* LAN host (every port, a real DHCP IP),
+> use `network: macvtap` instead. To reach an instance whose VPC has no internet gateway, put it behind a
+> network load balancer.
 
 ### Behind a network load balancer
 
