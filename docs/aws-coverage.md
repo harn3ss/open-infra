@@ -48,7 +48,7 @@ template that declares one of their resources is refused, although the API serve
 | 4 | Route 53 Resolver | `route53resolver` | 0 | 0 | 1 | 33 | none |
 | 5 | Glue | `glue` | 0 | 0 | 1 | 32 | none |
 | 6 | Athena | `athena` | 0 | 0 | 1 | 28 | none |
-| 7 | Elastic Load Balancing | `elasticloadbalancing` | 0 | 0 | 0 | 17 | `AWS::ElasticLoadBalancing::LoadBalancer`, `AWS::ElasticLoadBalancingV2::Listener`, `AWS::ElasticLoadBalancingV2::ListenerRule`, `AWS::ElasticLoadBalancingV2::LoadBalancer`, `AWS::ElasticLoadBalancingV2::TargetGroup` |
+| 7 | Elastic Load Balancing | `elasticloadbalancing` | 0 | 0 | 1 | 17 | `AWS::ElasticLoadBalancing::LoadBalancer`, `AWS::ElasticLoadBalancingV2::Listener`, `AWS::ElasticLoadBalancingV2::ListenerRule`, `AWS::ElasticLoadBalancingV2::LoadBalancer`, `AWS::ElasticLoadBalancingV2::TargetGroup` |
 
 The other side of the same demand — types the in-repo templates use that no stack can create here (plan-only or refused), most used first:
 

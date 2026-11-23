@@ -6927,7 +6927,7 @@
       "class": "aws",
       "operations": 17,
       "service": "Elastic Load Balancing",
-      "tier": "gated"
+      "tier": "proven"
     },
     "email": {
       "actions": 6,

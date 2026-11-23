@@ -61,7 +61,7 @@ group's network policy, which sees the client's own address.
 
 ## Live proof
 
-`probe/aws-shim-elbv2-nlb.sh` creates a throwaway member account with a default VPC without its internet
+`probe/aws-shim-elbv2-nlb.sh` (passing live) creates a throwaway member account with a default VPC without its internet
 gateway and a public subnet, then runs the whole flow through the AWS CLI from LAN clients outside the
 cluster. It needs two such clients (`LAN_CLIENT_A`, `LAN_CLIENT_B`); `probe/lan-client-netns.sh` makes one
 on a node, in a network namespace with its own DHCP lease.

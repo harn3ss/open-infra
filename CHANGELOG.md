@@ -23,6 +23,7 @@ the product's public contract.
   targets are refused, saying so. Health checks are not sent: a target is healthy while its instance runs.
   CloudFormation does not create load balancers yet. See [Elastic Load Balancing](docs/elastic-load-balancing.md)
   and its [operator guide](docs/elastic-load-balancing-operator.md) (`networking.loadBalancers.addressPool`).
+  Proven live by `probe/aws-shim-elbv2-nlb.sh` through the AWS CLI, from LAN clients outside the cluster.
 
 ### Added — GPU instances (`g4dn.xlarge`)
 - An instance can have a whole GPU of its own, as an EC2 G instance does. `InstanceType: g4dn.xlarge`

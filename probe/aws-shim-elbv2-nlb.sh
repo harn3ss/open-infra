@@ -48,7 +48,7 @@ START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 log()  { printf '▸ %s\n' "$*"; }
 ok()   { printf '▸   ✓ %s\n' "$*"; }
-die()  { printf '✗ FAIL: %s\n' "$*" >&2; exit 1; }
+fail()  { printf '✗ FAIL: %s\n' "$*" >&2; exit 1; }
 inconclusive() { printf '⚠ INCONCLUSIVE: %s\n' "$*" >&2; exit "$EXIT_INCONCLUSIVE"; }
 
 for t in aws kubectl curl python3; do command -v "$t" >/dev/null || inconclusive "$t is required"; done
@@ -161,10 +161,10 @@ done
 sleep "$SETTLE"
 M sts assume-role --role-arn "arn:aws:iam::$NEW_ACCOUNT:role/OrganizationAccountAccessRole" \
   --role-session-name nlb --output json > "$TMP/session.json" 2>"$TMP/err" \
-  || die "assume-role into the member account: $(tr '\n' ' ' < "$TMP/err")"
+  || fail "assume-role into the member account: $(tr '\n' ' ' < "$TMP/err")"
 read -r MAK MSK MST < <(python3 -c 'import json,sys; c=json.load(open(sys.argv[1]))["Credentials"]; print(c["AccessKeyId"], c["SecretAccessKey"], c["SessionToken"])' "$TMP/session.json")
 B() { AWS_ACCESS_KEY_ID="$MAK" AWS_SECRET_ACCESS_KEY="$MSK" AWS_SESSION_TOKEN="$MST" AWS_PAGER="" aws --endpoint-url "$ENDPOINT" --region "$REGION" "$@"; }
-[ "$(B sts get-caller-identity --query Account --output text 2>/dev/null)" = "$NEW_ACCOUNT" ] || die "the assumed session is not the member account's"
+[ "$(B sts get-caller-identity --query Account --output text 2>/dev/null)" = "$NEW_ACCOUNT" ] || fail "the assumed session is not the member account's"
 AMI="$(B ec2 describe-images --owners amazon --filters Name=name,Values=ubuntu-24.04 --query 'Images[0].ImageId' --output text 2>/dev/null)"
 case "$AMI" in ami-*) ;; *) inconclusive "no ubuntu-24.04 image is listed (got '$AMI')" ;; esac
 ok "acting in member account $NEW_ACCOUNT (home $NEW_HOME), image $AMI"
@@ -172,18 +172,18 @@ ok "acting in member account $NEW_ACCOUNT (home $NEW_HOME), image $AMI"
 # --- 2. the VPC as EC2 shows it ---------------------------------------------------------------------------
 log "2. EC2: the gateway, the public subnet and its route, the default subnet without one"
 VPC="$(B ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text 2>/dev/null)"
-[[ "$VPC" == vpc-* ]] || die "no default VPC (got '$VPC')"
+[[ "$VPC" == vpc-* ]] || fail "no default VPC (got '$VPC')"
 IGW="$(B ec2 describe-internet-gateways --filters Name=attachment.vpc-id,Values="$VPC" --query 'InternetGateways[0].InternetGatewayId' --output text 2>/dev/null)"
-[[ "$IGW" == igw-* ]] || die "no internet gateway is attached to the default VPC for its public subnet (got '$IGW')"
+[[ "$IGW" == igw-* ]] || fail "no internet gateway is attached to the default VPC for its public subnet (got '$IGW')"
 PUBLIC="$(B ec2 describe-subnets --filters Name=vpc-id,Values="$VPC" Name=cidr-block,Values="$PUBLIC_CIDR" --query 'Subnets[0].SubnetId' --output text 2>/dev/null)"
 PRIVATE="$(B ec2 describe-subnets --filters Name=vpc-id,Values="$VPC" Name=default-for-az,Values=true --query 'Subnets[0].SubnetId' --output text 2>/dev/null)"
-[[ "$PUBLIC" == subnet-* ]] && [[ "$PRIVATE" == subnet-* ]] && [ "$PUBLIC" != "$PRIVATE" ] || die "the public ('$PUBLIC') and default ('$PRIVATE') subnets"
+[[ "$PUBLIC" == subnet-* ]] && [[ "$PRIVATE" == subnet-* ]] && [ "$PUBLIC" != "$PRIVATE" ] || fail "the public ('$PUBLIC') and default ('$PRIVATE') subnets"
 pub_route="$(B ec2 describe-route-tables --filters Name=association.subnet-id,Values="$PUBLIC" \
   --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].GatewayId | [0]" --output text 2>/dev/null)"
-[ "$pub_route" = "$IGW" ] || die "the public subnet's route table does not send 0.0.0.0/0 to $IGW (got '$pub_route')"
+[ "$pub_route" = "$IGW" ] || fail "the public subnet's route table does not send 0.0.0.0/0 to $IGW (got '$pub_route')"
 main_route="$(B ec2 describe-route-tables --filters Name=vpc-id,Values="$VPC" Name=association.main,Values=true \
   --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'] | length(@)" --output text 2>/dev/null)"
-[ "$main_route" = 0 ] || die "the default subnet's main route table has a route to the internet ($main_route)"
+[ "$main_route" = 0 ] || fail "the default subnet's main route table has a route to the internet ($main_route)"
 ok "$IGW attached; public subnet $PUBLIC routes 0.0.0.0/0 to it; default subnet $PRIVATE has no such route"
 
 # --- 3. the instance ----------------------------------------------------------------------------------------
@@ -246,47 +246,47 @@ Outputs:
 EOF
 sed -i "s/__AMI__/$AMI/g; s/__TAG__/$NAME/g" "$TMP/stack.yaml"
 B cloudformation create-stack --stack-name "$NAME" --template-body "file://$TMP/stack.yaml" \
-  --parameters ParameterKey=ClientA,ParameterValue="$A_ADDR" >/dev/null 2>"$TMP/err" || die "create-stack: $(cat "$TMP/err")"
+  --parameters ParameterKey=ClientA,ParameterValue="$A_ADDR" >/dev/null 2>"$TMP/err" || fail "create-stack: $(cat "$TMP/err")"
 CLEAN+=("B cloudformation delete-stack --stack-name $NAME")
 st="$(stack_settles "$NAME" 900)"
-[ "$st" = CREATE_COMPLETE ] || die "the stack is $st"
+[ "$st" = CREATE_COMPLETE ] || fail "the stack is $st"
 SERVER="$(B cloudformation describe-stacks --stack-name "$NAME" --query "Stacks[0].Outputs[?OutputKey=='Server'].OutputValue | [0]" --output text)"
-[[ "$SERVER" == i-* ]] || die "no instance id (got '$SERVER')"
+[[ "$SERVER" == i-* ]] || fail "no instance id (got '$SERVER')"
 ok "CREATE_COMPLETE: $SERVER"
 
 # --- 4. the load balancer -----------------------------------------------------------------------------------
 log "4. a network load balancer in the public subnet, a UDP 27015 listener to the instance's target group"
 if B elbv2 create-load-balancer --name "$NAME-private" --type network --scheme internet-facing --subnets "$PRIVATE" >/dev/null 2>"$TMP/err"; then
   B elbv2 delete-load-balancer --load-balancer-arn "$(B elbv2 describe-load-balancers --names "$NAME-private" --query 'LoadBalancers[0].LoadBalancerArn' --output text)" >/dev/null 2>&1
-  die "an internet-facing load balancer was placed in a subnet with no route to the internet gateway"
+  fail "an internet-facing load balancer was placed in a subnet with no route to the internet gateway"
 fi
-grep -q InvalidSubnet "$TMP/err" || die "the refusal is not InvalidSubnet: $(tail -c 300 "$TMP/err")"
+grep -q InvalidSubnet "$TMP/err" || fail "the refusal is not InvalidSubnet: $(tail -c 300 "$TMP/err")"
 ok "in the default subnet (no route to the gateway): InvalidSubnet"
 TG="$(B elbv2 create-target-group --name "$NAME" --protocol UDP --port 27015 --vpc-id "$VPC" --target-type instance \
-  --query 'TargetGroups[0].TargetGroupArn' --output text 2>"$TMP/err")" || die "create-target-group: $(cat "$TMP/err")"
+  --query 'TargetGroups[0].TargetGroupArn' --output text 2>"$TMP/err")" || fail "create-target-group: $(cat "$TMP/err")"
 CLEAN+=("B elbv2 delete-target-group --target-group-arn $TG")
-B elbv2 register-targets --target-group-arn "$TG" --targets Id="$SERVER" 2>"$TMP/err" || die "register-targets: $(cat "$TMP/err")"
+B elbv2 register-targets --target-group-arn "$TG" --targets Id="$SERVER" 2>"$TMP/err" || fail "register-targets: $(cat "$TMP/err")"
 LB="$(B elbv2 create-load-balancer --name "$NAME" --type network --scheme internet-facing --subnets "$PUBLIC" \
-  --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>"$TMP/err")" || die "create-load-balancer: $(cat "$TMP/err")"
+  --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>"$TMP/err")" || fail "create-load-balancer: $(cat "$TMP/err")"
 CLEAN+=("B elbv2 delete-load-balancer --load-balancer-arn $LB")
-case "$LB" in "arn:aws:elasticloadbalancing:$REGION:$NEW_ACCOUNT:loadbalancer/net/$NAME/"*) ;; *) die "a load balancer ARN not in AWS's form: $LB" ;; esac
+case "$LB" in "arn:aws:elasticloadbalancing:$REGION:$NEW_ACCOUNT:loadbalancer/net/$NAME/"*) ;; *) fail "a load balancer ARN not in AWS's form: $LB" ;; esac
 LST="$(B elbv2 create-listener --load-balancer-arn "$LB" --protocol UDP --port 27015 \
   --default-actions Type=forward,TargetGroupArn="$TG" --query 'Listeners[0].ListenerArn' --output text 2>"$TMP/err")" \
-  || die "create-listener: $(cat "$TMP/err")"
+  || fail "create-listener: $(cat "$TMP/err")"
 CLEAN+=("B elbv2 delete-listener --listener-arn $LST")
-B elbv2 wait load-balancer-available --load-balancer-arns "$LB" 2>"$TMP/err" || die "the load balancer did not become active: $(cat "$TMP/err")"
+B elbv2 wait load-balancer-available --load-balancer-arns "$LB" 2>"$TMP/err" || fail "the load balancer did not become active: $(cat "$TMP/err")"
 VIP="$(B elbv2 describe-load-balancers --load-balancer-arns "$LB" \
   --query 'LoadBalancers[0].AvailabilityZones[0].LoadBalancerAddresses[0].IpAddress' --output text)"
-[[ "$VIP" =~ ^[0-9.]+$ ]] || die "the active load balancer has no address (got '$VIP')"
+[[ "$VIP" =~ ^[0-9.]+$ ]] || fail "the active load balancer has no address (got '$VIP')"
 health=""
 for _ in $(seq 1 60); do
   health="$(B elbv2 describe-target-health --target-group-arn "$TG" --query 'TargetHealthDescriptions[0].TargetHealth.State' --output text 2>/dev/null)"
   [ "$health" = healthy ] && break
   sleep 5
 done
-[ "$health" = healthy ] || die "the target is $health"
+[ "$health" = healthy ] || fail "the target is $health"
 for _ in $(seq 1 60); do console "$SERVER" | grep -q "listening on 27015" && break; sleep 5; done
-console "$SERVER" | grep -q "listening on 27015" || die "the instance's service did not start: $(console "$SERVER" | tail -3 | tr '\n' ';')"
+console "$SERVER" | grep -q "listening on 27015" || fail "the instance's service did not start: $(console "$SERVER" | tail -3 | tr '\n' ';')"
 ok "active at $VIP:27015; target $SERVER healthy, its service listening"
 
 # --- 5. the clients -----------------------------------------------------------------------------------------
@@ -297,38 +297,38 @@ for _ in $(seq 1 24); do
   [ "$reply" != timeout ] && [ -n "$reply" ] && break
   sleep 5
 done
-[ "$reply" = "$NAME seen-from $A_ADDR" ] || die "client A's reply through the load balancer: '$reply' (want '$NAME seen-from $A_ADDR')"
+[ "$reply" = "$NAME seen-from $A_ADDR" ] || fail "client A's reply through the load balancer: '$reply' (want '$NAME seen-from $A_ADDR')"
 ok "client A ($A_ADDR): '$reply' — the instance saw the client's own address"
 b_reply="$(Bc "$ASK_PY" "$VIP" 27015 "hello-b-$SFX" 5 2>/dev/null)"
-[ "$b_reply" = timeout ] || die "client B, which the security group does not admit, got '$b_reply'"
+[ "$b_reply" = timeout ] || fail "client B, which the security group does not admit, got '$b_reply'"
 sleep 5
-if console "$SERVER" | grep -q "from $B_ADDR"; then die "client B's datagrams reached the instance: $(console "$SERVER" | grep "from $B_ADDR" | head -2 | tr '\n' ';')"; fi
+if console "$SERVER" | grep -q "from $B_ADDR"; then fail "client B's datagrams reached the instance: $(console "$SERVER" | grep "from $B_ADDR" | head -2 | tr '\n' ';')"; fi
 ok "client B ($B_ADDR): no reply, and nothing reached the instance"
 
 # --- 6. the instance starts nothing ---------------------------------------------------------------------------
 log "6. the instance's own connections and datagrams reach neither client A nor the internet"
 heard="$(A "$LISTEN_PY" 28017 28016 40 2>&1)"
-[ -z "$heard" ] || die "client A heard from the instance it never asked: $(printf '%s' "$heard" | head -3 | tr '\n' ';')"
+[ -z "$heard" ] || fail "client A heard from the instance it never asked: $(printf '%s' "$heard" | head -3 | tr '\n' ';')"
 lines="$(console "$SERVER" | grep 'egress ')"
-[ -n "$lines" ] || die "the instance printed no egress attempts"
+[ -n "$lines" ] || fail "the instance printed no egress attempts"
 if printf '%s\n' "$lines" | grep -Eq 'tcp-lan=(open|refused)|tcp-internet=(open|refused)'; then
-  die "a connection the instance started got out: $(printf '%s\n' "$lines" | grep -E '=(open|refused)' | head -2 | tr '\n' ';')"
+  fail "a connection the instance started got out: $(printf '%s\n' "$lines" | grep -E '=(open|refused)' | head -2 | tr '\n' ';')"
 fi
 ok "$(printf '%s\n' "$lines" | wc -l) attempts, each timed out ($(printf '%s\n' "$lines" | tail -1 | sed 's/.*ELB-PROBE //')); client A heard nothing in 40s"
 
 # --- 7. DENIAL ----------------------------------------------------------------------------------------------
 log "7. a user of the member account with no policy is refused DescribeLoadBalancers"
-B iam create-user --user-name "$NAME-nopol" >/dev/null 2>"$TMP/err" || die "create-user: $(cat "$TMP/err")"
+B iam create-user --user-name "$NAME-nopol" >/dev/null 2>"$TMP/err" || fail "create-user: $(cat "$TMP/err")"
 CLEAN+=("B iam delete-user --user-name $NAME-nopol")
-B iam create-access-key --user-name "$NAME-nopol" --output json >"$TMP/key.json" 2>"$TMP/err" || die "create-access-key: $(cat "$TMP/err")"
+B iam create-access-key --user-name "$NAME-nopol" --output json >"$TMP/key.json" 2>"$TMP/err" || fail "create-access-key: $(cat "$TMP/err")"
 read -r NAK NSK < <(python3 -c 'import json,sys; k=json.load(open(sys.argv[1]))["AccessKey"]; print(k["AccessKeyId"], k["SecretAccessKey"])' "$TMP/key.json")
 CLEAN+=("B iam delete-access-key --user-name $NAME-nopol --access-key-id $NAK")
 sleep "$SETTLE"
 if AWS_ACCESS_KEY_ID="$NAK" AWS_SECRET_ACCESS_KEY="$NSK" AWS_SESSION_TOKEN="" AWS_PAGER="" aws --endpoint-url "$ENDPOINT" --region "$REGION" \
   elbv2 describe-load-balancers >/dev/null 2>"$TMP/deny"; then
-  die "a user with no policy described the load balancers"
+  fail "a user with no policy described the load balancers"
 fi
-grep -q AccessDenied "$TMP/deny" || die "the refusal is not AccessDenied: $(tail -c 300 "$TMP/deny")"
+grep -q AccessDenied "$TMP/deny" || fail "the refusal is not AccessDenied: $(tail -c 300 "$TMP/deny")"
 ok "DescribeLoadBalancers by a user with no policy: AccessDenied"
 
 printf '✓ PASS — a network load balancer at %s brought client A to an instance with no route out (the instance saw the client'"'"'s own address and answered it); client B, outside its security group, got nothing; the instance'"'"'s own connections to the LAN and the internet all timed out and none of its datagrams arrived; a user with no policy was refused DescribeLoadBalancers.\n' "$VIP"

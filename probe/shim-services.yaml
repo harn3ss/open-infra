@@ -113,12 +113,11 @@ services:
     probes: [ecr, ecr-perrepo, ecr-node-pull, ecr-push-policy]
   - name: Elastic Load Balancing
     cell: "Network Load Balancers in front of EC2 instances: internet-facing (here, reachable from the network the installation's load-balancer addresses are on) in a default VPC's public subnet, TCP, UDP and TCP_UDP listeners forwarding to an instance target group, the client's own address passed to the instance so its security groups decide (`CreateLoadBalancer`, `CreateTargetGroup`, `RegisterTargets`, `CreateListener`, `DescribeTargetHealth`, tags); no Application or Gateway Load Balancers, internal load balancers, load balancer security groups, TLS or IP targets"
-    tier: gated
+    tier: proven
     sigv4: [elasticloadbalancing]
-    probes: []
     # elbv2-nlb: a LAN client reaches a no-internet instance's UDP service through the load balancer, a
     # client its security group does not admit is refused, the instance cannot start a connection out
-    pending: [elbv2-nlb]
+    probes: [elbv2-nlb]
 
   # --- data ---
   - name: RDS
