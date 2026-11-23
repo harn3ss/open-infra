@@ -29,14 +29,18 @@ type Policy struct {
 				Resources   []string `yaml:"resources"`
 			} `yaml:"resourceRules"`
 		} `yaml:"matchConstraints"`
-		MatchConditions []Named `yaml:"matchConditions"`
-		Variables       []Named `yaml:"variables"`
-		Validations     []struct {
-			Expression string `yaml:"expression"`
-			Message    string `yaml:"message"`
-			Reason     string `yaml:"reason"`
-		} `yaml:"validations"`
+		MatchConditions []Named      `yaml:"matchConditions"`
+		Variables       []Named      `yaml:"variables"`
+		Validations     []Validation `yaml:"validations"`
 	} `yaml:"spec"`
+}
+
+// Validation is one of a policy's validations.
+type Validation struct {
+	Expression        string `yaml:"expression"`
+	Message           string `yaml:"message"`
+	MessageExpression string `yaml:"messageExpression"`
+	Reason            string `yaml:"reason"`
 }
 
 // Named is a matchCondition or a variable.
@@ -72,6 +76,9 @@ type Request struct {
 	Groups    []string
 	Object    map[string]any // nil on DELETE
 	OldObject map[string]any // nil on CREATE
+	// NamespaceObject is the request's namespace as the API server presents it (namespaceObject): nil for a
+	// cluster-scoped object.
+	NamespaceObject map[string]any
 }
 
 // Verdict is the policy's answer: Matched is false when a matchCondition excluded the request (it is
@@ -89,6 +96,7 @@ var env = func() *cel.Env {
 		cel.Variable("request", cel.DynType),
 		cel.Variable("object", cel.DynType),
 		cel.Variable("oldObject", cel.DynType),
+		cel.Variable("namespaceObject", cel.DynType),
 		cel.Variable("variables", cel.MapType(cel.StringType, cel.DynType)),
 	)
 	if err != nil {
@@ -127,9 +135,10 @@ func (p *Policy) Admit(r Request) (Verdict, error) {
 			"namespace": r.Namespace,
 			"userInfo":  map[string]any{"username": r.Username, "groups": groups},
 		},
-		"object":    nilable(r.Object),
-		"oldObject": nilable(r.OldObject),
-		"variables": vars,
+		"object":          nilable(r.Object),
+		"oldObject":       nilable(r.OldObject),
+		"namespaceObject": nilable(r.NamespaceObject),
+		"variables":       vars,
 	}
 	for _, m := range p.Spec.MatchConditions {
 		v, err := eval(m.Expression, act)
@@ -159,7 +168,20 @@ func (p *Policy) Admit(r Request) (Verdict, error) {
 		if b, ok := v.(bool); !ok {
 			return Verdict{}, fmt.Errorf("validation %q: not a bool: %v", val.Expression, v)
 		} else if !b {
-			return Verdict{Matched: true, Denied: val.Message}, nil
+			msg := val.Message
+			// A messageExpression's string is the refusal's message, as the API server reports it.
+			if val.MessageExpression != "" {
+				m, err := eval(val.MessageExpression, act)
+				if err != nil {
+					return Verdict{}, fmt.Errorf("messageExpression: %w", err)
+				}
+				s, ok := m.(string)
+				if !ok {
+					return Verdict{}, fmt.Errorf("messageExpression %q: not a string: %v", val.MessageExpression, m)
+				}
+				msg = s
+			}
+			return Verdict{Matched: true, Denied: msg}, nil
 		}
 	}
 	return Verdict{Matched: true}, nil

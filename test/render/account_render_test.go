@@ -403,3 +403,32 @@ func TestAccount_DefaultVPCWithoutInternetGateway(t *testing.T) {
 		t.Fatalf("a default subnet with its gateway has no ACL: %v", acls)
 	}
 }
+
+// Every namespace of an account says whether its default VPC has its internet gateway: the public-address
+// policy refuses an instance there a public address when it does not. The label is always written, as
+// provider-kubernetes never removes one it stops rendering.
+func TestAccount_NamespacesSayWhetherTheVPCHasAnInternetGateway(t *testing.T) {
+	for _, c := range []struct {
+		vpc  any
+		want string
+	}{
+		{map[string]any{"subnetCidr": "172.31.64.0/20", "internetGateway": false}, "false"},
+		{map[string]any{"subnetCidr": "172.31.64.0/20", "internetGateway": true}, "true"},
+		{map[string]any{"subnetCidr": "172.31.64.0/20"}, "true"},
+		{nil, "true"},
+	} {
+		spec := map[string]any{"accountId": "912345678901", "namespaces": []any{"team-a", "team-a-data"}}
+		if c.vpc != nil {
+			spec["defaultVpc"] = c.vpc
+		}
+		nss := byKind(accountDocs(t, spec, "000000000000"))["Namespace"]
+		if len(nss) != 2 {
+			t.Fatalf("%v: want both namespaces, got %d", c.vpc, len(nss))
+		}
+		for _, ns := range nss {
+			if got := mstr(ns, "metadata", "labels", "openinfra.dev/internet-gateway"); got != c.want {
+				t.Errorf("defaultVpc %v: %s labeled internet-gateway %q, want %q", c.vpc, mstr(ns, "metadata", "name"), got, c.want)
+			}
+		}
+	}
+}

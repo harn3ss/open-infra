@@ -2469,7 +2469,10 @@ DNS), its pods, the nodes' network and the subnet itself — before any network 
 there reaches the AWS endpoints, as through VPC endpoints on AWS, and no address outside the platform,
 whatever `AssignPublicIp` says. In such an account an ECS task with no `NetworkConfiguration` runs in the default subnet too, as
 every task runs in a VPC on AWS, and so does an EC2 instance that names no subnet, as EC2 launches one in the
-default VPC (a public address there reaches nothing, so the instance is not exposed). The AWS services that reach the internet themselves (API Gateway HTTP integrations, Lambda
+default VPC (a public address there reaches nothing, so the instance is not exposed). An instance in that VPC
+has no public address: associating an Elastic IP with it fails as on EC2 (`Gateway.NotAttached`), and so does
+launching it, or changing it, with a LAN address of its own (`spec.expose`, `spec.ports`); reach it through a
+network load balancer. The AWS services that reach the internet themselves (API Gateway HTTP integrations, Lambda
 functions, SNS HTTP subscriptions) do so as on AWS: keep them out of such an account's permissions where its
 tasks must not reach the internet.
 

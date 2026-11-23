@@ -834,9 +834,13 @@ security group rule never gives an instance a public address.
 In the console the VM's **Network** tab shows the public and private addresses, the ports on the public
 address and the address ranges each port admits. It only reads: opening it changes nothing.
 
+In an account whose default VPC has no internet gateway, an instance in that VPC gets no public address:
+launching it, or changing it, with `spec.expose`, `spec.ports` or `spec.elasticIp` is refused with EC2's
+`Gateway.NotAttached`, as EC2 refuses an Elastic IP there. Put it behind a network load balancer instead.
+An instance that already had an address keeps it.
+
 > The guest must actually be listening on the port. For a *full* LAN host (every port, a real DHCP IP),
-> use `network: macvtap` instead. To reach an instance whose VPC has no internet gateway, put it behind a
-> network load balancer.
+> use `network: macvtap` instead.
 
 ### Behind a network load balancer
 

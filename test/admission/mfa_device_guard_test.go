@@ -95,11 +95,7 @@ func TestMFADeviceGuard_EveryRuleIsTested(t *testing.T) {
 	full := mfaGuard(t)
 	for i, val := range full.Spec.Validations {
 		cut := *full
-		cut.Spec.Validations = append(append([]struct {
-			Expression string `yaml:"expression"`
-			Message    string `yaml:"message"`
-			Reason     string `yaml:"reason"`
-		}{}, full.Spec.Validations[:i]...), full.Spec.Validations[i+1:]...)
+		cut.Spec.Validations = append(append([]Validation{}, full.Spec.Validations[:i]...), full.Spec.Validations[i+1:]...)
 		let := 0
 		for _, c := range mfaGuardCases() {
 			v, err := cut.Admit(c.req)

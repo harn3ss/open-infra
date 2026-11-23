@@ -6,6 +6,17 @@ the product's public contract.
 
 ## Unreleased
 
+### Changed — an instance in a default VPC without its internet gateway has no public address
+- As EC2 refuses to associate an Elastic IP with an instance in a VPC without an internet gateway
+  (`Gateway.NotAttached`), an instance in such an account's default VPC is refused a public address: a
+  launch with one (`spec.expose`, `spec.ports` or `spec.elasticIp`), or a change that adds one, fails with
+  `Gateway.NotAttached`, whether it comes from the console, a CloudFormation stack or a manifest. A public
+  address here is a LAN address, which would reach the instance from outside the platform. Reach such an
+  instance through a network load balancer. An instance that already had an address keeps it, and an
+  instance in a stack's own VPC is not affected.
+- Each namespace of an account now carries `openinfra.dev/internet-gateway` (`true` or `false`), written
+  by the account from `spec.defaultVpc.internetGateway`.
+
 ## v4.0.0 — 2026-11-22
 
 v4.0.0 makes every account behave like an AWS account. IAM is now the only authority: the AWS APIs, the
