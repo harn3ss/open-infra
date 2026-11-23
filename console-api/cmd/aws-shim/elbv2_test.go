@@ -170,6 +170,13 @@ func TestELB_NetworkLoadBalancerForwardsToItsTargets(t *testing.T) {
 		*slice.Ports[0].Port != 27015 || *slice.Ports[0].Protocol != corev1.ProtocolUDP {
 		t.Errorf("the instance's address and node, on the target port: %+v", slice)
 	}
+	// Every endpoint names what it is: kube-ovn dereferences each endpoint's targetRef and crashes on one
+	// without, which stops address allocation for every new pod in the cluster.
+	for _, ep := range slice.Endpoints {
+		if r := ep.TargetRef; r == nil || r.Kind != "VirtualMachineInstance" || r.APIVersion != "kubevirt.io/v1" || r.Name != "game" || r.Namespace != memberHome {
+			t.Errorf("the endpoint names the instance's VirtualMachineInstance (kube-ovn needs a targetRef): %+v", ep.TargetRef)
+		}
+	}
 
 	// Active once it has its address, which DescribeLoadBalancers reports.
 	svc.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "198.51.100.40"}}

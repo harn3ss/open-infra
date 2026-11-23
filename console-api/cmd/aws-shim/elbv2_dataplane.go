@@ -73,7 +73,11 @@ func (h *elbHandler) addresses(ctx context.Context, account string) map[string]s
 }
 
 // elbEndpoint is where a running instance receives its traffic: its address and its node.
-type elbEndpoint struct{ ip, node string }
+// elbEndpoint is a running instance's address and node, and the VirtualMachineInstance it is.
+type elbEndpoint struct {
+	ip, node string
+	vmi      *corev1.ObjectReference
+}
 
 // endpointOf reads in's endpoint from its VirtualMachineInstance (none while it is not running).
 func (h *elbHandler) endpointOf(ctx context.Context, in *ec2Instance) elbEndpoint {
@@ -92,7 +96,12 @@ func (h *elbHandler) endpointOf(ctx context.Context, in *ec2Instance) elbEndpoin
 	for _, i := range ifaces {
 		m, _ := i.(map[string]any)
 		if ip, _ := m["ipAddress"].(string); ip != "" && !strings.Contains(ip, ":") && node != "" {
-			return elbEndpoint{ip: ip, node: node}
+			// The endpoint names its VirtualMachineInstance, as the endpoints of a Service with a selector name
+			// their pods: kube-ovn reads every endpoint's targetRef to find the instance's network port, and
+			// stops (a nil dereference) on an endpoint without one.
+			ref := &corev1.ObjectReference{APIVersion: "kubevirt.io/v1", Kind: "VirtualMachineInstance",
+				Namespace: vmi.GetNamespace(), Name: vmi.GetName(), UID: vmi.GetUID()}
+			return elbEndpoint{ip: ip, node: node, vmi: ref}
 		}
 	}
 	return elbEndpoint{}
@@ -166,7 +175,7 @@ func (h *elbHandler) sync(ctx context.Context, rec *elbRecords) error {
 					continue
 				}
 				node := ep.node
-				byPort[t.Port] = append(byPort[t.Port], discoveryv1.Endpoint{Addresses: []string{ep.ip}, NodeName: &node,
+				byPort[t.Port] = append(byPort[t.Port], discoveryv1.Endpoint{Addresses: []string{ep.ip}, NodeName: &node, TargetRef: ep.vmi,
 					Conditions: discoveryv1.EndpointConditions{Ready: ptrTo(true), Serving: ptrTo(true), Terminating: ptrTo(false)}})
 			}
 			sort.Ints(ports)
