@@ -9,18 +9,20 @@
 #      spec.defaultVpc);
 #   2. EC2 lists an internet gateway attached to the VPC, the public subnet, its route table sending 0.0.0.0/0
 #      to the gateway, and the default subnet's main route table with no such route;
-#   3. a stack's instance in the default subnet runs a UDP service on 27015, its security group admitting
-#      client A alone; it keeps trying to start TCP connections to client A and to the internet, and to send
+#   3. a stack's instance in the default subnet runs a UDP service on 27015 and a TCP service on 27016, its
+#      security group admitting client A alone on both; it keeps trying to start TCP connections to client A and to the internet, and to send
 #      client A datagrams of its own, printing each outcome to its serial console (GetConsoleOutput);
 #   4. an internet-facing load balancer in the default subnet (no route to the gateway) is refused
-#      (InvalidSubnet); one in the public subnet with a UDP 27015 listener forwards to the instance's target
-#      group, becomes active with an address, and reports the target healthy;
-#   5. client A, a LAN host outside the cluster, gets the service's reply through the load balancer, and the
-#      instance saw client A's own address; client B, which the group does not admit, gets nothing;
+#      (InvalidSubnet); one in the public subnet with a UDP 27015 listener and a TCP 27016 listener (TCP and
+#      UDP on one load balancer) forwards each to a target group of the instance, becomes active with an
+#      address, and reports the targets healthy;
+#   5. client A, a LAN host outside the cluster, gets each service's reply through the load balancer, over UDP
+#      and over TCP, and the instance saw client A's own address on both; client B, which the group does not
+#      admit, gets nothing on either;
 #   6. the instance's own connections reach neither client A nor the internet (each times out), and none of
 #      its own datagrams reaches client A;
 #   7. DENIAL: a user of the member account with no policy is refused DescribeLoadBalancers (AccessDenied).
-# Everything the probe made is removed on exit: the load balancer, its listener and target group, the stack,
+# Everything the probe made is removed on exit: the load balancer, its listeners and target groups, the stack,
 # the user, the member account and its home namespace (only when this run created it), and the
 # administrator and its key.
 #
@@ -73,6 +75,19 @@ for _ in range(tries):
     try:
         print(s.recvfrom(2048)[0].decode(errors="replace")); sys.exit(0)
     except socket.timeout:
+        pass
+print("timeout")'
+# TASK connects to host:port over TCP and prints the first line it is sent (or "timeout"/"refused"), up to
+# tries times.
+TASK_PY='import socket, sys
+host, port, tries = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+for _ in range(tries):
+    try:
+        c = socket.create_connection((host, port), timeout=3); c.settimeout(3)
+        print(c.makefile().readline().strip() or "empty"); sys.exit(0)
+    except ConnectionRefusedError:
+        print("refused"); sys.exit(0)
+    except OSError:
         pass
 print("timeout")'
 # LISTEN prints every datagram (UDP port) and connection (TCP port) that arrives within seconds.
@@ -187,7 +202,7 @@ main_route="$(B ec2 describe-route-tables --filters Name=vpc-id,Values="$VPC" Na
 ok "$IGW attached; public subnet $PUBLIC routes 0.0.0.0/0 to it; default subnet $PRIVATE has no such route"
 
 # --- 3. the instance ----------------------------------------------------------------------------------------
-log "3. an instance in the default subnet, its group admitting client A alone on UDP 27015"
+log "3. an instance in the default subnet, its group admitting client A alone on UDP 27015 and TCP 27016"
 cat > "$TMP/stack.yaml" <<'EOF'
 Parameters:
   ClientA: { Type: String }
@@ -195,9 +210,10 @@ Resources:
   Game:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "client A on UDP 27015"
+      GroupDescription: "client A on UDP 27015 and TCP 27016"
       SecurityGroupIngress:
         - { IpProtocol: udp, FromPort: 27015, ToPort: 27015, CidrIp: !Sub "${ClientA}/32" }
+        - { IpProtocol: tcp, FromPort: 27016, ToPort: 27016, CidrIp: !Sub "${ClientA}/32" }
   Server:
     Type: AWS::EC2::Instance
     Properties:
@@ -221,6 +237,15 @@ Resources:
                   d, a = s.recvfrom(512)
                   say("got %s from %s" % (d.decode(errors="replace"), a[0]))
                   s.sendto(("%s seen-from %s" % (tag, a[0])).encode(), a)
+          def serve_tcp():
+              t = socket.socket()
+              t.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              t.bind(("0.0.0.0", 27016)); t.listen(8)
+              say("listening on tcp 27016")
+              while True:
+                  c, a = t.accept()
+                  say("tcp from %s" % a[0])
+                  c.sendall(("%s tcp-seen-from %s\n" % (tag, a[0])).encode()); c.close()
           def reach(host, port):
               try:
                   socket.create_connection((host, port), timeout=4).close()
@@ -230,6 +255,7 @@ Resources:
               except OSError:
                   return "timeout"
           threading.Thread(target=serve, daemon=True).start()
+          threading.Thread(target=serve_tcp, daemon=True).start()
           for i in range(240):
               u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
               try:
@@ -255,7 +281,7 @@ SERVER="$(B cloudformation describe-stacks --stack-name "$NAME" --query "Stacks[
 ok "CREATE_COMPLETE: $SERVER"
 
 # --- 4. the load balancer -----------------------------------------------------------------------------------
-log "4. a network load balancer in the public subnet, a UDP 27015 listener to the instance's target group"
+log "4. a network load balancer in the public subnet: UDP 27015 and TCP 27016 listeners to the instance's target groups"
 if B elbv2 create-load-balancer --name "$NAME-private" --type network --scheme internet-facing --subnets "$PRIVATE" >/dev/null 2>"$TMP/err"; then
   B elbv2 delete-load-balancer --load-balancer-arn "$(B elbv2 describe-load-balancers --names "$NAME-private" --query 'LoadBalancers[0].LoadBalancerArn' --output text)" >/dev/null 2>&1
   fail "an internet-facing load balancer was placed in a subnet with no route to the internet gateway"
@@ -266,6 +292,10 @@ TG="$(B elbv2 create-target-group --name "$NAME" --protocol UDP --port 27015 --v
   --query 'TargetGroups[0].TargetGroupArn' --output text 2>"$TMP/err")" || fail "create-target-group: $(cat "$TMP/err")"
 CLEAN+=("B elbv2 delete-target-group --target-group-arn $TG")
 B elbv2 register-targets --target-group-arn "$TG" --targets Id="$SERVER" 2>"$TMP/err" || fail "register-targets: $(cat "$TMP/err")"
+TG_TCP="$(B elbv2 create-target-group --name "$NAME-tcp" --protocol TCP --port 27016 --vpc-id "$VPC" --target-type instance \
+  --query 'TargetGroups[0].TargetGroupArn' --output text 2>"$TMP/err")" || fail "create-target-group (TCP): $(cat "$TMP/err")"
+CLEAN+=("B elbv2 delete-target-group --target-group-arn $TG_TCP")
+B elbv2 register-targets --target-group-arn "$TG_TCP" --targets Id="$SERVER" 2>"$TMP/err" || fail "register-targets (TCP): $(cat "$TMP/err")"
 LB="$(B elbv2 create-load-balancer --name "$NAME" --type network --scheme internet-facing --subnets "$PUBLIC" \
   --query 'LoadBalancers[0].LoadBalancerArn' --output text 2>"$TMP/err")" || fail "create-load-balancer: $(cat "$TMP/err")"
 CLEAN+=("B elbv2 delete-load-balancer --load-balancer-arn $LB")
@@ -274,6 +304,10 @@ LST="$(B elbv2 create-listener --load-balancer-arn "$LB" --protocol UDP --port 2
   --default-actions Type=forward,TargetGroupArn="$TG" --query 'Listeners[0].ListenerArn' --output text 2>"$TMP/err")" \
   || fail "create-listener: $(cat "$TMP/err")"
 CLEAN+=("B elbv2 delete-listener --listener-arn $LST")
+LST_TCP="$(B elbv2 create-listener --load-balancer-arn "$LB" --protocol TCP --port 27016 \
+  --default-actions Type=forward,TargetGroupArn="$TG_TCP" --query 'Listeners[0].ListenerArn' --output text 2>"$TMP/err")" \
+  || fail "create-listener (TCP): $(cat "$TMP/err")"
+CLEAN+=("B elbv2 delete-listener --listener-arn $LST_TCP")
 B elbv2 wait load-balancer-available --load-balancer-arns "$LB" 2>"$TMP/err" || fail "the load balancer did not become active: $(cat "$TMP/err")"
 VIP="$(B elbv2 describe-load-balancers --load-balancer-arns "$LB" \
   --query 'LoadBalancers[0].AvailabilityZones[0].LoadBalancerAddresses[0].IpAddress' --output text)"
@@ -285,9 +319,12 @@ for _ in $(seq 1 60); do
   sleep 5
 done
 [ "$health" = healthy ] || fail "the target is $health"
-for _ in $(seq 1 60); do console "$SERVER" | grep -q "listening on 27015" && break; sleep 5; done
-console "$SERVER" | grep -q "listening on 27015" || fail "the instance's service did not start: $(console "$SERVER" | tail -3 | tr '\n' ';')"
-ok "active at $VIP:27015; target $SERVER healthy, its service listening"
+health="$(B elbv2 describe-target-health --target-group-arn "$TG_TCP" --query 'TargetHealthDescriptions[0].TargetHealth.State' --output text 2>/dev/null)"
+[ "$health" = healthy ] || fail "the TCP target is $health"
+for _ in $(seq 1 60); do console "$SERVER" | grep -q "listening on tcp 27016" && break; sleep 5; done
+console "$SERVER" | grep -q "listening on 27015" && console "$SERVER" | grep -q "listening on tcp 27016" \
+  || fail "the instance's services did not start: $(console "$SERVER" | tail -3 | tr '\n' ';')"
+ok "active at $VIP (UDP 27015, TCP 27016); target $SERVER healthy in both groups, its services listening"
 
 # --- 5. the clients -----------------------------------------------------------------------------------------
 log "5. client A gets the reply through the load balancer; client B, outside the group, gets nothing"
@@ -299,11 +336,17 @@ for _ in $(seq 1 24); do
 done
 [ "$reply" = "$NAME seen-from $A_ADDR" ] || fail "client A's reply through the load balancer: '$reply' (want '$NAME seen-from $A_ADDR')"
 ok "client A ($A_ADDR): '$reply' — the instance saw the client's own address"
+treply="$(A "$TASK_PY" "$VIP" 27016 8 2>/dev/null)"
+[ "$treply" = "$NAME tcp-seen-from $A_ADDR" ] || fail "client A's TCP reply through the load balancer: '$treply' (want '$NAME tcp-seen-from $A_ADDR')"
+ok "client A over TCP: '$treply' — the instance saw the client's own address"
 b_reply="$(Bc "$ASK_PY" "$VIP" 27015 "hello-b-$SFX" 5 2>/dev/null)"
 [ "$b_reply" = timeout ] || fail "client B, which the security group does not admit, got '$b_reply'"
 sleep 5
-if console "$SERVER" | grep -q "from $B_ADDR"; then fail "client B's datagrams reached the instance: $(console "$SERVER" | grep "from $B_ADDR" | head -2 | tr '\n' ';')"; fi
-ok "client B ($B_ADDR): no reply, and nothing reached the instance"
+b_treply="$(Bc "$TASK_PY" "$VIP" 27016 2 2>/dev/null)"
+[ "$b_treply" = timeout ] || fail "client B, which the security group does not admit, got '$b_treply' over TCP"
+sleep 5
+if console "$SERVER" | grep -q "from $B_ADDR"; then fail "client B's traffic reached the instance: $(console "$SERVER" | grep "from $B_ADDR" | head -2 | tr '\n' ';')"; fi
+ok "client B ($B_ADDR): no reply over UDP or TCP, and nothing reached the instance"
 
 # --- 6. the instance starts nothing ---------------------------------------------------------------------------
 log "6. the instance's own connections and datagrams reach neither client A nor the internet"
@@ -331,4 +374,4 @@ fi
 grep -q AccessDenied "$TMP/deny" || fail "the refusal is not AccessDenied: $(tail -c 300 "$TMP/deny")"
 ok "DescribeLoadBalancers by a user with no policy: AccessDenied"
 
-printf '✓ PASS — a network load balancer at %s brought client A to an instance with no route out (the instance saw the client'"'"'s own address and answered it); client B, outside its security group, got nothing; the instance'"'"'s own connections to the LAN and the internet all timed out and none of its datagrams arrived; a user with no policy was refused DescribeLoadBalancers.\n' "$VIP"
+printf '✓ PASS — a network load balancer at %s brought client A to an instance with no route out over UDP and TCP (the instance saw the client'"'"'s own address and answered it on both); client B, outside its security group, got nothing on either; the instance'"'"'s own connections to the LAN and the internet all timed out and none of its datagrams arrived; a user with no policy was refused DescribeLoadBalancers.\n' "$VIP"
