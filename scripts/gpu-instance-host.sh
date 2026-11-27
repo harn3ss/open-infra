@@ -5,6 +5,7 @@
 #   sudo ./gpu-instance-host.sh 0000:01:00.0               # write the boot configuration; reboot to apply
 #   sudo ./gpu-instance-host.sh 0000:01:00.0 --now         # ... and move the card to vfio-pci now, no reboot
 #   sudo ./gpu-instance-host.sh 0000:01:00.0 --late [--now] # bind it late in boot instead (see below)
+#   sudo ./gpu-instance-host.sh 0000:01:00.0 ... --bus-reset # reset the whole card between boots (see below)
 #
 # By default the card's whole IOMMU group (its display and audio functions) is bound to vfio-pci at boot: the
 # group's vendor:device ids go to vfio-pci's ids option, which every GPU and audio driver is made to load
@@ -19,6 +20,12 @@
 # openinfra.gpu-instance=off to the kernel command line at the boot menu skips the service for that boot,
 # leaving the card with its own driver.
 #
+# --bus-reset, in either mode, has the card reset whole through its slot's bus at every instance start and
+# restart, instead of by its function-level reset: for a card whose driver in the instance does not start
+# after the latter (one consumer card's Windows driver reported Code 43 at every boot, yet started once
+# Windows was up). A udev rule clears the card's reset methods whenever it is bound to vfio-pci, so the emulator resets
+# its bus instead. It needs the card's functions alone on their bus; running without it undoes it.
+#
 # Either way nvidia-persistenced is masked, and a node with no other display device keeps no desktop: it
 # boots to multi-user.target, since a display manager would fail on the card and retry at every boot (--now
 # stops it). On a node with no other NVIDIA display device, NVIDIA's udev rule that loads the driver's modules
@@ -32,12 +39,12 @@
 set -euo pipefail
 
 die() { printf 'gpu-instance-host: %s\n' "$*" >&2; exit 1; }
-USAGE="usage: $0 <pci address, e.g. 0000:01:00.0> [--late] [--now]"
+USAGE="usage: $0 <pci address, e.g. 0000:01:00.0> [--late] [--bus-reset] [--now]"
 [ "$(id -u)" = 0 ] || die "run as root"
 ADDR="${1:-}"; [ $# -gt 0 ] && shift
-NOW=""; LATE=""
+NOW=""; LATE=""; BUSRESET=""
 for a in "$@"; do
-  case "$a" in --now) NOW=1 ;; --late) LATE=1 ;; *) die "$USAGE" ;; esac
+  case "$a" in --now) NOW=1 ;; --late) LATE=1 ;; --bus-reset) BUSRESET=1 ;; *) die "$USAGE" ;; esac
 done
 printf '%s' "$ADDR" | grep -Eq '^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$' || die "$USAGE"
 DEV="/sys/bus/pci/devices/$ADDR"
@@ -54,6 +61,19 @@ for d in /sys/kernel/iommu_groups/"$GROUP"/devices/*; do
 done
 ID_LIST="$(IFS=,; echo "${IDS[*]}")"
 echo "card $ADDR, IOMMU group $GROUP, functions $ID_LIST"
+
+# --bus-reset resets the whole card through its slot's bus, which resets everything on that bus: the card's
+# functions must be alone there, below a bridge of their own.
+if [ -n "$BUSRESET" ]; then
+  BRIDGE="$(dirname "$(readlink -f "$DEV")")"
+  printf '%s' "${BRIDGE##*/}" | grep -Eq '^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$' ||
+    die "--bus-reset: $ADDR is not below a PCI bridge, so its bus cannot be reset"
+  for s in "$BRIDGE"/[0-9a-f][0-9a-f][0-9a-f][0-9a-f]:*; do
+    [ -e "$s/vendor" ] || continue
+    a="$(basename "$s")"
+    [ "${a%.*}" = "$SLOT" ] || die "--bus-reset: the card's bus also holds $a, which a bus reset would reset too"
+  done
+fi
 
 # Is the card the node's only display device? Then the node keeps no desktop.
 ONLY_DISPLAY=1
@@ -194,6 +214,26 @@ EOF
   fi
 fi
 update-initramfs -u -k all >/dev/null
+
+# --bus-reset: the card gets no reset method of its own whenever it is bound to vfio-pci, so the instance's
+# emulator resets the whole card through its bus at every start and restart, instead of the card's
+# function-level reset. Either way nothing carries over from one instance to the next.
+RESET_RULE=/etc/udev/rules.d/72-openinfra-gpu-instance-reset.rules
+if [ -n "$BUSRESET" ]; then
+  cat > "$RESET_RULE" <<EOF
+# open-infra (scripts/gpu-instance-host.sh --bus-reset): the GPU at $ADDR is reset whole, through its bus,
+# between and during GPU instances, rather than by its function-level reset, after which its driver in the
+# instance does not start. Delete this file (and reboot) to give the card its own reset back.
+ACTION=="add|bind", SUBSYSTEM=="pci", KERNEL=="$ADDR", DRIVER=="vfio-pci", RUN+="/bin/sh -c 'echo > /sys/bus/pci/devices/$ADDR/reset_method'"
+EOF
+  udevadm control --reload 2>/dev/null || true
+  if [ "$(basename "$(readlink "$DEV/driver" 2>/dev/null)")" = vfio-pci ]; then echo > "$DEV/reset_method"; fi
+  echo "reset: the card is reset whole, through its bus ($(basename "$RESET_RULE"))"
+elif [ -e "$RESET_RULE" ]; then
+  rm -f "$RESET_RULE"; udevadm control --reload 2>/dev/null || true
+  [ -n "$(cat "$DEV/reset_method" 2>/dev/null)" ] || echo default > "$DEV/reset_method"
+  echo "reset: the card's own reset methods are back ($(cat "$DEV/reset_method"))"
+fi
 
 if grep -q '^GenuineIntel' <(grep -m1 vendor_id /proc/cpuinfo | awk '{print $3}'); then IOMMU=intel_iommu=on; else IOMMU=amd_iommu=on; fi
 cmdline="$(sed -n 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"$/\1/p' /etc/default/grub)"

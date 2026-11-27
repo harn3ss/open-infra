@@ -21,6 +21,10 @@ the product's public contract.
   bound from the initramfs, as one whose only display device is the card can. The card's own driver
   initializes it, then `openinfra-gpu-instance.service`, ordered before the node's Kubernetes agent, hands
   it to `vfio-pci`. `openinfra.gpu-instance=off` at the boot menu skips the service for one boot.
+- `scripts/gpu-instance-host.sh --bus-reset` has the host reset the whole card through its bus at every
+  instance start and restart, instead of by the card's function-level reset. It is for a card whose driver
+  in the instance does not start after that reset, as one consumer card's Windows driver did not: Code 43 at
+  every boot. Either way nothing carries over from one instance to the next.
 - A g4dn instance's spec is unchanged: it carries no family, and its card pool keeps its resource name.
 - A GPU instance made from the OS image cache now starts where its card is. Its local root disk is placed
   by the pod that copies the OS image onto it, which asked for the instance's memory but not its card, so the

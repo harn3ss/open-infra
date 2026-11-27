@@ -55,6 +55,21 @@ then and goes dark when the card is handed over. The udev override is written to
 point, for that boot only. Nothing of `vfio-pci` is left in the initramfs, and running the script in one mode
 undoes the other.
 
+**A card whose driver does not start after the card's own reset.** The host resets the card at every
+instance start and restart, by default with the card's function-level reset. Some cards come out of that
+reset in a state their driver in the instance cannot start from. One consumer card under Windows did: its
+driver reported Code 43 at every boot, yet started when the device was restarted once Windows was up. For such a
+card add `--bus-reset`, in either mode:
+
+```bash
+sudo scripts/gpu-instance-host.sh 0000:01:00.0 --late --bus-reset
+```
+
+A udev rule then clears the card's own reset methods whenever it is bound to `vfio-pci`, so the instance's
+emulator resets the whole card through its bus instead, at every start and restart. Either way nothing
+carries over from one instance to the next. The card's functions must be alone on their bus, and the script
+refuses otherwise.
+
 To start a node once with the card on its own driver (to recover a node, or to read its logs), add
 `openinfra.gpu-instance=off` to the kernel command line at the boot menu: the service is skipped for that
 boot. A node bound early can be started the same way by adding `initcall_blacklist=vfio_pci_init`.
@@ -120,7 +135,7 @@ with `gpus: 0` is refused a GPU instance with `VcpuLimitExceeded`. A GPU instanc
 ## Giving the card back to containers
 
 Delete `/etc/modprobe.d/openinfra-gpu-instance.conf` on the node, and any file in `/etc/udev/rules.d`
-that starts `# open-infra (scripts/gpu-instance-host.sh)`. For `--late`, also disable
+whose first line starts `# open-infra (scripts/gpu-instance-host.sh`. For `--late`, also disable
 `openinfra-gpu-instance.service` and delete it and `/usr/local/sbin/openinfra-gpu-instance-bind`. Then run
 `update-initramfs -u -k all`, unmask `nvidia-persistenced`, reboot, restore the node's GPU labels, and clear `gpuInstances` in
 `config.yaml` (remove the KubeVirt `permittedHostDevices` entry and the ConfigMap by hand if `install.sh`
