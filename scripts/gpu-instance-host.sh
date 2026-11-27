@@ -21,7 +21,10 @@
 #
 # Either way nvidia-persistenced is masked, and a node with no other display device keeps no desktop: it
 # boots to multi-user.target, since a display manager would fail on the card and retry at every boot (--now
-# stops it). Idempotent; running it in one mode undoes the other.
+# stops it). On a node with no other NVIDIA display device, NVIDIA's udev rule that loads the driver's modules
+# whenever it registers is overridden without those lines, since with no card to drive it would reload the
+# driver several times a second: in /etc/udev/rules.d, or for --late in /run/udev/rules.d once the card is
+# handed over at each boot. Idempotent; running it in one mode undoes the other.
 #
 # Refuses a card whose IOMMU group holds devices other than the card's own functions (they would have to be
 # given away with it). After it: remove the node's container-GPU labels (openinfra.dev/gpu, gpu-model,
@@ -60,6 +63,43 @@ for d in /sys/bus/pci/devices/*; do
   esac
 done
 
+# NVIDIA's driver package has a udev rule that loads the driver's other modules whenever the driver registers.
+# With the node's only NVIDIA display device on vfio-pci the driver finds no card and unloads, and loading it
+# fires the rule again: a loop of several loads a second, flooding the kernel log. So when the card is the
+# node's only NVIDIA display device, the rule is overridden by name without those lines (the rest, such as its
+# runtime power management, stays). Overrides this script wrote carry NV_MARK.
+NV_MARK="# open-infra (scripts/gpu-instance-host.sh):"
+NV_RULES=(); OTHER_NVIDIA=""
+for d in /sys/bus/pci/devices/*; do
+  [ "$(cat "$d/vendor")" = 0x10de ] || continue
+  case "$(cat "$d/class")" in
+    0x03*) g="$(readlink "$d/iommu_group" 2>/dev/null || true)"; [ "${g##*/}" = "$GROUP" ] || OTHER_NVIDIA=1 ;;
+  esac
+done
+if [ -z "$OTHER_NVIDIA" ]; then
+  for f in /usr/lib/udev/rules.d/*.rules /lib/udev/rules.d/*.rules; do
+    [ -f "$f" ] || continue
+    grep -q 'DEVPATH=="/bus/pci/drivers/nvidia"' "$f" || continue
+    case " ${NV_RULES[*]-} " in *"/$(basename "$f") "*) ;; *) NV_RULES+=("$f") ;; esac
+  done
+fi
+for o in /etc/udev/rules.d/*.rules; do
+  if [ -f "$o" ] && grep -qF "$NV_MARK" "$o"; then rm -f "$o"; fi
+done
+# nv_override <dir> <note>: write those overrides into <dir> and have udev reread its rules.
+nv_override() {
+  local f
+  [ ${#NV_RULES[@]} -gt 0 ] || return 0
+  mkdir -p "$1"
+  for f in "${NV_RULES[@]}"; do
+    { echo "$NV_MARK NVIDIA's rule of this name, without its lines that"
+      echo "# load the driver's modules when it registers: the card is on vfio-pci. $2"
+      grep -v 'DEVPATH=="/bus/pci/drivers/nvidia"' "$f" || true; } > "$1/$(basename "$f")"
+    echo "udev: $(basename "$f") overridden in $1, without its driver-loading lines"
+  done
+  udevadm control --reload 2>/dev/null || true
+}
+
 UNIT=/etc/systemd/system/openinfra-gpu-instance.service
 BIND=/usr/local/sbin/openinfra-gpu-instance-bind
 if [ -n "$LATE" ]; then
@@ -76,6 +116,19 @@ log() { echo "openinfra-gpu-instance: \$*"; }
 # Let the card's own driver initialize it first (up to a minute), as on a node whose card was moved live.
 i=0
 while [ \$i -lt 60 ] && [ ! -e /sys/bus/pci/devices/$ADDR/driver ]; do sleep 1; i=\$((i + 1)); done
+# Before the driver unloads: NVIDIA's udev rule, for this boot without the lines that load the driver's modules
+# when it registers, which with the card on vfio-pci would load it again and again.
+NV_RULES="${NV_RULES[*]-}"
+if [ -n "\$NV_RULES" ]; then
+  mkdir -p /run/udev/rules.d
+  for f in \$NV_RULES; do
+    [ -f "\$f" ] || continue
+    { echo "$NV_MARK NVIDIA's rule of this name, for this boot without its lines"
+      echo "# that load the driver's modules when it registers: the card is on vfio-pci (--late)."
+      grep -v 'DEVPATH=="/bus/pci/drivers/nvidia"' "\$f"; } > "/run/udev/rules.d/\$(basename "\$f")"
+  done
+  udevadm control --reload 2>/dev/null || true
+fi
 if [ -n "$ONLY_DISPLAY" ] && systemctl is-active --quiet display-manager 2>/dev/null; then
   systemctl stop display-manager
 fi
@@ -116,6 +169,10 @@ EOF
   systemctl daemon-reload
   systemctl enable openinfra-gpu-instance.service >/dev/null 2>&1
   echo "boot: openinfra-gpu-instance.service hands $ID_LIST to vfio-pci late in boot"
+  # A card already on vfio-pci this boot gets the service's udev overrides now.
+  if [ "$(basename "$(readlink "$DEV/driver" 2>/dev/null)")" = vfio-pci ]; then
+    nv_override /run/udev/rules.d "For this boot (--late)."
+  fi
 else
   cat > /etc/modprobe.d/openinfra-gpu-instance.conf <<EOF
 # open-infra: this node's GPU is given whole to GPU instances (PCI passthrough), not to containers.
@@ -130,6 +187,7 @@ EOF
   for m in vfio vfio_iommu_type1 vfio_pci; do
     grep -qx "$m" /etc/initramfs-tools/modules 2>/dev/null || echo "$m" >> /etc/initramfs-tools/modules
   done
+  nv_override /etc/udev/rules.d "Delete it to give the card back."
   if [ -e "$UNIT" ]; then
     systemctl disable openinfra-gpu-instance.service >/dev/null 2>&1 || true
     rm -f "$UNIT" "$BIND"; systemctl daemon-reload

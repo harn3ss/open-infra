@@ -28,6 +28,14 @@ the product's public contract.
   copy pod now asks for the card too, and a copy no node can take refuses the launch with
   `InsufficientInstanceCapacity` instead of waiting.
 
+### Fixed — a GPU instance host no longer reloads the NVIDIA driver several times a second
+- On a node whose only NVIDIA display device is given to GPU instances, NVIDIA's udev rule loaded the
+  driver's modules whenever the driver registered. With no card to drive, the driver unloaded, and the next
+  load fired the rule again, thousands of times an hour, flooding the kernel log. `scripts/gpu-instance-host.sh`
+  now overrides that rule by name without its driver-loading lines, keeping the rest such as runtime power
+  management. With `--late` the override is written for each boot once the card is handed over, so the
+  card's own driver still starts as usual first. A node with another NVIDIA display device keeps the rule.
+
 ### Changed — an instance in a default VPC without its internet gateway has no public address
 - As EC2 refuses to associate an Elastic IP with an instance in a VPC without an internet gateway
   (`Gateway.NotAttached`), an instance in such an account's default VPC is refused a public address: a
