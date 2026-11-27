@@ -6,8 +6,11 @@
 #     openinfra.dev/capacity-cpu      requests.cpu             (e.g. "16")
 #     openinfra.dev/capacity-memory   requests.memory          (e.g. "64Gi")
 #     openinfra.dev/capacity-gpu      requests.nvidia.com/gpu  (e.g. "1"), and the same number of GPU
-#                                     instances' cards, requests.openinfra.dev/instance-gpu (a quota counts
-#                                     each resource on its own, so each kind gets the limit)
+#                                     instances' cards in each GPU instance family's pool,
+#                                     requests.openinfra.dev/instance-gpu (g4dn) and
+#                                     requests.openinfra.dev/instance-gpu-g5 (a quota counts each resource on
+#                                     its own, so each kind gets the limit; a family left out of the quota
+#                                     would be unlimited)
 #     openinfra.dev/capacity-storage  requests.storage         (e.g. "500Gi")
 #     openinfra.dev/capacity-pods     count/pods               (e.g. "200")
 # Every label is always present on a member account's namespace; "none" means that limit is unset, and the
@@ -52,8 +55,9 @@ metadata:
     policies.kyverno.io/title: Account capacity
     policies.kyverno.io/category: Tenancy / resource governance
     policies.kyverno.io/description: >-
-      Generates native ResourceQuotas (requests.cpu, requests.memory, requests.nvidia.com/gpu and
-      requests.openinfra.dev/instance-gpu, requests.storage, count/pods) into each namespace an account's
+      Generates native ResourceQuotas (requests.cpu, requests.memory, requests.nvidia.com/gpu,
+      requests.openinfra.dev/instance-gpu and instance-gpu-g5, requests.storage, count/pods) into each
+      namespace an account's
       spec.capacity labels, bounding what
       one account may reserve on the shared cluster.
     # kyverno.io is a CRD from the opt-in compliance component: skip the dry-run so a fresh/DR sync doesn't
@@ -131,6 +135,7 @@ spec:
             hard:
               requests.nvidia.com/gpu: "{{request.object.metadata.labels.\"openinfra.dev/capacity-gpu\"}}"
               requests.openinfra.dev/instance-gpu: "{{request.object.metadata.labels.\"openinfra.dev/capacity-gpu\"}}"
+              requests.openinfra.dev/instance-gpu-g5: "{{request.object.metadata.labels.\"openinfra.dev/capacity-gpu\"}}"
     - name: capacity-storage
       match:
         any:

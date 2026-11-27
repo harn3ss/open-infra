@@ -9555,11 +9555,20 @@ components:
               type: integer
               minimum: 0
               maximum: 8
-              description: 'GPUs given to the instance whole, as a GPU instance type''s are (g4dn.xlarge: one): each a physical
-                card on a node that offers GPU instances, passed through to the guest, which runs the card''s own driver.
-                Counted against its account''s GPU capacity, and launched only while a card is free (InsufficientInstanceCapacity
+              description: 'GPUs given to the instance whole, as a GPU instance type''s are (g4dn.xlarge and g5.xlarge: one):
+                each a physical card on a node that offers GPU instances, passed through to the guest, which runs the card''s
+                own driver. Counted against its account''s GPU capacity, and launched only while a card is free (InsufficientInstanceCapacity
                 otherwise). Not with highAvailability: the card cannot live-migrate. Default 0. Takes effect when the instance
                 next starts.'
+            gpuFamily:
+              type: string
+              enum:
+              - g4dn
+              - g5
+              description: 'The GPU instance family whose cards spec.gpus are, as the instance type names it: g4dn (g4dn.xlarge)
+                or g5 (g5.xlarge). Each family is its own pool of the installation''s cards, one card model each, which DescribeInstanceTypes
+                reports, so an instance always gets its family''s card. Unset is g4dn. Takes effect when the instance next
+                starts.'
             diskSize:
               type: string
               default: 20Gi

@@ -61,7 +61,7 @@ func TestEC2_DescribeInstanceTypes_GPU(t *testing.T) {
 		t.Errorf("no GPU instances here: none listed: %s", b)
 	}
 
-	h.gpu = instanceGPU{name: "T4", manufacturer: "NVIDIA", memoryMiB: 16384}
+	h.gpus = map[string]instanceGPU{"g4dn": {name: "T4", manufacturer: "NVIDIA", memoryMiB: 16384}}
 	b := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstanceTypes"}, "InstanceType.1": {"g4dn.xlarge"}}).Body.String()
 	mustHave(t, "g4dn.xlarge", b, []string{"<instanceType>g4dn.xlarge</instanceType>", "<defaultVCpus>4</defaultVCpus>",
 		"<gpuInfo><gpus><item><name>T4</name><manufacturer>NVIDIA</manufacturer><count>1</count><memoryInfo><sizeInMiB>16384</sizeInMiB></memoryInfo></item></gpus><totalGpuMemoryInMiB>16384</totalGpuMemoryInMiB></gpuInfo>"}, nil)
@@ -77,6 +77,45 @@ func TestEC2_DescribeInstanceTypes_GPU(t *testing.T) {
 	unstructured.RemoveNestedField(vm.Object, "spec", "gpus")
 	if got := claimInstanceType(vm); got != "t3.xlarge" {
 		t.Errorf("without its GPU it is a t3.xlarge, got %q", got)
+	}
+}
+
+// Each GPU instance family is its own card: g5.xlarge is listed only where the installation offers a g5
+// card, with that card as its GpuInfo, beside g4dn.xlarge with its own; and a g5 instance reports g5.xlarge.
+func TestEC2_DescribeInstanceTypes_GPUFamilies(t *testing.T) {
+	h, _ := ec2Fixture(t)
+	h.gpus = map[string]instanceGPU{"g4dn": {name: "T4", manufacturer: "NVIDIA", memoryMiB: 16384}}
+	if w := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstanceTypes"}, "InstanceType.1": {"g5.xlarge"}}); w.Code != 400 || !strings.Contains(w.Body.String(), "InvalidInstanceType") {
+		t.Errorf("no g5 card here: g5.xlarge does not exist: %d %s", w.Code, w.Body.String())
+	}
+	h.gpus["g5"] = instanceGPU{name: "A10G", manufacturer: "NVIDIA", memoryMiB: 24576}
+	b := ec2Call(h, ec2Alice, url.Values{"Action": {"DescribeInstanceTypes"}, "InstanceType.1": {"g5.xlarge"}, "InstanceType.2": {"g4dn.xlarge"}}).Body.String()
+	mustHave(t, "both families", b, []string{"<instanceType>g5.xlarge</instanceType>",
+		"<name>A10G</name><manufacturer>NVIDIA</manufacturer><count>1</count><memoryInfo><sizeInMiB>24576</sizeInMiB></memoryInfo>",
+		"<instanceType>g4dn.xlarge</instanceType>", "<name>T4</name>"}, nil)
+	g5 := b[strings.Index(b, "<instanceType>g5.xlarge</instanceType>"):]
+	if strings.Contains(g5[:strings.Index(g5, "</gpuInfo>")], "T4") {
+		t.Errorf("g5.xlarge must report its own card, not g4dn's: %s", g5)
+	}
+	vm := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"cpu": int64(4), "memory": "16Gi", "gpus": int64(1), "gpuFamily": "g5"}}}
+	if got := claimInstanceType(vm); got != "g5.xlarge" {
+		t.Errorf("a 4 vCPU / 16Gi instance with a g5 GPU is a g5.xlarge, got %q", got)
+	}
+}
+
+func TestInstanceGPUsFromEnv(t *testing.T) {
+	t.Setenv("GPU_INSTANCE_GPU_NAME", "T4")
+	t.Setenv("GPU_INSTANCE_GPU_MEMORY_MIB", "16384")
+	t.Setenv("GPU_INSTANCE_G5_GPU_NAME", "A10G")
+	t.Setenv("GPU_INSTANCE_G5_GPU_MANUFACTURER", "NVIDIA")
+	t.Setenv("GPU_INSTANCE_G5_GPU_MEMORY_MIB", "24576")
+	got := instanceGPUsFromEnv()
+	if got["g4dn"] != (instanceGPU{name: "T4", memoryMiB: 16384}) || got["g5"] != (instanceGPU{name: "A10G", manufacturer: "NVIDIA", memoryMiB: 24576}) {
+		t.Errorf("cards by family: %+v", got)
+	}
+	t.Setenv("GPU_INSTANCE_G5_GPU_NAME", "")
+	if _, ok := instanceGPUsFromEnv()["g5"]; ok {
+		t.Errorf("an unnamed g5 card offers no g5 instances")
 	}
 }
 

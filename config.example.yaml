@@ -258,16 +258,24 @@ components:
   airgap: false                # air-gap support: in-cluster registry mirror + image prefetch (front-load), and the optional public-egress cutoff; opt-in, OFF (internet allowed by default — see docs/airgapping.md)
   mail: false                  # transactional email (Amazon SES): kind: EmailSender (SES SMTP credentials) + the platform SMTP relay behind the aws-shim's SES front door, the only way to send (needs awsShim: true); opt-in, OFF (internet delivery needs a smarthost + SPF/DKIM — see docs/email.md)
 
-# GPU instances (EC2 G instances: g4dn.xlarge, one GPU). A GPU card is handed whole to an instance by PCI
-# passthrough, and the instance runs the card's own driver; the card is then not available to containers.
-# Only meaningful when components.virtualization is on. Prepare each card's node first with
-# scripts/gpu-instance-host.sh (binds the card to vfio-pci at boot), then re-run install.sh. Blank
-# pciVendorSelector => no GPU instances. Site values (see docs/gpu-instances.md). EXAMPLE ONLY — set your own:
+# GPU instances (EC2 G instances: g4dn.xlarge and g5.xlarge, one GPU each). A GPU card is handed whole to an
+# instance by PCI passthrough, and the instance runs the card's own driver; the card is then not available to
+# containers. Each GPU instance family is its own pool of ONE card model, which DescribeInstanceTypes reports:
+# the top-level card serves g4dn.xlarge, the g5 block's card g5.xlarge (a different model: two models in one
+# family would make its type's GPU a guess). Only meaningful when components.virtualization is on. Prepare
+# each card's node first with scripts/gpu-instance-host.sh (binds the card to vfio-pci at boot), then re-run
+# install.sh. Blank pciVendorSelector => no instances of that family. Site values (see
+# docs/gpu-instances.md). EXAMPLE ONLY — set your own:
 gpuInstances:
   pciVendorSelector: ""        # the card's vendor:device from `lspci -nn`, e.g. "10DE:1EB8" (an NVIDIA T4)
   name: ""                     # the GPU as EC2's DescribeInstanceTypes names it, e.g. "T4"
   manufacturer: ""             # e.g. "NVIDIA"
   memoryMiB: ""                # the card's memory, e.g. "16384"
+  g5:                          # optional: a second card model, offered as g5.xlarge
+    pciVendorSelector: ""      # e.g. "10DE:2237" (an NVIDIA A10G)
+    name: ""                   # e.g. "A10G"
+    manufacturer: ""
+    memoryMiB: ""              # e.g. "24576"
 
 # OpenBao (#359). Only meaningful when components.openbao: true. Site values: install.sh writes them
 # into the cluster (scripts/openbao-site.sh); none is committed.

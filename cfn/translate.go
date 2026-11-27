@@ -958,14 +958,26 @@ var ec2InstanceTypes = map[string]struct {
 	"r5.large": {2, "16Gi"}, "r6i.large": {2, "16Gi"},
 	"r5.xlarge": {4, "32Gi"}, "r6i.xlarge": {4, "32Gi"},
 	"r5.2xlarge": {8, "64Gi"}, "r6i.2xlarge": {8, "64Gi"},
-	// accelerated computing (g4dn): one GPU each, ec2InstanceGPUs
-	"g4dn.xlarge": {4, "16Gi"},
+	// accelerated computing (g4dn / g5): one GPU each, ec2InstanceGPUs
+	"g4dn.xlarge": {4, "16Gi"}, "g5.xlarge": {4, "16Gi"},
 }
 
 // ec2InstanceGPUs are the GPU instance types' GPUs (spec.gpus): each a whole physical card on a node that
 // offers GPU instances, given to the instance's guest, as a G instance's GPU is its own. The card is the
-// installation's, which DescribeInstanceTypes reports, not the type's on AWS. A type not listed has none.
-var ec2InstanceGPUs = map[string]int{"g4dn.xlarge": 1}
+// installation's card for the type's family (spec.gpuFamily: each family its own pool of one card model),
+// which DescribeInstanceTypes reports, not the type's on AWS. A type not listed has none.
+var ec2InstanceGPUs = map[string]int{"g4dn.xlarge": 1, "g5.xlarge": 1}
+
+// GPUFamilyOf is a GPU instance type's family, its pool of cards ("g4dn" for g4dn.xlarge; "" for a type
+// without GPUs).
+func GPUFamilyOf(instanceType string) string {
+	t := strings.ToLower(instanceType)
+	if ec2InstanceGPUs[t] == 0 {
+		return ""
+	}
+	family, _, _ := strings.Cut(t, ".")
+	return family
+}
 
 // ec2CatalogOSes MUST stay in sync with vm-xrd.yaml's os enum and vm-composition.yaml's $catalog
 // (the XRD comment warns these three must match).
@@ -1238,6 +1250,10 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 			spec["memory"] = shape.mem
 			if g := ec2InstanceGPUs[strings.ToLower(it)]; g > 0 {
 				spec["gpus"] = g
+				// g4dn is the family an instance without one has, so a g4dn.xlarge's spec is as it always was.
+				if fam := GPUFamilyOf(it); fam != "g4dn" {
+					spec["gpuFamily"] = fam
+				}
 			}
 		} else {
 			f = append(f, Finding{"Resource " + id, "InstanceType " + it + " is not in the mapping table — the VM uses its default shape (2 vCPU / 2Gi); map a known type or set cpu/memory natively"})

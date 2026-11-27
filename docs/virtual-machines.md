@@ -600,16 +600,20 @@ the VM stays stopped until then (a few minutes on a 20Gi root), and `status.root
 the copy is done so it never runs again. The temporary disk and the copy pod are deleted after the copy. An encrypted root is RWO, so it cannot be combined with `highAvailability` (no live migration)
 or `existingRootClaim`, and `rootDisk` is fixed at creation.
 
-## GPU instances (`g4dn.xlarge`)
+## GPU instances (`g4dn.xlarge`, `g5.xlarge`)
 
 A GPU instance has a whole GPU to itself, as an EC2 G instance does. Launch an `AWS::EC2::Instance` with
-`InstanceType: g4dn.xlarge` (4 vCPUs, 16 GiB, one GPU), or give a `kind: VirtualMachine` `cpu: 4`,
-`memory: 16Gi` and `gpus: 1`.
+`InstanceType: g4dn.xlarge` or `g5.xlarge` (each 4 vCPUs, 16 GiB, one GPU), or give a
+`kind: VirtualMachine` `cpu: 4`, `memory: 16Gi`, `gpus: 1` and, for a g5, `gpuFamily: g5`.
 
-- **The GPU is the installation's card.** On AWS a g4dn's GPU is an NVIDIA T4. Here it is the card the
-  operator set aside for GPU instances, and `aws ec2 describe-instance-types --instance-types g4dn.xlarge`
-  names it in `GpuInfo` (its name, manufacturer and memory). An installation with no such card does not list
-  the type.
+- **The GPU is the installation's card for the type's family.** On AWS a g4dn's GPU is an NVIDIA T4 and a
+  g5's an NVIDIA A10G. Here each family is a card model the operator set aside for it, and
+  `aws ec2 describe-instance-types --instance-types g4dn.xlarge g5.xlarge` names each type's card in
+  `GpuInfo` (its name, manufacturer and memory). An installation with no card for a family does not list its
+  type.
+- **An instance keeps its family's card.** It is started on a card of its own type's family, never another
+  family's, so its guest always sees the same card model, across stop and start as on AWS. Where a family
+  has one card, it is the same card each time.
 - **Install the card's driver in the guest**, as on AWS: the manufacturer's ordinary driver for that card
   (for an NVIDIA GeForce card, NVIDIA's GeForce driver). The card is passed through to the guest, so the
   guest's driver talks to it directly.
@@ -623,7 +627,8 @@ A GPU instance has a whole GPU to itself, as an EC2 G instance does. Launch an `
   CloudFormation stack's instance fails with the same error, as on AWS.
 - **No live migration.** A GPU instance cannot be `highAvailability` (refused when it is created). When its
   node is taken down for maintenance the instance stops; start it again once the node is back.
-- **Not modelled:** g4dn's local NVMe instance store, and GPU instance sizes other than `g4dn.xlarge`.
+- **Not modelled:** the G instances' local NVMe instance store, and GPU instance sizes other than
+  `g4dn.xlarge` and `g5.xlarge`.
 
 The operator sets a card aside for GPU instances as [GPU instances: operator guide](gpu-instances.md)
 describes.

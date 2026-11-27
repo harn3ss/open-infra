@@ -6,6 +6,19 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — g5.xlarge, a second GPU instance type with its own card
+- `g5.xlarge` (4 vCPUs, 16 GiB, one GPU) launches beside `g4dn.xlarge`, from CloudFormation or a
+  `kind: VirtualMachine` with `gpus: 1` and the new `gpuFamily: g5`. Each GPU instance family is its own pool
+  of one card model, so `DescribeInstanceTypes` names each type's GPU truthfully and an instance only ever
+  starts on its own family's card, the same model across stop and start. The operator offers a family's card
+  in `config.yaml` (`gpuInstances` for g4dn, `gpuInstances.g5` for g5); an installation with no card for a
+  family does not list its type.
+- An account's `spec.capacity.gpus` bounds each family's cards on its own, as it already bounded GPU
+  instances and container GPUs separately.
+- `scripts/gpu-instance-host.sh` boots a node whose only display device is the card to text mode, since its
+  desktop would fail on a card given away, and `--now` stops the desktop first.
+- A g4dn instance's spec is unchanged: it carries no family, and its card pool keeps its resource name.
+
 ### Changed — an instance in a default VPC without its internet gateway has no public address
 - As EC2 refuses to associate an Elastic IP with an instance in a VPC without an internet gateway
   (`Gateway.NotAttached`), an instance in such an account's default VPC is refused a public address: a

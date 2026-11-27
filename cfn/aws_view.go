@@ -165,13 +165,16 @@ func catalogOSForImageID(id string) string {
 	return ""
 }
 
-// InstanceTypeForShape is an instance type a VM of cpu vCPUs, memory and gpus GPUs is ("" for none in the
-// mapping table): the t3 one when there is one, else the first by name. A VM a template made reports the
-// template's own InstanceType (its AWS view) instead.
-func InstanceTypeForShape(cpu int, memory string, gpus int) string {
+// InstanceTypeForShape is an instance type a VM of cpu vCPUs, memory and gpus GPUs of gpuFamily is ("" for
+// none in the mapping table): the t3 one when there is one, else the first by name. A GPU VM with no family
+// is g4dn. A VM a template made reports the template's own InstanceType (its AWS view) instead.
+func InstanceTypeForShape(cpu int, memory string, gpus int, gpuFamily string) string {
+	if gpus > 0 && gpuFamily == "" {
+		gpuFamily = "g4dn"
+	}
 	var match []string
 	for t, s := range ec2InstanceTypes {
-		if s.cpu == cpu && s.mem == memory && ec2InstanceGPUs[t] == gpus {
+		if s.cpu == cpu && s.mem == memory && ec2InstanceGPUs[t] == gpus && (gpus == 0 || GPUFamilyOf(t) == gpuFamily) {
 			match = append(match, t)
 		}
 	}
@@ -201,13 +204,15 @@ type InstanceTypeInfo struct {
 	VCPUs     int
 	MemoryMiB int64
 	GPUs      int
+	GPUFamily string // the GPU instance family whose card its GPUs are ("" without GPUs)
 }
 
 // InstanceTypes are the instance types an instance may be launched as, sorted by name.
 func InstanceTypes() []InstanceTypeInfo {
 	out := make([]InstanceTypeInfo, 0, len(ec2InstanceTypes))
 	for name, s := range ec2InstanceTypes {
-		out = append(out, InstanceTypeInfo{Name: name, VCPUs: s.cpu, MemoryMiB: memoryMiB(s.mem), GPUs: ec2InstanceGPUs[name]})
+		out = append(out, InstanceTypeInfo{Name: name, VCPUs: s.cpu, MemoryMiB: memoryMiB(s.mem), GPUs: ec2InstanceGPUs[name],
+			GPUFamily: GPUFamilyOf(name)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

@@ -530,7 +530,8 @@ func claimInstanceType(claim *unstructured.Unstructured) string {
 		mem = "2Gi"
 	}
 	gpus, _ := spec["gpus"].(int64)
-	return cfn.InstanceTypeForShape(int(cpu), mem, int(gpus))
+	family, _ := spec["gpuFamily"].(string)
+	return cfn.InstanceTypeForShape(int(cpu), mem, int(gpus), family)
 }
 
 // --- the endpoint ---

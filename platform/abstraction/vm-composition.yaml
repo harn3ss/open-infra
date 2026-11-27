@@ -73,6 +73,10 @@ spec:
             {{- $cpu := $spec.cpu | default 2 }}
             {{- $memory := $spec.memory | default "2Gi" }}
             {{- $gpus := int ($spec.gpus | default 0) }}
+            {{- /* The GPU instance family's pool of cards (spec.gpuFamily, unset = g4dn): g4dn's keeps the
+                   resource name it always had; every other family is openinfra.dev/instance-gpu-<family>. */}}
+            {{- $gpuFamily := $spec.gpuFamily | default "g4dn" }}
+            {{- $gpuDevice := "openinfra.dev/instance-gpu" }}{{- if ne $gpuFamily "g4dn" }}{{- $gpuDevice = printf "openinfra.dev/instance-gpu-%s" $gpuFamily }}{{- end }}
             {{- $disk := $spec.diskSize | default "20Gi" }}
             {{- /* running defaults true; explicit hasKey check because Sprig
                    `default` treats boolean false as empty (would force true). */}}
@@ -718,13 +722,13 @@ spec:
                               {{- end }}
                             networkInterfaceMultiqueue: true
                             {{- if gt $gpus 0 }}
-                            # A GPU instance's GPUs (spec.gpus): whole cards on a node that offers GPU instances
-                            # (KubeVirt's permitted host devices, openinfra.dev/instance-gpu), passed through to the
-                            # guest, which runs the card's own driver, as a G instance's GPU is its own.
+                            # A GPU instance's GPUs (spec.gpus): whole cards of its family's pool on a node that
+                            # offers GPU instances (KubeVirt's permitted host devices, $gpuDevice), passed through to
+                            # the guest, which runs the card's own driver, as a G instance's GPU is its own.
                             gpus:
                               {{- range $i := until $gpus }}
                               - name: gpu{{ add $i 1 }}
-                                deviceName: openinfra.dev/instance-gpu
+                                deviceName: {{ $gpuDevice }}
                               {{- end }}
                             {{- end }}
                         networks:

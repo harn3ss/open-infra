@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Probe: a GPU instance (g4dn.xlarge) gets a whole GPU of its own, and EC2's limits refuse it as on AWS.
+# Probe: a GPU instance (g4dn.xlarge, or g5.xlarge with GPU_INSTANCE_TYPE=g5.xlarge) gets a whole GPU of its
+# own, its family's card, and EC2's limits refuse it as on AWS.
 #
 # Through the real AWS CLI:
 #   1. the management account's administrator creates a throwaway member account (Organizations
 #      CreateAccount) and assumes its OrganizationAccountAccessRole; the operator gives the account no GPUs
 #      (kind: Account spec.capacity.gpus 0);
-#   2. DescribeInstanceTypes names g4dn.xlarge's GPU (GpuInfo: the installation's card, one of it);
-#   3. a stack whose instance is a g4dn.xlarge fails with EC2's VcpuLimitExceeded (the account's GPU limit)
+#   2. DescribeInstanceTypes names the type's GPU (GpuInfo: the installation's card for its family, one of it);
+#   3. a stack whose instance is of the type fails with EC2's VcpuLimitExceeded (the account's GPU limit)
 #      and rolls back;
-#   4. with GPUs allowed, a g4dn.xlarge stack completes: the instance is a g4dn.xlarge, and its guest finds a
-#      display device that is not an emulated one on its PCI bus (its UserData prints the bus's display
-#      devices to the serial console, read with GetConsoleOutput);
-#   5. a second g4dn.xlarge, while the first holds the card, fails with InsufficientInstanceCapacity;
+#   4. with GPUs allowed, a stack of the type completes: the instance reports the type, and its guest finds
+#      its family's card (the vendor:device KubeVirt offers for the family) on its PCI bus (its UserData prints
+#      the bus's display devices to the serial console, read with GetConsoleOutput);
+#   5. a second instance of the type, while the first holds its family's card, fails with
+#      InsufficientInstanceCapacity (skipped as inconclusive where the family has more cards);
 #   6. DENIAL: a user of the member account with no policy is refused DescribeInstanceTypes
 #      (UnauthorizedOperation).
 # Everything the probe made is removed on exit: the stacks, the user, the member account and its home
@@ -23,6 +25,7 @@
 # for GPU instances (docs/gpu-instances.md). Exit 0 = pass, 1 = fail, 42 = inconclusive.
 #
 #   SHIM_ENDPOINT=http://localhost:4566 ./probe/aws-shim-ec2-gpu.sh
+#   GPU_INSTANCE_TYPE=g5.xlarge ./probe/aws-shim-ec2-gpu.sh
 set -uo pipefail
 
 EXIT_INCONCLUSIVE=42
@@ -35,6 +38,12 @@ SFX="$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 NAME="gpu-$SFX"
 TMP="$(mktemp -d)"
 START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+ITYPE="${GPU_INSTANCE_TYPE:-g4dn.xlarge}"
+case "$ITYPE" in # each GPU instance family is its own pool of cards (docs/gpu-instances.md)
+  g4dn.xlarge) RES=instance-gpu ;;
+  g5.xlarge) RES=instance-gpu-g5 ;;
+  *) printf 'GPU_INSTANCE_TYPE must be g4dn.xlarge or g5.xlarge, got %s\n' "$ITYPE" >&2; exit 42 ;;
+esac
 
 log()  { printf '▸ %s\n' "$*"; }
 ok()   { printf '▸   ✓ %s\n' "$*"; }
@@ -71,7 +80,7 @@ gpus() {
   kubectl patch accounts.organizations.openinfra.dev "$NEW_ACCOUNT" --type merge \
     -p "{\"spec\":{\"capacity\":{\"gpus\":$1,\"storage\":\"80Gi\"}}}" >/dev/null || inconclusive "could not set the account's capacity"
   for _ in $(seq 1 60); do
-    [ "$(kubectl -n "$NEW_HOME" get resourcequota account-capacity-gpu -o jsonpath='{.spec.hard.requests\.openinfra\.dev/instance-gpu}' 2>/dev/null)" = "$1" ] && return 0
+    [ "$(kubectl -n "$NEW_HOME" get resourcequota account-capacity-gpu -o jsonpath="{.spec.hard.requests\.openinfra\.dev/$RES}" 2>/dev/null)" = "$1" ] && return 0
     sleep 5
   done
   inconclusive "the account's GPU capacity of $1 was not enforced for GPU instances in $NEW_HOME"
@@ -136,9 +145,9 @@ case "$AMI" in ami-*) ;; *) inconclusive "no ubuntu-24.04 image is listed (got '
 ok "acting in member account $NEW_ACCOUNT (home $NEW_HOME), image $AMI"
 
 # --- 2. the instance type names its GPU -------------------------------------------------------------------
-log "2. DescribeInstanceTypes names g4dn.xlarge's GPU"
-B ec2 describe-instance-types --instance-types g4dn.xlarge --output json > "$TMP/type.json" 2>"$TMP/err" || {
-  grep -q InvalidInstanceType "$TMP/err" && inconclusive "this installation offers no GPU instances (g4dn.xlarge is not listed)"
+log "2. DescribeInstanceTypes names $ITYPE's GPU"
+B ec2 describe-instance-types --instance-types "$ITYPE" --output json > "$TMP/type.json" 2>"$TMP/err" || {
+  grep -q InvalidInstanceType "$TMP/err" && inconclusive "this installation offers no GPU instances ($ITYPE is not listed)"
   die "describe-instance-types: $(tr '\n' ' ' < "$TMP/err")"
 }
 GPU="$(python3 -c '
@@ -148,8 +157,8 @@ g=t.get("GpuInfo",{}).get("Gpus",[{}])[0]
 assert t["VCpuInfo"]["DefaultVCpus"]==4 and t["MemoryInfo"]["SizeInMiB"]==16384, t
 assert g.get("Name") and g.get("Count")==1, t.get("GpuInfo")
 print(" ".join(str(x) for x in [g.get("Manufacturer",""), g["Name"], str(g.get("MemoryInfo",{}).get("SizeInMiB","?"))+" MiB"]))' "$TMP/type.json" 2>"$TMP/err")" \
-  || die "g4dn.xlarge is not 4 vCPUs, 16 GiB and one named GPU: $(tail -c 300 "$TMP/err")"
-ok "g4dn.xlarge: 4 vCPUs, 16 GiB, 1 GPU ($GPU)"
+  || die "$ITYPE is not 4 vCPUs, 16 GiB and one named GPU: $(tail -c 300 "$TMP/err")"
+ok "$ITYPE: 4 vCPUs, 16 GiB, 1 GPU ($GPU)"
 
 cat > "$TMP/gpu.yaml" <<EOF
 Resources:
@@ -157,7 +166,7 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: $AMI
-      InstanceType: g4dn.xlarge
+      InstanceType: $ITYPE
       UserData:
         Fn::Base64: |
           #!/bin/bash
@@ -169,7 +178,7 @@ Outputs:
 EOF
 
 # --- 3. the account's GPU limit refuses it ----------------------------------------------------------------
-log "3. a g4dn.xlarge in an account with no GPUs fails with VcpuLimitExceeded"
+log "3. a $ITYPE in an account with no GPUs fails with VcpuLimitExceeded"
 B cloudformation create-stack --stack-name "$NAME-nogpu" --template-body "file://$TMP/gpu.yaml" >/dev/null 2>"$TMP/err" \
   || die "create-stack: $(tr '\n' ' ' < "$TMP/err")"
 CLEAN+=("B cloudformation delete-stack --stack-name $NAME-nogpu")
@@ -183,7 +192,7 @@ ok "ROLLBACK_COMPLETE after ${took}s: $(head -c 120 "$TMP/why")…"
 B cloudformation delete-stack --stack-name "$NAME-nogpu" >/dev/null 2>&1
 
 # --- 4. with GPUs allowed, the instance has a GPU of its own ----------------------------------------------
-log "4. with GPUs allowed, a g4dn.xlarge's guest finds its GPU"
+log "4. with GPUs allowed, a $ITYPE's guest finds its GPU"
 gpus 2 # two, so the second instance below is refused for want of a card, not by the account's limit
 B cloudformation create-stack --stack-name "$NAME-gpu" --template-body "file://$TMP/gpu.yaml" >/dev/null 2>"$TMP/err" \
   || die "create-stack: $(tr '\n' ' ' < "$TMP/err")"
@@ -196,7 +205,7 @@ if [ "$st" != CREATE_COMPLETE ]; then
 fi
 IID="$(B cloudformation describe-stacks --stack-name "$NAME-gpu" --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue | [0]" --output text)"
 itype="$(B ec2 describe-instances --instance-ids "$IID" --query 'Reservations[0].Instances[0].InstanceType' --output text 2>/dev/null)"
-[ "$itype" = g4dn.xlarge ] || die "the instance reports type '$itype', want g4dn.xlarge"
+[ "$itype" = "$ITYPE" ] || die "the instance reports type '$itype', want $ITYPE"
 OUT=""
 for _ in $(seq 1 60); do
   OUT="$(B ec2 get-console-output --instance-id "$IID" --latest --query Output --output text 2>/dev/null || true)"
@@ -208,11 +217,20 @@ printf '%s\n' "$OUT" | grep "GPU-PROBE pci" | tr -d '\r' > "$TMP/pci"
 # Emulated display devices: QEMU's standard VGA / bochs (1234), QXL (1b36), virtio-gpu (1af4).
 grep -v -E "pci 0x(1234|1b36|1af4):" "$TMP/pci" > "$TMP/real" || true
 [ -s "$TMP/real" ] || die "the guest sees only emulated display devices: $(tr '\n' ';' < "$TMP/pci")"
-ok "$IID is a g4dn.xlarge; its guest finds $(head -1 "$TMP/real" | sed 's/^.*GPU-PROBE //') (and $(grep -c . "$TMP/pci") display device(s) in all)"
+# Its family's card: the vendor:device KubeVirt offers as the family's resource.
+WANT="$(kubectl get kubevirt -A -o json | python3 -c '
+import json,sys
+for kv in json.load(sys.stdin)["items"]:
+    for d in (((kv.get("spec") or {}).get("configuration") or {}).get("permittedHostDevices") or {}).get("pciHostDevices") or []:
+        if d.get("resourceName") == "openinfra.dev/"+sys.argv[1]:
+            v, _, dev = d["pciVendorSelector"].lower().partition(":"); print("0x"+v+":0x"+dev)' "$RES" | head -1)"
+[ -n "$WANT" ] || inconclusive "KubeVirt offers no card as openinfra.dev/$RES"
+grep -q "pci $WANT " "$TMP/real" || die "the guest's GPU is not its family's card $WANT: $(tr '\n' ';' < "$TMP/real")"
+ok "$IID is a $ITYPE; its guest finds its family's card $WANT: $(grep "pci $WANT " "$TMP/real" | head -1 | sed 's/^.*GPU-PROBE //') (and $(grep -c . "$TMP/pci") display device(s) in all)"
 
 # --- 5. no card free: a second one is refused -------------------------------------------------------------
-log "5. a second g4dn.xlarge, while the first holds the card, fails with InsufficientInstanceCapacity"
-free="$(kubectl get nodes -o jsonpath='{range .items[*]}{.status.allocatable.openinfra\.dev/instance-gpu}{"\n"}{end}' | awk '{s+=$1} END {print s+0}')"
+log "5. a second $ITYPE, while the first holds the card, fails with InsufficientInstanceCapacity"
+free="$(kubectl get nodes -o jsonpath="{range .items[*]}{.status.allocatable.openinfra\.dev/$RES}{\"\n\"}{end}" | awk '{s+=$1} END {print s+0}')"
 [ "$free" -le 1 ] || inconclusive "this installation has $free GPU instance cards: a second instance would get one"
 B cloudformation create-stack --stack-name "$NAME-second" --template-body "file://$TMP/gpu.yaml" >/dev/null 2>"$TMP/err" \
   || die "create-stack: $(tr '\n' ' ' < "$TMP/err")"
@@ -232,7 +250,7 @@ read -r NAK NSK < <(python3 -c 'import json,sys; k=json.load(open(sys.argv[1]))[
 CLEAN+=("B iam delete-access-key --user-name $NAME-nopol --access-key-id $NAK")
 sleep "$SETTLE"
 if AWS_ACCESS_KEY_ID="$NAK" AWS_SECRET_ACCESS_KEY="$NSK" AWS_SESSION_TOKEN="" AWS_PAGER="" aws --endpoint-url "$ENDPOINT" --region "$REGION" \
-  ec2 describe-instance-types --instance-types g4dn.xlarge >/dev/null 2>"$TMP/deny"; then
+  ec2 describe-instance-types --instance-types "$ITYPE" >/dev/null 2>"$TMP/deny"; then
   die "a user with no policy described the instance types"
 fi
 grep -q UnauthorizedOperation "$TMP/deny" || die "the refusal is not UnauthorizedOperation: $(tail -c 300 "$TMP/deny")"
@@ -242,4 +260,4 @@ for s in "$NAME-second" "$NAME-gpu" "$NAME-nogpu"; do B cloudformation delete-st
 for s in "$NAME-second" "$NAME-gpu" "$NAME-nogpu"; do
   for _ in $(seq 1 60); do B cloudformation describe-stacks --stack-name "$s" >/dev/null 2>&1 || break; sleep 5; done
 done
-printf '✓ PASS — g4dn.xlarge names its GPU (%s); an account with no GPUs was refused one with VcpuLimitExceeded; with GPUs allowed the instance ran with a GPU of its own on its PCI bus; a second, with no card free, failed with InsufficientInstanceCapacity; a user with no policy was refused DescribeInstanceTypes.\n' "$GPU"
+printf '✓ PASS — %s names its GPU (%s); an account with no GPUs was refused one with VcpuLimitExceeded; with GPUs allowed the instance ran with its family'"'"'s card (%s) of its own on its PCI bus; a second, with no card free, failed with InsufficientInstanceCapacity; a user with no policy was refused DescribeInstanceTypes.\n' "$ITYPE" "$GPU" "$WANT"

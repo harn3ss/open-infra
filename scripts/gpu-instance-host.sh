@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Operator script (run as root ON the GPU's node): prepare a GPU card to be handed whole to GPU instances
-# (EC2 g4dn.xlarge) by PCI passthrough, instead of to containers. See docs/gpu-instances.md.
+# (EC2 g4dn.xlarge, g5.xlarge) by PCI passthrough, instead of to containers. See docs/gpu-instances.md.
 #
 #   sudo ./gpu-instance-host.sh 0000:01:00.0          # write the boot configuration; reboot to apply
 #   sudo ./gpu-instance-host.sh 0000:01:00.0 --now    # ... and move the card to vfio-pci now, no reboot
@@ -9,7 +9,9 @@
 # vendor:device ids go to vfio-pci's ids option, which every GPU and audio driver is made to load after, and
 # vfio-pci joins the initramfs. The kernel command line gets the IOMMU on in pass-through mode, and the boot
 # framebuffer is left unclaimed (initcall_blacklist=sysfb_init) so the guest can take the card's memory: the
-# node's own screen goes dark after boot (SSH is unaffected). nvidia-persistenced is masked. Idempotent.
+# node's own screen goes dark after boot (SSH is unaffected). nvidia-persistenced is masked. A node with no
+# other display device keeps no desktop: it boots to multi-user.target, since a display manager would fail on
+# the card and retry at every boot (--now stops it). Idempotent.
 #
 # Refuses a card whose IOMMU group holds devices other than the card's own functions (they would have to be
 # given away with it). After it: remove the node's container-GPU labels (openinfra.dev/gpu, gpu-model,
@@ -63,7 +65,24 @@ if systemctl list-unit-files nvidia-persistenced.service >/dev/null 2>&1; then
   systemctl mask nvidia-persistenced >/dev/null 2>&1 || true
 fi
 
+# Is the card the node's only display device? Then the node keeps no desktop.
+ONLY_DISPLAY=1
+for d in /sys/bus/pci/devices/*; do
+  case "$(cat "$d/class")" in
+    0x03*) g="$(readlink "$d/iommu_group" 2>/dev/null || true)"; [ "${g##*/}" = "$GROUP" ] || ONLY_DISPLAY="" ;;
+  esac
+done
+if [ -n "$ONLY_DISPLAY" ] && [ "$(systemctl get-default)" = graphical.target ]; then
+  systemctl set-default multi-user.target >/dev/null 2>&1
+  echo "boot: the card is the node's only display, so it boots to multi-user.target (no desktop)"
+fi
+
 if [ "$NOW" = "--now" ]; then
+  # A desktop on the card holds its driver open: stop it (the node has no other screen to draw on).
+  if [ -n "$ONLY_DISPLAY" ] && systemctl is-active --quiet display-manager 2>/dev/null; then
+    systemctl stop display-manager
+    echo "stopped the display manager (the card is the node's only display)"
+  fi
   # Release the console from the card's framebuffer, unload its drivers, and hand its functions to vfio-pci.
   for v in /sys/class/vtconsole/vtcon*; do grep -qi "frame buffer" "$v/name" && echo 0 > "$v/bind"; done
   for m in nvidia_drm nvidia_modeset nvidia_uvm nvidia nouveau; do

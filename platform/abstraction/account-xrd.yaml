@@ -179,7 +179,7 @@ spec:
                       type: integer
                       minimum: 0
                       maximum: 64
-                      description: "GPUs the namespace may use in total, each kind counted on its own: its pods' GPUs (requests.nvidia.com/gpu) and its GPU instances' cards (requests.openinfra.dev/instance-gpu); 0 allows none."
+                      description: "GPUs the namespace may use in total, each kind counted on its own: its pods' GPUs (requests.nvidia.com/gpu) and its GPU instances' cards in each GPU instance family (requests.openinfra.dev/instance-gpu for g4dn, instance-gpu-g5 for g5); 0 allows none."
                     storage:
                       type: string
                       maxLength: 16

@@ -220,10 +220,16 @@ func TestTranslate_EC2Instance_GPUInstanceType(t *testing.T) {
 	if _, ok := m.Spec["gpus"]; ok {
 		t.Fatalf("t3.xlarge has no GPU: %#v", m.Spec)
 	}
-	if got := InstanceTypeForShape(4, "16Gi", 1); got != "g4dn.xlarge" {
-		t.Errorf("a 4 vCPU / 16Gi / 1 GPU shape is g4dn.xlarge, got %q", got)
+	if _, ok := m.Spec["gpuFamily"]; ok {
+		t.Fatalf("t3.xlarge has no GPU family: %#v", m.Spec)
 	}
-	if got := InstanceTypeForShape(4, "16Gi", 0); got != "t3.xlarge" {
+	if got := InstanceTypeForShape(4, "16Gi", 1, ""); got != "g4dn.xlarge" {
+		t.Errorf("a 4 vCPU / 16Gi / 1 GPU shape with no family is g4dn.xlarge, got %q", got)
+	}
+	if got := InstanceTypeForShape(4, "16Gi", 1, "g5"); got != "g5.xlarge" {
+		t.Errorf("a 4 vCPU / 16Gi / 1 g5 GPU shape is g5.xlarge, got %q", got)
+	}
+	if got := InstanceTypeForShape(4, "16Gi", 0, ""); got != "t3.xlarge" {
 		t.Errorf("a 4 vCPU / 16Gi shape without a GPU is t3.xlarge, got %q", got)
 	}
 	var g4 *InstanceTypeInfo
@@ -232,8 +238,29 @@ func TestTranslate_EC2Instance_GPUInstanceType(t *testing.T) {
 			g4 = &it
 		}
 	}
-	if g4 == nil || g4.GPUs != 1 || g4.VCPUs != 4 || g4.MemoryMiB != 16384 {
+	if g4 == nil || g4.GPUs != 1 || g4.VCPUs != 4 || g4.MemoryMiB != 16384 || g4.GPUFamily != "g4dn" {
 		t.Errorf("InstanceTypes reports g4dn.xlarge with its GPU: %+v", g4)
+	}
+}
+
+// g5.xlarge is g4dn.xlarge's shape with the g5 family's card: its own pool (spec.gpuFamily), while a
+// g4dn.xlarge's spec carries no family, as it did before families existed.
+func TestTranslate_EC2Instance_G5InstanceType(t *testing.T) {
+	m, fs := translateEC2Instance("Lab", map[string]any{"ImageId": "windows-server-2022", "InstanceType": "g5.xlarge"}, nil)
+	if len(fs) != 0 {
+		t.Fatalf("a g5.xlarge instance must translate cleanly: %s", findingsText(fs))
+	}
+	if m.Spec["cpu"] != 4 || m.Spec["memory"] != "16Gi" || m.Spec["gpus"] != 1 || m.Spec["gpuFamily"] != "g5" {
+		t.Fatalf("g5.xlarge should map to 4 vCPU / 16Gi / 1 GPU of the g5 family: %#v", m.Spec)
+	}
+	m, _ = translateEC2Instance("Game", map[string]any{"ImageId": "windows-server-2022", "InstanceType": "g4dn.xlarge"}, nil)
+	if _, ok := m.Spec["gpuFamily"]; ok {
+		t.Fatalf("a g4dn.xlarge spec must stay as it was, with no family: %#v", m.Spec)
+	}
+	for in, want := range map[string]string{"g4dn.xlarge": "g4dn", "G5.XLARGE": "g5", "t3.xlarge": "", "nope": ""} {
+		if got := GPUFamilyOf(in); got != want {
+			t.Errorf("GPUFamilyOf(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

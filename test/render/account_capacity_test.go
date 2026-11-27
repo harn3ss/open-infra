@@ -16,7 +16,7 @@ import (
 var capacityLabels = map[string]string{
 	"openinfra.dev/capacity-cpu":     "requests.cpu",
 	"openinfra.dev/capacity-memory":  "requests.memory",
-	"openinfra.dev/capacity-gpu":     "requests.nvidia.com/gpu requests.openinfra.dev/instance-gpu",
+	"openinfra.dev/capacity-gpu":     "requests.nvidia.com/gpu requests.openinfra.dev/instance-gpu requests.openinfra.dev/instance-gpu-g5",
 	"openinfra.dev/capacity-storage": "requests.storage",
 	"openinfra.dev/capacity-pods":    "count/pods",
 }

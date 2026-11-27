@@ -1,11 +1,16 @@
 # GPU instances: operator guide
 
 *This is an operator guide: it speaks of nodes, KubeVirt and Kubernetes resources, which customers never
-see. What a customer gets is in [Virtual Machines: GPU instances](virtual-machines.md#gpu-instances-g4dnxlarge).*
+see. What a customer gets is in [Virtual Machines: GPU instances](virtual-machines.md#gpu-instances-g4dnxlarge-g5xlarge).*
 
-A GPU instance (EC2 `g4dn.xlarge`: 4 vCPUs, 16 GiB, one GPU) is given a whole GPU card by PCI passthrough,
-and runs the card's own driver in its guest. A card set aside for GPU instances is not available to
-containers (`kind: Model`, Functions, training jobs): choose per card. Each card runs one instance at a time.
+A GPU instance (EC2 `g4dn.xlarge` or `g5.xlarge`: 4 vCPUs, 16 GiB, one GPU) is given a whole GPU card by PCI
+passthrough, and runs the card's own driver in its guest. A card set aside for GPU instances is not available
+to containers (`kind: Model`, Functions, training jobs): choose per card. Each card runs one instance at a time.
+
+Each GPU instance family is its own pool of one card model: `g4dn` and `g5`. An instance only ever starts on
+a card of its type's family, so `DescribeInstanceTypes` can name each type's GPU truthfully and an instance's
+guest sees the same model across stop and start. Two different card models go in two families; two cards of
+one model can share a family.
 
 ## Requirements
 
@@ -39,7 +44,7 @@ kubectl label node <node> openinfra.dev/gpu- openinfra.dev/gpu-model- openinfra.
 
 ## 2. Offer the card to instances
 
-In `config.yaml`:
+In `config.yaml`, the `g4dn` family's card at the top level and the `g5` family's in its own block:
 
 ```yaml
 gpuInstances:
@@ -47,34 +52,44 @@ gpuInstances:
   name: "T4"                       # as DescribeInstanceTypes names the GPU
   manufacturer: "NVIDIA"
   memoryMiB: "16384"
+  g5:                              # optional: a second card model, offered as g5.xlarge
+    pciVendorSelector: "10DE:2237"
+    name: "A10G"
+    manufacturer: "NVIDIA"
+    memoryMiB: "24576"
 ```
 
-and re-run `install.sh`. It permits the card in KubeVirt as the `openinfra.dev/instance-gpu` resource and
-writes the `openinfra-gpu-instances` ConfigMap the aws-shim reads; restart the aws-shim afterwards. The same
-two changes by hand, on a cluster where `install.sh` is not re-run:
+and re-run `install.sh`. It permits each family's card in KubeVirt as its own resource,
+`openinfra.dev/instance-gpu` (g4dn) and `openinfra.dev/instance-gpu-g5` (g5), and writes the
+`openinfra-gpu-instances` ConfigMap the aws-shim reads; restart the aws-shim afterwards. The same two changes
+by hand, on a cluster where `install.sh` is not re-run (the patch replaces the whole list, so name every
+family's card in it):
 
 ```bash
 kubectl patch kubevirt kubevirt -n kubevirt --type=merge -p \
-  '{"spec":{"configuration":{"permittedHostDevices":{"pciHostDevices":[{"pciVendorSelector":"10DE:1EB8","resourceName":"openinfra.dev/instance-gpu"}]}}}}'
+  '{"spec":{"configuration":{"permittedHostDevices":{"pciHostDevices":[{"pciVendorSelector":"10DE:1EB8","resourceName":"openinfra.dev/instance-gpu"},{"pciVendorSelector":"10DE:2237","resourceName":"openinfra.dev/instance-gpu-g5"}]}}}}'
 kubectl -n open-infra-aws-shim create configmap openinfra-gpu-instances \
   --from-literal=GPU_INSTANCE_GPU_NAME="T4" --from-literal=GPU_INSTANCE_GPU_MANUFACTURER="NVIDIA" \
-  --from-literal=GPU_INSTANCE_GPU_MEMORY_MIB="16384" --dry-run=client -o yaml | kubectl apply -f -
+  --from-literal=GPU_INSTANCE_GPU_MEMORY_MIB="16384" \
+  --from-literal=GPU_INSTANCE_G5_GPU_NAME="A10G" --from-literal=GPU_INSTANCE_G5_GPU_MANUFACTURER="NVIDIA" \
+  --from-literal=GPU_INSTANCE_G5_GPU_MEMORY_MIB="24576" --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n open-infra-aws-shim rollout restart deployment/aws-shim
 ```
 
 Check that the node offers the card:
 
 ```bash
-kubectl get node <node> -o jsonpath='{.status.allocatable.openinfra\.dev/instance-gpu}'   # 1
+kubectl get node <node> -o jsonpath='{.status.allocatable.openinfra\.dev/instance-gpu-g5}'   # 1
 ```
 
-One selector and one card model per installation: every GPU instance draws from the same pool of cards,
-and `DescribeInstanceTypes` reports the one model.
+One card model per family: every instance of a family draws from that family's pool, and
+`DescribeInstanceTypes` reports the family's model for its type. A family without a card is not listed.
 
 ## 3. Let an account launch them
 
-An account's `spec.capacity.gpus` limits its GPU instances' cards and, separately, its pods' GPUs: a
-quota counts each kind on its own, so `gpus: 1` allows one GPU instance and one container GPU. An account
+An account's `spec.capacity.gpus` limits its GPU instances' cards in each family and, separately, its
+pods' GPUs: a quota counts each kind on its own, so `gpus: 1` allows one g4dn instance, one g5 instance and
+one container GPU. An account
 with `gpus: 0` is refused a GPU instance with `VcpuLimitExceeded`. A GPU instance also counts its
 4 vCPUs and 16 GiB (plus the instance's overhead, about 1.5 GiB) against the account's CPU and memory.
 

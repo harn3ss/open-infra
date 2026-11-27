@@ -3347,6 +3347,15 @@
       "how": "update",
       "kind": "VirtualMachine"
     },
+    "VirtualMachine.gpuFamily": {
+      "actions": [
+        "ec2:ModifyInstanceAttribute"
+      ],
+      "class": "aws",
+      "field": "gpuFamily",
+      "how": "update",
+      "kind": "VirtualMachine"
+    },
     "VirtualMachine.gpus": {
       "actions": [
         "ec2:ModifyInstanceAttribute"
@@ -7079,11 +7088,11 @@
   },
   "summary": {
     "fields": {
-      "aws": 373,
+      "aws": 374,
       "extra": 25,
       "operator": 0,
       "removed": 0,
-      "total": 398
+      "total": 399
     },
     "kinds": {
       "aws": 54,

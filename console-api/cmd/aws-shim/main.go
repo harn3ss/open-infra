@@ -790,7 +790,7 @@ func run(logger *slog.Logger) error {
 			// An account's images: disks in the platform's image namespace, each with its EC2 record
 			// (ec2_images.go); an instance's ImageId may name one the stack's account may launch.
 			ec2H.imagesNS = getenv("EC2_IMAGES_NAMESPACE", defaultImagesNS)
-			ec2H.gpu = instanceGPUFromEnv() // the card a GPU instance is given, if the installation offers them
+			ec2H.gpus = instanceGPUsFromEnv() // the cards GPU instances are given, by family, where the installation offers them
 			if ec2H.imagesNS == "off" {
 				ec2H.imagesNS = ""
 			}

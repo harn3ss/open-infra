@@ -4,9 +4,10 @@ package main
 // InstanceType; cfn's table), with the vCPUs, memory and GPUs the instance gets, as EC2 reports them. Only
 // what holds for the platform's instances is reported: every type is current-generation x86_64 on EBS-backed
 // HVM, on demand; the t2 family is Xen with one thread per core and BIOS boot, the others Nitro with two
-// threads per core and BIOS or UEFI boot. A GPU instance type's GPU is the installation's own card (its
-// instanceGPU), and the GPU types are listed only where the installation offers GPU instances. Network and
-// storage figures that the platform does not provide are left out rather than invented.
+// threads per core and BIOS or UEFI boot. A GPU instance type's GPU is the installation's own card for the
+// type's family (its instanceGPU; g4dn and g5 are each a pool of one card model), and a GPU type is listed
+// only where the installation offers its family. Network and storage figures that the platform does not
+// provide are left out rather than invented.
 
 import (
 	"net/http"
@@ -31,8 +32,8 @@ func (h *ec2Handler) describeInstanceTypes(w http.ResponseWriter, r *http.Reques
 	}
 	var types []cfn.InstanceTypeInfo
 	for _, t := range cfn.InstanceTypes() {
-		if t.GPUs > 0 && !h.gpu.offered() {
-			continue // no GPU instances here: the type is not offered, as one outside a Region is not
+		if t.GPUs > 0 && !h.gpus[t.GPUFamily].offered() {
+			continue // no GPU instances of its family here: the type is not offered, as one outside a Region is not
 		}
 		types = append(types, t)
 	}
@@ -58,7 +59,7 @@ func (h *ec2Handler) describeInstanceTypes(w http.ResponseWriter, r *http.Reques
 		if len(want) > 0 && !want[t.Name] {
 			continue
 		}
-		it := instanceTypeOf(t, h.gpu)
+		it := instanceTypeOf(t, h.gpus[t.GPUFamily])
 		if it.record().matches(fs) {
 			items = append(items, it.xml())
 		}
@@ -66,9 +67,9 @@ func (h *ec2Handler) describeInstanceTypes(w http.ResponseWriter, r *http.Reques
 	writePage(w, r, requestID, "DescribeInstanceTypes", "instanceTypeSet", items, 5, 100)
 }
 
-// instanceGPU is the card a GPU instance type's instance is given here: the installation's, which its
-// operator names (install.sh writes config.yaml's virtualization.gpuInstances into the shim's optional
-// openinfra-gpu-instances ConfigMap). Unnamed, the installation offers no GPU instances.
+// instanceGPU is the card a GPU instance type's instance is given here: the installation's card for the
+// type's family, which its operator names (install.sh writes config.yaml's gpuInstances into the shim's
+// optional openinfra-gpu-instances ConfigMap). Unnamed, the installation offers no instances of the family.
 type instanceGPU struct {
 	name, manufacturer string
 	memoryMiB          int64
@@ -76,13 +77,28 @@ type instanceGPU struct {
 
 func (g instanceGPU) offered() bool { return g.name != "" }
 
-// instanceGPUFromEnv is the installation's GPU instance card: GPU_INSTANCE_GPU_NAME (as EC2 names a GPU,
-// e.g. "T4"), GPU_INSTANCE_GPU_MANUFACTURER and GPU_INSTANCE_GPU_MEMORY_MIB.
-func instanceGPUFromEnv() instanceGPU {
-	g := instanceGPU{name: strings.TrimSpace(os.Getenv("GPU_INSTANCE_GPU_NAME")),
-		manufacturer: strings.TrimSpace(os.Getenv("GPU_INSTANCE_GPU_MANUFACTURER"))}
-	g.memoryMiB, _ = strconv.ParseInt(strings.TrimSpace(os.Getenv("GPU_INSTANCE_GPU_MEMORY_MIB")), 10, 64)
-	return g
+// gpuFamilies are the GPU instance families an installation can offer, each a pool of its own cards.
+var gpuFamilies = []string{"g4dn", "g5"}
+
+// instanceGPUsFromEnv are the installation's GPU instance cards by family: g4dn's from GPU_INSTANCE_GPU_NAME
+// (as EC2 names a GPU, e.g. "T4"), GPU_INSTANCE_GPU_MANUFACTURER and GPU_INSTANCE_GPU_MEMORY_MIB, as before
+// families existed; every other family's from the same names with its family after GPU_INSTANCE_
+// (GPU_INSTANCE_G5_GPU_NAME, ...).
+func instanceGPUsFromEnv() map[string]instanceGPU {
+	out := map[string]instanceGPU{}
+	for _, fam := range gpuFamilies {
+		prefix := "GPU_INSTANCE_"
+		if fam != "g4dn" {
+			prefix += strings.ToUpper(fam) + "_"
+		}
+		g := instanceGPU{name: strings.TrimSpace(os.Getenv(prefix + "GPU_NAME")),
+			manufacturer: strings.TrimSpace(os.Getenv(prefix + "GPU_MANUFACTURER"))}
+		g.memoryMiB, _ = strconv.ParseInt(strings.TrimSpace(os.Getenv(prefix+"GPU_MEMORY_MIB")), 10, 64)
+		if g.offered() {
+			out[fam] = g
+		}
+	}
+	return out
 }
 
 // ec2InstanceType is one instance type as EC2 describes it.
@@ -161,7 +177,8 @@ func (it ec2InstanceType) xml() string {
 	return s.String()
 }
 
-// gpuInfoXML is a GPU instance type's GpuInfo: its GPUs, each the installation's card ("" for a type with none).
+// gpuInfoXML is a GPU instance type's GpuInfo: its GPUs, each the installation's card for its family ("" for a
+// type with none).
 func (it ec2InstanceType) gpuInfoXML() string {
 	if it.gpus == 0 || !it.gpu.offered() {
 		return ""
