@@ -17,6 +17,10 @@ the product's public contract.
   instances and container GPUs separately.
 - `scripts/gpu-instance-host.sh` boots a node whose only display device is the card to text mode, since its
   desktop would fail on a card given away, and `--now` stops the desktop first.
+- `scripts/gpu-instance-host.sh --late` binds the card late in boot, for a node that hangs when the card is
+  bound from the initramfs, as one whose only display device is the card can. The card's own driver
+  initializes it, then `openinfra-gpu-instance.service`, ordered before the node's Kubernetes agent, hands
+  it to `vfio-pci`. `openinfra.gpu-instance=off` at the boot menu skips the service for one boot.
 - A g4dn instance's spec is unchanged: it carries no family, and its card pool keeps its resource name.
 - A GPU instance made from the OS image cache now starts where its card is. Its local root disk is placed
   by the pod that copies the OS image onto it, which asked for the instance's memory but not its card, so the

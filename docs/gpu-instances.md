@@ -33,7 +33,27 @@ The script binds the card's IOMMU group to `vfio-pci` at boot (ahead of the GPU 
 `vfio-pci` in the initramfs, turns the IOMMU on in pass-through mode and leaves the boot framebuffer
 unclaimed (`initcall_blacklist=sysfb_init`), so the node's own screen goes dark after boot. It masks
 `nvidia-persistenced`. `--now` unloads the card's drivers and rebinds it without a reboot, when nothing on
-the node holds the card open.
+the node holds the card open. A node whose only display device is the card keeps no desktop: it boots to
+`multi-user.target`, and `--now` stops its display manager first.
+
+**A node that does not boot with the card bound early.** Some nodes hang early in boot when the card is
+bound to `vfio-pci` from the initramfs: one whose only display device is the card, among them. There the
+boot shows nothing and the node never reaches the network. Bind the card late in boot instead:
+
+```bash
+sudo scripts/gpu-instance-host.sh 0000:01:00.0 --late          # reboot to apply
+sudo scripts/gpu-instance-host.sh 0000:01:00.0 --late --now    # or also move it over now
+```
+
+The card's own driver initializes it as usual. Then `openinfra-gpu-instance.service`, ordered before the
+node's Kubernetes agent, unloads that driver and hands the card's IOMMU group to `vfio-pci`, as `--now`
+does on a running node. `vfio-pci` removes the boot framebuffer itself, so the node's screen works until
+then and goes dark when the card is handed over. Nothing of `vfio-pci` is left in the initramfs, and running
+the script in one mode undoes the other.
+
+To start a node once with the card on its own driver (to recover a node, or to read its logs), add
+`openinfra.gpu-instance=off` to the kernel command line at the boot menu: the service is skipped for that
+boot. A node bound early can be started the same way by adding `initcall_blacklist=vfio_pci_init`.
 
 Then take the node out of container GPU scheduling, here and in its k3s `node-label` configuration, so a
 re-registration does not put them back:
@@ -95,7 +115,8 @@ with `gpus: 0` is refused a GPU instance with `VcpuLimitExceeded`. A GPU instanc
 
 ## Giving the card back to containers
 
-Delete `/etc/modprobe.d/openinfra-gpu-instance.conf` on the node, run `update-initramfs -u -k all`,
-unmask `nvidia-persistenced`, reboot, restore the node's GPU labels, and clear `gpuInstances` in
+Delete `/etc/modprobe.d/openinfra-gpu-instance.conf` on the node (and, for `--late`, disable
+`openinfra-gpu-instance.service` and delete it and `/usr/local/sbin/openinfra-gpu-instance-bind`), run
+`update-initramfs -u -k all`, unmask `nvidia-persistenced`, reboot, restore the node's GPU labels, and clear `gpuInstances` in
 `config.yaml` (remove the KubeVirt `permittedHostDevices` entry and the ConfigMap by hand if `install.sh`
 is not re-run).
