@@ -999,7 +999,8 @@ spec:
                     securityContext: { runAsUser: 0, runAsGroup: 0 }
                     # Where VMs run (the non-HA VM placement, #307). A local-path root is placed by this pod
                     # (its first user): the VM then runs on the same node, so the pod asks for what the VM
-                    # needs to run there (its node constraints and its memory).
+                    # needs to run there (its node constraints, its memory and a GPU instance's cards of its
+                    # family, which it holds only while it copies).
                     affinity:
                       nodeAffinity:
                         requiredDuringSchedulingIgnoredDuringExecution:
@@ -1020,8 +1021,8 @@ spec:
                         image: alpine/k8s:1.30.0
                         resources:
                           {{- if $baseCopy }}
-                          requests: { cpu: 250m, memory: {{ $memory | toJson }} }
-                          limits: { cpu: 250m, memory: {{ $memory | toJson }} }
+                          requests: { cpu: 250m, memory: {{ $memory | toJson }}{{ if gt $gpus 0 }}, {{ $gpuDevice }}: {{ $gpus }}{{ end }} }
+                          limits: { cpu: 250m, memory: {{ $memory | toJson }}{{ if gt $gpus 0 }}, {{ $gpuDevice }}: {{ $gpus }}{{ end }} }
                           {{- else }}
                           requests: { cpu: 250m, memory: 256Mi }
                           limits: { cpu: 250m, memory: 256Mi }
@@ -8339,6 +8340,16 @@ spec:
             {{-     end }}
             {{-   end }}
             {{- end }}{{- end }}{{- end }}{{- end }}{{- end }}
+            {{- /* A local-path root's copy pod places the root (and so the VM): with no node that has room for
+                   the VM (its memory, a GPU instance's free card), the pod cannot be scheduled, and the launch is
+                   refused with InsufficientInstanceCapacity, as the VM's own pod would be. */}}
+            {{- with index ($.observed.resources | default dict) "root-populate" }}{{ with .resource.status }}{{ with .atProvider }}{{ with .manifest }}{{ with .status }}
+            {{-   range $c := (.conditions | default list) }}
+            {{-     if and (eq ($c.type | default "") "PodScheduled") (eq (printf "%v" ($c.status | default "")) "False") (eq ($c.reason | default "") "Unschedulable") (regexMatch "Insufficient (cpu|memory|nvidia|openinfra.dev/instance-gpu)" ($c.message | default "")) }}
+            {{-       $launchRefused = "InsufficientInstanceCapacity" }}
+            {{-     end }}
+            {{-   end }}
+            {{- end }}{{ end }}{{ end }}{{ end }}{{ end }}
             {{- /* A disk the composition makes itself (a root copied from the OS image cache or onto an encrypted
                    volume, a data disk) that its account's capacity refuses: its Object cannot create it. */}}
             {{- range $rn, $ro := ($.observed.resources | default dict) }}

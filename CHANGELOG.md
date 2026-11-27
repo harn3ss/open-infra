@@ -18,6 +18,11 @@ the product's public contract.
 - `scripts/gpu-instance-host.sh` boots a node whose only display device is the card to text mode, since its
   desktop would fail on a card given away, and `--now` stops the desktop first.
 - A g4dn instance's spec is unchanged: it carries no family, and its card pool keeps its resource name.
+- A GPU instance made from the OS image cache now starts where its card is. Its local root disk is placed
+  by the pod that copies the OS image onto it, which asked for the instance's memory but not its card, so the
+  disk could land on a node without a free card of the instance's family and the instance never started. The
+  copy pod now asks for the card too, and a copy no node can take refuses the launch with
+  `InsufficientInstanceCapacity` instead of waiting.
 
 ### Changed — an instance in a default VPC without its internet gateway has no public address
 - As EC2 refuses to associate an Elastic IP with an instance in a VPC without an internet gateway
