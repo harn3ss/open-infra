@@ -568,6 +568,7 @@
         "DescribeInstances",
         "DescribeInternetGateways",
         "DescribeKeyPairs",
+        "DescribeNatGateways",
         "DescribeNetworkAcls",
         "DescribeNetworkInterfaces",
         "DescribeRegions",
@@ -1720,7 +1721,7 @@
     "excRead": 0,
     "excepted": 0,
     "flattened": 0,
-    "operations": 670,
+    "operations": 671,
     "planOnly": 11,
     "refused": 11,
     "services": 33,
@@ -2610,7 +2611,9 @@
       ],
       "kind": "NatGateway",
       "namespace": "AWS::EC2",
-      "readCalls": [],
+      "readCalls": [
+        "DescribeNatGateways"
+      ],
       "service": "EC2",
       "serviceTier": "proven",
       "signingNames": [

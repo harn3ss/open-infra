@@ -1531,6 +1531,11 @@ spec:
             # IPAddressPool), in an optional ConfigMap `openinfra-load-balancers` that install.sh writes from
             # config.yaml's networking.loadBalancers.addressPool. Absent = MetalLB's default pool.
             - configMapRef: { name: openinfra-load-balancers, optional: true }
+            # The address a default VPC's NAT gateway sends its traffic out with (NAT_GATEWAY_ADDRESS, the
+            # installation's NAT gateway node's), its Elastic IP's, in an optional ConfigMap
+            # `openinfra-nat-gateways` that install.sh writes from config.yaml's networking.natGateway.node.
+            # Absent = no NAT gateway is in service.
+            - configMapRef: { name: openinfra-nat-gateways, optional: true }
             # How far IAM policy decides (IAM_AUTHZ legacy|shadow|enforce), set by the IAM cutover
             # (scripts/iam-cutover.sh) in an optional ConfigMap `openinfra-iam` kept out of git — so ArgoCD's
             # self-heal never undoes a cutover step, and absent means legacy.

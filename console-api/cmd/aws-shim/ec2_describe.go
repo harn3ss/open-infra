@@ -121,7 +121,7 @@ func (h *ec2Handler) instanceOf(ctx context.Context, u *unstructured.Unstructure
 	}
 	in.instanceType = claimInstanceType(u)
 	if d := defaultVPCOfSubnet(in.subnet, h.account()); d != nil {
-		in.subnet, in.vpc = d.subnetID(), d.vpcID() // in its account's default VPC, by EC2's ids
+		in.subnet, in.vpc = d.subnetIDOf(in.subnet), d.vpcID() // in its account's default VPC, by EC2's ids
 	} else if in.subnet != "" {
 		in.vpc = subnetVPC[in.subnet]
 	}
@@ -855,6 +855,13 @@ func (h *ec2Handler) describeSubnets(ctx context.Context, w http.ResponseWriter,
 				items = append(items, item)
 			}
 		}
+		// Its private subnet, routed to its NAT gateway.
+		if d.private != nil && (len(ids) == 0 || want[d.privateSubnetID()]) {
+			found[d.privateSubnetID()] = true
+			if item, ok := h.privateSubnetItem(d, acct, fs); ok {
+				items = append(items, item)
+			}
+		}
 	}
 	for _, id := range ids {
 		if !found[id] {
@@ -942,7 +949,7 @@ func (h *ec2Handler) describeAvailabilityZones(w http.ResponseWriter, r *http.Re
 func (h *ec2Handler) describeAddresses(ctx context.Context, w http.ResponseWriter, r *http.Request, claims iam.Claims, requestID string) {
 	fs := ec2Filters(r.Form)
 	if msg, ok := checkFilters(fs, []string{"allocation-id", "association-id", "domain", "instance-id", "public-ip", "private-ip-address",
-		"network-border-group", "public-ipv4-pool"}); !ok {
+		"network-border-group", "public-ipv4-pool", "network-interface-id", "network-interface-owner-id"}); !ok {
 		writeEC2Error(w, http.StatusBadRequest, "InvalidParameterValue", requestID, msg)
 		return
 	}
@@ -1006,6 +1013,26 @@ func (h *ec2Handler) describeAddresses(ctx context.Context, w http.ResponseWrite
 		items = append(items, xtag("publicIp", ip)+xtag("allocationId", alloc)+"<domain>vpc</domain>"+xtag("instanceId", inst.id)+
 			xtag("associationId", assoc)+xtag("privateIpAddress", inst.privateIP)+xtags(tags)+"<publicIpv4Pool>amazon</publicIpv4Pool>"+
 			xtag("networkBorderGroup", h.region()))
+	}
+	// The default VPC's NAT gateway's Elastic IP (ec2_default_vpc.go).
+	if d := h.defaultVPCOf(ctx); d != nil && d.nat {
+		alloc, ip := d.natAllocationID(), d.natAddress
+		if len(allocs) == 0 && len(ips) == 0 || wantA[alloc] || ip != "" && wantIP[ip] {
+			found[alloc] = true
+			if ip != "" {
+				found[ip] = true
+			}
+			acct := callerAccount(ctx)
+			rec := ec2Record{fields: map[string][]string{"allocation-id": {alloc}, "association-id": {d.natAssociationID()}, "domain": {"vpc"},
+				"public-ip": {ip}, "private-ip-address": {d.natPrivateIP()}, "network-border-group": {h.region()}, "public-ipv4-pool": {"amazon"},
+				"network-interface-id": {d.natInterfaceID()}, "network-interface-owner-id": {acct}}}
+			if rec.matches(fs) {
+				items = append(items, xtag("publicIp", ip)+xtag("allocationId", alloc)+"<domain>vpc</domain>"+
+					xtag("associationId", d.natAssociationID())+xtag("networkInterfaceId", d.natInterfaceID())+
+					xtag("networkInterfaceOwnerId", acct)+xtag("privateIpAddress", d.natPrivateIP())+
+					"<publicIpv4Pool>amazon</publicIpv4Pool>"+xtag("networkBorderGroup", h.region()))
+			}
+		}
 	}
 	for _, a := range allocs {
 		if !found[a] {

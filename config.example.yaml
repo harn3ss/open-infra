@@ -92,6 +92,13 @@ networking:
   loadBalancers:
     addressPool: ""
 
+  # A default VPC's NAT gateway (docs/nat-gateway-operator.md): the node an account's private subnet
+  # sends its traffic out through, NATed to the node's address (the gateway's Elastic IP). An instance in
+  # a private subnet runs on this node. Blank => no NAT gateway is in service (a private subnet's routes
+  # to one are blackholes). Your site's router may translate the address again on its way out.
+  natGateway:
+    node: ""                   # e.g. a worker that hosts no other tenant's GPU or storage
+
   # The domain Knative Functions advertise their URLs on (<fn>.<ns>.<domain>) when kourier is
   # published by its own load balancer (routed ingress; ignored while lanExpose.enabled is true,
   # which sets <kourierIP>.sslip.io itself). Use <that load balancer's IP>.sslip.io, or a DNS zone

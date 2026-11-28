@@ -106,3 +106,31 @@ func TestPublicAddress_WhatIsAllowed(t *testing.T) {
 		}
 	}
 }
+
+// An instance in a default VPC's private subnet gets no public address whatever the VPC has: the subnet's
+// route table sends only its NAT gateway routes out. Another account's private subnet is not this one's, and
+// an instance that already has an address keeps it.
+func TestPublicAddress_RefusedInThePrivateSubnet(t *testing.T) {
+	for _, igw := range []string{"true", "false", ""} {
+		r := create(addrNS, "alice", instance(map[string]any{"expose": true, "subnet": "default-vpc-" + addrAccount + "-private"}))
+		r.NamespaceObject = addrNamespace(igw)
+		v := addrAdmit(t, r)
+		if v.Allowed() {
+			t.Errorf("internet gateway %q: launched with a public address in the private subnet", igw)
+			continue
+		}
+		if !strings.Contains(v.Denied, "Gateway.NotAttached") || !strings.Contains(v.Denied, "routes nothing to an internet gateway") {
+			t.Errorf("internet gateway %q: refusal %q", igw, v.Denied)
+		}
+	}
+	r := create(addrNS, "alice", instance(map[string]any{"subnet": "default-vpc-" + addrAccount + "-private"}))
+	r.NamespaceObject = addrNamespace("true")
+	if v := addrAdmit(t, r); !v.Allowed() {
+		t.Errorf("an instance with no public address is refused in the private subnet: %s", v.Denied)
+	}
+	r = create(addrNS, "alice", instance(map[string]any{"expose": true, "subnet": "default-vpc-999988887777-private"}))
+	r.NamespaceObject = addrNamespace("true")
+	if v := addrAdmit(t, r); !v.Allowed() {
+		t.Errorf("another account's subnet name is refused as this one's: %s", v.Denied)
+	}
+}

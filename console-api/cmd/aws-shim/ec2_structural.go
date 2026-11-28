@@ -366,6 +366,9 @@ func (h *ec2Handler) routeTables(n *ec2Network) []ec2RouteTable {
 		if pub := n.def.publicRouteTable(); pub != nil {
 			out = append(out, *pub) // its public subnet's: 0.0.0.0/0 to the gateway that subnet attaches
 		}
+		if priv := n.def.privateRouteTable(); priv != nil {
+			out = append(out, *priv) // its private subnet's: the destinations it names to the NAT gateway
+		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].id < out[j].id })
 	return out

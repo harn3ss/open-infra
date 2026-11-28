@@ -6899,7 +6899,7 @@
     "ec2": {
       "actions": 3,
       "class": "aws",
-      "operations": 40,
+      "operations": 41,
       "service": "EC2",
       "tier": "proven"
     },

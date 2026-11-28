@@ -199,6 +199,13 @@ spec:
                     its own, one of those AWS gives default subnets; the management account's is 172.31.0.0/20.
                     CreateAccount chooses it; its subnet cannot change once set.
                   required: [subnetCidr]
+                  x-kubernetes-validations:
+                    - rule: "!has(self.natGateway) || !self.natGateway || has(self.publicSubnet)"
+                      message: "a NAT gateway is placed in the default VPC's public subnet (publicSubnet)"
+                    - rule: >-
+                        !has(self.privateSubnet) || !has(self.privateSubnet.natGatewayRoutes) ||
+                        size(self.privateSubnet.natGatewayRoutes) == 0 || (has(self.natGateway) && self.natGateway)
+                      message: "a private subnet's routes to a NAT gateway need one (natGateway)"
                   properties:
                     subnetCidr:
                       type: string
@@ -233,6 +240,52 @@ spec:
                           type: string
                           pattern: '^172\.31\.([0-9]{1,3})\.([0-9]{1,3})/(1[6-9]|2[0-8])$'
                           description: "The public subnet's CIDR: inside 172.31.0.0/16 and outside the default subnet (e.g. 172.31.240.0/24)."
+                    natGateway:
+                      type: boolean
+                      default: false
+                      description: >-
+                        A NAT gateway in the public subnet, with an Elastic IP, as AWS's public NAT gateways: the
+                        private subnet's routes to it (privateSubnet.natGatewayRoutes) leave the platform through
+                        it, and nothing reaches back in but their replies. It is the installation's NAT gateway
+                        node (networking.natGateway.node in config.yaml): the traffic is NATed by that node, and
+                        its address is the Elastic IP's. Needs the public subnet.
+                    privateSubnet:
+                      type: object
+                      description: >-
+                        A private subnet of the default VPC with a route table of its own: the local route, and
+                        natGatewayRoutes to the NAT gateway, with no default route. Its instances reach the
+                        internet only at those destinations and nothing else outside the platform; its network
+                        ACL drops the rest. An instance or task lands in it only by naming its subnet id, and an
+                        instance in it runs on the NAT gateway node. Its CIDR is a /24 of 172.31.0.0/16 outside
+                        every account's default subnet (CreateAccount skips the /20 it is in); it cannot change.
+                      required: [subnetCidr]
+                      properties:
+                        subnetCidr:
+                          type: string
+                          pattern: '^172\.31\.([0-9]{1,3})\.0/24$'
+                          x-kubernetes-validations:
+                            - rule: "self == oldSelf"
+                              message: "a private subnet's CIDR cannot change once set"
+                          description: "The private subnet's CIDR, e.g. 172.31.241.0/24."
+                        natGatewayRoutes:
+                          type: array
+                          maxItems: 20
+                          x-kubernetes-list-type: set
+                          description: >-
+                            The destinations the private subnet's route table sends to the NAT gateway: IPv4
+                            CIDRs on the internet (a /32 for one address). None may cover a private, shared,
+                            loopback, link-local or multicast range, so 0.0.0.0/0 is refused: it would reach the
+                            site's own networks too.
+                          items:
+                            type: string
+                            maxLength: 18
+                            pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$'
+                            x-kubernetes-validations:
+                              - rule: >-
+                                  isCIDR(self) && cidr(self).ip().family() == 4 && cidr(self).masked().ip() == cidr(self).ip() &&
+                                  !['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
+                                  '192.168.0.0/16', '224.0.0.0/3'].exists(n, cidr(n).containsCIDR(cidr(self)) || cidr(self).containsCIDR(cidr(n)))
+                                message: "a route to a NAT gateway names an internet destination, as a masked IPv4 CIDR outside the private, shared, loopback, link-local and multicast ranges"
                 ses:
                   type: object
                   description: >-

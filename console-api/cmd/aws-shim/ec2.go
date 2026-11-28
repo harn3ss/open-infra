@@ -88,6 +88,7 @@ var ec2Ops = map[string]ec2Op{
 	"DescribeInstanceTypes":     {"InstanceType", "get"},
 	"DescribeAddresses":         {"ElasticIp", "get"},
 	"DescribeInternetGateways":  {"InternetGateway", "get"},
+	"DescribeNatGateways":       {"NatGateway", "get"},
 	"DescribeRouteTables":       {"RouteTable", "get"},
 	"DescribeNetworkAcls":       {"NetworkAcl", "get"},
 	"DescribeVpcEndpoints":      {"VpcEndpoint", "get"},
@@ -297,6 +298,8 @@ func (h *ec2Handler) serve(w http.ResponseWriter, r *http.Request, claims iam.Cl
 		h.describeAddresses(ctx, w, r, claims, requestID)
 	case "DescribeInternetGateways":
 		h.describeInternetGateways(ctx, w, r, claims, requestID)
+	case "DescribeNatGateways":
+		h.describeNatGateways(ctx, w, r, claims, requestID)
 	case "DescribeRouteTables":
 		h.describeRouteTables(ctx, w, r, claims, requestID)
 	case "DescribeNetworkAcls":

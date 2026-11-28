@@ -7,7 +7,9 @@ package main
 // (the Application composition's dnsConfig); in a default VPC without its internet gateway, the subnet's
 // network ACL drops DNS to anywhere else, so the firewall cannot be gone around. A default VPC that keeps its
 // internet gateway (the subnet's natOutgoing) is one whose senders reach the internet: an amazonaws.com name the
-// platform does not serve resolves for them as any other public name (vpcresolver.go).
+// platform does not serve resolves for them as any other public name (vpcresolver.go). A default VPC's private
+// subnet (default-vpc-<account>-private) is NATed out only to the few destinations its route table sends to the
+// VPC's NAT gateway, so its senders are ones with no route out (openinfra.dev/internet-gateway "false").
 
 import (
 	"context"
@@ -39,6 +41,7 @@ type defaultNet struct {
 	ipnet    *net.IPNet
 	account  string
 	internet bool // the subnet has its internet gateway (natOutgoing)
+	private  bool // the default VPC's private subnet
 }
 
 func newDefaultVPCSenders(dyn dynamic.Interface) *defaultVPCSenders {
@@ -54,8 +57,12 @@ func (d *defaultVPCSenders) At(ip string, t time.Time) (vpcInterface, bool) {
 	for _, n := range d.subnets(t) {
 		if n.ipnet.Contains(addr) {
 			v := &defaultVPC{account: n.account}
-			return vpcInterface{IP: ip, Account: n.account, VpcID: v.vpcID(), SubnetID: v.subnetID(),
-				SubnetIDs: []string{v.subnetID()}, Internet: n.internet}, true
+			subnet := v.subnetID()
+			if n.private {
+				subnet = v.privateSubnetID()
+			}
+			return vpcInterface{IP: ip, Account: n.account, VpcID: v.vpcID(), SubnetID: subnet,
+				SubnetIDs: []string{subnet}, Internet: n.internet}, true
 		}
 	}
 	return vpcInterface{}, false
@@ -82,7 +89,8 @@ func (d *defaultVPCSenders) subnets(t time.Time) []defaultNet {
 }
 
 // defaultNetsOf are the default subnets among items, each with its account: a member account's subnet carries
-// openinfra.dev/account-id; the one named default-vpc is the management account's.
+// openinfra.dev/account-id; the one named default-vpc is the management account's. A subnet labelled
+// openinfra.dev/internet-gateway "false" has no route to an internet gateway, whatever it NATs.
 func defaultNetsOf(items []unstructured.Unstructured, mgmt string) []defaultNet {
 	var out []defaultNet
 	for i := range items {
@@ -100,7 +108,11 @@ func defaultNetsOf(items []unstructured.Unstructured, mgmt string) []defaultNet 
 			continue
 		}
 		internet, _, _ := unstructured.NestedBool(u.Object, "spec", "natOutgoing")
-		out = append(out, defaultNet{ipnet: ipnet, account: account, internet: internet})
+		if u.GetLabels()["openinfra.dev/internet-gateway"] == "false" {
+			internet = false
+		}
+		out = append(out, defaultNet{ipnet: ipnet, account: account, internet: internet,
+			private: u.GetName() == privateSubnetName(account)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ipnet.String() < out[j].ipnet.String() })
 	return out

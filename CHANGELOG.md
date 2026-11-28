@@ -6,6 +6,21 @@ the product's public contract.
 
 ## Unreleased
 
+### Added — a default VPC's NAT gateway and private subnet
+- A member account's default VPC can have a NAT gateway in its public subnet (`spec.defaultVpc.natGateway`)
+  and a private subnet (`spec.defaultVpc.privateSubnet`), a /24 whose route table sends the internet
+  destinations the operator names (`natGatewayRoutes`), and only them, to the gateway, with no default route.
+  EC2 lists the gateway (`DescribeNatGateways`, new), its Elastic IP (`DescribeAddresses`), the private
+  subnet, its route table and its network ACL by AWS's ids.
+- The NAT gateway is the installation's NAT gateway node (`networking.natGateway.node`): the private subnet's
+  traffic to those destinations leaves through it, NATed to its address, and its network ACL drops every
+  other destination outside the platform. Nothing reaches in. An instance in the private subnet runs on that
+  node and gets no public address; one that names no subnet still launches in the default subnet.
+- A route to a NAT gateway must name the internet: private, shared, loopback, link-local and multicast
+  ranges, and so `0.0.0.0/0`, are refused. `CreateAccount` skips the /20 a private subnet is in.
+- Operator guide: [docs/nat-gateway-operator.md](docs/nat-gateway-operator.md). Live probe:
+  `probe/aws-shim-ec2-nat-gateway.sh`.
+
 ### Added — g5.xlarge, a second GPU instance type with its own card
 - `g5.xlarge` (4 vCPUs, 16 GiB, one GPU) launches beside `g4dn.xlarge`, from CloudFormation or a
   `kind: VirtualMachine` with `gpus: 1` and the new `gpuFamily: g5`. Each GPU instance family is its own pool

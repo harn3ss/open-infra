@@ -571,6 +571,26 @@ if [ -n "$ELB_POOL" ]; then
   RUN "$KUBECTL -n open-infra-aws-shim create configmap openinfra-load-balancers --from-literal=ELB_ADDRESS_POOL=$ELB_POOL --dry-run=client -o yaml | $KUBECTL apply -f -"
 fi
 
+# A default VPC's NAT gateway (an Account's spec.defaultVpc.natGateway): the node its private subnet's traffic
+# leaves the platform through (networking.natGateway.node). The node is labelled openinfra.dev/nat-gateway (an
+# instance in a private subnet runs there), the Account composition reads it from the openinfra-nat-gateway
+# EnvironmentConfig (the subnet's centralized gateway), and the aws-shim reports its address as the gateway's
+# Elastic IP (the openinfra-nat-gateways ConfigMap, NAT_GATEWAY_ADDRESS). Unset => no NAT gateway is in service.
+NAT_NODE="$(yget networking.natGateway.node)"
+if [ -n "$NAT_NODE" ]; then
+  printf '%s' "$NAT_NODE" | grep -Eq '^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$' || DIE "networking.natGateway.node must be a node name, got '$NAT_NODE'"
+  NAT_ADDR="$($KUBECTL get node "$NAT_NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null | awk '{print $1}')"
+  [ -n "$NAT_ADDR" ] || [ "$DRY_RUN" = 1 ] || DIE "networking.natGateway.node: node '$NAT_NODE' has no InternalIP (is it in the cluster?)"
+  LOG "NAT gateways leave through node $NAT_NODE (${NAT_ADDR:-its address})"
+  for n in $($KUBECTL get nodes -l openinfra.dev/nat-gateway=true -o name 2>/dev/null); do
+    [ "$n" = "node/$NAT_NODE" ] || RUN "$KUBECTL label $n openinfra.dev/nat-gateway-"
+  done
+  RUN "$KUBECTL label node $NAT_NODE openinfra.dev/nat-gateway=true --overwrite"
+  RUN "printf 'apiVersion: apiextensions.crossplane.io/v1alpha1\nkind: EnvironmentConfig\nmetadata: { name: openinfra-nat-gateway }\ndata: { natGatewayNode: %s }\n' $NAT_NODE | $KUBECTL apply -f -"
+  RUN "$KUBECTL create namespace open-infra-aws-shim --dry-run=client -o yaml | $KUBECTL apply -f -"
+  RUN "$KUBECTL -n open-infra-aws-shim create configmap openinfra-nat-gateways --from-literal=NAT_GATEWAY_ADDRESS=$NAT_ADDR --dry-run=client -o yaml | $KUBECTL apply -f -"
+fi
+
 # The routed-ingress shape (an AWS ALB): traefik runs on the host network, so a LAN
 # request is answered by the node it reached, with no overlay DNAT on the way in and
 # no natOutgoing SNAT on the reply (kube-ovn's cross-node LoadBalancer return path is
