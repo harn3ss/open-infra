@@ -40,6 +40,13 @@ the product's public contract.
   management. With `--late` the override is written for each boot once the card is handed over, so the
   card's own driver still starts as usual first. A node with another NVIDIA display device keeps the rule.
 
+### Fixed — a running instance keeps its load balancer targets and private address after a slow start
+- When an instance's start was slow enough that the hypervisor's first attempt timed out, the instance
+  came up with its address, but its recorded status had none. Its network load balancer targets then
+  carried no traffic, and `DescribeInstances` showed no `PrivateIpAddress`. Both now read the address the
+  VPC assigned the instance's network interface, as EC2 reports an instance's primary private address. They
+  read it only while that interface is the one on the instance's current host.
+
 ### Changed — an instance in a default VPC without its internet gateway has no public address
 - As EC2 refuses to associate an Elastic IP with an instance in a VPC without an internet gateway
   (`Gateway.NotAttached`), an instance in such an account's default VPC is refused a public address: a

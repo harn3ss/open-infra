@@ -119,6 +119,11 @@ func (h *ec2Handler) instanceOf(ctx context.Context, u *unstructured.Unstructure
 	if in.state == "stopped" {
 		in.shutdownBy = map[bool]string{true: "guest", false: "user"}[running]
 	}
+	// A running instance always has its private address. When its status has none (KubeVirt recorded none for
+	// the start), it is read as the load balancer reads it (runningVMIEndpoint).
+	if in.privateIP == "" && in.state == "running" {
+		in.privateIP = runningVMIEndpoint(ctx, xr, u.GetNamespace(), u.GetName()).ip
+	}
 	in.instanceType = claimInstanceType(u)
 	if d := defaultVPCOfSubnet(in.subnet, h.account()); d != nil {
 		in.subnet, in.vpc = d.subnetID(), d.vpcID() // in its account's default VPC, by EC2's ids

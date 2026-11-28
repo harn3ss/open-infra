@@ -227,6 +227,65 @@ func TestELB_NetworkLoadBalancerForwardsToItsTargets(t *testing.T) {
 	}
 }
 
+// A running instance whose VirtualMachineInstance lost its address (KubeVirt records none after a start whose
+// first sync timed out) is still a target, at the address the VPC gave its interface: kube-ovn's IP object
+// for the VM, when it is the same interface (MAC) on the same node. Without that record it is no target.
+func TestELB_TargetAddressIsTheVPCsWhenTheInstanceStatusHasNone(t *testing.T) {
+	h, _ := elbFixture(t, true)
+	bg := context.Background()
+	dyn := h.ec2.door.shimDyn
+	vmis := dyn.Resource(vmiGVR).Namespace(memberHome)
+	vmi, err := vmis.Get(bg, "game", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const mac = "02:00:5e:10:00:07"
+	vmi.Object["status"].(map[string]any)["interfaces"] = []any{map[string]any{"name": "default", "mac": mac, "infoSource": "domain", "linkState": "up"}}
+	if _, err := vmis.Update(bg, vmi, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := dyn.Resource(vmClaimGVR).Namespace(memberHome).Get(bg, "game", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &ec2Instance{id: elbGameID, claim: claim}
+	if ep := h.endpointOf(bg, in); ep.ip != "" {
+		t.Errorf("no address, and no VPC record: no target: %+v", ep)
+	}
+
+	ipObj := func(name, mac, node string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "kubeovn.io/v1", "kind": "IP",
+			"metadata": map[string]any{"name": name + "." + memberHome},
+			"spec": map[string]any{"podName": name, "namespace": memberHome, "podType": "VirtualMachine", "subnet": "default-vpc-" + testMember,
+				"v4IpAddress": "172.31.16.7", "macAddress": mac, "nodeName": node}}}
+	}
+	ips := dyn.Resource(kubeovnIPGVR)
+	// A record for another interface, or the VM's last node, is not where the instance is now.
+	for _, stale := range []*unstructured.Unstructured{ipObj("game", "02:00:5e:10:00:99", "node-b"), ipObj("game", mac, "node-a")} {
+		if _, err := ips.Create(bg, stale, metav1.CreateOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if ep := h.endpointOf(bg, in); ep.ip != "" {
+			t.Errorf("a record for another interface or node is no target: %+v", ep)
+		}
+		if err := ips.Delete(bg, stale.GetName(), metav1.DeleteOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ips.Create(bg, ipObj("game", strings.ToUpper(mac), "node-b"), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	ep := h.endpointOf(bg, in)
+	if ep.ip != "172.31.16.7" || ep.node != "node-b" || ep.vmi == nil || ep.vmi.Kind != "VirtualMachineInstance" || ep.vmi.Name != "game" {
+		t.Errorf("the VPC's address for the instance's interface, on its node, naming its VirtualMachineInstance: %+v", ep)
+	}
+	// DescribeInstances reads the same address for it (its status has none either).
+	delete(claim.Object["status"].(map[string]any), "ip")
+	if got := h.ec2.instanceOf(accountContext(bg, testMember, memberHome), claim, nil); got.state != "running" || got.privateIP != "172.31.16.7" {
+		t.Errorf("a running instance's private address, as its load balancer reads it: %q (%s)", got.privateIP, got.state)
+	}
+}
+
 // What the platform does not serve is refused in ELB's words, saying so, and what AWS refuses is refused
 // as AWS does.
 func TestELB_RefusesWhatItDoesNotServe(t *testing.T) {

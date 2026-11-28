@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"reflect"
 	"sort"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/dynamic"
 )
 
 const (
@@ -72,7 +74,6 @@ func (h *elbHandler) addresses(ctx context.Context, account string) map[string]s
 	return out
 }
 
-// elbEndpoint is where a running instance receives its traffic: its address and its node.
 // elbEndpoint is a running instance's address and node, and the VirtualMachineInstance it is.
 type elbEndpoint struct {
 	ip, node string
@@ -81,10 +82,19 @@ type elbEndpoint struct {
 
 // endpointOf reads in's endpoint from its VirtualMachineInstance (none while it is not running).
 func (h *elbHandler) endpointOf(ctx context.Context, in *ec2Instance) elbEndpoint {
-	if in == nil || in.claim == nil || h.ec2.door.shimDyn == nil {
+	if in == nil || in.claim == nil {
 		return elbEndpoint{}
 	}
-	vmi, err := h.ec2.door.shimDyn.Resource(vmiGVR).Namespace(in.claim.GetNamespace()).Get(ctx, in.claim.GetName(), metav1.GetOptions{})
+	return runningVMIEndpoint(ctx, h.ec2.door.shimDyn, in.claim.GetNamespace(), in.claim.GetName())
+}
+
+// runningVMIEndpoint is VM name's address and node in namespace, and its VirtualMachineInstance, read from
+// the VirtualMachineInstance (none while it is not running).
+func runningVMIEndpoint(ctx context.Context, dyn dynamic.Interface, namespace, name string) elbEndpoint {
+	if dyn == nil {
+		return elbEndpoint{}
+	}
+	vmi, err := dyn.Resource(vmiGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return elbEndpoint{}
 	}
@@ -92,19 +102,55 @@ func (h *elbHandler) endpointOf(ctx context.Context, in *ec2Instance) elbEndpoin
 		return elbEndpoint{}
 	}
 	node, _, _ := unstructured.NestedString(vmi.Object, "status", "nodeName")
+	if node == "" {
+		return elbEndpoint{}
+	}
+	// The endpoint names its VirtualMachineInstance, as the endpoints of a Service with a selector name
+	// their pods: kube-ovn reads every endpoint's targetRef to find the instance's network port, and
+	// stops (a nil dereference) on an endpoint without one.
+	ref := &corev1.ObjectReference{APIVersion: "kubevirt.io/v1", Kind: "VirtualMachineInstance",
+		Namespace: vmi.GetNamespace(), Name: vmi.GetName(), UID: vmi.GetUID()}
 	ifaces, _, _ := unstructured.NestedSlice(vmi.Object, "status", "interfaces")
+	mac := ""
 	for _, i := range ifaces {
 		m, _ := i.(map[string]any)
-		if ip, _ := m["ipAddress"].(string); ip != "" && !strings.Contains(ip, ":") && node != "" {
-			// The endpoint names its VirtualMachineInstance, as the endpoints of a Service with a selector name
-			// their pods: kube-ovn reads every endpoint's targetRef to find the instance's network port, and
-			// stops (a nil dereference) on an endpoint without one.
-			ref := &corev1.ObjectReference{APIVersion: "kubevirt.io/v1", Kind: "VirtualMachineInstance",
-				Namespace: vmi.GetNamespace(), Name: vmi.GetName(), UID: vmi.GetUID()}
+		if ip, _ := m["ipAddress"].(string); ip != "" && !strings.Contains(ip, ":") {
 			return elbEndpoint{ip: ip, node: node, vmi: ref}
 		}
+		if n, _ := m["name"].(string); n == "default" {
+			mac, _ = m["mac"].(string)
+		}
+	}
+	// KubeVirt can leave a running instance's interface without its address: a start whose first sync times
+	// out records none, though the instance has it. The address is the VPC's, as an EC2 instance's primary
+	// private address is its network interface's: kube-ovn's address for the VM, read when the interface
+	// is the same one (its MAC) on the same node.
+	if ip := vmVPCAddress(ctx, dyn, vmi.GetNamespace(), vmi.GetName(), mac, node); ip != "" {
+		return elbEndpoint{ip: ip, node: node, vmi: ref}
 	}
 	return elbEndpoint{}
+}
+
+// vmVPCAddress is the IPv4 address kube-ovn assigned VM name's interface in namespace: its IP object,
+// <name>.<namespace>, when it is the VM's, with mac and on node ("" when there is none or it does not match).
+func vmVPCAddress(ctx context.Context, dyn dynamic.Interface, namespace, name, mac, node string) string {
+	if dyn == nil || mac == "" {
+		return ""
+	}
+	o, err := dyn.Resource(kubeovnIPGVR).Get(ctx, name+"."+namespace, metav1.GetOptions{})
+	if err != nil {
+		return ""
+	}
+	spec, _, _ := unstructured.NestedMap(o.Object, "spec")
+	s := func(k string) string { v, _ := spec[k].(string); return v }
+	if s("podType") != "VirtualMachine" || s("podName") != name || s("namespace") != namespace ||
+		!strings.EqualFold(s("macAddress"), mac) || s("nodeName") != node {
+		return ""
+	}
+	if p := net.ParseIP(s("v4IpAddress")); p != nil && p.To4() != nil {
+		return p.String()
+	}
+	return ""
 }
 
 // accountContext is ctx acting in account (whose home is ns), as a request in it would.
