@@ -3,7 +3,7 @@ module openinfra/test/admission
 go 1.26.4
 
 require (
-	cel.dev/cel-go v0.33.2
+	cel.dev/cel-go v0.33.4
 	gopkg.in/yaml.v3 v3.0.1
 )
 
