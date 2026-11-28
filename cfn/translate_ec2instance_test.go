@@ -458,47 +458,12 @@ Resources:
 	if len(fs) != 0 || m.Spec["subnet"] != "default-vpc-111122223333" {
 		t.Fatalf("a no-internet account's instance: %s %v", findingsText(fs), m.Spec["subnet"])
 	}
-	if m.Spec["expose"] != nil || !strings.Contains(strings.Join(m.Caveats, "\n"), "no route to an internet gateway") {
+	if m.Spec["expose"] != nil || !strings.Contains(strings.Join(m.Caveats, "\n"), "no internet gateway") {
 		t.Fatalf("a public address in a VPC with no internet gateway is not exposed: %v %v", m.Spec["expose"], m.Caveats)
 	}
 	ctx.caps.NoInternetSubnets = nil
 	if m, _ := translateEC2Instance("Web", resolvedProps(t, ctx, "Web"), ctx); m.Spec["subnet"] != nil || m.Spec["expose"] != true {
 		t.Fatalf("with an internet gateway the instance is not moved and keeps its public address: %v %v", m.Spec["subnet"], m.Spec["expose"])
-	}
-}
-
-// A default VPC's private subnet: an instance lands in it by naming its id, and a public address there is not
-// exposed; an instance that names no subnet launches in the default subnet, never the private one.
-func TestTranslate_EC2Instance_PrivateSubnet(t *testing.T) {
-	named := `
-Resources:
-  Server:
-    Type: AWS::EC2::Instance
-    Properties:
-      ImageId: windows-server-2022
-      InstanceType: t3.medium
-      NetworkInterfaces: [ { DeviceIndex: "0", SubnetId: subnet-0priv, AssociatePublicIpAddress: true } ]
-`
-	caps := func(ctx *stackCtx) {
-		ctx.caps.DefaultSubnets = map[string]string{"subnet-0abc": "default-vpc-111122223333", "subnet-0priv": "default-vpc-111122223333-private"}
-		ctx.caps.NoInternetSubnets = map[string]bool{"default-vpc-111122223333": true, "default-vpc-111122223333-private": true}
-		ctx.caps.PrivateSubnets = map[string]bool{"default-vpc-111122223333-private": true}
-	}
-	ctx := ecsCtx(t, named)
-	caps(ctx)
-	m, fs := translateEC2Instance("Server", resolvedProps(t, ctx, "Server"), ctx)
-	if len(fs) != 0 || m.Spec["subnet"] != "default-vpc-111122223333-private" {
-		t.Fatalf("an instance naming the private subnet: %s %v", findingsText(fs), m.Spec["subnet"])
-	}
-	if m.Spec["expose"] != nil || !strings.Contains(strings.Join(m.Caveats, "\n"), "no route to an internet gateway") {
-		t.Fatalf("a public address in the private subnet is not exposed: %v %v", m.Spec["expose"], m.Caveats)
-	}
-	for range 20 { // map order: the private subnet is never chosen for an instance that names none
-		ctx = ecsCtx(t, "Resources:\n  Web:\n    Type: AWS::EC2::Instance\n    Properties:\n      ImageId: ubuntu-24.04\n")
-		caps(ctx)
-		if m, _ := translateEC2Instance("Web", resolvedProps(t, ctx, "Web"), ctx); m.Spec["subnet"] != "default-vpc-111122223333" {
-			t.Fatalf("an instance that names no subnet: %v", m.Spec["subnet"])
-		}
 	}
 }
 

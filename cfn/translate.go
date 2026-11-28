@@ -1610,17 +1610,17 @@ func translateEC2Instance(id string, props map[string]any, ctx *stackCtx) (*Mani
 	// nothing outside the platform either.
 	if _, named := spec["subnet"]; !named && ctx != nil {
 		for _, ls := range ctx.caps.DefaultSubnets {
-			if ctx.caps.NoInternetSubnets[ls] && !ctx.caps.PrivateSubnets[ls] {
+			if ctx.caps.NoInternetSubnets[ls] {
 				spec["subnet"] = ls
 			}
 		}
 	}
-	// A public address in a subnet with no route to an internet gateway (one whose VPC has none, or a private
-	// subnet) reaches nothing, as on AWS: the instance is not exposed.
+	// A public address in a subnet whose VPC has no internet gateway reaches nothing, as on AWS: the instance
+	// is not exposed.
 	if ls, _ := spec["subnet"].(string); ls != "" && ctx != nil && ctx.caps.NoInternetSubnets[ls] {
 		if exp, _ := spec["expose"].(bool); exp {
 			delete(spec, "expose")
-			cav = append(cav, "AssociatePublicIpAddress: the instance's subnet has no route to an internet gateway, so a public address reaches nothing; it is not exposed")
+			cav = append(cav, "AssociatePublicIpAddress: the instance's subnet is in a VPC with no internet gateway, so a public address reaches nothing; it is not exposed")
 		}
 	}
 	var requires []Requirement
@@ -3916,7 +3916,7 @@ func translateECSService(id string, props map[string]any, ctx *stackCtx) (*Manif
 	// it reaches nothing outside the platform either.
 	if _, named := props["NetworkConfiguration"]; !named {
 		for _, ls := range ctx.caps.DefaultSubnets {
-			if ctx.caps.NoInternetSubnets[ls] && !ctx.caps.PrivateSubnets[ls] {
+			if ctx.caps.NoInternetSubnets[ls] {
 				m.Spec["subnet"] = ls
 			}
 		}

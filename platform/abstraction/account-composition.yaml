@@ -24,9 +24,7 @@ spec:
   mode: Pipeline
   pipeline:
     # The install's AWS identity (platform/aws-shim/aws-identity.yaml): its account is the management
-    # account. Optional: without it the management account is 000000000000. And its NAT gateway node
-    # (openinfra-nat-gateway, install.sh's networking.natGateway.node): where a private subnet's traffic leaves
-    # the platform. Optional: without it no NAT gateway is in service.
+    # account. Optional: without it the management account is 000000000000.
     - step: environment
       functionRef:
         name: crossplane-contrib-function-environment-configs
@@ -40,9 +38,6 @@ spec:
             - type: Reference
               ref:
                 name: openinfra-aws-identity
-            - type: Reference
-              ref:
-                name: openinfra-nat-gateway
     - step: render-resources
       functionRef:
         name: crossplane-contrib-function-go-templating
@@ -263,13 +258,6 @@ spec:
             {{- $cidr := .subnetCidr }}
             {{- $third := int (index (splitList "." $cidr) 2) }}
             {{- $net := printf "172.31.%d" $third }}
-            {{- /* Its private subnet (spec.defaultVpc.privateSubnet): a /24 of 172.31.0.0/16. The account's own
-                   subnets reach each other, as AWS's local route joins a VPC's subnets. */}}
-            {{- $priv := .privateSubnet | default dict }}
-            {{- $pcidr := $priv.subnetCidr | default "" }}
-            {{- if not (regexMatch `^172\.31\.[0-9]{1,3}\.0/24$` $pcidr) }}{{ $pcidr = "" }}{{ end }}
-            {{- $own := $cidr }}
-            {{- if $pcidr }}{{ $own = printf "%s, %s" $cidr $pcidr }}{{ end }}
             ---
             # The account's default subnet (its default VPC, 172.31.0.0/16): a /20 of the cluster network of its
             # own, which a workload joins by naming it (ovn.kubernetes.io/logical_switch) — the account's
@@ -307,7 +295,7 @@ spec:
                     acls:
                       - direction: from-lport
                         priority: 3000
-                        match: {{ printf "ip4 && ip4.dst != {10.43.0.0/16, 10.16.0.0/16, 100.64.0.0/16, %s}" $own | toJson }}
+                        match: {{ printf "ip4 && ip4.dst != {10.43.0.0/16, 10.16.0.0/16, 100.64.0.0/16, %s}" $cidr | toJson }}
                         action: drop
                       # DNS only to the VPC resolver (Route 53 Resolver, its DNS Firewall: vpcresolver_default.go),
                       # never to the cluster's own resolver or any other, so the firewall cannot be gone around.
@@ -319,67 +307,6 @@ spec:
                     natOutgoing: true
                     acls: []
                     {{- end }}
-            {{- if $pcidr }}
-            {{- $pnet := trimSuffix ".0/24" $pcidr }}
-            {{- $natNode := index $envCfg "natGatewayNode" | default "" }}
-            {{- $routes := list }}
-            {{- if and .natGateway .publicSubnet }}
-            {{-   range ($priv.natGatewayRoutes | default list) }}
-            {{-     if regexMatch `^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$` . }}{{ $routes = append $routes . }}{{ end }}
-            {{-   end }}
-            {{- end }}
-            {{- $nat := and (gt (len $routes) 0) (ne $natNode "") }}
-            ---
-            # The default VPC's private subnet (spec.defaultVpc.privateSubnet): a /24 of the cluster network of
-            # its own, whose route table sends natGatewayRoutes, and nothing else, to the VPC's NAT gateway. A
-            # workload joins it only by naming it. Its traffic leaves through the installation's NAT gateway node
-            # (a centralized gateway there), NATed to the node's address, and only for those destinations: its
-            # network ACL drops every other one outside the platform's networks and the account's own subnets,
-            # before any network policy allows it. Nothing outside reaches in (the node NATs out; it publishes
-            # nothing). Without a NAT gateway node, nothing NATs it out at all. It is labelled with no internet
-            # gateway, so the VPC resolver treats its senders as having no route out.
-            apiVersion: kubernetes.crossplane.io/v1alpha2
-            kind: Object
-            metadata:
-              annotations:
-                gotemplating.fn.crossplane.io/composition-resource-name: private-subnet
-            spec:
-              forProvider:
-                manifest:
-                  apiVersion: kubeovn.io/v1
-                  kind: Subnet
-                  metadata:
-                    name: {{ printf "default-vpc-%s-private" $acct | toJson }}
-                    labels:
-                      openinfra.dev/default-vpc: "true"
-                      openinfra.dev/account-id: {{ $acct | toJson }}
-                      openinfra.dev/internet-gateway: "false"
-                  spec:
-                    protocol: IPv4
-                    vpc: ovn-cluster
-                    cidrBlock: {{ $pcidr | toJson }}
-                    gateway: {{ printf "%s.1" $pnet | toJson }}
-                    excludeIps:
-                      - {{ printf "%s.1..%s.3" $pnet $pnet | toJson }}
-                      - {{ printf "%s.255" $pnet | toJson }}
-                    private: false
-                    natOutgoing: {{ $nat }}
-                    {{- if $nat }}
-                    gatewayType: centralized
-                    gatewayNode: {{ $natNode | toJson }}
-                    {{- else }}
-                    gatewayType: distributed
-                    {{- end }}
-                    acls:
-                      - direction: from-lport
-                        priority: 3000
-                        match: {{ printf "ip4 && ip4.dst != {10.43.0.0/16, 10.16.0.0/16, 100.64.0.0/16, %s%s}" $own (ternary (printf ", %s" (join ", " $routes)) "" $nat) | toJson }}
-                        action: drop
-                      - direction: from-lport
-                        priority: 3001
-                        match: "(udp.dst == 53 || tcp.dst == 53) && ip4.dst != 10.43.0.2"
-                        action: drop
-            {{- end }}
             {{- end }}
             {{- end }}
             ---
@@ -525,8 +452,7 @@ subjects:
 # namespace's openinfra.dev/internet-gateway label, which the Account writes, says which VPC an instance
 # launches in. A launch with an address (spec.expose, spec.ports or spec.elasticIp), and an update that
 # adds one, are refused; an instance that already has one keeps it. An instance that names another subnet
-# (a stack's own VPC) is not this VPC's. An instance in the default VPC's private subnet gets no public
-# address either, whatever the VPC has: its route table sends only its NAT gateway routes out.
+# (a stack's own VPC) is not this VPC's.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -561,12 +487,6 @@ spec:
     - name: inDefaultSubnet
       expression: >-
         !has(object.spec.subnet) || object.spec.subnet == '' || object.spec.subnet == 'default-vpc-' + variables.account
-    # A default VPC's private subnet has no route to an internet gateway, whatever the VPC has.
-    - name: inPrivateSubnet
-      expression: >-
-        namespaceObject != null && has(namespaceObject.metadata.labels) &&
-        'openinfra.dev/account-id' in namespaceObject.metadata.labels && has(object.spec.subnet) &&
-        object.spec.subnet == 'default-vpc-' + namespaceObject.metadata.labels['openinfra.dev/account-id'] + '-private'
     - name: hadAddress
       expression: >-
         oldObject != null && has(oldObject.spec) &&
@@ -579,12 +499,6 @@ spec:
         internet gateway, so instance ' + object.metadata.name + ' cannot have a public address
         (spec.expose, spec.ports or spec.elasticIp). Reach it through a network load balancer (Elastic Load
         Balancing).'
-      reason: Invalid
-    - expression: "!variables.inPrivateSubnet || variables.hadAddress"
-      messageExpression: >-
-        'Gateway.NotAttached: subnet ' + object.spec.subnet + ' routes nothing to an internet gateway (its route
-        table sends only its NAT gateway routes out), so instance ' + object.metadata.name + ' cannot have a
-        public address (spec.expose, spec.ports or spec.elasticIp).'
       reason: Invalid
 ---
 apiVersion: admissionregistration.k8s.io/v1

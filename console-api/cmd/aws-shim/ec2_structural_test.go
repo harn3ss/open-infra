@@ -88,7 +88,7 @@ func stackRecordConfigMap(t *testing.T, rec cfn.StackRecord) *unstructured.Unstr
 
 var structuralLists = map[schema.GroupVersionResource]string{
 	vmClaimGVR: "VirtualMachineList", vpcGVR: "VpcList", subnetGVR: "SubnetList", natGatewayGVR: "NatGatewayList",
-	vpcEndpointGVR: "VpcEndpointList", configMapGVR: "ConfigMapList", secretGVR: "SecretList", serviceGVR: "ServiceList",
+	vpcEndpointGVR: "VpcEndpointList", configMapGVR: "ConfigMapList", secretGVR: "SecretList",
 }
 
 // netObjects are what the net stack (named stack, deployed in namespace ns) and the operator (natively: the

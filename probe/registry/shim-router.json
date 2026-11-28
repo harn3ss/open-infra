@@ -281,7 +281,6 @@
         "DescribeInstances",
         "DescribeInternetGateways",
         "DescribeKeyPairs",
-        "DescribeNatGateways",
         "DescribeNetworkAcls",
         "DescribeNetworkInterfaces",
         "DescribeRegions",

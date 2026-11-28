@@ -151,8 +151,6 @@ spec:
             {{- $lan := or $bridge $macvtap }}
             {{- /* highAvailability: root disk on Longhorn (migratable RWX block) + live migration */}}
             {{- $ha := $spec.highAvailability | default false }}
-            {{- /* In a default VPC's private subnet (default-vpc-<account>-private): runs on the NAT gateway node. */}}
-            {{- $natSubnet := and (hasPrefix "default-vpc-" ($spec.subnet | default "")) (hasSuffix "-private" ($spec.subnet | default "")) }}
             {{- if and (gt $gpus 0) $ha }}{{ fail "EC2 instance: a GPU instance (gpus) cannot be combined with high availability (live migration): a GPU given whole to an instance cannot move with it" }}{{ end }}
             {{- /* adopt an existing root PVC (migration/restore) instead of cloning the image */}}
             {{- $adopt := $spec.existingRootClaim | default "" }}
@@ -551,14 +549,12 @@ spec:
                         # of killing it. Requires the migratable RWX block root disk above.
                         evictionStrategy: LiveMigrate
                         {{- end }}
-                        {{- if or $lan (not $ha) $natSubnet }}
+                        {{- if or $lan (not $ha) }}
                         # One nodeSelectorTerm, matchExpressions AND-ed:
                         # - Direct-LAN VMs must land where the parent LAN NIC exists (openinfra.dev/vm-lan).
                         # - Fail-closed storage (#307): a non-HA VM's root disk is on local-path, so the
                         #   launcher node's disk-class must be nvme or sata-ssd. (HA roots live on Longhorn,
                         #   placed by Longhorn's own disk-class tags, so no node constraint is added here.)
-                        # - An instance in a default VPC's private subnet runs on the NAT gateway node, the
-                        #   one its traffic leaves through (openinfra.dev/nat-gateway, install.sh).
                         affinity:
                           nodeAffinity:
                             requiredDuringSchedulingIgnoredDuringExecution:
@@ -569,9 +565,6 @@ spec:
                                     {{- end }}
                                     {{- if not $ha }}
                                     - { key: openinfra.dev/disk-class, operator: In, values: [nvme, sata-ssd] }
-                                    {{- end }}
-                                    {{- if $natSubnet }}
-                                    - { key: openinfra.dev/nat-gateway, operator: In, values: ["true"] }
                                     {{- end }}
                         {{- end }}
                         {{- if hasPrefix "default-vpc" ($spec.subnet | default "") }}
@@ -1016,9 +1009,6 @@ spec:
                                 - { key: openinfra.dev/disk-class, operator: In, values: [nvme, sata-ssd] }
                                 {{- if $vmArch }}
                                 - { key: kubernetes.io/arch, operator: In, values: [{{ $vmArch }}] }
-                                {{- end }}
-                                {{- if $natSubnet }}
-                                - { key: openinfra.dev/nat-gateway, operator: In, values: ["true"] }
                                 {{- end }}
                                 {{- if $baseCopy }}
                                 - { key: kubevirt.io/schedulable, operator: In, values: ["true"] }

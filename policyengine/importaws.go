@@ -42,7 +42,7 @@ var SupportedActions = map[string]map[string]bool{
 		"DescribeInstances": true, "DescribeVolumes": true, "DescribeSecurityGroups": true, "DescribeVpcs": true, "DescribeSubnets": true,
 		"DescribeImages": true, "DescribeRegions": true, "DescribeAvailabilityZones": true, "DescribeKeyPairs": true,
 		"ImportKeyPair": true, "CreateKeyPair": true, "DeleteKeyPair": true, "DeleteVolume": true,
-		"DescribeInternetGateways": true, "DescribeNatGateways": true, "DescribeRouteTables": true, "DescribeNetworkAcls": true, "DescribeVpcEndpoints": true,
+		"DescribeInternetGateways": true, "DescribeRouteTables": true, "DescribeNetworkAcls": true, "DescribeVpcEndpoints": true,
 		"DescribeNetworkInterfaces": true, "CreateFlowLogs": true, "DescribeFlowLogs": true, "DeleteFlowLogs": true,
 		"GetConsoleOutput": true, "GetConsoleScreenshot": true,
 		"GetSerialConsoleAccessStatus": true, "EnableSerialConsoleAccess": true, "DisableSerialConsoleAccess": true,

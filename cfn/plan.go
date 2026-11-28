@@ -165,9 +165,6 @@ type Capabilities struct {
 	// NoInternetSubnets are those of them, by cluster subnet, whose VPC has no internet gateway: a workload
 	// there reaches only the platform's own networks, as a task in a subnet with no route out does on AWS.
 	NoInternetSubnets map[string]bool
-	// PrivateSubnets are those of them, by cluster subnet, a workload lands in only by naming it (a default VPC's
-	// private subnet, routed to its NAT gateway): one that names no subnet is never placed there.
-	PrivateSubnets map[string]bool
 	// Images are the EC2 images the stack's account may launch, by image id: those it made (the aws-shim's
 	// CreateImage and CopyImage), those another account shared with it (a launch permission naming it), and
 	// public ones. An instance's ImageId naming one launches from it (spec.imageId, on the image's OS); an

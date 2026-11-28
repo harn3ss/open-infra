@@ -73,11 +73,8 @@ type cfnDoorway struct {
 	// where its roles live (cfn_service_role.go); nil roles = a RoleARN is refused as invalid.
 	roles   roleResolver
 	rolesNS string
-	// natAddress is the address the installation's NAT gateway node sends a default VPC's NAT gateway's
-	// traffic out with (NAT_GATEWAY_ADDRESS, the openinfra-nat-gateways ConfigMap): its Elastic IP's.
-	natAddress string
-	cfg        *rest.Config      // base in-cluster config; copied + impersonated per caller
-	shimDyn    dynamic.Interface // shim SA client for stack-record / changeset / drift bookkeeping
+	cfg     *rest.Config      // base in-cluster config; copied + impersonated per caller
+	shimDyn dynamic.Interface // shim SA client for stack-record / changeset / drift bookkeeping
 	// packages keeps zip Lambdas' deployment packages (lambda_packages.go); nil = an S3 package refuses and
 	// inline code deploys as a ConfigMap, as on the CLI.
 	packages *packageStore
@@ -194,7 +191,6 @@ func (h *cfnDoorway) caps(ctx context.Context) cfn.Capabilities {
 	// The account's default subnet, which a template may name by its id (ec2_default_vpc.go).
 	c.DefaultSubnets = h.defaultSubnets(ctx)
 	c.NoInternetSubnets = h.defaultSubnetsWithoutInternet(ctx)
-	c.PrivateSubnets = h.privateSubnets(ctx)
 	// The EC2 key pairs an instance's KeyName may name (ec2_keypairs.go): the stack's account's, as on AWS.
 	// Unreadable: none are known, and KeyName stays a caveat rather than refusing a key pair that may exist.
 	if h.keyPairs != nil {

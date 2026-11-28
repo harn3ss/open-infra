@@ -471,7 +471,7 @@ Every screen of the console, by the service it belongs to and the AWS service it
 | Cognito | `cognito-idp` | proven | 20 |
 | DynamoDB | `dynamodb` | proven | 19 |
 | DynamoDB | `dynamodbstreams` | proven | 4 |
-| EC2 | `ec2` | proven | 41 |
+| EC2 | `ec2` | proven | 40 |
 | EC2 | `ec2-instance-connect` | proven | 2 |
 | ECR | `ecr` | proven | 37 |
 | ECS | `ecs` | proven | 16 |

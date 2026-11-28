@@ -26,7 +26,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/netip"
 	"regexp"
 	"sort"
 	"strconv"
@@ -540,7 +539,7 @@ func (h *organizationsHandler) createAccount(ctx context.Context, w http.Respons
 var defaultSubnetMu sync.Mutex
 
 // freeDefaultSubnet is the first /20 of 172.31.0.0/16 no account's default VPC has taken (172.31.0.0/20 is
-// the management account's): neither as its default subnet nor by holding its private subnet.
+// the management account's).
 func (h *organizationsHandler) freeDefaultSubnet(ctx context.Context) (string, bool) {
 	if h.shimDyn == nil {
 		return "", false
@@ -553,12 +552,6 @@ func (h *organizationsHandler) freeDefaultSubnet(ctx context.Context) (string, b
 	for i := range list.Items {
 		if c, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "defaultVpc", "subnetCidr"); c != "" {
 			taken[c] = true
-		}
-		if c, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "defaultVpc", "privateSubnet", "subnetCidr"); c != "" {
-			if p, err := netip.ParsePrefix(c); err == nil && p.Addr().Is4() {
-				b := p.Addr().As4()
-				taken[fmt.Sprintf("172.31.%d.0/20", int(b[2])&^15)] = true
-			}
 		}
 	}
 	for third := 16; third <= 240; third += 16 {
